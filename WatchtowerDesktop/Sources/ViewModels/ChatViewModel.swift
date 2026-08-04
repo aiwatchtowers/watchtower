@@ -340,20 +340,15 @@ final class ChatViewModel {
             return try dbPool.read { db in
                 let ws = try WorkspaceQueries.fetchWorkspace(db)
                 let schema = try Self.fetchSchema(db)
-                return Self.formatSystemPrompt(
-                    workspace: ws,
-                    dbPath: dbPool.path,
-                    schema: schema
-                )
+                return Self.formatSystemPrompt(workspace: ws, schema: schema)
             }
         } catch {
-            return "You are Watchtower, an AI assistant for Slack workspace analysis. Query the SQLite database to answer questions."
+            return "You are Watchtower, an AI assistant for Slack workspace analysis. Use the local Watchtower tools to answer questions."
         }
     }
 
     nonisolated static func formatSystemPrompt(
         workspace ws: Workspace?,
-        dbPath: String,
         schema: String
     ) -> String {
         let name = ws?.name ?? "unknown"
@@ -367,8 +362,8 @@ final class ChatViewModel {
             return fmt.string(from: Date())
         }()
 
-        return promptHeader(name: name, domain: domain, now: now, dbPath: dbPath, schema: schema)
-            + promptQueryPatterns(teamID: teamID)
+        return promptHeader(name: name, domain: domain, now: now, schema: schema)
+            + promptDeepLinksAndRestrictions(teamID: teamID)
             + promptRules(teamID: teamID)
             + promptAppGuide()
     }
@@ -377,79 +372,40 @@ final class ChatViewModel {
         name: String,
         domain: String,
         now: String,
-        dbPath: String,
         schema: String
     ) -> String {
         """
-        You are Watchtower, an AI assistant that answers questions about a Slack workspace by querying its SQLite database.
+        You are Watchtower, an AI assistant that answers questions about a Slack workspace from its local database.
 
         Workspace: "\(name)" (domain: \(domain).slack.com)
         Current time: \(now)
-        Database: \(dbPath)
 
-        IMPORTANT: You MUST query the database to answer every question.
-        You have NO pre-loaded data — the database is your only source of truth.
+        IMPORTANT: You MUST look things up with the tools below to answer every question.
+        You have NO pre-loaded data — the local database is your only source of truth.
 
-        === HOW TO QUERY ===
-        You have MCP tools for SQLite. Use them:
-        - read_query: run SELECT queries (use this for all data retrieval)
-        - list_tables: see all tables
-        - describe_table: see table schema
+        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        - list_messages — search/list raw Slack messages by person, channel, and/or keyword, newest first. \
+        At least one of person/channel/query is required.
+        - list_people / get_person — people cards; list_tracks / get_track — work narratives.
+        - list_targets / get_target — the user's action items and goals.
+        - get_today_briefing / list_digests / get_digest — the daily briefing and AI summaries of Slack activity.
+        - list_jira_issues / get_jira_issue — synced Jira issues.
+        - list_transcripts / get_transcript — recorded meeting transcripts.
+        - list_upcoming_events — calendar events in the next N hours.
+        - memory_recall / memory_open / memory_map — the secretary's long-term memory, once it has been built.
+        Never ask for a database path; the data is already local and the tools are already connected.
 
-        Fallback (if MCP tools fail): sqlite3 -header -separator '|' "\(dbPath)" "SQL"
+        There is no SQL tool and no shell — you cannot run database or shell commands of any kind. \
+        The schema below documents the fields behind those tools; read it as reference, never as something to execute.
 
-        === DATABASE SCHEMA ===
+        === DATABASE SCHEMA (reference) ===
         \(schema)
 
         """
     }
 
-    nonisolated private static func promptQueryPatterns(teamID: String) -> String {
+    nonisolated private static func promptDeepLinksAndRestrictions(teamID: String) -> String {
         """
-        === QUERY PATTERNS ===
-
-        First, orient yourself — find what channels and users exist:
-          SELECT name, id, type FROM channels WHERE is_archived = 0 ORDER BY name;
-          SELECT name, display_name, id FROM users WHERE is_deleted = 0 ORDER BY name;
-
-        Messages in a channel (recent first):
-          SELECT m.ts, u.display_name, m.text
-          FROM messages m JOIN users u ON m.user_id = u.id
-          WHERE m.channel_id = (SELECT id FROM channels
-          WHERE name = 'general')
-          AND m.ts_unix > unixepoch('now', '-1 day')
-          ORDER BY m.ts_unix DESC LIMIT 50;
-
-        Messages from a user:
-          SELECT m.ts, m.text, c.name
-          FROM messages m JOIN channels c ON m.channel_id = c.id
-          WHERE m.user_id = (SELECT id FROM users
-          WHERE name = 'alice')
-          ORDER BY m.ts_unix DESC LIMIT 30;
-
-        Activity overview:
-          SELECT c.name, COUNT(*) as cnt
-          FROM messages m JOIN channels c ON m.channel_id = c.id
-          WHERE m.ts_unix > unixepoch('now', '-1 day')
-          GROUP BY c.name ORDER BY cnt DESC;
-
-        Full-text search:
-          SELECT m.text, u.display_name, c.name, m.ts
-          FROM messages_fts fts
-          JOIN messages m ON fts.channel_id = m.channel_id
-            AND fts.ts = m.ts
-          JOIN users u ON m.user_id = u.id
-          JOIN channels c ON m.channel_id = c.id
-          WHERE messages_fts MATCH 'keyword'
-          ORDER BY m.ts_unix DESC LIMIT 20;
-
-        Thread replies:
-          SELECT m.ts, u.display_name, m.text
-          FROM messages m JOIN users u ON m.user_id = u.id
-          WHERE m.channel_id = 'C123'
-          AND m.thread_ts = '1234567890.123456'
-          ORDER BY m.ts_unix ASC;
-
         Deep link format:
           slack://channel?team=\(teamID)&id={channel_id}&message={ts}
           Example: ts "1740577800.000100" →
@@ -457,7 +413,8 @@ final class ChatViewModel {
 
         === IMPORTANT RESTRICTIONS ===
         - You have NO internet access. Do NOT call any Slack API, WebFetch, or WebSearch tools.
-        - Your ONLY data source is the local SQLite database. Query it, do not try to fetch from Slack.
+        - Your ONLY data source is the local database, reached through the tools above. \
+        Do not try to fetch from Slack, and do not try to reach the database any other way.
 
         """
     }
@@ -465,9 +422,9 @@ final class ChatViewModel {
     nonisolated private static func promptRules(teamID: String) -> String {
         """
         === WORKFLOW ===
-        1. Run a SQL query using the read_query MCP tool
-        2. If results are empty or insufficient, broaden the query (wider time range, different search terms)
-        3. Analyze the actual message content from query results
+        1. Look the data up with the tools above (start with list_messages for raw Slack traffic)
+        2. If results are empty or insufficient, broaden the lookup (wider filters, different keywords)
+        3. Analyze the actual message content from the results
         4. Respond with insights, organized by channel or topic
         5. Include Slack permalinks for key messages
 

@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildSystemPrompt_ContainsWorkspaceInfo(t *testing.T) {
-	prompt := BuildSystemPrompt("my-company", "my-company", "T001", "/path/to/db.sqlite", "CREATE TABLE test;", "")
+	prompt := BuildSystemPrompt("my-company", "my-company", "T001", "CREATE TABLE test;", "")
 
 	assert.Contains(t, prompt, `"my-company"`)
 	assert.Contains(t, prompt, "my-company.slack.com")
@@ -18,40 +18,61 @@ func TestBuildSystemPrompt_ContainsWorkspaceInfo(t *testing.T) {
 	assert.Contains(t, prompt, "You are Watchtower")
 }
 
-func TestBuildSystemPrompt_ContainsDBAccess(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/watchtower.db", "CREATE TABLE messages;", "")
+func TestBuildSystemPrompt_ContainsSchema(t *testing.T) {
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "CREATE TABLE messages;", "")
 
-	assert.Contains(t, prompt, "/tmp/watchtower.db")
-	assert.Contains(t, prompt, "sqlite3")
 	assert.Contains(t, prompt, "CREATE TABLE messages;")
 }
 
+// The prompt must never hand the assistant a shell recipe: on the codex
+// provider command execution is permitted (read-only sandbox), so a suggested
+// `sqlite3 <path>` is a readable path to the config file holding the Slack
+// token. Data access goes through the read-only MCP tools only. (The database
+// path is kept out by construction — BuildSystemPrompt no longer takes one.)
+func TestBuildSystemPrompt_NoShellFallback(t *testing.T) {
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
+
+	assert.NotContains(t, prompt, "sqlite3")
+	assert.Contains(t, prompt, "no SQL tool and no shell")
+}
+
 func TestBuildSystemPrompt_ContainsGuidelines(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "")
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 
 	assert.Contains(t, prompt, "concise")
 	assert.Contains(t, prompt, "deep link")
 	assert.Contains(t, prompt, "markdown")
 }
 
-func TestBuildSystemPrompt_ContainsQueryPatterns(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "")
+// Every tool the prompt advertises must actually be registered by
+// internal/mcp; naming one that isn't only steers the assistant off the tool
+// path (that is how the `read_query` / `list_tables` / `describe_table` text
+// this replaces sent it looking for a shell instead).
+func TestBuildSystemPrompt_NamesRegisteredTools(t *testing.T) {
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 
-	assert.Contains(t, prompt, "QUERY PATTERNS")
-	assert.Contains(t, prompt, "messages_fts MATCH")
-	assert.Contains(t, prompt, "ts_unix")
+	for _, tool := range []string{
+		"list_messages", "list_people", "get_person", "list_tracks", "get_track",
+		"list_targets", "get_target", "get_today_briefing", "list_digests", "get_digest",
+		"list_jira_issues", "get_jira_issue", "list_transcripts", "get_transcript",
+		"list_upcoming_events", "memory_recall", "memory_open", "memory_map",
+	} {
+		assert.Contains(t, prompt, tool)
+	}
+
+	for _, stale := range []string{"read_query", "list_tables", "describe_table"} {
+		assert.NotContains(t, prompt, stale)
+	}
 }
 
-func TestBuildSystemPrompt_MustQueryDB(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "")
+func TestBuildSystemPrompt_MustUseTools(t *testing.T) {
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 
-	assert.Contains(t, prompt, "MUST query the database")
-	assert.Contains(t, prompt, "read_query")
-	assert.Contains(t, prompt, "MCP tools")
+	assert.Contains(t, prompt, "You MUST look things up with the tools below")
 }
 
 func TestBuildSystemPrompt_SanitizesInputs(t *testing.T) {
-	prompt := BuildSystemPrompt("my company!", "my domain<>", "T001", "/tmp/db", "schema", "")
+	prompt := BuildSystemPrompt("my company!", "my domain<>", "T001", "schema", "")
 
 	assert.Contains(t, prompt, "my company")
 	assert.Contains(t, prompt, "mydomain")
@@ -60,30 +81,30 @@ func TestBuildSystemPrompt_SanitizesInputs(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_PreservesUnicode(t *testing.T) {
-	prompt := BuildSystemPrompt("Société Générale", "societe", "T001", "/tmp/db", "schema", "")
+	prompt := BuildSystemPrompt("Société Générale", "societe", "T001", "schema", "")
 
 	assert.Contains(t, prompt, "Société Générale")
 }
 
 func TestBuildSystemPrompt_EmptyInputsGetDefaults(t *testing.T) {
-	prompt := BuildSystemPrompt("", "", "", "/tmp/db", "schema", "")
+	prompt := BuildSystemPrompt("", "", "", "schema", "")
 
 	assert.Contains(t, prompt, "unknown")
 }
 
 func TestBuildSystemPrompt_DefaultLanguage(t *testing.T) {
 	// Empty language must fall back to the shared default (currently "Russian").
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "")
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 	assert.Contains(t, prompt, "Respond ONLY in Russian")
 }
 
 func TestBuildSystemPrompt_EnglishLanguage(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "English")
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "English")
 	assert.Contains(t, prompt, "Respond ONLY in English")
 }
 
 func TestBuildSystemPrompt_NonEnglishLanguage(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "/tmp/db", "schema", "Russian")
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "Russian")
 	assert.Contains(t, prompt, "Respond ONLY in Russian")
 	assert.Contains(t, prompt, "MUST be in Russian")
 }

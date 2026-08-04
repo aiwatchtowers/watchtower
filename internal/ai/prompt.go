@@ -9,23 +9,27 @@ import (
 	"watchtower/internal/prompts"
 )
 
-const systemPromptTemplate = `You are Watchtower, an AI assistant that answers questions about a Slack workspace by querying its SQLite database.
+const systemPromptTemplate = `You are Watchtower, an AI assistant that answers questions about a Slack workspace from its local database.
 
 Workspace: "%s" (domain: %s.slack.com)
 Current time: %s
-Database: %s
 
-IMPORTANT: You MUST query the database to answer every question. You have NO pre-loaded data — the database is your only source of truth.
+IMPORTANT: You MUST look things up with the tools below to answer every question. You have NO pre-loaded data — the local database is your only source of truth.
 
-=== HOW TO QUERY ===
-You have MCP tools for SQLite. Use them:
-- read_query: run SELECT queries (use this for all data retrieval)
-- list_tables: see all tables
-- describe_table: see table schema
+=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+- list_messages: search/list raw Slack messages by person, channel, and/or keyword, newest first. At least one of person/channel/query is required.
+- list_people / get_person: people cards; list_tracks / get_track: work narratives.
+- list_targets / get_target: the user's action items and goals.
+- get_today_briefing / list_digests / get_digest: the daily briefing and AI summaries of Slack activity.
+- list_jira_issues / get_jira_issue: synced Jira issues.
+- list_transcripts / get_transcript: recorded meeting transcripts.
+- list_upcoming_events: calendar events in the next N hours.
+- memory_recall / memory_open / memory_map: the secretary's long-term memory, once it has been built.
+Never ask for a database path; the data is already local and the tools are already connected.
 
-Fallback (if MCP tools fail): sqlite3 -header -separator '|' "%s" "SQL"
+There is no SQL tool and no shell — you cannot run database or shell commands of any kind. The schema below documents the fields behind those tools; read it as reference, never as something to execute.
 
-=== DATABASE SCHEMA ===
+=== DATABASE SCHEMA (reference) ===
 %s
 
 === TARGETS & GOAL HIERARCHY ===
@@ -37,42 +41,15 @@ The workspace uses a hierarchical goal system called "targets" (replaces the old
   relation is one of: contributes_to, blocks, related, duplicates.
   target_target_id references another target; external_ref holds e.g. 'jira:PROJ-123' or 'slack:C123:ts'.
   created_by is 'ai' (auto-linked) or 'user' (manually added).
-Useful queries:
-  -- Active day-level targets, highest priority first
-  SELECT id, text, priority, due_date FROM targets WHERE status IN ('todo','in_progress','blocked') AND level='day' ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END;
-  -- Children of a target
-  SELECT id, text, status, progress FROM targets WHERE parent_id = 42;
-  -- Links for a target
-  SELECT relation, target_target_id, external_ref FROM target_links WHERE source_target_id = 42;
-
-=== QUERY PATTERNS ===
-
-First, orient yourself — find what channels and users exist:
-  SELECT name, id, type FROM channels WHERE is_archived = 0 ORDER BY name;
-  SELECT name, display_name, id FROM users WHERE is_deleted = 0 ORDER BY name;
-
-Messages in a channel (recent first):
-  SELECT m.ts, u.display_name, m.text FROM messages m JOIN users u ON m.user_id = u.id WHERE m.channel_id = (SELECT id FROM channels WHERE name = 'general') AND m.ts_unix > unixepoch('now', '-1 day') ORDER BY m.ts_unix DESC LIMIT 50;
-
-Messages from a user:
-  SELECT m.ts, m.text, c.name FROM messages m JOIN channels c ON m.channel_id = c.id WHERE m.user_id = (SELECT id FROM users WHERE name = 'alice') ORDER BY m.ts_unix DESC LIMIT 30;
-
-Activity overview:
-  SELECT c.name, COUNT(*) as cnt FROM messages m JOIN channels c ON m.channel_id = c.id WHERE m.ts_unix > unixepoch('now', '-1 day') GROUP BY c.name ORDER BY cnt DESC;
-
-Full-text search:
-  SELECT m.text, u.display_name, c.name, m.ts FROM messages_fts fts JOIN messages m ON fts.channel_id = m.channel_id AND fts.ts = m.ts JOIN users u ON m.user_id = u.id JOIN channels c ON m.channel_id = c.id WHERE messages_fts MATCH 'keyword' ORDER BY m.ts_unix DESC LIMIT 20;
-
-Thread replies:
-  SELECT m.ts, u.display_name, m.text FROM messages m JOIN users u ON m.user_id = u.id WHERE m.channel_id = 'C123' AND m.thread_ts = '1234567890.123456' ORDER BY m.ts_unix ASC;
+Reach targets and their links with list_targets / get_target — status, priority, level, and ownership are filters on list_targets.
 
 Deep link format: slack://channel?team=%s&id={channel_id}&message={ts}
   Example: ts "1740577800.000100" → slack://channel?team=%s&id=C123&message=1740577800.000100
 
 === WORKFLOW ===
-1. Run a SQL query using the read_query MCP tool
-2. If results are empty or insufficient, broaden the query (wider time range, different search terms)
-3. Analyze the actual message content from query results
+1. Look the data up with the tools above (start with list_messages for raw Slack traffic)
+2. If results are empty or insufficient, broaden the lookup (wider filters, different keywords)
+3. Analyze the actual message content from the results
 4. Respond with insights, organized by channel or topic
 5. Include Slack deep links for key messages
 
@@ -94,7 +71,7 @@ Rules:
 - Every referenced message or thread MUST have a link with descriptive text in the user's language
 - Link text should describe WHAT is being linked, not "click here" or "link"
 - When listing messages, each one gets its own link
-- Always SELECT channel_id and ts in your queries so you can build links
+- list_messages returns the channel and ts of every message, so you can always build a link
 
 === RESPONSE STYLE ===
 - Be concise and direct
@@ -112,7 +89,10 @@ var (
 func languageInstruction(lang string) string { return prompts.Directive(lang) }
 
 // BuildSystemPrompt generates the system prompt with database access context.
-func BuildSystemPrompt(workspaceName, domain, teamID, dbPath, schema, language string) string {
+// The database path is deliberately NOT part of the prompt: the assistant reads
+// the data through the read-only watchtower MCP tools, and naming a file it
+// could open is only useful to something trying to shell out.
+func BuildSystemPrompt(workspaceName, domain, teamID, schema, language string) string {
 	// Sanitize workspace name and domain to prevent prompt injection
 	safeName := safeNameRe.ReplaceAllString(workspaceName, "")
 	safeDomain := safeDomainRe.ReplaceAllString(domain, "")
@@ -127,23 +107,10 @@ func BuildSystemPrompt(workspaceName, domain, teamID, dbPath, schema, language s
 		safeTeamID = "unknown"
 	}
 
-	// Sanitize dbPath for prompt injection and shell safety.
-	// The path appears inside double quotes in a shell command template in the
-	// prompt, so we only need to escape the characters that are special inside
-	// double quotes: ", \, $, `, and strip newlines.
-	safeDBPath := strings.NewReplacer(
-		"\n", " ", "\r", " ",
-		`"`, `\"`,
-		`\`, `\\`,
-		"`", "\\`",
-		"$", "\\$",
-	).Replace(dbPath)
-
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")
 	langInstr := languageInstruction(language)
 	return fmt.Sprintf(systemPromptTemplate,
 		safeName, safeDomain, now,
-		safeDBPath, safeDBPath,
 		schema,
 		safeTeamID, safeTeamID, // deep link format + example
 		safeTeamID, safeTeamID, // channel link + example
@@ -153,13 +120,13 @@ func BuildSystemPrompt(workspaceName, domain, teamID, dbPath, schema, language s
 	)
 }
 
-// JiraPromptSection returns the Jira schema and query patterns section to
-// append to the system prompt. Call only when Jira integration is enabled.
+// JiraPromptSection returns the Jira schema reference to append to the system
+// prompt. Call only when Jira integration is enabled.
 func JiraPromptSection() string {
 	return `
 
-=== JIRA TABLES ===
-The workspace has Jira Cloud integration. You can query these tables:
+=== JIRA TABLES (reference) ===
+The workspace has Jira Cloud integration. These tables back the Jira tools:
 
 CREATE TABLE jira_issues (
     key TEXT PRIMARY KEY,              -- e.g. "PROJ-123"
@@ -229,31 +196,9 @@ CREATE TABLE jira_boards (
     board_type TEXT NOT NULL DEFAULT ''
 );
 
-=== JIRA QUERY PATTERNS ===
-
--- My open issues (use current user's Slack ID)
-SELECT key, summary, status, priority, due_date FROM jira_issues WHERE assignee_slack_id = '{user_slack_id}' AND status_category != 'done' AND is_deleted = 0 ORDER BY priority, due_date;
-
--- Issues linked to a Slack channel or track
-SELECT ji.key, ji.summary, ji.status, ji.priority FROM jira_issues ji JOIN jira_slack_links jsl ON ji.key = jsl.issue_key WHERE jsl.track_id = ?;
-
--- Blocked issues
-SELECT ji.key, ji.summary, jil.link_type, jil.target_key FROM jira_issues ji JOIN jira_issue_links jil ON ji.key = jil.source_key WHERE jil.link_type LIKE '%lock%' AND ji.is_deleted = 0;
-
--- Sprint progress
-SELECT status_category, COUNT(*) as cnt FROM jira_issues WHERE sprint_id = ? AND is_deleted = 0 GROUP BY status_category;
-
--- Active sprint overview
-SELECT js.name, js.goal, js.start_date, js.end_date, ji.status_category, COUNT(*) as cnt FROM jira_sprints js JOIN jira_issues ji ON ji.sprint_id = js.id WHERE js.state = 'active' AND ji.is_deleted = 0 GROUP BY js.id, ji.status_category;
-
--- Overdue issues
-SELECT key, summary, due_date, assignee_display_name FROM jira_issues WHERE due_date < date('now') AND due_date != '' AND status_category != 'done' AND is_deleted = 0 ORDER BY due_date;
-
--- Issues mentioned in Slack
-SELECT ji.key, ji.summary, ji.status, c.name as channel, jsl.detected_at FROM jira_issues ji JOIN jira_slack_links jsl ON ji.key = jsl.issue_key JOIN channels c ON jsl.channel_id = c.id ORDER BY jsl.detected_at DESC LIMIT 20;
-
--- Cross-reference: Slack user's Jira issues
-SELECT ji.key, ji.summary, ji.status FROM jira_issues ji JOIN jira_user_map jum ON ji.assignee_account_id = jum.jira_account_id WHERE jum.slack_user_id = (SELECT id FROM users WHERE name = 'alice') AND ji.status_category != 'done' AND ji.is_deleted = 0;
+=== HOW TO REACH JIRA DATA ===
+list_jira_issues filters by project, status, or assignee account id; get_jira_issue fetches one issue by key
+with its full fields. The tables above are reference for what those fields mean — you cannot query them directly.
 
 Notes:
 - assignee_slack_id links directly to users.id when available
