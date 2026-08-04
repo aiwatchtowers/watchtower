@@ -5,20 +5,51 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
+
+// gmailChannelScheme is the leading segment of every Gmail channel id. It is
+// spelled once here so the builders below and GmailAccountIDFromChannelID
+// cannot drift apart.
+const gmailChannelScheme = "gmail:"
 
 // GmailChannelPrefix returns the inbox channel_id prefix shared by every
 // Gmail-derived row of accountID. It is the single source of truth for the
 // account half of a Gmail channel id — a per-account purge filters on it, and
 // GmailChannelID builds the full id from it.
 func GmailChannelPrefix(accountID int64) string {
-	return fmt.Sprintf("gmail:%d", accountID)
+	return gmailChannelScheme + strconv.FormatInt(accountID, 10)
 }
 
 // GmailChannelID returns the inbox channel_id for one Gmail thread of
 // accountID: "gmail:<account-id>:<thread-id>".
 func GmailChannelID(accountID int64, threadID string) string {
 	return GmailChannelPrefix(accountID) + ":" + threadID
+}
+
+// GmailAccountIDFromChannelID reads the account half back out of a channel id
+// built by GmailChannelID, reporting false for anything that is not one (a
+// Slack channel, a Jira key, a truncated or non-numeric value). It is the only
+// parser of the format, deliberately living beside the two builders so the
+// layout of a Gmail channel id stays confined to this file.
+//
+// Inbox rows carry the Gmail account only inside their channel_id, so this is
+// what lets a consumer of an email signal scope its gmail_messages lookup to
+// the right mailbox.
+func GmailAccountIDFromChannelID(channelID string) (int64, bool) {
+	rest, ok := strings.CutPrefix(channelID, gmailChannelScheme)
+	if !ok {
+		return 0, false
+	}
+	accountPart, _, ok := strings.Cut(rest, ":")
+	if !ok {
+		return 0, false
+	}
+	accountID, err := strconv.ParseInt(accountPart, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return accountID, true
 }
 
 // ClearGmailData removes the Gmail data synced for one account on the user's
@@ -203,19 +234,26 @@ func (db *DB) GmailMessagesSyncedAfter(accountID int64, sinceISO string) ([]Gmai
 	return out, rows.Err()
 }
 
-// GetGmailBodyByID returns the body_text of the gmail_messages row with the
-// given id. A missing row is not an error: it returns ("", nil), since a
-// signal's underlying gmail message may have been synced by a different
-// pipeline path or since removed — callers should just fall back to the
-// snippet in that case.
-func (db *DB) GetGmailBodyByID(id string) (string, error) {
+// GetGmailBody returns the body_text of accountID's gmail_messages row with
+// the given Gmail message id. The lookup is scoped to the account because a
+// Gmail message id is unique per mailbox, not globally — that is why the
+// table's primary key is (account_id, id) since migration 00043. An unscoped
+// lookup can return a row belonging to another connected account, which for
+// mail bodies means one mailbox's content surfacing under another's.
+//
+// A missing row is not an error: it returns ("", nil), since a signal's
+// underlying gmail message may have been synced by a different pipeline path
+// or since removed — callers should just fall back to the snippet in that
+// case.
+func (db *DB) GetGmailBody(accountID int64, id string) (string, error) {
 	var body string
-	err := db.QueryRow(`SELECT body_text FROM gmail_messages WHERE id = ?`, id).Scan(&body)
+	err := db.QueryRow(`SELECT body_text FROM gmail_messages WHERE account_id = ? AND id = ?`,
+		accountID, id).Scan(&body)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
-		return "", fmt.Errorf("getting gmail body for %s: %w", id, err)
+		return "", fmt.Errorf("getting gmail body for %d/%s: %w", accountID, id, err)
 	}
 	return body, nil
 }

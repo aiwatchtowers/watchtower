@@ -116,12 +116,17 @@ func (p *Pipeline) buildSituationCardBlock(s db.DashboardSituation) string {
 		// only ever sees the Snippet (subject+preview); the full body is fed
 		// here because situation cards are generated once per situation, not
 		// once per message, so the cost is bounded. message_ts for an email
-		// item is the Gmail message id (see gmail_detector.go). A missing or
-		// empty body is not an error — the snippet-only line above still
-		// carries the subject.
+		// item is the Gmail message id (see gmail_detector.go), which is
+		// unique per mailbox only, so the lookup must be scoped to the
+		// account that synced it — inbox rows carry that account solely
+		// inside their channel_id. A channel id that doesn't parse, a missing
+		// row, or an empty body is not an error — the snippet-only line above
+		// still carries the subject.
 		if it.TriggerType == "email_received" || it.TriggerType == "email_cc" {
-			if body, err := p.db.GetGmailBodyByID(it.MessageTS); err == nil && body != "" {
-				b.WriteString(fmt.Sprintf("body=%s\n", body))
+			if accountID, ok := db.GmailAccountIDFromChannelID(it.ChannelID); ok {
+				if body, err := p.db.GetGmailBody(accountID, it.MessageTS); err == nil && body != "" {
+					b.WriteString(fmt.Sprintf("body=%s\n", body))
+				}
 			}
 		}
 	}

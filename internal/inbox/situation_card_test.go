@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 
@@ -163,7 +164,9 @@ func TestRunSituationCards_SnippetResolvesMention(t *testing.T) {
 func TestRunSituationCards_EmailSignalIncludesFullBody(t *testing.T) {
 	// Spec "AI-обработка писем" #3: situation cards (the strong tier) must see
 	// the full gmail body_text, not just the subject+preview Snippet triage
-	// judges on. message_ts on an email inbox item is the Gmail message id.
+	// judges on. message_ts on an email inbox item is the Gmail message id, and
+	// channel_id is the "gmail:<account>:<thread>" id the detector builds — the
+	// only place the item records which mailbox the body must come from.
 	d, p, gen := newComposePipeline(t)
 	acctID, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "Me"})
 	require.NoError(t, err)
@@ -176,7 +179,7 @@ func TestRunSituationCards_EmailSignalIncludesFullBody(t *testing.T) {
 
 	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "contract renewal", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
 	require.NoError(t, err)
-	emailSig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "thr1", MessageTS: "gm1", SenderUserID: "a@x.com", TriggerType: "email_received", Snippet: "Contract renewal — preview only"})
+	emailSig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: db.GmailChannelID(acctID, "thr1"), MessageTS: "gm1", SenderUserID: "a@x.com", TriggerType: "email_received", Snippet: "Contract renewal — preview only"})
 	streamSig := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
 	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(emailSig), int(streamSig)}))
 
@@ -191,6 +194,93 @@ func TestRunSituationCards_EmailSignalIncludesFullBody(t *testing.T) {
 	assert.Contains(t, prompt, "The full contract terms are attached, please review by Friday.", "email signal must carry the full gmail body_text")
 	// Non-email signal format is unchanged: no body= line for it.
 	assert.NotContains(t, prompt, "body=prod down")
+}
+
+// TestRunSituationCards_EmailBodyScopedToAccount: with two connected Google
+// accounts, a Gmail message id is unique per mailbox only, so both can hold the
+// same id with different bodies. The card for account B's signal must inline
+// B's body and never A's — the prompt goes to an external AI provider, so a
+// mis-scoped lookup here ships one mailbox's mail under the other's situation.
+// The signal deliberately belongs to the second account: an id-only lookup
+// walks (account_id, id) and hands back the first account's row.
+func TestRunSituationCards_EmailBodyScopedToAccount(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	acctA, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "A"})
+	require.NoError(t, err)
+	acctB, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@y.com", Label: "B"})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	const sharedID = "18f0c0ffee"
+	require.NoError(t, d.UpsertGmailMessage(acctA, db.GmailMessage{
+		ID: sharedID, ThreadID: "thr1", FromEmail: "a@x.com",
+		Subject: "Contract renewal", BodyText: "ACCOUNT-A-BODY contract terms",
+		InternalDate: syncedAt, SyncedAt: syncedAt,
+	}))
+	require.NoError(t, d.UpsertGmailMessage(acctB, db.GmailMessage{
+		ID: sharedID, ThreadID: "thr9", FromEmail: "c@y.com",
+		Subject: "Salary review", BodyText: "ACCOUNT-B-BODY salary figures",
+		InternalDate: syncedAt, SyncedAt: syncedAt,
+	}))
+
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "salary review", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	sig := mustCreateInboxItem(t, d, db.InboxItem{
+		ChannelID: db.GmailChannelID(acctB, "thr9"), MessageTS: sharedID,
+		SenderUserID: "c@y.com", TriggerType: "email_received", Snippet: "Salary review — preview only",
+	})
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig)}))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.Len(t, gen.prompts, 1)
+	prompt := gen.prompts[0]
+	assert.Contains(t, prompt, "ACCOUNT-B-BODY salary figures", "the signal's own account body must be inlined")
+	assert.NotContains(t, prompt, "ACCOUNT-A-BODY", "another account's mail body must never reach the prompt")
+}
+
+// TestRunSituationCards_EmailBodyFallsBackWhenAccountUnknown: an email signal
+// whose channel_id doesn't name a Gmail account (a legacy or foreign id) has no
+// mailbox to scope the lookup to, so the card degrades to the snippet exactly
+// like a missing row — no error, no card failure, and no unscoped guess at a
+// body belonging to some other account.
+func TestRunSituationCards_EmailBodyFallsBackWhenAccountUnknown(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	acct, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", Label: "A"})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	require.NoError(t, d.UpsertGmailMessage(acct, db.GmailMessage{
+		ID: "gm1", ThreadID: "thr1", FromEmail: "a@x.com", Subject: "Contract renewal",
+		BodyText: "SECRET-BODY contract terms", InternalDate: syncedAt, SyncedAt: syncedAt,
+	}))
+
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "contract renewal", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "reason"})
+	require.NoError(t, err)
+	sig := mustCreateInboxItem(t, d, db.InboxItem{
+		ChannelID: "thr1", MessageTS: "gm1", SenderUserID: "a@x.com",
+		TriggerType: "email_received", Snippet: "Contract renewal — preview only",
+	})
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig)}))
+
+	gen.responses = []string{`{"summary":"s","why_matters":"w","chronology":"c"}`}
+
+	n, err := p.runSituationCards(context.Background(), "U1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "an unresolvable account must not fail the card")
+
+	require.Len(t, gen.prompts, 1)
+	prompt := gen.prompts[0]
+	assert.NotContains(t, prompt, "SECRET-BODY", "an unscoped body must not be inlined")
+	assert.Contains(t, prompt, "Contract renewal — preview only", "the snippet fallback still carries the subject")
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "ready", s.CardStatus)
 }
 
 func TestTargetTitle_ResolvesMention(t *testing.T) {

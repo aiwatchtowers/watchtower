@@ -85,6 +85,33 @@ func TestGmailChannelIDHelpers(t *testing.T) {
 	assert.Equal(t, "gmail:7:thread-1", GmailChannelID(7, "thread-1"))
 }
 
+// TestGmailAccountIDFromChannelID: the parser round-trips what GmailChannelID
+// builds and rejects everything else, so a caller that can't identify the
+// account degrades to its no-account fallback instead of guessing one.
+func TestGmailAccountIDFromChannelID(t *testing.T) {
+	id, ok := GmailAccountIDFromChannelID(GmailChannelID(7, "thread-1"))
+	assert.True(t, ok)
+	assert.Equal(t, int64(7), id)
+
+	// A thread id containing colons still yields the account half.
+	id, ok = GmailAccountIDFromChannelID(GmailChannelID(42, "a:b:c"))
+	assert.True(t, ok)
+	assert.Equal(t, int64(42), id)
+
+	for _, notGmail := range []string{
+		"",                // empty
+		"C0123ABC",        // Slack channel
+		"jira:PROJ-1",     // another source's id
+		"gmail:7",         // account prefix only, no thread segment
+		"gmail::thread-1", // empty account half
+		"gmail:abc:t1",    // non-numeric account half
+		"gmail",           // scheme without separator
+	} {
+		_, ok := GmailAccountIDFromChannelID(notGmail)
+		assert.False(t, ok, "must not parse %q as a gmail channel id", notGmail)
+	}
+}
+
 // gmailPurgeFixture seeds two Google accounts, each with synced mail, its own
 // Gmail inbox items and a situation fed only by them, plus cross-source rows
 // that must survive any per-account purge. It returns the two account ids.
@@ -329,19 +356,56 @@ func TestClearGmailData_Degenerate(t *testing.T) {
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?`, acctB))
 }
 
-func TestGetGmailBodyByID(t *testing.T) {
+func TestGetGmailBody(t *testing.T) {
 	d := openTestDB(t)
 	acct, err := d.CreateGoogleAccount(GoogleAccount{Email: "a@x.com", Label: "A"})
 	require.NoError(t, err)
 
-	require.NoError(t, d.UpsertGmailMessage(acct, GmailMessage{ID: "gm1", BodyText: "hello world", SyncedAt: "2026-04-01T00:00:00Z"}))
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	require.NoError(t, d.UpsertGmailMessage(acct, GmailMessage{ID: "gm1", BodyText: "hello world", SyncedAt: syncedAt}))
 
-	body, err := d.GetGmailBodyByID("gm1")
+	body, err := d.GetGmailBody(acct, "gm1")
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", body)
 
-	// Missing row is not an error.
-	body, err = d.GetGmailBodyByID("nonexistent")
+	// Missing row is not an error: the caller falls back to the item snippet,
+	// which is what keeps a reference dangling after a purge harmless.
+	body, err = d.GetGmailBody(acct, "nonexistent")
 	require.NoError(t, err)
 	assert.Empty(t, body)
+
+	// An account that never synced this id is a miss too, not another
+	// account's body.
+	other, err := d.CreateGoogleAccount(GoogleAccount{Email: "b@y.com", Label: "B"})
+	require.NoError(t, err)
+	body, err = d.GetGmailBody(other, "gm1")
+	require.NoError(t, err)
+	assert.Empty(t, body)
+}
+
+// TestGetGmailBody_ScopedToAccount is the cross-account regression: a Gmail
+// message id is unique per mailbox, so two connected accounts can legitimately
+// hold the same id with different content (that is why migration 00043 made the
+// primary key (account_id, id)). Each account's lookup must return its own
+// body — an id-only query returns whichever row SQLite reaches first, leaking
+// one mailbox's mail into the other's situation card.
+func TestGetGmailBody_ScopedToAccount(t *testing.T) {
+	d := openTestDB(t)
+	acctA, err := d.CreateGoogleAccount(GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+	acctB, err := d.CreateGoogleAccount(GoogleAccount{Email: "b@y.com", Label: "B"})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	const sharedID = "18f0c0ffee"
+	require.NoError(t, d.UpsertGmailMessage(acctA, GmailMessage{ID: sharedID, BodyText: "account A private body", SyncedAt: syncedAt}))
+	require.NoError(t, d.UpsertGmailMessage(acctB, GmailMessage{ID: sharedID, BodyText: "account B private body", SyncedAt: syncedAt}))
+
+	bodyA, err := d.GetGmailBody(acctA, sharedID)
+	require.NoError(t, err)
+	assert.Equal(t, "account A private body", bodyA)
+
+	bodyB, err := d.GetGmailBody(acctB, sharedID)
+	require.NoError(t, err)
+	assert.Equal(t, "account B private body", bodyB)
 }
