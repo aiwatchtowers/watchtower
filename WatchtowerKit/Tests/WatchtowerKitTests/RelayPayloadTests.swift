@@ -66,7 +66,6 @@ final class RelayPayloadTests: XCTestCase {
         let data = try RelayCoder.makeEncoder().encode(message)
         XCTAssertEqual(
             String(data: data, encoding: .utf8),
-            // swiftlint:disable:next line_length
             #"{"context":{"id":"42","type":"situation"},"created_at":1700000001,"id":"M10","session_id":"S2","text":"what should I answer?"}"#
         )
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(ChatMessagePayload.self, from: data), message)

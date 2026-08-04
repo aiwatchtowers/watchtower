@@ -68,7 +68,7 @@ extension ReplicaStore {
     /// than an error.
     public func chatSession(contextType: String, contextID: String) throws -> ChatSession? {
         try writer.read { db in
-            try Row.fetchOne(
+            let row = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT * FROM chat_sessions
@@ -77,7 +77,8 @@ extension ReplicaStore {
                     LIMIT 1
                     """,
                 arguments: [contextType, contextID]
-            ).map(ChatSession.init(row:))
+            )
+            return row.map(ChatSession.init(row:))
         }
     }
 

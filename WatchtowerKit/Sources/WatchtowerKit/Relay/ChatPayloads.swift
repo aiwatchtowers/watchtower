@@ -15,8 +15,8 @@ public struct ChatContext: Codable, Equatable, Sendable {
     /// `chat_conversations.context_id` — the entity id as a string.
     public let id: String
 
-    public static func situation(_ situationID: Int) -> ChatContext {
-        ChatContext(type: "situation", id: String(situationID))
+    public static func situation(_ situationID: Int) -> Self {
+        Self(type: "situation", id: String(situationID))
     }
 
     public init(type: String, id: String) {
