@@ -91,6 +91,15 @@ final class ChatThreadViewModel {
         case firstSend
     }
 
+    /// Set when this thread is bound to one entity (a situation's Discuss
+    /// chat). Bound threads are Mac-answered ONLY — the draft-in-the-owner's-
+    /// voice contract is built from the style profile, people cards and raw
+    /// messages, none of which exist on the phone — so the direct-mode
+    /// affordances are suppressed for them and every send carries the context.
+    private(set) var context: ChatContext?
+
+    var isContextBound: Bool { context != nil }
+
     private var cancellable: AnyDatabaseCancellable?
     private var store: ReplicaStore?
     private var directBackend: (any MobileAgentBackend)?
@@ -118,7 +127,8 @@ final class ChatThreadViewModel {
         relay: any MobileAgentBackend,
         hasKey: @escaping () -> Bool,
         isReachable: @escaping (Date) -> Bool,
-        sessionID: String?
+        sessionID: String?,
+        context: ChatContext? = nil
     ) {
         guard self.store == nil else { return }
         self.store = store
@@ -126,8 +136,19 @@ final class ChatThreadViewModel {
         relayBackend = relay
         self.hasKey = hasKey
         self.isReachable = isReachable
-        self.sessionID = sessionID
-        if let sessionID {
+        self.context = context
+        // An entity's thread is opened by its context, not by an id the caller
+        // tracks: this device may already have one from an earlier visit. Not
+        // finding it is the normal first-visit case — the first send mints it.
+        self.sessionID = sessionID ?? context.flatMap { bound in
+            do {
+                return try store.chatSession(contextType: bound.type, contextID: bound.id)?.id
+            } catch {
+                Self.logger.error("bound-thread lookup failed: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+        }
+        if let sessionID = self.sessionID {
             // Restore the persisted opt-in; a failed read falls back to the
             // relay route — the safe default (never a silent switch TO direct).
             do {
@@ -148,7 +169,8 @@ final class ChatThreadViewModel {
         // A NEW chat while a key exists and the Mac is unreachable asks ONCE
         // before the first send (Decision 7): the dialog decides which
         // backend that send uses. Declining routes the relay, as today.
-        if sessionID == nil, !directMode, !firstSendOfferDeclined,
+        // Never asked for a bound thread — the phone cannot answer one.
+        if sessionID == nil, context == nil, !directMode, !firstSendOfferDeclined,
            hasKey?() == true, isDesktopUnreachable(now: now) {
             directOfferContext = .firstSend
             return
@@ -212,7 +234,7 @@ final class ChatThreadViewModel {
         let text = trimmedDraft
         guard !text.isEmpty, let backend = direct ? directBackend : relayBackend else { return }
         do {
-            let ids = try await backend.sendTurn(text: text, sessionID: sessionID)
+            let ids = try await backend.sendTurn(text: text, sessionID: sessionID, context: context)
             // Clear ONLY on success — a throw above persisted nothing and the
             // draft must keep the typed text (see `sendErrorMessage`).
             draft = ""
@@ -443,6 +465,9 @@ struct ChatThreadView: View {
     @State private var model = ChatThreadViewModel()
     /// nil = new chat; the VM adopts the minted session on the first send.
     let sessionID: String?
+    /// Set when this thread is bound to an entity (a situation's Discuss
+    /// chat). The VM resolves it to this device's existing thread, if any.
+    var context: ChatContext?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -461,6 +486,19 @@ struct ChatThreadView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 10) {
+                                // States the v1 asymmetry where the user would
+                                // otherwise infer a full two-way thread: this
+                                // device shows only what it sent.
+                                if model.isContextBound, model.messages.isEmpty {
+                                    Text("""
+                                        Your Mac answers this chat with the situation's context. \
+                                        What you send here also lands in Discuss on the Mac; \
+                                        turns typed there stay there.
+                                        """)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
                                 ForEach(model.messages) { message in
                                     ChatBubbleView(message: message)
                                         .id(message.id)
@@ -497,7 +535,7 @@ struct ChatThreadView: View {
             }
             composer
         }
-        .navigationTitle("Chat")
+        .navigationTitle(model.isContextBound ? "Discuss" : "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // Direct mode is never ambient (Decision 7): while ON the thread
@@ -545,27 +583,38 @@ struct ChatThreadView: View {
                 relay: env.relayBackend,
                 hasKey: { env.hasAPIKey },
                 isReachable: env.feed.isDesktopReachable,
-                sessionID: sessionID
+                sessionID: sessionID,
+                context: context
             )
         }
     }
 
     /// What the unreachable banner offers (never rendered in
     /// `.directActive` — the banner itself is suppressed then).
+    ///
+    /// A bound thread only ever informs: the phone cannot answer it, so
+    /// offering "Answer directly" (or a key setup that would not help) would
+    /// promise something the send path refuses.
     private var bannerAffordance: MacUnreachableBanner.Affordance {
+        guard !model.isContextBound else { return .informational }
         switch model.optInState {
-        case .needsKey: .setupKey(openSettingsTab)
-        case .offerDirect: .answerDirectly { model.offerDirect(.banner) }
-        case .directActive: .informational
+        case .needsKey: return .setupKey(openSettingsTab)
+        case .offerDirect: return .answerDirectly { model.offerDirect(.banner) }
+        case .directActive: return .informational
         }
+    }
+
+    private var composerPrompt: String {
+        if model.isContextBound { return "Ask about this situation…" }
+        return model.directMode ? "Ask this phone…" : "Ask your desktop…"
     }
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField(
                 // Honest placeholder: in direct mode the desktop is out of
-                // the loop for this thread.
-                model.directMode ? "Ask this phone…" : "Ask your desktop…",
+                // the loop for this thread; a bound thread names its subject.
+                composerPrompt,
                 text: Binding(get: { model.draft }, set: { model.draft = $0 }),
                 axis: .vertical
             )

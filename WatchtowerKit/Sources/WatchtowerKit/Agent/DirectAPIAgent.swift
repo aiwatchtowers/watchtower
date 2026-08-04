@@ -9,6 +9,11 @@ public enum DirectAPIAgentError: Error, Equatable {
     /// The SSE stream ended without a `.finished` event. A cut-off answer is
     /// an ERROR turn, never a silently-completed one.
     case streamEndedPrematurely
+    /// An entity-bound thread (a situation's Discuss chat) was routed here.
+    /// Those answers are built from the owner's style profile, people cards
+    /// and raw Slack messages — none of which the phone has — so the Mac
+    /// answers them or nobody does. Thrown BEFORE any rows are created.
+    case contextUnsupported
 }
 
 extension DirectAPIAgentError: LocalizedError {
@@ -16,6 +21,7 @@ extension DirectAPIAgentError: LocalizedError {
         switch self {
         case .missingKey: "No API key set — add one in Settings"
         case .streamEndedPrematurely: "The answer stream ended unexpectedly — try again"
+        case .contextUnsupported: "This chat is answered by your Mac — it needs data the phone doesn't have"
         }
     }
 }
@@ -96,7 +102,17 @@ public actor DirectAPIAgent: MobileAgentBackend {
     /// `DirectAPIAgentError.missingKey` BEFORE any side effect when no key is
     /// configured; the key is captured here, so removing it in Settings never
     /// strands an in-flight answer.
-    public func sendTurn(text: String, sessionID: String?) async throws -> (sessionID: String, messageID: String) {
+    public func sendTurn(
+        text: String,
+        sessionID: String?,
+        context: ChatContext?
+    ) async throws -> (sessionID: String, messageID: String) {
+        // Entity-bound threads are the Mac's alone (the backend contract):
+        // answering one here would silently drop the situation context and
+        // produce a generic reply where the user asked for a draft.
+        guard context == nil else {
+            throw DirectAPIAgentError.contextUnsupported
+        }
         guard let key = apiKey(), !key.isEmpty else {
             throw DirectAPIAgentError.missingKey
         }

@@ -115,7 +115,9 @@ public final class ReplicaStore: Sendable {
                     title TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    direct_mode INTEGER NOT NULL DEFAULT 0
+                    direct_mode INTEGER NOT NULL DEFAULT 0,
+                    context_type TEXT,
+                    context_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     message_id TEXT PRIMARY KEY,
@@ -137,6 +139,16 @@ public final class ReplicaStore: Sendable {
             // (Decision 7: never a silent switch).
             if try !db.columns(in: "chat_sessions").contains(where: { $0.name == "direct_mode" }) {
                 try db.execute(sql: "ALTER TABLE chat_sessions ADD COLUMN direct_mode INTEGER NOT NULL DEFAULT 0")
+            }
+            // Same in-place migration for the entity-bound thread columns
+            // (situation Discuss). Pre-existing sessions read NULL and stay
+            // generic — nothing re-binds an old thread to an entity.
+            let chatSessionColumns = try db.columns(in: "chat_sessions").map(\.name)
+            if !chatSessionColumns.contains("context_type") {
+                try db.execute(sql: "ALTER TABLE chat_sessions ADD COLUMN context_type TEXT")
+            }
+            if !chatSessionColumns.contains("context_id") {
+                try db.execute(sql: "ALTER TABLE chat_sessions ADD COLUMN context_id TEXT")
             }
         }
     }

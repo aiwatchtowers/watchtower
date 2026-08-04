@@ -343,6 +343,19 @@ struct SituationReviewView: View {
                     }
                 }
             }
+
+            Section {
+                // The desktop's Discuss pane, reached from the phone: the Mac
+                // answers with this situation's full context (people cards,
+                // the owner's style profile, raw messages) and both sides'
+                // turns land in the same conversation.
+                NavigationLink {
+                    ChatThreadView(sessionID: nil, context: .situation(situation.id))
+                } label: {
+                    Label("Discuss with secretary", systemImage: "bubble.left.and.bubble.right")
+                        .font(.subheadline)
+                }
+            }
         }
         .navigationTitle("Situation")
         .navigationBarTitleDisplayMode(.inline)
