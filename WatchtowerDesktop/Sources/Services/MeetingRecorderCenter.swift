@@ -808,20 +808,25 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// One-shot migration off the single-slot pointer. Deliberately does NOT
-    /// write a `.meta` sidecar: the entry is already recoverable in memory, and
-    /// the only window it would cover is a crash between this launch and the
-    /// user acting on the pill.
+    /// One-shot migration off the single-slot pointer. The legacy UserDefaults
+    /// pointer was durable across launches, so the migrated recording must stay
+    /// durable too: a `.meta` sidecar is written BEFORE the keys are cleared —
+    /// quitting without acting on the recovered pill would otherwise leave the
+    /// recording invisible to every later scan, and the Go orphan sweep would
+    /// eventually reclaim the audio. A crash mid-migration keeps the legacy
+    /// pointer for the next launch (the keys clear last).
     private func migrateLegacyPendingDefaults() {
         guard let path = defaults.string(forKey: Self.pendingAudioPathKey) else { return }
         let eventID = defaults.string(forKey: Self.pendingEventIDKey)
         let title = defaults.string(forKey: Self.pendingTitleKey)
+        if FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path)
+            Self.writeMetaSidecar(eventID: eventID, title: title, for: url)
+            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title))
+        }
         defaults.removeObject(forKey: Self.pendingAudioPathKey)
         defaults.removeObject(forKey: Self.pendingEventIDKey)
         defaults.removeObject(forKey: Self.pendingTitleKey)
-        guard FileManager.default.fileExists(atPath: path) else { return }
-        addRecoverable(RecoverableRecording(audioURL: URL(fileURLWithPath: path),
-                                            eventID: eventID, title: title))
     }
 
     private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {

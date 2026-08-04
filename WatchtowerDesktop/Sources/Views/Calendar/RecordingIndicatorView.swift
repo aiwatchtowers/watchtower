@@ -371,8 +371,8 @@ struct RecordingJobPill: View {
                     .disabled(!canDismiss)
                     .help(canDismiss
                           ? "Keep the audio and stop showing this failure"
-                          : "Available once the queue settles; capture errors take "
-                            + "precedence; newest failure first")
+                          : "Available once the running transcription finishes; capture "
+                            + "errors take precedence; newest failure first")
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
                 titleText

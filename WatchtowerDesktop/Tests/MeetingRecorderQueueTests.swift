@@ -387,14 +387,17 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
     }
 
     /// A recording captured by a pre-queue build lives in three `UserDefaults`
-    /// keys. They are read once, converted to a recoverable recording, and
-    /// cleared — so a second launch neither re-reads nor duplicates them.
+    /// keys. The migration converts it to a durable `.meta` sidecar BEFORE
+    /// clearing the keys — the legacy pointer was durable across launches, so
+    /// the migrated recording must stay durable too. A genuine relaunch (a
+    /// FRESH Center over the cleared defaults) must find it via the sidecar
+    /// scan, event link intact; losing it would strand the audio behind the
+    /// Go orphan sweep.
     func testLegacyPendingDefaultsMigrateOnceAndAreCleared() async throws {
-        let audio = try makeDummyAudioFile()
-        defer {
-            try? FileManager.default.removeItem(at: audio)
-            removeSidecars(audio)
-        }
+        // Inside the recordings directory, like every real pre-queue recording —
+        // the relaunch below can only find it where the sidecar scan looks.
+        let audio = recordingsDir.appendingPathComponent("rec_20260101_090000.caf")
+        try Data([0x00, 0x01]).write(to: audio)
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
         defaults.set("evt-legacy", forKey: MeetingRecorderCenter.pendingEventIDKey)
@@ -419,10 +422,29 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                     MeetingRecorderCenter.pendingTitleKey] {
             XCTAssertNil(defaults.string(forKey: key), "\(key) must be cleared by the one-shot migration")
         }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(audio).path),
+                      "the migration must leave a durable sidecar — the keys it cleared were the only other pointer")
 
-        // A second launch of the same Center must not re-add or duplicate it.
+        // A second scan on the same Center must not re-add or duplicate it.
         center.restorePendingOnLaunch()
         XCTAssertEqual(center.recoverable.map(\.audioURL), [audio])
+
+        // A genuine relaunch: a FRESH Center over the same (now key-less)
+        // defaults still finds the recording — via the sidecar, link intact.
+        let relaunched = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
+        )
+        relaunched.restorePendingOnLaunch()
+        XCTAssertEqual(relaunched.recoverable.map(\.audioURL), [audio],
+                       "quitting before acting on the pill must not lose the recording")
+        XCTAssertEqual(relaunched.recoverable.first?.eventID, "evt-legacy")
+        XCTAssertEqual(relaunched.recoverable.first?.title, "Legacy build")
     }
 
     /// A `.meta` that is present but corrupt still proves the recording was
@@ -586,11 +608,12 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                      "the engine the live pass handed over must not be pinned by a parked failure")
     }
 
-    /// The other release of the handed-over engine, on the one path that returns
-    /// before `renderAndSave` reaches its own: the live pass produced nothing, so
-    /// the batch pass reuses its engine and finds only silence. The engine must
-    /// be released by the failure itself, not left pinned on a job that can sit
-    /// in the queue indefinitely.
+    /// Contract pin: a failed job never pins an engine. On this path (live pass
+    /// produced nothing → batch pass reuses its engine → only silence found)
+    /// the release happens via `transcribeAndSave` consuming the handed-over
+    /// engine up front; `failJob`'s own clear is defensive back-stop, not what
+    /// this test exercises — no reachable flow leaves the engine set by the
+    /// time `failJob` runs.
     func testEmptyTranscriptFailureReleasesTheLiveHandedEngine() async throws {
         let recorder = FakeRecorder()
         var engineLoads = 0
@@ -1189,13 +1212,18 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
     func testNothingIsDismissableWhileAJobIsActivelyRunning() async throws {
         let recorder1 = FakeRecorder()
         let recorder2 = FakeRecorder()
+        let recorder3 = FakeRecorder()
+        recorder3.startError = AudioRecordingError.deviceSetupFailed("no device")
         var recorderCalls = 0
         var firstAudio: URL?
         let gate = GateEngine(texts: ["job two"])
         var engineLoads = 0
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         let center = MeetingRecorderCenter(
-            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            recorderFactory: {
+                recorderCalls += 1
+                return [recorder1, recorder2, recorder3][recorderCalls - 1]
+            },
             engineFactory: { _ in
                 engineLoads += 1
                 return TestTranscriber(engineLoads == 1 ? ScriptedEngine(texts: []) : gate)
@@ -1229,9 +1257,19 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                      "dismissFailure would no-op here, so no pill may offer Dismiss")
         XCTAssertNil(center.retriableFailureID)
 
+        // A capture error surfacing NOW (failed third start) is equally
+        // undismissable — the running job owns `phase`, so `dismissFailure`
+        // would no-op on the capture error too.
+        await center.startRecording(eventID: nil, title: "Third", config: config)
+        XCTAssertNotNil(center.captureError)
+        XCTAssertFalse(center.captureErrorDismissable,
+                       "the running job owns `phase`; the capture-error capsule must not offer Dismiss")
+
         gate.release()
         await stopSecond.value
         XCTAssertEqual(runner.savedTranscripts, ["job two"])
+        XCTAssertTrue(center.captureErrorDismissable,
+                      "with the queue settled the capture error is dismissable again")
     }
 
     // MARK: - Diarizer configuration
