@@ -19,6 +19,13 @@ struct MeetingRecordingRow: View {
                     .font(.callout)
                     .lineLimit(2)
 
+                if let subtitle = Self.subtitle(for: item) {
+                    Label(subtitle, systemImage: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
                 HStack(spacing: 8) {
                     Text(TranscriptFormatting.formattedDate(item.createdAt))
                     Text(TranscriptFormatting.formatDuration(item.durationSec))
@@ -51,5 +58,16 @@ struct MeetingRecordingRow: View {
 
     private var backgroundStyle: Color {
         isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.04)
+    }
+
+    /// The linked-event provenance label to show under the title — non-nil
+    /// only when the recording has a linked event whose title actually adds
+    /// information (present, non-empty, and distinct from the recording's own
+    /// title). Migrated from the deleted `RecordingsListView`'s subtitle.
+    static func subtitle(for item: RecordingListItem) -> String? {
+        guard let eventTitle = item.eventTitle, !eventTitle.isEmpty, eventTitle != item.title else {
+            return nil
+        }
+        return eventTitle
     }
 }
