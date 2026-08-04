@@ -37,7 +37,10 @@ enum SingleInstanceGuard {
     /// observability artifact of a mid-launch peer, not evidence of age. On a mismatch we
     /// never defer — two racing instances may then both survive briefly (a recoverable
     /// duplicate, and the LSMultipleInstancesProhibited layer's case), but they can never
-    /// BOTH exit, which is the unrecoverable direction.
+    /// BOTH exit, which is the unrecoverable direction. The both-nil pid tie-break assumes
+    /// pids are assigned in launch order; a pid-counter wrap between two simultaneous cold
+    /// launches combined with asymmetric observability could still defeat it — accepted,
+    /// as no per-process ordering over inconsistent views can close that corner.
     private static func certainlyOlder(_ peer: InstanceInfo, than current: InstanceInfo) -> Bool {
         switch (peer.launchDate, current.launchDate) {
         case let (p?, c?): return p < c || (p == c && peer.pid < current.pid)
