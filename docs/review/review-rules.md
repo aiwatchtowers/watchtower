@@ -70,4 +70,37 @@ reviewer should be able to point at code and say pass/fail). Cite the PR or less
 - A macOS TCC prompt triggered by `Watchtower.app` is a **P0**: fix the responsibility chain (e.g. `responsibility_spawnattrs_setdisclaim` in the daemon spawn path), never suppress the symptom or blame the source CLI. (seed, memory)
 - SQL is parameterised; never string-concatenate user/Slack data into a query. (seed)
 
+## Swift / Desktop conventions
+
+Promoted 2026-08-04 from recurring `review-lessons.md` findings (source dates cited per rule;
+the matching lesson entries are marked `[promoted]`). These bind authors as well as reviewers —
+read this section before writing or reviewing anything under `WatchtowerDesktop/`. Dimension
+tags in brackets.
+
+### Lifecycle & state
+
+- State for an async operation that must survive navigation lives in `AppState` or an app-wide center (`MeetingRecorderCenter`, `TranscriptNotesCenter`), never in a view-local ViewModel; the test must exercise start → navigate away → return. (memory) [1/6]
+- A ViewModel backing an always-visible surface (sidebar badge, indicator) must be constructed on EVERY path that reveals that surface — e.g. both `!needsOnboarding` and `completeOnboarding()`. (2026-06-16) [6]
+- When a view gains the ability to mutate data that a lazily-created sibling ViewModel snapshotted at init, every mutation site must invalidate or recreate that VM — newly-mutable state plus a `let`-snapshot consumer is the auto-flag. (2026-07-13 CX-1, recurred 2026-07-31) [6]
+- Any new view in the recording file-family that loads recordings/recaps on appear must also reload on `meetingRecorderCenter.phase → .idle`; conversely, a change to the `phase` projection must prove `.idle` stays reachable from every terminal state. (2026-07-31, 2026-08-03) [6/8]
+- An automatically-invoked action riding a user gesture (e.g. auto-record on Join) must inherit every capability/availability gate its manual twin enforces; a `.disabled(...)` condition on the manual control with no matching guard on the automatic path is the tell. (2026-07-31 meet-join) [6/9]
+
+### Go ↔ Swift dual-path contracts
+
+- A Go-side write guard, status/ack cascade, or collision guard on a table also written by a Swift `*Queries` twin must land with its mirror in the same change (or document divergent semantics and ship the collision test); the existing twin guard is the auto-flag. (2026-07-04 R2-F13, 2026-07-13 F1) [8]
+- Wire shape: a nil Go slice marshals to JSON `null` and a non-optional Swift `[T]` then throws on decode; initialise slices to `[]T{}` (or omitempty + Swift optional/default) and add a test asserting the empty-state wire shape. (2026-06-16, recurred verbatim 2026-07-04) [8/9]
+- A string datetime column read by both Go and Swift pins an explicit timezone in BOTH formatters; a sibling formatter that sets UTC while the used one doesn't is the tell. (2026-07-04) [6/8]
+- Envelope symmetry: each NEW best-effort payload in a CLI command gets its own `*_ok`/`*_error` envelope fields (the `recap_ok` precedent) AND a Swift decoder field consuming them, in the same change; a degradation warning must survive the caller's exit-0 path — `ProcessCLIRunner` discards stderr on success. (2026-07-31 ×3) [8/9]
+- A Swift ViewModel that hardcodes a CLI flag (e.g. `--app-return`) requires verifying the flag is registered on EVERY cobra subcommand that reaches that flow — mechanically greppable; cobra rejects unknown flags before RunE runs. (2026-08-03) [6]
+
+### Error handling
+
+- Desktop mark-read/ack must not clear UI state before the DB write succeeds: do/catch and clear only on success (the DigestViewModel pattern), never `try?` plus an unconditional clear. (2026-06-16) [9]
+- A ViewModel read-modify-write of a whole JSON column must reload the row immediately before writing (the TargetChatViewModel pattern). (2026-07-04) [9]
+- A scan/validation site where "file missing" is a meaningful contract state must treat "file present but undecodable" as a THIRD state, never fold it into the missing branch; a `compactMap` over two chained `try?` where only one of them means "absent" is the tell. (2026-08-03, 5th recurrence of the absent-vs-error class) [9]
+
+### Tests
+
+- Every new `@Observable` ViewModel/center ships with its own test suite in the same change — the recurring failure shape is bimodal coverage: a thorough library-layer suite beside a zero-test VM or CLI entry point, where green-overall masks the untested core. (weak-dimension 7 in ≥5 consecutive lesson entries) [7]
+
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
