@@ -11,6 +11,15 @@ enum CalendarMode: String, CaseIterable {
     }
 }
 
+/// Frame of the now-line marker row in the events scroll view's named
+/// coordinate space; nil when no marker is rendered.
+private struct NowLineFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect?
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = value ?? nextValue()
+    }
+}
+
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
@@ -30,6 +39,10 @@ struct CalendarEventsView: View {
     @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
+    /// Now-line marker frame in the scroll view's named coordinate space, nil
+    /// while no marker is rendered (no Today section). Drives the floating
+    /// "Now" button.
+    @State private var nowLineFrame: CGRect?
 
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
@@ -120,31 +133,43 @@ struct CalendarEventsView: View {
 
     private func eventsList(_ vm: CalendarViewModel) -> some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
+            // GeometryReader supplies the viewport height for the marker
+            // visibility check — the app targets macOS 14, so the macOS 15+
+            // onScrollGeometryChange APIs are off the table.
+            GeometryReader { viewport in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
 
-                    ForEach(vm.dailyEvents) { day in
-                        daySection(day: day)
-                            .id(day.id)
+                        ForEach(vm.dailyEvents) { day in
+                            daySection(day: day)
+                                .id(day.id)
+                        }
+
+                        if vm.dailyEvents.isEmpty {
+                            emptyState
+                        }
                     }
-
-                    if vm.dailyEvents.isEmpty {
-                        emptyState
+                    .padding()
+                }
+                .coordinateSpace(name: Self.eventsScrollSpace)
+                .onPreferenceChange(NowLineFramePreferenceKey.self) { frame in
+                    nowLineFrame = frame
+                }
+                .overlay(alignment: .bottom) {
+                    jumpToNowButton(proxy: proxy, viewportHeight: viewport.size.height)
+                }
+                // Deep-link scroll wins when a target is set (before the mode
+                // switch); otherwise land on "Today" past the history days.
+                .onAppear {
+                    if scrollTargetEventID != nil {
+                        scrollToTargetIfNeeded(proxy)
+                    } else {
+                        scrollToToday(vm, proxy: proxy)
                     }
                 }
-                .padding()
+                .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
             }
-            // Deep-link scroll wins when a target is set (before the mode
-            // switch); otherwise land on "Today" past the history days.
-            .onAppear {
-                if scrollTargetEventID != nil {
-                    scrollToTargetIfNeeded(proxy)
-                } else {
-                    scrollToToday(vm, proxy: proxy)
-                }
-            }
-            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
     }
 
@@ -249,14 +274,106 @@ struct CalendarEventsView: View {
                 allDayChip(allDay, date: day.id)
             }
 
-            ForEach(timed) { event in
-                eventRow(event)
+            if isToday {
+                // Only the Today section ticks: TimelineView recomputes the
+                // marker's label and position once a minute.
+                TimelineView(.everyMinute) { context in
+                    timedRowsWithNowLine(timed, now: context.date)
+                }
+            } else {
+                ForEach(timed) { event in
+                    eventRow(event)
+                }
             }
         }
         // Past days are browsable history, visually receded. Edge: a
         // cross-midnight meeting still running lands in a dimmed past
         // section WITH the green now-highlight — accepted cosmetic quirk.
         .opacity(isPast ? 0.55 : 1)
+    }
+
+    // MARK: - Now Line
+
+    private static let eventsScrollSpace = "calendar-events-scroll"
+
+    private static let nowLineTimeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt
+    }()
+
+    /// Today's timed events with the red now-line marker inserted at
+    /// `NowLine.nowLineIndex` — before the first not-yet-started event, or
+    /// after the last row when everything has started.
+    @ViewBuilder
+    private func timedRowsWithNowLine(_ timed: [CalendarEvent], now: Date) -> some View {
+        let lineIndex = NowLine.nowLineIndex(events: timed, now: now)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(timed.enumerated()), id: \.element.id) { index, event in
+                if index == lineIndex {
+                    nowLineRow(now: now)
+                }
+                eventRow(event)
+            }
+            if lineIndex == timed.count {
+                nowLineRow(now: now)
+            }
+        }
+    }
+
+    private func nowLineRow(now: Date) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(.red)
+                .frame(width: 6, height: 6)
+            Text(Self.nowLineTimeFormatter.string(from: now))
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.red)
+            Rectangle()
+                .fill(.red)
+                .frame(height: 1.5)
+        }
+        // Publish the marker's frame in the scroll view's coordinate space so
+        // the floating "Now" button knows when it is off-screen (preference
+        // key instead of the macOS 15+ scroll-visibility APIs).
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: NowLineFramePreferenceKey.self,
+                    value: geo.frame(in: .named(Self.eventsScrollSpace))
+                )
+            }
+        )
+        .id("now-line")
+    }
+
+    /// Floating jump-to-now capsule, shown only while the marker exists and
+    /// sits outside the viewport.
+    @ViewBuilder
+    private func jumpToNowButton(proxy: ScrollViewProxy, viewportHeight: CGFloat) -> some View {
+        if let frame = nowLineFrame, viewportHeight > 0 {
+            let isAbove = frame.maxY <= 0
+            let isBelow = frame.minY >= viewportHeight
+            if isAbove || isBelow {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo("now-line", anchor: .center)
+                    }
+                } label: {
+                    Label("Now", systemImage: isAbove ? "arrow.up" : "arrow.down")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(.red, in: Capsule())
+                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                .padding(.bottom, 12)
+            }
+        }
     }
 
     // MARK: - All-Day Chip
