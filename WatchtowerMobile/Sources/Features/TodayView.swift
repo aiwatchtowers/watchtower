@@ -54,6 +54,17 @@ struct TodayView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        // Recordings are meeting-shaped, so they hang off the
+                        // calendar section instead of claiming a seventh tab
+                        // (the iPhone tab bar already folds two of the six
+                        // under "More"). Labeled for the PAST so it never
+                        // reads as part of today's agenda above it.
+                        NavigationLink {
+                            RecordingsView()
+                        } label: {
+                            Label("Past meeting recordings", systemImage: "waveform")
+                                .font(.subheadline)
+                        }
                     }
                 }
                 SyncStatusFooter()

@@ -9,7 +9,9 @@
 /* Begin PBXBuildFile section */
 		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
+		1CF8C51201A91A5F39CF0A4D /* RecordingDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C826A435973DBF359BE581 /* RecordingDetailView.swift */; };
 		203887C3A8BA29CDB67E6437 /* AgentSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32B5333500926289814ECEB0 /* AgentSettingsTests.swift */; };
+		26B0C3BAC81DD216E0083DD3 /* RecordingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB8A174EE607338A87C82C4 /* RecordingsView.swift */; };
 		305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C33BA22DB5ABF55F50EBC /* InboxView.swift */; };
 		3213674D1C4C25C4869DD86D /* APIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */; };
 		39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 153A4760ECC99126216F0221 /* NotificationCoordinator.swift */; };
@@ -26,6 +28,7 @@
 		C68C3B81124062F591CDCEDF /* Badge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D5566BA2797C739FDA9FDC4 /* Badge.swift */; };
 		CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */; };
 		D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3240E546D853A416356E32D1 /* SettingsView.swift */; };
+		D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */; };
 		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
 		DF35C6CE39FC21D33BD51E82 /* NotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 996DA85353A5CF07B2C7BBDC /* NotificationTests.swift */; };
 		E93CAF336D1C1CB6ED76A4C5 /* TracksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0FBB330E7F18A51BAED059F /* TracksView.swift */; };
@@ -61,12 +64,15 @@
 		649E02AF149E7AB38609A747 /* BadgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BadgeTests.swift; sourceTree = "<group>"; };
 		6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateTargetSheet.swift; sourceTree = "<group>"; };
 		80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionsWiringTests.swift; sourceTree = "<group>"; };
+		89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsWiringTests.swift; sourceTree = "<group>"; };
 		916C33BA22DB5ABF55F50EBC /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		996DA85353A5CF07B2C7BBDC /* NotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTests.swift; sourceTree = "<group>"; };
 		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
 		B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaObserver.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
 		B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyStore.swift; sourceTree = "<group>"; };
+		B7C826A435973DBF359BE581 /* RecordingDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingDetailView.swift; sourceTree = "<group>"; };
+		BBB8A174EE607338A87C82C4 /* RecordingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsView.swift; sourceTree = "<group>"; };
 		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWiringTests.swift; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -117,6 +123,7 @@
 				649E02AF149E7AB38609A747 /* BadgeTests.swift */,
 				D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */,
 				996DA85353A5CF07B2C7BBDC /* NotificationTests.swift */,
+				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
 			);
 			path = Tests;
@@ -188,6 +195,8 @@
 				6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */,
 				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
 				211E805C97CFC4405C7263AB /* QuickActions.swift */,
+				B7C826A435973DBF359BE581 /* RecordingDetailView.swift */,
+				BBB8A174EE607338A87C82C4 /* RecordingsView.swift */,
 				3240E546D853A416356E32D1 /* SettingsView.swift */,
 				5DF609973C6F27C56B9BD9A9 /* TasksView.swift */,
 				53EEE394524E80319F081C9E /* TodayView.swift */,
@@ -301,6 +310,8 @@
 				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
 				39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */,
 				AC491EE585F1CB3A9F911402 /* QuickActions.swift in Sources */,
+				1CF8C51201A91A5F39CF0A4D /* RecordingDetailView.swift in Sources */,
+				26B0C3BAC81DD216E0083DD3 /* RecordingsView.swift in Sources */,
 				EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */,
 				D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */,
 				FB8013BC2F645E939B2A0E44 /* SyncStatusFooter.swift in Sources */,
@@ -320,6 +331,7 @@
 				582932A8E80F14FFC007035E /* BadgeTests.swift in Sources */,
 				CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */,
 				DF35C6CE39FC21D33BD51E82 /* NotificationTests.swift in Sources */,
+				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
