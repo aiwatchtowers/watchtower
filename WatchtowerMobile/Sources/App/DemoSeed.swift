@@ -168,6 +168,47 @@ enum DemoSeed {
             "created_at": Self.iso.string(from: now),
         ]))
 
+        // MARK: Meeting recordings (Recordings screen, reached from Today)
+        // Event-linked, fully processed: recap + notes + chapters + a diarized
+        // roster — what a recording looks like once every Mac-side pass ran.
+        records.append(try record(.meetingTranscript, "1", now, [
+            "id": 1,
+            "event_id": "evt-2",
+            "event_title": "Mobile app design review",
+            "title": "Mobile app design review",
+            "duration_sec": 2732,
+            "lang_stats": #"{"en":6,"ru":2}"#,
+            "notes_md": """
+                # Mobile app design review
+
+                - Recordings ship read-only on the phone
+                - Full transcript and audio stay on the Mac
+                """,
+            "chapters_json": #"{"overall_summary":"Scope and rollout of the phone's recordings screen.","chapters":[{"title":"Scope","start_sec":0,"end_sec":540,"summary":"Agreed the phone gets a read-only surface: recap, notes, chapters, snippet.","participants":["Я","Speaker 2"]},{"title":"Rollout","start_sec":540,"end_sec":2732,"summary":"Reachable from Today rather than a seventh tab.","participants":["Я"]}]}"#,
+            "recap_json": #"{"summary":"The phone gets a read-only Recordings screen; the transcript and audio stay on the Mac.","key_decisions":["No seventh tab — reach Recordings from Today","Read-only: no delete, rename, or notes editing on the phone"],"action_items":["Wire the Recordings list and detail","Label the snippet honestly as a preview"],"open_questions":["Should the notes render as rich markdown later?"]}"#,
+            "speakers": #"["Я","Speaker 2"]"#,
+            "snippet": "[Я] Let's start with the recordings screen — read-only, recap first, and the transcript stays here on the Mac.",
+            "created_at": Self.iso.string(from: now),
+            "updated_at": Self.iso.string(from: now),
+        ]))
+        // The degenerate twin, on purpose: ad-hoc (no event), untitled, no
+        // recap, no notes, no chapters, never diarized — the state a recording
+        // is in when the audio saved but every AI pass failed or never ran.
+        // The screen must render this, so the demo path exercises it.
+        records.append(try record(.meetingTranscript, "2", now, [
+            "id": 2,
+            "title": "",
+            "duration_sec": 95,
+            "lang_stats": "",
+            "notes_md": "",
+            "chapters_json": "",
+            "recap_json": "",
+            "speakers": "[]",
+            "snippet": "quick voice note before the standup",
+            "created_at": Self.iso.string(from: now.addingTimeInterval(-86_400)),
+            "updated_at": Self.iso.string(from: now.addingTimeInterval(-86_400)),
+        ]))
+
         // MARK: Desktop heartbeat (Chat liveness)
         // Refreshed every launch so the Chat tab demos the reachable state;
         // it goes stale — and the "Mac unreachable" banner appears — if the

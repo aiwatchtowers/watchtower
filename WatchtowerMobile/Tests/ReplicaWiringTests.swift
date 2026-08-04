@@ -21,6 +21,7 @@ final class ReplicaWiringTests: XCTestCase {
         .situation: 2,
         .target: 3,
         .track: 2,
+        .meetingTranscript: 2,
     ]
 
     // MARK: - Helpers
