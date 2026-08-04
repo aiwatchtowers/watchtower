@@ -30,7 +30,11 @@ struct MeetingDaySection: Identifiable, Equatable {
 /// event was pruned by sync retention).
 enum MeetingListBuilder {
     static func build(
-        days: [DayEvents], recordings: [RecordingListItem], now: Date, calendar: Calendar
+        days: [DayEvents],
+        recordings: [RecordingListItem],
+        now: Date,
+        calendar: Calendar,
+        locale: Locale = .current
     ) -> [MeetingDaySection] {
         let todayStart = calendar.startOfDay(for: now)
         let eventIDs = Set(days.flatMap { $0.events.map(\.id) })
@@ -68,7 +72,7 @@ enum MeetingListBuilder {
         }
 
         for (dayStart, items) in standaloneByDay {
-            var section = sectionsByDay[dayStart] ?? (label(for: dayStart, calendar: calendar), [])
+            var section = sectionsByDay[dayStart] ?? (label(for: dayStart, calendar: calendar, locale: locale), [])
             for item in items {
                 section.entries.append(MeetingListEntry(
                     kind: .recording(item), id: .recording(item.id),
@@ -80,7 +84,7 @@ enum MeetingListBuilder {
         if !unparseable.isEmpty {
             let pastKeys = sectionsByDay.keys.filter { $0 < todayStart }
             let targetKey = pastKeys.min() ?? sectionsByDay.keys.min() ?? todayStart
-            var section = sectionsByDay[targetKey] ?? (label(for: targetKey, calendar: calendar), [])
+            var section = sectionsByDay[targetKey] ?? (label(for: targetKey, calendar: calendar, locale: locale), [])
             for item in unparseable {
                 section.entries.append(MeetingListEntry(
                     kind: .recording(item), id: .recording(item.id),
@@ -109,12 +113,19 @@ enum MeetingListBuilder {
         }?.id
     }
 
-    private static func label(for date: Date, calendar: Calendar) -> String {
+    /// Mirrors `CalendarViewModel.label(for:calendar:)` exactly (same
+    /// dateFormat + locale) so a recording-only day section reads no
+    /// differently from an event day section in the same list. `locale` is
+    /// injectable for deterministic tests; production always passes
+    /// `.current`, matching `CalendarViewModel`'s hardcoded `Locale.current`.
+    private static func label(for date: Date, calendar: Calendar, locale: Locale) -> String {
         if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInTomorrow(date) { return "Tomorrow" }
         if calendar.isDateInYesterday(date) { return "Yesterday" }
-        var style = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day()
-        style.locale = Locale(identifier: "en_US")
-        style.timeZone = calendar.timeZone
-        return date.formatted(style)
+        let fmt = DateFormatter()
+        fmt.locale = locale
+        fmt.timeZone = calendar.timeZone
+        fmt.dateFormat = "EEEE, d MMM"
+        return fmt.string(from: date)
     }
 }

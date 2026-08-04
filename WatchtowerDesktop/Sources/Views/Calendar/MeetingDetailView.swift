@@ -120,7 +120,7 @@ struct MeetingDetailView: View {
                 }
 
                 if Self.showsRecordButton(for: event, now: Date()) {
-                    recordButton(eventID: event.id, title: event.title)
+                    MeetingRecordButton(eventID: event.id, title: event.title)
                 }
 
                 if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
@@ -173,38 +173,6 @@ struct MeetingDetailView: View {
         case "declined": return .red
         default: return .secondary
         }
-    }
-
-    // MARK: - Record Button
-
-    /// Record/Stop control for a calendar event. Shows "Stop" only while THIS
-    /// event is the one being recorded; disabled when another recording is
-    /// capturing or system-audio capture is unsupported. A previous recording
-    /// still being transcribed does NOT disable it — post-processing is
-    /// queued, not exclusive.
-    @ViewBuilder
-    private func recordButton(eventID: String?, title: String?) -> some View {
-        let center = appState.meetingRecorderCenter
-        let isRecordingThis: Bool = {
-            if case .recording = center.phase { return center.currentEventID == eventID }
-            return false
-        }()
-        Button {
-            if isRecordingThis {
-                Task { await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults()) }
-            } else {
-                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
-            }
-        } label: {
-            Label(isRecordingThis ? "Stop" : "Record",
-                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
-                .font(.caption)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(isRecordingThis ? .red : nil)
-        .disabled((center.isCapturing && !isRecordingThis) || !SystemAudioRecorder.isSupported)
-        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
     }
 
     // MARK: - Join Button

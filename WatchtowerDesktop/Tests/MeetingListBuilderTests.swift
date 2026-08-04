@@ -151,17 +151,47 @@ final class MeetingListBuilderTests: XCTestCase {
         let days = [dayEvents(id: todayStart, label: "Today", events: [makeEvent(id: "e1", start: now)])]
         let oldCreatedAt = now.addingTimeInterval(-30 * 86400)
         let old = makeRecording(id: 5, eventID: nil, createdAt: iso(oldCreatedAt))
+        // Pinned explicitly (not .current) so the assertion is deterministic
+        // regardless of the machine's system locale — see
+        // testLabelMirrorsCalendarViewModelFormat for the format-parity guard.
+        let locale = Locale(identifier: "en_US")
 
-        let sections = MeetingListBuilder.build(days: days, recordings: [old], now: now, calendar: calendar)
+        let sections = MeetingListBuilder.build(
+            days: days, recordings: [old], now: now, calendar: calendar, locale: locale)
 
         let expectedDay = calendar.startOfDay(for: oldCreatedAt)
         XCTAssertEqual(sections.map(\.id), [todayStart, expectedDay])
         XCTAssertEqual(sections[1].entries.count, 1)
         XCTAssertEqual(sections[1].entries[0].id, .recording(5))
-        var style = Date.FormatStyle.dateTime.weekday(.abbreviated).month(.abbreviated).day()
-        style.locale = Locale(identifier: "en_US")
-        style.timeZone = calendar.timeZone
-        XCTAssertEqual(sections[1].label, expectedDay.formatted(style))
+        let fmt = DateFormatter()
+        fmt.locale = locale
+        fmt.timeZone = calendar.timeZone
+        fmt.dateFormat = "EEEE, d MMM"
+        XCTAssertEqual(sections[1].label, fmt.string(from: expectedDay))
+    }
+
+    /// Decision: the builder's fallback label (used only for a recording-only
+    /// day outside the calendar window) must format identically to
+    /// `CalendarViewModel.label(for:calendar:)` — same "EEEE, d MMM" pattern —
+    /// so a recording-only day section reads no differently from an event day
+    /// section in the same list. Mirrors `CalendarViewModel.swift`'s private
+    /// `label` verbatim rather than re-deriving it, to catch drift.
+    func testLabelMirrorsCalendarViewModelFormat() {
+        let todayStart = calendar.startOfDay(for: now)
+        let dayMinus5 = calendar.date(byAdding: .day, value: -5, to: todayStart) ?? todayStart
+        let days = [dayEvents(id: todayStart, label: "Today", events: [makeEvent(id: "e1", start: now)])]
+        let locale = Locale(identifier: "en_US")
+        let old = makeRecording(id: 6, eventID: nil, createdAt: iso(dayMinus5.addingTimeInterval(3600)))
+
+        let sections = MeetingListBuilder.build(
+            days: days, recordings: [old], now: now, calendar: calendar, locale: locale)
+
+        let expectedFmt = DateFormatter()
+        expectedFmt.locale = locale
+        expectedFmt.timeZone = calendar.timeZone
+        expectedFmt.dateFormat = "EEEE, d MMM"
+        let section = sections.first { $0.id == dayMinus5 }
+        XCTAssertEqual(section?.label, expectedFmt.string(from: dayMinus5))
     }
 
     func testEventWithoutRecordingsKeptWithZeroCount() {
