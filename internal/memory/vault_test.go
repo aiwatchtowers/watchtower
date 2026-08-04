@@ -65,6 +65,98 @@ func commitFiles(t *testing.T, commit *object.Commit) []string {
 	return names
 }
 
+func assertPerm(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, want, info.Mode().Perm(), "permissions of %s", path)
+}
+
+// TestVaultPermissionsAreOwnerOnly: the vault is the one place the product
+// writes AI-synthesised statements about named people alongside Gmail- and
+// calendar-derived episodes, so its directories are 0700 and its files 0600 —
+// the same owner-only modes as the token stores and the database. The .git
+// directory is included: the history holds the same content as the worktree.
+func TestVaultPermissionsAreOwnerOnly(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+
+	v, err := OpenVault(dir)
+	require.NoError(t, err)
+
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5PM1", "entity", "Permissions")
+	_, err = v.WriteNodes([]Node{n}, CommitMsg{Op: "seed", Summary: "one entity", Cause: "seed", NodeIDs: []string{n.ID}})
+	require.NoError(t, err)
+
+	assertPerm(t, dir, 0o700)
+	assertPerm(t, filepath.Join(dir, ".git"), 0o700)
+	for _, sub := range vaultSubdirs {
+		assertPerm(t, filepath.Join(dir, sub), 0o700)
+	}
+	assertPerm(t, filepath.Join(dir, "map.md"), 0o600)
+	assertPerm(t, filepath.Join(dir, ".gitignore"), 0o600)
+	assertPerm(t, filepath.Join(dir, "entities", n.ID+".md"), 0o600)
+}
+
+// TestOpenVaultTightensPreExistingPermissions: a vault seeded under the old
+// 0755/0644 modes is brought up to 0700/0600 on its next open. Only files
+// written after the change pick up the new mode, and a node file is rewritten
+// in place, so without this pass an existing vault would stay world-readable
+// indefinitely. go-git must keep writing through the tightened .git — proven
+// here by committing after the tightening, not merely by reopening.
+func TestOpenVaultTightensPreExistingPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+
+	v, err := OpenVault(dir)
+	require.NoError(t, err)
+	n := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5PM2", "entity", "Legacy")
+	_, err = v.WriteNodes([]Node{n}, CommitMsg{Op: "seed", Summary: "one entity", Cause: "seed", NodeIDs: []string{n.ID}})
+	require.NoError(t, err)
+
+	// Put the vault back the way a pre-0600 installation has it on disk. The
+	// modes are set explicitly, not inherited from the test process umask.
+	nodePath := filepath.Join(dir, "entities", n.ID+".md")
+	require.NoError(t, os.Chmod(nodePath, 0o644))
+	require.NoError(t, os.Chmod(filepath.Join(dir, "map.md"), 0o644))
+	require.NoError(t, os.Chmod(filepath.Join(dir, "entities"), 0o755))
+	require.NoError(t, os.Chmod(filepath.Join(dir, ".git"), 0o755))
+	require.NoError(t, os.Chmod(dir, 0o755))
+
+	reopened, err := OpenExistingVault(dir)
+	require.NoError(t, err)
+
+	assertPerm(t, dir, 0o700)
+	assertPerm(t, filepath.Join(dir, ".git"), 0o700)
+	assertPerm(t, filepath.Join(dir, "entities"), 0o700)
+	assertPerm(t, nodePath, 0o600)
+	assertPerm(t, filepath.Join(dir, "map.md"), 0o600)
+
+	// go-git still reads and writes the repository at 0700.
+	require.NoError(t, os.WriteFile(nodePath, append(n.Render(), []byte("\nowner note\n")...), 0o600))
+	made, err := reopened.CommitOwnerEdits()
+	require.NoError(t, err)
+	assert.True(t, made, "go-git must still commit through a tightened .git directory")
+
+	next := vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5PM3", "episode", "After")
+	_, err = reopened.WriteNodes([]Node{next}, CommitMsg{Op: "extract", Summary: "one episode", Cause: "run:1", NodeIDs: []string{next.ID}})
+	require.NoError(t, err, "machine writes must survive the tightened repository")
+}
+
+// TestTightenVaultPermsEmptyVault: a vault with no nodes in it walks to
+// nothing but its own root. That is a clean no-op — the root is still brought
+// to 0700 and nothing reports an error.
+func TestTightenVaultPermsEmptyVault(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "empty")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.Chmod(dir, 0o755))
+
+	tightenVaultPerms(dir)
+
+	assertPerm(t, dir, 0o700)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "tightening must not create anything")
+}
+
 func TestOpenVaultInitializesRepo(t *testing.T) {
 	dir := t.TempDir()
 

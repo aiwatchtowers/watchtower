@@ -35,6 +35,79 @@ func TestOpenCreatesDirectory(t *testing.T) {
 	assert.NoError(t, err, "directory should have been created")
 }
 
+// TestOpenRestrictsDatabaseFilePermissions: the database holds every synced
+// message, mail body and meeting transcript, so the file is owner-only (0600)
+// inside an owner-only directory (0700). SQLite creates the file itself, at
+// whatever the process umask allows (0644 in practice), so the mode is not
+// something the open path can leave to chance.
+func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sub", "watchtower.db")
+
+	database, err := Open(dbPath)
+	require.NoError(t, err)
+	defer database.Close()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "database file must be owner-only")
+
+	dirInfo, err := os.Stat(filepath.Dir(dbPath))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(), "database directory must be owner-only")
+
+	// The WAL/SHM sidecars carry the same content and are live while the
+	// connection is open.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, serr := os.Stat(dbPath + suffix)
+		require.NoError(t, serr, "WAL mode must have created %s", suffix)
+		assert.Equal(t, os.FileMode(0o600), sidecar.Mode().Perm(), "sidecar %s must be owner-only", suffix)
+	}
+}
+
+// TestOpenTightensPreExistingDatabasePermissions: a database created before
+// the 0600 default existed is brought up to it on its next open. Setting the
+// mode only on newly created files would leave every current installation
+// world-readable forever, since the file is created once and never replaced.
+func TestOpenTightensPreExistingDatabasePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
+
+	database, err := Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	// Put the file back the way a pre-0600 installation has it. Set the mode
+	// explicitly rather than inheriting whatever the test process umask is.
+	require.NoError(t, os.Chmod(dbPath, 0o644))
+
+	reopened, err := Open(dbPath)
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "a pre-existing 0644 database must be tightened on open")
+}
+
+// TestTightenDBFilePermsMissingSidecars: SQLite removes the WAL and SHM files
+// on a clean close, so tightening a closed database finds neither. That is the
+// ordinary case, not a failure — the database file is still tightened and no
+// sidecar is conjured into existence.
+func TestTightenDBFilePermsMissingSidecars(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "closed.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("db contents"), 0o600))
+	require.NoError(t, os.Chmod(dbPath, 0o644))
+
+	tightenDBFilePerms(dbPath)
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	for _, suffix := range []string{"-wal", "-shm"} {
+		_, serr := os.Stat(dbPath + suffix)
+		assert.True(t, os.IsNotExist(serr), "sidecar %s must not have been created", suffix)
+	}
+}
+
 func TestPragmas(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
