@@ -67,7 +67,7 @@ reviewer should be able to point at code and say pass/fail). Cite the PR or less
 
 - A swallowed error (caught/ignored without log or return) is a blocker unless it is a documented known-safe idempotency case (e.g. already-resolved); rethrow/return everything else so it surfaces. (seed)
 - No committed credentials, Slack/Google tokens, or machine-absolute paths (`/Users/...`); load secrets from config/keychain and gitignore token files. (seed)
-- A macOS TCC prompt triggered by `Watchtower.app` is a **P0**: fix the responsibility chain (e.g. `responsibility_spawnattrs_setdisclaim` in the daemon spawn path), never suppress the symptom or blame the source CLI. (seed, memory)
+- A macOS TCC prompt triggered by `Watchtower.app` is a **P0**: fix the attribution, never suppress the symptom or blame the source CLI. Note that `responsibility_spawnattrs_setdisclaim` in the daemon spawn path — the obvious fix, and what this rule used to recommend — was tried and rolled back: it does move `responsible_path`, but `tccd` resolves the *subject* shown in the prompt by walking up from the binary's physical path to the nearest `.app` and reading its `CFBundleIdentifier`, so the dialog still said `Watchtower.app`. Signing the CLI with its own `--identifier` did not move it either. The open direction is a sub-bundle (`Contents/Helpers/WatchtowerCLI.app` with its own `Info.plist`), so the upward walk terminates somewhere else. (seed, memory)
 - SQL is parameterised; never string-concatenate user/Slack data into a query. (seed)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
