@@ -72,10 +72,10 @@ struct MeetingDetailView: View {
                 Spacer()
             }
         }
+        // The host wraps this view in `.id(entry.id)` (`CalendarEventsView`),
+        // so switching entries recreates the view and re-runs `.onAppear` —
+        // no `.onChange(of: entry.id)` reseed is needed alongside it.
         .onAppear { selectedRecordingID = MeetingListBuilder.defaultRecordingID(recordings) }
-        .onChange(of: entry.id) { _, _ in
-            selectedRecordingID = MeetingListBuilder.defaultRecordingID(recordings)
-        }
     }
 
     // MARK: - Header
@@ -218,9 +218,12 @@ struct MeetingDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(TranscriptFormatting.formattedDate(item.createdAt))
                     .font(.caption2)
-                Text(TranscriptFormatting.formatDuration(item.durationSec))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(TranscriptFormatting.formatDuration(item.durationSec))
+                    TranscriptLangBadges(langStatsJSON: item.langStats)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
