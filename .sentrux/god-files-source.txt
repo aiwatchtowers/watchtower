@@ -11,6 +11,7 @@ WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/MeetingNotesView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailTabs.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
+WatchtowerDesktop/Sources/Views/Calendar/RecordingIndicatorView.swift
 WatchtowerDesktop/Sources/Views/Calendar/TranscriptSectionView.swift
 WatchtowerDesktop/Sources/Views/Dashboard/SituationReviewPane.swift
 WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
