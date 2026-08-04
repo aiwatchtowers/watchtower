@@ -1,9 +1,9 @@
 {
-  "timestamp": 1785855935.078796,
-  "quality_signal": 0.6946360453452992,
+  "timestamp": 1785880240.380231,
+  "quality_signal": 0.6944737469916207,
   "coupling_score": 0.004434589800443459,
   "cycle_count": 0,
-  "god_file_count": 34,
+  "god_file_count": 36,
   "hotspot_count": 18,
   "complex_fn_count": 131,
   "max_depth": 2,

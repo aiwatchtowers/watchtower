@@ -15,7 +15,7 @@ final class NowLineTests: XCTestCase {
     /// CalendarEvent has only init(row:) — build fixtures from a minimal
     /// dictionary Row (init defaults every other column), start relative to
     /// `now` (no hardcoded dates), end = start + 30 min.
-    private func makeEvent(id: String, startsIn: TimeInterval) -> CalendarEvent {
+    private func makeCalendarEvent(id: String, startsIn: TimeInterval) -> CalendarEvent {
         let start = now.addingTimeInterval(startsIn)
         let row: Row = [
             "id": id,
@@ -48,33 +48,33 @@ final class NowLineTests: XCTestCase {
 
     func testAllEventsPastInsertsAfterLast() {
         let events = [
-            makeEvent(id: "a", startsIn: -7200),
-            makeEvent(id: "b", startsIn: -3600)
+            makeCalendarEvent(id: "a", startsIn: -7200),
+            makeCalendarEvent(id: "b", startsIn: -3600)
         ]
         XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 2)
     }
 
     func testAllEventsFutureInsertsAtZero() {
         let events = [
-            makeEvent(id: "a", startsIn: 1800),
-            makeEvent(id: "b", startsIn: 7200)
+            makeCalendarEvent(id: "a", startsIn: 1800),
+            makeCalendarEvent(id: "b", startsIn: 7200)
         ]
         XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 0)
     }
 
     func testOngoingEventStaysAboveLine() {
         let events = [
-            makeEvent(id: "past", startsIn: -7200),
-            makeEvent(id: "ongoing", startsIn: -1800),
-            makeEvent(id: "future", startsIn: 3600)
+            makeCalendarEvent(id: "past", startsIn: -7200),
+            makeCalendarEvent(id: "ongoing", startsIn: -1800),
+            makeCalendarEvent(id: "future", startsIn: 3600)
         ]
         XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 2)
     }
 
     func testEventStartingExactlyAtNowCountsAsStarted() {
         let events = [
-            makeEvent(id: "at-now", startsIn: 0),
-            makeEvent(id: "future", startsIn: 3600)
+            makeCalendarEvent(id: "at-now", startsIn: 0),
+            makeCalendarEvent(id: "future", startsIn: 3600)
         ]
         XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 1)
     }
@@ -84,13 +84,13 @@ final class NowLineTests: XCTestCase {
     func testRowsInsertsMarkerExactlyOnce() {
         let cases: [(events: [CalendarEvent], expectedIDs: [String])] = [
             // All future → marker at start.
-            ([makeEvent(id: "a", startsIn: 1800), makeEvent(id: "b", startsIn: 3600)],
+            ([makeCalendarEvent(id: "a", startsIn: 1800), makeCalendarEvent(id: "b", startsIn: 3600)],
              [NowLine.nowLineID, "a", "b"]),
             // Past + future → marker in the middle.
-            ([makeEvent(id: "past", startsIn: -3600), makeEvent(id: "future", startsIn: 3600)],
+            ([makeCalendarEvent(id: "past", startsIn: -3600), makeCalendarEvent(id: "future", startsIn: 3600)],
              ["past", NowLine.nowLineID, "future"]),
             // All past → marker at end.
-            ([makeEvent(id: "a", startsIn: -7200), makeEvent(id: "b", startsIn: -3600)],
+            ([makeCalendarEvent(id: "a", startsIn: -7200), makeCalendarEvent(id: "b", startsIn: -3600)],
              ["a", "b", NowLine.nowLineID]),
             // Empty list → marker alone.
             ([], [NowLine.nowLineID])
@@ -109,7 +109,7 @@ final class NowLineTests: XCTestCase {
         // insertion point (here, seeded first, it renders above the line).
         let events = [
             makeMalformedEvent(id: "broken"),
-            makeEvent(id: "future", startsIn: 3600)
+            makeCalendarEvent(id: "future", startsIn: 3600)
         ]
         XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 1)
         XCTAssertEqual(
