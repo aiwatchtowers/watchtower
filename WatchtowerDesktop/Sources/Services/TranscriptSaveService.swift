@@ -13,6 +13,9 @@ import Foundation
 /// (chapters_json stayed NULL — retry via the in-UI "Generate chapters"
 /// button); `.notAttempted` covers no-segments saves, the recap-retry
 /// command, and envelopes from an older CLI without the chapters keys.
+/// `recapSkipped` means the CLI deliberately skipped recap generation for a
+/// too-short transcript (`recapOK` is also false in that case) — an older-CLI
+/// envelope omits the key, decoding as `false`.
 struct TranscriptSaveResult: Decodable, Equatable {
     /// Outcome of the auto-chapter generation the CLI attempts after save.
     enum ChaptersOutcome: Equatable {
@@ -24,6 +27,7 @@ struct TranscriptSaveResult: Decodable, Equatable {
     let transcriptID: Int64
     let recapOK: Bool
     let recapError: String
+    let recapSkipped: Bool
     let segmentsOK: Bool
     let segmentsError: String?
     let chapters: ChaptersOutcome
@@ -33,6 +37,7 @@ struct TranscriptSaveResult: Decodable, Equatable {
         case transcriptID = "transcript_id"
         case recapOK = "recap_ok"
         case recapError = "recap_error"
+        case recapSkipped = "recap_skipped"
         case segmentsOK = "segments_ok"
         case segmentsError = "segments_error"
         case chaptersOK = "chapters_ok"
@@ -44,6 +49,7 @@ struct TranscriptSaveResult: Decodable, Equatable {
         transcriptID = try container.decode(Int64.self, forKey: .transcriptID)
         recapOK = try container.decode(Bool.self, forKey: .recapOK)
         recapError = try container.decode(String.self, forKey: .recapError)
+        recapSkipped = try container.decodeIfPresent(Bool.self, forKey: .recapSkipped) ?? false
         segmentsOK = try container.decodeIfPresent(Bool.self, forKey: .segmentsOK) ?? true
         segmentsError = try container.decodeIfPresent(String.self, forKey: .segmentsError)
         if let chaptersOK = try container.decodeIfPresent(Bool.self, forKey: .chaptersOK) {

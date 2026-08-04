@@ -167,6 +167,41 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(notifier.failedReasons.isEmpty)
     }
 
+    func testRecapSkippedStillCompletesWithFriendlierNotification() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapSkippedEnvelope) },
+            notifier: notifier,
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        // Skipped recap is not a failure to retry — the notification says so
+        // instead of implying the recap needs another attempt.
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(notifier.readyTitles.count, 1)
+        XCTAssertTrue(
+            notifier.readyTitles.first?.localizedCaseInsensitiveContains("too short for recap") ?? false,
+            "ready notification must mention the recap was skipped for being too short, got \(notifier.readyTitles)")
+        XCTAssertFalse(
+            notifier.readyTitles.first?.localizedCaseInsensitiveContains("needs retry") ?? true,
+            "a skipped recap must not read like a failure needing retry")
+        XCTAssertTrue(notifier.failedReasons.isEmpty)
+    }
+
     // MARK: Failure paths
 
     func testRecorderStartFailureGoesFailed() async throws {

@@ -10,7 +10,6 @@ struct SlackAccount: FetchableRecord, Identifiable, Equatable {
     let teamName: String
     let teamDomain: String
     let label: String
-    let currentUserID: String
     let status: String
     let error: String
     let enabled: Bool
@@ -20,7 +19,6 @@ struct SlackAccount: FetchableRecord, Identifiable, Equatable {
         teamName = row["team_name"] ?? ""
         teamDomain = row["team_domain"] ?? ""
         label = row["label"] ?? ""
-        currentUserID = row["current_user_id"] ?? ""
         status = row["status"] ?? "ok"
         error = row["error"] ?? ""
         enabled = row["enabled"] ?? true

@@ -30,7 +30,7 @@ func (s *TokenStore) Load() (*Token, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("reading slack token: %w", err)
 	}
 	var token Token
 	if err := json.Unmarshal(data, &token); err != nil {

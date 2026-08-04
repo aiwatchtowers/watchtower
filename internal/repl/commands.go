@@ -150,9 +150,11 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 	var earliest time.Time
 	var firstErr error
 	ran := 0
+	skipped := 0
 	for _, acct := range accounts {
 		token, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID).Load()
 		if err != nil || token == nil {
+			skipped++
 			continue
 		}
 		client := watchtowerslack.NewClient(token.AccessToken)
@@ -176,12 +178,19 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 		return errorStyle.Render("Error: no Slack account has a stored token. Run: watchtower slack login")
 	}
 	if firstErr != nil {
-		return errorStyle.Render("Sync failed: " + firstErr.Error())
+		msg := errorStyle.Render("Sync failed: " + firstErr.Error())
+		if skipped > 0 {
+			msg += fmt.Sprintf(" (%d account(s) also skipped — no stored token, run: watchtower slack login)", skipped)
+		}
+		return msg
 	}
 
 	elapsed := time.Since(earliest).Round(time.Second)
-	return fmt.Sprintf("Sync complete in %s: %d messages synced.",
-		elapsed, totalMessages)
+	msg := fmt.Sprintf("Sync complete in %s: %d messages synced.", elapsed, totalMessages)
+	if skipped > 0 {
+		msg += fmt.Sprintf(" (%d account(s) skipped — no stored token, run: watchtower slack login)", skipped)
+	}
+	return msg
 }
 
 // runCatchup streams a catchup summary to stdout.

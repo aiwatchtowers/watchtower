@@ -252,6 +252,8 @@ class MeetingRecorderTestCase: XCTestCase {
     // Envelopes matching the `meeting-prep transcript save` CLI contract.
     let recapOKEnvelope = Data(#"{"transcript_id":7,"recap_ok":true,"recap_error":""}"#.utf8)
     let recapFailedEnvelope = Data(#"{"transcript_id":7,"recap_ok":false,"recap_error":"AI generation: boom"}"#.utf8)
+    let recapSkippedEnvelope = Data(
+        #"{"transcript_id":7,"recap_ok":false,"recap_error":"transcript too short (12 chars): recap skipped","recap_skipped":true}"#.utf8)
 
     func isolatedDefaults() throws -> UserDefaults {
         try XCTUnwrap(UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)"))

@@ -70,10 +70,12 @@ var slackRemoveCmd = &cobra.Command{
 
 func init() {
 	slackLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
+	slackLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	slackLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
 
 	slackAddCmd.Flags().String("label", "", "display name for this workspace")
 	slackAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
+	slackAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 
 	slackCmd.AddCommand(slackAddCmd)
 	slackCmd.AddCommand(slackLoginCmd)
@@ -157,7 +159,9 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		return slackIdentity{}, fmt.Errorf("saving token: %w", err)
 	}
 
-	_ = database.SetSlackAccountAuthState(id, "ok", "")
+	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
+		fmt.Fprintf(warnOut, "warning: failed to record auth state: %v\n", err)
+	}
 	return identity, nil
 }
 
@@ -214,8 +218,9 @@ func runSlackAdd(cmd *cobra.Command, _ []string) error {
 	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
-	result, err := slackOAuthLogin(cmd, noOpen)
+	result, err := slackOAuthLogin(cmd, noOpen, appReturn)
 	if err != nil {
 		return err
 	}
@@ -259,8 +264,9 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	out := cmd.OutOrStdout()
-	result, err := slackOAuthLogin(cmd, noOpen)
+	result, err := slackOAuthLogin(cmd, noOpen, appReturn)
 	if err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, accountID, cmd.ErrOrStderr())
@@ -323,6 +329,16 @@ func setSlackAccountEnabled(cmd *cobra.Command, idArg string, enabled bool) erro
 		return err
 	}
 	defer database.Close()
+
+	if enabled {
+		acct, err := database.GetSlackAccount(id)
+		if err != nil {
+			return fmt.Errorf("account %d not found: %w", id, err)
+		}
+		if acct.Status == "removed" {
+			return fmt.Errorf("account %d was removed — run \"slack add\" to reconnect it, enable has no effect on a removed account", id)
+		}
+	}
 
 	if err := database.SetSlackAccountEnabled(id, enabled); err != nil {
 		return fmt.Errorf("updating account: %w", err)
@@ -390,12 +406,12 @@ func resolveSlackAccountOneForLogin(cmd *cobra.Command, cfg *config.Config, data
 }
 
 // slackOAuthLogin runs the browser-based OAuth flow and returns the result.
-func slackOAuthLogin(cmd *cobra.Command, noOpen bool) (*auth.OAuthResult, error) {
+func slackOAuthLogin(cmd *cobra.Command, noOpen, appReturn bool) (*auth.OAuthResult, error) {
 	oauthCfg, err := resolveOAuthConfig()
 	if err != nil {
 		return nil, err
 	}
-	result, err := auth.Login(cmd.Context(), oauthCfg, cmd.OutOrStdout(), auth.LoginOptions{SkipBrowserOpen: noOpen})
+	result, err := auth.Login(cmd.Context(), oauthCfg, cmd.OutOrStdout(), auth.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	if err != nil {
 		return nil, fmt.Errorf("oauth login: %w", err)
 	}
