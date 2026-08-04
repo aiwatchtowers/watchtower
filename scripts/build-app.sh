@@ -37,6 +37,16 @@ else
 fi
 echo ""
 
+# Refuse to rebuild under a live Watchtower.app: rm -rf replaces the bundle
+# beneath the running process, breaking its Security.framework/TLS and
+# desyncing LaunchServices. Fixed-string match — worktree paths contain '+',
+# which pgrep -f / grep would read as a regex.
+RUNNING_APP=$(ps -axo command | grep -F "$APP_BUNDLE/Contents/MacOS/" | grep -v grep || true)
+if [ -n "$RUNNING_APP" ]; then
+    echo "ERROR: Watchtower is running from $APP_BUNDLE — quit it before rebuilding."
+    exit 1
+fi
+
 # Clean previous build
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -147,6 +157,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
+    <!-- Several copies of this bundle id can be registered in LaunchServices
+         (worktree builds, dmg-staging); without this a notification click can
+         launch a second instance from a non-running copy. -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

@@ -124,6 +124,7 @@ struct WatchtowerApp: App {
     private let notificationDelegate = NotificationDelegate()
 
     init() {
+        SingleInstanceGuard.terminateIfDuplicate()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
         UNUserNotificationCenter.current().delegate = notificationDelegate
