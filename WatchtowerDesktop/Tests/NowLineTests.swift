@@ -10,7 +10,7 @@ final class NowLineTests: XCTestCase {
     /// strings (no fractional seconds), so aligning `now` the same way makes
     /// the exactly-at-now boundary case exact instead of sub-second-off.
     private static let iso = ISO8601DateFormatter()
-    private let now = NowLineTests.iso.date(from: NowLineTests.iso.string(from: Date()))!
+    private let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
 
     /// CalendarEvent has only init(row:) — build fixtures from a dictionary
     /// Row, with start/end relative to `now` (no hardcoded dates).
