@@ -12,6 +12,7 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case calendarEvent = "calendar_event"
     case personCard = "person_card"
     case situation
+    case meetingTranscript = "meeting_transcript"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

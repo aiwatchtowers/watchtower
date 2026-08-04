@@ -17,6 +17,15 @@ import Foundation
 ///   dumps — the replica rows carry sync metadata the model has no use for.
 /// - `get_person` matches by Slack user id ONLY: the Go fallback name search
 ///   reads the `users` table, which is not a replica slice. Documented gap.
+/// - `get_transcript` returns NO `transcript_text`: the meeting-transcript
+///   slice publishes a recap/notes/snippet projection, never the full text (see
+///   `SlicePublisher.sliceSQL`). It hands back the chapter breakdown and the
+///   200-char snippet instead, and both tool descriptions say plainly that the
+///   full text lives on the Mac — the same routing `MobileSystemPrompt` gives
+///   for raw Slack messages.
+/// - Slack-id filters also accept a BARE raw id (`"U0456"` for a stored
+///   `"1:U0456"`), which Go does not — the model rarely knows the account
+///   prefix; a namespaced query still pins one account.
 /// - Two write tools (`create_task`, `snooze_item`) extend the read-only MCP
 ///   set; they enqueue through `ActionOutbox` and land in the pending overlay
 ///   like any swipe action.
@@ -65,6 +74,8 @@ public struct ReplicaToolbox: Sendable {
         case "list_people": return try listPeople(args: Self.decodeArgs(input))
         case "get_person": return try getPerson(args: Self.decodeArgs(input))
         case "list_upcoming_events": return try listUpcomingEvents(args: Self.decodeArgs(input))
+        case "list_transcripts": return try listTranscripts(args: Self.decodeArgs(input))
+        case "get_transcript": return try getTranscript(args: Self.decodeArgs(input))
         case "create_task": return try await createTask(args: Self.decodeArgs(input))
         case "snooze_item": return try await snoozeItem(args: Self.decodeArgs(input))
         default: throw ToolError("unknown tool \"\(name)\"")
@@ -225,7 +236,7 @@ public struct ReplicaToolbox: Sendable {
         let matches = try store.fetchAll(Digest.self, kind: .digest)
             .filter { digest in
                 Self.matches(digest.type, args.type)
-                    && Self.matches(digest.channelID, args.channel)
+                    && Self.matchesSlackID(digest.channelID, args.channel)
                     && (sinceUnix <= 0 || digest.periodFrom >= sinceUnix)
             }
             .sorted(by: Self.digestOrder)
@@ -352,12 +363,17 @@ public struct ReplicaToolbox: Sendable {
     }
 
     private func getPerson(args: GetPersonArgs) throws -> String {
-        // Exact Slack user-id match only. The Go tool falls back to
+        // An empty query is a miss, not `matchesSlackID`'s "no filter" — that
+        // is list-tool semantics and here it would hand back a random card.
+        guard !args.query.isEmpty else { return "null" }
+        // Slack user-id match only. The Go tool falls back to
         // SearchUsersByName, but the users table is not a replica slice —
         // name lookup is a documented phone-side gap, and an unmatched query
         // is null (MCP mirror rule), not an error.
+        //
+        // A bare raw id can match cards from several accounts; the newest wins.
         let card = try store.fetchAll(PeopleCard.self, kind: .personCard)
-            .filter { $0.userID == args.query }
+            .filter { Self.matchesSlackID($0.userID, args.query) }
             .min(by: Self.personOrder)
         guard let card else { return "null" }
         return Self.encode(Self.personDetail(card))
@@ -443,6 +459,86 @@ public struct ReplicaToolbox: Sendable {
                 ]
             })
         ]
+    }
+
+    // MARK: - Meeting transcripts
+
+    private struct ListTranscriptsArgs: Decodable {
+        var eventID: String?
+        var from: String?
+        var to: String?
+        var limit: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case eventID = "event_id"
+            case from
+            case to
+            case limit
+        }
+    }
+
+    private func listTranscripts(args: ListTranscriptsArgs) throws -> String {
+        // Go parity (dateBound + firstError): both bounds are validated as
+        // YYYY-MM-DD and widened to the ISO8601 strings its SQL compares
+        // created_at against; an invalid `from` is reported before `to`.
+        let from = try Self.dateBound(args.from ?? "", "from", suffix: "T00:00:00Z")
+        let to = try Self.dateBound(args.to ?? "", "to", suffix: "T23:59:59Z")
+        let matches = try store.fetchAll(MeetingTranscript.self, kind: .meetingTranscript)
+            .filter { transcript in
+                Self.matches(transcript.eventID ?? "", args.eventID)
+                    && (from.isEmpty || transcript.createdAt >= from)
+                    && (to.isEmpty || transcript.createdAt <= to)
+            }
+            .sorted(by: Self.transcriptOrder)
+            .prefix(Self.listLimit(args.limit))
+        return Self.encode(.array(matches.map { Self.transcriptSummary($0, recap: $0.recap) }))
+    }
+
+    private func getTranscript(args: GetByIDArgs) throws -> String {
+        let transcript = try store.fetchAll(MeetingTranscript.self, kind: .meetingTranscript)
+            .first { $0.id == args.id }
+        guard let transcript else { return "null" }
+        return Self.encode(Self.transcriptDetail(transcript))
+    }
+
+    /// Go ListMeetingTranscripts ORDER BY created_at DESC, id DESC.
+    private static func transcriptOrder(_ a: MeetingTranscript, _ b: MeetingTranscript) -> Bool {
+        a.createdAt != b.createdAt ? a.createdAt > b.createdAt : a.id > b.id
+    }
+
+    /// The list shape, from the caller's already-decoded recap (Go's
+    /// `renderTranscriptRow` takes it the same way, so a detail render decodes
+    /// the recap once, not twice).
+    private static func transcriptSummary(
+        _ transcript: MeetingTranscript,
+        recap: MeetingTranscript.Recap?
+    ) -> WireJSON {
+        [
+            "id": .int(transcript.id),
+            "title": .string(transcript.title),
+            "event_id": optionalString(transcript.eventID),
+            "event_title": optionalString(transcript.eventTitle),
+            "duration_sec": .int(transcript.durationSec),
+            "created_at": .string(transcript.createdAt),
+            "summary": .string(recap?.summary ?? "")
+        ]
+    }
+
+    /// The detail shape, with the Go tool's `transcript_text` replaced by what
+    /// the phone actually holds: the chapter breakdown, the notes, and the
+    /// snippet (see the deviation note on the type).
+    private static func transcriptDetail(_ transcript: MeetingTranscript) -> WireJSON {
+        let recap = transcript.recap
+        return merged(transcriptSummary(transcript, recap: recap), [
+            "key_decisions": .array((recap?.keyDecisions ?? []).map(WireJSON.string)),
+            "action_items": .array((recap?.actionItems ?? []).map(WireJSON.string)),
+            "open_questions": .array((recap?.openQuestions ?? []).map(WireJSON.string)),
+            "chapters": parsedObject(transcript.chaptersJSON),
+            "notes_md": .string(transcript.notesMD),
+            "speakers": .array(transcript.decodedSpeakers.map(WireJSON.string)),
+            "snippet": .string(transcript.snippet),
+            "updated_at": .string(transcript.updatedAt)
+        ])
     }
 
     // MARK: - Write tools (queue through ActionOutbox)
@@ -539,6 +635,20 @@ public struct ReplicaToolbox: Sendable {
         return value == filter
     }
 
+    /// `matches` for a stored account-namespaced Slack id (`"1:U0456"`), which
+    /// also answers a bare raw query. A namespaced query is NEVER stripped —
+    /// `"2:U0456"` must not reach account 1's row — so widening only ever adds
+    /// matches, never crosses accounts. Precondition: the column holds Slack
+    /// ids only; `inbox_items.channel_id` is heterogeneous (Jira keys,
+    /// calendar event ids, the literal `"briefing"`, `gmail:`/`imap:`
+    /// prefixes), so extending this helper there is a deliberate decision, not
+    /// an assumption.
+    private static func matchesSlackID(_ value: String, _ filter: String?) -> Bool {
+        guard let filter, !filter.isEmpty else { return true }
+        if value == filter { return true }
+        return !SlackID.split(filter).isNamespaced && SlackID.split(value).rawID == filter
+    }
+
     /// Go `parseSince`: a date (YYYY-MM-DD, LOCAL midnight) or an RFC3339
     /// timestamp.
     private static func parseSince(_ raw: String) throws -> Date {
@@ -588,6 +698,47 @@ public struct ReplicaToolbox: Sendable {
         }
         return value
     }
+
+    /// `parsedJSON` for a nullable OBJECT column (chapters_json): empty or
+    /// unparseable → null, because `[]` would misreport an object as a list.
+    private static func parsedObject(_ raw: String) -> WireJSON {
+        guard !raw.isEmpty,
+              let value = try? JSONDecoder().decode(WireJSON.self, from: Data(raw.utf8)) else {
+            return .null
+        }
+        return value
+    }
+
+    /// A nullable TEXT column: absent → null, so "ad-hoc recording" is
+    /// distinguishable from an empty title (the `linked_target_id` precedent).
+    private static func optionalString(_ value: String?) -> WireJSON {
+        guard let value else { return .null }
+        return .string(value)
+    }
+
+    /// Mirrors Go's `dateBound`: validates a YYYY-MM-DD filter date and widens
+    /// it to the ISO8601 bound its SQL compares `created_at` against as a
+    /// string. "" passes through as "no filter".
+    private static func dateBound(_ date: String, _ field: String, suffix: String) throws -> String {
+        guard !date.isEmpty else { return "" }
+        guard dayOnly.date(from: date) != nil else {
+            throw ToolError("invalid \(field) date \"\(date)\": must be YYYY-MM-DD")
+        }
+        return date + suffix
+    }
+
+    /// Strict YYYY-MM-DD parser — non-lenient, so "2026-13-01" is rejected the
+    /// way Go's `time.Parse` rejects it (`parseSince`'s hand-rolled
+    /// DateComponents path would silently roll it into 2027).
+    private static let dayOnly: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter
+    }()
 
     private static func merged(_ base: WireJSON, _ extra: [String: WireJSON]) -> WireJSON {
         guard case .object(var dict) = base else { return base }
@@ -662,7 +813,10 @@ extension ReplicaToolbox {
             "type": "object",
             "properties": [
                 "type": ["type": "string", "description": "digest type: channel|daily|weekly"],
-                "channel": ["type": "string", "description": "channel id to filter by"],
+                "channel": [
+                    "type": "string",
+                    "description": "channel id: namespaced \"<account>:C…\" as returned, or a bare \"C…\" (matches every account)"
+                ],
                 "since": [
                     "type": "string",
                     "description": "only digests whose period starts on/after this date (YYYY-MM-DD or RFC3339)"
@@ -716,11 +870,15 @@ extension ReplicaToolbox {
 
     private static let getPersonTool = APITool(
         name: "get_person",
-        description: "Get the latest people card for a person by Slack user id (U…). "
-            + "Name search is not available on the phone — pass the exact user id.",
+        description: "Get the latest people card for a person by Slack user id, namespaced \"<account>:U…\" "
+            + "as other tools return it (a bare \"U…\" also matches, newest card across accounts). "
+            + "Name search is not available on the phone.",
         inputSchema: [
             "type": "object",
-            "properties": ["query": ["type": "string", "description": "Slack user id (U…)"]],
+            "properties": ["query": [
+                "type": "string",
+                "description": "Slack user id: \"<account>:U…\" (e.g. 1:U0456), or a bare \"U…\""
+            ]],
             "required": ["query"]
         ]
     )
@@ -734,6 +892,43 @@ extension ReplicaToolbox {
                 "hours": ["type": "integer", "description": "look-ahead window in hours, default 48"],
                 "limit": limitProperty
             ]
+        ]
+    )
+
+    private static let listTranscriptsTool = APITool(
+        name: "list_transcripts",
+        description: "List locally-recorded meeting transcripts (title, linked calendar event, "
+            + "recap summary), newest first. Use to find what was discussed/decided in a meeting; "
+            + "get_transcript adds the chapter breakdown and notes. The full transcript text is "
+            + "NOT on the phone — it stays on the user's Mac.",
+        inputSchema: [
+            "type": "object",
+            "properties": [
+                "event_id": ["type": "string", "description": "filter to one calendar event id"],
+                "from": [
+                    "type": "string",
+                    "description": "only transcripts recorded on/after this date (YYYY-MM-DD)"
+                ],
+                "to": [
+                    "type": "string",
+                    "description": "only transcripts recorded on/before this date (YYYY-MM-DD)"
+                ],
+                "limit": limitProperty
+            ]
+        ]
+    )
+
+    private static let getTranscriptTool = APITool(
+        name: "get_transcript",
+        description: "Fetch one meeting recording by id: the parsed recap (summary, key decisions, "
+            + "action items, open questions), the AI chapter breakdown, the user's notes, the "
+            + "speaker list, and a 200-character snippet of the transcript. The FULL transcript "
+            + "text is not synced to the phone, so you cannot quote the meeting verbatim or search "
+            + "its text — for that, tell the user to open the recording on their Mac.",
+        inputSchema: [
+            "type": "object",
+            "properties": ["id": ["type": "integer", "description": "transcript id from list_transcripts"]],
+            "required": ["id"]
         ]
     )
 
@@ -770,6 +965,7 @@ extension ReplicaToolbox {
         listTracksTool, getTrackTool,
         listPeopleTool, getPersonTool,
         listUpcomingEventsTool,
+        listTranscriptsTool, getTranscriptTool,
         createTaskTool, snoozeItemTool
     ]
 }

@@ -37,6 +37,8 @@ public enum MobileSystemPrompt {
     (list_tracks / get_track)
     - People cards: per-person communication and collaboration profiles (list_people / get_person)
     - Calendar: upcoming events with attendees (list_upcoming_events)
+    - Meeting recordings: recap, AI chapter breakdown, notes, and speaker list per recorded \
+    meeting — but NOT the transcript text (list_transcripts / get_transcript)
     - Two write tools: create_task and snooze_item
 
     """
@@ -47,6 +49,9 @@ public enum MobileSystemPrompt {
     - The phone has NO raw Slack messages. You cannot quote a message, search message text, or \
     answer "what exactly did X say" — for quote-level questions, tell the user to ask on their \
     Mac, where the desktop app has the full workspace.
+    - Meeting recordings sync WITHOUT their transcript text (only a 200-character snippet). The \
+    same rule applies: you cannot quote or search what was said in a meeting — route those asks \
+    to the Mac.
     - Write actions (create_task, snooze_item) are queued on the phone and take effect only when \
     the user's Mac next processes the queue. When you use one, say it is queued, not applied.
     - You have no internet access beyond this API: no Slack API, no web search.

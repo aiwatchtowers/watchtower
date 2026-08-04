@@ -237,7 +237,7 @@ final class DirectLoopTests: XCTestCase {
         await f.agent.drainAnswers(inSession: sessionID)
 
         // Wire side, call 1: the turn went out with the system prompt and the
-        // full 12-tool contract.
+        // full 14-tool contract.
         let first = try requestJSON(0)
         XCTAssertEqual(first["model"] as? String, "claude-sonnet-5")
         XCTAssertEqual(first["max_tokens"] as? Int, 8192)
@@ -250,6 +250,7 @@ final class DirectLoopTests: XCTestCase {
             "list_tracks", "get_track",
             "list_people", "get_person",
             "list_upcoming_events",
+            "list_transcripts", "get_transcript",
             "create_task", "snooze_item"
         ])
         let firstMessages = try messages(of: first)

@@ -75,7 +75,7 @@ final class LiveAPISmokeTests: XCTestCase {
 
     /// DirectAPIAgent (default clientFactory — the REAL AnthropicClient over
     /// the real network) answers a turn that forces a `list_targets` tool
-    /// round against a 2-row fixture replica: request format WITH the 12-tool
+    /// round against a 2-row fixture replica: request format WITH the 14-tool
     /// contract, live tool_use streaming, tool_result follow-up call, and the
     /// assembled answer must carry the count.
     func testLiveToolRoundExecutes() async throws {
