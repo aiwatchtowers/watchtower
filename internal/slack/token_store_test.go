@@ -52,6 +52,17 @@ func TestTokenStore_LoadMissing(t *testing.T) {
 	assert.Nil(t, loaded)
 }
 
+func TestTokenStore_LoadMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTokenStore(dir, 3)
+
+	require.NoError(t, os.WriteFile(store.Path(), []byte("not valid json"), 0o600))
+
+	loaded, err := store.Load()
+	assert.Error(t, err)
+	assert.Nil(t, loaded)
+}
+
 func TestTokenStore_Path(t *testing.T) {
 	dir := t.TempDir()
 	store := NewTokenStore(dir, 3)
