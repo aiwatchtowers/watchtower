@@ -228,7 +228,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 		links := item.SecondaryLinks
 		if len(links) > 3 {
 			if logger != nil {
-				logger.Printf("targets/extractor: target %q has %d secondary links, truncating to 3", item.Text, len(links))
+				logger.Printf("targets/extractor: target %.80q has %d secondary links, truncating to 3", item.Text, len(links))
 			}
 			links = links[:3]
 		}
@@ -282,7 +282,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 		subs := item.SubItems
 		if len(subs) > 15 {
 			if logger != nil {
-				logger.Printf("targets/extractor: target %q has %d sub_items, truncating to 15", item.Text, len(subs))
+				logger.Printf("targets/extractor: target %.80q has %d sub_items, truncating to 15", item.Text, len(subs))
 			}
 			subs = subs[:15]
 		}

@@ -1,7 +1,10 @@
 package targets
 
 import (
+	"bytes"
+	"fmt"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,4 +58,50 @@ func TestIsValidExternalRef(t *testing.T) {
 	for _, ref := range invalid {
 		assert.False(t, IsValidExternalRef(ref), "expected invalid: %q", ref)
 	}
+}
+
+// TestParseExtractResponse_TruncatesTargetTextInLogs pins that the cap-hit log
+// lines carry at most 80 runes of the model's target text. The text is derived
+// from private Slack/mail content and the daemon log is not a place for it —
+// the sibling tracks pipeline truncates the equivalent sites the same way.
+func TestParseExtractResponse_TruncatesTargetTextInLogs(t *testing.T) {
+	// A text long enough that the 80-rune cap lands between the two markers.
+	sensitive := "Acquisition of Northwind " + strings.Repeat("padding ", 12) + "DO-NOT-LOG-TAIL"
+	require.Greater(t, len([]rune(sensitive)), 80)
+
+	var subs []string
+	for i := 0; i < 16; i++ {
+		subs = append(subs, fmt.Sprintf(`{"text": "sub %d"}`, i))
+	}
+	raw := fmt.Sprintf(`{
+		"extracted": [
+			{
+				"text": %q,
+				"level": "week",
+				"secondary_links": [
+					{"external_ref": "jira:PROJ-1", "relation": "related"},
+					{"external_ref": "jira:PROJ-2", "relation": "related"},
+					{"external_ref": "jira:PROJ-3", "relation": "related"},
+					{"external_ref": "jira:PROJ-4", "relation": "related"}
+				],
+				"sub_items": [%s]
+			}
+		],
+		"omitted_count": 0,
+		"notes": ""
+	}`, sensitive, strings.Join(subs, ","))
+
+	var logBuf bytes.Buffer
+	_, err := parseExtractResponse(raw, nil, log.New(&logBuf, "", 0))
+	require.NoError(t, err)
+
+	logged := logBuf.String()
+	// Both cap-hit branches must have fired, or the test proves nothing.
+	require.Contains(t, logged, "secondary links, truncating to 3")
+	require.Contains(t, logged, "sub_items, truncating to 15")
+
+	assert.NotContains(t, logged, "DO-NOT-LOG-TAIL",
+		"target text beyond the 80-rune cap must not reach the log")
+	assert.Contains(t, logged, "Acquisition of Northwind",
+		"the truncated head must survive so the line stays diagnostic")
 }

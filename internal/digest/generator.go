@@ -177,7 +177,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 		return nil, fmt.Errorf("no result event found in claude CLI streaming output (%d events)", len(events))
 	}
 
-	return nil, fmt.Errorf("unexpected claude CLI output format: %.200s", string(trimmed))
+	return nil, fmt.Errorf("unexpected claude CLI output format: %s", claude.DescribeOutput(trimmed))
 }
 
 // Generate calls Claude CLI with the given prompt and returns the response text,
