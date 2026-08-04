@@ -238,6 +238,80 @@ final class RelayProcessorActionTests: XCTestCase {
         XCTAssertEqual(rows[3]["suggested_resolution"], "")
     }
 
+    // MARK: - Day plan items
+
+    /// Done cascades to the source task — but ONLY for a task-sourced item,
+    /// and the decision is made here from the row's own `source_type`, never
+    /// from anything the phone sends. Skip never cascades: the block is off
+    /// today's plan, the task itself is still open.
+    func testDayPlanItemDoneCascadesOnlyForTaskSourcedItems() async throws {
+        try await dbPool.write { db in
+            _ = try TestDatabase.insertTarget(db, text: "Ship the migration")  // id 1
+            let plan = try TestDatabase.insertDayPlan(db)
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: plan, sourceType: "task", sourceID: "1", title: "Ship the migration"
+            ) // id 1 → done, cascades
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: plan, sourceType: "focus", title: "Deep work"
+            ) // id 2 → done, no source task to cascade to
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: plan, sourceType: "task", sourceID: "1", title: "Second block on the same task"
+            ) // id 3 → skipped, must NOT touch the task
+        }
+        let names = [
+            try await enqueue(.dayPlanItemDone, id: "d1", entityID: "1"),
+            try await enqueue(.dayPlanItemDone, id: "d2", entityID: "2"),
+            try await enqueue(.dayPlanItemSkip, id: "d3", entityID: "3")
+        ]
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 3)
+        for name in names {
+            let payload = try await statusPayload(recordName: name)
+            XCTAssertEqual(payload?.status, .applied)
+        }
+        let statuses = try await dbPool.read { db -> [String] in
+            try String.fetchAll(db, sql: "SELECT status FROM day_plan_items ORDER BY id")
+        }
+        XCTAssertEqual(statuses, ["done", "done", "skipped"])
+        let taskStatus = try await dbPool.read { db -> String? in
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = 1")
+        }
+        XCTAssertEqual(taskStatus, "done", "a task-sourced block completing must close its task")
+    }
+
+    /// Skipping a task-sourced block leaves the task alone — the only way to
+    /// tell cascade-on-done from cascade-on-any-write.
+    func testDayPlanItemSkipDoesNotTouchTheSourceTask() async throws {
+        try await dbPool.write { db in
+            _ = try TestDatabase.insertTarget(db, text: "Ship the migration")
+            let plan = try TestDatabase.insertDayPlan(db)
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: plan, sourceType: "task", sourceID: "1", title: "Ship the migration"
+            )
+        }
+        try await enqueue(.dayPlanItemSkip, id: "d1", entityID: "1")
+
+        _ = try await processor.processOnce()
+
+        let taskStatus = try await dbPool.read { db -> String? in
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = 1")
+        }
+        XCTAssertNotEqual(taskStatus, "done")
+    }
+
+    func testDayPlanItemActionOnMissingRowFails() async throws {
+        let name = try await enqueue(.dayPlanItemDone, id: "d1", entityID: "404")
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 0)
+        let payload = try await statusPayload(recordName: name)
+        XCTAssertEqual(payload?.status, .failed)
+        XCTAssertEqual(payload?.errorMessage, "no row in day_plan_items with id 404")
+    }
+
     /// A situation action against a row that no longer exists fails with the
     /// echoed error instead of silently applying (same contract as inbox).
     func testSituationActionOnMissingRowFails() async throws {

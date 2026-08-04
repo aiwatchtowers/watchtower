@@ -8,11 +8,13 @@ struct DayPlanItemRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // Checkbox toggle
+            // Checkbox toggle. A skipped item ("not happening today" — set
+            // from the phone) reads as settled, not pending, and toggling it
+            // brings it back into the plan.
             Button(action: onToggle) {
-                Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                Image(systemName: statusIcon)
                     .font(.title3)
-                    .foregroundStyle(item.isDone ? .green : .secondary)
+                    .foregroundStyle(item.isDone ? Color.green : Color.secondary)
             }
             .buttonStyle(.plain)
 
@@ -22,8 +24,8 @@ struct DayPlanItemRow: View {
                     Text(item.title)
                         .font(.callout)
                         .fontWeight(.medium)
-                        .strikethrough(item.isDone, color: .secondary)
-                        .foregroundStyle(item.isDone ? .secondary : .primary)
+                        .strikethrough(item.isDone || item.isSkipped, color: .secondary)
+                        .foregroundStyle(item.isDone || item.isSkipped ? .secondary : .primary)
                         .lineLimit(2)
 
                     if item.isManual {
@@ -68,7 +70,9 @@ struct DayPlanItemRow: View {
 
             // Context menu trigger (3-dot)
             Menu {
-                if item.isDone {
+                if item.isSkipped {
+                    Button("Move Back to Pending") { onToggle() }
+                } else if item.isDone {
                     Button("Mark Pending") { onToggle() }
                 } else {
                     Button("Mark Done") { onToggle() }
@@ -91,6 +95,13 @@ struct DayPlanItemRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
+    }
+
+    /// Skipped is its own mark ("crossed off the day"), distinct from both the
+    /// done checkmark and the empty pending circle.
+    private var statusIcon: String {
+        if item.isDone { return "checkmark.circle.fill" }
+        return item.isSkipped ? "slash.circle" : "circle"
     }
 
     // MARK: - Source badge

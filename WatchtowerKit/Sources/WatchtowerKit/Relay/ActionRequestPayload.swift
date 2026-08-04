@@ -14,6 +14,8 @@ public enum ActionKind: String, Codable, CaseIterable {
     case situationDismiss = "situation_dismiss"
     case situationSnooze = "situation_snooze"
     case situationKeepOpen = "situation_keep_open"
+    case dayPlanItemDone = "day_plan_item_done"
+    case dayPlanItemSkip = "day_plan_item_skip"
 }
 
 public enum ActionStatus: String, Codable {

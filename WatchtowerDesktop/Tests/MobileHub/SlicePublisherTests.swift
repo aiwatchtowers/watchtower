@@ -52,6 +52,56 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertTrue(batch.deletedRecordNames.isEmpty)
     }
 
+    // MARK: - Day plan
+
+    /// Today's plan (and only today's) reaches the phone: yesterday's plan
+    /// falling out of the window is exactly what removes it there. Dates are
+    /// seeded RELATIVE to now in the LOCAL zone — the publisher's window uses
+    /// `date('now','localtime')`, matching `DayPlanQueries.todayDateString()`.
+    func testDayPlanSlicePublishesTodayOnly() async throws {
+        let today = Self.localDayString(daysFromNow: 0)
+        let yesterday = Self.localDayString(daysFromNow: -1)
+        try await dbPool.write { db in
+            let oldPlan = try TestDatabase.insertDayPlan(db, planDate: yesterday)
+            _ = try TestDatabase.insertDayPlanItem(db, dayPlanID: oldPlan, title: "yesterday's block")
+            let todayPlan = try TestDatabase.insertDayPlan(
+                db, planDate: today, hasConflicts: true, conflictSummary: "two blocks overlap at 14:00"
+            )
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: todayPlan, title: "Deep work",
+                startTime: "\(today)T09:30:00Z", endTime: "\(today)T11:00:00Z"
+            )
+            _ = try TestDatabase.insertDayPlanItem(
+                db, dayPlanID: todayPlan, kind: "backlog", title: "Answer in #ops", orderIndex: 1
+            )
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let batch = try await transport.changes(in: .data, since: nil)
+        let planNames = batch.changed.map(\.recordName).filter { $0.hasPrefix("day_plan") }
+        XCTAssertEqual(Set(planNames), ["day_plan-2", "day_plan_item-2", "day_plan_item-3"])
+
+        let plan = try await publishedRow(named: "day_plan-2")
+        XCTAssertEqual(plan["plan_date"] as String?, today)
+        XCTAssertEqual(plan["has_conflicts"] as Int?, 1)
+        XCTAssertEqual(plan["conflict_summary"] as String?, "two blocks overlap at 14:00")
+
+        let block = try await publishedRow(named: "day_plan_item-2")
+        XCTAssertEqual(block["title"] as String?, "Deep work")
+        XCTAssertEqual(block["kind"] as String?, "timeblock")
+    }
+
+    /// `yyyy-MM-dd` for `now + days` in the LOCAL zone (never a hardcoded
+    /// date — see the project's no-date-bombs rule).
+    private static func localDayString(daysFromNow days: Int) -> String {
+        let date = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt.string(from: date)
+    }
+
     func testSecondPublishWithNoDBChangePushesNothing() async throws {
         try await dbPool.write { db in
             try TestDatabase.insertTarget(db)

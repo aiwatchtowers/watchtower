@@ -28,6 +28,10 @@ final class TodayViewModel {
 struct TodayView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var model = TodayViewModel()
+    /// Owns the plan's observations and its action overlay; shared with the
+    /// full-plan screen so an in-flight done/skip survives navigating there
+    /// and back.
+    @State private var planModel = DayPlanViewModel()
 
     var body: some View {
         NavigationStack {
@@ -42,6 +46,20 @@ struct TodayView: View {
                             }
                         }
                     }
+                    // Above the calendar: the plan is what the user is meant
+                    // to DO today; the calendar below is what is already
+                    // fixed in it.
+                    if let message = planModel.actionErrorMessage {
+                        ActionErrorRow(message: message) { planModel.clearActionError() }
+                    }
+                    ForEach(planModel.failedActions) { failed in
+                        FailedActionBanner(
+                            failed: failed,
+                            onRetry: { Task { await planModel.retry(failed) } },
+                            onDismiss: { planModel.dismissFailure(failed) }
+                        )
+                    }
+                    DayPlanSection(model: planModel)
                     Section("Today's Calendar") {
                         if model.events.isEmpty {
                             Text("No events today").foregroundStyle(.secondary)
@@ -71,6 +89,9 @@ struct TodayView: View {
             }
             .navigationTitle("Today")
         }
-        .onAppear { model.start(store: env.store) }
+        .onAppear {
+            model.start(store: env.store)
+            planModel.start(store: env.store, outbox: env.outbox)
+        }
     }
 }
