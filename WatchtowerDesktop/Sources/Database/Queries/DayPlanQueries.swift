@@ -83,6 +83,19 @@ enum DayPlanQueries {
         }
     }
 
+    /// Mark a day plan item as skipped — "not happening today". Never cascades:
+    /// the block is dropped from the day, but its source task stays open.
+    static func markItemSkipped(_ db: Database, itemId: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE day_plan_items
+                SET status = 'skipped', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [itemId]
+        )
+    }
+
     // MARK: - Delete
 
     /// Delete a day plan item. Calendar items are silently skipped (defense-in-depth).

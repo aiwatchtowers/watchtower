@@ -66,7 +66,9 @@ struct DayPlanView: View {
                             calendarEventsByID: vm.calendarEventsByID,
                             onToggle: { item in
                                 Task {
-                                    if item.isDone {
+                                    // Skipped toggles back into the plan, not
+                                    // straight to done.
+                                    if item.isDone || item.isSkipped {
                                         await vm.markPending(item)
                                     } else {
                                         await vm.markDone(item)
@@ -111,7 +113,9 @@ struct DayPlanView: View {
                                 item: item,
                                 onToggle: {
                                     Task {
-                                        if item.isDone {
+                                        // Skipped toggles back into the plan, not
+                                        // straight to done.
+                                        if item.isDone || item.isSkipped {
                                             await vm.markPending(item)
                                         } else {
                                             await vm.markDone(item)

@@ -12,6 +12,7 @@
 		1CF8C51201A91A5F39CF0A4D /* RecordingDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C826A435973DBF359BE581 /* RecordingDetailView.swift */; };
 		203887C3A8BA29CDB67E6437 /* AgentSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32B5333500926289814ECEB0 /* AgentSettingsTests.swift */; };
 		26B0C3BAC81DD216E0083DD3 /* RecordingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB8A174EE607338A87C82C4 /* RecordingsView.swift */; };
+		2D2CFA0BA9C98C58F17E4451 /* DayPlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3F00F256559A237BEABEB3D /* DayPlanView.swift */; };
 		305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 916C33BA22DB5ABF55F50EBC /* InboxView.swift */; };
 		3213674D1C4C25C4869DD86D /* APIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B720CF5A08E47A7D2EFD7CA2 /* APIKeyStore.swift */; };
 		39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 153A4760ECC99126216F0221 /* NotificationCoordinator.swift */; };
@@ -20,6 +21,7 @@
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		582932A8E80F14FFC007035E /* BadgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 649E02AF149E7AB38609A747 /* BadgeTests.swift */; };
+		5DF0027FC9A7E20A6F8D53F8 /* DayPlanWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F68308D2132BB2F81532D3B4 /* DayPlanWiringTests.swift */; };
 		6E7B3F11235C858E711FE47D /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		6F4653DC7997A2F36BD7543F /* CreateTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */; };
 		8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EEE394524E80319F081C9E /* TodayView.swift */; };
@@ -80,6 +82,8 @@
 		DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncStatusFooter.swift; sourceTree = "<group>"; };
 		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
 		E0FBB330E7F18A51BAED059F /* TracksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TracksView.swift; sourceTree = "<group>"; };
+		E3F00F256559A237BEABEB3D /* DayPlanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayPlanView.swift; sourceTree = "<group>"; };
+		F68308D2132BB2F81532D3B4 /* DayPlanWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DayPlanWiringTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -122,6 +126,7 @@
 				32B5333500926289814ECEB0 /* AgentSettingsTests.swift */,
 				649E02AF149E7AB38609A747 /* BadgeTests.swift */,
 				D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */,
+				F68308D2132BB2F81532D3B4 /* DayPlanWiringTests.swift */,
 				996DA85353A5CF07B2C7BBDC /* NotificationTests.swift */,
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
@@ -193,6 +198,7 @@
 			children = (
 				0374C759543223E96F51029A /* ChatView.swift */,
 				6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */,
+				E3F00F256559A237BEABEB3D /* DayPlanView.swift */,
 				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
 				211E805C97CFC4405C7263AB /* QuickActions.swift */,
 				B7C826A435973DBF359BE581 /* RecordingDetailView.swift */,
@@ -306,6 +312,7 @@
 				C68C3B81124062F591CDCEDF /* Badge.swift in Sources */,
 				EB0C2BFE128E47FC5A80B2A0 /* ChatView.swift in Sources */,
 				6F4653DC7997A2F36BD7543F /* CreateTargetSheet.swift in Sources */,
+				2D2CFA0BA9C98C58F17E4451 /* DayPlanView.swift in Sources */,
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
 				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
 				39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */,
@@ -330,6 +337,7 @@
 				203887C3A8BA29CDB67E6437 /* AgentSettingsTests.swift in Sources */,
 				582932A8E80F14FFC007035E /* BadgeTests.swift in Sources */,
 				CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */,
+				5DF0027FC9A7E20A6F8D53F8 /* DayPlanWiringTests.swift in Sources */,
 				DF35C6CE39FC21D33BD51E82 /* NotificationTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,

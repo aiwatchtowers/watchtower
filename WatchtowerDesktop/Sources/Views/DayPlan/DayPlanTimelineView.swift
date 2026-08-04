@@ -243,9 +243,13 @@ struct DayPlanTimelineView: View {
 
             if !item.isReadOnly {
                 Button(action: { onToggle(item) }) {
-                    Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                    // Skipped blocks (set from the phone) wear their own mark;
+                    // see DayPlanItemRow.statusIcon.
+                    Image(systemName: item.isDone
+                        ? "checkmark.circle.fill"
+                        : (item.isSkipped ? "slash.circle" : "circle"))
                         .font(.title3)
-                        .foregroundStyle(item.isDone ? .green : .secondary)
+                        .foregroundStyle(item.isDone ? Color.green : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 4)

@@ -466,6 +466,21 @@ final class RelayProcessor: Sendable {
             let id = try entityInt(action)
             try requireRow(db, table: "situations", id: id)
             try SituationQueries.clearSuggestedResolution(db, id: id)
+        case .dayPlanItemDone:
+            let id = try entityInt(action)
+            try requireRow(db, table: "day_plan_items", id: id)
+            // Whether finishing the block also finishes its source task is
+            // decided HERE from the row's own source_type (the desktop's rule
+            // in DayPlanViewModel.markDone), never from a phone-supplied flag.
+            try DayPlanQueries.markItemDone(
+                db, itemId: Int64(id), cascadeToTask: try isTaskSourced(db, itemID: id)
+            )
+        case .dayPlanItemSkip:
+            let id = try entityInt(action)
+            try requireRow(db, table: "day_plan_items", id: id)
+            // Skipping does NOT cascade: the block is not happening today, but
+            // the underlying task is still open.
+            try DayPlanQueries.markItemSkipped(db, itemId: Int64(id))
         }
     }
 
@@ -500,6 +515,16 @@ final class RelayProcessor: Sendable {
             throw RelayActionError.unparseableDate(raw)
         }
         return date
+    }
+
+    /// True when the day-plan item came from a task, which is what makes its
+    /// completion cascade to that task.
+    private func isTaskSourced(_ db: Database, itemID: Int) throws -> Bool {
+        try String.fetchOne(
+            db,
+            sql: "SELECT source_type FROM day_plan_items WHERE id = ?",
+            arguments: [itemID]
+        ) == "task"
     }
 
     /// The mutation Queries are plain UPDATEs that succeed on 0 rows, so an

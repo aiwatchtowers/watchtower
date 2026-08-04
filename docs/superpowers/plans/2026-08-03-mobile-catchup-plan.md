@@ -18,8 +18,10 @@ Branch: `mobile-app` (integration). Worktree: `.claude/worktrees/mobile-app`.
    - One human in two workspaces = two `people_cards` rows; the UI must not assume uniqueness.
 2. **Meeting transcripts on the phone** — new slice kind for `meeting_transcripts` (recap + `notes_md` + snippet; the full transcript is large, likely relay-only like raw Slack) and a Recordings screen. Mirror `list_transcripts`/`get_transcript` into `ReplicaToolbox` for the BYOK agent.
 3. **Multi-account status in mobile Settings** — read `google_accounts` and `slack_accounts` (email/label, badges, status/error); hide data from disabled/removed accounts.
-4. **Per-situation Discuss chat** — desktop has it; relay chat already exists, needs `context_type='situation'` in the payload.
-5. **Day plan on Today** — `day_plans`/`day_plan_items` are in the schema; Today shows only briefing + calendar.
+4. ~~**Per-situation Discuss chat**~~ — done 2026-08-04 (`feature/mobile-situation-chat`). The phone's turn joins the DESKTOP's conversation for that situation, so the memory chat ingest sees phone-authored owner turns too. Relay-only (the on-device agent refuses a bound thread); desktop-authored turns are not synced down in v1.
+5. ~~**Day plan on Today**~~ — done 2026-08-04 (`feature/mobile-day-plan`, stacked on 4). Today's plan publishes as two slice kinds, with done/skip actions. Note: `day_plan_items.status='skipped'` was a dead state — that branch also taught the desktop to render it.
+
+Both are specced in `2026-08-04-mobile-situation-chat-day-plan.md`.
 
 ## Standing gotchas
 

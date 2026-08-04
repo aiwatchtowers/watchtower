@@ -95,6 +95,25 @@ final class SlicePublisher: Sendable {
             LEFT JOIN meeting_recaps r ON r.event_id = t.event_id
             ORDER BY t.created_at DESC, t.id DESC
             LIMIT 50
+            """,
+        // Today's plan only — the phone's Today screen is the only consumer,
+        // and yesterday's plan falling out of the window is what deletes it
+        // from the phone. `date('now','localtime')` matches the desktop's own
+        // `DayPlanQueries.todayDateString()` (local zone on both sides), so a
+        // plan generated late in the evening is not "tomorrow's" to one and
+        // "today's" to the other.
+        .dayPlan: """
+            SELECT * FROM day_plans
+            WHERE plan_date = date('now','localtime')
+            ORDER BY id DESC LIMIT 1
+            """,
+        .dayPlanItem: """
+            SELECT * FROM day_plan_items
+            WHERE day_plan_id IN (
+                SELECT id FROM day_plans
+                WHERE plan_date = date('now','localtime')
+                ORDER BY id DESC LIMIT 1
+            )
             """
     ]
 

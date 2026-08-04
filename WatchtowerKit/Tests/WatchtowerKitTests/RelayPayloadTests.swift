@@ -94,7 +94,8 @@ final class RelayPayloadTests: XCTestCase {
             [
                 "target_done", "target_snooze", "inbox_resolve", "inbox_dismiss", "inbox_snooze",
                 "task_create", "track_read",
-                "situation_done", "situation_dismiss", "situation_snooze", "situation_keep_open"
+                "situation_done", "situation_dismiss", "situation_snooze", "situation_keep_open",
+                "day_plan_item_done", "day_plan_item_skip"
             ]
         )
     }

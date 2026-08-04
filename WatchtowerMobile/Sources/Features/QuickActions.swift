@@ -143,6 +143,8 @@ enum PendingOverlay {
         case .targetSnooze, .inboxSnooze, .situationSnooze: return "snoozed"
         case .inboxResolve: return "resolved"
         case .inboxDismiss, .situationDismiss: return "dismissed"
+        case .dayPlanItemDone: return "done"
+        case .dayPlanItemSkip: return "skipped"
         case .taskCreate, .trackRead, .situationKeepOpen: return nil
         }
     }
@@ -157,6 +159,8 @@ enum PendingOverlay {
         case .taskCreate: return "Create task"
         case .trackRead: return "Mark read"
         case .situationKeepOpen: return "Keep open"
+        case .dayPlanItemDone: return "Mark done"
+        case .dayPlanItemSkip: return "Skip"
         }
     }
 
