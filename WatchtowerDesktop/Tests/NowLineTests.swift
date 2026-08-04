@@ -105,7 +105,8 @@ final class NowLineTests: XCTestCase {
 
     func testMalformedStartTimeCountsAsStarted() {
         // startDate falls back to Date.distantPast on an unparseable
-        // start_time, so the malformed event stays above the line.
+        // start_time, so the malformed event never itself becomes the
+        // insertion point (here, seeded first, it renders above the line).
         let events = [
             makeMalformedEvent(id: "broken"),
             makeEvent(id: "future", startsIn: 3600)
