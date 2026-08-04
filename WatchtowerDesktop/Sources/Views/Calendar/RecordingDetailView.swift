@@ -34,6 +34,11 @@ struct RecordingDetailView: View {
     @State private var attendees: [EventAttendee] = []
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
+    /// True when `recapContent` came from the event's `meeting_recaps` row and
+    /// that row was generated from a different recording's transcript (or
+    /// another source) than this one — the Recap tab needs a provenance note
+    /// so it doesn't read like AI hallucination.
+    @State private var recapFromOtherSource = false
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -141,6 +146,7 @@ struct RecordingDetailView: View {
             RecordingRecapTab(
                 transcript: transcript,
                 recapContent: recapContent,
+                recapFromOtherSource: recapFromOtherSource,
                 chapters: chapters,
                 hasSegments: utterances != nil,
                 onRetryRecap: retryRecap,
@@ -284,6 +290,25 @@ struct RecordingDetailView: View {
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
             recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
+            // An exact source-text match means the event recap WAS generated
+            // from this recording's own transcript; anything else (including
+            // no event recap at all, or a recap row whose recap_json failed
+            // to decode so `parsed` is nil and the tab falls back to this
+            // recording's own summary) is either this recording's own
+            // summary or none, so no note is needed. Gating on `parsed` (not
+            // just `recap != nil`) keeps the note tied to what is actually
+            // displayed.
+            //
+            // Known limitation: this exact-match formula does not survive a
+            // later utterance soft-delete, which rewrites `transcript_text`
+            // (see `setUtteranceDeleted`) — a recording's own recap can then
+            // read as "from a different source" even though nothing else
+            // changed. The caption's "different recording or source" wording
+            // keeps this only mildly over-cautious; a robust fix would need
+            // the originating transcript id persisted on `meeting_recaps`
+            // (out of scope here).
+            recapFromOtherSource = loaded.recap?.parsed != nil
+                && loaded.recap?.sourceText != loaded.row?.transcriptText
         } catch {
             errorMessage = error.localizedDescription
         }

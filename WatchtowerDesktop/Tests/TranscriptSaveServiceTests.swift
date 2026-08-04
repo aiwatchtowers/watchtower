@@ -247,6 +247,24 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertEqual(result.recapError, "boom")
         XCTAssertTrue(result.segmentsOK, "an older-CLI envelope without segments fields must decode as not-dropped")
         XCTAssertNil(result.segmentsError)
+        XCTAssertFalse(result.recapSkipped, "an envelope without recap_skipped must decode as not-skipped")
+    }
+
+    func test_saveDecodesRecapSkippedEnvelope() async throws {
+        let payload = """
+        {"transcript_id":7,"event_id":"","title":"Ad hoc","recap_ok":false,\
+        "recap_error":"transcript too short (12 chars): recap skipped","recap_skipped":true}
+        """
+        let fake = FakeCLIRunner(stdout: Data(payload.utf8))
+        let svc = TranscriptSaveService(runner: fake)
+
+        let result = try await svc.save(
+            transcriptText: "t", audioPath: "/tmp/a.wav", durationSec: 10,
+            eventID: nil, title: "Ad hoc", langStatsJSON: "{}"
+        )
+
+        XCTAssertFalse(result.recapOK)
+        XCTAssertTrue(result.recapSkipped)
     }
 
     func test_saveDecodesDroppedSegmentsEnvelope() async throws {
