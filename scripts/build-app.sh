@@ -37,15 +37,23 @@ else
 fi
 echo ""
 
-# Refuse to rebuild under a live Watchtower.app: rm -rf replaces the bundle
-# beneath the running process, breaking its Security.framework/TLS and
-# desyncing LaunchServices. Fixed-string match — worktree paths contain '+',
-# which pgrep -f / grep would read as a regex.
-RUNNING_APP=$(ps -axo command | grep -F "$APP_BUNDLE/Contents/MacOS/" | grep -v grep || true)
-if [ -n "$RUNNING_APP" ]; then
-    echo "ERROR: Watchtower is running from $APP_BUNDLE — quit it before rebuilding."
+# BEGIN live-process-guard (extracted verbatim by scripts/tests/test-build-app-guard.sh)
+# Refuse to rebuild while anything executes from build/: rm -rf replaces the
+# binary beneath the live process (app, bundled daemon, or standalone CLI),
+# breaking its Security.framework/TLS and desyncing LaunchServices.
+# ps snapshot is taken separately so set -e still aborts if ps itself fails
+# (the guard must fail closed), and so grep cannot match its own argv.
+# awk matches the executable path (first field) only — paths can contain
+# regex metacharacters ('+' in worktree names), so index()/literal prefix,
+# and an argv that merely mentions build/ must not trip the guard.
+PS_SNAPSHOT=$(ps -axo command=)
+RUNNING_FROM_BUILD=$(printf '%s\n' "$PS_SNAPSHOT" | awk -v p="$BUILD_DIR/" 'index($1, p) == 1')
+if [ -n "$RUNNING_FROM_BUILD" ]; then
+    echo "ERROR: a Watchtower process (app or daemon) is still running from $BUILD_DIR — quit it before rebuilding:" >&2
+    printf '%s\n' "$RUNNING_FROM_BUILD" >&2
     exit 1
 fi
+# END live-process-guard
 
 # Clean previous build
 rm -rf "$BUILD_DIR"
@@ -157,9 +165,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
-    <!-- Several copies of this bundle id can be registered in LaunchServices
-         (worktree builds, dmg-staging); without this a notification click can
-         launch a second instance from a non-running copy. -->
+    <!-- Layered with SingleInstanceGuard.swift: keep LaunchServices from launching a second instance of this bundle id. -->
     <key>LSMultipleInstancesProhibited</key>
     <true/>
     <key>NSAppTransportSecurity</key>

@@ -124,7 +124,10 @@ struct WatchtowerApp: App {
     private let notificationDelegate = NotificationDelegate()
 
     init() {
-        SingleInstanceGuard.terminateIfDuplicate()
+        // Stored-property initializers (`appState`, `notificationDelegate`) run BEFORE
+        // this guard, so they must stay side-effect-free — a duplicate instance
+        // constructs them and then exits. Heavy work belongs in `AppState.initialize()`.
+        SingleInstanceGuard.deferToRunningInstance()
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
         UNUserNotificationCenter.current().delegate = notificationDelegate
