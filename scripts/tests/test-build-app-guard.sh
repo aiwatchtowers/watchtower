@@ -15,9 +15,14 @@
 #   - clean process list (valid, degenerate)         → guard passes, exit 0
 #   - BUILD_DIR containing a literal '+'             → exit 1 (worktree paths
 #     carry regex metacharacters; the match must stay literal)
+#   - BUILD_DIR containing a space                   → exit 1 (the path must be
+#     matched whole-line, not as ps's first whitespace-delimited field)
 #   - build/ mentioned only in a later argv token    → guard passes (no false
 #     positive on e.g. an editor or tail watching the directory)
+#   - a sibling '<build>-other' directory            → guard passes (the trailing
+#     slash of the prefix is load-bearing)
 #   - `ps` itself failing                            → guard aborts (fail closed)
+#   - the guard still sits ABOVE `rm -rf "$BUILD_DIR"` in build-app.sh
 #   - Info.plist pins LSMultipleInstancesProhibited to <true/>
 set -euo pipefail
 
@@ -42,9 +47,16 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 SNIPPET="$WORK_DIR/snippet.sh"
-sed -n '/# BEGIN live-process-guard/,/# END live-process-guard/p' "$BUILD_APP" > "$SNIPPET"
+END_MARKER="# END live-process-guard"
+sed -n "/# BEGIN live-process-guard/,/$END_MARKER/p" "$BUILD_APP" > "$SNIPPET"
 if ! grep -q 'RUNNING_FROM_BUILD' "$SNIPPET"; then
     echo "FAIL: snippet extraction came up empty — markers moved in build-app.sh?"
+    exit 1
+fi
+# Without the END marker sed prints to EOF, so the "snippet" would be the whole
+# rest of build-app.sh — including the real build. Refuse to run that.
+if [ "$(tail -n 1 "$SNIPPET")" != "$END_MARKER" ]; then
+    echo "FAIL: extracted block does not end at '$END_MARKER' — END marker lost, extraction ran to EOF"
     exit 1
 fi
 
@@ -92,16 +104,16 @@ check() {
     esac
 }
 
-# The expectation helpers publish the run through globals rather than stdout:
-# a `$(...)` capture would run note_fail in a subshell and lose the failure.
+# The expectation helpers publish the run's output through a global rather than
+# stdout: a `$(...)` capture would run note_fail in a subshell and lose the
+# failure. The exit code stays local — callers assert on GUARD_OUT.
 GUARD_OUT=""
-GUARD_RC=0
 
 # expect_blocked <label> <build_dir>  — guard must exit non-zero.
 expect_blocked() {
-    GUARD_RC=0
-    GUARD_OUT=$(run_guard "$2" 2>&1) || GUARD_RC=$?
-    if [ "$GUARD_RC" -eq 0 ]; then
+    local rc=0
+    GUARD_OUT=$(run_guard "$2" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ]; then
         note_fail "$1 (guard let the build through)"
         printf '  got:\n%s\n' "$GUARD_OUT"
     else
@@ -111,10 +123,10 @@ expect_blocked() {
 
 # expect_passed <label> <build_dir>  — guard must fall through with exit 0.
 expect_passed() {
-    GUARD_RC=0
-    GUARD_OUT=$(run_guard "$2" 2>&1) || GUARD_RC=$?
-    if [ "$GUARD_RC" -ne 0 ]; then
-        note_fail "$1 (rc=$GUARD_RC)"
+    local rc=0
+    GUARD_OUT=$(run_guard "$2" 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        note_fail "$1 (rc=$rc)"
         printf '  got:\n%s\n' "$GUARD_OUT"
     else
         check "$1" "$GUARD_OUT" "GUARD=passed"
@@ -123,6 +135,7 @@ expect_passed() {
 
 BD="$WORK_DIR/project/build"
 PLUS_BD="$WORK_DIR/feature+x/build"
+SPACE_BD="$WORK_DIR/my worktree/build"
 
 # --- 1. The app bundle itself ------------------------------------------------
 make_ps_stub 0 <<EOF
@@ -146,7 +159,9 @@ make_ps_stub 0 <<EOF
 $BD/watchtower daemon --interval 5m
 EOF
 expect_blocked "standalone build/watchtower blocks the rebuild" "$BD"
-check "daemon error mentions the daemon case" "$GUARD_OUT" "daemon"
+# Assert on the seeded fixture path, not on the word "daemon" — that also appears
+# in the guard's static error text, so it could never fail.
+check "daemon error prints the matched command line" "$GUARD_OUT" "$BD/watchtower daemon"
 
 # --- 4. Clean process list (valid, degenerate input) -------------------------
 make_ps_stub 0 <<EOF
@@ -170,6 +185,15 @@ $WORK_DIR/featurexx/build/Watchtower.app/Contents/MacOS/WatchtowerDesktop
 EOF
 expect_passed "'+' is not treated as a repetition operator" "$PLUS_BD"
 
+# --- 5b. A space in BUILD_DIR must not truncate the match --------------------
+# ps output is whitespace-delimited, so matching only the first field would cut
+# this path at 'my' and let the rebuild proceed under the live app.
+make_ps_stub 0 <<EOF
+$SPACE_BD/Watchtower.app/Contents/MacOS/WatchtowerDesktop
+EOF
+expect_blocked "space in BUILD_DIR still matches (whole-line prefix)" "$SPACE_BD"
+check "space error prints the matched command line" "$GUARD_OUT" "$SPACE_BD/Watchtower.app"
+
 # --- 6. build/ only as a later argv token → no false positive ----------------
 make_ps_stub 0 <<EOF
 /usr/bin/tail -f $BD/watchtower.log
@@ -177,24 +201,36 @@ make_ps_stub 0 <<EOF
 EOF
 expect_passed "build/ mentioned in argv does not trip the guard" "$BD"
 
+# A sibling directory sharing the prefix is outside the blast radius: the
+# trailing slash on the compared prefix is what keeps it out.
+make_ps_stub 0 <<EOF
+${BD}-other/Watchtower.app/Contents/MacOS/WatchtowerDesktop
+EOF
+expect_passed "a sibling '<build>-other' directory does not trip the guard" "$BD"
+
 # --- 7. ps failure → fail closed --------------------------------------------
 make_ps_stub 1 <<EOF
 ps: some catastrophe
 EOF
-RC=0
-OUT=$(run_guard "$BD" 2>&1) || RC=$?
-if [ "$RC" -ne 0 ]; then
-    echo "ok: failing ps aborts the build (fail closed)"
-else
-    note_fail "failing ps aborts the build (got rc=0)"
-    printf '  got:\n%s\n' "$OUT"
-fi
-case "$OUT" in
+expect_blocked "failing ps aborts the build (fail closed)" "$BD"
+case "$GUARD_OUT" in
     *GUARD=passed*) note_fail "failing ps must not fall through to the build" ;;
     *) echo "ok: failing ps does not fall through" ;;
 esac
 
-# --- 8. Info.plist pin -------------------------------------------------------
+# --- 8. The guard must stay ABOVE the destructive step -----------------------
+# Below `rm -rf "$BUILD_DIR"` the guard is dead code: the damage is already done.
+GUARD_END_LINE=$(grep -n "^$END_MARKER\$" "$BUILD_APP" | head -n 1 | cut -d: -f1)
+RM_LINE=$(grep -n '^rm -rf "\$BUILD_DIR"$' "$BUILD_APP" | head -n 1 | cut -d: -f1)
+if [ -z "$GUARD_END_LINE" ] || [ -z "$RM_LINE" ]; then
+    note_fail "ordering check: could not locate the guard END marker ($GUARD_END_LINE) or rm -rf line ($RM_LINE)"
+elif [ "$GUARD_END_LINE" -lt "$RM_LINE" ]; then
+    echo "ok: guard (line $GUARD_END_LINE) runs before rm -rf \"\$BUILD_DIR\" (line $RM_LINE)"
+else
+    note_fail "guard END (line $GUARD_END_LINE) is not above rm -rf \"\$BUILD_DIR\" (line $RM_LINE)"
+fi
+
+# --- 9. Info.plist pin -------------------------------------------------------
 # Load-bearing flag with no runtime assertion elsewhere: LaunchServices reads it
 # from the shipped plist, so pin the heredoc text.
 if grep -A1 '<key>LSMultipleInstancesProhibited</key>' "$BUILD_APP" | grep -q '<true/>'; then

@@ -11,9 +11,12 @@ import AppKit
 /// A notification response that launched this duplicate is dropped — the survivor is
 /// only activated, not told why. Forwarding the payload to the running instance is a
 /// known follow-up.
+///
+/// Deferral goes only to a *certainly older live* peer: when the two launch dates are
+/// not comparable (one observable, the other not), this process keeps running.
 enum SingleInstanceGuard {
     /// One observed instance of the app, as seen through `NSRunningApplication`.
-    struct InstanceInfo: Equatable {
+    struct InstanceInfo {
         let pid: pid_t
         let launchDate: Date?
         let isTerminated: Bool
@@ -21,27 +24,25 @@ enum SingleInstanceGuard {
 
     /// The pid of the instance this process should defer to, or nil when it should keep running.
     ///
-    /// Deferral goes only to a strictly older *live* peer, under a strict total order:
-    /// an unobservable launch date counts as older than any observed one (the peer
-    /// started before we could see it), an earlier launch date is older, and ties break
-    /// on the lower pid. That total order is what makes two instances racing each other
-    /// agree on exactly one survivor.
+    /// A peer qualifies only when it is live and *certainly* older than this process;
+    /// an observability mismatch between the two launch dates is not evidence of age,
+    /// so it never triggers a deferral. Among qualifying peers the lowest pid wins, so
+    /// the choice is stable whichever side asks.
     static func instanceToDefer(candidates: [InstanceInfo], current: InstanceInfo) -> pid_t? {
         let peers = candidates.filter { $0.pid != current.pid && !$0.isTerminated }
-        guard let oldest = peers.min(by: isOlder), isOlder(oldest, current) else { return nil }
-        return oldest.pid
+        return peers.filter { certainlyOlder($0, than: current) }.map(\.pid).min()
     }
 
-    private static func isOlder(_ lhs: InstanceInfo, _ rhs: InstanceInfo) -> Bool {
-        switch (lhs.launchDate, rhs.launchDate) {
-        case let (left?, right?) where left != right:
-            return left < right
-        case (nil, .some):
-            return true
-        case (.some, nil):
-            return false
-        default:
-            return lhs.pid < rhs.pid
+    /// Comparable views only: a launch date visible on one side but not the other is an
+    /// observability artifact of a mid-launch peer, not evidence of age. On a mismatch we
+    /// never defer — two racing instances may then both survive briefly (a recoverable
+    /// duplicate, and the LSMultipleInstancesProhibited layer's case), but they can never
+    /// BOTH exit, which is the unrecoverable direction.
+    private static func certainlyOlder(_ peer: InstanceInfo, than current: InstanceInfo) -> Bool {
+        switch (peer.launchDate, current.launchDate) {
+        case let (p?, c?): return p < c || (p == c && peer.pid < current.pid)
+        case (nil, nil):   return peer.pid < current.pid
+        default:           return false
         }
     }
 
