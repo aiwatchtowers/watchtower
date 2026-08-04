@@ -235,6 +235,7 @@ jobs:
       # baseline.json holds ONE god-file count, so a source file crossing the
       # threshold is indistinguishable from a test file that grew with new
       # coverage — and re-snapshotting for the latter is accepted practice.
-      # This holds the SOURCE half to an explicit roster instead.
-      - name: Non-test god-file gate
+      # This holds the SOURCE half to an explicit roster instead, at a fan-out
+      # the codebase actually treats as a hub (see the script's header).
+      - name: Non-test hub-file gate
         run: scripts/god-files.sh
