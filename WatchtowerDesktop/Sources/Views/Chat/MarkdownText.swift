@@ -261,7 +261,10 @@ struct MarkdownText: View {
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
         if let attr = try? AttributedString(markdown: text, options: options) {
-            return Text(attr)
+            // Assistant replies are built from attacker-reachable content, so a
+            // link on a disallowed scheme loses its `.link` attribute and stays
+            // as plain visible text.
+            return Text(AllowedURLSchemes.strippingDisallowedLinks(attr))
         }
         return Text(text)
     }

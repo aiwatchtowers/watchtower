@@ -47,12 +47,15 @@ enum SlackTextParser {
         text = slackToMarkdown(text)
         text = autolinkBareURLs(text)
 
-        // Try parsing as Markdown; fall back to plain text
+        // Try parsing as Markdown; fall back to plain text.
+        // The markdown parser sets `.link` to whatever destination the message
+        // author wrote, scheme included, so a disallowed one is stripped of its
+        // link attribute here — the text still shows, the tap is gone.
         if let attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            return attributed
+            return AllowedURLSchemes.strippingDisallowedLinks(attributed)
         }
         return AttributedString(text)
     }
