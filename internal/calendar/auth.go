@@ -217,12 +217,15 @@ func exchangeCode(ctx context.Context, cfg GoogleOAuthConfig, code, redirectURI 
 }
 
 // GrantsScope reports whether the token's granted-scope list includes scope.
-// An empty Scope field means the response didn't say — treated as granted,
-// since Google omits it only in legacy/test responses, never to deny.
+// An empty Scope field is NOT a grant: RFC 6749 §5.1 lets a server omit the
+// field only when the granted scope equals the requested one, but "the user
+// ticked nothing" on Google's granular-consent screen is exactly a case where
+// an empty value is plausible — and access must rest on positive evidence,
+// not on the absence of a denial. Google's authorization_code responses do
+// carry the field, so this rejects no real grant; when it ever fires, failing
+// the login loudly beats recording a service as connected and letting it
+// surface later as unexplained 403s during sync.
 func (t *OAuthToken) GrantsScope(scope string) bool {
-	if t.Scope == "" {
-		return true
-	}
 	return slices.Contains(strings.Fields(t.Scope), scope)
 }
 

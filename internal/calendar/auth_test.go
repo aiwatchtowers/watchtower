@@ -195,10 +195,29 @@ func TestValidateGrantedScopes_PartialGrantPasses(t *testing.T) {
 	assert.False(t, tok.GrantsScope(gmailScope))
 }
 
-func TestGrantsScope_EmptyScopeMeansGranted(t *testing.T) {
+// TestGrantsScope_EmptyScopeIsNotGranted pins the fail-closed reading: an
+// absent or empty scope field is not evidence of a grant. Google's consent
+// screen lets a user continue having ticked nothing, so treating silence as
+// approval would record a service as connected and only surface as 403s
+// during sync.
+func TestGrantsScope_EmptyScopeIsNotGranted(t *testing.T) {
 	tok := &OAuthToken{}
+	assert.False(t, tok.GrantsScope(ScopeCalendarReadonly))
+
+	err := validateGrantedScopes(tok, []string{ScopeCalendarReadonly})
+	require.Error(t, err, "an empty scope must fail the login, not pass it")
+	assert.Contains(t, err.Error(), "did not grant any of the requested access")
+}
+
+// TestGrantsScope_FullGrantStillPasses is the counterpart: the ordinary path,
+// where Google echoes every requested scope, must remain untouched.
+func TestGrantsScope_FullGrantStillPasses(t *testing.T) {
+	gmailScope := "https://www.googleapis.com/auth/gmail.readonly"
+	tok := &OAuthToken{Scope: ScopeCalendarReadonly + " " + gmailScope}
+
 	assert.True(t, tok.GrantsScope(ScopeCalendarReadonly))
-	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly}))
+	assert.True(t, tok.GrantsScope(gmailScope))
+	require.NoError(t, validateGrantedScopes(tok, []string{ScopeCalendarReadonly, gmailScope}))
 }
 
 func TestRevoke_Success(t *testing.T) {
