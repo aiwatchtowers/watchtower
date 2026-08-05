@@ -2,6 +2,9 @@ import SwiftUI
 
 struct CalendarEventRow: View {
     let event: CalendarEvent
+    /// Number of recordings folded into this event by `MeetingListBuilder`;
+    /// 0 renders no badge.
+    var recordingCount: Int = 0
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -63,11 +66,18 @@ struct CalendarEventRow: View {
 
     @ViewBuilder
     private var trailingInfo: some View {
-        let count = event.parsedAttendees.count
-        if count > 0 {
-            Label("\(count)", systemImage: "person.2")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        VStack(alignment: .trailing, spacing: 4) {
+            let count = event.parsedAttendees.count
+            if count > 0 {
+                Label("\(count)", systemImage: "person.2")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if recordingCount > 0 {
+                Text("\(recordingCount) rec")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
