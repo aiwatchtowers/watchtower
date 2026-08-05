@@ -25,7 +25,7 @@ enum AllowedURLSchemes {
         "http",
         "mailto",
         "slack",
-        MemoryMarkdown.linkScheme,
+        MemoryMarkdown.linkScheme
     ]
 
     /// Whether `url` may be handed to the system. A URL with no scheme

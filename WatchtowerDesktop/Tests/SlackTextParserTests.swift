@@ -184,7 +184,7 @@ final class SlackTextParserTests: XCTestCase {
         let input = "[Q3 numbers](smb://198.51.100.7/share)"
         let result = SlackTextParser.toAttributedString(input)
         XCTAssertEqual(String(result.characters), "Q3 numbers")
-        XCTAssertNil(result.runs.first(where: { $0.link != nil }),
+        XCTAssertNil(result.runs.first { $0.link != nil },
                      "smb:// link must not stay clickable")
     }
 
@@ -192,7 +192,7 @@ final class SlackTextParserTests: XCTestCase {
         let input = "[Q3 numbers](https://example.com/q3)"
         let result = SlackTextParser.toAttributedString(input)
         XCTAssertEqual(String(result.characters), "Q3 numbers")
-        XCTAssertEqual(result.runs.first(where: { $0.link != nil })?.link?.absoluteString,
+        XCTAssertEqual(result.runs.first { $0.link != nil }?.link?.absoluteString,
                        "https://example.com/q3")
     }
 }

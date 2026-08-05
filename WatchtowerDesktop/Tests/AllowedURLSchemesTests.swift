@@ -18,9 +18,9 @@ final class AllowedURLSchemesTests: XCTestCase {
         XCTAssertTrue(AllowedURLSchemes.permits(URL(string: "slack://channel?team=T1&id=C1")!))
     }
 
-    func testAllowsMemoryWikiLink() {
-        let raw = MemoryMarkdown.linkURL(for: "situation:23")!
-        XCTAssertTrue(AllowedURLSchemes.permits(URL(string: raw)!))
+    func testAllowsMemoryWikiLink() throws {
+        let raw = try XCTUnwrap(MemoryMarkdown.linkURL(for: "situation:23"))
+        XCTAssertTrue(AllowedURLSchemes.permits(try XCTUnwrap(URL(string: raw))))
     }
 
     // MARK: - Rejected schemes
@@ -74,32 +74,32 @@ final class AllowedURLSchemesTests: XCTestCase {
 
     // MARK: - Link stripping
 
-    func testStrippingRemovesDisallowedLinkButKeepsText() {
-        let source = try! AttributedString(
+    func testStrippingRemovesDisallowedLinkButKeepsText() throws {
+        let source = try AttributedString(
             markdown: "[Q3 numbers](smb://198.51.100.7/share)",
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
-        XCTAssertNotNil(source.runs.first(where: { $0.link != nil }), "precondition: markdown set a link")
+        XCTAssertNotNil(source.runs.first { $0.link != nil }, "precondition: markdown set a link")
 
         let stripped = AllowedURLSchemes.strippingDisallowedLinks(source)
-        XCTAssertNil(stripped.runs.first(where: { $0.link != nil }))
+        XCTAssertNil(stripped.runs.first { $0.link != nil })
         XCTAssertEqual(String(stripped.characters), "Q3 numbers")
     }
 
-    func testStrippingKeepsAllowedLink() {
-        let source = try! AttributedString(
+    func testStrippingKeepsAllowedLink() throws {
+        let source = try AttributedString(
             markdown: "[Q3 numbers](https://example.com/q3)",
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
         let stripped = AllowedURLSchemes.strippingDisallowedLinks(source)
-        XCTAssertEqual(stripped.runs.first(where: { $0.link != nil })?.link?.absoluteString,
+        XCTAssertEqual(stripped.runs.first { $0.link != nil }?.link?.absoluteString,
                        "https://example.com/q3")
     }
 
     /// A mixed run must lose only the disallowed link — the neighbouring
     /// allowed one survives the same pass.
-    func testStrippingIsPerRun() {
-        let source = try! AttributedString(
+    func testStrippingIsPerRun() throws {
+        let source = try AttributedString(
             markdown: "[bad](smb://host/share) and [good](https://example.com)",
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )
