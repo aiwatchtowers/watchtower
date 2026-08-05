@@ -1,7 +1,9 @@
 import Foundation
 
 /// A notification response handed from a deferring duplicate instance to the one that
-/// survived the single-instance race, reduced to what `NotificationDelegate.route` reads.
+/// survived the single-instance race, reduced to what `NotificationDelegate.route` reads
+/// on its FORWARDED (navigation-only) branches — a strict subset of what a self-received
+/// response carries.
 struct ForwardedNotificationResponse: Codable {
     let actionID: String
     /// The routed subset of the push's `userInfo`, every value flattened to a string.
@@ -43,8 +45,7 @@ enum NotificationForwarding {
 
     /// The `userInfo` keys forwarded routing in `NotificationDelegate.route` actually
     /// reads — anything else in the push is dropped rather than shipped across the
-    /// process boundary. `eventId`/`conferenceUrl` are absent by design: navigation-only
-    /// routing never reads them, and a conference link may embed a passcode.
+    /// process boundary.
     static let routedKeys = ["type", digestIDKey]
 
     static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {
@@ -74,17 +75,21 @@ enum NotificationForwarding {
         return response
     }
 
-    /// Duplicate side. `deliverImmediately` bypasses receiver-side suspension and
-    /// coalescing; it is not an acknowledgement — once `post` returns, distnoted owns
-    /// the message and nothing here can observe whether it landed.
-    static func post(actionID: String, userInfo: [AnyHashable: Any]) {
-        guard let json = encode(actionID: actionID, userInfo: userInfo) else { return }
+    /// Duplicate side. Returns whether the response reached the bus at all — false
+    /// means it could not be encoded and nothing was posted. True is not delivery:
+    /// `deliverImmediately` bypasses receiver-side suspension and coalescing, but it
+    /// is not an acknowledgement — once `post` returns, distnoted owns the message and
+    /// nothing here can observe whether it landed.
+    @discardableResult
+    static func post(actionID: String, userInfo: [AnyHashable: Any]) -> Bool {
+        guard let json = encode(actionID: actionID, userInfo: userInfo) else { return false }
         DistributedNotificationCenter.default().postNotificationName(
             notificationName,
             object: json,
             userInfo: nil,
             deliverImmediately: true
         )
+        return true
     }
 
     /// Survivor side. The observer lives as long as the app does, so its token is

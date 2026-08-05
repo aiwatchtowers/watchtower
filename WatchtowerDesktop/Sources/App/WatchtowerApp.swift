@@ -38,14 +38,19 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let actionID = response.actionIdentifier
 
         if forwardMode {
-            NotificationForwarding.post(actionID: actionID, userInfo: userInfo)
+            let posted = NotificationForwarding.post(actionID: actionID, userInfo: userInfo)
             completionHandler()
-            // "posted", not "delivered": the distributed-notification transport
-            // gives no acknowledgement, so a survivor that never observes it is
-            // indistinguishable from here.
-            NSLog("NotificationDelegate: posted response for action %@ to the running instance; exiting", actionID)
-            // The response is what this process was waiting for — no reason to
-            // sit out the rest of the grace window.
+            if posted {
+                // "posted", not "delivered": the distributed-notification transport
+                // gives no acknowledgement, so a survivor that never observes it is
+                // indistinguishable from here.
+                NSLog("NotificationDelegate: posted response for action %@ to the running instance; exiting", actionID)
+            } else {
+                NSLog("NotificationDelegate: could not forward response for action %@; exiting", actionID)
+            }
+            // The response is what this process was waiting for — no reason to sit
+            // out the rest of the grace window, and no reason to stay on a failed
+            // hand-off either: the survivor is already running.
             exit(0)
         }
 
@@ -59,17 +64,37 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
     }
 
+    /// Survivor side of the forwarding bus: routes a response handed over by a
+    /// duplicate that deferred to this instance. The sole caller of `route` with
+    /// `forwarded: true` in the app, so the navigation-only policy is applied by
+    /// construction rather than by each call site remembering the flag.
+    @MainActor
+    static func routeForwarded(_ response: ForwardedNotificationResponse, appState: AppState?) async {
+        // Mirror the self-received path: the click was meant to surface the app.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        await route(
+            actionID: response.actionID,
+            userInfo: response.userInfo,
+            appState: appState,
+            forwarded: true
+        )
+    }
+
     /// The notification-response routing table. Shared by a response this instance
     /// received itself and one forwarded from a duplicate that deferred to it.
     ///
     /// `forwarded` marks the second case, and downgrades routing to navigation only:
     /// the forwarding bus is unauthenticated, so a response arriving on it may move the
-    /// UI but must never arm an action (start or stop a recording, open a link). The
-    /// gate is structural — it is read here, before any action-bearing branch — so it
-    /// cannot be re-opened by widening the wire payload.
+    /// UI but must never arm an action (start or stop a recording, open a link) —
+    /// navigation itself may still carry idempotent UI side effects, e.g.
+    /// `navigateToDigest` marking the digest read. The gate is read here, in each
+    /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
+    /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
-    /// The `userInfo` keys read below must stay in sync with
+    /// The keys the FORWARDED branches read (`type`, `digestId`) must stay in sync with
     /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
+    /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
+    /// those keys are absent by design from the forwarded payload and must stay so.
     /// `openURL` is an injectable seam threaded through to the meeting handler (the
     /// `JoinMeetingAction` convention), so tests can prove the forwarded path never opens.
     @MainActor
@@ -95,6 +120,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             appState?.selectedDestination = .digests
         case "meeting_reminder":
             if forwarded {
+                // Say it out loud rather than degrading in silence — the same
+                // principle as the dropped-Stop-intent log below.
+                NSLog(
+                    "NotificationDelegate: forwarded action %@ downgraded to navigation (unauthenticated bus)",
+                    actionID
+                )
                 appState?.selectedDestination = .calendar
             } else {
                 await handleMeetingReminderAction(
@@ -106,6 +137,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             }
         case "meeting_stop_recording":
             if forwarded || actionID != NotificationService.stopRecordingActionID {
+                if forwarded {
+                    NSLog(
+                        "NotificationDelegate: forwarded action %@ downgraded to navigation (unauthenticated bus)",
+                        actionID
+                    )
+                }
                 appState?.selectedDestination = .calendar
             } else if let appState {
                 await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
@@ -124,12 +161,13 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// auto-record setting); a plain tap navigates to the Calendar tab.
     /// `openURL` is an injectable seam (the `JoinMeetingAction` convention);
     /// internal rather than private so tests can drive the fallback branches.
+    /// It carries no default — `route` is the seam's entry point and owns the one.
     @MainActor
     static func handleMeetingReminderAction(
         actionID: String,
         userInfo: [AnyHashable: Any],
         appState: AppState?,
-        openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+        openURL: (URL) -> Bool
     ) async {
         guard actionID == NotificationService.joinActionID
             || actionID == NotificationService.joinRecordActionID else {
@@ -217,19 +255,14 @@ struct WatchtowerApp: App {
         NotificationForwarding.observe { response in
             NSLog("NotificationForwarding: received forwarded response for action %@", response.actionID)
             Task { @MainActor in
-                // Mirror the self-received path: the click was meant to surface the app.
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                await NotificationDelegate.route(
-                    actionID: response.actionID,
-                    userInfo: response.userInfo,
-                    appState: NotificationDelegate.sharedAppState,
-                    forwarded: true
+                await NotificationDelegate.routeForwarded(
+                    response,
+                    appState: NotificationDelegate.sharedAppState
                 )
             }
         }
     }
 
-    @ViewBuilder
     private var rootContent: some View {
         NavigationRoot()
             .frame(minWidth: 800, minHeight: 600)

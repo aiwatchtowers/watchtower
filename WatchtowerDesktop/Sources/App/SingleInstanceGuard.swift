@@ -9,9 +9,8 @@ import AppKit
 /// already running and exits.
 ///
 /// A notification response that launched this duplicate is not dropped: the duplicate
-/// stays alive headless for a short grace window (`WatchtowerApp.duplicateGraceWindow`,
-/// applied in `WatchtowerApp.init`) so the response can arrive and be forwarded to the
-/// survivor before it exits.
+/// stays alive headless for a short grace window (5 s, applied in `WatchtowerApp.init`)
+/// so the response can arrive and be forwarded to the survivor before it exits.
 ///
 /// Deferral goes only to a *certainly older live* peer: when the two launch dates are
 /// not comparable (one observable, the other not), this process keeps running.
