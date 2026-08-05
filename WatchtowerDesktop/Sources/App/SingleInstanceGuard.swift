@@ -8,9 +8,9 @@ import AppKit
 /// second instance. The newcomer therefore defers: it activates the instance that is
 /// already running and exits.
 ///
-/// A notification response that launched this duplicate is dropped — the survivor is
-/// only activated, not told why. Forwarding the payload to the running instance is a
-/// known follow-up.
+/// A notification response that launched this duplicate is not dropped: the duplicate
+/// stays alive headless for a two-second grace window (`WatchtowerApp.init`) so the
+/// response can arrive and be forwarded to the survivor before it exits.
 ///
 /// Deferral goes only to a *certainly older live* peer: when the two launch dates are
 /// not comparable (one observable, the other not), this process keeps running.
@@ -49,11 +49,14 @@ enum SingleInstanceGuard {
         }
     }
 
+    /// The live instance this process should defer to, or nil when it should keep
+    /// running. Deciding and acting are separate: what a duplicate does about it
+    /// (forward, then exit) belongs to `WatchtowerApp.init`.
     @MainActor
-    static func deferToRunningInstance() {
+    static func runningInstanceToDeferTo() -> NSRunningApplication? {
         // A bare `swift run` binary has no bundle identifier: without one there is
         // nothing to compare against, so it must never self-terminate.
-        guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { return }
+        guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else { return nil }
 
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
         let current = NSRunningApplication.current
@@ -63,10 +66,8 @@ enum SingleInstanceGuard {
                 InstanceInfo(pid: $0.processIdentifier, launchDate: $0.launchDate, isTerminated: $0.isTerminated)
             },
             current: InstanceInfo(pid: current.processIdentifier, launchDate: current.launchDate, isTerminated: false)
-        ), let other = running.first(where: { $0.processIdentifier == pid }) else { return }
+        ) else { return nil }
 
-        let activated = other.activate()
-        NSLog("SingleInstanceGuard: duplicate instance, deferring to pid %d (activate: %@); exiting", pid, activated ? "ok" : "denied")
-        exit(0)
+        return running.first { $0.processIdentifier == pid }
     }
 }
