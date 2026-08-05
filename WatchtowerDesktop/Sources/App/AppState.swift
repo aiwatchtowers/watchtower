@@ -315,7 +315,11 @@ final class AppState {
                 initMemory(dbPool: manager.dbPool)
                 initDashboard(dbManager: manager)
                 initSecretaryProfile(dbManager: manager)
-                initConnectedAccounts(dbPool: manager.dbPool)
+                initEmailAccounts(dbPool: manager.dbPool)
+                initCalendarAccounts(dbPool: manager.dbPool)
+                initGoogleAccounts(dbPool: manager.dbPool)
+                initSlackAccounts(dbPool: manager.dbPool)
+                initJiraAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 startMeetingReminders(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
@@ -338,9 +342,7 @@ final class AppState {
             }
         }
         // Check for updates in background (once per 24h)
-        Task {
-            await updateService.checkIfNeeded()
-        }
+        Task { await updateService.checkIfNeeded() }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
@@ -472,17 +474,6 @@ final class AppState {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         calendarAccountsViewModel = vm
-    }
-
-    /// Builds every connected-source account ViewModel in one place, so
-    /// `initialize()` stays a readable outline instead of growing a line per
-    /// source (email, calendar, Google, Slack, Jira — and whatever comes next).
-    func initConnectedAccounts(dbPool: DatabasePool) {
-        initEmailAccounts(dbPool: dbPool)
-        initCalendarAccounts(dbPool: dbPool)
-        initGoogleAccounts(dbPool: dbPool)
-        initSlackAccounts(dbPool: dbPool)
-        initJiraAccounts(dbPool: dbPool)
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {

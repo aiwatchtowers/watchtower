@@ -44,6 +44,17 @@ type DayPlanRunner interface {
 	AccumulatedUsage() (int, int, float64, int)
 }
 
+// jiraAccountSyncer is the slice of *jira.Syncer behaviour phaseJiraSync uses.
+// The phase keeps it as an interface (the DayPlanRunner precedent) because the
+// branch that matters — a revoked grant reaching the account row — is only
+// produced by a live 401 from Atlassian, which no offline test can stage
+// through the concrete Syncer.
+type jiraAccountSyncer interface {
+	Sync(ctx context.Context) (int, error)
+	AccountID() int64
+	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
+}
+
 // minPollInterval is the minimum allowed poll interval. Values below this
 // (e.g. nanosecond-scale durations from misconfigured integer values) are
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
@@ -70,7 +81,7 @@ type Daemon struct {
 	calDAVSyncers    []*caldav.Syncer
 	gmailSyncers     []*gmail.Syncer
 	imapSyncers      []*imap.Syncer
-	jiraSyncers      []*jira.Syncer
+	jiraSyncers      []jiraAccountSyncer
 	dayPlanPipeline  DayPlanRunner
 	lastJira         time.Time
 	lastPeople       time.Time // when people cards last ran (once per day)
@@ -187,7 +198,10 @@ func (d *Daemon) SetImapSyncers(s []*imap.Syncer) {
 // enabled jira_accounts row with a live token (mirrors SetCalendarSyncers/
 // SetGmailSyncers). An empty or nil slice disables the Jira sync phase.
 func (d *Daemon) SetJiraSyncers(s []*jira.Syncer) {
-	d.jiraSyncers = s
+	d.jiraSyncers = make([]jiraAccountSyncer, len(s))
+	for i, syncer := range s {
+		d.jiraSyncers[i] = syncer
+	}
 }
 
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
@@ -447,23 +461,25 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 
 // phaseJiraSync pulls Jira issues for every connected account respecting the
 // configured interval, then records board-analyzer LLM usage and reflects
-// target statuses. One account's sync error is logged and recorded on its
-// jira_accounts row only — it never blocks the other accounts (the
-// phaseCalendarSync/phaseGmailSync fan-out pattern).
+// target statuses. One account's sync error is logged and confined to that
+// account — it never blocks the other accounts, nor their target reflection
+// (the phaseCalendarSync/phaseGmailSync fan-out pattern).
 //
-// A pass records FAILURES only; it never writes a blanket "ok" back.
-// Syncer.Sync deliberately keeps going across ordinary per-project failures
-// (those are logged and skipped), so a nil error is not proof the account is
-// healthy — flipping the row to "ok" on it would paint a half-broken account
-// green in Settings and hide its Re-login button. Only the OAuth connect
-// (connectJiraAccount), which has just proven access, clears the state to "ok".
+// A pass never writes a blanket "ok" back. Syncer.Sync deliberately keeps going
+// across ordinary per-project failures (those are logged and skipped), so a nil
+// error is not proof the account is healthy — flipping the row to "ok" on it
+// would paint a half-broken account green in Settings and hide its Re-login
+// button. Only the OAuth connect (connectJiraAccount), which has just proven
+// access, clears the state to "ok".
 //
-// The failure that DOES reach here is the one that matters: jira.ErrAuthRevoked
-// aborts Sync outright, so a revoked grant lands on the account row and the
-// Settings Re-login button appears. Two guards on top of that: a cancelled
-// context means daemon shutdown rather than an auth problem and must never be
-// persisted as the account's auth error, and an already-failing account is not
-// re-stamped, so its status never churns.
+// The one failure a pass DOES persist is jira.ErrAuthRevoked: the grant itself
+// is gone, Sync aborts on it, and the row needs status "revoked" for the
+// Settings Re-login button to appear. Every other Sync error is logged and
+// left off the row entirely — a rate limit, a dropped connection or a failing
+// local read says nothing about the grant, and stamping it would strand a red
+// badge that only a re-login could clear. A cancelled context is daemon
+// shutdown, checked first for the same reason. Errors still accumulate into
+// firstErr, which is what the jira-boards pipeline_runs row records.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
 		return
@@ -478,30 +494,30 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	d.lastJira = time.Now()
 
 	var firstErr error
+	anyClean := false
 	for _, s := range d.jiraSyncers {
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
-			if ctx.Err() != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			switch {
+			case ctx.Err() != nil:
 				// Shutdown, not an auth problem — leave the account's state
 				// alone rather than stamping "context canceled" on it, which
 				// nothing but a re-login could clear.
 				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
-				if firstErr == nil {
-					firstErr = err
+			case errors.Is(err, jira.ErrAuthRevoked):
+				if d.db != nil {
+					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
+					}
 				}
-				continue
-			}
-			if d.db != nil {
-				if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "error", err.Error()); dbErr != nil {
-					d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
-				}
-			}
-			if firstErr == nil {
-				firstErr = err
 			}
 			continue
 		}
+		anyClean = true
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
 		}
@@ -523,8 +539,12 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		}
 	}
 
-	// Sync target statuses from Jira issues after a fully successful pass.
-	if firstErr == nil && d.db != nil {
+	// Reflect Jira issue statuses onto targets as soon as ANY account's pass
+	// came back clean. Gating on "no account failed" would let one broken
+	// account freeze every other account's targets in their stale status
+	// indefinitely — the same fan-out isolation the auth-state write follows.
+	// Zero syncers never reaches here (the early return above).
+	if anyClean && d.db != nil {
 		if synced, serr := d.db.SyncJiraTargetStatuses(); serr != nil {
 			d.logger.Printf("jira target status sync warning: %v", serr)
 		} else if synced > 0 {

@@ -8,8 +8,10 @@ import GRDB
 /// so the accounts list and any in-flight connect survive navigating away from
 /// Settings. Deliberate structural copy of `SlackAccountsViewModel` (house
 /// pattern) — `jira add`/`jira login` are browser-consent flows like
-/// `slack add`/`slack login` (Jira's CLI opens the browser itself, so no
-/// `--app-return` flag).
+/// `slack add`/`slack login`. Unlike those, the Jira CLI has no `--app-return`
+/// flag yet, so consent finishes in the system browser instead of returning
+/// into the app's WKWebView; closing that divergence is pending an owner
+/// decision.
 @MainActor
 @Observable
 final class JiraAccountsViewModel {

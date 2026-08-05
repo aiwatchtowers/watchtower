@@ -24,27 +24,41 @@ func (db *DB) UpsertJiraBoard(board JiraBoard) error {
 
 // UpdateJiraBoardProfile updates board analysis profile columns.
 func (db *DB) UpdateJiraBoardProfile(accountID int64, boardID int, rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt string) error {
-	_, err := db.Exec(`UPDATE jira_boards SET raw_columns_json=?, raw_config_json=?, llm_profile_json=?,
+	res, err := db.Exec(`UPDATE jira_boards SET raw_columns_json=?, raw_config_json=?, llm_profile_json=?,
 		workflow_summary=?, config_hash=?, profile_generated_at=? WHERE account_id=? AND id=?`,
 		rawColumnsJSON, rawConfigJSON, llmProfileJSON, workflowSummary, configHash, profileGeneratedAt, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("updating jira board profile %d: %w", boardID, err)
 	}
-	return nil
+	return requireBoardUpdated(res, accountID, boardID, "updating jira board profile")
 }
 
 // UpdateJiraBoardIssueCount sets issue_count from the actual number of issues in the database.
 func (db *DB) UpdateJiraBoardIssueCount(accountID int64, boardID int) error {
-	_, err := db.Exec(`UPDATE jira_boards SET issue_count = (SELECT COUNT(*) FROM jira_issues WHERE account_id = ? AND board_id = ?)
+	res, err := db.Exec(`UPDATE jira_boards SET issue_count = (SELECT COUNT(*) FROM jira_issues WHERE account_id = ? AND board_id = ?)
 		WHERE account_id = ? AND id = ?`, accountID, boardID, accountID, boardID)
-	return err
+	if err != nil {
+		return fmt.Errorf("updating jira board issue count %d: %w", boardID, err)
+	}
+	return requireBoardUpdated(res, accountID, boardID, "updating jira board issue count")
 }
 
 // UpdateJiraBoardUserOverrides updates user overrides for a board.
 func (db *DB) UpdateJiraBoardUserOverrides(accountID int64, boardID int, userOverridesJSON string) error {
-	_, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE account_id=? AND id=?`, userOverridesJSON, accountID, boardID)
+	res, err := db.Exec(`UPDATE jira_boards SET user_overrides_json=? WHERE account_id=? AND id=?`, userOverridesJSON, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("updating jira board user overrides %d: %w", boardID, err)
+	}
+	return requireBoardUpdated(res, accountID, boardID, "updating jira board user overrides")
+}
+
+// requireBoardUpdated turns a zero-row UPDATE into an error. Board ids are
+// site-local, so a (account_id, id) pair that matches nothing means the caller
+// aimed at the wrong site — silently writing nothing would leave the UI
+// showing stale data with no sign anything went wrong.
+func requireBoardUpdated(res sql.Result, accountID int64, boardID int, what string) error {
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%s: board %d not found for account %d", what, boardID, accountID)
 	}
 	return nil
 }
@@ -158,11 +172,11 @@ func (db *DB) GetJiraSelectedBoardsWithProfile(accountID int64) ([]JiraBoard, er
 
 // SetJiraBoardSelected updates the is_selected flag for a Jira board.
 func (db *DB) SetJiraBoardSelected(accountID int64, boardID int, selected bool) error {
-	_, err := db.Exec(`UPDATE jira_boards SET is_selected = ? WHERE account_id = ? AND id = ?`, selected, accountID, boardID)
+	res, err := db.Exec(`UPDATE jira_boards SET is_selected = ? WHERE account_id = ? AND id = ?`, selected, accountID, boardID)
 	if err != nil {
 		return fmt.Errorf("setting jira board %d selected=%v: %w", boardID, selected, err)
 	}
-	return nil
+	return requireBoardUpdated(res, accountID, boardID, "setting jira board selected")
 }
 
 // UpsertJiraIssue inserts or updates a Jira issue.

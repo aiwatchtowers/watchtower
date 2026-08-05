@@ -121,11 +121,15 @@ struct JiraKeyLinkBadgesView: View {
 
 // MARK: - Jira Config Helpers
 
+/// MainActor-confined: every reader is a view body / `.onAppear` or a
+/// MainActor ViewModel, and the pool is wired from `AppState.initJiraAccounts`,
+/// so the mutable `dbPool` needs no unchecked opt-out.
+@MainActor
 enum JiraConfigHelper {
     /// The app's DB pool, wired once from `AppState.initJiraAccounts` so
     /// `readSiteURL()` can resolve the site from `jira_accounts` (the config
     /// keys are frozen since multi-account, migration 00049).
-    nonisolated(unsafe) private static var dbPool: DatabasePool?
+    private static var dbPool: DatabasePool?
 
     static func configure(dbPool: DatabasePool) {
         self.dbPool = dbPool

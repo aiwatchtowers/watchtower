@@ -61,7 +61,10 @@ board/sprint-scoped readers gained an `accountID` parameter.
 - **Seed**: account #1 is minted when legacy Jira data exists (`jira_boards`
   or `jira_issues` non-empty, or the workspace watermark > 0), carrying the
   watermark; `cloud_id`/`site_url` stay empty for Go to fill (SQL can't see
-  config.yaml). Fresh DBs get no seed row.
+  config.yaml). Fresh DBs get no seed row. The seed INSERT also requires
+  `NOT EXISTS (SELECT 1 FROM jira_accounts)`, so re-applying the migration
+  after a down/up cycle on a populated install cannot mint a duplicate
+  account row.
 - `workspace.memory_jira_last_extracted_ts` dropped (moved to the account row).
 
 ### Legacy migration (two-phase, the Google/Slack pattern)
@@ -93,19 +96,43 @@ an account with no token or no cloud_id records only *its* `status`/`error`
 blocks the others. The daemon holds `jiraSyncers []*jira.Syncer`
 (`SetJiraSyncers`, replacing the singleton `SetJiraSyncer`); `phaseJiraSync`
 loops accounts, aggregates board-analyzer LLM usage into one `jira-boards`
-pipeline run, and runs `SyncJiraTargetStatuses` once after a fully clean pass.
-The global `cfg.Jira.Enabled` stays the daemon phase switch (the
-`cfg.Calendar.Enabled` precedent).
+pipeline run, and runs `SyncJiraTargetStatuses` once per phase as long as at
+least one account's pass returned nil (one broken site must not stop target
+statuses from reflecting the healthy ones). The global `cfg.Jira.Enabled` stays
+the daemon phase switch (the `cfg.Calendar.Enabled` precedent).
 
-**A sync pass records failures only — never a blanket "ok".** `Syncer.Sync`
+**Who writes `jira_accounts.status`, and what each writer may write:**
+
+- **The OAuth connect** (`connectJiraAccount`) is the *only* writer of `"ok"`.
+  It has just completed a consent + token exchange, so it is the one flow that
+  genuinely proves access.
+- **`wireJiraSyncers`** writes only `"error"`, and only for the two conditions
+  it can see at wiring time (no token file, no `cloud_id`), and only when the
+  row is currently `ok` — so an already-failing account's status never churns.
+- **`phaseJiraSync`** writes only `"revoked"`, and only for
+  `errors.Is(err, jira.ErrAuthRevoked)`. **Any other `Sync` error is
+  log-only** — it touches no auth state at all. A transient network blip would
+  otherwise stamp a sticky error that nothing but a re-login could clear, since
+  the phase has no authority to write `"ok"` back. A cancelled context
+  (shutdown) is likewise never persisted.
+
+**A sync pass therefore never writes a blanket "ok".** `Syncer.Sync`
 deliberately keeps going across projects: a per-project failure is logged and
 skipped, and `Sync` still returns nil, so a nil error is *not* proof the
 account is healthy. Writing "ok" back on it would paint a revoked account green
-in Settings and hide its Re-login button. Clearing the state therefore stays
-with the flows that genuinely prove access — `wireJiraSyncers` and the OAuth
-connect — matching Google/Slack, where auth state is likewise only ever
-recorded at wiring/connect time. Pinned by
+in Settings and hide its Re-login button. Pinned by
 `TestPhaseJiraSyncNeverPaintsAccountGreen`.
+
+This is a **deliberate divergence from the Google sibling**, not a copy of it:
+`gmail.Syncer`/`calendar.Syncer` *do* write `"ok"` back after a clean pass
+(`recordAuthResult(ctx, nil)` → `SetGoogleAccountAuthState(…, "ok")`), because
+their `Sync` fails outright on an auth problem. Jira's does not — it swallows
+per-project failures by design — so the same self-healing write would be a lie
+here. (Slack is not a counterexample either way: its sync wiring writes no auth
+state at all, only logs, so `"ok"` there likewise comes only from the connect
+flow.) The cost of the divergence is that a Jira account stuck in `error` is
+cleared only by a re-login — the button that state exists to surface, and the
+intended user action anyway.
 
 **`jira.ErrAuthRevoked` is what makes the per-account status surface real.**
 Review surfaced that without it the feature was near-inert: `Sync`'s only
@@ -117,8 +144,9 @@ simply never got the sentinel its two siblings already had
 same shape: `isInvalidGrant` on the token-endpoint body, plus a 401 that
 survives a successful token refresh. `Syncer.Sync` aborts the account's pass on
 it — every remaining project would fail identically — and `phaseJiraSync`
-records it on the `jira_accounts` row, which is what surfaces the Re-login
-button. Ordinary per-project failures are still logged and skipped.
+stamps `status='revoked'` on the `jira_accounts` row, which is what surfaces the
+Re-login button. Ordinary per-project failures are still logged and skipped, and
+a generic (non-revoked) `Sync` error is logged without touching the row.
 
 *Still true, and pre-existing:* `Syncer.Sync` sets `LastError`/`LastErrorAt` on
 its in-memory `JiraSyncState`, but `UpdateJiraSyncState` writes only
@@ -130,9 +158,8 @@ unchanged from before this branch. That now costs only per-project error
 
 `watchtower jira add [--label L] [--site URL] [--no-open]` (OAuth → new row +
 token file; rollback soft-removes a failed new row), `jira login
-[--account N]` (re-consent; prefers the account's existing site when the grant
-still reaches it; without `--account` operates on account #1, created on first
-use), `jira accounts`, `jira enable|disable <id>`, `jira remove <id>`
+[--account N]` (re-consent; prefers the account's existing site; without
+`--account` operates on account #1, created on first use), `jira accounts`, `jira enable|disable <id>`, `jira remove <id>`
 (**non-destructive**, the Slack precedent — token deleted, row marked
 removed, synced data kept), `jira logout` (legacy alias = remove account #1 —
 a deliberate behavior change: the old logout wiped every `jira_*` table via
@@ -140,13 +167,37 @@ a deliberate behavior change: the old logout wiped every `jira_*` table via
 `sync`, `fields`, `boards analyze/override`) take a persistent `--account`
 flag defaulting to the single enabled account.
 
+Three refusals keep the account fan-out honest rather than silently guessing:
+
+- **Re-login never silently retargets a site.** `selectJiraSite` auto-picks
+  only on `jira add` (no `preferCloudID`). On `jira login --account N`, if the
+  account's stored `cloud_id` is not among the resources the new grant returned,
+  the command errors out naming the expected site and the sites actually
+  granted — signing in with the wrong Atlassian identity must not quietly
+  re-point an existing account's row (and its synced data) at another site.
+- **The four dashboard commands reject `--account`** (`workload`, `blockers`,
+  `project-map`, `releases`): they aggregate every connected site by design, so
+  an `--account` that silently did nothing would misreport scope. The persistent
+  flag is refused with an explicit error there. (`releases` is genuinely
+  cross-site: its per-release issue lookup is scoped by the release's own
+  `account_id`.)
+- **Removed accounts refuse to be operated on.** `jira enable|disable <id>` and
+  an explicit `--account <id>` both error when the row's `status='removed'`;
+  Desktop's `JiraAccountQueries.fetchAll` filters those rows out, so a removed
+  site is neither a ghost row in Settings nor a target for a CLI action that
+  has no token to work with.
+
 ### Memory
 
 `runJiraIngest` loops enabled accounts (the `runGmailExtract` precedent), each
 against its own `jira_accounts.memory_jira_last_extracted_ts` — a shared
 watermark would let an account added later swallow the others' windows. The
 `jira:<KEY>` provenance scheme and `jiraissue:<KEY>` alias stay
-account-unscoped (documented v1 limitation mirroring `mail:`); `jira_issues`
+account-unscoped (documented v1 limitation mirroring `mail:`): if two sites
+share an issue key, both accounts' ingest passes address the *same* vault node,
+so each run rewrites it with the other site's issue — a flip-flop, not a
+first-writer-wins pin. Alias scoping is an open follow-up for the owner, not a
+decision this slice makes. `jira_issues`
 listing/init are account-scoped (`ListJiraIssuesForExtract(accountID, ...)`,
 `MaxJiraUpdatedUnix(accountID)`). MEM-12's `jiraResolver` is unchanged.
 
@@ -172,12 +223,18 @@ shelled out to `jira logout` — whose meaning changed here to "remove account
    `get_jira_issue`, `SyncJiraTargetStatuses`, key-detector links) — accepted,
    mirrors the Gmail `mail:` decision.
 2. **Desktop browse links resolve against the primary site** (first enabled
-   account) — per-issue site resolution via the row's `account_id` is a later
-   slice. Per-*board* actions are not affected: the Swift `JiraBoard` model
-   carries `accountID`, so the boards screen passes `--account` explicitly on
-   sync / select / analyze, and lists key on `rowID` (`account:id`) since raw
-   board ids collide across sites. `JiraQueries.fetchBoard` likewise queries
-   the bare id rather than the (now composite) primary key.
+   account): `JiraConfigHelper.readSiteURL()` returns one site URL for the
+   whole app, so an issue synced from a second site still opens under the
+   first site's host. Per-issue site resolution via the row's `account_id` is a
+   later slice. This is the *only* remaining Desktop deviation — per-*board*
+   actions are fully account-scoped: the Swift `JiraBoard` model carries
+   `accountID`, both boards screens pass `--account` on every CLI action they
+   run (select / deselect in `JiraBoardsSettingsView`, analyze and the three
+   override writes in `JiraBoardProfileView`), the boards refresh runs
+   `jira boards --account <id>` once per enabled account instead of a single
+   unscoped call, board lists key on `rowID` (`account:id`) since raw board ids
+   collide across sites, and `JiraQueries.fetchBoard(_:accountID:id:)` addresses
+   the composite primary key.
 3. **Concurrent OAuth flows** (loopback ports 18511-18520 are shared;
    sequential logins only).
 4. **Per-account sync schedules** — one `jira.sync_interval_mins` for all.

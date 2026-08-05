@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -32,14 +33,81 @@ func TestUpsertAndGetJiraBoards(t *testing.T) {
 func TestGetJiraSelectedBoards(t *testing.T) {
 	db := openTestDB(t)
 	SeedTestJiraAccount(t, db)
+	second := SeedTestJiraAccount(t, db)
 
 	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
 	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 2, Name: "B2", ProjectKey: "P2", IsSelected: false, SyncedAt: "now"}))
 	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 3, Name: "B3", ProjectKey: "P3", IsSelected: true, SyncedAt: "now"}))
+	// A second site's selected boards, including one that reuses a raw board id.
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: second, ID: 1, Name: "Other B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: second, ID: 9, Name: "Other B9", ProjectKey: "P9", IsSelected: true, SyncedAt: "now"}))
 
 	selected, err := db.GetJiraSelectedBoards(1)
 	require.NoError(t, err)
-	assert.Len(t, selected, 2)
+	require.Len(t, selected, 2)
+	for _, b := range selected {
+		assert.Equal(t, int64(1), b.AccountID, "GetJiraSelectedBoards must not leak another site's boards")
+	}
+
+	otherSelected, err := db.GetJiraSelectedBoards(second)
+	require.NoError(t, err)
+	require.Len(t, otherSelected, 2)
+	for _, b := range otherSelected {
+		assert.Equal(t, second, b.AccountID)
+	}
+
+	// The account-agnostic variant deliberately spans both sites.
+	all, err := db.ListSelectedJiraBoards()
+	require.NoError(t, err)
+	assert.Len(t, all, 4)
+}
+
+func TestGetJiraSelectedBoardsWithProfile_ScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second := SeedTestJiraAccount(t, db)
+
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 1, Name: "B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardProfile(1, 1, "raw", "cfg", "profile", "summary", "hash-1", "2026-04-01T00:00:00Z"))
+	// Same raw board id under the second site, also profiled.
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: second, ID: 1, Name: "Other B1", ProjectKey: "P1", IsSelected: true, SyncedAt: "now"}))
+	require.NoError(t, db.UpdateJiraBoardProfile(second, 1, "raw2", "cfg2", "profile2", "summary2", "hash-2", "2026-04-02T00:00:00Z"))
+
+	boards, err := db.GetJiraSelectedBoardsWithProfile(1)
+	require.NoError(t, err)
+	require.Len(t, boards, 1)
+	assert.Equal(t, int64(1), boards[0].AccountID)
+	assert.Equal(t, "hash-1", boards[0].ConfigHash, "config hashes must not cross sites")
+
+	otherBoards, err := db.GetJiraSelectedBoardsWithProfile(second)
+	require.NoError(t, err)
+	require.Len(t, otherBoards, 1)
+	assert.Equal(t, "hash-2", otherBoards[0].ConfigHash)
+}
+
+// TestJiraBoardWriters_WrongAccount pins CR4: the board writers scope their
+// UPDATE by (account_id, id), so aiming one at the wrong site matches no row.
+// That must surface as an error — a silent no-op leaves the caller believing
+// it persisted a selection or a freshly generated profile.
+func TestJiraBoardWriters_WrongAccount(t *testing.T) {
+	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second := SeedTestJiraAccount(t, db)
+
+	// The board exists under account #1 only.
+	require.NoError(t, db.UpsertJiraBoard(JiraBoard{AccountID: 1, ID: 7, Name: "B7", ProjectKey: "P7", SyncedAt: "now"}))
+
+	wantErr := fmt.Sprintf("board 7 not found for account %d", second)
+	assert.ErrorContains(t, db.SetJiraBoardSelected(second, 7, true), wantErr)
+	assert.ErrorContains(t, db.UpdateJiraBoardUserOverrides(second, 7, `{}`), wantErr)
+	assert.ErrorContains(t, db.UpdateJiraBoardProfile(second, 7, "raw", "cfg", "profile", "summary", "hash", "now"), wantErr)
+	assert.ErrorContains(t, db.UpdateJiraBoardIssueCount(second, 7), wantErr)
+
+	// Account #1's row is untouched and its own writes still succeed.
+	require.NoError(t, db.SetJiraBoardSelected(1, 7, true))
+	selected, err := db.GetJiraSelectedBoards(1)
+	require.NoError(t, err)
+	assert.Len(t, selected, 1)
 }
 
 func TestSetJiraBoardSelected(t *testing.T) {

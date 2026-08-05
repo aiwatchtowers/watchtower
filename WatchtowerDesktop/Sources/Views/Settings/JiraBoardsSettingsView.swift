@@ -379,54 +379,107 @@ struct JiraBoardsSettingsView: View {
         }
     }
 
+    /// Refreshes the board list from every connected site. `jira boards` is
+    /// account-scoped — without `--account` it errors out as soon as a second
+    /// site is connected — so this walks the enabled accounts one at a time and
+    /// reports whichever ones failed, leaving the sites that answered refreshed.
     private func fetchBoards() {
         guard let cliPath = Constants.findCLIPath() else {
             toggleError = "Watchtower CLI not found"
             return
         }
+        guard let db = appState.databaseManager else {
+            toggleError = "Database not available"
+            return
+        }
 
         isFetching = true
         toggleError = nil
+        let dbPool = db.dbPool
 
         Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = ["jira", "boards"]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
+            let enabled: [JiraAccount]
             do {
-                try process.run()
+                let all = try await dbPool.read { db in
+                    try JiraAccountQueries.fetchAll(db)
+                }
+                enabled = all.filter(\.enabled)
             } catch {
                 await MainActor.run {
                     isFetching = false
-                    toggleError = "Failed to launch CLI"
+                    toggleError = "Failed to load Jira accounts"
                 }
                 return
             }
 
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            guard !enabled.isEmpty else {
+                await MainActor.run {
+                    isFetching = false
+                    toggleError = "No connected Jira sites"
+                }
+                return
+            }
 
-            await MainActor.run {
-                isFetching = false
-                if process.terminationStatus != 0 {
-                    let stderr = String(
-                        data: stderrData, encoding: .utf8
-                    )?.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ) ?? ""
-                    toggleError = stderr.isEmpty
-                        ? "Failed to fetch boards"
-                        : String(stderr.prefix(200))
+            var failures: [String] = []
+            for account in enabled {
+                let failure = JiraBoardsCLI.run(
+                    cliPath: cliPath,
+                    arguments: [
+                        "jira", "--account", String(account.id), "boards"
+                    ],
+                    fallbackMessage: "failed to fetch boards"
+                )
+                if let failure {
+                    failures.append("\(account.displayName): \(failure)")
                 }
             }
+
+            let message = failures.isEmpty
+                ? nil
+                : String(failures.joined(separator: "; ").prefix(200))
+            await MainActor.run {
+                isFetching = false
+                toggleError = message
+            }
         }
+    }
+}
+
+/// The board screens' CLI seam — every `watchtower jira boards …` call this
+/// screen and `JiraBoardProfileView` fire goes through it, so none of them can
+/// drop an exit code again.
+enum JiraBoardsCLI {
+    /// Runs `arguments`, returning nil on success or a user-facing message on
+    /// failure (trimmed stderr, else `fallbackMessage`). stderr is drained
+    /// before `waitUntilExit` so a chatty failure can't fill the pipe buffer
+    /// and deadlock the wait.
+    static func run(
+        cliPath: String,
+        arguments: [String],
+        fallbackMessage: String
+    ) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = arguments
+        process.environment = Constants.resolvedEnvironment()
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+
+        let stderrPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return "Failed to launch CLI"
+        }
+
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        guard process.terminationStatus != 0 else { return nil }
+        let stderr = String(data: stderrData, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stderr.isEmpty ? fallbackMessage : String(stderr.prefix(200))
     }
 }

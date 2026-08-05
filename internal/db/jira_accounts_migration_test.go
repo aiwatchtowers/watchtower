@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/pressly/goose/v3"
@@ -167,6 +168,73 @@ func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 	if linkKey != "OPS-1" {
 		t.Errorf("jira_slack_links.issue_key = %q, want OPS-1 (unscoped, untouched)", linkKey)
 	}
+}
+
+// TestMigration00049_SeedIsIdempotent replays 00049's opening steps (create
+// jira_accounts, seed account #1) verbatim on a legacy DB. 00049 runs NO
+// TRANSACTION, so an apply that dies partway leaves no version row and goose
+// re-runs the whole file: CREATE TABLE IF NOT EXISTS is a harmless no-op, but
+// without the NOT EXISTS guard the seed INSERT fires a second time and mints
+// an empty ghost account that `jira accounts` then lists as a real site.
+func TestMigration00049_SeedIsIdempotent(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+		t.Fatalf("migrate to v48: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO jira_boards (id, name, project_key) VALUES (7, 'Board', 'OPS')`); err != nil {
+		t.Fatalf("seed jira_boards: %v", err)
+	}
+
+	create, insert := migration00049SeedStatements(t)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := raw.Exec(create); err != nil {
+			t.Fatalf("attempt %d, create jira_accounts: %v", attempt, err)
+		}
+		if _, err := raw.Exec(insert); err != nil {
+			t.Fatalf("attempt %d, seed INSERT: %v", attempt, err)
+		}
+	}
+
+	var n int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM jira_accounts`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("jira_accounts count after a replayed seed = %d, want 1 (the seed must be idempotent)", n)
+	}
+}
+
+// migration00049SeedStatements pulls the jira_accounts CREATE and the seed
+// INSERT out of the migration file itself, so the test can never drift from
+// the SQL that actually ships.
+func migration00049SeedStatements(t *testing.T) (create, insert string) {
+	t.Helper()
+	raw, err := migrationsFS.ReadFile("migrations/00049_jira_accounts.sql")
+	if err != nil {
+		t.Fatalf("reading migration 00049: %v", err)
+	}
+	return extractStatement(t, string(raw), "CREATE TABLE IF NOT EXISTS jira_accounts"),
+		extractStatement(t, string(raw), "INSERT INTO jira_accounts (cloud_id")
+}
+
+// extractStatement returns the statement starting at marker, up to and
+// including its terminating semicolon.
+func extractStatement(t *testing.T, sqlText, marker string) string {
+	t.Helper()
+	start := strings.Index(sqlText, marker)
+	if start < 0 {
+		t.Fatalf("statement %q not found in migration 00049", marker)
+	}
+	end := strings.Index(sqlText[start:], ";")
+	if end < 0 {
+		t.Fatalf("statement %q is unterminated in migration 00049", marker)
+	}
+	return sqlText[start : start+end+1]
 }
 
 // TestMigration00049DownUpCycle seeds the legacy shape at 00048, applies

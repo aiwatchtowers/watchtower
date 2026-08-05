@@ -26,6 +26,22 @@ final class JiraAccountQueriesTests: XCTestCase {
         XCTAssertEqual(accounts[1].id, Int(secondID))
     }
 
+    func testFetchAllSkipsRemovedAccounts() throws {
+        let pool = try makePool()
+        try pool.write { db in
+            // `jira remove` keeps the row so historical issues stay
+            // attributable — the account list must not show it anyway.
+            _ = try TestDatabase.insertJiraAccount(
+                db, siteName: "Gone", status: "removed", enabled: false
+            )
+            _ = try TestDatabase.insertJiraAccount(db, siteName: "Acme")
+        }
+
+        let accounts = try pool.read { db in try JiraAccountQueries.fetchAll(db) }
+
+        XCTAssertEqual(accounts.map(\.siteName), ["Acme"])
+    }
+
     func testFetchAllEmptyWhenNoAccounts() throws {
         let pool = try makePool()
         let accounts = try pool.read { db in try JiraAccountQueries.fetchAll(db) }

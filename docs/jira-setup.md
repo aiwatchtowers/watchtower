@@ -28,57 +28,86 @@ make app            # Desktop app (signed + notarized)
 
 Both `Makefile` and `scripts/build-app.sh` read `.env` and inject credentials via ldflags.
 
-## First-Time Login
+## First-Time Connect
 
 ```bash
-watchtower jira login       # Opens browser for OAuth
-watchtower jira status      # Verify connection
-watchtower jira boards      # List available boards
-watchtower jira select 1 2  # Select boards for sync
-watchtower jira users       # Show Jira-to-Slack user mapping
-watchtower jira sync        # Manual sync
+watchtower jira add               # Opens browser for OAuth, creates the site's account row
+watchtower jira accounts          # List connected sites and their ids
+watchtower jira status            # Verify connection
+watchtower jira boards            # List available boards
+watchtower jira boards select 1 2 # Select boards for sync
+watchtower jira users             # Show Jira-to-Slack user mapping
+watchtower jira sync              # Manual sync
 ```
 
-Or via Desktop App: Settings → Jira → Connect.
+Or via Desktop App: Settings → Jira Sites → Add Jira Site.
+
+`jira add` is the command for every site, including the first — run it again for
+each additional site, and each one gets its own account row, its own token, and
+its own sync watermarks. Two optional flags: `--label` names the site in the UI,
+and `--site https://<site>.atlassian.net` picks one non-interactively when your
+Atlassian account can reach several. `jira login` is kept as a legacy alias that
+operates on account #1 (creating it on first use); to re-consent a specific site
+later, use `jira login --account <id>` with an id from `jira accounts`.
+
+With more than one site connected, add `--account <id>` to the board, sync, and
+fields commands (they default to your single connected site). The cross-site
+dashboards — `workload`, `blockers`, `project-map`, `releases` — aggregate every
+connected site and reject `--account`.
 
 ## Token Details
 
 - **Access token**: 1 hour TTL, auto-refreshed
 - **Refresh token**: 90 days TTL, rotating (each refresh gives new refresh token)
-- Token file: `~/.local/share/watchtower/<workspace>/jira_token.json`
+- Token file: `~/.local/share/watchtower/<workspace>/jira_token_<account-id>.json`
+  — one per connected site (`jira_token_1.json`, `jira_token_2.json`, …). A
+  pre-multi-account install's `jira_token.json` is renamed to
+  `jira_token_1.json` automatically on the first run after upgrading.
 - As long as daemon runs regularly, tokens refresh indefinitely
 
 ## Transfer to Another Machine
 
-Copy these files to the target machine:
+The simplest path is to re-connect: run `watchtower jira add` on the target
+machine for each site. Nothing is lost — issues re-sync from Jira.
 
-### 1. Jira token
+To move an existing connection instead, remember that a token is only usable
+alongside its account row: the site identity (`cloud_id`, `site_url`) lives in
+the `jira_accounts` table in `watchtower.db`, **not** in `config.yaml` any more
+(the `jira.cloud_id` / `site_url` keys are a frozen legacy snapshot that nothing
+reads). So copy the token files **and** the database, or nothing at all.
+
+### 1. Jira tokens and the database
 
 ```bash
-# Source:
-~/.local/share/watchtower/<workspace>/jira_token.json
+# Source (one token file per connected site):
+~/.local/share/watchtower/<workspace>/jira_token_1.json
+~/.local/share/watchtower/<workspace>/jira_token_2.json
+~/.local/share/watchtower/<workspace>/watchtower.db
 
-# Copy to same path on target machine
+# Copy to the same paths on the target machine
 mkdir -p ~/.local/share/watchtower/<workspace>
-# paste jira_token.json there
+# paste the jira_token_<id>.json files and watchtower.db there
 ```
+
+Copy the token file for every id listed by `watchtower jira accounts` — an
+account whose token is missing is reported as needing a re-login and skipped by
+sync, without affecting the other sites.
 
 ### 2. Config (if not already set up)
 
-Ensure `~/.config/watchtower/config.yaml` contains:
+Ensure `~/.config/watchtower/config.yaml` enables the integration:
 
 ```yaml
 jira:
   enabled: true
-  cloud_id: "<your-cloud-id>"
-  site_url: "https://<your-site>.atlassian.net"
 ```
 
 ### 3. Verify
 
 ```bash
-watchtower jira status    # Should show "connected"
-watchtower jira boards    # Should list boards
+watchtower jira accounts               # Should list the transferred sites
+watchtower jira status                 # Per-site status: each should read "ok"
+watchtower jira boards --account <id>  # Should list that site's boards
 ```
 
 The access token may be expired — that's fine. On first API call, the refresh token will automatically obtain a new access token.
@@ -95,7 +124,12 @@ The access token may be expired — that's fine. On first API call, the refresh 
 - Or log in with the Atlassian account that created the app
 
 ### Token expired, no refresh
-- Re-run `watchtower jira login`
+- Re-consent the affected site: `watchtower jira login --account <id>` (ids from
+  `watchtower jira accounts`), or the **Re-login** button on its row in
+  Settings → Jira Sites
+- Sign in with the Atlassian identity that can reach that site: re-login refuses
+  to continue when the site is not among the ones the new grant covers, rather
+  than re-pointing the account at a different site
 - Ensure `offline_access` scope is in the authorization request
 
 ### Port 18511 busy

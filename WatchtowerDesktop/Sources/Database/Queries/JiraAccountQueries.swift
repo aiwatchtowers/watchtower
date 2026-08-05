@@ -1,10 +1,18 @@
 import GRDB
 
 enum JiraAccountQueries {
+    /// Every account still connected, oldest first. `jira remove` is
+    /// non-destructive — it keeps the row (status 'removed') so historical
+    /// issues stay attributable to their site — so a removed row must not
+    /// surface as a manageable account.
     static func fetchAll(_ db: Database) throws -> [JiraAccount] {
         try JiraAccount.fetchAll(
             db,
-            sql: "SELECT * FROM jira_accounts ORDER BY id ASC"
+            sql: """
+                SELECT * FROM jira_accounts
+                WHERE status != 'removed'
+                ORDER BY id ASC
+                """
         )
     }
 

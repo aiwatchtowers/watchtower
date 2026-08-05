@@ -14,8 +14,16 @@ import (
 // accessors target it). Idempotent so every fixture helper can call it.
 func seedJiraAccount(t *testing.T, d *db.DB) {
 	t.Helper()
-	if _, err := d.Exec(`INSERT OR IGNORE INTO jira_accounts (id, cloud_id) VALUES (1, 'c')`); err != nil {
-		t.Fatalf("seed jira account: %v", err)
+	seedJiraAccountRow(t, d, 1)
+}
+
+// seedJiraAccountRow ensures the jira_accounts row with the given id exists,
+// enabled and status 'ok' (the multi-account fixtures flip those afterwards).
+// Idempotent, and never clobbers a watermark already set on the row.
+func seedJiraAccountRow(t *testing.T, d *db.DB, id int64) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT OR IGNORE INTO jira_accounts (id, cloud_id) VALUES (?, 'c')`, id); err != nil {
+		t.Fatalf("seed jira account %d: %v", id, err)
 	}
 }
 
@@ -24,15 +32,46 @@ func seedJiraAccount(t *testing.T, d *db.DB) {
 // key/project_key for the project-seeding tests).
 func seedJiraIssueExtract(t *testing.T, d *db.DB, key, project, summary, desc, status, statusCat, resolvedAt, updatedAt, assigneeSlackID string) {
 	t.Helper()
-	seedJiraAccount(t, d)
+	seedJiraIssueExtractFor(t, d, 1, key, project, summary, desc, status, statusCat, resolvedAt, updatedAt, assigneeSlackID)
+}
+
+// seedJiraIssueExtractFor is seedJiraIssueExtract for an arbitrary account —
+// the multi-account fixture (each site carries its own issues and its own
+// watermark).
+func seedJiraIssueExtractFor(t *testing.T, d *db.DB, accountID int64, key, project, summary, desc, status, statusCat, resolvedAt, updatedAt, assigneeSlackID string) {
+	t.Helper()
+	seedJiraAccountRow(t, d, accountID)
 	_, err := d.Exec(`INSERT INTO jira_issues
 		(account_id, key, project_key, summary, description_text, issue_type, status, status_category,
 		 priority, assignee_display_name, assignee_slack_id, reporter_display_name, reporter_slack_id,
 		 sprint_name, epic_key, due_date, resolved_at, created_at, updated_at, synced_at, is_deleted)
-		VALUES (1,?,?,?,?, 'Task', ?, ?, 'Medium', 'Alice A', ?, 'Bob B', '', 'Sprint 9', '', '', ?, '2026-07-01T00:00:00.000+0000', ?, '2026-07-22T00:00:00Z', 0)`,
-		key, project, summary, desc, status, statusCat, assigneeSlackID, resolvedAt, updatedAt)
+		VALUES (?,?,?,?,?, 'Task', ?, ?, 'Medium', 'Alice A', ?, 'Bob B', '', 'Sprint 9', '', '', ?, '2026-07-01T00:00:00.000+0000', ?, '2026-07-22T00:00:00Z', 0)`,
+		accountID, key, project, summary, desc, status, statusCat, assigneeSlackID, resolvedAt, updatedAt)
 	if err != nil {
-		t.Fatalf("seed jira issue %s: %v", key, err)
+		t.Fatalf("seed jira issue %s (account %d): %v", key, accountID, err)
+	}
+}
+
+// mustParseJiraTime is the expected-watermark helper: the parsed unix seconds
+// of a seeded updated_at literal.
+func mustParseJiraTime(t *testing.T, raw string) int64 {
+	t.Helper()
+	u, ok := db.ParseJiraTime(raw)
+	if !ok {
+		t.Fatalf("fixture time %q failed to parse", raw)
+	}
+	return u
+}
+
+// assertJiraWatermark fails unless the account's watermark equals want.
+func assertJiraWatermark(t *testing.T, d *db.DB, accountID int64, want float64) {
+	t.Helper()
+	wm, err := d.MemoryJiraWatermark(accountID)
+	if err != nil {
+		t.Fatalf("read watermark for account %d: %v", accountID, err)
+	}
+	if wm != want {
+		t.Errorf("account %d watermark = %v, want %v", accountID, wm, want)
 	}
 }
 
@@ -421,5 +460,202 @@ func TestRunJiraIngestDarkByDefault(t *testing.T) {
 	wm, _ := d.MemoryJiraWatermark(1)
 	if wm != 0 {
 		t.Errorf("dark run moved the jira watermark to %v", wm)
+	}
+}
+
+// jiraStepStatuses returns the recorded jira-ingest step statuses keyed by step
+// number (the per-account loop records one step row per processed account, at
+// stepOffset+recorded+1).
+func jiraStepStatuses(steps []db.PipelineStep) map[int]string {
+	out := map[int]string{}
+	for _, s := range steps {
+		if s.ChannelName == "jira-ingest" {
+			out[s.Step] = s.Status
+		}
+	}
+	return out
+}
+
+// TestRunJiraIngestPerAccountWatermarks: two enabled sites are BOTH processed
+// in one run, each from its own watermark, and each advances only to its OWN
+// newest updated_at. Fails if the loop were reverted to a single account (the
+// second site's episodes never appear) or if the watermark were shared/
+// mis-scoped (one site would swallow the other's window).
+func TestRunJiraIngestPerAccountWatermarks(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedJiraAccountRow(t, d, 1)
+	seedJiraAccountRow(t, d, 2)
+
+	const (
+		acct1Older = "2026-07-22T09:00:00.000+0000"
+		acct1Newer = "2026-07-22T10:00:00.000+0000"
+		acct2Newer = "2026-07-23T11:00:00.000+0000"
+	)
+	seedJiraIssueExtractFor(t, d, 1, "CEX-1", "CEX", "first site, older", "", "To Do", "todo", "", acct1Older, "")
+	seedJiraIssueExtractFor(t, d, 1, "CEX-2", "CEX", "first site, newer", "", "To Do", "todo", "", acct1Newer, "")
+	seedJiraIssueExtractFor(t, d, 2, "OPS-1", "OPS", "second site", "", "To Do", "todo", "", acct2Newer, "")
+	for _, id := range []int64{1, 2} {
+		if err := d.SetMemoryJiraWatermark(id, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
+	runID, err := d.CreatePipelineRun("memory", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stats RunStats
+	steps, err := p.runJiraIngest(runID, 0, &stats)
+	if err != nil {
+		t.Fatalf("runJiraIngest: %v", err)
+	}
+	if steps != 2 {
+		t.Errorf("steps = %d, want 2 (one per enabled account)", steps)
+	}
+	if stats.JiraEpisodes != 3 {
+		t.Errorf("JiraEpisodes = %d, want 3 (2 from account 1 + 1 from account 2)", stats.JiraEpisodes)
+	}
+	for _, alias := range []string{"jiraissue:CEX-1", "jiraissue:CEX-2", "jiraissue:OPS-1"} {
+		if _, lerr := d.LookupMemoryAlias(alias); lerr != nil {
+			t.Errorf("alias %s not built: %v", alias, lerr)
+		}
+	}
+
+	// Each watermark landed on its OWN account's newest updated_at — account 1
+	// never sees account 2's newer timestamp, and vice versa.
+	assertJiraWatermark(t, d, 1, float64(mustParseJiraTime(t, acct1Newer)))
+	assertJiraWatermark(t, d, 2, float64(mustParseJiraTime(t, acct2Newer)))
+
+	recorded, err := d.GetPipelineSteps(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := jiraStepStatuses(recorded); len(got) != 2 || got[1] != "done" || got[2] != "done" {
+		t.Errorf("jira-ingest steps = %v, want two done steps numbered 1 and 2", got)
+	}
+
+	// Steady state: nothing above either watermark → no step rows at all.
+	steps, err = p.runJiraIngest(runID, 0, &stats)
+	if err != nil || steps != 0 {
+		t.Errorf("steady state = steps %d, err %v; want 0, nil", steps, err)
+	}
+}
+
+// TestRunJiraIngestSkipsDisabledAndRemovedAccounts: only enabled, non-removed
+// sites are ingested. A disabled site's issues mint no episode and its
+// watermark is untouched — a disabled account can never advance or freeze on
+// its own, and a removed one is equally invisible.
+func TestRunJiraIngestSkipsDisabledAndRemovedAccounts(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	const updated = "2026-07-22T10:00:00.000+0000"
+	seedJiraIssueExtractFor(t, d, 1, "CEX-1", "CEX", "enabled site", "", "To Do", "todo", "", updated, "")
+	seedJiraIssueExtractFor(t, d, 2, "OPS-1", "OPS", "disabled site", "", "To Do", "todo", "", updated, "")
+	seedJiraIssueExtractFor(t, d, 3, "REM-1", "REM", "removed site", "", "To Do", "todo", "", updated, "")
+	for _, id := range []int64{1, 2, 3} {
+		if err := d.SetMemoryJiraWatermark(id, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec(`UPDATE jira_accounts SET enabled = 0 WHERE id = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE jira_accounts SET status = 'removed' WHERE id = 3`); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
+	var stats RunStats
+	steps, err := p.runJiraIngest(1, 0, &stats)
+	if err != nil {
+		t.Fatalf("runJiraIngest: %v", err)
+	}
+	if steps != 1 {
+		t.Errorf("steps = %d, want 1 (only the enabled account is processed)", steps)
+	}
+	if stats.JiraEpisodes != 1 {
+		t.Errorf("JiraEpisodes = %d, want 1", stats.JiraEpisodes)
+	}
+	if _, err := d.LookupMemoryAlias("jiraissue:CEX-1"); err != nil {
+		t.Errorf("enabled account's episode not built: %v", err)
+	}
+	for _, alias := range []string{"jiraissue:OPS-1", "jiraissue:REM-1"} {
+		if _, err := d.LookupMemoryAlias(alias); err == nil {
+			t.Errorf("skipped account's issue was ingested (%s)", alias)
+		}
+	}
+	assertJiraWatermark(t, d, 1, float64(mustParseJiraTime(t, updated)))
+	assertJiraWatermark(t, d, 2, 1)
+	assertJiraWatermark(t, d, 3, 1)
+}
+
+// TestRunJiraIngestAccountFailureIsolation: one site's step failing hard (here
+// account 1's no-backfill initialization, whose watermark write a trigger
+// fails) must not stop the loop — account 2 is still ingested and still
+// advances ITS watermark, while account 1's stays frozen. Fails if the loop
+// returned on the first account error, or if the watermark write were not
+// account-scoped (the trigger would then also kill account 2's advance).
+func TestRunJiraIngestAccountFailureIsolation(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	const (
+		acct1Updated = "2026-07-22T10:00:00.000+0000"
+		acct2Updated = "2026-07-23T11:00:00.000+0000"
+	)
+	// Account 1 stays at watermark 0 → the init path, whose only write is the
+	// watermark set the trigger below fails.
+	seedJiraIssueExtractFor(t, d, 1, "CEX-1", "CEX", "first site", "", "To Do", "todo", "", acct1Updated, "")
+	seedJiraIssueExtractFor(t, d, 2, "OPS-1", "OPS", "second site", "", "To Do", "todo", "", acct2Updated, "")
+	if err := d.SetMemoryJiraWatermark(2, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`CREATE TRIGGER jira_account1_watermark_write_fails
+		BEFORE UPDATE OF memory_jira_last_extracted_ts ON jira_accounts
+		WHEN NEW.id = 1
+		BEGIN SELECT RAISE(FAIL, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewPipeline(d, v, noCallGen(t), pipelineTestConfig(), t.Logf)
+	runID, err := d.CreatePipelineRun("memory", "test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stats RunStats
+	steps, err := p.runJiraIngest(runID, 0, &stats)
+	if err != nil {
+		t.Fatalf("runJiraIngest: %v (one account's failure is logged and recorded, never returned)", err)
+	}
+	if steps != 2 {
+		t.Errorf("steps = %d, want 2 (the failed account still records its step)", steps)
+	}
+	if stats.JiraIssuesFailed == 0 {
+		t.Error("failed counter not bumped for the failing account")
+	}
+
+	// Account 1 froze: watermark still 0, nothing built from its issue.
+	assertJiraWatermark(t, d, 1, 0)
+	if _, err := d.LookupMemoryAlias("jiraissue:CEX-1"); err == nil {
+		t.Error("failing account built an episode")
+	}
+	// Account 2 was still processed and advanced independently.
+	if _, err := d.LookupMemoryAlias("jiraissue:OPS-1"); err != nil {
+		t.Errorf("second account not processed after the first failed: %v", err)
+	}
+	if stats.JiraEpisodes != 1 {
+		t.Errorf("JiraEpisodes = %d, want 1 (account 2's episode)", stats.JiraEpisodes)
+	}
+	assertJiraWatermark(t, d, 2, float64(mustParseJiraTime(t, acct2Updated)))
+
+	recorded, err := d.GetPipelineSteps(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := jiraStepStatuses(recorded); got[1] != "error" || got[2] != "done" {
+		t.Errorf("jira-ingest steps = %v, want step 1 error (account 1) and step 2 done (account 2)", got)
 	}
 }

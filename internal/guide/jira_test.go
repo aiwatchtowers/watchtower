@@ -32,7 +32,7 @@ func TestGatherJiraDelivery_NoData(t *testing.T) {
 
 func TestGatherJiraDelivery_WithData(t *testing.T) {
 	database := testDB(t)
-	db.SeedTestJiraAccount(t, database)
+	accountID := db.SeedTestJiraAccount(t, database)
 	cfg := &config.Config{}
 	cfg.Jira.Enabled = true
 	cfg.Jira.Features.MyIssuesInBriefing = true
@@ -40,7 +40,7 @@ func TestGatherJiraDelivery_WithData(t *testing.T) {
 	// Insert resolved issues in the period.
 	for i, key := range []string{"PROJ-1", "PROJ-2", "PROJ-3"} {
 		err := database.UpsertJiraIssue(db.JiraIssue{
-			AccountID:       1,
+			AccountID:       accountID,
 			Key:             key,
 			ID:              key,
 			ProjectKey:      "PROJ",
@@ -61,7 +61,7 @@ func TestGatherJiraDelivery_WithData(t *testing.T) {
 
 	// Insert an open issue.
 	err := database.UpsertJiraIssue(db.JiraIssue{
-		AccountID:       1,
+		AccountID:       accountID,
 		Key:             "PROJ-10",
 		ID:              "PROJ-10",
 		ProjectKey:      "PROJ",
@@ -94,7 +94,7 @@ func TestGatherJiraDelivery_WithData(t *testing.T) {
 
 func TestGatherJiraDelivery_MaxAccomplishments(t *testing.T) {
 	database := testDB(t)
-	db.SeedTestJiraAccount(t, database)
+	accountID := db.SeedTestJiraAccount(t, database)
 	cfg := &config.Config{}
 	cfg.Jira.Enabled = true
 	cfg.Jira.Features.MyIssuesInBriefing = true
@@ -103,7 +103,7 @@ func TestGatherJiraDelivery_MaxAccomplishments(t *testing.T) {
 	for i := 0; i < 15; i++ {
 		key := "PROJ-" + string(rune('A'+i))
 		err := database.UpsertJiraIssue(db.JiraIssue{
-			AccountID:       1,
+			AccountID:       accountID,
 			Key:             key,
 			ID:              key,
 			ProjectKey:      "PROJ",

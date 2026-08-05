@@ -295,12 +295,34 @@ func openJiraCmdDB() (*config.Config, *db.DB, error) {
 	return cfg, database, nil
 }
 
+// jiraCmdLogger returns the command-scoped logger the legacy seed writes
+// through, so its progress lines follow the command's stderr instead of the
+// process-wide default (the `slack add` precedent).
+func jiraCmdLogger(cmd *cobra.Command) *log.Logger {
+	return log.New(cmd.ErrOrStderr(), "[jira] ", log.LstdFlags)
+}
+
+// errJiraAccountRemoved is the shared refusal for operating on a soft-removed
+// account: its token is deleted, so anything that would sync or re-enable it
+// can only fail against Atlassian. Reconnecting mints a fresh account.
+func errJiraAccountRemoved(id int64) error {
+	return fmt.Errorf("jira account %d was removed; run 'watchtower jira add' to connect the site again", id)
+}
+
 // resolveJiraAccount resolves the --account flag to a connected account.
 // Without the flag it picks the single enabled account; zero or multiple
-// enabled accounts require an explicit --account.
+// enabled accounts require an explicit --account. A removed account is
+// refused even when named explicitly — it has no token left to work with.
 func resolveJiraAccount(database *db.DB, accountID int64) (db.JiraAccount, error) {
 	if accountID > 0 {
-		return database.GetJiraAccount(accountID)
+		account, err := database.GetJiraAccount(accountID)
+		if err != nil {
+			return db.JiraAccount{}, err
+		}
+		if account.Status == "removed" {
+			return db.JiraAccount{}, errJiraAccountRemoved(accountID)
+		}
+		return account, nil
 	}
 	accounts, err := database.ListEnabledJiraAccounts()
 	if err != nil {
@@ -331,10 +353,22 @@ func jiraAccountDisplayName(a db.JiraAccount) string {
 	}
 }
 
+// jiraSiteURLs lists the site URLs of a grant, for error messages that must
+// name the sites inline (the Desktop sheet surfaces only stderr, so pointing
+// at a printed list would name a list the user cannot see).
+func jiraSiteURLs(resources []jira.CloudResource) []string {
+	urls := make([]string, len(resources))
+	for i, r := range resources {
+		urls[i] = r.URL
+	}
+	return urls
+}
+
 // selectJiraSite picks one accessible site: --site substring match, auto if
 // exactly one, else an interactive numeric prompt. preferCloudID, when
-// non-empty and present in the list, short-circuits the choice — a re-login
-// keeps its account's site without prompting.
+// non-empty, is the re-login path: the account already has a site, so the
+// grant must reach it — a hit short-circuits the choice without prompting and
+// a miss is an error, never a silent re-point onto some other site.
 func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag, preferCloudID string) (jira.CloudResource, error) {
 	out := cmd.OutOrStdout()
 	if siteFlag != "" {
@@ -355,6 +389,15 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 				return r, nil
 			}
 		}
+		// The account's own site is not in this grant — almost always a
+		// different Atlassian identity in the browser. Auto-selecting or
+		// prompting here would silently re-point the account (and every issue,
+		// board and release already synced under it) at another site, so a
+		// re-login refuses and the move has to be asked for with --site.
+		return jira.CloudResource{}, fmt.Errorf(
+			"this Atlassian grant does not reach the account's site (cloud id %s); it reaches: %s — "+
+				"check which Atlassian identity is signed in, or re-run with --site <url> to move the account to another site deliberately",
+			preferCloudID, strings.Join(jiraSiteURLs(resources), ", "))
 	}
 	if len(resources) == 1 {
 		return resources[0], nil
@@ -371,13 +414,9 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 		// instead of dying on "invalid selection". The site names are inlined
 		// rather than pointed at: the sheet surfaces only stderr, so "see the
 		// list above" would name a list the user cannot see.
-		names := make([]string, len(resources))
-		for i, r := range resources {
-			names[i] = r.URL
-		}
 		return jira.CloudResource{}, fmt.Errorf(
 			"this Atlassian grant reaches %d sites and no site was chosen; re-run with --site set to one of: %s",
-			len(resources), strings.Join(names, ", "))
+			len(resources), strings.Join(jiraSiteURLs(resources), ", "))
 	}
 	if choice < 1 || choice > len(resources) {
 		return jira.CloudResource{}, fmt.Errorf("invalid selection %d: choose 1-%d", choice, len(resources))
@@ -447,7 +486,7 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 
 	// Seed the legacy single-account install first so the new row never
 	// collides with the implicit account #1 (the `slack add` precedent).
-	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
 
@@ -485,15 +524,19 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 // re-consents: --account if given, else account #1 — seeded from a legacy
 // install when possible, created empty otherwise (the
 // resolveSlackAccountOneForLogin pattern).
-func resolveJiraAccountForLogin(cfg *config.Config, database *db.DB, accountID int64) (int64, bool, error) {
+func resolveJiraAccountForLogin(cfg *config.Config, database *db.DB, accountID int64, logger *log.Logger) (int64, bool, error) {
 	if accountID > 0 {
 		if _, err := database.GetJiraAccount(accountID); err != nil {
 			return 0, false, err
 		}
 		return accountID, false, nil
 	}
-	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+	seeded, err := ensureLegacyJiraAccount(cfg, database, logger)
+	if err != nil {
 		return 0, false, fmt.Errorf("seeding legacy account: %w", err)
+	}
+	if seeded != 0 {
+		return seeded, false, nil
 	}
 	accounts, err := database.ListJiraAccounts()
 	if err != nil {
@@ -516,7 +559,7 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	accountID, isNewRow, err := resolveJiraAccountForLogin(cfg, database, jiraFlagAccount)
+	accountID, isNewRow, err := resolveJiraAccountForLogin(cfg, database, jiraFlagAccount, jiraCmdLogger(cmd))
 	if err != nil {
 		return err
 	}
@@ -571,7 +614,7 @@ func runJiraLogout(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
 	accounts, err := database.ListJiraAccounts()
@@ -590,12 +633,18 @@ func runJiraLogout(cmd *cobra.Command, _ []string) error {
 }
 
 func runJiraAccounts(cmd *cobra.Command, _ []string) error {
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
 
+	// A pre-multi-account install has its account only after the seed runs, so
+	// the listing seeds too — otherwise `jira accounts` is the one command that
+	// reports "none connected" on a perfectly connected legacy workspace.
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	}
 	accounts, err := database.ListJiraAccounts()
 	if err != nil {
 		return err
@@ -635,6 +684,13 @@ func setJiraAccountEnabled(cmd *cobra.Command, arg string, enabled bool) error {
 		return err
 	}
 	defer database.Close()
+	account, err := database.GetJiraAccount(id)
+	if err != nil {
+		return err
+	}
+	if account.Status == "removed" {
+		return errJiraAccountRemoved(id)
+	}
 	if err := database.SetJiraAccountEnabled(id, enabled); err != nil {
 		return err
 	}
@@ -672,7 +728,7 @@ func runJiraStatus(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 
-	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
 	accounts, err := database.ListJiraAccounts()
@@ -947,7 +1003,7 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	if _, err := ensureLegacyJiraAccount(cfg, database, log.Default()); err != nil {
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
 	}
 	account, err := resolveJiraAccount(database, jiraFlagAccount)

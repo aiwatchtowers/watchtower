@@ -143,13 +143,26 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, board.ID)
 	}
 
-	// Sync sprints for selected boards.
+	// Sync sprints for selected boards. A revoked grant is not a sprint problem:
+	// it is the account's problem, and only the caller can record it — so it
+	// travels up instead of being logged like an ordinary sprint failure. Same
+	// for releases below. (A board whose project key is empty or invalid is
+	// skipped by the loop above, so these two calls are the only place a
+	// revoked grant surfaces for such an account.)
 	if err := s.SyncSprints(ctx); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during sprint sync, aborting sync: %v", err)
+			return total, err
+		}
 		s.logger.Printf("sprint sync error: %v", err)
 	}
 
 	// Sync releases (fix versions) for selected boards.
 	if err := s.syncReleases(ctx, boards); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during releases sync, aborting sync: %v", err)
+			return total, err
+		}
 		s.logger.Printf("releases sync error: %v", err)
 	}
 
@@ -621,6 +634,9 @@ func (s *Syncer) ensureUserMap(u *User) {
 }
 
 // SyncSprints syncs active and recent closed sprints for all selected boards.
+// A per-board fetch failure is logged and skipped, except a revoked grant:
+// every remaining board would fail the same way, so it is returned for the
+// caller to record on the account row.
 func (s *Syncer) SyncSprints(ctx context.Context) error {
 	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
@@ -636,6 +652,9 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 			path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", board.ID)
 			var resp SprintList
 			if err := s.client.getWithQuery(ctx, path, params, &resp); err != nil {
+				if errors.Is(err, ErrAuthRevoked) {
+					return err
+				}
 				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
 				continue
 			}
@@ -665,7 +684,9 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 }
 
 // syncReleases fetches fix versions for each unique project key and upserts them.
-// Errors are logged but do not block the main sync.
+// Errors are logged and do not block the main sync, except a revoked grant:
+// every remaining project would fail the same way, so it is returned for the
+// caller to record on the account row.
 func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error {
 	// Collect unique project keys.
 	seen := make(map[string]bool)
@@ -685,6 +706,9 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 	for _, projectKey := range projectKeys {
 		versions, err := s.client.GetProjectVersions(ctx, projectKey)
 		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				return err
+			}
 			s.logger.Printf("failed to fetch versions for project %s: %v", projectKey, err)
 			continue
 		}
@@ -718,7 +742,8 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 		s.logger.Printf("synced %d releases for project %s", len(versions), projectKey)
 	}
 
-	// Always returns nil — individual version errors are logged but non-blocking by design.
+	// Individual version errors are logged but non-blocking by design; only a
+	// revoked grant (returned above) reaches the caller.
 	return nil
 }
 

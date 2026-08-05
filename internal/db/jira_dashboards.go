@@ -461,11 +461,14 @@ func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
 	return releases, rows.Err()
 }
 
-// GetJiraIssuesByFixVersion returns all non-deleted issues that have the given version name in their fix_versions JSON array.
-func (db *DB) GetJiraIssuesByFixVersion(versionName string) ([]JiraIssue, error) {
+// GetJiraIssuesByFixVersion returns accountID's non-deleted issues that have the given
+// version name in their fix_versions JSON array. Version names are site-local strings —
+// two connected sites routinely both ship a "v1.0" — so the query is account-scoped.
+func (db *DB) GetJiraIssuesByFixVersion(accountID int64, versionName string) ([]JiraIssue, error) {
 	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
-		WHERE EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
-		AND is_deleted = 0`, versionName)
+		WHERE account_id = ?
+		AND EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
+		AND is_deleted = 0`, accountID, versionName)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira issues by fix version %s: %w", versionName, err)
 	}
@@ -482,14 +485,17 @@ func (db *DB) GetJiraIssuesByFixVersion(versionName string) ([]JiraIssue, error)
 	return issues, rows.Err()
 }
 
-// GetJiraIssueCountAddedSince returns the count of non-deleted issues with the given version name
-// in fix_versions whose synced_at is after the given timestamp (approximate scope tracking).
-func (db *DB) GetJiraIssueCountAddedSince(versionName string, since string) (int, error) {
+// GetJiraIssueCountAddedSince returns the count of accountID's non-deleted issues with the
+// given version name in fix_versions whose synced_at is after the given timestamp
+// (approximate scope tracking). Account-scoped for the same reason as
+// GetJiraIssuesByFixVersion: version names collide across sites.
+func (db *DB) GetJiraIssueCountAddedSince(accountID int64, versionName string, since string) (int, error) {
 	var count int
 	err := db.QueryRow(`SELECT COUNT(*) FROM jira_issues
-		WHERE EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
+		WHERE account_id = ?
+		AND EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
 		AND synced_at > ? AND is_deleted = 0`,
-		versionName, since).Scan(&count)
+		accountID, versionName, since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting jira issues added since %s for version %s: %w", since, versionName, err)
 	}

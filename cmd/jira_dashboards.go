@@ -15,12 +15,29 @@ import (
 )
 
 // This file hosts the read-only Jira dashboard commands: workload, blockers,
-// project-map and releases. Each one follows the same shape — config + DB
-// open, feature gate check, build a domain DTO, then either marshal JSON or
-// render a text table. They were extracted from cmd/jira.go to make that file
-// navigable; the cobra command vars and init() wiring live in jira.go.
+// project-map and releases. Each one follows the same shape — reject the
+// inherited --account flag, config + DB open, feature gate check, build a
+// domain DTO, then either marshal JSON or render a text table. They were
+// extracted from cmd/jira.go to make that file navigable; the cobra command
+// vars and init() wiring live in jira.go.
+
+// rejectJiraAccountFlag fails the four dashboards when --account is set.
+// They read every connected site by design (their queries carry no account
+// dimension), so honouring the persistent flag would either be a no-op or
+// silently return a subset of what the dashboard claims to show. Erroring is
+// the honest answer until per-site dashboards exist.
+func rejectJiraAccountFlag() error {
+	if jiraFlagAccount != 0 {
+		return fmt.Errorf("--account is not supported by this dashboard; it aggregates all connected sites")
+	}
+	return nil
+}
 
 func runJiraWorkload(cmd *cobra.Command, _ []string) error {
+	if err := rejectJiraAccountFlag(); err != nil {
+		return err
+	}
+
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -103,6 +120,10 @@ func formatWorkloadSignal(s jira.WorkloadSignal) string {
 }
 
 func runJiraBlockers(cmd *cobra.Command, _ []string) error {
+	if err := rejectJiraAccountFlag(); err != nil {
+		return err
+	}
+
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -210,6 +231,10 @@ func formatBlockingChain(chain []string) string {
 }
 
 func runJiraProjectMap(cmd *cobra.Command, _ []string) error {
+	if err := rejectJiraAccountFlag(); err != nil {
+		return err
+	}
+
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -367,6 +392,10 @@ func renderProjectMapList(out io.Writer, database *db.DB, cfg *config.Config, js
 }
 
 func runJiraReleases(cmd *cobra.Command, _ []string) error {
+	if err := rejectJiraAccountFlag(); err != nil {
+		return err
+	}
+
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

@@ -2,10 +2,12 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +133,30 @@ func TestClient_RefreshOn401(t *testing.T) {
 	require.NoError(t, c.get(context.Background(), "/x", &got))
 	assert.Equal(t, true, got["ok"])
 	assert.Equal(t, 2, calls)
+}
+
+// TestClient_PersistentUnauthorizedIsAuthRevoked pins the distinction the whole
+// re-login chain rests on: a 401 that survives a successful token refresh is
+// not a stale access token, it is a grant that is gone. Only ErrAuthRevoked
+// makes Syncer.Sync abort and the daemon stamp the account for re-login; a
+// plain "status 401" error would be swallowed per project.
+func TestClient_PersistentUnauthorizedIsAuthRevoked(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	stubTokenEndpoint(t)
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	err := c.get(context.Background(), "/x", &got)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAuthRevoked), "a 401 surviving a refresh must read as a revoked grant")
+	assert.Equal(t, int32(4), calls.Load(), "the client must retry through its refresh budget before giving up")
 }
 
 func TestClient_SearchIssues(t *testing.T) {

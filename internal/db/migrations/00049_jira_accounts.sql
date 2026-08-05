@@ -34,18 +34,23 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
 --    boards/issues only) would leave rows pointing at an account that does not
 --    exist — and the next `jira add` would mint id 1 and silently adopt another
 --    site's custom fields / releases.
+--    The NOT EXISTS guard makes the seed idempotent: jira_accounts is created
+--    with IF NOT EXISTS, so a re-run of this statement (a goose version line
+--    replayed after a partial NO TRANSACTION apply) must not mint a second,
+--    empty account that `jira accounts` would then show as a ghost site.
 INSERT INTO jira_accounts (cloud_id, site_url, site_name, memory_jira_last_extracted_ts)
 SELECT '', '', '',
        COALESCE((SELECT memory_jira_last_extracted_ts FROM workspace LIMIT 1), 0)
-WHERE EXISTS (SELECT 1 FROM jira_boards)
-   OR EXISTS (SELECT 1 FROM jira_issues)
-   OR EXISTS (SELECT 1 FROM jira_sprints)
-   OR EXISTS (SELECT 1 FROM jira_issue_links)
-   OR EXISTS (SELECT 1 FROM jira_custom_fields)
-   OR EXISTS (SELECT 1 FROM jira_board_field_map)
-   OR EXISTS (SELECT 1 FROM jira_sync_state)
-   OR EXISTS (SELECT 1 FROM jira_releases)
-   OR COALESCE((SELECT memory_jira_last_extracted_ts FROM workspace LIMIT 1), 0) > 0;
+WHERE NOT EXISTS (SELECT 1 FROM jira_accounts)
+  AND (EXISTS (SELECT 1 FROM jira_boards)
+    OR EXISTS (SELECT 1 FROM jira_issues)
+    OR EXISTS (SELECT 1 FROM jira_sprints)
+    OR EXISTS (SELECT 1 FROM jira_issue_links)
+    OR EXISTS (SELECT 1 FROM jira_custom_fields)
+    OR EXISTS (SELECT 1 FROM jira_board_field_map)
+    OR EXISTS (SELECT 1 FROM jira_sync_state)
+    OR EXISTS (SELECT 1 FROM jira_releases)
+    OR COALESCE((SELECT memory_jira_last_extracted_ts FROM workspace LIMIT 1), 0) > 0);
 
 -- 3. jira_boards: PK becomes (account_id, id) — raw board ids are small
 --    integers and collide across sites.
