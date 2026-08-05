@@ -37,6 +37,32 @@ else
 fi
 echo ""
 
+# BEGIN live-process-guard (extracted verbatim by scripts/tests/test-build-app-guard.sh)
+# Refuse to rebuild while anything executes from build/: rm -rf replaces the
+# binary beneath the live process (app, bundled daemon, or standalone CLI),
+# breaking its Security.framework/TLS and desyncing LaunchServices.
+# ps snapshot is taken separately so set -e still aborts if ps itself fails
+# (the guard must fail closed).
+# awk matches the WHOLE LINE by literal prefix: `ps -axo command=` emits no
+# leading whitespace, so the executable path always starts at position 1 and an
+# argv that merely MENTIONS build/ in a later token can never match there. The
+# match is index()/literal rather than a regex because paths carry regex
+# metacharacters ('+' in worktree names); matching $0 rather than $1 also keeps
+# a BUILD_DIR containing a space from being truncated at the field split.
+# `awk -v` processes backslash escapes in p — irrelevant for macOS paths, which
+# do not realistically contain backslashes.
+# Accepted limitation: a process launched via a RELATIVE argv (./build/watchtower)
+# is not matched, since ps reports argv[0] as typed. Every primary consumer (the
+# app bundle, the make targets, the daemon spawn) launches from an absolute path.
+PS_SNAPSHOT=$(ps -axo command=)
+RUNNING_FROM_BUILD=$(printf '%s\n' "$PS_SNAPSHOT" | awk -v p="$BUILD_DIR/" 'index($0, p) == 1')
+if [ -n "$RUNNING_FROM_BUILD" ]; then
+    echo "ERROR: a Watchtower process (app or daemon) is still running from $BUILD_DIR — quit it before rebuilding:" >&2
+    printf '%s\n' "$RUNNING_FROM_BUILD" >&2
+    exit 1
+fi
+# END live-process-guard
+
 # Clean previous build
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
@@ -147,6 +173,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
+    <!-- Layered with SingleInstanceGuard.swift: keep LaunchServices from launching a second instance of this bundle id. -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
