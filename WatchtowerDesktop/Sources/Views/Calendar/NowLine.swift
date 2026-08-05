@@ -1,21 +1,22 @@
 import CoreGraphics
 import Foundation
 
-/// Placement of the red "now" marker among a day's timed events, kept as a
+/// Placement of the red "now" marker among a day's timed rows, kept as a
 /// pure helper (the `TranscriptFormatting` pattern) so it stays unit-testable.
 enum NowLine {
     /// Scroll-anchor id of the marker row (`.id` on the row, `scrollTo` target).
     static let nowLineID = "now-line"
 
-    /// A row of the Today section's timed list: an event, or the now marker.
+    /// A row of the Today section's timed list: a meetings-list entry
+    /// (event or standalone recording), or the now marker.
     enum TodayRow: Identifiable {
-        case event(CalendarEvent)
+        case entry(MeetingListEntry)
         case nowLine
 
-        var id: String {
+        var id: AnyHashable {
             switch self {
-            case .event(let event): return event.id
-            case .nowLine: return NowLine.nowLineID
+            case .entry(let entry): return AnyHashable(entry.id)
+            case .nowLine: return AnyHashable(NowLine.nowLineID)
             }
         }
     }
@@ -36,25 +37,25 @@ enum NowLine {
         }
     }
 
-    /// Index in `events` (the day's timed events, sorted by start) where the
-    /// marker row is inserted: before the first event with `startDate > now`.
-    /// The boundary is strictly `>` so an event starting exactly at `now`
-    /// counts as started (ongoing meetings stay above the line); if every
-    /// event has started, returns `events.count`.
-    /// Note: `CalendarEvent.startDate` falls back to `Date.distantPast` on an
-    /// unparseable `start_time`, so a malformed event compares as already
-    /// started and never itself becomes the insertion point — but its list
-    /// position still follows the DB's lexical `start_time` sort, so it may
-    /// render below the line if it sorts after a future event.
-    static func nowLineIndex(events: [CalendarEvent], now: Date) -> Int {
-        events.firstIndex { $0.startDate > now } ?? events.count
+    /// Index in `starts` (the day's timed-row start dates, sorted ascending)
+    /// where the marker row is inserted: before the first start with
+    /// `start > now`. The boundary is strictly `>` so a row starting exactly
+    /// at `now` counts as started (ongoing meetings stay above the line); if
+    /// every row has started, returns `starts.count`.
+    /// Note: an unparseable event `start_time` (or recording timestamp) falls
+    /// back to `Date.distantPast` upstream, so a malformed row compares as
+    /// already started and never itself becomes the insertion point — its
+    /// on-screen position still follows the section's own ordering.
+    static func nowLineIndex(starts: [Date], now: Date) -> Int {
+        starts.firstIndex { $0 > now } ?? starts.count
     }
 
-    /// `events` mapped to `.event` rows with `.nowLine` inserted at
-    /// `nowLineIndex` — the single insertion site the view renders from.
-    static func rows(events: [CalendarEvent], now: Date) -> [TodayRow] {
-        var rows = events.map(TodayRow.event)
-        rows.insert(.nowLine, at: nowLineIndex(events: events, now: now))
+    /// `entries` mapped to `.entry` rows with `.nowLine` inserted at
+    /// `nowLineIndex` over their `sortDate`s — the single insertion site the
+    /// view renders from.
+    static func rows(entries: [MeetingListEntry], now: Date) -> [TodayRow] {
+        var rows = entries.map(TodayRow.entry)
+        rows.insert(.nowLine, at: nowLineIndex(starts: entries.map(\.sortDate), now: now))
         return rows
     }
 

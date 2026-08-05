@@ -25,72 +25,80 @@ final class NowLineTests: XCTestCase {
         return CalendarEvent(row: row)
     }
 
-    /// Event whose `start_time` is not a parseable date — `startDate` falls
-    /// back to `Date.distantPast`.
-    private func makeMalformedEvent(id: String) -> CalendarEvent {
-        let row: Row = [
-            "id": id,
-            "start_time": "not-a-date",
-            "end_time": "not-a-date"
-        ]
-        return CalendarEvent(row: row)
+    /// Meetings-list entry for an event starting `startsIn` seconds from now
+    /// (the unified list's row unit — `NowLine.rows` inserts over these).
+    private func makeEntry(id: String, startsIn: TimeInterval) -> MeetingListEntry {
+        let event = makeCalendarEvent(id: id, startsIn: startsIn)
+        return MeetingListEntry(
+            kind: .event(event, recordings: []),
+            id: .event(id),
+            sortDate: event.startDate,
+            recordingCount: 0
+        )
     }
 
     private func rowIDs(_ rows: [NowLine.TodayRow]) -> [String] {
-        rows.map(\.id)
+        rows.map { row in
+            switch row {
+            case .nowLine:
+                return NowLine.nowLineID
+            case .entry(let entry):
+                guard case .event(let event, _) = entry.kind else { return "recording" }
+                return event.id
+            }
+        }
     }
 
     // MARK: - nowLineIndex
 
     func testEmptyListInsertsAtZero() {
-        XCTAssertEqual(NowLine.nowLineIndex(events: [], now: now), 0)
+        XCTAssertEqual(NowLine.nowLineIndex(starts: [], now: now), 0)
     }
 
-    func testAllEventsPastInsertsAfterLast() {
-        let events = [
-            makeCalendarEvent(id: "a", startsIn: -7200),
-            makeCalendarEvent(id: "b", startsIn: -3600)
-        ]
-        XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 2)
+    func testAllStartsPastInsertsAfterLast() {
+        let starts = [now.addingTimeInterval(-7200), now.addingTimeInterval(-3600)]
+        XCTAssertEqual(NowLine.nowLineIndex(starts: starts, now: now), 2)
     }
 
-    func testAllEventsFutureInsertsAtZero() {
-        let events = [
-            makeCalendarEvent(id: "a", startsIn: 1800),
-            makeCalendarEvent(id: "b", startsIn: 7200)
-        ]
-        XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 0)
+    func testAllStartsFutureInsertsAtZero() {
+        let starts = [now.addingTimeInterval(1800), now.addingTimeInterval(7200)]
+        XCTAssertEqual(NowLine.nowLineIndex(starts: starts, now: now), 0)
     }
 
-    func testOngoingEventStaysAboveLine() {
-        let events = [
-            makeCalendarEvent(id: "past", startsIn: -7200),
-            makeCalendarEvent(id: "ongoing", startsIn: -1800),
-            makeCalendarEvent(id: "future", startsIn: 3600)
+    func testOngoingMeetingStaysAboveLine() {
+        // Started 30 min ago (still running) → above; the future one → below.
+        let starts = [
+            now.addingTimeInterval(-7200),
+            now.addingTimeInterval(-1800),
+            now.addingTimeInterval(3600)
         ]
-        XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 2)
+        XCTAssertEqual(NowLine.nowLineIndex(starts: starts, now: now), 2)
     }
 
-    func testEventStartingExactlyAtNowCountsAsStarted() {
-        let events = [
-            makeCalendarEvent(id: "at-now", startsIn: 0),
-            makeCalendarEvent(id: "future", startsIn: 3600)
-        ]
-        XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 1)
+    func testStartExactlyAtNowCountsAsStarted() {
+        let starts = [now, now.addingTimeInterval(3600)]
+        XCTAssertEqual(NowLine.nowLineIndex(starts: starts, now: now), 1)
+    }
+
+    func testDistantPastFallbackCountsAsStarted() {
+        // An unparseable start_time upstream becomes Date.distantPast — it
+        // never itself becomes the insertion point.
+        let starts = [Date.distantPast, now.addingTimeInterval(3600)]
+        XCTAssertEqual(NowLine.nowLineIndex(starts: starts, now: now), 1)
     }
 
     // MARK: - rows
 
     func testRowsInsertsMarkerExactlyOnce() {
-        let cases: [(events: [CalendarEvent], expectedIDs: [String])] = [
+        let cases: [(entries: [MeetingListEntry], expectedIDs: [String])] = [
             // All future → marker at start.
-            ([makeCalendarEvent(id: "a", startsIn: 1800), makeCalendarEvent(id: "b", startsIn: 3600)],
+            ([makeEntry(id: "a", startsIn: 1800), makeEntry(id: "b", startsIn: 3600)],
              [NowLine.nowLineID, "a", "b"]),
             // Past + future → marker in the middle.
-            ([makeCalendarEvent(id: "past", startsIn: -3600), makeCalendarEvent(id: "future", startsIn: 3600)],
+            ([makeEntry(id: "past", startsIn: -3600), makeEntry(id: "future", startsIn: 3600)],
              ["past", NowLine.nowLineID, "future"]),
             // All past → marker at end.
-            ([makeCalendarEvent(id: "a", startsIn: -7200), makeCalendarEvent(id: "b", startsIn: -3600)],
+            ([makeEntry(id: "a", startsIn: -7200), makeEntry(id: "b", startsIn: -3600)],
              ["a", "b", NowLine.nowLineID]),
             // Empty list → marker alone.
             ([], [NowLine.nowLineID])
@@ -98,24 +106,9 @@ final class NowLineTests: XCTestCase {
 
         // Each expected sequence contains nowLineID exactly once, so the
         // exact-order assertion also pins the exactly-one-marker property.
-        for (events, expectedIDs) in cases {
-            XCTAssertEqual(rowIDs(NowLine.rows(events: events, now: now)), expectedIDs)
+        for (entries, expectedIDs) in cases {
+            XCTAssertEqual(rowIDs(NowLine.rows(entries: entries, now: now)), expectedIDs)
         }
-    }
-
-    func testMalformedStartTimeCountsAsStarted() {
-        // startDate falls back to Date.distantPast on an unparseable
-        // start_time, so the malformed event never itself becomes the
-        // insertion point (here, seeded first, it renders above the line).
-        let events = [
-            makeMalformedEvent(id: "broken"),
-            makeCalendarEvent(id: "future", startsIn: 3600)
-        ]
-        XCTAssertEqual(NowLine.nowLineIndex(events: events, now: now), 1)
-        XCTAssertEqual(
-            rowIDs(NowLine.rows(events: events, now: now)),
-            ["broken", NowLine.nowLineID, "future"]
-        )
     }
 
     // MARK: - visibility
@@ -147,12 +140,6 @@ final class NowLineTests: XCTestCase {
         XCTAssertEqual(NowLine.visibility(frame: atBottom, viewportHeight: 500), .below)
     }
 
-    func testJumpArrowSymbolMatchesDirection() {
-        XCTAssertEqual(NowLine.Visibility.above.jumpArrowSymbol, "arrow.up")
-        XCTAssertEqual(NowLine.Visibility.below.jumpArrowSymbol, "arrow.down")
-        XCTAssertNil(NowLine.Visibility.visible.jumpArrowSymbol)
-    }
-
     func testVisibilityOnScreenFrames() {
         // Fully on-screen.
         let inside = CGRect(x: 0, y: 100, width: 300, height: 20)
@@ -163,5 +150,11 @@ final class NowLineTests: XCTestCase {
         // Straddling the bottom edge (minY < viewportHeight < maxY).
         let straddlingBottom = CGRect(x: 0, y: 490, width: 300, height: 20)
         XCTAssertEqual(NowLine.visibility(frame: straddlingBottom, viewportHeight: 500), .visible)
+    }
+
+    func testJumpArrowSymbolMatchesDirection() {
+        XCTAssertEqual(NowLine.Visibility.above.jumpArrowSymbol, "arrow.up")
+        XCTAssertEqual(NowLine.Visibility.below.jumpArrowSymbol, "arrow.down")
+        XCTAssertNil(NowLine.Visibility.visible.jumpArrowSymbol)
     }
 }

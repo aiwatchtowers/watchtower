@@ -21,13 +21,16 @@ A horizontal marker row inside the **Today** day section: red dot + current
 time label (e.g. `14:32`) + a red line to the trailing edge — the
 Google/Apple Calendar convention.
 
-- **Placement:** among today's *timed* events, before the first event with
-  `startDate > now`. Currently-running meetings (started before now, still
-  ongoing) stay **above** the line; if every event has started, the line goes
+- **Placement:** among today's *timed* rows, before the first row with
+  start > now. Currently-running meetings (started before now, still
+  ongoing) stay **above** the line; if every row has started, the line goes
   after the last row. All-day chips are unaffected (line always renders below
   the chip, inside the timed list). A Today section containing only all-day
   events still renders the marker (with its time label) below the all-day chip
   — intended, it keeps the "you are here" mark visible on such days.
+  (Post-#71 unified Meetings list: "timed rows" are `MeetingListEntry`s —
+  calendar events and standalone recordings alike — ordered by `sortDate`,
+  which is what the insertion compares against.)
 - **Ticking:** the Today section body is wrapped in
   `TimelineView(.everyMinute)`, so both the time label and the line position
   recompute once a minute with no manual timers.
