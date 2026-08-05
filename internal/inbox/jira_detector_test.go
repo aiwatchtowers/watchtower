@@ -12,12 +12,20 @@ import (
 // updated is used as both updated_at and synced_at.
 func seedJiraIssue(t *testing.T, d *db.DB, key, assigneeAccountID string, updated time.Time) {
 	t.Helper()
+	// jira_issues.account_id references jira_accounts(id); make sure account 1 exists.
+	var accounts int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM jira_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("seedJiraIssue: counting jira_accounts: %v", err)
+	}
+	if accounts == 0 {
+		db.SeedTestJiraAccount(t, d)
+	}
 	ts := updated.UTC().Format(time.RFC3339)
 	_, err := d.Exec(`INSERT INTO jira_issues
-		(key, id, project_key, summary, status, status_category,
+		(account_id, key, id, project_key, summary, status, status_category,
 		 assignee_account_id, created_at, updated_at, synced_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		key, key, "WT", "test issue", "In Progress", "in_progress",
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		1, key, key, "WT", "test issue", "In Progress", "in_progress",
 		assigneeAccountID, ts, ts, ts)
 	if err != nil {
 		t.Fatalf("seedJiraIssue: %v", err)

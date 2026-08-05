@@ -68,15 +68,18 @@ func (t *OAuthToken) IsExpired() bool {
 	return time.Now().After(exp.Add(-60 * time.Second))
 }
 
-// TokenStore persists and loads OAuth2 tokens for Jira.
+// TokenStore persists and loads OAuth2 tokens for one Jira account.
 type TokenStore struct {
-	path string // ~/.local/share/watchtower/{workspace}/jira_token.json
+	path string // ~/.local/share/watchtower/{workspace}/jira_token_<accountID>.json
 }
 
-// NewTokenStore creates a TokenStore for the given workspace directory.
-func NewTokenStore(workspaceDir string) *TokenStore {
+// NewTokenStore creates a TokenStore for one Jira account in the given
+// workspace directory — jira_token_<accountID>.json, the google_token_<id>
+// precedent. The legacy single-account jira_token.json is renamed to
+// jira_token_1.json by ensureLegacyJiraAccount.
+func NewTokenStore(workspaceDir string, accountID int64) *TokenStore {
 	return &TokenStore{
-		path: filepath.Join(workspaceDir, "jira_token.json"),
+		path: filepath.Join(workspaceDir, fmt.Sprintf("jira_token_%d.json", accountID)),
 	}
 }
 
@@ -255,6 +258,9 @@ func RefreshToken(ctx context.Context, cfg JiraOAuthConfig, refreshToken string)
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		if isInvalidGrant(respBody) {
+			return nil, fmt.Errorf("%w: %s", ErrAuthRevoked, respBody)
+		}
 		return nil, fmt.Errorf("refresh token failed (%d): %s", resp.StatusCode, respBody)
 	}
 

@@ -318,8 +318,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 				d.SetFeedPipeline(feed.New(database, cfg, logger))
 			}
 		}
-		// Wire Jira syncer if configured and token exists.
-		wireJiraSyncer(d, cfg, database, logger)
+		// Seed jira_accounts from a pre-multi-account legacy token file
+		// before wiring, so a single-account install keeps syncing without
+		// a re-login.
+		if _, err := ensureLegacyJiraAccount(cfg, database, logger); err != nil {
+			logger.Printf("jira: failed to seed legacy account: %v", err)
+		}
+		// Wire one Jira syncer per connected, enabled jira_accounts row.
+		wireJiraSyncers(d, cfg, database, logger)
 		// Seed google_accounts from a pre-multi-account legacy token file
 		// before wiring, so a single-account install keeps syncing without
 		// a re-login.
@@ -495,39 +501,60 @@ func recordSlackWireError(database *db.DB, logger *log.Logger, accountID int64, 
 	}
 }
 
-// wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured
-// and a token exists, logging failures instead of failing sync startup.
-func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
-	if !cfg.Jira.Enabled || cfg.Jira.CloudID == "" {
+// wireJiraSyncers wires one Jira syncer per connected, enabled jira_accounts
+// row whose token file exists. A broken account records its own auth-state
+// error rather than aborting the wiring step for the others — the
+// wireGoogleSyncers fan-out pattern. The global cfg.Jira.Enabled toggle gates
+// the whole phase, matching every other daemon phase's on/off switch. Zero
+// accounts is a clean no-op.
+func wireJiraSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	if !cfg.Jira.Enabled {
 		return
 	}
-	jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !jiraStore.Exists() {
+	accounts, err := database.ListEnabledJiraAccounts()
+	if err != nil {
+		logger.Printf("jira: failed to list accounts: %v", err)
 		return
 	}
 	jiraCfg := resolveJiraOAuthConfig()
-	jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
-	jiraMapper := jira.NewUserMapper(jiraClient, database)
-	boards, err := database.GetJiraSelectedBoards()
-	if err != nil {
-		logger.Printf("jira: failed to load selected boards: %v", err)
-		return
+	var syncers []*jira.Syncer
+	for _, acct := range accounts {
+		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if acct.CloudID == "" || !store.Exists() {
+			// Only flip a currently-"ok" account to "error" — an account
+			// already flagged error/revoked stays as-is, so this doesn't
+			// churn the status on every daemon cycle.
+			if acct.Status == "ok" {
+				if err := database.SetJiraAccountAuthState(acct.ID, "error", "no token or site — re-login required"); err != nil {
+					logger.Printf("jira: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
+			continue
+		}
+		client := jira.NewClient(acct.CloudID, jiraCfg, store)
+		mapper := jira.NewUserMapper(client, database)
+		boards, err := database.GetJiraSelectedBoards(acct.ID)
+		if err != nil {
+			logger.Printf("jira: account %d: failed to load selected boards: %v", acct.ID, err)
+			continue
+		}
+		boardIDs := make([]int, len(boards))
+		for i, b := range boards {
+			boardIDs[i] = b.ID
+		}
+		syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
+		syncer.SetLogger(logger)
+		// Wire board analyzer for auto-refresh of changed configs.
+		if cfg.Digest.Enabled {
+			aiProvider := newAIClient(cfg, cfg.DBPath())
+			analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
+			analyzer.SetLanguage(cfg.Digest.Language)
+			syncer.SetBoardAnalyzer(analyzer)
+			syncer.SetAutoRefresh(true)
+		}
+		syncers = append(syncers, syncer)
 	}
-	boardIDs := make([]int, len(boards))
-	for i, b := range boards {
-		boardIDs[i] = b.ID
-	}
-	jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
-	jiraSyncer.SetLogger(logger)
-	// Wire board analyzer for auto-refresh of changed configs.
-	if cfg.Digest.Enabled {
-		aiProvider := newAIClient(cfg, cfg.DBPath())
-		analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
-		analyzer.SetLanguage(cfg.Digest.Language)
-		jiraSyncer.SetBoardAnalyzer(analyzer)
-		jiraSyncer.SetAutoRefresh(true)
-	}
-	d.SetJiraSyncer(jiraSyncer)
+	d.SetJiraSyncers(syncers)
 }
 
 // wireGoogleSyncers wires one calendar.Syncer and/or gmail.Syncer per

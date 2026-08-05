@@ -78,17 +78,18 @@ func TestCheckAndRefreshProfiles_CooldownSkipsRecent(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	db.SeedTestJiraAccount(t, d)
 
 	// Insert a board with a profile generated 1 hour ago.
-	_, err = d.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at,
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		config_hash, profile_generated_at, llm_profile_json, raw_columns_json, raw_config_json, workflow_summary)
-		VALUES (1, 'Test Board', 'TEST', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
+		VALUES (1, 1, 'Test Board', 'TEST', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
 		'oldhash', ?, '{"stale_thresholds":{"In Progress":3}}', '[]', '{}', 'test')`,
 		time.Now().UTC().Add(-1*time.Hour).Format(time.RFC3339))
 	require.NoError(t, err)
 
 	// Verify board is returned by GetJiraBoardProfile.
-	board, err := d.GetJiraBoardProfile(1)
+	board, err := d.GetJiraBoardProfile(1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, board)
 
@@ -103,16 +104,17 @@ func TestCheckAndRefreshProfiles_CooldownElapsed(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	db.SeedTestJiraAccount(t, d)
 
 	oldTime := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
 
-	_, err = d.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at,
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		config_hash, profile_generated_at, llm_profile_json, raw_columns_json, raw_config_json, workflow_summary)
-		VALUES (1, 'Test Board', 'TEST', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
+		VALUES (1, 1, 'Test Board', 'TEST', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
 		'oldhash', ?, '{"stale_thresholds":{"In Progress":3}}', '[]', '{}', 'test')`, oldTime)
 	require.NoError(t, err)
 
-	board, err := d.GetJiraBoardProfile(1)
+	board, err := d.GetJiraBoardProfile(1, 1)
 	require.NoError(t, err)
 	require.NotNil(t, board)
 
@@ -152,27 +154,28 @@ func TestGetJiraSelectedBoardsWithProfile(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	defer d.Close()
+	db.SeedTestJiraAccount(t, d)
 
 	// Board with config_hash (has profile).
-	_, err = d.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at,
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		config_hash, profile_generated_at, llm_profile_json, raw_columns_json, raw_config_json, workflow_summary)
-		VALUES (1, 'Board1', 'B1', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
+		VALUES (1, 1, 'Board1', 'B1', 'scrum', 1, 10, '2026-04-09T00:00:00Z',
 		'hash1', '2026-04-08T00:00:00Z', '{}', '[]', '{}', 'summary')`)
 	require.NoError(t, err)
 
 	// Board without config_hash (no profile yet).
-	_, err = d.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at)
-		VALUES (2, 'Board2', 'B2', 'kanban', 1, 5, '2026-04-09T00:00:00Z')`)
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at)
+		VALUES (1, 2, 'Board2', 'B2', 'kanban', 1, 5, '2026-04-09T00:00:00Z')`)
 	require.NoError(t, err)
 
 	// Board with config_hash but not selected.
-	_, err = d.Exec(`INSERT INTO jira_boards (id, name, project_key, board_type, is_selected, issue_count, synced_at,
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
 		config_hash, profile_generated_at, llm_profile_json, raw_columns_json, raw_config_json, workflow_summary)
-		VALUES (3, 'Board3', 'B3', 'scrum', 0, 10, '2026-04-09T00:00:00Z',
+		VALUES (1, 3, 'Board3', 'B3', 'scrum', 0, 10, '2026-04-09T00:00:00Z',
 		'hash3', '2026-04-08T00:00:00Z', '{}', '[]', '{}', 'summary')`)
 	require.NoError(t, err)
 
-	boards, err := d.GetJiraSelectedBoardsWithProfile()
+	boards, err := d.GetJiraSelectedBoardsWithProfile(1)
 	require.NoError(t, err)
 
 	// Only board 1 should be returned (selected + has config_hash).

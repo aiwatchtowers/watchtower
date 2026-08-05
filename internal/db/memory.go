@@ -1308,26 +1308,33 @@ func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit 
 	return out, rows.Err()
 }
 
-// MemoryJiraWatermark reads the Jira episode-extraction watermark — the FIFTH
-// extraction watermark (see 00040), unix seconds of the newest fully-committed
-// parsed jira_issues.updated_at. A fresh workspace reads 0.
-func (db *DB) MemoryJiraWatermark() (float64, error) {
+// MemoryJiraWatermark reads the Jira episode-extraction watermark for
+// accountID — the FIFTH extraction watermark (see 00040), unix seconds of the
+// newest fully-committed parsed jira_issues.updated_at. Moved onto
+// jira_accounts by migration 00049 (one per connected site, the
+// MemoryGmailWatermark precedent — a shared watermark would let an account
+// added later swallow the others' windows); a missing account reads as 0.
+func (db *DB) MemoryJiraWatermark(accountID int64) (float64, error) {
 	var ts float64
-	err := db.QueryRow(`SELECT COALESCE(memory_jira_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	err := db.QueryRow(`SELECT memory_jira_last_extracted_ts FROM jira_accounts WHERE id = ?`, accountID).Scan(&ts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("getting memory jira watermark: %w", err)
+		return 0, fmt.Errorf("getting memory jira watermark for account %d: %w", accountID, err)
 	}
 	return ts, nil
 }
 
-// SetMemoryJiraWatermark advances the Jira extraction watermark. Callers only
-// move it behind fully-committed issue episodes (MEM-04, adapted).
-func (db *DB) SetMemoryJiraWatermark(ts float64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_jira_last_extracted_ts = ?`, ts); err != nil {
-		return fmt.Errorf("setting memory jira watermark: %w", err)
+// SetMemoryJiraWatermark advances the Jira extraction watermark for accountID.
+// Callers only move it behind fully-committed issue episodes (MEM-04, adapted).
+func (db *DB) SetMemoryJiraWatermark(accountID int64, ts float64) error {
+	res, err := db.Exec(`UPDATE jira_accounts SET memory_jira_last_extracted_ts = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting memory jira watermark for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting memory jira watermark: no jira_accounts row %d", accountID)
 	}
 	return nil
 }
@@ -1389,12 +1396,12 @@ type JiraExtractIssue struct {
 // small (low thousands), a full scan per run is fine — the whole filtered set
 // is already in memory before the cap, so the drain is a plain Go slice
 // extension, no second query needed (unlike the Slack/Gmail two-query drain).
-func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
+func (db *DB) ListJiraIssuesForExtract(accountID int64, sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
 	rows, err := db.Query(`SELECT key, project_key, summary, description_text, issue_type,
 		status, status_category, priority, assignee_display_name, assignee_slack_id,
 		reporter_display_name, reporter_slack_id, sprint_name, epic_key, due_date,
 		story_points, updated_at, resolved_at
-		FROM jira_issues WHERE is_deleted = 0`)
+		FROM jira_issues WHERE account_id = ? AND is_deleted = 0`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issues for extract: %w", err)
 	}
@@ -1432,9 +1439,9 @@ func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtrac
 }
 
 // MaxJiraUpdatedUnix is the no-backfill initializer's bound: the newest parsed
-// updated_at among non-deleted issues, 0 when none exist or parse.
-func (db *DB) MaxJiraUpdatedUnix() (int64, error) {
-	rows, err := db.Query(`SELECT updated_at FROM jira_issues WHERE is_deleted = 0`)
+// updated_at among one account's non-deleted issues, 0 when none exist or parse.
+func (db *DB) MaxJiraUpdatedUnix(accountID int64) (int64, error) {
+	rows, err := db.Query(`SELECT updated_at FROM jira_issues WHERE account_id = ? AND is_deleted = 0`, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("scanning jira updated_at for max: %w", err)
 	}

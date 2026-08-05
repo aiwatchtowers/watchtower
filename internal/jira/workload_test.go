@@ -72,6 +72,7 @@ func openWorkloadTestDB(t *testing.T) *db.DB {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 
@@ -145,7 +146,8 @@ func TestWorkload_WithJiraAndSlack(t *testing.T) {
 	// U1: overload scenario (3 overdue).
 	for i := 0; i < 3; i++ {
 		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-			Key: "P-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Overdue task",
+			AccountID: 1,
+			Key:       "P-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Overdue task",
 			Status: "Open", StatusCategory: "todo",
 			AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 			StoryPoints: &sp5,
@@ -157,14 +159,16 @@ func TestWorkload_WithJiraAndSlack(t *testing.T) {
 
 	// U2: normal scenario — 2 open issues, no overdue.
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "P-X", ProjectKey: "P", Summary: "U2 task 1",
+		AccountID: 1,
+		Key:       "P-X", ProjectKey: "P", Summary: "U2 task 1",
 		Status: "In Progress", StatusCategory: "in_progress",
 		AssigneeSlackID: "U2", AssigneeDisplayName: "Bob",
 		Labels: `[]`, Components: `[]`,
 		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
 	}))
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "P-Y", ProjectKey: "P", Summary: "U2 task 2",
+		AccountID: 1,
+		Key:       "P-Y", ProjectKey: "P", Summary: "U2 task 2",
 		Status: "To Do", StatusCategory: "todo",
 		AssigneeSlackID: "U2", AssigneeDisplayName: "Bob",
 		Labels: `[]`, Components: `[]`,
@@ -209,7 +213,8 @@ func TestWorkload_SortOrder(t *testing.T) {
 	// U1: normal (3 open, some slack messages)
 	for i := 0; i < 3; i++ {
 		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-			Key: "N-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Normal",
+			AccountID: 1,
+			Key:       "N-" + string(rune('A'+i)), ProjectKey: "P", Summary: "Normal",
 			Status: "Open", StatusCategory: "todo",
 			AssigneeSlackID: "U1", AssigneeDisplayName: "Normal User",
 			Labels: `[]`, Components: `[]`,
@@ -227,7 +232,8 @@ func TestWorkload_SortOrder(t *testing.T) {
 
 	// U2: watch (1 overdue, 2 open)
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "W-1", ProjectKey: "P", Summary: "Watch overdue",
+		AccountID: 1,
+		Key:       "W-1", ProjectKey: "P", Summary: "Watch overdue",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U2", AssigneeDisplayName: "Watch User",
 		DueDate: "2020-01-01",
@@ -235,7 +241,8 @@ func TestWorkload_SortOrder(t *testing.T) {
 		CreatedAt: "2026-04-01T00:00:00Z", UpdatedAt: "2026-04-01T00:00:00Z", SyncedAt: "now",
 	}))
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "W-2", ProjectKey: "P", Summary: "Watch normal",
+		AccountID: 1,
+		Key:       "W-2", ProjectKey: "P", Summary: "Watch normal",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U2", AssigneeDisplayName: "Watch User",
 		Labels: `[]`, Components: `[]`,
@@ -247,7 +254,8 @@ func TestWorkload_SortOrder(t *testing.T) {
 	// GetJiraTeamWorkload only returns users with jira issues. A user with only done issues
 	// still has open_issues=0. Let's add a done issue.
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "L-1", ProjectKey: "P", Summary: "Done task",
+		AccountID: 1,
+		Key:       "L-1", ProjectKey: "P", Summary: "Done task",
 		Status: "Done", StatusCategory: "done",
 		AssigneeSlackID: "U3", AssigneeDisplayName: "Low User",
 		Labels: `[]`, Components: `[]`,
@@ -279,7 +287,8 @@ func TestWorkload_WithMeetingHours(t *testing.T) {
 
 	// Create a user with Jira issues.
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
-		Key: "M-1", ProjectKey: "P", Summary: "Task",
+		AccountID: 1,
+		Key:       "M-1", ProjectKey: "P", Summary: "Task",
 		Status: "Open", StatusCategory: "todo",
 		AssigneeSlackID: "U1", AssigneeDisplayName: "Alice",
 		Labels: `[]`, Components: `[]`,

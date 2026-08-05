@@ -14,11 +14,13 @@ import (
 	"watchtower/internal/db"
 )
 
-// FieldDiscovery handles custom field discovery and classification.
+// FieldDiscovery handles custom field discovery and classification for one
+// Jira account.
 type FieldDiscovery struct {
 	client     *Client
 	db         *db.DB
 	aiProvider ai.Provider
+	accountID  int64
 	logger     *log.Logger
 
 	// Accumulated usage from LLM calls.
@@ -27,12 +29,13 @@ type FieldDiscovery struct {
 	totalAPITokens    int
 }
 
-// NewFieldDiscovery creates a new FieldDiscovery instance.
-func NewFieldDiscovery(client *Client, database *db.DB, aiProvider ai.Provider) *FieldDiscovery {
+// NewFieldDiscovery creates a new FieldDiscovery instance for one Jira account.
+func NewFieldDiscovery(client *Client, database *db.DB, aiProvider ai.Provider, accountID int64) *FieldDiscovery {
 	return &FieldDiscovery{
 		client:     client,
 		db:         database,
 		aiProvider: aiProvider,
+		accountID:  accountID,
 		logger:     log.New(log.Default().Writer(), "[jira-fields] ", log.LstdFlags),
 	}
 }
@@ -92,6 +95,7 @@ func (fd *FieldDiscovery) DiscoverFields(ctx context.Context) ([]db.JiraCustomFi
 		}
 
 		cf := db.JiraCustomField{
+			AccountID: fd.accountID,
 			ID:        f.ID,
 			Name:      f.Name,
 			FieldType: fieldType,
@@ -186,7 +190,7 @@ Be generous — if a field COULD provide useful context for understanding how a 
 	updated := 0
 	useful := 0
 	for _, r := range results {
-		if err := fd.db.UpdateJiraCustomFieldClassification(r.ID, r.Useful, r.Hint); err != nil {
+		if err := fd.db.UpdateJiraCustomFieldClassification(fd.accountID, r.ID, r.Useful, r.Hint); err != nil {
 			fd.logger.Printf("warning: could not update classification for %s: %v", r.ID, err)
 			continue
 		}
@@ -211,7 +215,7 @@ func (fd *FieldDiscovery) DiscoverAndClassify(ctx context.Context) error {
 
 // NeedsDiscovery returns true if fields haven't been synced or are stale (>24h).
 func (fd *FieldDiscovery) NeedsDiscovery() bool {
-	syncedAt, err := fd.db.GetJiraCustomFieldsSyncedAt()
+	syncedAt, err := fd.db.GetJiraCustomFieldsSyncedAt(fd.accountID)
 	if err != nil || syncedAt == "" {
 		return true
 	}
@@ -226,7 +230,7 @@ func (fd *FieldDiscovery) NeedsDiscovery() bool {
 // are actually used, then asks LLM to assign semantic roles for each.
 func (fd *FieldDiscovery) MapFieldsForBoard(ctx context.Context, board db.JiraBoard) ([]db.JiraBoardFieldMap, error) {
 	// 1. Get useful fields from DB
-	usefulFields, err := fd.db.GetUsefulJiraCustomFields()
+	usefulFields, err := fd.db.GetUsefulJiraCustomFields(fd.accountID)
 	if err != nil || len(usefulFields) == 0 {
 		return nil, fmt.Errorf("no useful fields discovered, run field discovery first")
 	}
@@ -390,7 +394,7 @@ Consider the sample values to determine the correct role.`
 		})
 	}
 
-	if err := fd.db.UpsertJiraBoardFieldMap(board.ID, mappings); err != nil {
+	if err := fd.db.UpsertJiraBoardFieldMap(fd.accountID, board.ID, mappings); err != nil {
 		return nil, fmt.Errorf("saving field mappings: %w", err)
 	}
 
