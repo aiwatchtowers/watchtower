@@ -1398,6 +1398,10 @@ func TestRunSyncCommandFanOutOverAccounts(t *testing.T) {
 	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
 	assert.True(t, hasError, "expected error in output, got: %s", output)
 	assert.NotContains(t, output, "no Slack account has a stored token")
+	// Account #1 was silently `continue`d for lacking a token file — the
+	// output must say so, not just report account #2's own failure, or a
+	// skipped-but-connectable account goes unnoticed indefinitely.
+	assert.Contains(t, output, "1 account(s) also skipped", "the skipped account #1 must be surfaced, not silently dropped")
 }
 
 // ---------------------------------------------------------------------------

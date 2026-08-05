@@ -34,6 +34,14 @@ UPDATE users SET id = '1:' || id WHERE id != '';
 UPDATE messages SET channel_id = '1:' || channel_id WHERE channel_id != '';
 UPDATE messages SET user_id = '1:' || user_id WHERE user_id != '';
 -- messages.thread_ts is a raw Slack timestamp, not an id — intentionally untouched.
+-- messages_fts is a standalone (non-external-content) FTS5 table with its own
+-- copy of channel_id/user_id; the messages_au trigger only fires on
+-- text/is_deleted changes, so it never sees this id-only rewrite and the
+-- search join (messages.channel_id = messages_fts.channel_id) would silently
+-- stop matching every pre-migration message. Rewrite it directly, same as
+-- the `messages` row it mirrors.
+UPDATE messages_fts SET channel_id = '1:' || channel_id WHERE channel_id != '';
+UPDATE messages_fts SET user_id = '1:' || user_id WHERE user_id != '';
 UPDATE reactions SET channel_id = '1:' || channel_id WHERE channel_id != '';
 UPDATE reactions SET user_id = '1:' || user_id WHERE user_id != '';
 UPDATE files SET message_channel_id = '1:' || message_channel_id WHERE message_channel_id != '';
@@ -58,8 +66,17 @@ UPDATE inbox_items SET sender_user_id = '1:' || sender_user_id
   WHERE sender_user_id != '' AND channel_id LIKE '1:%';
 UPDATE inbox_learned_rules SET scope_key = 'channel:1:' || substr(scope_key, 9)
   WHERE scope_key LIKE 'channel:%' AND scope_key NOT LIKE 'channel:gmail:%' AND scope_key NOT LIKE 'channel:imap:%';
+-- sender:-scoped rules have no explicit source prefix (unlike channel:, which
+-- carries gmail:/imap:), so non-Slack senders are excluded by SHAPE instead:
+-- Gmail/IMAP senders are raw email addresses (contain '@'), Jira senders are
+-- issue keys (contain '-'), and the watchtower detector's synthetic sender is
+-- the literal 'watchtower' — none of these ever appear in a real raw Slack
+-- user id, which is alphanumeric only.
 UPDATE inbox_learned_rules SET scope_key = 'sender:1:' || substr(scope_key, 8)
-  WHERE scope_key LIKE 'sender:%';
+  WHERE scope_key LIKE 'sender:%'
+    AND scope_key NOT LIKE 'sender:%@%'
+    AND scope_key NOT LIKE 'sender:%-%'
+    AND scope_key != 'sender:watchtower';
 UPDATE user_profile SET slack_user_id = '1:' || slack_user_id WHERE slack_user_id != '';
 UPDATE user_profile SET manager = '1:' || manager WHERE manager != '';
 UPDATE communication_guides SET user_id = '1:' || user_id WHERE user_id != '';
@@ -119,6 +136,8 @@ UPDATE sync_state SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '
 UPDATE files SET message_channel_id = substr(message_channel_id, 3) WHERE message_channel_id LIKE '1:%';
 UPDATE reactions SET user_id = substr(user_id, 3) WHERE user_id LIKE '1:%';
 UPDATE reactions SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
+UPDATE messages_fts SET user_id = substr(user_id, 3) WHERE user_id LIKE '1:%';
+UPDATE messages_fts SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
 UPDATE messages SET user_id = substr(user_id, 3) WHERE user_id LIKE '1:%';
 UPDATE messages SET channel_id = substr(channel_id, 3) WHERE channel_id LIKE '1:%';
 UPDATE users SET id = substr(id, 3) WHERE id LIKE '1:%';

@@ -82,7 +82,82 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 	return workers
 }
 
-// Run executes the sync pipeline. For incremental sync (default), it uses
+// Run executes the sync pipeline and records the resulting auth state on the
+// account row (recordAuthResult) — the calendar.Syncer/gmail.Syncer precedent,
+// so a revoked/broken token surfaces in Desktop instead of staying silently
+// "ok" forever while the daemon log fills with the same error every cycle.
+// Coverage caveat: only an error that propagates all the way to run's own
+// return value is classified here — a per-channel/per-item failure that a
+// deeper phase catches and logs but doesn't return (e.g. message_sync.go's
+// per-page swallow) never reaches this point, so a token that dies mid-run
+// after an earlier phase already succeeded may still record "ok" until a
+// later cycle's failure surfaces at the top level.
+func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+	err := o.run(ctx, opts)
+	o.recordAuthResult(ctx, err)
+	return err
+}
+
+// recordAuthResult persists the account's sync auth state. Pass err=nil to
+// mark it healthy. Errors writing to the DB are logged but not returned —
+// auth state is best-effort telemetry. A cancelled ctx means daemon shutdown,
+// not an auth problem, so the state is left untouched (calendar.Syncer's
+// recordAuthResult precedent).
+func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
+	if o.db == nil {
+		return
+	}
+	if err == nil {
+		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", ""); dbErr != nil {
+			o.logger.Printf("slack: failed to clear auth state: %v", dbErr)
+		}
+		return
+	}
+	if ctx.Err() != nil {
+		o.logger.Printf("slack: sync cancelled, leaving auth state untouched: %v", err)
+		return
+	}
+	status := "error"
+	if isRevokedAuthError(err) {
+		status = "revoked"
+	}
+	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, err.Error()); dbErr != nil {
+		o.logger.Printf("slack: failed to record auth state: %v", dbErr)
+	}
+}
+
+// revokedSlackErrors are the Slack API error codes that mean the token itself
+// is dead (revoked/deactivated), not a transient or narrowly-scoped failure —
+// slack_accounts.status="revoked" drives Desktop's more urgent red indicator
+// (SlackAccount.isRevoked) vs the softer "error" one.
+var revokedSlackErrors = map[string]bool{
+	"invalid_auth":     true,
+	"account_inactive": true,
+	"token_revoked":    true,
+	"not_authed":       true,
+}
+
+// isRevokedAuthError classifies a Run() error for recordAuthResult — the
+// isNonFatalError precedent's structured-then-string-match pattern, applied
+// to a different question (dead token vs a transient/scoped one).
+func isRevokedAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var slackErr slack.SlackErrorResponse
+	if errors.As(err, &slackErr) {
+		return revokedSlackErrors[slackErr.Err]
+	}
+	msg := err.Error()
+	for code := range revokedSlackErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// run is Run's actual pipeline. For incremental sync (default), it uses
 // search.messages to directly save messages, avoiding per-channel API calls.
 // For --full or --channels, it runs the full pipeline:
 // 1. Workspace info (team.info, cached)
@@ -90,7 +165,7 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // 3. Messages (conversations.history per channel)
 // 4. User profiles (users.info for unknown users)
 // 5. Threads (conversations.replies)
-func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+func (o *Orchestrator) run(ctx context.Context, opts SyncOptions) error {
 	o.logger.Println("starting sync")
 
 	// Phase 1: workspace info
@@ -205,11 +280,18 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Println("syncing channel read state")
 
+	// UnreadDigestChannelIDs/ChannelIDsWithoutLastRead are account-unscoped —
+	// they return every connected account's channels — so filter to this
+	// orchestrator's own account before calling the Slack API with them; a
+	// raw channel id can collide across two workspaces (the exact scenario
+	// namespacing exists to prevent), and this orchestrator only holds a
+	// token for its own account.
 	channelIDs, err := o.db.UnreadDigestChannelIDs()
 	if err != nil {
 		o.logger.Printf("warning: failed to get unread digest channels: %v", err)
 		return
 	}
+	channelIDs = o.filterOwnAccountIDs(channelIDs)
 
 	// First-run path: no digests yet, pre-fetch last_read for channels without it.
 	if len(channelIDs) == 0 {
@@ -218,6 +300,7 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 			o.logger.Printf("warning: failed to get channels without last_read: %v", err)
 			return
 		}
+		channelIDs = o.filterOwnAccountIDs(channelIDs)
 		if len(channelIDs) == 0 {
 			o.logger.Println("channel read state: all channels up to date, skipping")
 			return
@@ -245,11 +328,39 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Printf("channel read state: %d/%d channels updated (via conversations.info)", updated, len(channelIDs))
 }
 
+// filterOwnAccountIDs keeps only the namespaced ids that belong to this
+// orchestrator's own account, dropping every other connected Slack account's
+// ids plus any non-Slack-namespaced id (gmail:/imap: prefixed, or a bare
+// Jira/watchtower id with no namespace at all) — none of those are ever
+// valid input to this orchestrator's single-account Slack client.
+func (o *Orchestrator) filterOwnAccountIDs(ids []string) []string {
+	out := ids[:0:0]
+	for _, id := range ids {
+		if o.ownsID(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// ownsID reports whether a namespaced id belongs to this orchestrator's own
+// account — the single check filterOwnAccountIDs and syncInboxReactions both
+// need before ever handing an id to this orchestrator's Slack client.
+func (o *Orchestrator) ownsID(id string) bool {
+	acctID, _, ok := watchtowerslack.SplitAccountID(id)
+	return ok && acctID == o.accountID
+}
+
 // syncInboxReactions fetches fresh reactions from Slack for pending inbox items.
 // This ensures CheckUserReplied() can detect user reactions even though
 // search.messages doesn't return reactions and conversations.history only
 // captures reactions at the time of the sync.
 func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
+	// GetInboxItems is account-unscoped — it returns every source's pending
+	// items (every connected Slack account, plus Gmail/Jira/Watchtower) — so
+	// filter to this orchestrator's own account before calling the Slack API;
+	// a raw channel id can collide across two workspaces, and this
+	// orchestrator only holds a token for its own account.
 	pendingItems, err := o.db.GetInboxItems(db.InboxFilter{Status: "pending"})
 	if err != nil {
 		o.logger.Printf("warning: failed to load pending inbox items for reaction sync: %v", err)
@@ -265,6 +376,9 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 	seen := make(map[key]bool, len(pendingItems))
 	var targets []key
 	for _, item := range pendingItems {
+		if !o.ownsID(item.ChannelID) {
+			continue
+		}
 		k := key{item.ChannelID, item.MessageTS}
 		if !seen[k] {
 			seen[k] = true

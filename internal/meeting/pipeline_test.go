@@ -132,6 +132,28 @@ func TestCleanJSON(t *testing.T) {
 		{"```json\n{\"key\": \"val\"}\n```", `{"key": "val"}`},
 		{"```\n{\"key\": \"val\"}\n```", `{"key": "val"}`},
 		{"  {\"key\": \"val\"}  ", `{"key": "val"}`},
+		// Chatty model: prose after the closing fence must not survive
+		// (the Suggest-speaker-names failure of 2026-08-03).
+		{"```json\n[{\"speaker\": \"Speaker 1\"}]\n```\nThese are my guesses.", `[{"speaker": "Speaker 1"}]`},
+		{"Here you go:\n```json\n{\"key\": \"val\"}\n```\nLet me know!", `{"key": "val"}`},
+		{"[1, 2]\n```", `[1, 2]`},
+		// Unfenced response with trailing prose: the value ends the payload.
+		{"{\"key\": \"val\"}\nHope that helps.", `{"key": "val"}`},
+		{"[{\"speaker\": \"Speaker 1\", \"name\": \"Ann\"}]\nThese are my guesses.", `[{"speaker": "Speaker 1", "name": "Ann"}]`},
+		// A ``` inside a string value is part of the JSON, not a fence —
+		// on the fenced path too, where cutting at the next ``` would
+		// truncate the value mid-string.
+		{"{\"key\": \"a ``` b\"}\nDone.", "{\"key\": \"a ``` b\"}"},
+		{"```json\n{\"key\": \"a ``` b\"}\n```", "{\"key\": \"a ``` b\"}"},
+		{"```json\n{\"key\": \"a ``` b\"}\n```\nDone.", "{\"key\": \"a ``` b\"}"},
+		// Missing closing fence: the single JSON value is still extracted.
+		{"```json\n{\"key\": \"val\"}", `{"key": "val"}`},
+		{"```json\n[{\"speaker\": \"Speaker 1\"}]\nThese are my guesses.", `[{"speaker": "Speaker 1"}]`},
+		// A ```json block wins over an earlier plain fence — the model may
+		// quote a transcript excerpt before answering.
+		{"Excerpt:\n```\n[00:01] Ann: hi\n```\n```json\n[{\"speaker\": \"Speaker 1\"}]\n```", `[{"speaker": "Speaker 1"}]`},
+		// Undecodable payload is returned unchanged — callers report it raw.
+		{"no json here", "no json here"},
 	}
 
 	for _, tt := range tests {

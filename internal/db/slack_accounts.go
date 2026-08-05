@@ -44,6 +44,21 @@ func FormatConnectedWorkspaces(accounts []SlackAccount) string {
 	return strings.Join(parts, ", ")
 }
 
+// slackAccountColumns is the shared column list for ListSlackAccounts,
+// ListEnabledSlackAccounts, and GetSlackAccount — one place to keep the
+// SELECT list and scanSlackAccount's Scan targets in lockstep.
+const slackAccountColumns = `id, team_id, team_name, team_domain, label, current_user_id,
+        status, error, enabled, search_last_date, created_at`
+
+// scanSlackAccount scans one slackAccountColumns row from either *sql.Row or
+// *sql.Rows (the jira.scanJiraIssue precedent).
+func scanSlackAccount(scanner interface{ Scan(dest ...any) error }) (SlackAccount, error) {
+	var a SlackAccount
+	err := scanner.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
+		&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt)
+	return a, err
+}
+
 // CreateSlackAccount inserts a new connected Slack account and returns its ID.
 func (db *DB) CreateSlackAccount(a SlackAccount) (int64, error) {
 	res, err := db.Exec(`INSERT INTO slack_accounts
@@ -62,18 +77,15 @@ func (db *DB) CreateSlackAccount(a SlackAccount) (int64, error) {
 
 // ListSlackAccounts returns every connected Slack account, oldest first.
 func (db *DB) ListSlackAccounts() ([]SlackAccount, error) {
-	rows, err := db.Query(`SELECT id, team_id, team_name, team_domain, label, current_user_id,
-        status, error, enabled, search_last_date, created_at
-        FROM slack_accounts ORDER BY id ASC`)
+	rows, err := db.Query(`SELECT ` + slackAccountColumns + ` FROM slack_accounts ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing slack accounts: %w", err)
 	}
 	defer rows.Close()
 	var out []SlackAccount
 	for rows.Next() {
-		var a SlackAccount
-		if err := rows.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
-			&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt); err != nil {
+		a, err := scanSlackAccount(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scanning slack account: %w", err)
 		}
 		out = append(out, a)
@@ -84,18 +96,15 @@ func (db *DB) ListSlackAccounts() ([]SlackAccount, error) {
 // ListEnabledSlackAccounts returns every enabled, non-removed connected
 // Slack account, oldest first.
 func (db *DB) ListEnabledSlackAccounts() ([]SlackAccount, error) {
-	rows, err := db.Query(`SELECT id, team_id, team_name, team_domain, label, current_user_id,
-        status, error, enabled, search_last_date, created_at
-        FROM slack_accounts WHERE enabled = 1 AND status != 'removed' ORDER BY id ASC`)
+	rows, err := db.Query(`SELECT ` + slackAccountColumns + ` FROM slack_accounts WHERE enabled = 1 AND status != 'removed' ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing enabled slack accounts: %w", err)
 	}
 	defer rows.Close()
 	var out []SlackAccount
 	for rows.Next() {
-		var a SlackAccount
-		if err := rows.Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
-			&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt); err != nil {
+		a, err := scanSlackAccount(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scanning slack account: %w", err)
 		}
 		out = append(out, a)
@@ -105,12 +114,7 @@ func (db *DB) ListEnabledSlackAccounts() ([]SlackAccount, error) {
 
 // GetSlackAccount returns a single connected Slack account by ID.
 func (db *DB) GetSlackAccount(id int64) (SlackAccount, error) {
-	var a SlackAccount
-	err := db.QueryRow(`SELECT id, team_id, team_name, team_domain, label, current_user_id,
-        status, error, enabled, search_last_date, created_at
-        FROM slack_accounts WHERE id = ?`, id).
-		Scan(&a.ID, &a.TeamID, &a.TeamName, &a.TeamDomain, &a.Label, &a.CurrentUserID,
-			&a.Status, &a.Error, &a.Enabled, &a.SearchLastDate, &a.CreatedAt)
+	a, err := scanSlackAccount(db.QueryRow(`SELECT `+slackAccountColumns+` FROM slack_accounts WHERE id = ?`, id))
 	if err != nil {
 		return SlackAccount{}, fmt.Errorf("getting slack account %d: %w", id, err)
 	}
@@ -128,18 +132,6 @@ func (db *DB) UpdateSlackAccountConnection(id int64, teamID, teamName, teamDomai
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("updating slack account connection: no slack_accounts row %d", id)
-	}
-	return nil
-}
-
-// SetSlackAccountLabel updates the display label for accountID.
-func (db *DB) SetSlackAccountLabel(id int64, label string) error {
-	res, err := db.Exec(`UPDATE slack_accounts SET label = ? WHERE id = ?`, label, id)
-	if err != nil {
-		return fmt.Errorf("setting label for slack account %d: %w", id, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("setting label: no slack_accounts row %d", id)
 	}
 	return nil
 }

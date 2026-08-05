@@ -32,4 +32,16 @@ struct RecordingListItem: Decodable, FetchableRecord, Identifiable, Equatable {
         case hasNotes = "has_notes"
         case snippet
     }
+
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt
+    }()
+
+    /// Parses `createdAt` (`strftime('%Y-%m-%dT%H:%M:%SZ','now')` from the
+    /// CLI) into a `Date`; nil for malformed input.
+    var createdDate: Date? {
+        Self.iso8601Formatter.date(from: createdAt)
+    }
 }

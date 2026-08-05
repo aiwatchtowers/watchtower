@@ -54,7 +54,7 @@ struct UpcomingMeetingBannerView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(recorder.isBusy || !SystemAudioRecorder.isSupported)
+            .disabled(recorder.isCapturing || !SystemAudioRecorder.isSupported)
 
             Button {
                 center.dismissBanner(event)

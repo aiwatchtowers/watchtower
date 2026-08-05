@@ -65,6 +65,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
+    @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @State private var showAdvancedTranscription = false
 
@@ -998,6 +999,13 @@ struct GeneralSettings: View {
                         .frame(width: 70)
                         .multilineTextAlignment(.trailing)
                 }
+                LabeledContent("Diarization threshold") {
+                    TextField("", value: $transcriptionDiarizationThreshold, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
+                    + "Try lowering when different people get merged into one Speaker N.")
                 TextField(
                     "Force language",
                     text: $transcriptionForceLang,
