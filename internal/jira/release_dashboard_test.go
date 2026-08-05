@@ -16,6 +16,7 @@ func releaseDashTestDB(t *testing.T) *db.DB {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 
@@ -32,7 +33,13 @@ func releaseDashConfig(enabled bool) *config.Config {
 
 func seedRelease(t *testing.T, database *db.DB, id int, projectKey, name, releaseDate string, released, archived bool) {
 	t.Helper()
+	seedReleaseForAccount(t, database, 1, id, projectKey, name, releaseDate, released, archived)
+}
+
+func seedReleaseForAccount(t *testing.T, database *db.DB, accountID int64, id int, projectKey, name, releaseDate string, released, archived bool) {
+	t.Helper()
 	err := database.UpsertJiraRelease(db.JiraRelease{
+		AccountID:   accountID,
 		ID:          id,
 		ProjectKey:  projectKey,
 		Name:        name,
@@ -46,7 +53,13 @@ func seedRelease(t *testing.T, database *db.DB, id int, projectKey, name, releas
 
 func seedReleaseIssue(t *testing.T, database *db.DB, key, epicKey, status, statusCategory, fixVersions, syncedAt string) {
 	t.Helper()
+	seedReleaseIssueForAccount(t, database, 1, key, epicKey, status, statusCategory, fixVersions, syncedAt)
+}
+
+func seedReleaseIssueForAccount(t *testing.T, database *db.DB, accountID int64, key, epicKey, status, statusCategory, fixVersions, syncedAt string) {
+	t.Helper()
 	err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID:      accountID,
 		Key:            key,
 		ID:             key,
 		Summary:        "Issue " + key,
@@ -142,10 +155,10 @@ func TestBuildReleaseDashboard_EpicGrouping(t *testing.T) {
 
 	// Seed epic issues for name lookup.
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "EPIC-A", ID: "EPIC-A", Summary: "Auth System",
+		AccountID: 1, Key: "EPIC-A", ID: "EPIC-A", Summary: "Auth System",
 	}))
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "EPIC-B", ID: "EPIC-B", Summary: "Payment",
+		AccountID: 1, Key: "EPIC-B", ID: "EPIC-B", Summary: "Payment",
 	}))
 
 	// EPIC-A: 2/3 done = 66.7%
@@ -347,6 +360,75 @@ func TestBuildReleaseDashboard_NoIssues(t *testing.T) {
 	require.Len(t, result, 1)
 	assert.Equal(t, 0, result[0].TotalIssues)
 	assert.InDelta(t, 0.0, result[0].ProgressPct, 0.01)
+}
+
+// TestBuildReleaseDashboard_ScopesIssuesByAccount pins the multi-account fix:
+// two connected sites both ship a release literally named "v1.0". A release's
+// progress and scope changes must count only its own site's issues — before
+// the fix the list path bucketed issues by bare version name and the detail
+// path queried them by bare name, so each site saw the other's issues folded
+// into its numbers.
+func TestBuildReleaseDashboard_ScopesIssuesByAccount(t *testing.T) {
+	database := releaseDashTestDB(t)
+	second := db.SeedTestJiraAccount(t, database)
+	cfg := releaseDashConfig(true)
+	now := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
+	syncedAt := now.AddDate(0, 0, -1).Format(time.RFC3339)
+
+	seedReleaseForAccount(t, database, 1, 1, "PROJ", "v1.0", "2026-06-01", false, false)
+	seedReleaseForAccount(t, database, second, 1, "OPS", "v1.0", "2026-06-01", false, false)
+
+	// Site #1: one issue, done. Site #2: two issues, neither done.
+	seedReleaseIssueForAccount(t, database, 1, "P-1", "", "Done", "done", `["v1.0"]`, syncedAt)
+	seedReleaseIssueForAccount(t, database, second, "O-1", "", "To Do", "to_do", `["v1.0"]`, syncedAt)
+	seedReleaseIssueForAccount(t, database, second, "O-2", "", "To Do", "to_do", `["v1.0"]`, syncedAt)
+
+	entries, err := BuildReleaseDashboard(database, cfg, "", now)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	byProject := make(map[string]ReleaseEntry, len(entries))
+	for _, e := range entries {
+		byProject[e.ProjectKey] = e
+	}
+
+	first := byProject["PROJ"]
+	assert.Equal(t, 1, first.TotalIssues, "site #1's release must not count site #2's issues")
+	assert.Equal(t, 1, first.DoneIssues)
+	assert.InDelta(t, 100.0, first.ProgressPct, 0.01)
+	assert.Equal(t, 1, first.ScopeChanges.AddedLastWeek)
+
+	other := byProject["OPS"]
+	assert.Equal(t, 2, other.TotalIssues, "site #2's release must not count site #1's issues")
+	assert.Equal(t, 0, other.DoneIssues)
+	assert.InDelta(t, 0.0, other.ProgressPct, 0.01)
+	assert.Equal(t, 2, other.ScopeChanges.AddedLastWeek)
+}
+
+// TestBuildReleaseDetail_ScopesIssuesByAccount is the detail-path half of the
+// same fix. GetJiraReleasesByName orders by project_key, so "OPS" (site #2)
+// wins the name collision — its detail must show only site #2's two issues.
+func TestBuildReleaseDetail_ScopesIssuesByAccount(t *testing.T) {
+	database := releaseDashTestDB(t)
+	second := db.SeedTestJiraAccount(t, database)
+	cfg := releaseDashConfig(true)
+	now := time.Date(2026, 4, 9, 12, 0, 0, 0, time.UTC)
+	syncedAt := now.AddDate(0, 0, -1).Format(time.RFC3339)
+
+	seedReleaseForAccount(t, database, 1, 1, "PROJ", "v1.0", "2026-06-01", false, false)
+	seedReleaseForAccount(t, database, second, 1, "OPS", "v1.0", "2026-06-01", false, false)
+
+	seedReleaseIssueForAccount(t, database, 1, "P-1", "", "Done", "done", `["v1.0"]`, syncedAt)
+	seedReleaseIssueForAccount(t, database, second, "O-1", "", "To Do", "to_do", `["v1.0"]`, syncedAt)
+	seedReleaseIssueForAccount(t, database, second, "O-2", "", "To Do", "to_do", `["v1.0"]`, syncedAt)
+
+	detail, err := BuildReleaseDetail(database, cfg, "v1.0", now)
+	require.NoError(t, err)
+	require.NotNil(t, detail)
+	assert.Equal(t, "OPS", detail.ProjectKey)
+	assert.Equal(t, 2, detail.TotalIssues, "detail must not fold in the other site's v1.0 issues")
+	assert.Equal(t, 0, detail.DoneIssues)
+	assert.Equal(t, 2, detail.ScopeChanges.AddedLastWeek)
 }
 
 // --- BuildReleaseDetail tests ---

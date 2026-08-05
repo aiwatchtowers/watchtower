@@ -46,7 +46,6 @@ struct GeneralSettings: View {
     @State private var slackAuth = SlackAuthService()
     @State private var slackDisconnecting = false
     @State private var showSlackDisconnectConfirm = false
-    @State private var jiraAuth = JiraAuthService()
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
     @State private var showAddCalendarAccountSheet = false
@@ -55,6 +54,8 @@ struct GeneralSettings: View {
     @State private var googleAccountPendingRemoval: GoogleAccount?
     @State private var showAddSlackAccountSheet = false
     @State private var slackAccountPendingRemoval: SlackAccount?
+    @State private var showAddJiraAccountSheet = false
+    @State private var jiraAccountPendingRemoval: JiraAccount?
 
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
@@ -110,9 +111,9 @@ struct GeneralSettings: View {
         .onAppear {
             // Re-stat tokens/config: a connect or disconnect may have happened
             // outside this window (Calendar tab, Inbox banner, CLI).
-            jiraAuth.checkStatus()
             slackAuth.checkStatus()
             appState.slackAccountsViewModel?.refresh()
+            appState.jiraAccountsViewModel?.refresh()
             appState.emailAccountsViewModel?.refresh()
             appState.calendarAccountsViewModel?.refresh()
             appState.googleAccountsViewModel?.refresh()
@@ -1037,58 +1038,106 @@ struct GeneralSettings: View {
             .foregroundStyle(.secondary)
     }
 
+    /// Jira Sites section — the multi-account Atlassian connections
+    /// (`jira_accounts` table, migration 00049), each independently granting
+    /// access via its own OAuth consent. Modeled on `slackAccountsSection`
+    /// above; replaces the old single Connect/Disconnect block.
+    ///
+    /// Like Slack (and unlike Google), removal is non-destructive: `jira
+    /// remove` drops the token and marks the row removed/disabled but leaves
+    /// already-synced issues, boards, and releases in place.
     @ViewBuilder
     private var jiraSettingsSection: some View {
-        Section("Jira") {
-            if jiraAuth.isConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Connected")
-                        if let site = jiraAuth.siteURL {
-                            Text(site)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let user = jiraAuth.userDisplayName {
-                            Text(user)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button("Disconnect") {
-                        jiraAuth.disconnect()
-                    }
-                }
-            } else {
-                HStack {
-                    Image(systemName: "bolt.horizontal.circle")
+        Section("Jira Sites") {
+            if let vm = appState.jiraAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No Jira sites connected.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("Not connected")
-                    Spacer()
-
-                    if jiraAuth.isAuthenticating {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") {
-                            jiraAuth.cancelConnect()
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                if !account.siteURL.isEmpty {
+                                    Text(account.siteURL)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(jiraAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                            Toggle("Enabled", isOn: Binding(
+                                get: { account.enabled },
+                                set: { newValue in
+                                    Task { await vm.setEnabled(account, enabled: newValue) }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .disabled(vm.isConnecting)
+                            if !account.isOK {
+                                Button("Re-login") {
+                                    Task { await vm.relogin(account) }
+                                }
+                                .disabled(vm.isConnecting)
+                            }
+                            Button("Remove") {
+                                jiraAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                            .disabled(vm.isConnecting)
                         }
-                    } else {
-                        Button("Connect") { jiraAuth.connect() }
-                            .buttonStyle(.borderedProminent)
                     }
                 }
-            }
 
-            if let err = jiraAuth.error {
-                Text(err)
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Jira Site") {
+                    showAddJiraAccountSheet = true
+                }
+                .disabled(vm.isConnecting)
+            } else {
+                Text("Loading...")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
         }
+        .sheet(isPresented: $showAddJiraAccountSheet) {
+            AddJiraAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(jiraAccountPendingRemoval?.displayName ?? "this site")?",
+            isPresented: Binding(
+                get: { jiraAccountPendingRemoval != nil },
+                set: { if !$0 { jiraAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Site", role: .destructive) {
+                if let account = jiraAccountPendingRemoval {
+                    Task { await appState.jiraAccountsViewModel?.remove(account) }
+                }
+                jiraAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Disconnects the site. Already-synced issues, boards, and "
+                    + "releases stay in Watchtower."
+            )
+        }
 
-        if jiraAuth.isConnected {
+        if appState.jiraAccountsViewModel?.accounts.isEmpty == false {
             Section {
                 Button {
                     appState.selectedDestination = .boards
@@ -1106,6 +1155,12 @@ struct GeneralSettings: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .red }
+        return .orange
     }
 
     private var bottomBar: some View {

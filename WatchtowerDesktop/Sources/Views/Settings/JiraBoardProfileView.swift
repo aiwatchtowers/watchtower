@@ -22,7 +22,9 @@ struct JiraBoardProfileView: View {
     @State private var terminalOverrides: [String: Bool] = [:]
     @State private var phaseOverrides: [String: String] = [:]
     @State private var isAnalyzing = false
-    @State private var analyzeError: String?
+    /// Shared error slot for every CLI action this screen fires — re-analyze
+    /// and the three override flags — rendered next to the Re-analyze button.
+    @State private var actionError: String?
 
     var body: some View {
         ScrollView {
@@ -214,7 +216,11 @@ struct JiraBoardProfileView: View {
             let currentPhase = phaseOverrides[statusName] ?? originalPhase(for: statusName)
             guard currentPhase != phase else { return false }
             phaseOverrides[statusName] = phase
-            applyPhaseOverride(boardID: board.id, status: statusName, phase: phase)
+            runOverride(
+                flag: "--phase",
+                value: "\(statusName)=\(phase)",
+                failureMessage: "Failed to move \(statusName)"
+            )
             return true
         } isTargeted: { _ in }
     }
@@ -265,7 +271,11 @@ struct JiraBoardProfileView: View {
         .onTapGesture {
             let newVal = !isTerminal
             terminalOverrides[status] = newVal
-            applyTerminalOverride(boardID: board.id, stage: status, isTerminal: newVal)
+            runOverride(
+                flag: "--terminal",
+                value: "\(status)=\(newVal)",
+                failureMessage: "Failed to update \(status)"
+            )
         }
         .help(isOverridden
               ? "\(status): moved here (drag to another phase, or re-analyze to reset)"
@@ -330,10 +340,10 @@ struct JiraBoardProfileView: View {
                     set: { newVal in
                         let intVal = Int(newVal.rounded())
                         overrides[stage.name] = intVal
-                        applyOverride(
-                            boardID: board.id,
-                            stage: stage.name,
-                            days: intVal
+                        runOverride(
+                            flag: "--stale",
+                            value: "\(stage.name)=\(intVal)",
+                            failureMessage: "Failed to update \(stage.name)"
                         )
                     }
                 ),
@@ -502,7 +512,7 @@ struct JiraBoardProfileView: View {
             }
             .disabled(isAnalyzing)
 
-            if let err = analyzeError {
+            if let err = actionError {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -559,7 +569,9 @@ struct JiraBoardProfileView: View {
     private func reloadBoard() async {
         guard let db = appState.databaseManager else { return }
         let updated = try? await db.dbPool.read { db in
-            try JiraQueries.fetchBoard(db, id: board.id)
+            try JiraQueries.fetchBoard(
+                db, accountID: board.accountID, id: board.id
+            )
         }
         if let updated {
             currentBoard = updated
@@ -569,138 +581,64 @@ struct JiraBoardProfileView: View {
 
     private func runAnalyze() {
         guard let cliPath = Constants.findCLIPath() else {
-            analyzeError = "Watchtower CLI not found"
+            actionError = "Watchtower CLI not found"
             return
         }
 
         isAnalyzing = true
-        analyzeError = nil
+        actionError = nil
+        let arguments = boardCommand("analyze", "--force", String(board.id))
 
         Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = [
-                "jira", "boards", "analyze", "--force",
-                String(board.id),
-            ]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    isAnalyzing = false
-                    analyzeError = "Failed to launch CLI"
-                }
-                return
-            }
-
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
-
+            let failure = JiraBoardsCLI.run(
+                cliPath: cliPath,
+                arguments: arguments,
+                fallbackMessage: "Analysis failed"
+            )
             await MainActor.run {
                 isAnalyzing = false
-                if process.terminationStatus != 0 {
-                    let stderr = String(
-                        data: stderrData, encoding: .utf8
-                    )?.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ) ?? ""
-                    analyzeError = stderr.isEmpty
-                        ? "Analysis failed"
-                        : String(stderr.prefix(200))
-                } else {
-                    Task {
-                        await reloadBoard()
-                    }
+                actionError = failure
+                if failure == nil {
+                    Task { await reloadBoard() }
                 }
             }
         }
     }
 
-    private func applyOverride(
-        boardID: Int,
-        stage: String,
-        days: Int
+    /// Persists one `jira boards override` flag for this board. A failure
+    /// lands in the same error slot as Re-analyze — the local override state
+    /// stays as the user set it, so the next edit retries the write.
+    private func runOverride(
+        flag: String,
+        value: String,
+        failureMessage: String
     ) {
-        guard let cliPath = Constants.findCLIPath() else { return }
+        guard let cliPath = Constants.findCLIPath() else {
+            actionError = "Watchtower CLI not found"
+            return
+        }
+
+        actionError = nil
+        let arguments = boardCommand(
+            "override", String(board.id), flag, value
+        )
 
         Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = [
-                "jira", "boards", "override",
-                String(boardID),
-                "--stale", "\(stage)=\(days)"
-            ]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = Pipe()
-
-            try? process.run()
-            process.waitUntilExit()
+            let failure = JiraBoardsCLI.run(
+                cliPath: cliPath,
+                arguments: arguments,
+                fallbackMessage: failureMessage
+            )
+            if let failure {
+                await MainActor.run { actionError = failure }
+            }
         }
     }
 
-    private func applyPhaseOverride(
-        boardID: Int,
-        status: String,
-        phase: String
-    ) {
-        guard let cliPath = Constants.findCLIPath() else { return }
-
-        Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = [
-                "jira", "boards", "override",
-                String(boardID),
-                "--phase", "\(status)=\(phase)"
-            ]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = Pipe()
-
-            try? process.run()
-            process.waitUntilExit()
-        }
-    }
-
-    private func applyTerminalOverride(
-        boardID: Int,
-        stage: String,
-        isTerminal: Bool
-    ) {
-        guard let cliPath = Constants.findCLIPath() else { return }
-
-        Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = [
-                "jira", "boards", "override",
-                String(boardID),
-                "--terminal", "\(stage)=\(isTerminal)"
-            ]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = Pipe()
-
-            try? process.run()
-            process.waitUntilExit()
-        }
+    /// A `jira boards` invocation scoped to this board's site — raw board ids
+    /// collide across connected sites, so `--account` is what makes the id
+    /// address one row (migration 00049).
+    private func boardCommand(_ args: String...) -> [String] {
+        ["jira", "--account", String(board.accountID), "boards"] + args
     }
 }
-

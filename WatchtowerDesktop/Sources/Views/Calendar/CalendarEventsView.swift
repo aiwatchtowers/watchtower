@@ -1,35 +1,50 @@
 import SwiftUI
 
-enum CalendarMode: String, CaseIterable {
-    case events, recordings
-
-    var title: String {
-        switch self {
-        case .events: return "Events"
-        case .recordings: return "Recordings"
-        }
+/// Frame of the now-line marker row in the meetings scroll view's named
+/// coordinate space; nil when no marker is rendered.
+private struct NowLineFramePreferenceKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = value ?? nextValue()
     }
 }
 
+/// Reference box for the marker's last published frame — mutating it does not
+/// invalidate the view, unlike a plain `@State CGRect?`.
+private final class NowLineFrameBox {
+    var value: CGRect?
+}
+
+/// Unified master-detail "Meetings" screen for the Calendar tab: one
+/// chronological list merging calendar events and recordings (an event with
+/// recordings is one row; an ad-hoc or orphaned recording is its own row —
+/// see `MeetingListBuilder`), with `MeetingDetailView` as the right pane.
 struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @State private var meetingPrepVM = MeetingPrepViewModel()
-    @State private var selectedEventID: String?
     private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
-    @State private var expandedEventID: String?
     @State private var userNotes: String = ""
-    @State private var mode: CalendarMode = .events
-    /// Hoisted Recordings-tab selection so the Events tab can deep-link into
-    /// a specific recording (expanded event row → Recordings section tap).
-    @State private var selectedRecordingID: Int64?
-    /// Event id the events list should scroll to on next appearance/change —
+    @State private var selectedMeeting: MeetingSelection?
+    @State private var recordings: [RecordingListItem] = []
+    @State private var sections: [MeetingDaySection] = []
+    /// Event id the meetings list should scroll to on next appearance/change —
     /// set by the recording→event deep link, consumed once.
     @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
+    /// Derived tri-state position of the now-line marker relative to the
+    /// viewport (nil while no marker is rendered — no Today section). Storing
+    /// the derived state instead of the raw frame means scroll ticks don't
+    /// invalidate the whole non-lazy list — only actual visibility
+    /// transitions do. Drives the floating "Now" button.
+    @State private var nowLineVisibility: NowLine.Visibility?
+    /// Last frame published by the marker row, boxed in a reference type so
+    /// updating it never invalidates the view tree — it only feeds
+    /// `updateNowLineVisibility` when either geometry input changes.
+    @State private var lastNowLineFrame = NowLineFrameBox()
 
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
@@ -43,108 +58,163 @@ struct CalendarEventsView: View {
     var body: some View {
         Group {
             if hasCalendarSource, !google.isRunning, let calVM = appState.calendarViewModel {
-                VStack(spacing: 0) {
-                    Picker("", selection: $mode) {
-                        ForEach(CalendarMode.allCases, id: \.self) { m in
-                            Text(m.title).tag(m)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 260)
-                    .padding(.top, 10)
-
-                    switch mode {
-                    case .events:
-                        eventsSplitView(calVM)
-                    case .recordings:
-                        RecordingsView(externalSelection: $selectedRecordingID) { link in
-                            openLinkedEvent(link, in: calVM)
-                        }
-                    }
-                }
+                meetingsSplitView(calVM)
             } else {
                 notConnectedView
             }
         }
     }
 
+    /// Resolves a `MeetingSelection` (row tap, deep link) to its
+    /// `MeetingListEntry` in the currently built `sections` — nil once the
+    /// entry has scrolled out of the window or was pruned (e.g. a stale
+    /// deep-link target after a reload). Pure/static for direct unit testing.
+    static func entry(for selection: MeetingSelection, in sections: [MeetingDaySection]) -> MeetingListEntry? {
+        for section in sections {
+            if let match = section.entries.first(where: { $0.id == selection }) {
+                return match
+            }
+        }
+        return nil
+    }
+
     /// Recording→event deep link ("Linked to:" header tap). The linked event
     /// may be outside the default today..+7d window in EITHER direction —
     /// sync retains ~24h back and calendar.sync_days_ahead is configurable —
     /// so first pin its day into the rendered window (synchronous reload),
-    /// then switch to Events with the row expanded and scrolled into view.
+    /// then select the event and scroll it into view.
     private func openLinkedEvent(_ link: CalendarQueries.EventLink, in vm: CalendarViewModel) {
         if let start = link.startDate {
             vm.ensureVisible(date: start)
         }
         // An all-day event renders inside a collapsed chip — expand its day
-        // too, or the expanded detail would stay hidden.
+        // too, or the row would stay hidden.
         if let day = vm.dailyEvents.first(where: { day in
             day.events.contains { $0.id == link.id && $0.isAllDay }
         }) {
             expandedAllDayDates.insert(day.id)
         }
         withAnimation(.easeInOut(duration: 0.15)) {
-            mode = .events
-            expandedEventID = link.id
+            selectedMeeting = .event(link.id)
         }
         scrollTargetEventID = link.id
     }
 
-    private func eventsSplitView(_ vm: CalendarViewModel) -> some View {
+    // MARK: - Split view
+
+    private func meetingsSplitView(_ vm: CalendarViewModel) -> some View {
         HStack(spacing: 0) {
-            eventsList(vm)
+            meetingsList
                 .frame(minWidth: 300, idealWidth: 350)
 
-            if let eventID = selectedEventID {
+            if let selected = selectedMeeting, let entry = Self.entry(for: selected, in: sections) {
                 Divider()
-                MeetingPrepDetailView(
-                    eventID: eventID,
-                    viewModel: meetingPrepVM,
-                    userNotes: $userNotes
-                ) { selectedEventID = nil }
-                .id(eventID)
+                MeetingDetailView(
+                    entry: entry,
+                    prepVM: meetingPrepVM,
+                    userNotes: $userNotes,
+                    onDeleted: handleRecordingDeleted,
+                    onChanged: loadRecordings
+                ) { link in openLinkedEvent(link, in: vm) }
+                .id(entry.id)
                 .frame(minWidth: 400, idealWidth: 500)
-                .transition(
-                    .move(edge: .trailing).combined(with: .opacity)
-                )
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: selectedEventID)
+        .animation(.easeInOut(duration: 0.25), value: selectedMeeting)
         .onAppear {
             vm.loadEvents()
+            loadRecordings()
+            // Explicit build, not left to the onChange handlers below:
+            // `vm` is a shared, already-loaded `@Observable` (its `init`
+            // eagerly calls `loadEvents()`), so `vm.loadEvents()` here can be
+            // a same-value no-op that never fires `.onChange(of: vm.dailyEvents)`
+            // — and a workspace with events but zero recordings ever made
+            // would likewise never trigger `.onChange(of: recordings)`
+            // (`[] == []`). Sections must exist on first appearance regardless.
+            rebuildSections(vm)
             appState.transcriptionModelProvisioner.ensureDownloaded(providerID: transcriptionProvider, model: transcriptionModel)
+        }
+        // Keyed on the save counter, not on the recorder settling: with capture
+        // decoupled from the queue, a transcript can land while another job is
+        // still queued or a failed one lingers — `phase` never reaches `.idle`
+        // then, and the new row would never appear.
+        .onChange(of: appState.meetingRecorderCenter.savedTick) { _, _ in loadRecordings() }
+        .onChange(of: vm.dailyEvents) { _, _ in rebuildSections(vm) }
+        .onChange(of: recordings) { _, _ in rebuildSections(vm) }
+    }
+
+    private func handleRecordingDeleted() {
+        selectedMeeting = nil
+        loadRecordings()
+    }
+
+    private func loadRecordings() {
+        guard let db = appState.databaseManager else { return }
+        do {
+            recordings = try db.dbPool.read { conn in
+                try MeetingTranscriptQueries.fetchRecordingList(conn)
+            }
+        } catch {
+            // Render-nothing on failure, but never silently: an empty list and
+            // a failed read must be distinguishable in the logs.
+            print("CalendarEventsView recordings load failed: \(error)")
         }
     }
 
-    private func eventsList(_ vm: CalendarViewModel) -> some View {
+    private func rebuildSections(_ vm: CalendarViewModel) {
+        sections = MeetingListBuilder.build(
+            days: vm.dailyEvents, recordings: recordings, now: Date(), calendar: .current)
+    }
+
+    // MARK: - Meetings List
+
+    private var meetingsList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
+            // GeometryReader supplies the viewport height for the marker
+            // visibility check — the app targets macOS 14, so the macOS 15+
+            // onScrollGeometryChange APIs are off the table.
+            GeometryReader { viewport in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
 
-                    ForEach(vm.dailyEvents) { day in
-                        daySection(day: day)
-                            .id(day.id)
+                        ForEach(sections) { section in
+                            daySection(section)
+                                .id(section.id)
+                        }
+
+                        if sections.isEmpty {
+                            emptyState
+                        }
                     }
-
-                    if vm.dailyEvents.isEmpty {
-                        emptyState
+                    .padding()
+                }
+                .coordinateSpace(name: Self.meetingsScrollSpace)
+                .onPreferenceChange(NowLineFramePreferenceKey.self) { frame in
+                    lastNowLineFrame.value = frame
+                    updateNowLineVisibility(viewportHeight: viewport.size.height)
+                }
+                // The classification depends on TWO inputs; a height-only
+                // resize keeps the marker frame byte-identical in the scroll
+                // space, so the preference alone would go stale.
+                .onChange(of: viewport.size.height) { _, height in
+                    updateNowLineVisibility(viewportHeight: height)
+                }
+                .overlay(alignment: .bottom) {
+                    jumpToNowButton(proxy: proxy)
+                }
+                // Deep-link scroll wins when a target is set (before this view
+                // first appears); otherwise land on "Today" past the history days.
+                .onAppear {
+                    if scrollTargetEventID != nil {
+                        scrollToTargetIfNeeded(proxy)
+                    } else {
+                        scrollToToday(proxy)
                     }
                 }
-                .padding()
+                .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
             }
-            // Deep-link scroll wins when a target is set (before the mode
-            // switch); otherwise land on "Today" past the history days.
-            .onAppear {
-                if scrollTargetEventID != nil {
-                    scrollToTargetIfNeeded(proxy)
-                } else {
-                    scrollToToday(vm, proxy: proxy)
-                }
-            }
-            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
     }
 
@@ -157,10 +227,12 @@ struct CalendarEventsView: View {
     }
 
     /// With past days in the list, land on "Today" (or the first future day
-    /// when today has no events) instead of two weeks of history.
-    private func scrollToToday(_ vm: CalendarViewModel, proxy: ScrollViewProxy) {
+    /// when today has no entries) instead of two weeks of history. Sections
+    /// are ordered upcoming-ascending-then-past-descending, so the first
+    /// section at or after today is simply the earliest upcoming one.
+    private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
-        guard let target = vm.dailyEvents.first(where: { $0.id >= today })?.id else { return }
+        guard let target = sections.first(where: { $0.id >= today })?.id else { return }
         proxy.scrollTo(target, anchor: .top)
     }
 
@@ -174,89 +246,139 @@ struct CalendarEventsView: View {
                 .font(.title2)
                 .fontWeight(.bold)
             Spacer()
-            recordButton(eventID: nil, title: nil)
-        }
-    }
-
-    // MARK: - Record Button
-
-    /// Record/Stop control for a calendar event (or ad-hoc when `eventID` is nil).
-    /// Shows "Stop" only while THIS target is the one being recorded; disabled
-    /// when another recording is capturing or system-audio capture is
-    /// unsupported. A previous recording still being transcribed does NOT
-    /// disable it — post-processing is queued, not exclusive.
-    @ViewBuilder
-    private func recordButton(eventID: String?, title: String?) -> some View {
-        let center = appState.meetingRecorderCenter
-        let isRecordingThis: Bool = {
-            if case .recording = center.phase { return center.currentEventID == eventID }
-            return false
-        }()
-        Button {
-            if isRecordingThis {
-                stopRecording()
-            } else {
-                Task { await center.startRecording(eventID: eventID, title: title, config: .fromDefaults()) }
-            }
-        } label: {
-            Label(isRecordingThis ? "Stop" : "Record",
-                  systemImage: isRecordingThis ? "stop.circle" : "record.circle")
-                .font(.caption)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(isRecordingThis ? .red : nil)
-        .disabled((center.isCapturing && !isRecordingThis) || !SystemAudioRecorder.isSupported)
-        .help(SystemAudioRecorder.isSupported ? "" : "Recording requires macOS 14.4+")
-    }
-
-    // MARK: - Join Button
-
-    /// Opens the event's conference link and (per the "Auto-record on join"
-    /// setting) starts an event-linked recording via the shared
-    /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
-    @ViewBuilder
-    private func joinButton(_ event: CalendarEvent) -> some View {
-        JoinButton(event: event,
-                   center: appState.meetingRecorderCenter,
-                   prominent: event.isUpcoming || event.isHappeningNow)
-    }
-
-    private func stopRecording() {
-        // No CLI-runner guard here: stopping capture must never depend on the
-        // watchtower binary resolving — the Center fails visibly at the save
-        // step instead, with the audio kept.
-        Task {
-            await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+            MeetingRecordButton(eventID: nil, title: nil)
         }
     }
 
     // MARK: - Day Section
 
-    private func daySection(day: DayEvents) -> some View {
+    private func daySection(_ section: MeetingDaySection) -> some View {
         let cal = Calendar.current
-        let isToday = cal.isDateInToday(day.id)
-        let isPast = day.id < cal.startOfDay(for: Date())
-        let timed = day.events.filter { !$0.isAllDay }
-        let allDay = day.events.filter { $0.isAllDay }
+        let isToday = cal.isDateInToday(section.id)
+        let isPast = section.id < cal.startOfDay(for: Date())
+        let allDayEvents: [CalendarEvent] = section.entries.compactMap { entry in
+            guard case let .event(event, _) = entry.kind, event.isAllDay else { return nil }
+            return event
+        }
+        let timedEntries = section.entries.filter { entry in
+            if case let .event(event, _) = entry.kind { return !event.isAllDay }
+            return true
+        }
 
         return VStack(alignment: .leading, spacing: 8) {
-            Text(day.label)
+            Text(section.label)
                 .font(.headline)
                 .foregroundStyle(isToday ? .primary : .secondary)
 
-            if !allDay.isEmpty {
-                allDayChip(allDay, date: day.id)
+            if !allDayEvents.isEmpty {
+                allDayChip(allDayEvents, date: section.id)
             }
 
-            ForEach(timed) { event in
-                eventRow(event)
+            if isToday {
+                // Only the Today section ticks: TimelineView recomputes the
+                // marker's label and position once a minute.
+                TimelineView(.everyMinute) { context in
+                    timedRowsWithNowLine(timedEntries, now: context.date)
+                }
+            } else {
+                ForEach(timedEntries) { entry in
+                    entryRow(entry)
+                }
             }
         }
         // Past days are browsable history, visually receded. Edge: a
         // cross-midnight meeting still running lands in a dimmed past
         // section WITH the green now-highlight — accepted cosmetic quirk.
         .opacity(isPast ? 0.55 : 1)
+    }
+
+    // MARK: - Now Line
+
+    private static let meetingsScrollSpace = "meetings-scroll"
+
+    private static let nowLineTimeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt
+    }()
+
+    /// Today's timed rows with the red now-line marker inserted at
+    /// `NowLine.nowLineIndex` — before the first not-yet-started row, or
+    /// after the last one when everything has started. Rendered from
+    /// `NowLine.rows`, the single insertion site.
+    private func timedRowsWithNowLine(_ entries: [MeetingListEntry], now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(NowLine.rows(entries: entries, now: now)) { row in
+                switch row {
+                case .entry(let entry):
+                    entryRow(entry)
+                case .nowLine:
+                    nowLineRow(now: now)
+                }
+            }
+        }
+    }
+
+    private func nowLineRow(now: Date) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(.red)
+                .frame(width: 6, height: 6)
+            Text(Self.nowLineTimeFormatter.string(from: now))
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.red)
+            Rectangle()
+                .fill(.red)
+                .frame(height: 1.5)
+        }
+        // Publish the marker's frame in the scroll view's coordinate space so
+        // the floating "Now" button knows when it is off-screen (preference
+        // key instead of the macOS 15+ scroll-visibility APIs).
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: NowLineFramePreferenceKey.self,
+                    value: geo.frame(in: .named(Self.meetingsScrollSpace))
+                )
+            }
+        )
+        .id(NowLine.nowLineID)
+    }
+
+    private func updateNowLineVisibility(viewportHeight: CGFloat) {
+        let visibility = NowLine.visibility(
+            frame: lastNowLineFrame.value, viewportHeight: viewportHeight
+        )
+        if visibility != nowLineVisibility {
+            nowLineVisibility = visibility
+        }
+    }
+
+    /// Floating jump-to-now capsule, shown only while the marker exists and
+    /// sits outside the viewport.
+    @ViewBuilder
+    private func jumpToNowButton(proxy: ScrollViewProxy) -> some View {
+        if let arrow = nowLineVisibility?.jumpArrowSymbol {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(NowLine.nowLineID, anchor: .center)
+                }
+            } label: {
+                // Styling lives on the Label (the allDayChip pattern) so the
+                // whole painted capsule is clickable with .buttonStyle(.plain).
+                Label("Now", systemImage: arrow)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.red, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+            .padding(.bottom, 12)
+        }
     }
 
     // MARK: - All-Day Chip
@@ -308,29 +430,21 @@ struct CalendarEventsView: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(events) { event in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(.secondary.opacity(0.3))
-                                    .frame(width: 6, height: 6)
-                                Text(event.title)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            .padding(.leading, 12)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    expandedEventID = expandedEventID == event.id ? nil : event.id
-                                }
-                            }
-
-                            if expandedEventID == event.id {
-                                eventDetail(event)
-                                    .padding(.leading, 24)
-                            }
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(.secondary.opacity(0.3))
+                                .frame(width: 6, height: 6)
+                            Text(event.title)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
+                        .padding(.leading, 12)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedMeeting = .event(event.id)
+                        }
+                        .id(event.id)
                     }
                 }
                 .padding(.top, 2)
@@ -338,130 +452,40 @@ struct CalendarEventsView: View {
         }
     }
 
-    // MARK: - Event Row
+    // MARK: - Entry Row
 
-    private func eventRow(_ event: CalendarEvent) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    @ViewBuilder
+    private func entryRow(_ entry: MeetingListEntry) -> some View {
+        switch entry.kind {
+        case let .event(event, folded):
             HStack {
-                CalendarEventRow(event: event)
+                CalendarEventRow(event: event, recordingCount: folded.count)
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            expandedEventID = expandedEventID == event.id ? nil : event.id
-                        }
-                    }
-                Button {
-                    if selectedEventID == event.id {
-                        selectedEventID = nil
-                    } else {
-                        selectedEventID = event.id
-                        meetingPrepVM.generate(eventID: event.id)
-                    }
-                } label: {
-                    Label("Prepare", systemImage: "doc.text.magnifyingglass")
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(selectedEventID == event.id ? Color.accentColor : .blue)
+                    .onTapGesture { selectedMeeting = entry.id }
 
-                if event.conferenceLink != nil {
+                if event.conferenceLink != nil, event.endDate > Date() {
                     joinButton(event)
                 }
-
-                recordButton(eventID: event.id, title: event.title)
             }
-
-            if expandedEventID == event.id {
-                eventDetail(event)
-                    .padding(.leading, 88)
-            }
-        }
-        // Scroll anchor for the recording→event deep link.
-        .id(event.id)
-    }
-
-    // MARK: - Event Detail
-
-    private func eventDetail(_ event: CalendarEvent) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if !event.location.isEmpty {
-                Label(event.location, systemImage: "mappin")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if !event.organizerEmail.isEmpty {
-                Label(event.organizerEmail, systemImage: "person")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            let attendees = event.parsedAttendees
-            if !attendees.isEmpty {
-                Label("\(attendees.count) attendees", systemImage: "person.2")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                ForEach(attendees) { a in
-                    HStack(spacing: 4) {
-                        Image(systemName: responseIcon(a.responseStatus))
-                            .font(.caption2)
-                            .foregroundStyle(responseColor(a.responseStatus))
-                        Text(a.displayName.isEmpty ? a.email : a.displayName)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.leading, 20)
-                }
-            }
-
-            let plain = event.plainDescription
-            if !plain.isEmpty {
-                Text(plain)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
-                    .padding(.top, 2)
-            }
-
-            if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
-                Link(destination: eventURL) {
-                    Label("Open in Google Calendar", systemImage: "arrow.up.right.square")
-                        .font(.caption)
-                }
-                .padding(.top, 2)
-            }
-
-            // Linked recordings (hidden when the event has none): tapping a
-            // row deep-links into the Recordings tab with it selected.
-            EventRecordingsSection(eventID: event.id) { recordingID in
-                selectedRecordingID = recordingID
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    mode = .recordings
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    // MARK: - Helpers
-
-    private func responseIcon(_ status: String) -> String {
-        switch status {
-        case "accepted": return "checkmark.circle.fill"
-        case "tentative": return "questionmark.circle"
-        case "declined": return "xmark.circle"
-        default: return "circle"
+            .id(event.id)
+        case let .recording(item):
+            MeetingRecordingRow(item: item, isSelected: selectedMeeting == entry.id)
+                .contentShape(Rectangle())
+                .onTapGesture { selectedMeeting = entry.id }
+                .id(item.id)
         }
     }
 
-    private func responseColor(_ status: String) -> Color {
-        switch status {
-        case "accepted": return .green
-        case "tentative": return .orange
-        case "declined": return .red
-        default: return .secondary
-        }
+    // MARK: - Join Button
+
+    /// Opens the event's conference link and (per the "Auto-record on join"
+    /// setting) starts an event-linked recording via the shared
+    /// `JoinMeetingAction`. Prominent while the meeting is imminent/ongoing.
+    @ViewBuilder
+    private func joinButton(_ event: CalendarEvent) -> some View {
+        JoinButton(event: event,
+                   center: appState.meetingRecorderCenter,
+                   prominent: event.isUpcoming || event.isHappeningNow)
     }
 
     // MARK: - Empty

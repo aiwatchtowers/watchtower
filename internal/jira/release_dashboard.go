@@ -42,6 +42,12 @@ type ScopeChange struct {
 	AddedLastWeek int `json:"added_last_week"`
 }
 
+// releaseVersionKey identifies a fix version within one connected Jira site.
+type releaseVersionKey struct {
+	accountID int64
+	name      string
+}
+
 // BuildReleaseDashboard returns unreleased, non-archived releases with aggregated progress.
 // Returns nil, nil when the release_dashboard feature is disabled.
 func BuildReleaseDashboard(database *db.DB, cfg *config.Config, projectKey string, now time.Time) ([]ReleaseEntry, error) {
@@ -80,18 +86,21 @@ func BuildReleaseDashboard(database *db.DB, cfg *config.Config, projectKey strin
 		return nil, err
 	}
 
-	// Group issues by fix version name.
-	issuesByVersion := make(map[string][]db.JiraIssue)
+	// Group issues by (account, fix version name). Version names are site-local:
+	// two connected sites routinely both ship a "v1.0", and folding them into one
+	// bucket would count the other site's issues against this release's progress.
+	issuesByVersion := make(map[releaseVersionKey][]db.JiraIssue)
 	for _, issue := range allIssues {
 		versions := parseFixVersions(issue.FixVersions)
 		for _, v := range versions {
-			issuesByVersion[v] = append(issuesByVersion[v], issue)
+			key := releaseVersionKey{accountID: issue.AccountID, name: v}
+			issuesByVersion[key] = append(issuesByVersion[key], issue)
 		}
 	}
 
 	var entries []ReleaseEntry
 	for _, rel := range filtered {
-		issues := issuesByVersion[rel.Name]
+		issues := issuesByVersion[releaseVersionKey{accountID: rel.AccountID, name: rel.Name}]
 		entry, err := buildReleaseEntry(database, rel, now, weekAgo, issues)
 		if err != nil {
 			return nil, err
@@ -135,8 +144,8 @@ func BuildReleaseDetail(database *db.DB, cfg *config.Config, releaseName string,
 	rel := releases[0]
 	weekAgo := now.AddDate(0, 0, -7).Format(time.RFC3339)
 
-	// Load issues for this specific release.
-	issues, err := database.GetJiraIssuesByFixVersion(rel.Name)
+	// Load issues for this specific release, scoped to the site that owns it.
+	issues, err := database.GetJiraIssuesByFixVersion(rel.AccountID, rel.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +285,7 @@ func buildReleaseEntry(database *db.DB, rel db.JiraRelease, now time.Time, weekA
 	}
 
 	// Scope changes (approximate: count issues synced in last week).
-	addedLastWeek, err := database.GetJiraIssueCountAddedSince(rel.Name, weekAgo)
+	addedLastWeek, err := database.GetJiraIssueCountAddedSince(rel.AccountID, rel.Name, weekAgo)
 	if err != nil {
 		return ReleaseEntry{}, err
 	}

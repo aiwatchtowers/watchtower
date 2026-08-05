@@ -21,7 +21,7 @@ final class JiraBoardSyncManager {
         return Self.formatDuration(Date().timeIntervalSince(startedAt))
     }
 
-    func startSync(boardID: Int) {
+    func startSync(accountID: Int64, boardID: Int) {
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
             return
@@ -34,7 +34,9 @@ final class JiraBoardSyncManager {
         error = nil
 
         Task {
-            let result = await Self.runSyncProcess(cliPath: cliPath, boardID: boardID) { json in
+            let result = await Self.runSyncProcess(
+                cliPath: cliPath, accountID: accountID, boardID: boardID
+            ) { json in
                 await MainActor.run { [weak self] in
                     self?.progress = json
                 }
@@ -53,13 +55,15 @@ final class JiraBoardSyncManager {
     /// Runs the sync CLI process off the main actor. Calls `onProgress` for each JSON line.
     private nonisolated static func runSyncProcess(
         cliPath: String,
+        accountID: Int64,
         boardID: Int,
         onProgress: @Sendable (InsightProgressData) async -> Void
     ) async -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: cliPath)
         proc.arguments = [
-            "jira", "sync", "--board", String(boardID), "--progress-json",
+            "jira", "--account", String(accountID),
+            "sync", "--board", String(boardID), "--progress-json"
         ]
         proc.environment = Constants.resolvedEnvironment()
         proc.currentDirectoryURL = Constants.processWorkingDirectory()
