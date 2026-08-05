@@ -2,8 +2,11 @@ import Foundation
 
 /// A notification response handed from a deferring duplicate instance to the one that
 /// survived the single-instance race, reduced to what `NotificationDelegate.route` reads.
+///
+/// Payload only, by design: the action identifier deliberately does not cross the bus,
+/// so no action-button branch of `route` is reachable from a forwarded response. A blob
+/// that still carries an `actionID` key decodes fine and simply has nowhere to put it.
 struct ForwardedNotificationResponse: Codable {
-    let actionID: String
     /// The routed subset of the push's `userInfo`, every value flattened to a string.
     let payload: [String: String]
 
@@ -25,6 +28,17 @@ struct ForwardedNotificationResponse: Codable {
 /// URL-scheme routing is ambiguous here; distributed `userInfo` is dropped under App
 /// Sandbox (this app is unsandboxed today — `com.apple.security.app-sandbox` is false
 /// in `scripts/Watchtower.entitlements` — but an object string works either way).
+///
+/// Threat model: `DistributedNotificationCenter` is a session-wide bus with no sender
+/// authentication, so any process running as this user can post here and the survivor
+/// cannot tell a real duplicate from a forgery. The payload is therefore untrusted
+/// input and may only ever *navigate*: the action identifier does not travel, so a
+/// forged post cannot reach a capability-bearing branch (`joinRecordActionID` starting
+/// mic + system-audio capture under this app's TCC grants, `stopRecordingActionID`
+/// stopping one). Navigation-only is the settled design, not a stopgap: an authenticated
+/// transport (XPC with a peer code-signing check) would buy back only the ability to
+/// forward action buttons, which is not worth a Mach-service registration. Do not let
+/// the identifier — or any other capability-bearing field — cross this bus again.
 enum NotificationForwarding {
     static let notificationName = Notification.Name("com.watchtower.desktop.forwarded-notification-response")
 
@@ -35,7 +49,7 @@ enum NotificationForwarding {
     /// in the push is dropped rather than shipped across the process boundary.
     private static let routedKeys = ["type", digestIDKey, "eventId", "conferenceUrl"]
 
-    static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {
+    static func encode(userInfo: [AnyHashable: Any]) -> String? {
         var payload: [String: String] = [:]
         for key in routedKeys {
             if let value = userInfo[key] as? String {
@@ -44,10 +58,10 @@ enum NotificationForwarding {
                 payload[key] = String(value)
             }
         }
-        let response = ForwardedNotificationResponse(actionID: actionID, payload: payload)
+        let response = ForwardedNotificationResponse(payload: payload)
         guard let data = try? JSONEncoder().encode(response),
               let json = String(data: data, encoding: .utf8) else {
-            NSLog("NotificationForwarding: could not encode response for action %@", actionID)
+            NSLog("NotificationForwarding: could not encode forwarded response")
             return nil
         }
         return json
@@ -63,8 +77,8 @@ enum NotificationForwarding {
     }
 
     /// Duplicate side. Delivery is immediate: the poster exits right after.
-    static func post(actionID: String, userInfo: [AnyHashable: Any]) {
-        guard let json = encode(actionID: actionID, userInfo: userInfo) else { return }
+    static func post(userInfo: [AnyHashable: Any]) {
+        guard let json = encode(userInfo: userInfo) else { return }
         DistributedNotificationCenter.default().postNotificationName(
             notificationName,
             object: json,

@@ -32,9 +32,16 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let actionID = response.actionIdentifier
 
         if Self.forwardMode {
-            NotificationForwarding.post(actionID: actionID, userInfo: userInfo)
+            // Payload only: the action identifier never crosses the unauthenticated
+            // bus, so the survivor treats this as a plain tap. A pressed action button
+            // is deliberately downgraded to navigation rather than executed remotely.
+            NotificationForwarding.post(userInfo: userInfo)
             completionHandler()
-            NSLog("NotificationDelegate: forwarded response for action %@ to the running instance; exiting", actionID)
+            NSLog(
+                "NotificationDelegate: forwarded response for action %@ to the running instance "
+                    + "as navigation only; exiting",
+                actionID
+            )
             // The response is what this process was waiting for — no reason to
             // sit out the rest of the grace window.
             exit(0)
@@ -170,10 +177,18 @@ struct WatchtowerApp: App {
         UNUserNotificationCenter.current().delegate = notificationDelegate
         NotificationService.registerMeetingCategories()
         // Only the survivor listens: a duplicate must never route what it forwards.
+        //
+        // A forwarded response always routes under the default (plain-tap) identifier —
+        // the forwarding bus is unauthenticated, so nothing arriving on it may reach an
+        // action-button branch. Every capture-touching branch of `route` degrades to
+        // navigation under that identifier: `meeting_reminder` fails
+        // `handleMeetingReminderAction`'s join/join-record guard and lands on the
+        // Calendar tab, and `meeting_stop_recording` takes its else branch to the same
+        // place. The remaining branches never read the identifier at all.
         NotificationForwarding.observe { response in
             Task { @MainActor in
                 await NotificationDelegate.route(
-                    actionID: response.actionID,
+                    actionID: UNNotificationDefaultActionIdentifier,
                     userInfo: response.userInfo,
                     appState: NotificationDelegate.sharedAppState
                 )
