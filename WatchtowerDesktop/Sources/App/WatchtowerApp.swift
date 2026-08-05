@@ -11,6 +11,10 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// Set from the SwiftUI body once the real managed AppState is live.
     static var sharedAppState: AppState?
 
+    /// Set by a duplicate instance that lost the single-instance race: it routes
+    /// nothing itself, it hands the response to the survivor and exits.
+    static var forwardMode = false
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -25,47 +29,61 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        let type = userInfo["type"] as? String
         let actionID = response.actionIdentifier
+
+        if Self.forwardMode {
+            NotificationForwarding.post(actionID: actionID, userInfo: userInfo)
+            completionHandler()
+            NSLog("NotificationDelegate: forwarded response for action %@ to the running instance; exiting", actionID)
+            // The response is what this process was waiting for — no reason to
+            // sit out the rest of the grace window.
+            exit(0)
+        }
 
         // Bring the running app to front
         NSApplication.shared.activate(ignoringOtherApps: true)
 
         Task { @MainActor in
-            let appState = Self.sharedAppState
-            switch type {
-            case "decision":
-                if let digestID = userInfo["digestId"] as? Int {
-                    appState?.navigateToDigest(digestID)
-                } else {
-                    appState?.selectedDestination = .digests
-                }
-            case "track", "track_update":
-                appState?.selectedDestination = .tracks
-            case "task_overdue", "target_extract":
-                appState?.selectedDestination = .targets
-            case "daily_summary":
-                appState?.selectedDestination = .digests
-            case "meeting_reminder":
-                await Self.handleMeetingReminderAction(actionID: actionID, userInfo: userInfo, appState: appState)
-            case "meeting_stop_recording":
-                if actionID == NotificationService.stopRecordingActionID {
-                    if let appState {
-                        await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
-                    } else {
-                        // appState not wired yet (tap raced app launch): never
-                        // drop an explicit Stop-recording intent silently.
-                        print("[MeetingReminder] stop-recording action dropped: appState unavailable")
-                    }
-                } else {
-                    appState?.selectedDestination = .calendar
-                }
-            default:
-                break
-            }
+            await Self.route(actionID: actionID, userInfo: userInfo, appState: Self.sharedAppState)
         }
 
         completionHandler()
+    }
+
+    /// The notification-response routing table. Shared by a response this instance
+    /// received itself and one forwarded from a duplicate that deferred to it.
+    @MainActor
+    static func route(actionID: String, userInfo: [AnyHashable: Any], appState: AppState?) async {
+        switch userInfo["type"] as? String {
+        case "decision":
+            if let digestID = userInfo["digestId"] as? Int {
+                appState?.navigateToDigest(digestID)
+            } else {
+                appState?.selectedDestination = .digests
+            }
+        case "track", "track_update":
+            appState?.selectedDestination = .tracks
+        case "task_overdue", "target_extract":
+            appState?.selectedDestination = .targets
+        case "daily_summary":
+            appState?.selectedDestination = .digests
+        case "meeting_reminder":
+            await handleMeetingReminderAction(actionID: actionID, userInfo: userInfo, appState: appState)
+        case "meeting_stop_recording":
+            if actionID == NotificationService.stopRecordingActionID {
+                if let appState {
+                    await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+                } else {
+                    // appState not wired yet (tap raced app launch): never
+                    // drop an explicit Stop-recording intent silently.
+                    print("[MeetingReminder] stop-recording action dropped: appState unavailable")
+                }
+            } else {
+                appState?.selectedDestination = .calendar
+            }
+        default:
+            break
+        }
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared
@@ -122,53 +140,92 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 struct WatchtowerApp: App {
     @State private var appState = AppState()
     private let notificationDelegate = NotificationDelegate()
+    private let isDuplicate: Bool
 
     init() {
+        // Stored-property initializers (`appState`, `notificationDelegate`) run BEFORE
+        // this guard, so they must stay side-effect-free — a duplicate instance
+        // constructs them and then exits. Heavy work belongs in `AppState.initialize()`.
+        if let survivor = SingleInstanceGuard.runningInstanceToDeferTo() {
+            // Duplicate: stay alive, headless, only long enough for the notification
+            // response that launched this process to arrive and be forwarded. With no
+            // response the two seconds elapse and this degrades to activate-and-exit.
+            isDuplicate = true
+            NSApplication.shared.setActivationPolicy(.prohibited)
+            NotificationDelegate.forwardMode = true
+            UNUserNotificationCenter.current().delegate = notificationDelegate
+            let activated = survivor.activate()
+            NSLog(
+                "SingleInstanceGuard: duplicate instance, deferring to pid %d (activate: %@); exiting",
+                survivor.processIdentifier,
+                activated ? "ok" : "denied"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { exit(0) }
+            return
+        }
+
+        isDuplicate = false
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
         UNUserNotificationCenter.current().delegate = notificationDelegate
         NotificationService.registerMeetingCategories()
+        // Only the survivor listens: a duplicate must never route what it forwards.
+        NotificationForwarding.observe { response in
+            Task { @MainActor in
+                await NotificationDelegate.route(
+                    actionID: response.actionID,
+                    userInfo: response.userInfo,
+                    appState: NotificationDelegate.sharedAppState
+                )
+            }
+        }
     }
 
     var body: some Scene {
         WindowGroup {
-            NavigationRoot()
-                .frame(minWidth: 800, minHeight: 600)
-                .overlay(alignment: .bottomTrailing) {
-                    RecordingIndicatorView()
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    ExtractIndicatorView()
-                }
-                // Separate alignment from the recording/extract indicators'
-                // corner, so the banner and the pills never overlap.
-                .overlay(alignment: .top) {
-                    UpcomingMeetingBannerView()
-                }
-                .background(OpaqueWindowBackground())
-                // `.environment` must wrap the overlay too: the overlay attaches as a
-                // sibling outside any environment applied deeper on NavigationRoot, so
-                // injecting here (outermost) is what lets RecordingIndicatorView's
-                // @Environment(AppState.self) resolve instead of trapping on launch.
-                .environment(appState)
-                // Same outermost placement, same reason: link surfaces live
-                // inside the overlays too (the recording indicator's panel,
-                // the meeting banner), so the scheme gate has to wrap them.
-                .environment(\.openURL, AllowedURLSchemes.openURLAction)
-                .onAppear {
-                    // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
-                    NotificationDelegate.sharedAppState = appState
-                    appState.initialize()
-                }
-                .onOpenURL { url in
-                    // Handle watchtower-auth:// callback — just bring app to front
-                    if url.scheme == "watchtower-auth" {
-                        NSApplication.shared.activate(ignoringOtherApps: true)
+            // A duplicate is headless for its grace window: no UI to flash, and no
+            // `AppState.initialize()` running a second time against the shared database.
+            if isDuplicate {
+                EmptyView()
+            } else {
+                NavigationRoot()
+                    .frame(minWidth: 800, minHeight: 600)
+                    .overlay(alignment: .bottomTrailing) {
+                        RecordingIndicatorView()
                     }
-                }
-                // Claim external URL events for the EXISTING window — without
-                // this, WindowGroup spawns a brand-new window per open-URL.
-                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                    .overlay(alignment: .bottomTrailing) {
+                        ExtractIndicatorView()
+                    }
+                    // Separate alignment from the recording/extract indicators'
+                    // corner, so the banner and the pills never overlap.
+                    .overlay(alignment: .top) {
+                        UpcomingMeetingBannerView()
+                    }
+                    .background(OpaqueWindowBackground())
+                    // `.environment` must wrap the overlay too: the overlay attaches as a
+                    // sibling outside any environment applied deeper on NavigationRoot, so
+                    // injecting here (outermost) is what lets RecordingIndicatorView's
+                    // @Environment(AppState.self) resolve instead of trapping on launch.
+                    .environment(appState)
+                    // Same outermost placement, same reason: link surfaces live
+                    // inside the overlays too (the recording indicator's panel,
+                    // the meeting banner), so the scheme gate has to wrap them.
+                    .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                    .onAppear {
+                        // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
+                        NotificationDelegate.sharedAppState = appState
+                        appState.initialize()
+                    }
+                    .onOpenURL { url in
+                        // Handle watchtower-auth:// callback — just bring app to front
+                        if url.scheme == "watchtower-auth" {
+                            NSApplication.shared.activate(ignoringOtherApps: true)
+                        }
+                    }
+                    // Claim external URL events for the EXISTING window — without
+                    // this, WindowGroup spawns a brand-new window per open-URL.
+                    .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+            }
         }
         .defaultSize(width: 1200, height: 800)
 

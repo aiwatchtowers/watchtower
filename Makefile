@@ -13,7 +13,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift test-scripts sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -35,6 +35,14 @@ test-cover:
 
 test-swift:
 	cd WatchtowerDesktop && swift test
+
+# Shell-level tests for build-app.sh. Each extracts a marked block from the
+# script and runs it against stubbed binaries — no real build, no codesign.
+test-scripts:
+	@rc=0; for t in scripts/tests/test-*.sh; do \
+	  echo "==> $$t"; \
+	  bash "$$t" || rc=1; \
+	done; exit $$rc
 
 lint:
 	golangci-lint run ./...
@@ -97,5 +105,5 @@ periphery-baseline:
 # periphery dead-code check (vs baseline), Go tests, and Swift tests. Failing
 # any of these halts the release. Used by .claude/commands/release.md before
 # `make app`.
-release-check: quality periphery-check test test-swift
+release-check: quality periphery-check test test-swift test-scripts
 	@echo "✓ release-check passed"
