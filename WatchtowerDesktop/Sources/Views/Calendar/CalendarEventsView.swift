@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// Frame of the now-line marker row in the meetings scroll view's named
+/// coordinate space; nil when no marker is rendered.
+private struct NowLineFramePreferenceKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = value ?? nextValue()
+    }
+}
+
+/// Reference box for the marker's last published frame — mutating it does not
+/// invalidate the view, unlike a plain `@State CGRect?`.
+private final class NowLineFrameBox {
+    var value: CGRect?
+}
+
 /// Unified master-detail "Meetings" screen for the Calendar tab: one
 /// chronological list merging calendar events and recordings (an event with
 /// recordings is one row; an ad-hoc or orphaned recording is its own row —
@@ -20,6 +35,16 @@ struct CalendarEventsView: View {
     @State private var scrollTargetEventID: String?
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
+    /// Derived tri-state position of the now-line marker relative to the
+    /// viewport (nil while no marker is rendered — no Today section). Storing
+    /// the derived state instead of the raw frame means scroll ticks don't
+    /// invalidate the whole non-lazy list — only actual visibility
+    /// transitions do. Drives the floating "Now" button.
+    @State private var nowLineVisibility: NowLine.Visibility?
+    /// Last frame published by the marker row, boxed in a reference type so
+    /// updating it never invalidates the view tree — it only feeds
+    /// `updateNowLineVisibility` when either geometry input changes.
+    @State private var lastNowLineFrame = NowLineFrameBox()
 
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
@@ -146,31 +171,50 @@ struct CalendarEventsView: View {
 
     private var meetingsList: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
+            // GeometryReader supplies the viewport height for the marker
+            // visibility check — the app targets macOS 14, so the macOS 15+
+            // onScrollGeometryChange APIs are off the table.
+            GeometryReader { viewport in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
 
-                    ForEach(sections) { section in
-                        daySection(section)
-                            .id(section.id)
+                        ForEach(sections) { section in
+                            daySection(section)
+                                .id(section.id)
+                        }
+
+                        if sections.isEmpty {
+                            emptyState
+                        }
                     }
-
-                    if sections.isEmpty {
-                        emptyState
+                    .padding()
+                }
+                .coordinateSpace(name: Self.meetingsScrollSpace)
+                .onPreferenceChange(NowLineFramePreferenceKey.self) { frame in
+                    lastNowLineFrame.value = frame
+                    updateNowLineVisibility(viewportHeight: viewport.size.height)
+                }
+                // The classification depends on TWO inputs; a height-only
+                // resize keeps the marker frame byte-identical in the scroll
+                // space, so the preference alone would go stale.
+                .onChange(of: viewport.size.height) { _, height in
+                    updateNowLineVisibility(viewportHeight: height)
+                }
+                .overlay(alignment: .bottom) {
+                    jumpToNowButton(proxy: proxy)
+                }
+                // Deep-link scroll wins when a target is set (before this view
+                // first appears); otherwise land on "Today" past the history days.
+                .onAppear {
+                    if scrollTargetEventID != nil {
+                        scrollToTargetIfNeeded(proxy)
+                    } else {
+                        scrollToToday(proxy)
                     }
                 }
-                .padding()
+                .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
             }
-            // Deep-link scroll wins when a target is set (before this view
-            // first appears); otherwise land on "Today" past the history days.
-            .onAppear {
-                if scrollTargetEventID != nil {
-                    scrollToTargetIfNeeded(proxy)
-                } else {
-                    scrollToToday(proxy)
-                }
-            }
-            .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
         }
     }
 
@@ -230,14 +274,111 @@ struct CalendarEventsView: View {
                 allDayChip(allDayEvents, date: section.id)
             }
 
-            ForEach(timedEntries) { entry in
-                entryRow(entry)
+            if isToday {
+                // Only the Today section ticks: TimelineView recomputes the
+                // marker's label and position once a minute.
+                TimelineView(.everyMinute) { context in
+                    timedRowsWithNowLine(timedEntries, now: context.date)
+                }
+            } else {
+                ForEach(timedEntries) { entry in
+                    entryRow(entry)
+                }
             }
         }
         // Past days are browsable history, visually receded. Edge: a
         // cross-midnight meeting still running lands in a dimmed past
         // section WITH the green now-highlight — accepted cosmetic quirk.
         .opacity(isPast ? 0.55 : 1)
+    }
+
+    // MARK: - Now Line
+
+    private static let meetingsScrollSpace = "meetings-scroll"
+
+    private static let nowLineTimeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        return fmt
+    }()
+
+    /// Today's timed rows with the red now-line marker inserted at
+    /// `NowLine.nowLineIndex` — before the first not-yet-started row, or
+    /// after the last one when everything has started. Rendered from
+    /// `NowLine.rows`, the single insertion site.
+    private func timedRowsWithNowLine(_ entries: [MeetingListEntry], now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(NowLine.rows(entries: entries, now: now)) { row in
+                switch row {
+                case .entry(let entry):
+                    entryRow(entry)
+                case .nowLine:
+                    nowLineRow(now: now)
+                }
+            }
+        }
+    }
+
+    private func nowLineRow(now: Date) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(.red)
+                .frame(width: 6, height: 6)
+            Text(Self.nowLineTimeFormatter.string(from: now))
+                .font(.caption2)
+                .fontWeight(.medium)
+                .foregroundStyle(.red)
+            Rectangle()
+                .fill(.red)
+                .frame(height: 1.5)
+        }
+        // Publish the marker's frame in the scroll view's coordinate space so
+        // the floating "Now" button knows when it is off-screen (preference
+        // key instead of the macOS 15+ scroll-visibility APIs).
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: NowLineFramePreferenceKey.self,
+                    value: geo.frame(in: .named(Self.meetingsScrollSpace))
+                )
+            }
+        )
+        .id(NowLine.nowLineID)
+    }
+
+    private func updateNowLineVisibility(viewportHeight: CGFloat) {
+        let visibility = NowLine.visibility(
+            frame: lastNowLineFrame.value, viewportHeight: viewportHeight
+        )
+        if visibility != nowLineVisibility {
+            nowLineVisibility = visibility
+        }
+    }
+
+    /// Floating jump-to-now capsule, shown only while the marker exists and
+    /// sits outside the viewport.
+    @ViewBuilder
+    private func jumpToNowButton(proxy: ScrollViewProxy) -> some View {
+        if let arrow = nowLineVisibility?.jumpArrowSymbol {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    proxy.scrollTo(NowLine.nowLineID, anchor: .center)
+                }
+            } label: {
+                // Styling lives on the Label (the allDayChip pattern) so the
+                // whole painted capsule is clickable with .buttonStyle(.plain).
+                Label("Now", systemImage: arrow)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.red, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+            .padding(.bottom, 12)
+        }
     }
 
     // MARK: - All-Day Chip
