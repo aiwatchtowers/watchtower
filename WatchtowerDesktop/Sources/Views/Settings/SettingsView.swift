@@ -46,13 +46,16 @@ struct GeneralSettings: View {
     @State private var slackAuth = SlackAuthService()
     @State private var slackDisconnecting = false
     @State private var showSlackDisconnectConfirm = false
-    @State private var jiraAuth = JiraAuthService()
     @State private var showAddEmailAccountSheet = false
     @State private var accountPendingRemoval: EmailAccount?
     @State private var showAddCalendarAccountSheet = false
     @State private var calendarAccountPendingRemoval: CalendarAccount?
     @State private var showAddGoogleAccountSheet = false
     @State private var googleAccountPendingRemoval: GoogleAccount?
+    @State private var showAddSlackAccountSheet = false
+    @State private var slackAccountPendingRemoval: SlackAccount?
+    @State private var showAddJiraAccountSheet = false
+    @State private var jiraAccountPendingRemoval: JiraAccount?
 
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
@@ -62,12 +65,14 @@ struct GeneralSettings: View {
     @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
+    @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @State private var showAdvancedTranscription = false
 
     var body: some View {
         Form {
             workspaceSection
+            slackAccountsSection
             syncSection
             digestSection
             briefingSection
@@ -106,8 +111,9 @@ struct GeneralSettings: View {
         .onAppear {
             // Re-stat tokens/config: a connect or disconnect may have happened
             // outside this window (Calendar tab, Inbox banner, CLI).
-            jiraAuth.checkStatus()
             slackAuth.checkStatus()
+            appState.slackAccountsViewModel?.refresh()
+            appState.jiraAccountsViewModel?.refresh()
             appState.emailAccountsViewModel?.refresh()
             appState.calendarAccountsViewModel?.refresh()
             appState.googleAccountsViewModel?.refresh()
@@ -187,15 +193,15 @@ struct GeneralSettings: View {
             isPresented: $showSlackDisconnectConfirm,
             titleVisibility: .visible
         ) {
-            Button("Disconnect & Delete Slack Data", role: .destructive) {
+            Button("Disconnect Slack", role: .destructive) {
                 disconnectSlack()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Removes the Slack connection and deletes all synced Slack messages plus the AI products "
-                    + "built on them (digests, tracks, people cards, inbox items, situations). "
-                    + "Gmail, Calendar, and Jira data are kept."
+                "Removes the Slack connection and stops syncing. Already-synced Slack messages and the AI "
+                    + "products built on them (digests, tracks, people cards, inbox items, situations) are kept "
+                    + "and stay queryable. Gmail, Calendar, and Jira data are unaffected."
             )
         }
     }
@@ -203,8 +209,10 @@ struct GeneralSettings: View {
     private func disconnectSlack() {
         slackDisconnecting = true
         Task {
-            // Stop the daemon first so it doesn't rewrite Slack data mid-purge,
-            // then restart it — without a token it skips the Slack phase.
+            // Stop the daemon first so it isn't mid-sync when the token is
+            // removed, then restart it — without a token it skips the Slack
+            // phase. Synced data is kept (non-destructive, matches `slack
+            // remove` / `auth logout` semantics).
             await daemonManager.stopDaemon()
             await slackAuth.disconnect()
             if slackAuth.error == nil {
@@ -493,6 +501,115 @@ struct GeneralSettings: View {
             Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
                 .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
         }
+    }
+
+    /// Slack Workspaces section — the multi-account Slack connections
+    /// (`slack_accounts` table, migration 00048), each independently granting
+    /// access via its own OAuth consent and carrying its own namespaced
+    /// identity. Modeled on `googleAccountsSection` below. Placed near the top
+    /// of the sources group since Slack is Watchtower's primary data source.
+    ///
+    /// The removal confirmation copy explicitly states data is KEPT — unlike
+    /// Google's removal, `slack remove` is non-destructive: it drops the token
+    /// and marks the row removed/disabled but leaves already-synced messages,
+    /// digests, and situations in place. The legacy single-account Slack
+    /// "Disconnect" in `workspaceSection` now shares the same non-destructive
+    /// semantics (`auth logout` → `removeSlackAccount`).
+    private var slackAccountsSection: some View {
+        Section("Slack Workspaces") {
+            if let vm = appState.slackAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No Slack workspaces connected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                if !account.teamDomain.isEmpty {
+                                    Text("\(account.teamDomain).slack.com")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(slackAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                            Toggle("Enabled", isOn: Binding(
+                                get: { account.enabled },
+                                set: { newValue in
+                                    Task { await vm.setEnabled(account, enabled: newValue) }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .disabled(vm.isConnecting)
+                            if !account.isOK {
+                                Button("Re-login") {
+                                    Task { await vm.relogin(account) }
+                                }
+                                .disabled(vm.isConnecting)
+                            }
+                            Button("Remove") {
+                                slackAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                            .disabled(vm.isConnecting)
+                        }
+                    }
+                }
+
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Slack Workspace") {
+                    showAddSlackAccountSheet = true
+                }
+                .disabled(vm.isConnecting)
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $showAddSlackAccountSheet) {
+            AddSlackAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(slackAccountPendingRemoval?.displayName ?? "this workspace")?",
+            isPresented: Binding(
+                get: { slackAccountPendingRemoval != nil },
+                set: { if !$0 { slackAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Workspace", role: .destructive) {
+                if let account = slackAccountPendingRemoval {
+                    Task { await appState.slackAccountsViewModel?.remove(account) }
+                }
+                slackAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Disconnects the workspace. Already-synced messages, digests, and "
+                    + "situations stay in Watchtower."
+            )
+        }
+    }
+
+    private func slackAccountStatusColor(_ account: SlackAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .red }
+        return .orange
     }
 
     /// Google Accounts section — the multi-account Calendar/Gmail
@@ -882,6 +999,13 @@ struct GeneralSettings: View {
                         .frame(width: 70)
                         .multilineTextAlignment(.trailing)
                 }
+                LabeledContent("Diarization threshold") {
+                    TextField("", value: $transcriptionDiarizationThreshold, format: .number)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                }
+                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
+                    + "Try lowering when different people get merged into one Speaker N.")
                 TextField(
                     "Force language",
                     text: $transcriptionForceLang,
@@ -914,58 +1038,106 @@ struct GeneralSettings: View {
             .foregroundStyle(.secondary)
     }
 
+    /// Jira Sites section — the multi-account Atlassian connections
+    /// (`jira_accounts` table, migration 00049), each independently granting
+    /// access via its own OAuth consent. Modeled on `slackAccountsSection`
+    /// above; replaces the old single Connect/Disconnect block.
+    ///
+    /// Like Slack (and unlike Google), removal is non-destructive: `jira
+    /// remove` drops the token and marks the row removed/disabled but leaves
+    /// already-synced issues, boards, and releases in place.
     @ViewBuilder
     private var jiraSettingsSection: some View {
-        Section("Jira") {
-            if jiraAuth.isConnected {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Connected")
-                        if let site = jiraAuth.siteURL {
-                            Text(site)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let user = jiraAuth.userDisplayName {
-                            Text(user)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button("Disconnect") {
-                        jiraAuth.disconnect()
-                    }
-                }
-            } else {
-                HStack {
-                    Image(systemName: "bolt.horizontal.circle")
+        Section("Jira Sites") {
+            if let vm = appState.jiraAccountsViewModel {
+                if vm.accounts.isEmpty {
+                    Text("No Jira sites connected.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("Not connected")
-                    Spacer()
-
-                    if jiraAuth.isAuthenticating {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") {
-                            jiraAuth.cancelConnect()
+                } else {
+                    ForEach(vm.accounts) { account in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.displayName)
+                                if !account.siteURL.isEmpty {
+                                    Text(account.siteURL)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Circle()
+                                .fill(jiraAccountStatusColor(account))
+                                .frame(width: 8, height: 8)
+                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                            Toggle("Enabled", isOn: Binding(
+                                get: { account.enabled },
+                                set: { newValue in
+                                    Task { await vm.setEnabled(account, enabled: newValue) }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .disabled(vm.isConnecting)
+                            if !account.isOK {
+                                Button("Re-login") {
+                                    Task { await vm.relogin(account) }
+                                }
+                                .disabled(vm.isConnecting)
+                            }
+                            Button("Remove") {
+                                jiraAccountPendingRemoval = account
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                            .disabled(vm.isConnecting)
                         }
-                    } else {
-                        Button("Connect") { jiraAuth.connect() }
-                            .buttonStyle(.borderedProminent)
                     }
                 }
-            }
 
-            if let err = jiraAuth.error {
-                Text(err)
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Add Jira Site") {
+                    showAddJiraAccountSheet = true
+                }
+                .disabled(vm.isConnecting)
+            } else {
+                Text("Loading...")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
             }
         }
+        .sheet(isPresented: $showAddJiraAccountSheet) {
+            AddJiraAccountView()
+                .environment(appState)
+        }
+        .confirmationDialog(
+            "Remove \(jiraAccountPendingRemoval?.displayName ?? "this site")?",
+            isPresented: Binding(
+                get: { jiraAccountPendingRemoval != nil },
+                set: { if !$0 { jiraAccountPendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Site", role: .destructive) {
+                if let account = jiraAccountPendingRemoval {
+                    Task { await appState.jiraAccountsViewModel?.remove(account) }
+                }
+                jiraAccountPendingRemoval = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Disconnects the site. Already-synced issues, boards, and "
+                    + "releases stay in Watchtower."
+            )
+        }
 
-        if jiraAuth.isConnected {
+        if appState.jiraAccountsViewModel?.accounts.isEmpty == false {
             Section {
                 Button {
                     appState.selectedDestination = .boards
@@ -983,6 +1155,12 @@ struct GeneralSettings: View {
                 .buttonStyle(.plain)
             }
         }
+    }
+
+    private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {
+        if account.isOK { return .green }
+        if account.isRevoked { return .red }
+        return .orange
     }
 
     private var bottomBar: some View {

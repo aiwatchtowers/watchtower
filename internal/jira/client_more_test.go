@@ -2,10 +2,12 @@ package jira
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 func makeTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 
 	tok := &OAuthToken{
 		AccessToken:  "at-valid",
@@ -42,7 +44,7 @@ func makeTestClient(t *testing.T, baseURL string) *Client {
 }
 
 func TestNewClient_Initialization(t *testing.T) {
-	store := NewTokenStore(t.TempDir())
+	store := NewTokenStore(t.TempDir(), 1)
 	c := NewClient("c1", JiraOAuthConfig{}, store)
 	assert.Equal(t, "c1", c.cloudID)
 	assert.Contains(t, c.baseURL, "/ex/jira/c1")
@@ -133,6 +135,30 @@ func TestClient_RefreshOn401(t *testing.T) {
 	assert.Equal(t, 2, calls)
 }
 
+// TestClient_PersistentUnauthorizedIsAuthRevoked pins the distinction the whole
+// re-login chain rests on: a 401 that survives a successful token refresh is
+// not a stale access token, it is a grant that is gone. Only ErrAuthRevoked
+// makes Syncer.Sync abort and the daemon stamp the account for re-login; a
+// plain "status 401" error would be swallowed per project.
+func TestClient_PersistentUnauthorizedIsAuthRevoked(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	stubTokenEndpoint(t)
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	err := c.get(context.Background(), "/x", &got)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAuthRevoked), "a 401 surviving a refresh must read as a revoked grant")
+	assert.Equal(t, int32(4), calls.Load(), "the client must retry through its refresh budget before giving up")
+}
+
 func TestClient_SearchIssues(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/rest/api/3/search/jql")
@@ -213,7 +239,7 @@ func TestClient_FetchBoardIssueCount(t *testing.T) {
 
 func TestClient_GetAccessToken_Refreshes(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 	// Save expired token.
 	require.NoError(t, store.Save(&OAuthToken{
 		AccessToken:  "old",
@@ -249,7 +275,7 @@ func TestClient_GetAccessToken_Refreshes(t *testing.T) {
 
 func TestClient_GetAccessToken_PreservesRefreshTokenOnEmptyResponse(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTokenStore(dir)
+	store := NewTokenStore(dir, 1)
 	require.NoError(t, store.Save(&OAuthToken{
 		AccessToken:  "old",
 		RefreshToken: "keep-me",

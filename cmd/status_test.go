@@ -96,6 +96,8 @@ workspaces:
 	database2, err := db.Open(wsDBPath)
 	require.NoError(t, err)
 	require.NoError(t, database2.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
+	_, err = database2.CreateSlackAccount(db.SlackAccount{TeamID: "T001", TeamName: "test-ws", TeamDomain: "test-ws", Label: "Work"})
+	require.NoError(t, err)
 	require.NoError(t, database2.UpsertUser(db.User{ID: "U001", Name: "alice"}))
 	require.NoError(t, database2.UpsertUser(db.User{ID: "U002", Name: "bob"}))
 	require.NoError(t, database2.UpsertChannel(db.Channel{ID: "C001", Name: "general", Type: "public"}))
@@ -119,7 +121,7 @@ workspaces:
 	require.NoError(t, err)
 
 	output := buf.String()
-	assert.Contains(t, output, "Workspace: test-ws (T001)")
+	assert.Contains(t, output, "Slack: Work (test-ws) [ok]")
 	assert.Contains(t, output, "Channels: 2 (1 watched)")
 	assert.Contains(t, output, "Users: 2")
 	assert.Contains(t, output, "Messages: 2")

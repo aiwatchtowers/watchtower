@@ -25,23 +25,31 @@ type SyncOptions struct {
 	SkipDMs  bool     // Skip syncing DMs and group DMs
 }
 
-// Orchestrator coordinates the sync phases.
+// Orchestrator coordinates the sync phases for one connected Slack account.
+// Every channelID/userID string passed between its methods, stored on a
+// SyncTask, or written to the DB is namespaced ("<accountID>:<rawID>"); only
+// the literal Slack SDK calls need the raw id (stripped via
+// watchtowerslack.SplitAccountID immediately before the call).
 type Orchestrator struct {
 	db                   *db.DB
 	slackClient          *watchtowerslack.Client
 	config               *config.Config
+	accountID            int64
+	account              db.SlackAccount
 	logger               *log.Logger
 	progress             *Progress
-	channelNames         map[string]string // channel ID -> name, populated during message sync
-	discoveredChannelIDs map[string]bool   // channels found active by discovery phase
+	channelNames         map[string]string // namespaced channel ID -> name, populated during message sync
+	discoveredChannelIDs map[string]bool   // namespaced channel IDs found active by discovery phase
 }
 
-// NewOrchestrator creates a new sync orchestrator.
-func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config) *Orchestrator {
+// NewOrchestrator creates a new sync orchestrator scoped to one connected
+// Slack account (accountID, a slack_accounts.id).
+func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config, accountID int64) *Orchestrator {
 	return &Orchestrator{
 		db:          database,
 		slackClient: slackClient,
 		config:      cfg,
+		accountID:   accountID,
 		logger:      log.Default(),
 		progress:    NewProgress(),
 	}
@@ -74,7 +82,82 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 	return workers
 }
 
-// Run executes the sync pipeline. For incremental sync (default), it uses
+// Run executes the sync pipeline and records the resulting auth state on the
+// account row (recordAuthResult) — the calendar.Syncer/gmail.Syncer precedent,
+// so a revoked/broken token surfaces in Desktop instead of staying silently
+// "ok" forever while the daemon log fills with the same error every cycle.
+// Coverage caveat: only an error that propagates all the way to run's own
+// return value is classified here — a per-channel/per-item failure that a
+// deeper phase catches and logs but doesn't return (e.g. message_sync.go's
+// per-page swallow) never reaches this point, so a token that dies mid-run
+// after an earlier phase already succeeded may still record "ok" until a
+// later cycle's failure surfaces at the top level.
+func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+	err := o.run(ctx, opts)
+	o.recordAuthResult(ctx, err)
+	return err
+}
+
+// recordAuthResult persists the account's sync auth state. Pass err=nil to
+// mark it healthy. Errors writing to the DB are logged but not returned —
+// auth state is best-effort telemetry. A cancelled ctx means daemon shutdown,
+// not an auth problem, so the state is left untouched (calendar.Syncer's
+// recordAuthResult precedent).
+func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
+	if o.db == nil {
+		return
+	}
+	if err == nil {
+		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", ""); dbErr != nil {
+			o.logger.Printf("slack: failed to clear auth state: %v", dbErr)
+		}
+		return
+	}
+	if ctx.Err() != nil {
+		o.logger.Printf("slack: sync cancelled, leaving auth state untouched: %v", err)
+		return
+	}
+	status := "error"
+	if isRevokedAuthError(err) {
+		status = "revoked"
+	}
+	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, err.Error()); dbErr != nil {
+		o.logger.Printf("slack: failed to record auth state: %v", dbErr)
+	}
+}
+
+// revokedSlackErrors are the Slack API error codes that mean the token itself
+// is dead (revoked/deactivated), not a transient or narrowly-scoped failure —
+// slack_accounts.status="revoked" drives Desktop's more urgent red indicator
+// (SlackAccount.isRevoked) vs the softer "error" one.
+var revokedSlackErrors = map[string]bool{
+	"invalid_auth":     true,
+	"account_inactive": true,
+	"token_revoked":    true,
+	"not_authed":       true,
+}
+
+// isRevokedAuthError classifies a Run() error for recordAuthResult — the
+// isNonFatalError precedent's structured-then-string-match pattern, applied
+// to a different question (dead token vs a transient/scoped one).
+func isRevokedAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var slackErr slack.SlackErrorResponse
+	if errors.As(err, &slackErr) {
+		return revokedSlackErrors[slackErr.Err]
+	}
+	msg := err.Error()
+	for code := range revokedSlackErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// run is Run's actual pipeline. For incremental sync (default), it uses
 // search.messages to directly save messages, avoiding per-channel API calls.
 // For --full or --channels, it runs the full pipeline:
 // 1. Workspace info (team.info, cached)
@@ -82,28 +165,20 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // 3. Messages (conversations.history per channel)
 // 4. User profiles (users.info for unknown users)
 // 5. Threads (conversations.replies)
-func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+func (o *Orchestrator) run(ctx context.Context, opts SyncOptions) error {
 	o.logger.Println("starting sync")
 
 	// Phase 1: workspace info
 	o.progress.SetPhase(PhaseMetadata)
 
-	// Ensure workspace record exists (team.info, cached after first call)
-	ws, err := o.db.GetWorkspace()
-	if err != nil {
-		return fmt.Errorf("checking workspace: %w", err)
+	// Ensure the connected account's team info is resolved (team.info, cached after first call)
+	if err := o.ensureWorkspace(ctx); err != nil {
+		return fmt.Errorf("workspace sync: %w", err)
 	}
-	if ws == nil {
-		if err := o.ensureWorkspace(ctx); err != nil {
-			return fmt.Errorf("workspace sync: %w", err)
-		}
-	} else {
-		o.logger.Printf("workspace: %s (%s) [cached]", ws.Name, ws.ID)
-		// Retry syncCurrentUser if it failed on a previous run (e.g. auth.test error).
-		// Required for action items pipeline which needs current_user_id.
-		if ws.CurrentUserID == "" {
-			o.syncCurrentUser(ctx)
-		}
+	// Retry syncCurrentUser if it failed on a previous run (e.g. auth.test error).
+	// Required for action items pipeline which needs current_user_id.
+	if o.account.CurrentUserID == "" {
+		o.syncCurrentUser(ctx)
 	}
 
 	// Sync custom emojis (fast, single API call)
@@ -205,11 +280,18 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Println("syncing channel read state")
 
+	// UnreadDigestChannelIDs/ChannelIDsWithoutLastRead are account-unscoped —
+	// they return every connected account's channels — so filter to this
+	// orchestrator's own account before calling the Slack API with them; a
+	// raw channel id can collide across two workspaces (the exact scenario
+	// namespacing exists to prevent), and this orchestrator only holds a
+	// token for its own account.
 	channelIDs, err := o.db.UnreadDigestChannelIDs()
 	if err != nil {
 		o.logger.Printf("warning: failed to get unread digest channels: %v", err)
 		return
 	}
+	channelIDs = o.filterOwnAccountIDs(channelIDs)
 
 	// First-run path: no digests yet, pre-fetch last_read for channels without it.
 	if len(channelIDs) == 0 {
@@ -218,6 +300,7 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 			o.logger.Printf("warning: failed to get channels without last_read: %v", err)
 			return
 		}
+		channelIDs = o.filterOwnAccountIDs(channelIDs)
 		if len(channelIDs) == 0 {
 			o.logger.Println("channel read state: all channels up to date, skipping")
 			return
@@ -227,7 +310,8 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 
 	var updated int
 	for _, chID := range channelIDs {
-		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, chID)
+		_, rawID, _ := watchtowerslack.SplitAccountID(chID)
+		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, rawID)
 		if err != nil {
 			o.logger.Printf("warning: failed to get read cursor for %s: %v", chID, err)
 			continue
@@ -244,11 +328,39 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) {
 	o.logger.Printf("channel read state: %d/%d channels updated (via conversations.info)", updated, len(channelIDs))
 }
 
+// filterOwnAccountIDs keeps only the namespaced ids that belong to this
+// orchestrator's own account, dropping every other connected Slack account's
+// ids plus any non-Slack-namespaced id (gmail:/imap: prefixed, or a bare
+// Jira/watchtower id with no namespace at all) — none of those are ever
+// valid input to this orchestrator's single-account Slack client.
+func (o *Orchestrator) filterOwnAccountIDs(ids []string) []string {
+	out := ids[:0:0]
+	for _, id := range ids {
+		if o.ownsID(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// ownsID reports whether a namespaced id belongs to this orchestrator's own
+// account — the single check filterOwnAccountIDs and syncInboxReactions both
+// need before ever handing an id to this orchestrator's Slack client.
+func (o *Orchestrator) ownsID(id string) bool {
+	acctID, _, ok := watchtowerslack.SplitAccountID(id)
+	return ok && acctID == o.accountID
+}
+
 // syncInboxReactions fetches fresh reactions from Slack for pending inbox items.
 // This ensures CheckUserReplied() can detect user reactions even though
 // search.messages doesn't return reactions and conversations.history only
 // captures reactions at the time of the sync.
 func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
+	// GetInboxItems is account-unscoped — it returns every source's pending
+	// items (every connected Slack account, plus Gmail/Jira/Watchtower) — so
+	// filter to this orchestrator's own account before calling the Slack API;
+	// a raw channel id can collide across two workspaces, and this
+	// orchestrator only holds a token for its own account.
 	pendingItems, err := o.db.GetInboxItems(db.InboxFilter{Status: "pending"})
 	if err != nil {
 		o.logger.Printf("warning: failed to load pending inbox items for reaction sync: %v", err)
@@ -264,6 +376,9 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 	seen := make(map[key]bool, len(pendingItems))
 	var targets []key
 	for _, item := range pendingItems {
+		if !o.ownsID(item.ChannelID) {
+			continue
+		}
 		k := key{item.ChannelID, item.MessageTS}
 		if !seen[k] {
 			seen[k] = true
@@ -273,7 +388,8 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 
 	var synced int
 	for _, t := range targets {
-		reactions, err := o.slackClient.GetMessageReactions(ctx, t.ch, t.ts)
+		_, rawCh, _ := watchtowerslack.SplitAccountID(t.ch)
+		reactions, err := o.slackClient.GetMessageReactions(ctx, rawCh, t.ts)
 		if err != nil {
 			// Non-fatal: channel might be archived, message deleted, etc.
 			if !isNonFatalError(err) {
@@ -293,7 +409,7 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 				dbReactions = append(dbReactions, db.Reaction{
 					ChannelID: t.ch,
 					MessageTS: t.ts,
-					UserID:    uid,
+					UserID:    watchtowerslack.Namespace(o.accountID, uid),
 					Emoji:     r.Name,
 				})
 			}
@@ -348,48 +464,47 @@ func (o *Orchestrator) finishSync() error {
 	return nil
 }
 
-// ensureWorkspace fetches and caches workspace info. Skips the API call if already in DB.
+// ensureWorkspace loads (and, on first run, resolves via team.info) the
+// connected account's team info. Skips the API call if already cached on
+// the slack_accounts row.
 func (o *Orchestrator) ensureWorkspace(ctx context.Context) error {
-	ws, err := o.db.GetWorkspace()
+	acct, err := o.db.GetSlackAccount(o.accountID)
 	if err != nil {
-		return fmt.Errorf("checking workspace: %w", err)
+		return fmt.Errorf("loading slack account %d: %w", o.accountID, err)
 	}
-	if ws != nil {
-		o.logger.Printf("workspace: %s (%s) [cached]", ws.Name, ws.ID)
+	if acct.TeamID != "" {
+		o.logger.Printf("workspace: %s (%s) [cached]", acct.TeamName, acct.TeamID)
+		o.account = acct
 		return nil
 	}
 
-	teamInfo, err := o.slackClient.GetTeamInfo(ctx)
+	info, err := o.slackClient.GetTeamInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
 	}
-	if err := o.db.UpsertWorkspace(db.Workspace{
-		ID:     teamInfo.ID,
-		Name:   teamInfo.Name,
-		Domain: teamInfo.Domain,
-	}); err != nil {
-		return fmt.Errorf("upserting workspace: %w", err)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, info.ID, info.Name, info.Domain, acct.CurrentUserID); err != nil {
+		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
 	}
-	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
-
-	// Identify the current user via auth.test
-	o.syncCurrentUser(ctx)
-
+	acct.TeamID, acct.TeamName, acct.TeamDomain = info.ID, info.Name, info.Domain
+	o.account = acct
+	o.logger.Printf("workspace: %s (%s)", acct.TeamName, acct.TeamID)
 	return nil
 }
 
 // syncCurrentUser calls auth.test to identify the token owner and stores
-// the user_id in the workspace record. Errors are logged but non-fatal.
+// the namespaced user_id on slack_accounts. Errors are logged but non-fatal.
 func (o *Orchestrator) syncCurrentUser(ctx context.Context) {
 	authResp, err := o.slackClient.AuthTest(ctx)
 	if err != nil {
 		o.logger.Printf("warning: auth.test failed: %v", err)
 		return
 	}
-	if err := o.db.SetCurrentUserID(authResp.UserID); err != nil {
+	namespaced := watchtowerslack.Namespace(o.accountID, authResp.UserID)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, o.account.TeamID, o.account.TeamName, o.account.TeamDomain, namespaced); err != nil {
 		o.logger.Printf("warning: saving current user: %v", err)
 		return
 	}
+	o.account.CurrentUserID = namespaced
 	o.logger.Printf("current user: @%s (%s)", authResp.User, authResp.UserID)
 }
 
@@ -400,13 +515,10 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 	if err != nil {
 		return fmt.Errorf("fetching team info: %w", err)
 	}
-	if err := o.db.UpsertWorkspace(db.Workspace{
-		ID:     teamInfo.ID,
-		Name:   teamInfo.Name,
-		Domain: teamInfo.Domain,
-	}); err != nil {
-		return fmt.Errorf("upserting workspace: %w", err)
+	if err := o.db.UpdateSlackAccountConnection(o.accountID, teamInfo.ID, teamInfo.Name, teamInfo.Domain, o.account.CurrentUserID); err != nil {
+		return fmt.Errorf("updating slack account %d: %w", o.accountID, err)
 	}
+	o.account.TeamID, o.account.TeamName, o.account.TeamDomain = teamInfo.ID, teamInfo.Name, teamInfo.Domain
 	o.logger.Printf("workspace: %s (%s)", teamInfo.Name, teamInfo.ID)
 
 	// Identify the current user
@@ -448,7 +560,7 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 			profileJSON = []byte("{}")
 		}
 		if err := o.db.UpsertUser(db.User{
-			ID:          u.ID,
+			ID:          watchtowerslack.Namespace(o.accountID, u.ID),
 			Name:        u.Name,
 			DisplayName: u.Profile.DisplayName,
 			RealName:    u.RealName,
@@ -492,15 +604,19 @@ func (o *Orchestrator) syncMetadata(ctx context.Context, opts SyncOptions) error
 			name = ch.ID
 		}
 		o.logger.Printf("  channel %d/%d: #%s [%s] %d members", i+1, len(channels), name, strings.Join(flags, ","), ch.NumMembers)
+		dmUserID := ch.User
+		if dmUserID != "" {
+			dmUserID = watchtowerslack.Namespace(o.accountID, dmUserID)
+		}
 		if err := o.db.UpsertChannel(db.Channel{
-			ID:         ch.ID,
+			ID:         watchtowerslack.Namespace(o.accountID, ch.ID),
 			Name:       ch.Name,
 			Type:       chType,
 			Topic:      ch.Topic.Value,
 			Purpose:    ch.Purpose.Value,
 			IsArchived: ch.IsArchived,
 			IsMember:   ch.IsMember,
-			DMUserID:   sql.NullString{String: ch.User, Valid: ch.User != ""},
+			DMUserID:   sql.NullString{String: dmUserID, Valid: dmUserID != ""},
 			NumMembers: ch.NumMembers,
 			LastRead:   ch.LastRead,
 		}); err != nil {

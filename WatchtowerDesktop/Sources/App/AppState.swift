@@ -120,6 +120,16 @@ final class AppState {
     /// away from the Settings window.
     private(set) var googleAccountsViewModel: GoogleAccountsViewModel?
 
+    /// Slack Accounts ViewModel (multi-workspace) — persists across tab
+    /// switches so an in-flight OAuth connect survives navigating away from the
+    /// Settings window.
+    private(set) var slackAccountsViewModel: SlackAccountsViewModel?
+
+    /// Jira Accounts ViewModel (multi-site) — persists across tab switches so
+    /// an in-flight OAuth connect survives navigating away from the Settings
+    /// window.
+    private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -308,6 +318,8 @@ final class AppState {
                 initEmailAccounts(dbPool: manager.dbPool)
                 initCalendarAccounts(dbPool: manager.dbPool)
                 initGoogleAccounts(dbPool: manager.dbPool)
+                initSlackAccounts(dbPool: manager.dbPool)
+                initJiraAccounts(dbPool: manager.dbPool)
                 startDigestWatcher(dbPool: manager.dbPool)
                 startMeetingReminders(dbPool: manager.dbPool)
                 // Resume pipelines if app was closed mid-generation
@@ -330,9 +342,7 @@ final class AppState {
             }
         }
         // Check for updates in background (once per 24h)
-        Task {
-            await updateService.checkIfNeeded()
-        }
+        Task { await updateService.checkIfNeeded() }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
@@ -464,6 +474,22 @@ final class AppState {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
         vm.refresh()
         calendarAccountsViewModel = vm
+    }
+
+    func initSlackAccounts(dbPool: DatabasePool) {
+        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        slackAccountsViewModel = vm
+    }
+
+    func initJiraAccounts(dbPool: DatabasePool) {
+        let vm = JiraAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        jiraAccountsViewModel = vm
+        // Browse-URL resolution reads jira_accounts.site_url — wire the pool
+        // here, the same point the sibling VM gets its pool, so per-issue
+        // links resolve from the DB instead of the frozen config keys.
+        JiraConfigHelper.configure(dbPool: dbPool)
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

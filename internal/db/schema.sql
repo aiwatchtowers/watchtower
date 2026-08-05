@@ -1,14 +1,14 @@
 -- Watchtower database schema
 -- All tables for Slack workspace data storage
 
--- Workspace metadata
+-- Workspace metadata. id/name/domain are a frozen legacy snapshot of Slack
+-- account #1 — current_user_id/search_last_date moved to slack_accounts,
+-- one row per connected Slack workspace (see 00048).
 CREATE TABLE IF NOT EXISTS workspace (
     id                TEXT PRIMARY KEY,  -- Slack team_id
     name              TEXT NOT NULL,
     domain            TEXT NOT NULL DEFAULT '',
     synced_at         TEXT,              -- ISO8601 timestamp of last sync
-    search_last_date  TEXT NOT NULL DEFAULT '',  -- YYYY-MM-DD of last search sync
-    current_user_id   TEXT NOT NULL DEFAULT '',  -- Slack user_id of the token owner (from auth.test)
     inbox_last_processed_ts REAL NOT NULL DEFAULT 0,  -- Unix timestamp of last inbox pipeline run
     secretary_profile TEXT NOT NULL DEFAULT '',  -- User-written secretary brief text
     style_profile TEXT NOT NULL DEFAULT '',  -- AI-distilled, user-editable communication style (see 00013)
@@ -19,14 +19,14 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0,  -- owner-chat ingest floor: highest chat_messages.id already folded into the belief pass (see 00019)
     memory_last_interaction_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor: highest owner-interaction row id already folded into episode outcomes / memory_engagement (see 00042)
     memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
-    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last jira issue fully folded into an episode by the jira issue extractor; a fifth independent memory watermark (see 00040)
+    -- memory_jira_last_extracted_ts moved to jira_accounts (per-account, see 00049)
     memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
     memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
 );
 
 -- Users
 CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,  -- Slack user ID
+    id            TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00048)
     name          TEXT NOT NULL,
     display_name  TEXT NOT NULL DEFAULT '',
     real_name     TEXT NOT NULL DEFAULT '',
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
 
 -- Channels
 CREATE TABLE IF NOT EXISTS channels (
-    id           TEXT PRIMARY KEY,  -- Slack channel ID
+    id           TEXT PRIMARY KEY,  -- namespaced "<slack_account_id>:<raw Slack channel ID>" (see 00048)
     name         TEXT NOT NULL,
     type         TEXT NOT NULL CHECK(type IN ('public', 'private', 'dm', 'group_dm')),
     topic        TEXT NOT NULL DEFAULT '',
@@ -64,9 +64,9 @@ CREATE INDEX IF NOT EXISTS idx_channels_is_member ON channels(is_member);
 
 -- Messages
 CREATE TABLE IF NOT EXISTS messages (
-    channel_id   TEXT NOT NULL,
+    channel_id   TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     ts           TEXT NOT NULL,       -- Slack timestamp (unique message ID)
-    user_id      TEXT NOT NULL DEFAULT '',
+    user_id      TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw user ID>" (see 00048)
     text         TEXT NOT NULL DEFAULT '',
     thread_ts    TEXT,
     reply_count  INTEGER NOT NULL DEFAULT 0,
@@ -345,10 +345,10 @@ CREATE TABLE IF NOT EXISTS track_states (
     context            TEXT NOT NULL DEFAULT '',
     category           TEXT NOT NULL,
     ownership          TEXT NOT NULL,
-    ball_on            TEXT NOT NULL DEFAULT '',
-    owner_user_id      TEXT NOT NULL DEFAULT '',
+    ball_on            TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
+    owner_user_id      TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     requester_name     TEXT NOT NULL DEFAULT '',
-    requester_user_id  TEXT NOT NULL DEFAULT '',
+    requester_user_id  TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     blocking           TEXT NOT NULL DEFAULT '',
     decision_summary   TEXT NOT NULL DEFAULT '',
     decision_options   TEXT NOT NULL DEFAULT '[]',
@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS targets (
                         CHECK(priority IN ('high','medium','low')),
     ownership           TEXT NOT NULL DEFAULT 'mine'
                         CHECK(ownership IN ('mine','delegated','watching')),
-    ball_on             TEXT NOT NULL DEFAULT '',
+    ball_on             TEXT NOT NULL DEFAULT '',  -- namespaced Slack user_id (see 00048)
     due_date            TEXT NOT NULL DEFAULT '',
     snooze_until        TEXT NOT NULL DEFAULT '',
     blocking            TEXT NOT NULL DEFAULT '',
@@ -603,13 +603,13 @@ CREATE INDEX IF NOT EXISTS idx_dic_created ON decision_importance_corrections(cr
 -- User profile for personalization (role, team, reports, starred items)
 CREATE TABLE IF NOT EXISTS user_profile (
     id                    INTEGER PRIMARY KEY,
-    slack_user_id         TEXT NOT NULL UNIQUE,
+    slack_user_id         TEXT NOT NULL UNIQUE,  -- namespaced "<slack_account_id>:<raw Slack user ID>" (see 00048)
     role                  TEXT NOT NULL DEFAULT '',
     team                  TEXT NOT NULL DEFAULT '',
     responsibilities      TEXT NOT NULL DEFAULT '[]',    -- JSON array of strings
     reports               TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
     peers                 TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
-    manager               TEXT NOT NULL DEFAULT '',      -- Slack user_id
+    manager               TEXT NOT NULL DEFAULT '',      -- namespaced Slack user_id (see 00048)
     starred_channels      TEXT NOT NULL DEFAULT '[]',    -- JSON array of channel_ids
     starred_people        TEXT NOT NULL DEFAULT '[]',    -- JSON array of Slack user_ids
     pain_points           TEXT NOT NULL DEFAULT '[]',    -- JSON array from onboarding
@@ -815,7 +815,7 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
     step             INTEGER NOT NULL,
     total            INTEGER NOT NULL,
     status           TEXT NOT NULL DEFAULT '',
-    channel_id       TEXT NOT NULL DEFAULT '',
+    channel_id       TEXT NOT NULL DEFAULT '',  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     channel_name     TEXT NOT NULL DEFAULT '',
     input_tokens     INTEGER NOT NULL DEFAULT 0,
     output_tokens    INTEGER NOT NULL DEFAULT 0,
@@ -881,9 +881,28 @@ CREATE TABLE IF NOT EXISTS meeting_prep_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_prep_cache_generated ON meeting_prep_cache(generated_at);
 
+-- Multi-account Jira source: one row per connected Atlassian site (see 00049).
+-- Site-scoped tables carry an account_id column with a composite PK (the
+-- google_accounts route, not Slack's namespaced ids — issue keys are
+-- user-visible and must stay bare). Bare-key lookups keep working; a key
+-- shared by two sites is a documented v1 ambiguity.
+CREATE TABLE IF NOT EXISTS jira_accounts (
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    cloud_id                      TEXT NOT NULL DEFAULT '',
+    site_url                      TEXT NOT NULL DEFAULT '',
+    site_name                     TEXT NOT NULL DEFAULT '',
+    label                         TEXT NOT NULL DEFAULT '',
+    status                        TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    error                         TEXT NOT NULL DEFAULT '',
+    enabled                       INTEGER NOT NULL DEFAULT 1,
+    memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was on workspace)
+    created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- Jira boards
 CREATE TABLE IF NOT EXISTS jira_boards (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
     board_type TEXT NOT NULL DEFAULT '', is_selected INTEGER NOT NULL DEFAULT 0,
     issue_count INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL DEFAULT '',
     raw_columns_json TEXT NOT NULL DEFAULT '',
@@ -892,31 +911,36 @@ CREATE TABLE IF NOT EXISTS jira_boards (
     workflow_summary TEXT NOT NULL DEFAULT '',
     user_overrides_json TEXT NOT NULL DEFAULT '',
     config_hash TEXT NOT NULL DEFAULT '',
-    profile_generated_at TEXT NOT NULL DEFAULT ''
+    profile_generated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
 );
 
 -- Jira custom fields (discovered from API, classified by LLM)
 CREATE TABLE IF NOT EXISTS jira_custom_fields (
-    id TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
     name TEXT NOT NULL,
     field_type TEXT NOT NULL,
     items_type TEXT NOT NULL DEFAULT '',
     is_useful INTEGER NOT NULL DEFAULT 0,
     usage_hint TEXT NOT NULL DEFAULT '',
-    synced_at TEXT NOT NULL DEFAULT ''
+    synced_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
 );
 
 -- Per-board custom field mapping
 CREATE TABLE IF NOT EXISTS jira_board_field_map (
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     board_id INTEGER NOT NULL,
     field_id TEXT NOT NULL,
     role TEXT NOT NULL,
-    PRIMARY KEY (board_id, field_id)
+    PRIMARY KEY (account_id, board_id, field_id)
 );
 
 -- Jira issues
 CREATE TABLE IF NOT EXISTS jira_issues (
-    key TEXT PRIMARY KEY, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    key TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
     board_id INTEGER,
     summary TEXT NOT NULL, description_text TEXT NOT NULL DEFAULT '',
     issue_type TEXT NOT NULL DEFAULT '', issue_type_category TEXT NOT NULL DEFAULT '',
@@ -934,7 +958,8 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     fix_versions TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
     raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
-    synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0
+    synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee ON jira_issues(assignee_account_id);
@@ -947,19 +972,24 @@ CREATE INDEX IF NOT EXISTS idx_jira_issues_board ON jira_issues(board_id);
 
 -- Jira sprints
 CREATE TABLE IF NOT EXISTS jira_sprints (
-    id INTEGER PRIMARY KEY, board_id INTEGER NOT NULL, name TEXT NOT NULL,
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    id INTEGER NOT NULL, board_id INTEGER NOT NULL, name TEXT NOT NULL,
     state TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '',
     start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL DEFAULT '',
-    complete_date TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT ''
+    complete_date TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
 );
 
 -- Jira issue links
 CREATE TABLE IF NOT EXISTS jira_issue_links (
-    id TEXT PRIMARY KEY, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
-    link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT ''
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    id TEXT NOT NULL, source_key TEXT NOT NULL, target_key TEXT NOT NULL,
+    link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
 );
 
--- Jira user mapping
+-- Jira user mapping — intentionally NOT account-scoped: Atlassian account
+-- ids are globally unique across sites (see 00049)
 CREATE TABLE IF NOT EXISTS jira_user_map (
     jira_account_id TEXT PRIMARY KEY, email TEXT NOT NULL DEFAULT '',
     slack_user_id TEXT NOT NULL DEFAULT '', display_name TEXT NOT NULL DEFAULT '',
@@ -967,7 +997,8 @@ CREATE TABLE IF NOT EXISTS jira_user_map (
     resolved_at TEXT NOT NULL DEFAULT ''
 );
 
--- Jira Slack links (key detection)
+-- Jira Slack links (key detection) — intentionally NOT account-scoped:
+-- keys detected in Slack text are site-ambiguous by nature (see 00049)
 CREATE TABLE IF NOT EXISTS jira_slack_links (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_key TEXT NOT NULL,
@@ -986,12 +1017,17 @@ CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(diges
 
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category);
+-- Bare-key lookups: the composite PK leads with account_id, so this index is
+-- what keeps `WHERE key = ?` off a full scan (see 00049)
+CREATE INDEX IF NOT EXISTS idx_jira_issues_key ON jira_issues(key);
 
 -- Jira sync state
 CREATE TABLE IF NOT EXISTS jira_sync_state (
-    project_key TEXT PRIMARY KEY, last_synced_at TEXT NOT NULL DEFAULT '',
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL, last_synced_at TEXT NOT NULL DEFAULT '',
     issues_synced INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
-    last_error_at TEXT NOT NULL DEFAULT ''
+    last_error_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, project_key)
 );
 
 -- Meeting notes (questions + freeform notes linked to calendar events)
@@ -1107,6 +1143,24 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+-- Multi-account Slack source: one row per connected Slack workspace.
+-- Every Slack-derived id column across the schema (channels.id, users.id,
+-- messages.channel_id/user_id, etc.) is namespaced "<accountID>:<rawID>" so
+-- multiple workspaces can coexist without id collisions (see 00048).
+CREATE TABLE IF NOT EXISTS slack_accounts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id           TEXT NOT NULL DEFAULT '',
+    team_name         TEXT NOT NULL DEFAULT '',
+    team_domain       TEXT NOT NULL DEFAULT '',
+    label             TEXT NOT NULL DEFAULT '',
+    current_user_id   TEXT NOT NULL DEFAULT '',  -- namespaced, e.g. "1:U0123"
+    status            TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    error             TEXT NOT NULL DEFAULT '',
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    search_last_date  TEXT NOT NULL DEFAULT '',
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
 -- (email_accounts) plus its synced messages (imap_messages). status/error
 -- live directly on email_accounts, the same pattern google_accounts uses
@@ -1168,6 +1222,7 @@ CREATE TABLE IF NOT EXISTS calendar_accounts (
 
 -- Jira releases (fix versions)
 CREATE TABLE IF NOT EXISTS jira_releases (
+    account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     id INTEGER NOT NULL,
     project_key TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -1176,8 +1231,8 @@ CREATE TABLE IF NOT EXISTS jira_releases (
     released INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     synced_at TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (id),
-    UNIQUE(project_key, name)
+    PRIMARY KEY (account_id, id),
+    UNIQUE(account_id, project_key, name)
 );
 
 -- Day plans (AI-generated daily schedule for the current user)
@@ -1398,7 +1453,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_provenance_sender ON memory_provenance(sen
 -- UI; a pure reader of digests/digest_topics/messages writes here.
 CREATE TABLE IF NOT EXISTS memory_digest_shadow (
     id                   INTEGER PRIMARY KEY,
-    channel_id           TEXT NOT NULL,
+    channel_id           TEXT NOT NULL,  -- namespaced "<slack_account_id>:<raw channel ID>" (see 00048)
     period_from          REAL NOT NULL,
     period_to            REAL NOT NULL,
     legacy_digest_id     INTEGER NOT NULL DEFAULT 0,

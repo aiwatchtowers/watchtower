@@ -4,6 +4,10 @@ import GRDB
 
 struct JiraBoard: Codable, FetchableRecord, TableRecord, Hashable {
     static let databaseTableName = "jira_boards"
+    /// Owning Atlassian site (`jira_accounts.id`, migration 00049). Raw board
+    /// ids collide across sites, so this is half of the row's identity — and
+    /// what per-board CLI calls pass as `--account`.
+    var accountID: Int64
     let id: Int
     var name: String
     var projectKey: String
@@ -20,8 +24,13 @@ struct JiraBoard: Codable, FetchableRecord, TableRecord, Hashable {
     var configHash: String
     var profileGeneratedAt: String
 
+    /// Stable SwiftUI list identity: a bare board id is only unique within its
+    /// site, so lists keyed on `id` alone would collide across accounts.
+    var rowID: String { "\(accountID):\(id)" }
+
     enum CodingKeys: String, CodingKey {
         case id, name
+        case accountID = "account_id"
         case projectKey = "project_key"
         case boardType = "board_type"
         case isSelected = "is_selected"

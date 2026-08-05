@@ -2,6 +2,9 @@ import SwiftUI
 
 struct CalendarEventRow: View {
     let event: CalendarEvent
+    /// Number of recordings folded into this event by `MeetingListBuilder`;
+    /// 0 renders no badge.
+    var recordingCount: Int = 0
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -25,18 +28,22 @@ struct CalendarEventRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            // Relative countdown next to the absolute range for events
-            // starting soon; `.relative` keeps it ticking without a timer.
-            // The extra start > now gate keeps a just-started event from
-            // counting UP until the next observation tick re-evaluates
-            // `isUpcoming`.
-            if event.isUpcoming, event.startDate > Date() {
-                HStack(spacing: 3) {
-                    Text("in")
-                    Text(event.startDate, style: .relative)
+            // Relative countdown next to the absolute range for events starting
+            // soon; `.relative` keeps it ticking without a timer. The explicit
+            // TimelineView schedule re-evaluates the gate exactly at startDate, so
+            // the countdown disappears the moment the meeting begins instead of
+            // counting UP until the next external re-render.
+            if event.isUpcoming {
+                TimelineView(.explicit([event.startDate])) { context in
+                    if context.date < event.startDate {
+                        HStack(spacing: 3) {
+                            Text("in")
+                            Text(event.startDate, style: .relative)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    }
                 }
-                .font(.caption2)
-                .foregroundStyle(.blue)
             }
         }
         .frame(width: 80, alignment: .trailing)
@@ -59,11 +66,18 @@ struct CalendarEventRow: View {
 
     @ViewBuilder
     private var trailingInfo: some View {
-        let count = event.parsedAttendees.count
-        if count > 0 {
-            Label("\(count)", systemImage: "person.2")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+        VStack(alignment: .trailing, spacing: 4) {
+            let count = event.parsedAttendees.count
+            if count > 0 {
+                Label("\(count)", systemImage: "person.2")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if recordingCount > 0 {
+                Text("\(recordingCount) rec")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

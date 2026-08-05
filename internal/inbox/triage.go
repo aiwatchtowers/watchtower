@@ -61,7 +61,11 @@ func (p *Pipeline) runTriage(ctx context.Context, currentUserID string, newItems
 	var out triageOutcome
 
 	maxStream := p.cfg.Inbox.MaxTriageMessages
-	streamCands, err := p.db.ListStreamCandidatesSince(currentUserID, sinceTS, maxStream)
+	ownerIDs, err := p.resolveOwnerSlackUserIDs()
+	if err != nil {
+		return out, fmt.Errorf("resolving owner slack user ids: %w", err)
+	}
+	streamCands, err := p.db.ListStreamCandidatesSince(ownerIDs, sinceTS, maxStream)
 	if err != nil {
 		return out, fmt.Errorf("listing stream candidates: %w", err)
 	}

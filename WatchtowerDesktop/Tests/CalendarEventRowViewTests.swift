@@ -111,4 +111,27 @@ final class CalendarEventRowViewTests: XCTestCase {
         ))
         XCTAssertThrowsError(try past.inspect().find(text: "in"))
     }
+
+    /// Recording-count badge (Meetings-screen rewiring, decision 2): "N rec"
+    /// renders only when the event has folded recordings.
+    func testRecordingBadgeShownWhenCountPositive() throws {
+        let view = CalendarEventRow(event: makeEvent(), recordingCount: 2)
+        XCTAssertNoThrow(try view.inspect().find(text: "2 rec"))
+    }
+
+    /// Default recordingCount is 0 — an event with no recordings renders no
+    /// badge at all, not a "0 rec" badge.
+    func testRecordingBadgeHiddenWhenCountZero() throws {
+        let view = CalendarEventRow(event: makeEvent())
+        XCTAssertThrowsError(try view.inspect().find(text: "0 rec"))
+    }
+
+    /// The row itself carries no Record affordance — Record moved to the
+    /// detail pane (`MeetingDetailView`/`MeetingRecordButton`) as part of the
+    /// unified Meetings screen; the row is tap-to-select only.
+    func testRowHasNoRecordAffordance() throws {
+        let view = CalendarEventRow(event: makeEvent(), recordingCount: 1)
+        XCTAssertThrowsError(try view.inspect().find(text: "Record"))
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Button.self))
+    }
 }

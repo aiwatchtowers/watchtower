@@ -16,6 +16,7 @@ func setupProjectMapTestDB(t *testing.T) *db.DB {
 		t.Fatalf("opening test db: %v", err)
 	}
 	t.Cleanup(func() { d.Close() })
+	db.SeedTestJiraAccount(t, d)
 	return d
 }
 

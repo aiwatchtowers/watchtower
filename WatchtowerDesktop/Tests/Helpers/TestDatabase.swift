@@ -39,15 +39,21 @@ enum TestDatabase {
         id: String = "T001",
         name: String = "Test Workspace",
         domain: String = "test",
-        syncedAt: String? = "2025-01-01T00:00:00Z",
-        searchLastDate: String = "2025-01-01"
+        syncedAt: String? = "2025-01-01T00:00:00Z"
     ) throws {
         try db.execute(sql: """
-            INSERT INTO workspace (id, name, domain, synced_at, search_last_date)
-            VALUES (?, ?, ?, ?, ?)
-            """, arguments: [id, name, domain, syncedAt, searchLastDate])
+            INSERT INTO workspace (id, name, domain, synced_at)
+            VALUES (?, ?, ?, ?)
+            """, arguments: [id, name, domain, syncedAt])
     }
 
+    // Slack multi-account note: post-migration (00048) the real `channels.id`/
+    // `users.id`/`messages.channel_id`/`messages.user_id` carry a namespaced
+    // `"<accountID>:<rawSlackID>"` value. These fixtures still use bare ids
+    // (`C001`/`U001`) — that's fine because each test inserts both sides of a
+    // join with the SAME bare id, so it stays internally consistent (the
+    // migration never runs against the fresh test schema). Only add a `"1:"`
+    // prefix here if a new test asserts a specific namespaced id string.
     static func insertChannel(
         _ db: Database,
         id: String = "C001",
@@ -228,8 +234,9 @@ enum TestDatabase {
         name              TEXT NOT NULL,
         domain            TEXT NOT NULL DEFAULT '',
         synced_at         TEXT,
-        search_last_date  TEXT NOT NULL DEFAULT '',
-        current_user_id   TEXT NOT NULL DEFAULT '',
+        -- current_user_id / search_last_date moved to slack_accounts
+        -- (migration 00048). Mirror kept in sync with the real post-migration
+        -- schema so tests can't accidentally read a dropped column.
         inbox_last_processed_ts REAL NOT NULL DEFAULT 0,
         secretary_profile TEXT NOT NULL DEFAULT '',
         style_profile TEXT NOT NULL DEFAULT '',
@@ -560,6 +567,33 @@ enum TestDatabase {
         created_at    TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_feedback_item ON inbox_feedback(inbox_item_id);
+
+    CREATE TABLE IF NOT EXISTS slack_accounts (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id           TEXT NOT NULL DEFAULT '',
+        team_name         TEXT NOT NULL DEFAULT '',
+        team_domain       TEXT NOT NULL DEFAULT '',
+        label             TEXT NOT NULL DEFAULT '',
+        current_user_id   TEXT NOT NULL DEFAULT '',
+        status            TEXT NOT NULL DEFAULT 'ok',
+        error             TEXT NOT NULL DEFAULT '',
+        enabled           INTEGER NOT NULL DEFAULT 1,
+        search_last_date  TEXT NOT NULL DEFAULT '',
+        created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS jira_accounts (
+        id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+        cloud_id                      TEXT NOT NULL DEFAULT '',
+        site_url                      TEXT NOT NULL DEFAULT '',
+        site_name                     TEXT NOT NULL DEFAULT '',
+        label                         TEXT NOT NULL DEFAULT '',
+        status                        TEXT NOT NULL DEFAULT 'ok',
+        error                         TEXT NOT NULL DEFAULT '',
+        enabled                       INTEGER NOT NULL DEFAULT 1,
+        memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,
+        created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
 
     CREATE TABLE IF NOT EXISTS google_accounts (
         id                             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1799,6 +1833,53 @@ enum TestDatabase {
     // MARK: - Google Account Fixtures
 
     @discardableResult
+    static func insertSlackAccount(
+        _ db: Database,
+        teamID: String = "",
+        teamName: String = "",
+        teamDomain: String = "",
+        label: String = "",
+        currentUserID: String = "",
+        status: String = "ok",
+        error: String = "",
+        enabled: Bool = true,
+        searchLastDate: String = "",
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO slack_accounts
+                    (team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [teamID, teamName, teamDomain, label, currentUserID, status, error, enabled, searchLastDate, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    static func insertJiraAccount(
+        _ db: Database,
+        cloudID: String = "",
+        siteURL: String = "",
+        siteName: String = "",
+        label: String = "",
+        status: String = "ok",
+        error: String = "",
+        enabled: Bool = true,
+        createdAt: String = "2026-01-01T00:00:00Z"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO jira_accounts
+                    (cloud_id, site_url, site_name, label, status, error, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [cloudID, siteURL, siteName, label, status, error, enabled, createdAt]
+        )
+        return db.lastInsertedRowID
+    }
+
     static func insertGoogleAccount(
         _ db: Database,
         email: String = "",

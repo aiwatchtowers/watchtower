@@ -250,12 +250,6 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	var orch *sync.Orchestrator
-	if ws.SlackToken != "" {
-		slackClient := watchtowerslack.NewClient(ws.SlackToken)
-		orch = sync.NewOrchestrator(database, slackClient, cfg)
-	}
-
 	// Always write logs to watchtower.log; also to stderr when verbose or detached.
 	syncLog := syncLogFilePath(cfg)
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
@@ -273,16 +267,24 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
-	if orch != nil {
-		orch.SetLogger(logger)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Seed slack_accounts from a pre-multi-account legacy token (config.yaml)
+	// before wiring, so a single-account install keeps syncing without a
+	// re-login: the migration seeds row #1 but only Go can move the token out
+	// of config into slack_token_<id>.json, which wireSlackSyncers requires.
+	if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
+		logger.Printf("slack: failed to seed legacy account: %v", err)
+	}
+	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
+	orchestrators := wireSlackSyncers(database, cfg, logger)
+
 	// Daemon mode: run periodic syncs until interrupted
 	if syncFlagDaemon {
-		d := daemon.New(orch, cfg)
+		d := daemon.New(cfg)
+		d.SetOrchestrators(orchestrators)
 		d.SetLogger(logger)
 		d.SetDB(database)
 		d.SetPIDPath(pidFilePath(cfg))
@@ -316,8 +318,14 @@ func runSync(cmd *cobra.Command, args []string) error {
 				d.SetFeedPipeline(feed.New(database, cfg, logger))
 			}
 		}
-		// Wire Jira syncer if configured and token exists.
-		wireJiraSyncer(d, cfg, database, logger)
+		// Seed jira_accounts from a pre-multi-account legacy token file
+		// before wiring, so a single-account install keeps syncing without
+		// a re-login.
+		if _, err := ensureLegacyJiraAccount(cfg, database, logger); err != nil {
+			logger.Printf("jira: failed to seed legacy account: %v", err)
+		}
+		// Wire one Jira syncer per connected, enabled jira_accounts row.
+		wireJiraSyncers(d, cfg, database, logger)
 		// Seed google_accounts from a pre-multi-account legacy token file
 		// before wiring, so a single-account install keeps syncing without
 		// a re-login.
@@ -333,8 +341,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return d.Run(ctx)
 	}
 
-	// One-shot sync is a Slack sync — nothing to do without a token.
-	if orch == nil {
+	// One-shot sync is a Slack sync — nothing to do without a connected account.
+	if len(orchestrators) == 0 {
 		return fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
 	}
 
@@ -352,105 +360,201 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	// In verbose mode: just run sync, logs go to stderr
+	// In verbose mode: just run sync, logs go to stderr. Each connected
+	// account's orchestrator runs in turn; one account's failure is recorded
+	// but does not block the others (the fan-out pattern), and a single
+	// aggregated result is written.
 	if flagVerbose {
-		syncErr := orch.Run(ctx, opts)
-		snap := orch.Progress().Snapshot()
-		if err := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshot(snap, syncErr)); err != nil {
+		var snaps []sync.Snapshot
+		var firstErr error
+		for _, o := range orchestrators {
+			syncErr := o.Run(ctx, opts)
+			snap := o.Progress().Snapshot()
+			snaps = append(snaps, snap)
+			if syncErr != nil && firstErr == nil {
+				firstErr = syncErr
+			}
+			elapsed := time.Since(snap.StartTime).Round(time.Second)
+			fmt.Fprintf(out, "Sync complete in %s: %d messages synced.\n",
+				elapsed, snap.MessagesFetched)
+		}
+		if err := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 			logger.Printf("warning: failed to write sync result: %v", err)
 		}
-		if syncErr != nil {
-			return fmt.Errorf("sync failed: %w", syncErr)
+		if firstErr != nil {
+			return fmt.Errorf("sync failed: %w", firstErr)
 		}
-		elapsed := time.Since(snap.StartTime).Round(time.Second)
-		fmt.Fprintf(out, "Sync complete in %s: %d messages synced.\n",
-			elapsed, snap.MessagesFetched)
 		if !syncFlagNoPipelines {
 			runPostSyncPipelines(ctx, database, cfg, logger)
 		}
 		return nil
 	}
 
-	// Normal mode: progress display in background
+	// Normal mode: progress display in background. Each connected account's
+	// orchestrator runs in turn with its own progress display; failures are
+	// recorded but do not block the remaining accounts (the fan-out pattern),
+	// and a single aggregated result is written after all accounts finish.
 	progressLines.Store(0)
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				done <- fmt.Errorf("sync panicked: %v\n%s", r, debug.Stack())
-			}
+	var snaps []sync.Snapshot
+	var firstErr error
+	for _, o := range orchestrators {
+		done := make(chan error, 1)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					done <- fmt.Errorf("sync panicked: %v\n%s", r, debug.Stack())
+				}
+			}()
+			done <- o.Run(ctx, opts)
 		}()
-		done <- orch.Run(ctx, opts)
-	}()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case syncErr := <-done:
-			snap := orch.Progress().Snapshot()
-			if syncFlagProgressJSON {
-				printProgressJSON(out, snap, syncErr)
-			} else {
-				printProgress(out, orch.Progress(), cfg.ActiveWorkspace)
-			}
-			if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshot(snap, syncErr)); wErr != nil {
-				logger.Printf("warning: failed to write sync result: %v", wErr)
-			}
-			if syncErr != nil {
-				return fmt.Errorf("sync failed: %w", syncErr)
-			}
-			// Skip post-sync pipelines in --progress-json mode: the desktop app
-			// runs them independently via BackgroundTaskManager after onboarding.
-			if !syncFlagProgressJSON && !syncFlagNoPipelines {
-				runPostSyncPipelines(ctx, database, cfg, logger)
-			}
-			return nil
-		case <-ticker.C:
-			snap := orch.Progress().Snapshot()
-			if syncFlagProgressJSON {
-				printProgressJSON(out, snap, nil)
-			} else {
-				printProgress(out, orch.Progress(), cfg.ActiveWorkspace)
+		ticker := time.NewTicker(500 * time.Millisecond)
+	accountLoop:
+		for {
+			select {
+			case syncErr := <-done:
+				snap := o.Progress().Snapshot()
+				snaps = append(snaps, snap)
+				if syncFlagProgressJSON {
+					printProgressJSON(out, snap, syncErr)
+				} else {
+					printProgress(out, o.Progress(), cfg.ActiveWorkspace)
+				}
+				if syncErr != nil && firstErr == nil {
+					firstErr = syncErr
+				}
+				ticker.Stop()
+				break accountLoop
+			case <-ticker.C:
+				snap := o.Progress().Snapshot()
+				if syncFlagProgressJSON {
+					printProgressJSON(out, snap, nil)
+				} else {
+					printProgress(out, o.Progress(), cfg.ActiveWorkspace)
+				}
 			}
 		}
 	}
+
+	if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); wErr != nil {
+		logger.Printf("warning: failed to write sync result: %v", wErr)
+	}
+	if firstErr != nil {
+		return fmt.Errorf("sync failed: %w", firstErr)
+	}
+	// Skip post-sync pipelines in --progress-json mode: the desktop app
+	// runs them independently via BackgroundTaskManager after onboarding.
+	if !syncFlagProgressJSON && !syncFlagNoPipelines {
+		runPostSyncPipelines(ctx, database, cfg, logger)
+	}
+	return nil
 }
 
-// wireJiraSyncer wires the Jira syncer onto the daemon if Jira is configured
-// and a token exists, logging failures instead of failing sync startup.
-func wireJiraSyncer(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
-	if !cfg.Jira.Enabled || cfg.Jira.CloudID == "" {
+// wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack
+// account (slack_accounts row) whose per-account token file exists. An account
+// with a missing or unreadable token is skipped and logged rather than
+// aborting the rest — the wireImapSyncers/wireGoogleSyncers fan-out pattern.
+// Returns an empty slice when no account is connected (Slack simply doesn't
+// sync; the other sources still run).
+func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
+	accounts, err := database.ListEnabledSlackAccounts()
+	if err != nil {
+		logger.Printf("slack: failed to list accounts: %v", err)
+		return nil
+	}
+	var orchestrators []*sync.Orchestrator
+	for _, acct := range accounts {
+		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
+		token, err := store.Load()
+		if err != nil {
+			logger.Printf("slack: account %d: failed to load token: %v", acct.ID, err)
+			recordSlackWireError(database, logger, acct.ID, acct.Status, err)
+			continue
+		}
+		if token == nil {
+			logger.Printf("slack: account %d: no token file, skipping", acct.ID)
+			recordSlackWireError(database, logger, acct.ID, acct.Status, fmt.Errorf("no token file — re-login required"))
+			continue
+		}
+		client := watchtowerslack.NewClient(token.AccessToken)
+		client.SetLogger(logger)
+		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
+		orch.SetLogger(logger)
+		orchestrators = append(orchestrators, orch)
+	}
+	return orchestrators
+}
+
+// recordSlackWireError records a per-account wiring failure (missing/unreadable
+// token — before an Orchestrator ever exists to self-report via
+// Orchestrator.recordAuthResult) so the Desktop UI shows the account needs
+// re-login instead of staying silently "ok" forever. Only flips a currently-
+// "ok" account to "error" — one already flagged error/revoked stays as-is,
+// so this doesn't churn the status/updated_at on every daemon cycle (the
+// wireGoogleSyncers precedent).
+func recordSlackWireError(database *db.DB, logger *log.Logger, accountID int64, currentStatus string, err error) {
+	if currentStatus != "ok" {
 		return
 	}
-	jiraStore := jira.NewTokenStore(cfg.WorkspaceDir())
-	if !jiraStore.Exists() {
+	if dbErr := database.SetSlackAccountAuthState(accountID, "error", err.Error()); dbErr != nil {
+		logger.Printf("slack: account %d: record auth state: %v", accountID, dbErr)
+	}
+}
+
+// wireJiraSyncers wires one Jira syncer per connected, enabled jira_accounts
+// row whose token file exists. A broken account records its own auth-state
+// error rather than aborting the wiring step for the others — the
+// wireGoogleSyncers fan-out pattern. The global cfg.Jira.Enabled toggle gates
+// the whole phase, matching every other daemon phase's on/off switch. Zero
+// accounts is a clean no-op.
+func wireJiraSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+	if !cfg.Jira.Enabled {
+		return
+	}
+	accounts, err := database.ListEnabledJiraAccounts()
+	if err != nil {
+		logger.Printf("jira: failed to list accounts: %v", err)
 		return
 	}
 	jiraCfg := resolveJiraOAuthConfig()
-	jiraClient := jira.NewClient(cfg.Jira.CloudID, jiraCfg, jiraStore)
-	jiraMapper := jira.NewUserMapper(jiraClient, database)
-	boards, err := database.GetJiraSelectedBoards()
-	if err != nil {
-		logger.Printf("jira: failed to load selected boards: %v", err)
-		return
+	var syncers []*jira.Syncer
+	for _, acct := range accounts {
+		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
+		if acct.CloudID == "" || !store.Exists() {
+			// Only flip a currently-"ok" account to "error" — an account
+			// already flagged error/revoked stays as-is, so this doesn't
+			// churn the status on every daemon cycle.
+			if acct.Status == "ok" {
+				if err := database.SetJiraAccountAuthState(acct.ID, "error", "no token or site — re-login required"); err != nil {
+					logger.Printf("jira: account %d: record auth state: %v", acct.ID, err)
+				}
+			}
+			continue
+		}
+		client := jira.NewClient(acct.CloudID, jiraCfg, store)
+		mapper := jira.NewUserMapper(client, database)
+		boards, err := database.GetJiraSelectedBoards(acct.ID)
+		if err != nil {
+			logger.Printf("jira: account %d: failed to load selected boards: %v", acct.ID, err)
+			continue
+		}
+		boardIDs := make([]int, len(boards))
+		for i, b := range boards {
+			boardIDs[i] = b.ID
+		}
+		syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
+		syncer.SetLogger(logger)
+		// Wire board analyzer for auto-refresh of changed configs.
+		if cfg.Digest.Enabled {
+			aiProvider := newAIClient(cfg, cfg.DBPath())
+			analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
+			analyzer.SetLanguage(cfg.Digest.Language)
+			syncer.SetBoardAnalyzer(analyzer)
+			syncer.SetAutoRefresh(true)
+		}
+		syncers = append(syncers, syncer)
 	}
-	boardIDs := make([]int, len(boards))
-	for i, b := range boards {
-		boardIDs[i] = b.ID
-	}
-	jiraSyncer := jira.NewSyncer(jiraClient, database, jiraMapper, boardIDs)
-	jiraSyncer.SetLogger(logger)
-	// Wire board analyzer for auto-refresh of changed configs.
-	if cfg.Digest.Enabled {
-		aiProvider := newAIClient(cfg, cfg.DBPath())
-		analyzer := jira.NewBoardAnalyzer(jiraClient, database, aiProvider)
-		analyzer.SetLanguage(cfg.Digest.Language)
-		jiraSyncer.SetBoardAnalyzer(analyzer)
-		jiraSyncer.SetAutoRefresh(true)
-	}
-	d.SetJiraSyncer(jiraSyncer)
+	d.SetJiraSyncers(syncers)
 }
 
 // wireGoogleSyncers wires one calendar.Syncer and/or gmail.Syncer per

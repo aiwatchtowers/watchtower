@@ -14,6 +14,7 @@ func openTestDB(t *testing.T) *db.DB {
 	database, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
+	db.SeedTestJiraAccount(t, database)
 	return database
 }
 
@@ -22,7 +23,8 @@ func TestKeyDetector_DetectKeys(t *testing.T) {
 
 	// Seed known project keys.
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo",
+		AccountID: 1,
+		Key:       "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo",
 		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
 
@@ -115,7 +117,8 @@ func TestKeyDetector_ResetCache(t *testing.T) {
 
 	// Add a project key.
 	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		Key: "NEW-1", ProjectKey: "NEW", Summary: "S", Status: "O", StatusCategory: "todo",
+		AccountID: 1,
+		Key:       "NEW-1", ProjectKey: "NEW", Summary: "S", Status: "O", StatusCategory: "todo",
 		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
 

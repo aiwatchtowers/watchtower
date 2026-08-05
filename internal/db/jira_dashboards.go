@@ -389,12 +389,12 @@ func (db *DB) GetJiraDecisionCountByIssueKeys(keys []string) (int, error) {
 
 // UpsertJiraRelease inserts or updates a Jira release (fix version).
 func (db *DB) UpsertJiraRelease(r JiraRelease) error {
-	_, err := db.Exec(`INSERT INTO jira_releases (id, project_key, name, description, release_date, released, archived, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET project_key=excluded.project_key, name=excluded.name,
+	_, err := db.Exec(`INSERT INTO jira_releases (account_id, id, project_key, name, description, release_date, released, archived, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, id) DO UPDATE SET project_key=excluded.project_key, name=excluded.name,
 			description=excluded.description, release_date=excluded.release_date,
 			released=excluded.released, archived=excluded.archived, synced_at=excluded.synced_at`,
-		r.ID, r.ProjectKey, r.Name, r.Description, r.ReleaseDate, r.Released, r.Archived, r.SyncedAt)
+		r.AccountID, r.ID, r.ProjectKey, r.Name, r.Description, r.ReleaseDate, r.Released, r.Archived, r.SyncedAt)
 	if err != nil {
 		return fmt.Errorf("upserting jira release %d (%s): %w", r.ID, r.Name, err)
 	}
@@ -403,7 +403,7 @@ func (db *DB) UpsertJiraRelease(r JiraRelease) error {
 
 // GetJiraReleases returns all releases for a project, sorted by release_date.
 func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases WHERE project_key = ? ORDER BY release_date, name`, projectKey)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira releases for %s: %w", projectKey, err)
@@ -413,7 +413,7 @@ func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release: %w", err)
 		}
 		releases = append(releases, r)
@@ -423,7 +423,7 @@ func (db *DB) GetJiraReleases(projectKey string) ([]JiraRelease, error) {
 
 // GetJiraReleasesByName returns releases matching a name across all projects.
 func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases WHERE name = ? ORDER BY project_key`, name)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira releases by name %s: %w", name, err)
@@ -433,7 +433,7 @@ func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release by name: %w", err)
 		}
 		releases = append(releases, r)
@@ -443,7 +443,7 @@ func (db *DB) GetJiraReleasesByName(name string) ([]JiraRelease, error) {
 
 // GetAllJiraReleases returns all releases across all projects, sorted by release_date.
 func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
-	rows, err := db.Query(`SELECT id, project_key, name, description, release_date, released, archived, synced_at
+	rows, err := db.Query(`SELECT account_id, id, project_key, name, description, release_date, released, archived, synced_at
 		FROM jira_releases ORDER BY release_date, name`)
 	if err != nil {
 		return nil, fmt.Errorf("querying all jira releases: %w", err)
@@ -453,7 +453,7 @@ func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
 	var releases []JiraRelease
 	for rows.Next() {
 		var r JiraRelease
-		if err := rows.Scan(&r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
+		if err := rows.Scan(&r.AccountID, &r.ID, &r.ProjectKey, &r.Name, &r.Description, &r.ReleaseDate, &r.Released, &r.Archived, &r.SyncedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira release: %w", err)
 		}
 		releases = append(releases, r)
@@ -461,11 +461,14 @@ func (db *DB) GetAllJiraReleases() ([]JiraRelease, error) {
 	return releases, rows.Err()
 }
 
-// GetJiraIssuesByFixVersion returns all non-deleted issues that have the given version name in their fix_versions JSON array.
-func (db *DB) GetJiraIssuesByFixVersion(versionName string) ([]JiraIssue, error) {
+// GetJiraIssuesByFixVersion returns accountID's non-deleted issues that have the given
+// version name in their fix_versions JSON array. Version names are site-local strings —
+// two connected sites routinely both ship a "v1.0" — so the query is account-scoped.
+func (db *DB) GetJiraIssuesByFixVersion(accountID int64, versionName string) ([]JiraIssue, error) {
 	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
-		WHERE EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
-		AND is_deleted = 0`, versionName)
+		WHERE account_id = ?
+		AND EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
+		AND is_deleted = 0`, accountID, versionName)
 	if err != nil {
 		return nil, fmt.Errorf("querying jira issues by fix version %s: %w", versionName, err)
 	}
@@ -482,14 +485,17 @@ func (db *DB) GetJiraIssuesByFixVersion(versionName string) ([]JiraIssue, error)
 	return issues, rows.Err()
 }
 
-// GetJiraIssueCountAddedSince returns the count of non-deleted issues with the given version name
-// in fix_versions whose synced_at is after the given timestamp (approximate scope tracking).
-func (db *DB) GetJiraIssueCountAddedSince(versionName string, since string) (int, error) {
+// GetJiraIssueCountAddedSince returns the count of accountID's non-deleted issues with the
+// given version name in fix_versions whose synced_at is after the given timestamp
+// (approximate scope tracking). Account-scoped for the same reason as
+// GetJiraIssuesByFixVersion: version names collide across sites.
+func (db *DB) GetJiraIssueCountAddedSince(accountID int64, versionName string, since string) (int, error) {
 	var count int
 	err := db.QueryRow(`SELECT COUNT(*) FROM jira_issues
-		WHERE EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
+		WHERE account_id = ?
+		AND EXISTS (SELECT 1 FROM json_each(jira_issues.fix_versions) WHERE value = ?)
 		AND synced_at > ? AND is_deleted = 0`,
-		versionName, since).Scan(&count)
+		accountID, versionName, since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting jira issues added since %s for version %s: %w", since, versionName, err)
 	}
@@ -626,25 +632,25 @@ func (db *DB) GetUserMeetingHours(slackUserID string, from, to time.Time) (float
 
 // UpsertJiraCustomField inserts or updates a custom field.
 func (db *DB) UpsertJiraCustomField(f JiraCustomField) error {
-	_, err := db.Exec(`INSERT INTO jira_custom_fields (id, name, field_type, items_type, is_useful, usage_hint, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, field_type=excluded.field_type,
+	_, err := db.Exec(`INSERT INTO jira_custom_fields (account_id, id, name, field_type, items_type, is_useful, usage_hint, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(account_id, id) DO UPDATE SET name=excluded.name, field_type=excluded.field_type,
 		items_type=excluded.items_type, synced_at=excluded.synced_at`,
-		f.ID, f.Name, f.FieldType, f.ItemsType, f.IsUseful, f.UsageHint, f.SyncedAt)
+		f.AccountID, f.ID, f.Name, f.FieldType, f.ItemsType, f.IsUseful, f.UsageHint, f.SyncedAt)
 	return err
 }
 
 // UpdateJiraCustomFieldClassification updates LLM classification for a field.
-func (db *DB) UpdateJiraCustomFieldClassification(id string, isUseful bool, usageHint string) error {
-	_, err := db.Exec(`UPDATE jira_custom_fields SET is_useful=?, usage_hint=? WHERE id=?`,
-		isUseful, usageHint, id)
+func (db *DB) UpdateJiraCustomFieldClassification(accountID int64, id string, isUseful bool, usageHint string) error {
+	_, err := db.Exec(`UPDATE jira_custom_fields SET is_useful=?, usage_hint=? WHERE account_id=? AND id=?`,
+		isUseful, usageHint, accountID, id)
 	return err
 }
 
-// GetJiraCustomFields returns all custom fields.
-func (db *DB) GetJiraCustomFields() ([]JiraCustomField, error) {
-	rows, err := db.Query(`SELECT id, name, field_type, items_type, is_useful, usage_hint, synced_at
-		FROM jira_custom_fields ORDER BY name`)
+// GetJiraCustomFields returns one account's custom fields.
+func (db *DB) GetJiraCustomFields(accountID int64) ([]JiraCustomField, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, field_type, items_type, is_useful, usage_hint, synced_at
+		FROM jira_custom_fields WHERE account_id = ? ORDER BY name`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -652,7 +658,7 @@ func (db *DB) GetJiraCustomFields() ([]JiraCustomField, error) {
 	var fields []JiraCustomField
 	for rows.Next() {
 		var f JiraCustomField
-		if err := rows.Scan(&f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
+		if err := rows.Scan(&f.AccountID, &f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
 			return nil, err
 		}
 		fields = append(fields, f)
@@ -660,10 +666,10 @@ func (db *DB) GetJiraCustomFields() ([]JiraCustomField, error) {
 	return fields, rows.Err()
 }
 
-// GetUsefulJiraCustomFields returns only fields marked as useful by LLM.
-func (db *DB) GetUsefulJiraCustomFields() ([]JiraCustomField, error) {
-	rows, err := db.Query(`SELECT id, name, field_type, items_type, is_useful, usage_hint, synced_at
-		FROM jira_custom_fields WHERE is_useful = 1 ORDER BY usage_hint, name`)
+// GetUsefulJiraCustomFields returns one account's fields marked as useful by LLM.
+func (db *DB) GetUsefulJiraCustomFields(accountID int64) ([]JiraCustomField, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, field_type, items_type, is_useful, usage_hint, synced_at
+		FROM jira_custom_fields WHERE account_id = ? AND is_useful = 1 ORDER BY usage_hint, name`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -671,7 +677,7 @@ func (db *DB) GetUsefulJiraCustomFields() ([]JiraCustomField, error) {
 	var fields []JiraCustomField
 	for rows.Next() {
 		var f JiraCustomField
-		if err := rows.Scan(&f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
+		if err := rows.Scan(&f.AccountID, &f.ID, &f.Name, &f.FieldType, &f.ItemsType, &f.IsUseful, &f.UsageHint, &f.SyncedAt); err != nil {
 			return nil, err
 		}
 		fields = append(fields, f)
@@ -679,27 +685,27 @@ func (db *DB) GetUsefulJiraCustomFields() ([]JiraCustomField, error) {
 	return fields, rows.Err()
 }
 
-// GetJiraCustomFieldsSyncedAt returns the most recent synced_at for custom fields.
-func (db *DB) GetJiraCustomFieldsSyncedAt() (string, error) {
+// GetJiraCustomFieldsSyncedAt returns the most recent synced_at for one account's custom fields.
+func (db *DB) GetJiraCustomFieldsSyncedAt(accountID int64) (string, error) {
 	var syncedAt string
-	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_custom_fields`).Scan(&syncedAt)
+	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_custom_fields WHERE account_id = ?`, accountID).Scan(&syncedAt)
 	return syncedAt, err
 }
 
 // UpsertJiraBoardFieldMap sets the field mapping for a board. Replaces all existing mappings.
-func (db *DB) UpsertJiraBoardFieldMap(boardID int, mappings []JiraBoardFieldMap) error {
+func (db *DB) UpsertJiraBoardFieldMap(accountID int64, boardID int, mappings []JiraBoardFieldMap) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM jira_board_field_map WHERE board_id = ?`, boardID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM jira_board_field_map WHERE account_id = ? AND board_id = ?`, accountID, boardID); err != nil {
 		return err
 	}
 	for _, m := range mappings {
-		if _, err := tx.Exec(`INSERT INTO jira_board_field_map (board_id, field_id, role) VALUES (?, ?, ?)`,
-			boardID, m.FieldID, m.Role); err != nil {
+		if _, err := tx.Exec(`INSERT INTO jira_board_field_map (account_id, board_id, field_id, role) VALUES (?, ?, ?, ?)`,
+			accountID, boardID, m.FieldID, m.Role); err != nil {
 			return err
 		}
 	}
@@ -707,8 +713,8 @@ func (db *DB) UpsertJiraBoardFieldMap(boardID int, mappings []JiraBoardFieldMap)
 }
 
 // GetJiraBoardFieldMap returns field mappings for a board.
-func (db *DB) GetJiraBoardFieldMap(boardID int) ([]JiraBoardFieldMap, error) {
-	rows, err := db.Query(`SELECT board_id, field_id, role FROM jira_board_field_map WHERE board_id = ?`, boardID)
+func (db *DB) GetJiraBoardFieldMap(accountID int64, boardID int) ([]JiraBoardFieldMap, error) {
+	rows, err := db.Query(`SELECT account_id, board_id, field_id, role FROM jira_board_field_map WHERE account_id = ? AND board_id = ?`, accountID, boardID)
 	if err != nil {
 		return nil, err
 	}
@@ -716,7 +722,7 @@ func (db *DB) GetJiraBoardFieldMap(boardID int) ([]JiraBoardFieldMap, error) {
 	var mappings []JiraBoardFieldMap
 	for rows.Next() {
 		var m JiraBoardFieldMap
-		if err := rows.Scan(&m.BoardID, &m.FieldID, &m.Role); err != nil {
+		if err := rows.Scan(&m.AccountID, &m.BoardID, &m.FieldID, &m.Role); err != nil {
 			return nil, err
 		}
 		mappings = append(mappings, m)

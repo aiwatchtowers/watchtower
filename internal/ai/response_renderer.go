@@ -30,10 +30,11 @@ type messageRef struct {
 // references to Slack permalinks, renders markdown for terminal display, and
 // appends a Sources section with referenced message links.
 type ResponseRenderer struct {
-	db       *db.DB
-	domain   string
-	teamID   string
-	renderer *glamour.TermRenderer
+	db             *db.DB
+	domain         string
+	teamID         string
+	renderer       *glamour.TermRenderer
+	slackAcctCache slackAccountCache
 }
 
 // NewResponseRenderer creates a ResponseRenderer.
@@ -59,10 +60,11 @@ func NewResponseRenderer(database *db.DB, domain, teamID string) *ResponseRender
 		log.Printf("warning: failed to create markdown renderer: %v", err)
 	}
 	return &ResponseRenderer{
-		db:       database,
-		domain:   domain,
-		teamID:   teamID,
-		renderer: r,
+		db:             database,
+		domain:         domain,
+		teamID:         teamID,
+		renderer:       r,
+		slackAcctCache: make(slackAccountCache),
 	}
 }
 
@@ -149,10 +151,18 @@ func (r *ResponseRenderer) resolveRefs(refs []messageRef) []messageRef {
 			continue
 		}
 
-		ref.permalink = slackutil.GenerateDeeplink(r.teamID, ch.ID, msg.TS)
+		teamID, rawChannelID := r.resolveLinkTarget(ch.ID)
+		ref.permalink = slackutil.GenerateDeeplink(teamID, rawChannelID, msg.TS)
 		resolved = append(resolved, ref)
 	}
 	return resolved
+}
+
+// resolveLinkTarget resolves the Slack team id and raw (un-namespaced) channel
+// id to use when building a deep link for a stored channel id. See
+// resolveSlackLinkTarget for the namespace/cache/fallback mechanics.
+func (r *ResponseRenderer) resolveLinkTarget(channelID string) (teamID, rawChannelID string) {
+	return resolveSlackLinkTarget(r.db, r.slackAcctCache, r.teamID, channelID)
 }
 
 // replaceRefs replaces raw message references with markdown links in the response text.

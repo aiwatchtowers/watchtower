@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -34,6 +35,14 @@ var (
 	transcriptListFlagEventID   string
 	transcriptFollowupChapter   int
 )
+
+// minRecapTranscriptChars gates the automatic recap (and chapters) generation
+// at save time: Whisper on near-silent audio hallucinates short phrases, and
+// GenerateTranscriptRecap injects the calendar event's description into the
+// prompt — so a near-empty transcript makes the model "recap" the event
+// description instead of the meeting. The explicit `transcript recap <id>`
+// retry command stays ungated (an explicit user request always generates).
+const minRecapTranscriptChars = 200
 
 // transcriptGeneratorFactory is the seam tests override to inject a mock
 // generator (same pattern as newDayPlanPipelineFactory).
@@ -201,16 +210,32 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 
 	// The row is saved — from here on a recap failure must NOT flip the exit
 	// code; it is reported inside the envelope instead.
-	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+	recapSkipped, chaptersOutcome, recapErr := runSaveGenerations(
+		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
+	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+}
+
+// runSaveGenerations runs save's post-insert AI steps: the recap (unless the
+// transcript is under minRecapTranscriptChars — the too-short skip) and,
+// when segments were persisted and the recap wasn't skipped, the chapters
+// pass. Returned values feed printTranscriptEnvelope verbatim.
+func runSaveGenerations(ctx context.Context, database *db.DB, cfg *config.Config, id int64, text string, hasSegments bool, errOut io.Writer) (recapSkipped bool, chaptersOutcome *error, recapErr error) {
+	recapSkipped = utf8.RuneCountInString(text) < minRecapTranscriptChars
+	if recapSkipped {
+		recapErr = fmt.Errorf("transcript too short (<%d chars): recap skipped", minRecapTranscriptChars)
+	} else {
+		recapErr = generateAndStoreTranscriptRecap(ctx, database, cfg, id, errOut)
+	}
 	// Chapters are generated automatically only when segments exist (they
-	// carry the timecodes the chapterizer needs). A failure leaves
-	// chapters_json NULL; retry via `transcript chapters <id>`.
-	var chaptersOutcome *error
-	if tr.SegmentsJSON.Valid {
-		_, chaptersErr := generateAndStoreTranscriptChapters(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
+	// carry the timecodes the chapterizer needs) and the recap wasn't
+	// skipped for being too short (the same near-empty transcript has no
+	// chapters worth extracting either). A failure leaves chapters_json
+	// NULL; retry via `transcript chapters <id>`.
+	if !recapSkipped && hasSegments {
+		_, chaptersErr := generateAndStoreTranscriptChapters(ctx, database, cfg, id, errOut)
 		chaptersOutcome = &chaptersErr
 	}
-	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome)
+	return recapSkipped, chaptersOutcome, recapErr
 }
 
 // loadTranscriptSegments reads and validates the optional --segments-file for
@@ -332,11 +357,13 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("transcript %d not found", id)
 	}
 
+	// The recap retry is never gated by minRecapTranscriptChars — an explicit
+	// user request always generates, regardless of transcript length.
 	recapErr := generateAndStoreTranscriptRecap(cmd.Context(), database, cfg, id, cmd.ErrOrStderr())
 	// The recap retry never touches segments or speakers — nothing attempted,
 	// nothing dropped, so segments_ok/speakers_ok are honestly true. Chapters
 	// are likewise not attempted here (nil ⇒ no chapters keys in the envelope).
-	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil, nil)
+	return printTranscriptEnvelope(cmd, database, id, recapErr, nil, nil, nil, false)
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
@@ -422,10 +449,14 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 // (exit 1 only when nothing was persisted) — so it degrades to a minimal
 // envelope built from what is known, logging the refetch problem to stderr.
 // chaptersErr is nil when chapter generation was not attempted (no segments,
-// or the recap-only retry command); when non-nil the envelope additionally
-// reports chapters_ok / chapters_error — additive keys, safe for the frozen
-// Swift decoder.
-func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error, chaptersErr *error) error {
+// a skipped recap, or the recap-only retry command); when non-nil the
+// envelope additionally reports chapters_ok / chapters_error — additive
+// keys, safe for the frozen Swift decoder. recapSkipped is true only when
+// runTranscriptSave skipped recap generation for a too-short transcript
+// (minRecapTranscriptChars); it adds the additive recap_skipped=true key —
+// the `transcript recap <id>` retry (never gated) always passes false, so
+// the key never appears in that envelope.
+func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, recapErr, segmentsErr, speakersErr error, chaptersErr *error, recapSkipped bool) error {
 	recapErrMsg := ""
 	if recapErr != nil {
 		recapErrMsg = recapErr.Error()
@@ -446,6 +477,9 @@ func printTranscriptEnvelope(cmd *cobra.Command, database *db.DB, id int64, reca
 		"segments_error": segmentsErrMsg,
 		"speakers_ok":    speakersErr == nil,
 		"speakers_error": speakersErrMsg,
+	}
+	if recapSkipped {
+		envelope["recap_skipped"] = true
 	}
 	if chaptersErr != nil {
 		chaptersErrMsg := ""

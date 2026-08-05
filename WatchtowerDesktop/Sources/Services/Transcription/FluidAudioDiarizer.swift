@@ -15,10 +15,13 @@ final class FluidAudioDiarizer: SpeakerDiarizing, @unchecked Sendable {
     }
 
     /// Downloads the diarizer models on first use (HuggingFace, then cached
-    /// on disk) and initializes the pipeline.
-    static func load() async throws -> FluidAudioDiarizer {
+    /// on disk) and initializes the pipeline. `clusteringThreshold` overrides
+    /// FluidAudio's own 0.7 default — see `TranscriptionConfig.diarizationThreshold`.
+    static func load(clusteringThreshold: Float) async throws -> FluidAudioDiarizer {
         let models = try await DiarizerModels.downloadIfNeeded()
-        let manager = DiarizerManager()
+        var config = DiarizerConfig()
+        config.clusteringThreshold = clusteringThreshold
+        let manager = DiarizerManager(config: config)
         manager.initialize(models: models)
         return FluidAudioDiarizer(manager: manager)
     }

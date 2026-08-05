@@ -938,7 +938,7 @@ final class TracksViewModelTests: XCTestCase {
     func testLoadTracks() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db, domain: "acme")
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db, text: "Fix the bug", priority: "high", hasUpdates: true)
             try TestDatabase.insertTrack(db, text: "Write docs", priority: "low")
         }
@@ -973,7 +973,7 @@ final class TracksViewModelTests: XCTestCase {
     func testLoadWithPriorityFilter() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db, text: "High", priority: "high")
             try TestDatabase.insertTrack(db, text: "Low", priority: "low")
         }
@@ -990,7 +990,7 @@ final class TracksViewModelTests: XCTestCase {
     func testMarkRead() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db, text: "Fix it", hasUpdates: true)
         }
 
@@ -1013,7 +1013,7 @@ final class TracksViewModelTests: XCTestCase {
     func testSlackMessageURL() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db, domain: "acme")
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db)
         }
 
@@ -1038,7 +1038,7 @@ final class TracksViewModelTests: XCTestCase {
     func testLoadWithChannelFilter() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db, text: "Task 1", channelIDs: #"["C001"]"#)
             try TestDatabase.insertTrack(db, text: "Task 2", channelIDs: #"["C002"]"#)
         }
@@ -1472,7 +1472,7 @@ final class OnboardingChatViewModelTests: XCTestCase {
     func testMarkOnboardingDone() async throws {
         try await dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db, id: "T001")
-            try db.execute(sql: "UPDATE workspace SET current_user_id = 'U001'")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertProfile(db, slackUserID: "U001", onboardingDone: false)
         }
 

@@ -32,6 +32,10 @@ struct TranscriptionConfig: Equatable {
     var forcedLanguage: String?   // non-nil disables detection entirely
     /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
     var diarization: Bool = true
+    /// Clustering threshold for the diarizer's speaker embeddings; lower splits
+    /// more aggressively. FluidAudio's own default (0.7) under-splits compressed
+    /// meeting audio, merging distinct people into one cluster.
+    var diarizationThreshold: Float = 0.6
     static let sampleRate = 16_000
 }
 
@@ -83,6 +87,10 @@ extension TranscriptionConfig {
         }
         if defaults.object(forKey: "transcription.diarization") != nil {
             config.diarization = defaults.bool(forKey: "transcription.diarization")
+        }
+        if defaults.object(forKey: "transcription.diarizationThreshold") != nil {
+            let value = Float(defaults.double(forKey: "transcription.diarizationThreshold"))
+            if value >= 0.3 && value <= 0.9 { config.diarizationThreshold = value }
         }
         let force = (defaults.string(forKey: "transcription.forceLang") ?? "")
             .trimmingCharacters(in: .whitespaces)

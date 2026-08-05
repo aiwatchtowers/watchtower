@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,11 +48,12 @@ var authCompleteCmd = &cobra.Command{
 
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Disconnect Slack and purge Slack data",
-	Long: `Removes the Slack token from config and deletes all Slack data from the
-database: synced messages, users, channels, and the AI products built on them
-(digests, tracks, people cards, briefings, Slack inbox items and situations).
-Data from other sources (Gmail, Calendar, Jira) and targets are preserved.`,
+	Short: "Disconnect account #1's Slack workspace (non-destructive: keeps synced data)",
+	Long: `Legacy alias for "slack remove" on account #1: deletes the account's stored
+OAuth token and marks it removed so it stops syncing. Its synced messages,
+channels, digests, tracks, situations, and memory are deliberately kept —
+this is a soft delete, not a purge. Use "slack accounts"/"slack remove <id>"
+for multi-account control.`,
 	RunE: runAuthLogout,
 }
 
@@ -90,19 +92,19 @@ func init() {
 }
 
 func runAuthLogin(cmd *cobra.Command, _ []string) error {
-	cfg, err := resolveOAuthConfig()
+	oauthCfg, err := resolveOAuthConfig()
 	if err != nil {
 		return err
 	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	out := cmd.OutOrStdout()
-	result, err := auth.Login(cmd.Context(), cfg, out, auth.LoginOptions{SkipBrowserOpen: noOpen})
+	result, err := auth.Login(cmd.Context(), oauthCfg, out, auth.LoginOptions{SkipBrowserOpen: noOpen})
 	if err != nil {
 		return fmt.Errorf("oauth login: %w", err)
 	}
 
-	info, err := saveAuthResult(result)
+	info, err := saveAuthResult(cmd, result)
 	if err != nil {
 		return err
 	}
@@ -175,51 +177,50 @@ func runAuthComplete(cmd *cobra.Command, _ []string) error {
 	}
 
 	// H1: auth complete outputs JSON for the desktop app to parse
-	info, err := saveAuthResult(result)
+	info, err := saveAuthResult(cmd, result)
 	if err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(info)
 }
 
+// runAuthLogout is the legacy single-account alias for `slack remove 1`: it
+// disconnects account #1 (the implicit account every single-account install
+// has). Non-destructive, matching the multi-account model — the token file is
+// deleted and the row marked removed so it stops syncing, but synced Slack data
+// is kept (use a fresh sync or `slack remove` semantics; a full purge is no
+// longer part of logout). Create-if-absent does NOT apply to logout: with no
+// account #1 (nothing ever connected) it is a clean no-op, matching today's
+// `auth logout` with no token set.
 func runAuthLogout(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openSlackCmdDB(cmd)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-
-	// Blank the token in config — the same key path saveAuthResult writes on login.
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	tokenKey := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
-	if v.GetString(tokenKey) != "" {
-		v.Set(tokenKey, "")
-		if err := writeConfigAtomic(v, flagConfig); err != nil {
-			return err
-		}
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	if err := database.ClearSlackData(); err != nil {
-		return fmt.Errorf("purging slack data: %w", err)
+	accounts, err := database.ListSlackAccounts()
+	if err != nil {
+		return fmt.Errorf("listing accounts: %w", err)
 	}
 
+	// Also blank any lingering legacy config token so a re-login starts clean
+	// and the config source can never silently re-grant access.
+	logger := log.New(cmd.ErrOrStderr(), "[slack] ", log.LstdFlags)
+	blankLegacySlackConfigToken(cfg, logger)
+
 	out := cmd.OutOrStdout()
-	fmt.Fprintln(out, "Slack disconnected: token removed, Slack data purged.")
+	if len(accounts) == 0 {
+		fmt.Fprintln(out, "No Slack account connected — nothing to disconnect.")
+		return nil
+	}
+
+	id := accounts[0].ID
+	if err := removeSlackAccount(cfg, database, id); err != nil {
+		return fmt.Errorf("removing account: %w", err)
+	}
+
+	fmt.Fprintf(out, "Slack disconnected: account %d token removed (synced data kept).\n", id)
 	fmt.Fprintln(out, "Restart the sync daemon if it is running so it stops syncing Slack.")
 	return nil
 }
@@ -247,8 +248,17 @@ type authResultInfo struct {
 	UserID    string `json:"user_id"`
 }
 
-// saveAuthResult writes the OAuth result to config and creates the DB directory.
-func saveAuthResult(result *auth.OAuthResult) (*authResultInfo, error) {
+// saveAuthResult persists an OAuth login result onto a slack_accounts row and
+// its per-account token file (slack_token_<id>.json) — NOT into config.yaml.
+// It still writes the workspace scaffolding (active_workspace + sensible
+// defaults) so a fresh install has a resolvable workspace/DB path, but the
+// Slack token itself now lives only in the DB row + token file.
+//
+// Behaves as the legacy single-account alias: it seeds account #1 from any
+// pre-multi-account config token, then re-consents account #1 when one already
+// exists (like `slack login --account 1`) or creates it when none does (like
+// `slack add` with an empty label).
+func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultInfo, error) {
 	if result.ExpiresIn > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
 	}
@@ -269,7 +279,6 @@ func saveAuthResult(result *auth.OAuthResult) (*authResultInfo, error) {
 	_ = v.ReadInConfig()
 
 	v.Set("active_workspace", workspace)
-	v.Set("workspaces."+workspace+".slack_token", result.AccessToken)
 
 	defaults := map[string]any{
 		"ai.model":                  config.DefaultAIModel,
@@ -292,13 +301,38 @@ func saveAuthResult(result *auth.OAuthResult) (*authResultInfo, error) {
 		return nil, err
 	}
 
-	home, err := os.UserHomeDir()
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("getting home directory: %w", err)
+		return nil, fmt.Errorf("reloading config: %w", err)
 	}
-	dbDir := filepath.Join(home, ".local", "share", "watchtower", workspace)
-	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+	cfg.ActiveWorkspace = workspace
+
+	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o700); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	logger := log.New(cmd.ErrOrStderr(), "[slack] ", log.LstdFlags)
+	id, err := ensureLegacySlackAccount(cmd.Context(), cfg, database, logger)
+	if err != nil {
+		return nil, fmt.Errorf("seeding legacy account: %w", err)
+	}
+	isNewRow := false
+	if id == 0 {
+		id, err = database.CreateSlackAccount(db.SlackAccount{})
+		if err != nil {
+			return nil, fmt.Errorf("creating account: %w", err)
+		}
+		isNewRow = true
+	}
+
+	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result.AccessToken, isNewRow, cmd.ErrOrStderr()); err != nil {
+		return nil, err
 	}
 
 	return &authResultInfo{workspace, result.TeamID, result.UserID}, nil

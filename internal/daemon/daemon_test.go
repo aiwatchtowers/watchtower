@@ -105,6 +105,9 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 	// Pre-populate workspace so sync takes the incremental (search) path
 	err = database.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "test-workspace", Domain: "test-workspace"})
 	require.NoError(t, err)
+	// Seed slack_accounts account #1 — Orchestrator is now per-account (Task 4).
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T024BE7LD", TeamName: "test-workspace", TeamDomain: "test-workspace"})
+	require.NoError(t, err)
 
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
@@ -126,7 +129,7 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 		},
 	}
 
-	orch := sync.NewOrchestrator(database, slackClient, cfg)
+	orch := sync.NewOrchestrator(database, slackClient, cfg, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
 	return orch, srv
@@ -143,7 +146,7 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -165,7 +168,7 @@ func TestDaemon_PollTriggersSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -188,7 +191,7 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Inject a fake wake channel.
@@ -221,7 +224,7 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -254,7 +257,7 @@ func TestDaemon_SetLogger(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 
 	l := log.New(os.Stderr, "[custom] ", 0)
 	d.SetLogger(l)
@@ -266,7 +269,7 @@ func TestDaemon_SetPipelines(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 
 	// All pipeline setters should store without error.
 	d.SetDigestPipeline(nil)
@@ -283,7 +286,7 @@ func TestDaemon_SetPIDPath(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{PollInterval: time.Second},
 	}
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetPIDPath("/tmp/test.pid")
 	assert.Equal(t, "/tmp/test.pid", d.pidPath)
 }
@@ -302,7 +305,7 @@ func TestDaemon_RunWithPIDFile(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetPIDPath(pidPath)
 
@@ -336,17 +339,182 @@ func testDaemonWithTempHome(t *testing.T) (*sync.Orchestrator, *config.Config, s
 	return orch, cfg, wsDir
 }
 
+// TestPhaseSlackSyncAggregatesAcrossAccounts wires two per-account
+// orchestrators and asserts phaseSlackSync runs both and writes one aggregated
+// last_sync.json (the multi-account fan-out).
+func TestPhaseSlackSyncAggregatesAcrossAccounts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	wsDir := dir + "/.local/share/watchtower/test-ws"
+	require.NoError(t, os.MkdirAll(wsDir, 0o755))
+
+	var count1, count2 atomic.Int32
+	orch1, _ := newTestOrchestrator(t, &count1)
+	orch2, _ := newTestOrchestrator(t, &count2)
+
+	cfg := &config.Config{
+		ActiveWorkspace: "test-ws",
+		Workspaces: map[string]*config.WorkspaceConfig{
+			"test-ws": {SlackToken: "xoxp-test"},
+		},
+		Sync: config.SyncConfig{PollInterval: time.Second},
+	}
+
+	d := New(cfg)
+	d.SetOrchestrators([]*sync.Orchestrator{orch1, orch2})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	err := d.phaseSlackSync(context.Background())
+	require.NoError(t, err)
+
+	// Both accounts' orchestrators ran (each hit search.messages at least once).
+	assert.GreaterOrEqual(t, count1.Load(), int32(1), "account 1 orchestrator did not run")
+	assert.GreaterOrEqual(t, count2.Load(), int32(1), "account 2 orchestrator did not run")
+
+	// One aggregated last_sync.json was written for the whole fan-out.
+	result, err := sync.ReadSyncResult(wsDir + "/last_sync.json")
+	require.NoError(t, err)
+	assert.Empty(t, result.Error)
+	// Empty history from both accounts → zero messages summed.
+	assert.Equal(t, 0, result.MessagesFetched)
+}
+
+// TestPhaseSlackSyncEmptySlice is the degenerate case: no connected accounts →
+// phaseSlackSync returns nil immediately without touching the workspace dir,
+// matching the retired d.orchestrator == nil early-return.
+func TestPhaseSlackSyncEmptySlice(t *testing.T) {
+	d := newQuietDaemon(t)
+	d.SetOrchestrators(nil)
+	assert.NoError(t, d.phaseSlackSync(context.Background()))
+}
+
+// TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling proves the headline
+// isolation contract with an ACTUALLY failing account (TestPhaseSlackSyncAggregatesAcrossAccounts
+// only ever exercises the both-succeed case): a broken account's error must
+// not stop the healthy sibling's run, and each account's own status must
+// reflect only its own outcome (Orchestrator.recordAuthResult).
+func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
+	// Healthy account.
+	var healthyCount atomic.Int32
+	healthyOrch, healthyDB := newStatusTrackingOrchestrator(t, testMux(), &healthyCount)
+
+	// Broken account: team.info returns invalid_auth.
+	failMux := http.NewServeMux()
+	failMux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+	var failCount atomic.Int32
+	failOrch, failDB := newStatusTrackingOrchestrator(t, failMux, &failCount)
+
+	cfg := &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}}
+	d := New(cfg)
+	d.SetOrchestrators([]*sync.Orchestrator{healthyOrch, failOrch})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	err := d.phaseSlackSync(context.Background())
+	require.Error(t, err, "phaseSlackSync surfaces the first account error")
+
+	// The healthy sibling still ran, unaffected by the other's failure.
+	assert.GreaterOrEqual(t, healthyCount.Load(), int32(1), "healthy account orchestrator did not run")
+	healthyAcct, dbErr := healthyDB.GetSlackAccount(1)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "ok", healthyAcct.Status, "healthy account's own status must not be affected by the sibling's failure")
+
+	// The broken account's OWN row is flagged — not the healthy one's. The
+	// helper pre-seeds a workspace, so ensureWorkspace treats team.info as
+	// cached and the actual failure surfaces later from search.messages
+	// hitting failMux's unregistered path — a generic error, not an
+	// invalid_auth-shaped one, so this classifies as plain "error".
+	failAcct, dbErr := failDB.GetSlackAccount(1)
+	require.NoError(t, dbErr)
+	assert.Equal(t, "error", failAcct.Status)
+	assert.NotEmpty(t, failAcct.Error)
+}
+
+// TestPhaseSlackSyncRevokedTokenClassification proves the "revoked" status
+// classification (isRevokedAuthError) actually survives phaseSlackSync's
+// daemon-level fan-out, not just the orchestrator-level unit tests — an
+// account with NO team_id yet seeded means ensureWorkspace genuinely calls
+// team.info (unlike TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling's
+// pre-seeded helper, where team.info is cached and never called).
+func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	_, err = database.CreateSlackAccount(db.SlackAccount{}) // no team_id -> team.info is really called
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api),
+		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
+	orch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
+
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+
+	require.Error(t, d.phaseSlackSync(context.Background()))
+
+	acct, err := database.GetSlackAccount(1)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", acct.Status, "invalid_auth from team.info must classify as revoked through the daemon fan-out, not just at the orchestrator layer")
+}
+
+// newStatusTrackingOrchestrator is newTestOrchestrator plus a returned *db.DB
+// handle, so a test can assert on the resulting slack_accounts row.
+func newStatusTrackingOrchestrator(t *testing.T, mux *http.ServeMux, syncCount *atomic.Int32) (*sync.Orchestrator, *db.DB) {
+	t.Helper()
+
+	countingMux := http.NewServeMux()
+	countingMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			syncCount.Add(1)
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "test-workspace", Domain: "test-workspace"}))
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T024BE7LD", TeamName: "test-workspace", TeamDomain: "test-workspace"})
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(countingMux)
+	t.Cleanup(srv.Close)
+
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+
+	orch := sync.NewOrchestrator(database, slackClient, &config.Config{
+		Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1, SyncThreads: false},
+	}, 1)
+	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
+
+	return orch, database
+}
+
 func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
 	now := time.Now().Truncate(time.Second)
 	d.lastPeople = now
 	d.saveLastPeople()
 
-	d2 := New(orch, cfg)
+	d2 := newDaemon(orch, cfg)
 	d2.SetLogger(log.New(os.Stderr, "[test2] ", 0))
 	d2.loadLastPeople()
 
@@ -356,7 +524,7 @@ func TestDaemon_SaveLoadPeopleTime(t *testing.T) {
 func TestDaemon_LoadPeopleMissingFile(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	d.loadLastPeople()
 	assert.True(t, d.lastPeople.IsZero())
@@ -367,7 +535,7 @@ func TestDaemon_LoadPeopleInvalidContent(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(wsDir+"/last_people.txt", []byte("not-a-number"), 0o600))
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	d.loadLastPeople()
 	assert.True(t, d.lastPeople.IsZero())
@@ -411,7 +579,7 @@ func TestDaemon_RunSyncWithDigestPipeline(t *testing.T) {
 	gen := &mockGenerator{}
 	pipe := digest.New(database, cfg, gen, log.New(os.Stderr, "[digest-test] ", 0))
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(pipe)
 
@@ -459,7 +627,7 @@ func TestDaemon_RunSyncWithAllPipelines(t *testing.T) {
 	tracksPipe := tracks.New(database, cfg, gen, l)
 	peoplePipe := guide.New(database, cfg, gen, l)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(digestPipe)
 	d.SetTracksPipeline(tracksPipe)
@@ -524,7 +692,7 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 		Digest: config.DigestConfig{Enabled: true, MinMessages: 1},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -560,7 +728,7 @@ func TestDaemon_RunSyncContextCancelled(t *testing.T) {
 		Digest: config.DigestConfig{Enabled: true, MinMessages: 1},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Very short context so runSync hits ctx.Err() != nil branch
@@ -601,7 +769,7 @@ func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
 	l := log.New(os.Stderr, "[test] ", 0)
 	peoplePipe := guide.New(database, cfg, gen, l)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(l)
 	d.SetPeoplePipeline(peoplePipe)
 	// Set lastPeople to recent time — pipeline should be skipped
@@ -625,7 +793,7 @@ func TestDaemon_MinPollInterval(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -683,7 +851,7 @@ func TestDaemon_UnsnoozeExpiredTasks(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -740,7 +908,7 @@ func TestDaemon_NotifiesDueTargets(t *testing.T) {
 		},
 	}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
@@ -818,13 +986,13 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 		Name:   "test-ws",
 		Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	cfg.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 0}
 
 	fp := &fakeDayPlanRunner{database: database}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-dayplan] ", 0))
 	d.SetDB(database)
 	d.SetDayPlanPipeline(fp)
@@ -857,8 +1025,8 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 		Name:   "test-ws",
 		Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	// Insert a plan so conflict phase has something to work on.
 	testDate := "2026-04-23"
 	plan := &db.DayPlan{
@@ -873,7 +1041,7 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 
 	fp := &fakeDayPlanRunner{database: database}
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-dayplan-conflict] ", 0))
 	d.SetDB(database)
 	d.SetDayPlanPipeline(fp)
@@ -888,7 +1056,7 @@ func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 func TestDaemon_DayPlanNilPipeline(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-nil-dayplan] ", 0))
 
 	// Should not panic when pipeline is nil.
@@ -925,7 +1093,8 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
 		ID: "T024BE7LD", Name: "test-ws", Domain: "test-ws",
 	}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.EnsureChannel("C1", "general", "public", ""))
 	require.NoError(t, database.UpsertMessage(db.Message{
 		ChannelID: "C1", TS: "1700000000.000001", TSUnix: 1700000000.000001,
@@ -944,7 +1113,7 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	gen := &mockGenerator{}
 	l := log.New(os.Stderr, "[phase-test] ", 0)
 
-	d := New(orch, cfg)
+	d := newDaemon(orch, cfg)
 	d.SetLogger(l)
 	d.SetDB(database)
 	d.SetDigestPipeline(digest.New(database, cfg, gen, l))

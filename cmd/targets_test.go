@@ -21,7 +21,8 @@ func setupTargetsTestEnv(t *testing.T) func() {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	database.Close()
 	return cleanup
 }

@@ -57,6 +57,22 @@ private struct ReminderTestError: Error {}
 @MainActor
 final class MeetingReminderCenterTests: XCTestCase {
 
+    /// Stand-in for the user's real recordings directory — see the same
+    /// property in `MeetingRecorderCenterTests`.
+    private var recordingsDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        recordingsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reminder-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: recordingsDir)
+        super.tearDown()
+    }
+
     // MARK: - Fixtures
 
     private static let iso: ISO8601DateFormatter = {
@@ -312,7 +328,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             decode: { _ in [] },
             runnerResolver: { nil },
             notifier: ReminderFakeTranscriptNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
     }
 

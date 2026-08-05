@@ -111,7 +111,7 @@ func TestGetTodayBriefingHappy(t *testing.T) {
 	if err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"}); err != nil {
 		t.Fatalf("seeding workspace: %v", err)
 	}
-	if err := database.SetCurrentUserID("U1"); err != nil {
+	if _, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"}); err != nil {
 		t.Fatalf("setting current user: %v", err)
 	}
 	today := time.Now().Format("2006-01-02")

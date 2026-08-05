@@ -10,25 +10,25 @@ import (
 )
 
 func TestNewBoardAnalyzer_DefaultLanguage(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	assert.Equal(t, "English", a.language, "default language should be English")
 	assert.NotNil(t, a.logger)
 }
 
 func TestBoardAnalyzer_SetLanguage(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	a.SetLanguage("Russian")
 	assert.Equal(t, "Russian", a.language)
 }
 
 func TestBoardAnalyzer_SetLanguage_IgnoresEmpty(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	a.SetLanguage("")
 	assert.Equal(t, "English", a.language, "empty string should not change language")
 }
 
 func TestBoardAnalyzer_AccumulatedUsage_Empty(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	in, out, total := a.AccumulatedUsage()
 	assert.Equal(t, 0, in)
 	assert.Equal(t, 0, out)
@@ -36,7 +36,7 @@ func TestBoardAnalyzer_AccumulatedUsage_Empty(t *testing.T) {
 }
 
 func TestBoardAnalyzer_AddUsage_Accumulates(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	a.addUsage(&ai.Usage{InputTokens: 10, OutputTokens: 20, TotalAPITokens: 30})
 	a.addUsage(&ai.Usage{InputTokens: 5, OutputTokens: 15, TotalAPITokens: 25})
 	in, out, total := a.AccumulatedUsage()
@@ -46,7 +46,7 @@ func TestBoardAnalyzer_AddUsage_Accumulates(t *testing.T) {
 }
 
 func TestBoardAnalyzer_AddUsage_NilNoOp(t *testing.T) {
-	a := NewBoardAnalyzer(nil, nil, nil)
+	a := NewBoardAnalyzer(nil, nil, nil, 1)
 	a.addUsage(nil) // must not panic
 	in, _, _ := a.AccumulatedUsage()
 	assert.Equal(t, 0, in)

@@ -622,7 +622,8 @@ func TestProfileContextInjectedIntoDigestPrompt(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 
@@ -664,7 +665,8 @@ func TestNoProfileContextWhenProfileEmpty(t *testing.T) {
 	database := testDB(t)
 
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
-	require.NoError(t, database.SetCurrentUserID("U001"))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
 	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
 

@@ -494,6 +494,8 @@ func TestRunStatus_FullOutput(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
+	_, err = database.CreateSlackAccount(db.SlackAccount{TeamID: "T001", TeamName: "test-ws", TeamDomain: "test-ws", Label: "Work"})
+	require.NoError(t, err)
 
 	// Insert some messages to have non-zero stats
 	require.NoError(t, database.UpsertMessage(db.Message{
@@ -512,7 +514,7 @@ func TestRunStatus_FullOutput(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "test-ws")
-	assert.Contains(t, output, "T001")
+	assert.Contains(t, output, "Slack: Work (test-ws) [ok]")
 	assert.Contains(t, output, "Channels:")
 	assert.Contains(t, output, "Users:")
 	assert.Contains(t, output, "Messages:")
@@ -574,10 +576,9 @@ func TestRunProfile_WithWorkspaceSetup(t *testing.T) {
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{
-		ID:            "T001",
-		Name:          "test-ws",
-		Domain:        "test-ws",
-		CurrentUserID: "U001",
+		ID:     "T001",
+		Name:   "test-ws",
+		Domain: "test-ws",
 	}))
 	database.Close()
 

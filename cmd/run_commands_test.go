@@ -148,8 +148,8 @@ func TestRunBriefingList_NoBriefings(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)
@@ -168,8 +168,8 @@ func TestRunBriefingList_WithBriefings(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	id, err := database.UpsertBriefing(db.Briefing{
 		UserID:       "U123",
 		Date:         "2026-04-02",
@@ -249,12 +249,15 @@ func TestRunJiraLogout_NoToken(t *testing.T) {
 	var buf bytes.Buffer
 	c.SetOut(&buf)
 
-	// Logout is idempotent — works even without a saved token.
+	// Logout is idempotent — works even without a saved token. With no
+	// accounts (multi-account model) it reports nothing to disconnect.
 	require.NoError(t, runJiraLogout(c, nil))
-	assert.Contains(t, buf.String(), "disconnected")
+	assert.Contains(t, buf.String(), "No Jira site connected")
 }
 
-func TestRunJiraLogout_RemovesTokenAndClearsData(t *testing.T) {
+// Logout is now non-destructive: the token file is removed and the account row
+// marked removed, but synced data is kept.
+func TestRunJiraLogout_RemovesTokenKeepsData(t *testing.T) {
 	wsDir := setupTempWorkspace(t)
 
 	tokenPath := filepath.Join(wsDir, "jira_token.json")
@@ -264,11 +267,38 @@ func TestRunJiraLogout_RemovesTokenAndClearsData(t *testing.T) {
 	var buf bytes.Buffer
 	c.SetOut(&buf)
 
+	// Seed a synced issue: the headline of this change is that logout stops
+	// wiping jira_* (ClearJiraData is deleted), so the test must actually
+	// prove the data survives — otherwise reinstating the wipe passes.
+	database, err := db.Open(filepath.Join(wsDir, "watchtower.db"))
+	require.NoError(t, err)
+	acctID := db.SeedTestJiraAccount(t, database)
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: acctID, Key: "OPS-1", ProjectKey: "OPS", Summary: "keep me",
+		Status: "Open", StatusCategory: "todo",
+		CreatedAt: "2026-01-01", UpdatedAt: "2026-01-01", SyncedAt: "2026-01-01",
+	}))
+	require.NoError(t, database.Close())
+
 	require.NoError(t, runJiraLogout(c, nil))
 	assert.Contains(t, buf.String(), "disconnected")
 
-	_, err := os.Stat(tokenPath)
+	_, err = os.Stat(tokenPath)
 	assert.True(t, os.IsNotExist(err), "token file should be removed")
+
+	reopened, err := db.Open(filepath.Join(wsDir, "watchtower.db"))
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	issue, err := reopened.GetJiraIssueByKey("OPS-1")
+	require.NoError(t, err)
+	require.NotNil(t, issue, "logout must keep synced issues (it is no longer a purge)")
+	assert.Equal(t, "keep me", issue.Summary)
+
+	acct, err := reopened.GetJiraAccount(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", acct.Status)
+	assert.False(t, acct.Enabled)
 }
 
 func TestRunDigestResetContext_AllChannels(t *testing.T) {
@@ -335,8 +365,8 @@ func TestRunDayPlanCheckConflicts_NoPlan(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U123"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U123"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)
@@ -367,8 +397,8 @@ func TestRunBriefing_NoBriefingForToday(t *testing.T) {
 
 	_, err = database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'test')`)
 	require.NoError(t, err)
-	require.NoError(t, database.SetCurrentUserID("U1"))
-
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
 	c := &cobra.Command{}
 	var buf bytes.Buffer
 	c.SetOut(&buf)
@@ -387,7 +417,7 @@ func TestRunJiraStatus_NotConnected(t *testing.T) {
 	require.NoError(t, runJiraStatus(c, nil))
 	out := buf.String()
 	assert.Contains(t, out, "not connected")
-	assert.Contains(t, out, "jira login")
+	assert.Contains(t, out, "jira add")
 }
 
 func TestRunJiraStatus_Connected(t *testing.T) {
@@ -402,7 +432,10 @@ func TestRunJiraStatus_Connected(t *testing.T) {
 
 	require.NoError(t, runJiraStatus(c, nil))
 	out := buf.String()
-	assert.Contains(t, out, "connected")
-	assert.Contains(t, out, tokenPath)
+	assert.Contains(t, out, "account(s) connected")
+	assert.Contains(t, out, "[1]")
 	assert.Contains(t, out, "Issues synced:")
+	// The legacy token was migrated to the per-account store (account #1).
+	assert.FileExists(t, filepath.Join(wsDir, "jira_token_1.json"))
+	assert.NoFileExists(t, tokenPath)
 }

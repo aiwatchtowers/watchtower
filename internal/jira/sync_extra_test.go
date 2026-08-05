@@ -9,20 +9,20 @@ import (
 )
 
 func TestNewSyncer_Defaults(t *testing.T) {
-	s := NewSyncer(nil, nil, nil, []int{1, 2, 3})
+	s := NewSyncer(nil, nil, nil, []int{1, 2, 3}, 1)
 	assert.Equal(t, []int{1, 2, 3}, s.boardIDs)
 	assert.NotNil(t, s.logger)
 }
 
 func TestSyncer_SetLogger(t *testing.T) {
-	s := NewSyncer(nil, nil, nil, nil)
+	s := NewSyncer(nil, nil, nil, nil, 1)
 	custom := log.New(io.Discard, "", 0)
 	s.SetLogger(custom)
 	assert.Same(t, custom, s.logger)
 }
 
 func TestSyncer_SetBoardAnalyzer_AndUsage(t *testing.T) {
-	s := NewSyncer(nil, nil, nil, nil)
+	s := NewSyncer(nil, nil, nil, nil, 1)
 
 	// Without analyzer, usage is zero.
 	in, out, total := s.BoardAnalyzerUsage()
@@ -30,13 +30,13 @@ func TestSyncer_SetBoardAnalyzer_AndUsage(t *testing.T) {
 	assert.Equal(t, 0, out)
 	assert.Equal(t, 0, total)
 
-	analyzer := NewBoardAnalyzer(nil, nil, nil)
+	analyzer := NewBoardAnalyzer(nil, nil, nil, 1)
 	s.SetBoardAnalyzer(analyzer)
 	assert.Same(t, analyzer, s.boardAnalyzer)
 }
 
 func TestSyncer_SetAutoRefresh(t *testing.T) {
-	s := NewSyncer(nil, nil, nil, nil)
+	s := NewSyncer(nil, nil, nil, nil, 1)
 	s.SetAutoRefresh(true)
 	assert.True(t, s.autoRefresh)
 	s.SetAutoRefresh(false)
