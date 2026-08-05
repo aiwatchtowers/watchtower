@@ -22,6 +22,11 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Same pairing as ci.yml's Go Test job: the shell suite over
+      # scripts/build-app.sh runs first (seconds), then the coverage gate.
+      - name: Test (shell scripts)
+        run: make test-scripts
+
       - name: Test + coverage gate
         run: make test-cover
 

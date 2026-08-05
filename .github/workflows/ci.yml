@@ -73,6 +73,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # The shell suite over scripts/build-app.sh — it stubs `ps` and never
+      # builds, so it rides this Linux job rather than paying for a macOS one.
+      # Seconds long, so it runs before the coverage gate: earlier signal, no cost.
+      - name: Test (shell scripts)
+        run: make test-scripts
+
       # Runs the full suite with -cover and enforces coverage.thresholds —
       # this IS the test run on feature branches and PRs.
       - name: Test + coverage gate

@@ -22,37 +22,38 @@ final class NotificationForwardingTests: XCTestCase {
     func testRoundTripCarriesEveryRoutedKey() {
         let decoded = roundTrip(
             actionID: NotificationService.joinRecordActionID,
+            userInfo: ["type": "meeting_reminder", "digestId": 4242]
+        )
+
+        XCTAssertEqual(decoded?.actionID, NotificationService.joinRecordActionID)
+        XCTAssertEqual(decoded?.payload, ["type": "meeting_reminder", "digestId": "4242"])
+
+        // The routing view hands `digestId` back as the Int `navigateToDigest` takes.
+        XCTAssertEqual(decoded?.userInfo["digestId"] as? Int, 4242)
+        XCTAssertEqual(decoded?.userInfo["type"] as? String, "meeting_reminder")
+    }
+
+    /// A push carries more than forwarded routing reads (`eventTitle`, `trackId`, …);
+    /// none of it crosses the process boundary. `eventId`/`conferenceUrl` are on that
+    /// list too: forwarded routing is navigation-only, so it never reads them, and a
+    /// conference link may embed a passcode.
+    func testEncodeDropsUnroutedKeys() {
+        let decoded = roundTrip(
+            actionID: UNNotificationDefaultActionIdentifier,
             userInfo: [
-                "type": "meeting_reminder",
-                "digestId": 4242,
+                "type": "track_update",
+                "trackId": "T-9",
+                "eventTitle": "Standup",
                 "eventId": "evt-1",
                 "conferenceUrl": "https://meet.google.com/abc-defg-hij"
             ]
         )
 
-        XCTAssertEqual(decoded?.actionID, NotificationService.joinRecordActionID)
-        XCTAssertEqual(decoded?.payload["type"], "meeting_reminder")
-        XCTAssertEqual(decoded?.payload["digestId"], "4242")
-        XCTAssertEqual(decoded?.payload["eventId"], "evt-1")
-        XCTAssertEqual(decoded?.payload["conferenceUrl"], "https://meet.google.com/abc-defg-hij")
-
-        // The routing view hands `digestId` back as the Int `navigateToDigest` takes.
-        XCTAssertEqual(decoded?.userInfo["digestId"] as? Int, 4242)
-        XCTAssertEqual(decoded?.userInfo["type"] as? String, "meeting_reminder")
-        XCTAssertEqual(decoded?.userInfo["eventId"] as? String, "evt-1")
-    }
-
-    /// A push carries more than the delegate routes on (`eventTitle`, `trackId`, …);
-    /// none of it crosses the process boundary.
-    func testEncodeDropsUnroutedKeys() {
-        let decoded = roundTrip(
-            actionID: UNNotificationDefaultActionIdentifier,
-            userInfo: ["type": "track_update", "trackId": "T-9", "eventTitle": "Standup"]
-        )
-
         XCTAssertEqual(decoded?.payload, ["type": "track_update"])
         XCTAssertNil(decoded?.userInfo["trackId"])
         XCTAssertNil(decoded?.userInfo["eventTitle"])
+        XCTAssertNil(decoded?.userInfo["eventId"])
+        XCTAssertNil(decoded?.userInfo["conferenceUrl"])
     }
 
     /// A response with no routed keys at all still encodes: the survivor receives an
@@ -71,12 +72,12 @@ final class NotificationForwardingTests: XCTestCase {
     func testDecodeWithoutTypeStillCarriesTheAction() {
         let decoded = roundTrip(
             actionID: NotificationService.stopRecordingActionID,
-            userInfo: ["eventId": "evt-2"]
+            userInfo: ["digestId": 7]
         )
 
         XCTAssertEqual(decoded?.actionID, NotificationService.stopRecordingActionID)
         XCTAssertNil(decoded?.userInfo["type"])
-        XCTAssertEqual(decoded?.userInfo["eventId"] as? String, "evt-2")
+        XCTAssertEqual(decoded?.userInfo["digestId"] as? Int, 7)
     }
 
     /// A `digestId` that is not a number is dropped rather than handed on as text
