@@ -78,6 +78,11 @@ jobs:
       - name: Test + coverage gate
         run: make test-cover
 
+      # The shell suite over scripts/build-app.sh — it stubs `ps` and never
+      # builds, so it rides this Linux job rather than paying for a macOS one.
+      - name: Test (shell scripts)
+        run: make test-scripts
+
       - name: Test (race, library packages)
         # Race-instrumented pure-Go sqlite is ~10x slower (internal/db alone
         # ~9min on shared runners), so the race pass runs only on pushes to

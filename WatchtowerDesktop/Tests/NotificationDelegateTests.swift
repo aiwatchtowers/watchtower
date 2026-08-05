@@ -4,10 +4,10 @@ import XCTest
 
 /// `NotificationDelegate.handleMeetingReminderAction` fallback branches,
 /// driven through the injectable `openURL` seam (the `JoinMeetingAction`
-/// convention). Full delegate routing needs a live `UNUserNotificationCenter`
-/// and stays out of `swift test`; these pin the event-vanished → conferenceUrl
-/// fallback and the stringly "conferenceUrl" userInfo key contract written by
-/// `NotificationService` and read here.
+/// convention). These pin the event-vanished → conferenceUrl fallback and the
+/// stringly "conferenceUrl" userInfo key contract written by
+/// `NotificationService` and read here; the dispatch table that decides when
+/// this handler runs at all lives in `NotificationRouteTests`.
 @MainActor
 final class NotificationDelegateTests: XCTestCase {
 
