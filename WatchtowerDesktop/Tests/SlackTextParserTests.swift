@@ -174,4 +174,25 @@ final class SlackTextParserTests: XCTestCase {
         let result = SlackTextParser.toAttributedString(input, userNames: ["U09H4EMS85U": "Roman Olifir"])
         XCTAssertEqual(String(result.characters), "Hey @Roman Olifir")
     }
+
+    // MARK: - Link scheme gate
+
+    /// Slack escapes only `&`, `<`, `>`, so a markdown link written by a message
+    /// author reaches the parser verbatim. A disallowed scheme must render as
+    /// text with no clickable link attribute at all.
+    func testAttributedStringDropsDisallowedSchemeLink() {
+        let input = "[Q3 numbers](smb://198.51.100.7/share)"
+        let result = SlackTextParser.toAttributedString(input)
+        XCTAssertEqual(String(result.characters), "Q3 numbers")
+        XCTAssertNil(result.runs.first { $0.link != nil },
+                     "smb:// link must not stay clickable")
+    }
+
+    func testAttributedStringKeepsAllowedSchemeLink() {
+        let input = "[Q3 numbers](https://example.com/q3)"
+        let result = SlackTextParser.toAttributedString(input)
+        XCTAssertEqual(String(result.characters), "Q3 numbers")
+        XCTAssertEqual(result.runs.first { $0.link != nil }?.link?.absoluteString,
+                       "https://example.com/q3")
+    }
 }

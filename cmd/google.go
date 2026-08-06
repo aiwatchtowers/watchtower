@@ -269,8 +269,9 @@ func runGoogleRemove(cmd *cobra.Command, args []string) error {
 
 // removeGoogleAccount revokes id's OAuth grant at Google (best-effort — a
 // revoke failure is logged and swallowed, since a stale grant on Google's
-// side never blocks the local removal), deletes id's google_accounts row
-// (cascading its calendars/events/messages), then deletes its token and
+// side never blocks the local removal), purges the Gmail data that has no FK
+// back to the account row, deletes id's google_accounts row (cascading its
+// calendars/events/messages), then deletes its token and
 // credentials files. It also deletes any lingering legacy
 // google_token.json/gmail_token.json (belt-and-braces: after the C1 fix to
 // ensureLegacyGoogleAccount these shouldn't exist once any account is
@@ -282,6 +283,17 @@ func removeGoogleAccount(ctx context.Context, cfg *config.Config, database *db.D
 		if revokeErr := calendar.Revoke(ctx, token.RefreshToken); revokeErr != nil {
 			fmt.Fprintf(warnOut, "warning: could not revoke the grant at Google: %v\n", revokeErr)
 		}
+	}
+
+	// Before the row goes: the Gmail inbox items, their situations and the
+	// learned rules keyed to them hang off the "gmail:<id>:" channel-id
+	// convention, not off a foreign key, so nothing cascades them. They also
+	// become unreachable once the account row is gone — `gmail purge` resolves
+	// its account first — so a failure here must abort the removal rather than
+	// leave orphans no command can ever clean up. ClearGmailData is
+	// transactional and idempotent: the user can just retry.
+	if err := database.ClearGmailData(id); err != nil {
+		return nil, err
 	}
 
 	if err := database.DeleteGoogleAccount(id); err != nil {

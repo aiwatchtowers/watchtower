@@ -257,10 +257,10 @@ func TestIntegrationAIPromptAssembly(t *testing.T) {
 		To:   refTime,
 	}
 
-	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", "/tmp/test.db", db.Schema, "")
+	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", db.Schema, "")
 	assert.Contains(t, systemPrompt, "Watchtower")
 	assert.Contains(t, systemPrompt, "my-company")
-	assert.Contains(t, systemPrompt, "sqlite3")
+	assert.Contains(t, systemPrompt, "list_messages")
 	assert.Contains(t, systemPrompt, "CREATE TABLE")
 
 	timeHints := FormatTimeHints(query)
@@ -320,12 +320,12 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	assert.Contains(t, query.Channels, "general")
 
 	// Step 3: Build prompts (DB path + schema in system prompt, no pre-loaded context)
-	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", "/tmp/test.db", db.Schema, "")
+	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", db.Schema, "")
 	timeHints := FormatTimeHints(query)
 	userMessage := AssembleUserMessage(question, timeHints)
 
 	assert.Contains(t, systemPrompt, "Watchtower")
-	assert.Contains(t, systemPrompt, "sqlite3")
+	assert.Contains(t, systemPrompt, "list_messages")
 	assert.Contains(t, userMessage, question)
 
 	// Step 4: Mock Claude CLI and send the query
@@ -368,7 +368,7 @@ func TestIntegrationEndToEndStreaming(t *testing.T) {
 		To:   refTime,
 	}
 
-	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", "/tmp/test.db", db.Schema, "")
+	systemPrompt := BuildSystemPrompt("my-company", "my-company", "T001", db.Schema, "")
 	timeHints := FormatTimeHints(query)
 	userMessage := AssembleUserMessage(question, timeHints)
 

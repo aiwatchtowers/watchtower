@@ -87,7 +87,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 	// Assemble prompt with DB access
 	dbPath := cfg.DBPath()
-	systemPrompt := ai.BuildSystemPrompt(wsSummary, domain, teamID, dbPath, db.Schema, cfg.Digest.Language)
+	systemPrompt := ai.BuildSystemPrompt(wsSummary, domain, teamID, db.Schema, cfg.Digest.Language)
 
 	// Inject Jira context if enabled
 	if cfg.Jira.Enabled {

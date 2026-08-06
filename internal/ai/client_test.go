@@ -388,3 +388,21 @@ printf '\n'
 	require.NoError(t, err)
 	assert.Equal(t, "data", result.String())
 }
+
+// TestParseCLIOutput_UnparsableOutputIsNotEchoed pins that the parse error
+// describes the CLI output instead of quoting it. The output is model text
+// built from private Slack/mail/calendar content, and this error is wrapped
+// with %w into the daemon log, pipeline_runs.error_msg, and the Desktop UI.
+func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
+	secret := "Northwind acquisition closes Friday, legal still reviewing the terms"
+
+	_, err := parseCLIOutput([]byte(secret))
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), secret)
+	assert.NotContains(t, err.Error(), "Northwind")
+	// Still diagnostic: shape, size, and a correlatable fingerprint.
+	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
+	assert.Contains(t, err.Error(), "looks like plain text")
+	assert.Contains(t, err.Error(), "sha256:")
+}

@@ -2,6 +2,7 @@ package customtracks
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -70,5 +71,77 @@ func TestComposeParsesTitleAndInstruction(t *testing.T) {
 	}
 	if res.Title != "HashBank refund" || res.Instruction == "" {
 		t.Fatalf("bad compose result: %+v", res)
+	}
+}
+
+// TestEncodeRefsDropsUnsafeRefs pins that only absolute URLs with an allowed
+// scheme survive into source_refs. The Desktop timeline renders each stored
+// ref as Link(destination:), so a model-invented ref must be dropped here
+// rather than shipped to the UI as a clickable dead — or hostile — link.
+func TestEncodeRefsDropsUnsafeRefs(t *testing.T) {
+	kept := []string{
+		"https://acme.slack.com/archives/C123/p1714567890123456",
+		"http://jira.internal/browse/PROJ-1",
+		"slack://channel?team=T1&id=C1",
+		"mailto:someone@example.com",
+		"HTTPS://acme.slack.com/archives/C1/p1", // scheme casing is the author's
+	}
+	for _, ref := range kept {
+		// Compare decoded, not raw: json.Marshal escapes & as &.
+		got := decodeRefs(t, encodeRefs([]string{ref}))
+		if len(got) != 1 || got[0] != ref {
+			t.Errorf("encodeRefs(%q) = %v; want it kept", ref, got)
+		}
+	}
+
+	dropped := []string{
+		"javascript:alert(document.cookie)",
+		"data:text/html;base64,PHNjcmlwdD4=",
+		"file:///etc/passwd",
+		"the #general thread where this was decided", // prose, not a link
+		"/archives/C123/p1714567890123456",           // relative
+		"https://",                                   // scheme but no host
+		"",
+		"   ",
+	}
+	for _, ref := range dropped {
+		if got := encodeRefs([]string{ref}); got != "[]" {
+			t.Errorf("encodeRefs(%q) = %s; want it dropped as []", ref, got)
+		}
+	}
+}
+
+// TestEncodeRefsKeepsValidRefsAlongsideInvalid verifies filtering is per-ref:
+// one bad entry must not discard the good ones it travelled with.
+func TestEncodeRefsKeepsValidRefsAlongsideInvalid(t *testing.T) {
+	got := decodeRefs(t, encodeRefs([]string{
+		"javascript:alert(1)",
+		"  https://acme.slack.com/archives/C1/p1  ",
+		"not a link at all",
+	}))
+	want := "https://acme.slack.com/archives/C1/p1"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("encodeRefs = %v; want exactly [%s]", got, want)
+	}
+}
+
+// decodeRefs parses an encodeRefs result back into the slice the Desktop sees.
+func decodeRefs(t *testing.T, encoded string) []string {
+	t.Helper()
+	var refs []string
+	if err := json.Unmarshal([]byte(encoded), &refs); err != nil {
+		t.Fatalf("encodeRefs produced invalid JSON %q: %v", encoded, err)
+	}
+	return refs
+}
+
+// TestEncodeRefsEmptyIsAlwaysJSONArray keeps the never-"" contract: the value
+// goes into a NOT NULL JSON column and is decoded by the Desktop.
+func TestEncodeRefsEmptyIsAlwaysJSONArray(t *testing.T) {
+	if got := encodeRefs(nil); got != "[]" {
+		t.Errorf("encodeRefs(nil) = %s; want []", got)
+	}
+	if got := encodeRefs([]string{}); got != "[]" {
+		t.Errorf("encodeRefs(empty) = %s; want []", got)
 	}
 }

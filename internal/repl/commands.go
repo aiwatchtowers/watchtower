@@ -231,7 +231,7 @@ func (r *REPL) runCatchup() {
 		},
 	}
 
-	systemPrompt := ai.BuildSystemPrompt(r.deps.Workspace, r.deps.Domain, r.deps.TeamID, r.deps.DBPath, db.Schema, cfg.Digest.Language)
+	systemPrompt := ai.BuildSystemPrompt(r.deps.Workspace, r.deps.Domain, r.deps.TeamID, db.Schema, cfg.Digest.Language)
 
 	// Inject Jira context if enabled
 	if cfg.Jira.Enabled {

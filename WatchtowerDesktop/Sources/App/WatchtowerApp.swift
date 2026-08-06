@@ -283,6 +283,10 @@ struct WatchtowerApp: App {
             // injecting here (outermost) is what lets RecordingIndicatorView's
             // @Environment(AppState.self) resolve instead of trapping on launch.
             .environment(appState)
+            // Same outermost placement, same reason: link surfaces live
+            // inside the overlays too (the recording indicator's panel,
+            // the meeting banner), so the scheme gate has to wrap them.
+            .environment(\.openURL, AllowedURLSchemes.openURLAction)
             .onAppear {
                 // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
                 NotificationDelegate.sharedAppState = appState
@@ -314,6 +318,7 @@ struct WatchtowerApp: App {
         Window("Pipeline Progress", id: "progress-detail") {
             ProgressDetailView()
                 .environment(appState)
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
         }
         .defaultSize(width: 600, height: 500)
 
@@ -321,6 +326,7 @@ struct WatchtowerApp: App {
             SettingsView()
                 .environment(appState)
                 .background(SettingsWindowAccessor())
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
         }
     }
 }
