@@ -173,7 +173,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
-    <!-- Layered with SingleInstanceGuard.swift: keep LaunchServices from launching a second instance of this bundle id. -->
+    <!-- Layered with SingleInstanceGuard.swift: keep LaunchServices from launching a second instance of this bundle.
+         Per-app-bundle, not per-bundle-id — it does not cover a second on-disk copy sharing the identifier. -->
     <key>LSMultipleInstancesProhibited</key>
     <true/>
     <key>NSAppTransportSecurity</key>
