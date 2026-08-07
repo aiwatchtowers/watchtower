@@ -49,12 +49,13 @@ type DigestResult struct {
 // Topic is a self-contained thematic unit within a digest.
 // Each topic carries its own decisions, action items, situations, and key messages.
 type Topic struct {
-	Title       string         `json:"title"`
-	Summary     string         `json:"summary"`
-	Decisions   []Decision     `json:"decisions"`
-	ActionItems []ActionItem   `json:"action_items"`
-	Situations  []db.Situation `json:"situations"`
-	KeyMessages []string       `json:"key_messages"`
+	Title       string          `json:"title"`
+	Summary     string          `json:"summary"`
+	Decisions   []Decision      `json:"decisions"`
+	ActionItems []ActionItem    `json:"action_items"`
+	Situations  []db.Situation  `json:"situations"`
+	KeyMessages []string        `json:"key_messages"`
+	Ideas       []IdeaCandidate `json:"ideas"`
 }
 
 // DigestSituationParticipant mirrors db.SituationParticipant for JSON parsing.
@@ -88,6 +89,14 @@ type ActionItem struct {
 	Text     string `json:"text"`
 	Assignee string `json:"assignee"`
 	Status   string `json:"status"`
+}
+
+// IdeaCandidate represents a proposal — something new suggested but not (yet)
+// decided — extracted from messages. Stage-1 material for the ideas registry.
+type IdeaCandidate struct {
+	Text      string `json:"text"`
+	By        string `json:"by"`
+	MessageTS string `json:"message_ts"`
 }
 
 // TrackLinker runs the tracks pipeline between channel digests and rollups.
@@ -1334,6 +1343,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 			ai, _ := json.Marshal(t.ActionItems)
 			sit, _ := json.Marshal(t.Situations)
 			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
+			ideas, _ := json.Marshal(t.Ideas)
 			dbTopics = append(dbTopics, db.DigestTopic{
 				Idx:         i,
 				Title:       t.Title,
@@ -1342,6 +1352,7 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 				ActionItems: string(ai),
 				Situations:  string(sit),
 				KeyMessages: string(km),
+				Ideas:       string(ideas),
 			})
 		}
 		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {

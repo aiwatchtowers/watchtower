@@ -103,7 +103,7 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel:              3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestChannel:              4, // v4: per-topic idea-candidate extraction (stage-1 for ideas registry)
 	DigestDaily:                1,
 	DigestWeekly:               1,
 	DigestPeriod:               1,
@@ -116,7 +116,7 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:                 1,
 	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
 	InboxTriage:                1, // v1: initial triage template
-	DigestChannelBatch:         2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
+	DigestChannelBatch:         3, // v3: per-topic idea-candidate extraction (stage-1 for ideas registry)
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
@@ -213,7 +213,8 @@ Analyze the messages below and return ONLY a JSON object (no markdown fences, no
       "decisions": [{"text": "what was decided", "by": "@username", "message_ts": "1234567890.123456", "importance": "high"}],
       "action_items": [{"text": "what needs to be done", "assignee": "@username", "status": "open"}],
       "situations": [{"topic": "Auth refactor ownership", "type": "collaboration", "participants": [{"user_id": "U123456", "role": "initiator"}], "dynamic": "what happened", "outcome": "result", "red_flags": [], "observations": [], "message_refs": ["1234567890.123456"]}],
-      "key_messages": ["1234567890.123456"]
+      "key_messages": ["1234567890.123456"],
+      "ideas": [{"text": "what was proposed", "by": "@username", "message_ts": "1234567890.123456"}]
     }
   ],
   "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress|resolved|stale", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [{"decision": "...", "date": "2026-03-20", "by": "U123", "status": "active"}], "channel_dynamics": "Brief description of channel culture and key players", "open_questions": ["..."]}
@@ -239,6 +240,7 @@ Rules:
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Capture dynamics BETWEEN people, not individual behavior. Each situation has:
@@ -772,7 +774,8 @@ Return ONLY a JSON array (no markdown fences, no explanation):
         "decisions": [{"text": "what was decided", "by": "@username", "message_ts": "1234567890.123456", "importance": "high"}],
         "action_items": [{"text": "what needs to be done", "assignee": "@username", "status": "open"}],
         "situations": [{"topic": "...", "type": "collaboration", "participants": [{"user_id": "U123456", "role": "initiator"}], "dynamic": "...", "outcome": "...", "red_flags": [], "observations": [], "message_refs": []}],
-        "key_messages": ["1234567890.123456"]
+        "key_messages": ["1234567890.123456"],
+        "ideas": [{"text": "what was proposed", "by": "@username", "message_ts": "1234567890.123456"}]
       }
     ],
     "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [], "channel_dynamics": "...", "open_questions": []}
@@ -799,6 +802,7 @@ Rules:
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Each situation has:
