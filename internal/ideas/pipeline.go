@@ -92,14 +92,19 @@ func (p *Pipeline) language() string {
 }
 
 // Run executes the ideas pipeline: the Gmail pre-digest pass, then the Jira
-// pre-digest pass, then — only when both completed cleanly this cycle — the
-// stage-2 consolidator (runConsolidate). Each stage-1 pass logs and continues
-// past a single account's failure (see runEmailDigests/runJiraDigests) and
-// both always get their turn; but the consolidator is skipped for the cycle
-// if either stage-1 pass failed, so it never processes a cycle it can't
-// fully trust — the failed pass's material simply waits for a healthy cycle.
-// Run returns the consolidator's proposed count (0 when it didn't run) and
-// the first error any stage produced.
+// pre-digest pass, then the stage-2 consolidator (runConsolidate) — always,
+// regardless of whether either stage-1 pass failed. A persistent single-
+// account failure (a revoked Jira token, say) must never starve
+// consolidation of every OTHER source's already-queued material (healthy
+// accounts' stream_digests rows, Slack digest topics, meeting transcripts)
+// forever — the "one account's failure never blocks the others" principle,
+// and IDEA-01 already makes partial-material consolidation safe (unconsumed
+// material just waits; floors stay honest). Each stage-1 pass logs and
+// continues past a single account's failure (see runEmailDigests/
+// runJiraDigests) and all three stages always get their turn; Run surfaces
+// the first error any of them produced — a stage-1 failure if one occurred,
+// otherwise the consolidator's — without swallowing it. Run returns the
+// consolidator's proposed count.
 func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if p.cfg != nil && !p.cfg.Ideas.Enabled {
 		return 0, nil
@@ -111,13 +116,10 @@ func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if err := p.runJiraDigests(ctx); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	if firstErr != nil {
-		return 0, firstErr
-	}
 
-	proposed, err = p.runConsolidate(ctx)
-	if err != nil {
-		return proposed, err
+	proposed, cerr := p.runConsolidate(ctx)
+	if cerr != nil && firstErr == nil {
+		firstErr = cerr
 	}
-	return proposed, nil
+	return proposed, firstErr
 }
