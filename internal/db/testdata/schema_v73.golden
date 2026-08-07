@@ -83,6 +83,15 @@ CREATE INDEX idx_gmail_messages_synced ON gmail_messages(synced_at)
 index	idx_gmail_messages_thread
 CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id)
 
+index	idx_idea_mentions_idea
+CREATE INDEX idx_idea_mentions_idea ON idea_mentions(idea_id)
+
+index	idx_ideas_kind
+CREATE INDEX idx_ideas_kind ON ideas(kind, status)
+
+index	idx_ideas_status
+CREATE INDEX idx_ideas_status ON ideas(status, updated_at DESC)
+
 index	idx_imap_messages_synced
 CREATE INDEX idx_imap_messages_synced ON imap_messages(synced_at)
 
@@ -112,6 +121,9 @@ CREATE INDEX idx_inbox_items_updated ON inbox_items(updated_at DESC)
 
 index	idx_inbox_learned_rules_scope
 CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key)
+
+index	idx_jira_comments_issue
+CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
 index	idx_jira_issues_assignee
 CREATE INDEX idx_jira_issues_assignee ON jira_issues(assignee_account_id)
@@ -223,6 +235,9 @@ CREATE INDEX idx_situations_status_rank ON situations(status, rank DESC)
 
 index	idx_situations_updated
 CREATE INDEX idx_situations_updated ON situations(updated_at DESC)
+
+index	idx_stream_digests_source
+CREATE INDEX idx_stream_digests_source ON stream_digests(source, account_id)
 
 index	idx_target_links_external
 CREATE INDEX idx_target_links_external ON target_links(external_ref)
@@ -556,7 +571,7 @@ summary TEXT NOT NULL DEFAULT '',
 decisions TEXT NOT NULL DEFAULT '[]',
 action_items TEXT NOT NULL DEFAULT '[]',
 situations TEXT NOT NULL DEFAULT '[]',
-key_messages TEXT NOT NULL DEFAULT '[]',
+key_messages TEXT NOT NULL DEFAULT '[]', ideas TEXT NOT NULL DEFAULT '[]',
 UNIQUE(digest_id, idx)
 )
 
@@ -679,7 +694,7 @@ gmail_last_internal_date REAL NOT NULL DEFAULT 0, -- per-account Gmail sync wate
 memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, ideas_email_floor REAL NOT NULL DEFAULT 0)
 
 table	guide_summaries
 CREATE TABLE guide_summaries (
@@ -695,6 +710,42 @@ cost_usd REAL NOT NULL DEFAULT 0,
 prompt_version INTEGER NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(period_from, period_to)
+)
+
+table	idea_mentions
+CREATE TABLE idea_mentions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+ref TEXT NOT NULL DEFAULT '',
+quote TEXT NOT NULL DEFAULT '',
+author TEXT NOT NULL DEFAULT '',
+said_at TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	ideas
+CREATE TABLE ideas (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+kind TEXT NOT NULL CHECK(kind IN ('idea','decision','note')),
+title TEXT NOT NULL,
+essence TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'proposed'
+CHECK(status IN ('proposed','active','rejected','not_now',
+'converted','dropped','merged','superseded','reversed')),
+source TEXT NOT NULL DEFAULT 'mined' CHECK(source IN ('mined','owner')),
+snooze_until TEXT NOT NULL DEFAULT '',
+needs_review INTEGER NOT NULL DEFAULT 0,
+review_reason TEXT NOT NULL DEFAULT '',
+similar_to_id INTEGER,
+merged_into_id INTEGER,
+superseded_by_id INTEGER,
+converted_target_id INTEGER,
+owner_rating INTEGER NOT NULL DEFAULT 0,
+rating_comment TEXT NOT NULL DEFAULT '',
+last_mention_at TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
 table	imap_messages
@@ -792,7 +843,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, ideas_jira_floor TEXT NOT NULL DEFAULT '')
 
 table	jira_board_field_map
 CREATE TABLE "jira_board_field_map" (
@@ -816,6 +867,19 @@ workflow_summary TEXT NOT NULL DEFAULT '',
 user_overrides_json TEXT NOT NULL DEFAULT '',
 config_hash TEXT NOT NULL DEFAULT '',
 profile_generated_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
+)
+
+table	jira_comments
+CREATE TABLE jira_comments (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+issue_key TEXT NOT NULL,
+id TEXT NOT NULL,
+author TEXT NOT NULL DEFAULT '',
+body_text TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT '',
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 PRIMARY KEY (account_id, id)
 )
 
@@ -1303,6 +1367,18 @@ search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
+table	stream_digests
+CREATE TABLE stream_digests (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+source TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+account_id INTEGER NOT NULL,
+scope TEXT NOT NULL DEFAULT '',
+period_from TEXT NOT NULL,
+period_to TEXT NOT NULL,
+topics_json TEXT NOT NULL DEFAULT '[]',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
 table	sync_state
 CREATE TABLE sync_state (
 channel_id TEXT PRIMARY KEY,
@@ -1332,7 +1408,7 @@ UNIQUE(source_target_id, target_target_id, external_ref, relation)
 )
 
 table	targets
-CREATE TABLE targets (
+CREATE TABLE "targets" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 text TEXT NOT NULL,
 intent TEXT NOT NULL DEFAULT '',
@@ -1357,12 +1433,15 @@ sub_items TEXT NOT NULL DEFAULT '[]',
 notes TEXT NOT NULL DEFAULT '[]',
 progress REAL NOT NULL DEFAULT 0.0,
 source_type TEXT NOT NULL DEFAULT 'manual'
-CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem')),
+CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem','idea')),
 source_id TEXT NOT NULL DEFAULT '',
 ai_level_confidence REAL DEFAULT NULL,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, notified_at TEXT NOT NULL DEFAULT '', next_step TEXT NOT NULL DEFAULT '', next_step_at TEXT NOT NULL DEFAULT '')
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+notified_at TEXT NOT NULL DEFAULT '',
+next_step TEXT NOT NULL DEFAULT '',
+next_step_at TEXT NOT NULL DEFAULT ''
+)
 
 table	track_events
 CREATE TABLE track_events (
@@ -1571,7 +1650,7 @@ name TEXT NOT NULL,
 domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0)
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -1809,6 +1888,7 @@ END
 6	action_items	TEXT	notnull=1	dflt='[]'	pk=0
 7	situations	TEXT	notnull=1	dflt='[]'	pk=0
 8	key_messages	TEXT	notnull=1	dflt='[]'	pk=0
+9	ideas	TEXT	notnull=1	dflt='[]'	pk=0
 
 ## digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -1911,6 +1991,7 @@ END
 9	memory_gmail_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 11	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+12	ideas_email_floor	REAL	notnull=1	dflt=0	pk=0
 
 ## guide_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -1924,6 +2005,36 @@ END
 8	cost_usd	REAL	notnull=1	dflt=0	pk=0
 9	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
 10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## idea_mentions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	idea_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	source	TEXT	notnull=1	dflt=NULL	pk=0
+3	ref	TEXT	notnull=1	dflt=''	pk=0
+4	quote	TEXT	notnull=1	dflt=''	pk=0
+5	author	TEXT	notnull=1	dflt=''	pk=0
+6	said_at	TEXT	notnull=1	dflt=''	pk=0
+7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## ideas
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	kind	TEXT	notnull=1	dflt=NULL	pk=0
+2	title	TEXT	notnull=1	dflt=NULL	pk=0
+3	essence	TEXT	notnull=1	dflt=''	pk=0
+4	status	TEXT	notnull=1	dflt='proposed'	pk=0
+5	source	TEXT	notnull=1	dflt='mined'	pk=0
+6	snooze_until	TEXT	notnull=1	dflt=''	pk=0
+7	needs_review	INTEGER	notnull=1	dflt=0	pk=0
+8	review_reason	TEXT	notnull=1	dflt=''	pk=0
+9	similar_to_id	INTEGER	notnull=0	dflt=NULL	pk=0
+10	merged_into_id	INTEGER	notnull=0	dflt=NULL	pk=0
+11	superseded_by_id	INTEGER	notnull=0	dflt=NULL	pk=0
+12	converted_target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+13	owner_rating	INTEGER	notnull=1	dflt=0	pk=0
+14	rating_comment	TEXT	notnull=1	dflt=''	pk=0
+15	last_mention_at	TEXT	notnull=1	dflt=''	pk=0
+16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## imap_messages
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -2001,6 +2112,7 @@ END
 7	enabled	INTEGER	notnull=1	dflt=1	pk=0
 8	memory_jira_last_extracted_ts	REAL	notnull=1	dflt=0	pk=0
 9	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+10	ideas_jira_floor	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_board_field_map
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -2024,6 +2136,16 @@ END
 12	user_overrides_json	TEXT	notnull=1	dflt=''	pk=0
 13	config_hash	TEXT	notnull=1	dflt=''	pk=0
 14	profile_generated_at	TEXT	notnull=1	dflt=''	pk=0
+
+## jira_comments
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	issue_key	TEXT	notnull=1	dflt=NULL	pk=0
+2	id	TEXT	notnull=1	dflt=NULL	pk=2
+3	author	TEXT	notnull=1	dflt=''	pk=0
+4	body_text	TEXT	notnull=1	dflt=''	pk=0
+5	created_at	TEXT	notnull=1	dflt=''	pk=0
+6	updated_at	TEXT	notnull=1	dflt=''	pk=0
+7	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## jira_custom_fields
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -2472,6 +2594,16 @@ END
 9	search_last_date	TEXT	notnull=1	dflt=''	pk=0
 10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
+## stream_digests
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	source	TEXT	notnull=1	dflt=NULL	pk=0
+2	account_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	scope	TEXT	notnull=1	dflt=''	pk=0
+4	period_from	TEXT	notnull=1	dflt=NULL	pk=0
+5	period_to	TEXT	notnull=1	dflt=NULL	pk=0
+6	topics_json	TEXT	notnull=1	dflt='[]'	pk=0
+7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## sync_state
 0	channel_id	TEXT	notnull=0	dflt=NULL	pk=1
 1	last_synced_ts	TEXT	notnull=1	dflt=''	pk=0
@@ -2714,4 +2846,7 @@ END
 13	memory_last_situation_feedback_id	INTEGER	notnull=1	dflt=0	pk=0
 14	memory_focus_fingerprint	TEXT	notnull=1	dflt=''	pk=0
 15	memory_last_interaction_id	INTEGER	notnull=1	dflt=0	pk=0
+16	ideas_digest_floor	INTEGER	notnull=1	dflt=0	pk=0
+17	ideas_stream_digest_floor	INTEGER	notnull=1	dflt=0	pk=0
+18	ideas_transcript_floor	INTEGER	notnull=1	dflt=0	pk=0
 
