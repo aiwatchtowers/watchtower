@@ -124,8 +124,11 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// Login-item launch: no window, straight to the tray. SwiftUI may
     /// materialise the WindowGroup window after this delegate callback, so the
     /// immediate close is backed by a short-lived observer that closes a main
-    /// window arriving late. Both are torn down after the grace period, so a
-    /// user who opens the window from the tray is never fought.
+    /// window arriving late. The observer is torn down as soon as the grace
+    /// period elapses OR the app deliberately becomes regular again (tray
+    /// "Open Watchtower", Dock/Finder reopen — see `endLoginLaunchClosing`'s
+    /// call sites), so a user who opens the window from the tray is never
+    /// fought.
     private func enterTrayForLoginLaunch() {
         NSApp.setActivationPolicy(.accessory)
         closeMainWindows()
@@ -147,7 +150,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func endLoginLaunchClosing() {
+    /// Torn down on grace-period expiry and from both places the app
+    /// deliberately leaves the tray for a regular window (`TrayMenuView`'s
+    /// "Open Watchtower" action, via `NSApp.delegate`, and
+    /// `applicationShouldHandleReopen` below) — internal, not private, so the
+    /// tray view can reach it.
+    func endLoginLaunchClosing() {
         guard let observer = loginLaunchObserver else { return }
         NotificationCenter.default.removeObserver(observer)
         loginLaunchObserver = nil
@@ -159,6 +167,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard managesLifecycle else { return true }
         if !flag {
+            endLoginLaunchClosing()
             ActivationPolicyDecision.becomeRegularAndActivate()
         }
         return true

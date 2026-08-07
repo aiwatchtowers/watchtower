@@ -13,6 +13,12 @@ struct TrayMenuView: View {
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError
         ) {
+            // Opening from the tray is a deliberate "become regular" move —
+            // it must win over a still-armed login-launch close observer
+            // (see `TrayAppDelegate.endLoginLaunchClosing`), or a window
+            // opened right after a login launch gets closed out from under
+            // the user.
+            (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
             ActivationPolicyDecision.becomeRegularAndActivate()
             openWindow(id: TrayAppDelegate.mainWindowSceneID)
         }

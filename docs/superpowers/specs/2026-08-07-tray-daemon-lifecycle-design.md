@@ -93,6 +93,10 @@ Static template icon. The tray renders only for the survivor instance — a
   `.terminateLater`, run `sync --stop` async with a bounded wait (10 s, the
   daemon's own SIGTERM grace), and reply. Replaces the current
   `stopDaemonSync` 2-second variant.
+  - **As built:** the quit gate is `MeetingRecorderCenter.isBusy`, not
+    `isCapturing` — it also covers a still-pending transcription/diarization
+    job in the processing queue, so quitting after Stop but before a job
+    finishes still shows the confirm alert.
 - `applicationShouldHandleReopen`: while in accessory mode, restore
   `.regular` and show the main window.
 - Login-launch detection: `keyAELaunchedAsLogInItem` from the current Apple
@@ -101,6 +105,16 @@ Static template icon. The tray renders only for the survivor instance — a
 - Activation-policy decisions live in a pure helper (launch kind + open
   main-window count → policy) so the matrix is unit-testable. The Settings
   and Pipeline Progress windows do not count as main windows.
+  - **As built:** the two checks are narrower and broader than that,
+    respectively. `ActivationPolicyDecision.hasVisibleAppWindow` — the
+    general close-to-tray policy check — counts ANY visible window that
+    `canBecomeMain`, so Settings or Pipeline Progress being open keeps the
+    app `.regular` when the main window closes. Only the login-launch grace
+    window's close observer targets the main window specifically
+    (`TrayAppDelegate.isMainWindow`), and it is torn down as soon as the app
+    deliberately becomes regular again (tray "Open Watchtower", Dock/Finder
+    reopen), not just on its 3s timeout — otherwise it could close a window
+    the user just opened from the tray.
 
 ### 3. `CLIBinaryStore`
 
