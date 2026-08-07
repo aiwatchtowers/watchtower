@@ -78,6 +78,7 @@ func TestToolsList(t *testing.T) {
 		"list_jira_issues", "get_jira_issue",
 		"list_messages",
 		"list_transcripts", "get_transcript",
+		"list_ideas", "get_idea",
 		"memory_map", "memory_open", "memory_recall",
 	}
 	for _, name := range want {
