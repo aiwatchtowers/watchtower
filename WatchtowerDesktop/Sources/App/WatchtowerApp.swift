@@ -213,6 +213,7 @@ struct WatchtowerApp: App {
     /// notification response that launched it.
     private static let duplicateGraceWindow: TimeInterval = 5
 
+    @NSApplicationDelegateAdaptor(TrayAppDelegate.self) private var trayDelegate
     @State private var appState = AppState()
     private let notificationDelegate: NotificationDelegate
     private let isDuplicate: Bool
@@ -249,6 +250,7 @@ struct WatchtowerApp: App {
         }
 
         NSApplication.shared.setActivationPolicy(.regular)
+        trayDelegate.managesLifecycle = true
         NSApplication.shared.activate(ignoringOtherApps: true)
         NotificationService.registerMeetingCategories()
         // Only the survivor listens: a duplicate must never route what it forwards.
