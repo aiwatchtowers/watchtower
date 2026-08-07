@@ -19,6 +19,24 @@ const jiraIssuesPerAccountLimit = 300
 // jiraExcerptBytes caps each rendered description/comment excerpt.
 const jiraExcerptBytes = 500
 
+// jiraFloorInitLayout mirrors Jira Cloud's own updated_at timestamp shape
+// (internal/db's unexported jiraUpdatedLayout — dotted milliseconds plus a
+// numeric offset, e.g. "2026-08-07T12:00:00.500+0000") so an initialized
+// ideas_jira_floor compares correctly, byte-for-byte, against real
+// jira_issues rows in ListJiraIssuesUpdatedSince's plain string SELECT. A
+// bare RFC3339 floor ("...T12:00:00Z") does NOT: '.' (0x2E) sorts below 'Z'
+// (0x5A), so any issue updated in the very same second as init — but
+// rendered with Jira's dotted-millisecond format — would lexically compare
+// as NOT newer than the floor and be silently, permanently excluded (round-1
+// review finding).
+const jiraFloorInitLayout = "2006-01-02T15:04:05.000-0700"
+
+// jiraFloorInitBackoff biases the init floor a few seconds into the past, on
+// top of matching Jira's own format, so an issue updated within a couple of
+// seconds of initialization is never lost even accounting for clock skew
+// between this process and whatever wrote the issue's updated_at.
+const jiraFloorInitBackoff = 5 * time.Second
+
 // renderJiraBlock groups issues per project ("=== PROJECT <KEY> ==="
 // separators) and renders one numbered line per issue plus its comments —
 // "[n] <KEY> <summary> — <status> — <description excerpt> — comments:"
@@ -88,7 +106,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return fmt.Errorf("getting ideas jira floor: %w", err)
 	}
 	if floor == "" {
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := time.Now().UTC().Add(-jiraFloorInitBackoff).Format(jiraFloorInitLayout)
 		if serr := p.db.SetIdeasJiraFloor(acct.ID, now); serr != nil {
 			return fmt.Errorf("initializing ideas jira floor: %w", serr)
 		}

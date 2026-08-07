@@ -162,13 +162,56 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
 	require.NotEmpty(t, newFloor)
-	parsed, perr := time.Parse(time.RFC3339, newFloor)
+	// The floor is now formatted in Jira's own dotted-millisecond layout
+	// (jiraFloorInitLayout), not bare RFC3339 — round-1 review Finding 1.
+	parsed, perr := time.Parse(jiraFloorInitLayout, newFloor)
 	require.NoError(t, perr)
-	assert.True(t, !parsed.Before(before.Add(-time.Minute)), "floor should initialize near now, got %s", newFloor)
+	assert.WithinDuration(t, before, parsed, 2*time.Minute, "floor should initialize near now (minus the backoff), got %s", newFloor)
 
 	digests, err := d.ListStreamDigestsAfter(0)
 	require.NoError(t, err)
 	assert.Empty(t, digests)
+}
+
+// TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded proves round-1
+// review Finding 1 is fixed: an issue updated within a couple of seconds of
+// the init instant — rendered in Jira's own dotted-millisecond format, which
+// used to lexically sort BELOW a bare RFC3339 "...Z" floor — is not silently
+// excluded from the very next real pass.
+func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
+	d := newTestDB(t)
+	acctID := seedJiraAccount(t, d)
+
+	// First pass: floor is empty, so this only initializes it (no AI call).
+	initGen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("generator must not be called on the init pass")
+		return "", nil
+	}}
+	p := New(d, testCfg(), initGen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background()))
+	require.Zero(t, initGen.calls)
+
+	// An issue updated an instant after initialization, in Jira's raw
+	// dotted-millisecond format — the exact shape that used to compare as
+	// lexically "before" a bare RFC3339 floor and get silently dropped.
+	updatedAt := time.Now().UTC().Add(time.Second).Format(jiraFloorInitLayout)
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Same-second issue", "Open", "new", "desc", updatedAt)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"idea","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
+	}}
+	p2 := New(d, testCfg(), gen, testLogger())
+	require.NoError(t, p2.runJiraDigests(context.Background()))
+	assert.Equal(t, 1, gen.calls)
+
+	digests, err := d.ListStreamDigestsAfter(0)
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Contains(t, digests[0].TopicsJSON, `"ref":"WT-1"`)
+
+	newFloor, err := d.IdeasJiraFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, updatedAt, newFloor)
 }
 
 // TestRunJiraDigests_HallucinatedRef_Dropped covers ref validation: a
