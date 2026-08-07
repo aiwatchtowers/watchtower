@@ -117,9 +117,9 @@ New Swift service owning the out-of-bundle CLI copy:
 
 ### 4. Login item
 
-`SMAppService.mainApp.register()` on first launch of a version (idempotent;
-re-register is a no-op). No in-app setting — System Settings → Login Items is
-the opt-out surface.
+`SMAppService.mainApp.register()` on every launch (idempotent; re-register is
+a no-op). No in-app setting — System Settings → Login Items is the opt-out
+surface.
 
 ### 5. Existing code changes
 
