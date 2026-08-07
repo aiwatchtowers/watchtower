@@ -109,15 +109,37 @@ final class DaemonManager {
     }
 
     /// Stop the daemon for app quit: `sync stop` (the daemon gets up to 10 s
-    /// of SIGTERM grace from the CLI) with an outer watchdog so a hung CLI
-    /// can never stall termination.
-    nonisolated static func stopForQuit(timeout: Duration = .seconds(12)) async {
-        guard let path = Constants.findCLIPath() else { return }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { _ = try? await runProcess(path: path, arguments: ["sync", "stop"]) }
-            group.addTask { try? await Task.sleep(for: timeout) }
-            _ = await group.next()
-            group.cancelAll()
+    /// of SIGTERM grace from the CLI) with an outer watchdog. If the CLI hangs,
+    /// the watchdog terminates the subprocess after timeout expires, ensuring quit
+    /// never blocks — the next launch adopts or replaces the daemon.
+    nonisolated static func stopForQuit(
+        timeout: Duration = .seconds(12),
+        cliPath: String? = Constants.findCLIPath()
+    ) async {
+        guard let path = cliPath else { return }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = ["sync", "stop"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return
+        }
+
+        // Race: process exit vs timeout. Timeout wins → terminate subprocess
+        let startTime = ContinuousClock.now
+        while process.isRunning && ContinuousClock.now - startTime < timeout {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        if process.isRunning {
+            process.terminate()
+            // Give it a moment to die from SIGTERM
+            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 

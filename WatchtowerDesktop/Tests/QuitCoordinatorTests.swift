@@ -40,3 +40,37 @@ final class QuitCoordinatorTests: XCTestCase {
         await fulfillment(of: [replied], timeout: 5)
     }
 }
+
+@MainActor
+final class DaemonManagerStopTests: XCTestCase {
+    func testStopForQuitBoundsHungSubprocess() async {
+        // Create a temp shell script that sleeps forever
+        let tempDir = FileManager.default.temporaryDirectory
+        let scriptPath = tempDir.appendingPathComponent("sleeper-\(UUID().uuidString).sh").path
+        let scriptContent = "#!/bin/sh\nsleep 100\n"
+        _ = FileManager.default.createFile(
+            atPath: scriptPath,
+            contents: scriptContent.data(using: .utf8),
+            attributes: [.protectionKey: FileProtectionType.none]
+        )
+        defer { try? FileManager.default.removeItem(atPath: scriptPath) }
+
+        // Make executable
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptPath
+        )
+
+        let clock = ContinuousClock()
+        let elapsed = await clock.measure {
+            await DaemonManager.stopForQuit(
+                timeout: .milliseconds(300),
+                cliPath: scriptPath
+            )
+        }
+
+        // Should complete in ~300ms + small grace for SIGTERM + overhead
+        // Upper bound: 1 second (ensures timeout actually killed it, not full sleep)
+        XCTAssertLessThan(elapsed, .seconds(1), "stopForQuit should terminate hung subprocess within timeout")
+    }
+}
