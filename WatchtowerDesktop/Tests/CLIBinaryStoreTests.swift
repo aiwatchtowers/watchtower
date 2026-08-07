@@ -16,7 +16,7 @@ final class CLIBinaryStoreTests: XCTestCase {
 
     private func write(_ name: String, _ content: String) throws -> String {
         let path = dir.appendingPathComponent(name).path
-        try content.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+        try Data(content.utf8).write(to: URL(fileURLWithPath: path))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         return path
     }
@@ -31,7 +31,7 @@ final class CLIBinaryStoreTests: XCTestCase {
         let store = storePath()
         var stopped = false
         let outcome = await CLIBinaryStore.sync(
-            bundleBinary: bundle, storeBinary: store, stopDaemon: { stopped = true })
+            bundleBinary: bundle, storeBinary: store) { stopped = true }
         XCTAssertEqual(outcome, .installed)
         XCTAssertFalse(stopped, "no store file existed, nothing could be running from it")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: store))
@@ -41,10 +41,10 @@ final class CLIBinaryStoreTests: XCTestCase {
     func testMatchingHashIsNoOp() async throws {
         let bundle = try write("bundle-cli", "v1")
         let store = storePath()
-        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store, stopDaemon: {})
+        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store) {}
         var stopped = false
         let outcome = await CLIBinaryStore.sync(
-            bundleBinary: bundle, storeBinary: store, stopDaemon: { stopped = true })
+            bundleBinary: bundle, storeBinary: store) { stopped = true }
         XCTAssertEqual(outcome, .upToDate)
         XCTAssertFalse(stopped)
     }
@@ -55,10 +55,10 @@ final class CLIBinaryStoreTests: XCTestCase {
         try FileManager.default.createDirectory(
             atPath: (store as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true)
-        try "v1".data(using: .utf8)!.write(to: URL(fileURLWithPath: store))
+        try Data("v1".utf8).write(to: URL(fileURLWithPath: store))
         var stopped = false
         let outcome = await CLIBinaryStore.sync(
-            bundleBinary: bundle, storeBinary: store, stopDaemon: { stopped = true })
+            bundleBinary: bundle, storeBinary: store) { stopped = true }
         XCTAssertEqual(outcome, .replaced)
         XCTAssertTrue(stopped, "a stale store copy may back a live daemon — must stop before replacing")
         XCTAssertEqual(try String(contentsOfFile: store, encoding: .utf8), "v2")
@@ -70,10 +70,10 @@ final class CLIBinaryStoreTests: XCTestCase {
         try FileManager.default.createDirectory(
             atPath: (store as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true)
-        try "v1".data(using: .utf8)!.write(to: URL(fileURLWithPath: store))
+        try Data("v1".utf8).write(to: URL(fileURLWithPath: store))
         let outcome = await CLIBinaryStore.sync(
             bundleBinary: dir.appendingPathComponent("nope").path,
-            storeBinary: store, stopDaemon: {})
+            storeBinary: store) {}
         guard case .failed = outcome else {
             return XCTFail("expected .failed, got \(outcome)")
         }
@@ -87,7 +87,7 @@ final class CLIBinaryStoreTests: XCTestCase {
     func testInstalledPathReturnsExecutableCopy() async throws {
         let bundle = try write("bundle-cli", "v1")
         let store = storePath()
-        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store, stopDaemon: {})
+        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store) {}
         XCTAssertEqual(CLIBinaryStore.installedPath(storeBinary: store), store)
     }
 }

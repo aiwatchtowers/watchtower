@@ -263,20 +263,7 @@ final class AppState {
             self?.backgroundTaskManager.terminateProcessesSync()
         }
         Task {
-            // Sync the out-of-bundle CLI copy before anything spawns the CLI,
-            // so migrations, the daemon, and OAuth logins all run from the
-            // store, never from the (rebuild-overwritten) bundle binary.
-            if let bundled = Constants.bundledCLIPath() {
-                let outcome = await CLIBinaryStore.sync(bundleBinary: bundled) {
-                    let daemon = DaemonManager()
-                    daemon.resolvePathIfNeeded()
-                    await daemon.stopDaemon()
-                }
-                if case .failed(let reason) = outcome {
-                    cliStoreError = reason
-                    NSLog("CLIBinaryStore: sync failed, falling back to bundle CLI: %@", reason)
-                }
-            }
+            await syncCLIBinaryStore()
             let splashStart = ContinuousClock.now
             do {
                 let manager = try await Task.detached {
@@ -359,6 +346,22 @@ final class AppState {
         }
         // Check for updates in background (once per 24h)
         Task { await updateService.checkIfNeeded() }
+    }
+
+    /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
+    /// migrations, the daemon, and OAuth logins all run from the store,
+    /// never from the (rebuild-overwritten) bundle binary.
+    private func syncCLIBinaryStore() async {
+        guard let bundled = Constants.bundledCLIPath() else { return }
+        let outcome = await CLIBinaryStore.sync(bundleBinary: bundled) {
+            let daemon = DaemonManager()
+            daemon.resolvePathIfNeeded()
+            await daemon.stopDaemon()
+        }
+        if case .failed(let reason) = outcome {
+            cliStoreError = reason
+            NSLog("CLIBinaryStore: sync failed, falling back to bundle CLI: %@", reason)
+        }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).

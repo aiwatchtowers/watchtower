@@ -12,7 +12,7 @@ final class TrayMenuViewTests: XCTestCase {
     // rendering (see RecordingIndicatorView/RecordingJobPill for the same
     // pattern), so it's what gets exercised here.
     func testMenuOffersOpenAndQuit() throws {
-        let view = TrayMenuContent(isRunning: true, cliStoreError: nil, openAction: {})
+        let view = TrayMenuContent(isRunning: true, cliStoreError: nil) {}
         let openButton = try view.inspect().find(button: "Open Watchtower")
         let quitButton = try view.inspect().find(button: "Quit Watchtower")
         XCTAssertNotNil(openButton)
