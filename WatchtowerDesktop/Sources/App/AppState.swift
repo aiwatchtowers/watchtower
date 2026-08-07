@@ -261,7 +261,6 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             self?.backgroundTaskManager.terminateProcessesSync()
-            DaemonManager.stopDaemonSync()
         }
         Task {
             // Sync the out-of-bundle CLI copy before anything spawns the CLI,
@@ -431,7 +430,7 @@ final class AppState {
 
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
-    /// then start a fresh one. Paired with `DaemonManager.stopDaemonSync()` on app terminate
+    /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle.
     private func ensureDaemonRunning() {
         Task {

@@ -108,27 +108,16 @@ final class DaemonManager {
         _ = try? await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
     }
 
-    /// Synchronously stop the daemon via `watchtower sync stop`, with a 2s hard timeout.
-    /// Safe to call from NSApplication.willTerminateNotification handler.
-    nonisolated static func stopDaemonSync() {
+    /// Stop the daemon for app quit: `sync stop` (the daemon gets up to 10 s
+    /// of SIGTERM grace from the CLI) with an outer watchdog so a hung CLI
+    /// can never stall termination.
+    nonisolated static func stopForQuit(timeout: Duration = .seconds(12)) async {
         guard let path = Constants.findCLIPath() else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
-        process.arguments = ["sync", "stop"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return
-        }
-        let deadline = Date().addingTimeInterval(2.0)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if process.isRunning {
-            process.terminate()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = try? await runProcess(path: path, arguments: ["sync", "stop"]) }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            _ = await group.next()
+            group.cancelAll()
         }
     }
 
