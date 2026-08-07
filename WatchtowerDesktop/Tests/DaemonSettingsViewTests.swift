@@ -8,7 +8,7 @@ final class DaemonSettingsViewTests: XCTestCase {
 
     /// На свежем DaemonManager (isRunning=false, path=nil) дерево показывает
     /// "Stopped" и предупреждение про отсутствующий бинарь.
-    /// Start/Stop кнопки удалены (lifecycle is app-owned).
+    /// Start/Stop buttons removed (lifecycle is app-owned).
     /// `.onAppear` ViewInspector не триггерит, поэтому
     /// resolvePathIfNeeded()/checkStatus() не запускаются — состояние стабильно.
     func testInitialStoppedState() throws {
