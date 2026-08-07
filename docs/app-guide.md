@@ -268,10 +268,22 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 **Jira Sites:** Connect any number of Jira Cloud sites side by side, each with its own OAuth consent and its own synced issues, boards, and releases. The list shows one row per site (its label or site name, its `<site>.atlassian.net` URL, and a status dot — green connected, otherwise the error as a tooltip). Each row has an **Enabled** toggle (a disabled site stops syncing but keeps all its already-synced data), a **Re-login** button (shown when the site needs re-authorization), and **Remove**. **Add Jira Site** opens a small sheet with an optional label and an optional site URL (useful when your Atlassian account can reach several sites); **Connect** launches Atlassian's consent page in your browser, and after you approve, the site is added and syncing starts. **Removing a site is non-destructive** — it drops the authorization and stops syncing, but already-synced issues, boards, and releases stay in Watchtower. Re-login re-consents the *same* site: if the Atlassian account you sign in with can no longer reach that site, the command stops with an error naming the site it expected rather than silently re-pointing the row at a different one. Boards selection with toggle switches — every board belongs to a site, and board actions (select, re-analyze, threshold overrides) always run against that board's own site. Board Profiles — workflow visualization (stage chain), stale threshold sliders, Re-analyze button, health signals, iteration info. User Mapping — matched/unmatched table with manual mapping dropdown. Sync status (last sync time, manual sync button). Jira Features — toggle switches organized by category (Your Work, Team Visibility, Product & Strategy, Automation). Defaults are set by user role on first connection; any toggle can be changed at any time. Jira key patterns (PROJ-123) in Slack messages are automatically detected and linked to issues. With several sites connected, "open in Jira" links currently resolve against your first connected site, and an issue key present on two sites resolves to one of them — per-site link resolution is planned.
 **Profile:** Your role, team, manager, reports, peers, starred channels/people.
 **Notifications:** Decision alerts, daily summaries, meeting reminders (toggle + minutes-before stepper, 0 disables pre-meeting reminders; the "still recording" alert stays on regardless), quiet hours.
-**Daemon:** Start/stop the background sync daemon, view status.
+**Daemon:** Read-only status (running/stopped, last sync time, last error) — there is no Start/Stop toggle here; see "Menu Bar & App Lifecycle" below for how background sync actually starts and stops.
 **Training:** Prompt editor, feedback stats, tuning.
 **Logs:** Live daemon logs with filtering.
 **Data:** Storage info, regenerate AI data, delete everything.
+
+## Menu Bar & App Lifecycle
+
+Watchtower is a menu-bar app first: it keeps syncing in the background even when its window is closed.
+
+**Menu bar icon** — always present while Watchtower is running, whether or not the window is open. Click it for a status line (daemon running/stopped, last sync time, last error) plus two actions: "Open Watchtower" (brings back the window and Dock icon) and "Quit Watchtower" (full exit, see below).
+
+**Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing.
+
+**Quitting stops the daemon** — Cmd+Q or the tray's "Quit Watchtower" is the one full-exit path: it stops the background sync daemon (no further syncing or AI token spend) and then quits the app. If a meeting recording is in progress, Watchtower asks first — "Stop recording & quit" ends the recording safely before quitting, "Cancel" keeps recording and aborts the quit.
+
+**Starts at login, into the tray** — Watchtower registers itself as a login item so background sync is already running by the time you'd open the app; a login launch starts windowless, straight into the menu bar (no Dock icon) rather than opening the main window. To turn this off, disable Watchtower in System Settings → General → Login Items — there is no in-app setting for it.
 
 ## Background Processes
 
