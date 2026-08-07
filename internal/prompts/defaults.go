@@ -121,7 +121,7 @@ var DefaultVersions = map[string]int{
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
 	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
-	MeetingRecap:               1, // v1: initial meeting recap template
+	MeetingRecap:               2, // v2: idea-candidate extraction (stage-1 for ideas registry)
 	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
 	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
@@ -1130,7 +1130,8 @@ Return ONLY a JSON object (no markdown fences, no commentary) matching:
   "summary": "string (1-2 sentences, what the meeting was about and outcome)",
   "key_decisions": ["string", ...],
   "action_items": ["string (imperative; if a person is named in the text, include them)", ...],
-  "open_questions": ["string", ...]
+  "open_questions": ["string", ...],
+  "ideas": ["string", ...]
 }
 
 Rules:
@@ -1138,6 +1139,7 @@ Rules:
 - Decisions: things explicitly resolved.
 - Action items: only items with implied owner or commitment ("X will do Y" / "we'll send Y").
 - Open questions: things flagged as unresolved or "to discuss later".
+- Ideas: proposals raised but not decided; empty when none.
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
 

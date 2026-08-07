@@ -113,3 +113,35 @@ func TestGenerateRecap_TrimsAndDropsEmptyArrayEntries(t *testing.T) {
 		t.Errorf("expected empty action_items, got %v", res.ActionItems)
 	}
 }
+
+func TestGenerateRecap_IdeasTrimmed(t *testing.T) {
+	aiResponse := `{
+      "summary": "x",
+      "key_decisions": [],
+      "action_items": [],
+      "open_questions": [],
+      "ideas": ["idea one", ""]
+    }`
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
+
+	res, err := p.GenerateRecap(context.Background(), "evt-1", "raw")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Ideas) != 1 || res.Ideas[0] != "idea one" {
+		t.Errorf("expected 1 trimmed idea, got %v", res.Ideas)
+	}
+}
+
+func TestGenerateRecap_IdeasAbsentIsEmpty(t *testing.T) {
+	aiResponse := `{"summary":"x","key_decisions":[],"action_items":[],"open_questions":[]}`
+	p := newTestPipelineForRecap(t, &mockGenerator{response: aiResponse})
+
+	res, err := p.GenerateRecap(context.Background(), "evt-1", "raw")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Ideas) != 0 {
+		t.Errorf("expected no ideas when field is absent, got %v", res.Ideas)
+	}
+}
