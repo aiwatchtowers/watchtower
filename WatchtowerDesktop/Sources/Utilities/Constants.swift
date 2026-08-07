@@ -209,8 +209,12 @@ enum Constants {
 
     /// Resolve the watchtower CLI binary path.
     /// Priority: Application Support store copy → app bundle → resolved PATH.
+    /// The store copy is used only while it matches the bundled CLI (validated
+    /// once per launch, see `CLIBinaryStore.resolvedInstalledPath`); a stale or
+    /// tampered copy falls through to the bundle, and a dev run with no bundled
+    /// CLI ignores the store entirely and resolves via PATH.
     nonisolated static func findCLIPath() -> String? {
-        if let store = CLIBinaryStore.installedPath() { return store }
+        if let store = CLIBinaryStore.resolvedInstalledPath() { return store }
         if let bundled = bundledCLIPath() { return bundled }
         return findInPath("watchtower")
     }
