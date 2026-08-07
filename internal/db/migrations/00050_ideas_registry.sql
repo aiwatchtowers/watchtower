@@ -64,14 +64,15 @@ CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, a
 -- Bounded Jira comment sync (per-account, per-issue) feeding the Jira
 -- stream digest; a small local cache, not a full Jira-comment mirror.
 CREATE TABLE IF NOT EXISTS jira_comments (
-    account_id  INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
-    issue_key   TEXT NOT NULL,
-    id          TEXT NOT NULL,
-    author      TEXT NOT NULL DEFAULT '',
-    body_text   TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT '',
-    updated_at  TEXT NOT NULL DEFAULT '',
-    synced_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    account_id          INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    issue_key           TEXT NOT NULL,
+    id                  TEXT NOT NULL,
+    author              TEXT NOT NULL DEFAULT '',
+    author_account_id   TEXT NOT NULL DEFAULT '',
+    body_text           TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT '',
+    updated_at          TEXT NOT NULL DEFAULT '',
+    synced_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);

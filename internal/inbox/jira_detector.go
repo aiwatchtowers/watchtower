@@ -3,6 +3,7 @@ package inbox
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -13,14 +14,16 @@ import (
 //
 // Implemented signals:
 //   - jira_assigned: issues where assignee_account_id = currentUserID and updated_at > sinceTS
+//   - jira_comment_mention: comments in jira_comments (migration 00050) whose body
+//     [~mentions] one of currentUserID's mapped Atlassian account ids (jira_user_map).
+//     A jira_comments table absence, or currentUserID having no mapped Atlassian id,
+//     is a graceful no-op rather than an error.
 //
 // No-op signals (schema not available — follow-up required):
-//   - jira_comment_mention: requires jira_comments table (not in current schema)
 //   - jira_status_change: requires jira_issue_history table (not in current schema)
 //   - jira_priority_change: requires jira_issue_history table (not in current schema)
 //   - jira_comment_watching: requires jira_watchers table (not in current schema)
 //
-// TODO(inbox-pulse v2): add comment mention detection once jira_comments is added to schema.
 // TODO(inbox-pulse v2): add status/priority change detection once jira_issue_history is added.
 // TODO(inbox-pulse v2): add watching detection once jira_watchers is added.
 func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinceTS time.Time) (int, error) {
@@ -82,13 +85,18 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 	}
 
 	// --- jira_comment_mention: detect when jira_comments table is available ---
-	// The jira_comments table is not part of the core schema but may be created by
-	// the Jira sync extension or by tests. We check for its existence at runtime and
-	// skip gracefully if it is absent.
+	// jira_comments is part of the core schema since migration 00050; the
+	// existence check is now a defensive no-op that only matters for a
+	// mid-migration or otherwise unusual database state.
 	if jiraCommentsTableExists(database) {
-		// Look for comments that mention ~currentUserID in the body.
-		mentionPattern := "%[~" + currentUserID + "]%"
-		commentCandidates := collectJiraCommentCandidates(database, mentionPattern, sinceISO)
+		// A Jira [~mention] embeds the mentioned user's ATLASSIAN account id,
+		// not their Slack id — resolve every account id mapped to
+		// currentUserID (a user can be unmapped, mapped once, or in theory
+		// mapped from more than one namespaced Slack id) and match any of
+		// them. Zero mapped ids means we cannot recognize a mention at all,
+		// so the detector skips comment mentions gracefully, same as before.
+		atlassianIDs := atlassianIDsForUser(database, currentUserID)
+		commentCandidates := collectJiraCommentCandidates(database, atlassianIDs, sinceISO)
 		for _, c := range commentCandidates {
 			if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
 				continue
@@ -124,8 +132,8 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 }
 
 // jiraCommentsTableExists returns true if the jira_comments table is present
-// in the SQLite database. The table is not part of the core schema and may be
-// absent when the Jira sync extension has not run yet.
+// in the SQLite database. Part of the core schema since migration 00050; this
+// is now a defensive check rather than a real conditional.
 func jiraCommentsTableExists(d *db.DB) bool {
 	var n int
 	d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jira_comments'`).Scan(&n) //nolint:errcheck
@@ -136,19 +144,33 @@ type commentCandidate struct {
 	issueKey, commentID, body, createdAt string
 }
 
-// collectJiraCommentCandidates queries jira_comments for the given mention
-// pattern and returns fully-scanned candidates, best-effort (query or scan
-// errors just yield fewer/no candidates rather than failing the detector).
-// The rows are closed via defer scoped to this helper, so they are released
+// collectJiraCommentCandidates queries jira_comments for a [~mention] of any
+// of the given Atlassian account ids and returns fully-scanned candidates,
+// best-effort (query or scan errors just yield fewer/no candidates rather
+// than failing the detector). An empty atlassianIDs list — the user has no
+// known Jira identity — is a graceful no-op, same as an absent table. The
+// rows are closed via defer scoped to this helper, so they are released
 // before the caller issues any further queries — required to avoid a
 // deadlock on the MaxOpenConns(1) SQLite pool.
-func collectJiraCommentCandidates(database *db.DB, mentionPattern, sinceISO string) []commentCandidate {
-	cRows, err := database.Query(`
-		SELECT issue_key, id, body, created_at
+func collectJiraCommentCandidates(database *db.DB, atlassianIDs []string, sinceISO string) []commentCandidate {
+	if len(atlassianIDs) == 0 {
+		return nil
+	}
+
+	whereParts := make([]string, len(atlassianIDs))
+	args := make([]any, 0, len(atlassianIDs)+1)
+	for i, id := range atlassianIDs {
+		whereParts[i] = "body_text LIKE ?"
+		args = append(args, "%[~"+id+"]%")
+	}
+	args = append(args, sinceISO)
+
+	query := fmt.Sprintf(`
+		SELECT issue_key, id, body_text, created_at
 		FROM jira_comments
-		WHERE body LIKE ?
-		  AND created_at > ?`,
-		mentionPattern, sinceISO)
+		WHERE (%s)
+		  AND created_at > ?`, strings.Join(whereParts, " OR "))
+	cRows, err := database.Query(query, args...)
 	if err != nil {
 		return nil
 	}
@@ -163,6 +185,50 @@ func collectJiraCommentCandidates(database *db.DB, mentionPattern, sinceISO stri
 		candidates = append(candidates, c)
 	}
 	return candidates
+}
+
+// atlassianIDsForUser returns every Atlassian account id mapped to a Slack
+// user id in jira_user_map, matching both the raw id and its "1:"-namespaced
+// form. jira_user_map.slack_user_id was namespaced by the Slack
+// multi-account migration (00048: `'1:' || slack_user_id`), but this
+// dormant Jira code predates that migration and its callers (tests, and any
+// pre-migration data) may still carry the bare id — matching both forms
+// keeps identity resolution honest either way. Returns nil (not an error)
+// on an unmapped user or a query failure — the caller treats that as "skip
+// comment-mention detection gracefully".
+func atlassianIDsForUser(database *db.DB, slackUserID string) []string {
+	if slackUserID == "" {
+		return nil
+	}
+	candidates := []string{slackUserID}
+	if trimmed, ok := strings.CutPrefix(slackUserID, "1:"); ok {
+		candidates = append(candidates, trimmed)
+	} else {
+		candidates = append(candidates, "1:"+slackUserID)
+	}
+
+	placeholders := make([]string, len(candidates))
+	args := make([]any, len(candidates))
+	for i, c := range candidates {
+		placeholders[i] = "?"
+		args[i] = c
+	}
+	rows, err := database.Query(fmt.Sprintf(`SELECT jira_account_id FROM jira_user_map WHERE slack_user_id IN (%s)`,
+		strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			break
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // jiraInboxExists returns true if an inbox_item already exists for the given

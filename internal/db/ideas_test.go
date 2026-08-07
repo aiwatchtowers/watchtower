@@ -374,6 +374,40 @@ func TestIdeas_UpsertJiraCommentsIdempotent(t *testing.T) {
 	}
 }
 
+func TestIdeas_UpsertJiraCommentsRoundTripsAuthorAccountID(t *testing.T) {
+	d := openTestDB(t)
+	accountID := mustCreateJiraAccount(t, d)
+
+	comments := []JiraComment{
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c1", Author: "Alice", AuthorAccountID: "acc-alice",
+			BodyText: "hey [~acc-bob]", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+	}
+	if err := d.UpsertJiraComments(comments); err != nil {
+		t.Fatalf("UpsertJiraComments (insert): %v", err)
+	}
+
+	got, err := d.ListJiraCommentsSince(accountID, []string{"PROJ-1"}, "2025-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListJiraCommentsSince: %v", err)
+	}
+	if len(got) != 1 || got[0].AuthorAccountID != "acc-alice" {
+		t.Fatalf("ListJiraCommentsSince = %+v, want AuthorAccountID=acc-alice", got)
+	}
+
+	// Update path also round-trips the new column.
+	comments[0].AuthorAccountID = "acc-alice-2"
+	if err := d.UpsertJiraComments(comments); err != nil {
+		t.Fatalf("UpsertJiraComments (update): %v", err)
+	}
+	got, err = d.ListJiraCommentsSince(accountID, []string{"PROJ-1"}, "2025-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListJiraCommentsSince: %v", err)
+	}
+	if len(got) != 1 || got[0].AuthorAccountID != "acc-alice-2" {
+		t.Fatalf("ListJiraCommentsSince after update = %+v, want AuthorAccountID=acc-alice-2", got)
+	}
+}
+
 func TestIdeas_ListJiraCommentsSinceFiltersIssueAndTime(t *testing.T) {
 	d := openTestDB(t)
 	accountID := mustCreateJiraAccount(t, d)

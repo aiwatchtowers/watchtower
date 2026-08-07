@@ -330,15 +330,20 @@ func (db *DB) ListStreamDigestsAfter(floor int64) ([]StreamDigest, error) {
 }
 
 // JiraComment is a bounded, locally-cached Jira comment feeding the Jira
-// stream digest — not a full Jira-comment mirror.
+// stream digest — not a full Jira-comment mirror. AuthorAccountID is the
+// commenter's Atlassian account id (distinct from Author, the display name);
+// it is what the inbox dormant comment-mention/auto-resolve code matches
+// against, since Atlassian ids — not Slack ids — are what a Jira [~mention]
+// and jira_comments.author_account_id actually carry.
 type JiraComment struct {
-	AccountID int64
-	IssueKey  string
-	ID        string
-	Author    string
-	BodyText  string
-	CreatedAt string
-	UpdatedAt string
+	AccountID       int64
+	IssueKey        string
+	ID              string
+	Author          string
+	AuthorAccountID string
+	BodyText        string
+	CreatedAt       string
+	UpdatedAt       string
 }
 
 // UpsertJiraComments inserts or updates comments keyed on (account_id, id).
@@ -347,16 +352,17 @@ func (db *DB) UpsertJiraComments(comments []JiraComment) error {
 		return nil
 	}
 	for _, c := range comments {
-		_, err := db.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, body_text, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
+		_, err := db.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(account_id, id) DO UPDATE SET
 				issue_key = excluded.issue_key,
 				author = excluded.author,
+				author_account_id = excluded.author_account_id,
 				body_text = excluded.body_text,
 				created_at = excluded.created_at,
 				updated_at = excluded.updated_at,
 				synced_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
-			c.AccountID, c.IssueKey, c.ID, c.Author, c.BodyText, c.CreatedAt, c.UpdatedAt)
+			c.AccountID, c.IssueKey, c.ID, c.Author, c.AuthorAccountID, c.BodyText, c.CreatedAt, c.UpdatedAt)
 		if err != nil {
 			return fmt.Errorf("upserting jira comment %s/%s: %w", c.IssueKey, c.ID, err)
 		}
@@ -379,7 +385,7 @@ func (db *DB) ListJiraCommentsSince(accountID int64, issueKeys []string, sinceIS
 	}
 	args = append(args, sinceISO)
 
-	query := fmt.Sprintf(`SELECT account_id, issue_key, id, author, body_text, created_at, updated_at
+	query := fmt.Sprintf(`SELECT account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at
 		FROM jira_comments WHERE account_id = ? AND issue_key IN (%s) AND updated_at >= ?
 		ORDER BY issue_key, updated_at`, strings.Join(placeholders, ","))
 	rows, err := db.Query(query, args...)
@@ -391,7 +397,7 @@ func (db *DB) ListJiraCommentsSince(accountID int64, issueKeys []string, sinceIS
 	var out []JiraComment
 	for rows.Next() {
 		var c JiraComment
-		if err := rows.Scan(&c.AccountID, &c.IssueKey, &c.ID, &c.Author, &c.BodyText, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.AccountID, &c.IssueKey, &c.ID, &c.Author, &c.AuthorAccountID, &c.BodyText, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning jira comment: %w", err)
 		}
 		out = append(out, c)

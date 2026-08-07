@@ -56,24 +56,51 @@ func TestJiraDetector_AssignedToMe(t *testing.T) {
 	}
 }
 
-func TestJiraDetector_CommentMention(t *testing.T) {
+func TestJiraDetector_CommentMention_SkippedWithoutMappedAtlassianID(t *testing.T) {
 	d := testDB(t)
-	// No jira_comments table in schema — jira_comment_mention is a no-op (TODO v2).
-	// This test verifies DetectJira returns 0 for comment mentions gracefully.
+	// jira_comments is real (migration 00050), but alice has no jira_user_map
+	// row — DetectJira cannot resolve her Atlassian account id, so comment
+	// mentions stay a graceful no-op (the pre-reconciliation "no schema"
+	// no-op is now "no mapped identity").
 	seedJiraIssue(t, d, "WT-200", "bob", time.Now().Add(-1*time.Hour))
+	seedJiraComment(t, d, "WT-200", "acc-bob", "hey [~acc-alice] please look", time.Now().Add(-30*time.Minute))
 
 	n, err := DetectJira(context.Background(), d, "alice", time.Now().Add(-2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// alice is not the assignee, so no jira_assigned item.
-	// jira_comment_mention is a no-op (schema not available).
+	// jira_comment_mention is a no-op (alice has no mapped Atlassian id).
 	if n != 0 {
-		t.Errorf("expected 0 items for non-assignee with no comment schema, got %d", n)
+		t.Errorf("expected 0 items for non-assignee with unmapped identity, got %d", n)
 	}
 	got := queryInboxByTrigger(t, d, "jira_comment_mention")
 	if len(got) != 0 {
 		t.Errorf("expected no comment mention items, got %d", len(got))
+	}
+}
+
+func TestJiraDetector_CommentMention_Detected(t *testing.T) {
+	d := testDB(t)
+	seedJiraIssue(t, d, "WT-201", "bob", time.Now().Add(-1*time.Hour))
+	if err := d.UpsertJiraUserMap(db.JiraUserMap{JiraAccountID: "acc-alice", SlackUserID: "alice", DisplayName: "Alice"}); err != nil {
+		t.Fatalf("UpsertJiraUserMap: %v", err)
+	}
+	seedJiraComment(t, d, "WT-201", "acc-bob", "hey [~acc-alice] please look", time.Now().Add(-30*time.Minute))
+
+	n, err := DetectJira(context.Background(), d, "alice", time.Now().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 comment mention item, got %d", n)
+	}
+	got := queryInboxByTrigger(t, d, "jira_comment_mention")
+	if len(got) != 1 {
+		t.Fatalf("want 1 jira_comment_mention item, got %d", len(got))
+	}
+	if got[0].SenderUserID != "WT-201" {
+		t.Errorf("expected SenderUserID=WT-201, got %q", got[0].SenderUserID)
 	}
 }
 

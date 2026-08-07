@@ -876,6 +876,7 @@ account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
 issue_key TEXT NOT NULL,
 id TEXT NOT NULL,
 author TEXT NOT NULL DEFAULT '',
+author_account_id TEXT NOT NULL DEFAULT '',
 body_text TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL DEFAULT '',
@@ -2142,10 +2143,11 @@ END
 1	issue_key	TEXT	notnull=1	dflt=NULL	pk=0
 2	id	TEXT	notnull=1	dflt=NULL	pk=2
 3	author	TEXT	notnull=1	dflt=''	pk=0
-4	body_text	TEXT	notnull=1	dflt=''	pk=0
-5	created_at	TEXT	notnull=1	dflt=''	pk=0
-6	updated_at	TEXT	notnull=1	dflt=''	pk=0
-7	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+4	author_account_id	TEXT	notnull=1	dflt=''	pk=0
+5	body_text	TEXT	notnull=1	dflt=''	pk=0
+6	created_at	TEXT	notnull=1	dflt=''	pk=0
+7	updated_at	TEXT	notnull=1	dflt=''	pk=0
+8	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## jira_custom_fields
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1

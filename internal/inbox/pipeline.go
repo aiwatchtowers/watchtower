@@ -773,12 +773,17 @@ func (p *Pipeline) autoResolveSlack(ctx context.Context, currentUserID string) i
 
 // autoResolveJira resolves pending jira_comment_mention and jira_assigned items
 // when the current user has authored a comment on the issue after the item was created.
-// If the jira_comments table does not exist, this method is a no-op.
+// If the jira_comments table does not exist, or the current user has no
+// mapped Atlassian account id (jira_user_map), this method is a no-op.
 func (p *Pipeline) autoResolveJira(_ context.Context) int {
 	if !jiraCommentsTableExists(p.db) {
 		return 0
 	}
 	if p.currentUserID == "" {
+		return 0
+	}
+	atlassianIDs := atlassianIDsForUser(p.db, p.currentUserID)
+	if len(atlassianIDs) == 0 {
 		return 0
 	}
 
@@ -805,12 +810,22 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 		candidates = append(candidates, c)
 	}
 
+	placeholders := make([]string, len(atlassianIDs))
+	idArgs := make([]any, len(atlassianIDs))
+	for i, id := range atlassianIDs {
+		placeholders[i] = "?"
+		idArgs[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
 	resolved := 0
 	for _, c := range candidates {
 		var n int
-		p.db.QueryRow(`SELECT COUNT(*) FROM jira_comments
-			WHERE issue_key=? AND author_id=? AND created_at >= ?`,
-			c.issueKey, p.currentUserID, c.createdAt).Scan(&n) //nolint:errcheck
+		args := append([]any{c.issueKey}, idArgs...)
+		args = append(args, c.createdAt)
+		p.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM jira_comments
+			WHERE issue_key=? AND author_account_id IN (%s) AND created_at >= ?`, inClause),
+			args...).Scan(&n) //nolint:errcheck
 		if n > 0 {
 			if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
 				time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
