@@ -14,19 +14,6 @@ struct DaemonSettings: View {
                     Text(daemonManager.isRunning ? "Running" : "Stopped")
                 }
 
-                HStack {
-                    // C4 fix: async button action
-                    Button(daemonManager.isRunning ? "Stop Daemon" : "Start Daemon") {
-                        Task {
-                            if daemonManager.isRunning {
-                                await daemonManager.stopDaemon()
-                            } else {
-                                await daemonManager.startDaemon()
-                            }
-                        }
-                    }
-                }
-
                 if let path = daemonManager.watchtowerPath {
                     LabeledContent("Binary", value: path)
                 } else {

@@ -7,7 +7,8 @@ import ViewInspector
 final class DaemonSettingsViewTests: XCTestCase {
 
     /// На свежем DaemonManager (isRunning=false, path=nil) дерево показывает
-    /// "Stopped", "Start Daemon" и предупреждение про отсутствующий бинарь.
+    /// "Stopped" и предупреждение про отсутствующий бинарь.
+    /// Start/Stop кнопки удалены (lifecycle is app-owned).
     /// `.onAppear` ViewInspector не триггерит, поэтому
     /// resolvePathIfNeeded()/checkStatus() не запускаются — состояние стабильно.
     func testInitialStoppedState() throws {
@@ -15,7 +16,7 @@ final class DaemonSettingsViewTests: XCTestCase {
         let inspected = try view.inspect()
 
         XCTAssertNoThrow(try inspected.find(text: "Stopped"))
-        XCTAssertNoThrow(try inspected.find(text: "Start Daemon"))
+        XCTAssertThrowsError(try inspected.find(text: "Start Daemon"))
         XCTAssertNoThrow(try inspected.find(text: "watchtower binary not found"))
     }
 
