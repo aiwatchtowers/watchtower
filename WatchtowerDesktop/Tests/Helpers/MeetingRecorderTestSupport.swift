@@ -58,7 +58,7 @@ final class ScriptedEngine: WhisperWindowEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
         defer { index += 1 }
         let text = index < texts.count ? texts[index] : ""
         return [TranscribedSegment(text: text, startSec: 0,
@@ -87,7 +87,7 @@ final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
         enteredContinuation.yield(())
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()

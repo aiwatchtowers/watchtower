@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 
 /// Scripted engine: canned per-window detection results + transcription texts.
-/// Records every forced language and window size passed in.
+/// Records every forced language, window size and context prompt passed in.
 private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     enum Detection {
         case probs([String: Float])
@@ -17,6 +17,7 @@ private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     private(set) var detectCallCount = 0
     private(set) var transcribedLanguages: [String] = []
     private(set) var windowSizes: [Int] = []
+    private(set) var prompts: [String?] = []
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] {
         let idx = detectCallCount
@@ -28,9 +29,10 @@ private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
         }
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
         windowSizes.append(samples.count)
         transcribedLanguages.append(language)
+        prompts.append(prompt)
         let idx = transcribedLanguages.count - 1
         let text = idx < texts.count ? try texts[idx].get() : ""
         return [TranscribedSegment(text: text, startSec: 0,
@@ -166,6 +168,71 @@ final class WindowedTranscriberTests: XCTestCase {
         _ = try await run(engine, tinyConfig(), windows: 1)
 
         XCTAssertEqual(engine.transcribedLanguages, ["ru"])
+    }
+
+    // MARK: - Context prompt
+
+    func testPromptCarriesPreviousWindowText() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success("two"), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "two"])
+    }
+
+    func testSilentWindowKeepsPreviousPrompt() async throws {
+        // Context survives a non-speech window, mirroring sticky language.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success(""), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+    }
+
+    func testLanguageFlipDropsPrompt() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["en": 0.9, "ru": 0.02]),
+            .probs(["uk": 0.9, "ru": 0.02])
+        ]
+        engine.texts = [.success("hello"), .success("привіт")]
+
+        _ = try await run(engine, tinyConfig(), windows: 2)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["en", "uk"])
+        XCTAssertEqual(engine.prompts, [nil, nil], "a ru/en prompt must never condition another language")
+    }
+
+    func testDisabledContextPromptNeverPrompts() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        config.contextPrompt = false
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success("two"), .success("three")]
+
+        let output = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, nil, nil])
+        XCTAssertEqual(output.text, "one\ntwo\nthree")
+    }
+
+    func testPromptIsCappedAtTwoHundredCharacters() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        let long = String(repeating: "x", count: 150) + String(repeating: "y", count: 150)
+        engine.texts = [.success(long), .success("next")]
+
+        _ = try await run(engine, config, windows: 2)
+
+        let tail = String(repeating: "x", count: 50) + String(repeating: "y", count: 150)
+        XCTAssertEqual(engine.prompts, [nil, tail])
     }
 
     // MARK: - Errors

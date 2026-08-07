@@ -67,13 +67,34 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         return probs
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    /// Encodes the conditioning prompt the way WhisperKit's own CLI does: a
+    /// leading space, special tokens filtered out (the decoder prepends
+    /// `<|startofprev|>` itself and trims the rest to half the context).
+    /// nil whenever there is nothing to condition on or the tokenizer is not
+    /// loaded — the window then decodes exactly as it did before.
+    private func promptTokens(for prompt: String?) -> [Int]? {
+        guard let text = prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+              let tokenizer = whisperKit.tokenizer
+        else { return nil }
+        let tokens = tokenizer.encode(text: " " + text)
+            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        return tokens.isEmpty ? nil : tokens
+    }
+
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+        try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
+            try await decode(samples, language: language, promptTokens: tokens)
+        }
+    }
+
+    private func decode(_ samples: [Float], language: String, promptTokens: [Int]?) async throws -> [TranscribedSegment] {
         let options = DecodingOptions(
             task: .transcribe,
             language: language,
             detectLanguage: false,
             skipSpecialTokens: true,
-            withoutTimestamps: false
+            withoutTimestamps: false,
+            promptTokens: promptTokens
         )
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
@@ -91,4 +112,29 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
             }
         }
     }
+}
+
+/// Decodes one window, retrying ONCE without the prompt when a prompted decode
+/// came back empty: a prompted decode can collapse to an immediate end-of-text
+/// on audio that decodes fine clean; prompt is advisory, so an empty prompted
+/// window retries once without it — genuine silence stays silent (the clean
+/// retry is empty too), at the cost of a double decode on silent-after-speech
+/// windows.
+///
+/// Lives at the engine level so batch and live inherit it identically, and takes
+/// the decode step as a closure so the retry rule is testable without loading a
+/// model.
+func decodeWithPromptFallback(
+    promptTokens: [Int]?,
+    decode: ([Int]?) async throws -> [TranscribedSegment]
+) async rethrows -> [TranscribedSegment] {
+    let segments = try await decode(promptTokens)
+    guard promptTokens != nil, !containsSpeech(segments) else { return segments }
+    return try await decode(nil)
+}
+
+/// Whether a decode produced anything usable, under the same trimming rule
+/// `liftWindowSegments` applies downstream.
+private func containsSpeech(_ segments: [TranscribedSegment]) -> Bool {
+    segments.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }

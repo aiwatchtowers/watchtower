@@ -70,6 +70,20 @@ struct TranscriptionSettingsTests {
         #expect(config.diarizationThreshold == 0.6)
     }
 
+    @Test("Absent context prompt keeps the default")
+    func contextPromptDefault() throws {
+        let config = TranscriptionConfig.fromDefaults(try makeSuite())
+        #expect(config.contextPrompt)
+    }
+
+    @Test("Reads the context prompt override")
+    func contextPromptOverride() throws {
+        let defaults = try makeSuite()
+        defaults.set(false, forKey: "transcription.contextPrompt")
+        let config = TranscriptionConfig.fromDefaults(defaults)
+        #expect(config.contextPrompt == false)
+    }
+
     @Test("Empty langset falls back to default")
     func emptyLangsetFallsBack() throws {
         let defaults = try makeSuite()

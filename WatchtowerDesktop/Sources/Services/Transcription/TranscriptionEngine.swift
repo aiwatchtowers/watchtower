@@ -12,8 +12,10 @@ struct TranscribedSegment: Equatable, Sendable {
 protocol WhisperWindowEngine: Sendable {
     /// Language probabilities for one audio window (16 kHz mono Float32 samples).
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float]
-    /// Transcribe one window with the language forced.
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment]
+    /// Transcribe one window with the language forced. `prompt` is the previous
+    /// speech window's text tail in the SAME language — whisper's long-form
+    /// conditioning convention — and is nil when unavailable or disabled.
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
 }
 
 /// Windowed-transcription parameters. Defaults are ported verbatim from snoop:
@@ -30,6 +32,9 @@ struct TranscriptionConfig: Equatable {
     var margin: Float = 0.2
     var firstWindowDefault: String = "ru"
     var forcedLanguage: String?   // non-nil disables detection entirely
+    /// Condition each window's decode on the previous window's text, whisper's
+    /// long-form convention. Off = every window decodes with no prior context.
+    var contextPrompt: Bool = true
     /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
     var diarization: Bool = true
     /// Clustering threshold for the diarizer's speaker embeddings; lower splits
@@ -85,6 +90,9 @@ extension TranscriptionConfig {
         if defaults.object(forKey: "transcription.margin") != nil {
             config.margin = Float(defaults.double(forKey: "transcription.margin"))
         }
+        if defaults.object(forKey: "transcription.contextPrompt") != nil {
+            config.contextPrompt = defaults.bool(forKey: "transcription.contextPrompt")
+        }
         if defaults.object(forKey: "transcription.diarization") != nil {
             config.diarization = defaults.bool(forKey: "transcription.diarization")
         }
@@ -124,6 +132,25 @@ func liftWindowSegments(
                           language: language)
     }
     return (cleaned.map(\.text).joined(separator: " "), lifted)
+}
+
+/// Prompt for the next window: the previous speech window's tail, passed
+/// only while the language sticks — a language flip drops the context so
+/// e.g. a ru prompt never conditions an en window. 200 chars is plenty:
+/// WhisperKit further trims prompt tokens to half the decoder context.
+/// Shared by WindowedTranscriber (batch) and StreamingTranscriber (live) so
+/// their conditioning cannot drift.
+func contextPromptTail(
+    prevText: String?,
+    prevLang: String?,
+    language: String,
+    config: TranscriptionConfig
+) -> String? {
+    guard config.contextPrompt,
+          let prevText, !prevText.isEmpty,
+          prevLang == language
+    else { return nil }
+    return String(prevText.suffix(200))
 }
 
 /// Detection with sticky fallback, shared by WindowedTranscriber (batch) and
