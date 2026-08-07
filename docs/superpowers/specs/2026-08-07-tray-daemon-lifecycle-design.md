@@ -76,6 +76,10 @@ A third scene in `WatchtowerApp` next to `WindowGroup`/`Settings`:
 - Status line (disabled item): daemon running/stopped + last sync time +
   last error — all already tracked by `DaemonManager` (`isRunning`,
   `lastSyncTime`, `errorMessage`).
+  - **As built, narrower:** running/stopped, plus a daemon start/stop error
+    and a CLI-store error line when either is set. No last-sync time: the
+    daemon writes no timestamp the tray could read without opening the
+    database, which the tray deliberately does not do.
 - "Open Watchtower" — switch to `.regular`, open/focus the main window.
 - "Quit Watchtower" — same full-exit path as Cmd+Q (`NSApp.terminate`).
 

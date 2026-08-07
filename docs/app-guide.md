@@ -277,11 +277,11 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 Watchtower is a menu-bar app first: it keeps syncing in the background even when its window is closed.
 
-**Menu bar icon** — always present while Watchtower is running, whether or not the window is open. Click it for a status line showing whether background sync is running (plus a CLI-install error, if any) and two actions: "Open Watchtower" (brings back the window and Dock icon) and "Quit Watchtower" (full exit, see below).
+**Menu bar icon** — always present while Watchtower is running, whether or not the window is open. Click it for a status line showing whether background sync is running (plus a daemon or CLI-install error, if either happened) and two actions: "Open Watchtower" (brings back the window and Dock icon) and "Quit Watchtower" (full exit, see below).
 
-**Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing.
+**Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing. If Settings or the Pipeline Progress window is still open, the Dock icon stays until that window is closed too.
 
-**Quitting stops the daemon** — Cmd+Q or the tray's "Quit Watchtower" is the one full-exit path: it stops the background sync daemon (no further syncing or AI token spend) and then quits the app. If a meeting recording is in progress, Watchtower asks first — "Stop Recording & Quit" ends the recording safely before quitting, "Cancel" keeps recording and aborts the quit.
+**Quitting stops the daemon** — Cmd+Q or the tray's "Quit Watchtower" is the one full-exit path: it stops the background sync daemon (no further syncing or AI token spend) and then quits the app. If a recording is capturing, or a finished recording is still being transcribed, Watchtower asks first — "Stop & Quit" ends that work before quitting, "Cancel" aborts the quit and lets it finish. Audio already captured is kept on disk and offered again on the next launch.
 
 **Starts at login, into the tray** — Watchtower registers itself as a login item so background sync is already running by the time you'd open the app; a login launch starts windowless, straight into the menu bar (no Dock icon) rather than opening the main window. To turn this off, disable Watchtower in System Settings → General → Login Items — there is no in-app setting for it.
 
