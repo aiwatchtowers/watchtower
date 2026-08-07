@@ -116,6 +116,10 @@ final class AppState {
     /// selection survive navigating away from and back to the feed.
     private(set) var feedViewModel: FeedViewModel?
 
+    /// Ideas & Decisions registry ViewModel — persists across tab switches so
+    /// filters and selection survive navigating away from and back to the tab.
+    private(set) var ideasViewModel: IdeasViewModel?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -335,19 +339,7 @@ final class AppState {
                 }
                 isLoading = false
                 loadCustomEmoji(from: manager)
-                initCalendar(dbPool: manager.dbPool)
-                initDayPlan(dbPool: manager.dbPool)
-                initCatchUp(dbPool: manager.dbPool)
-                initMemory(dbPool: manager.dbPool)
-                initDashboard(dbManager: manager)
-                initSecretaryProfile(dbManager: manager)
-                initEmailAccounts(dbPool: manager.dbPool)
-                initCalendarAccounts(dbPool: manager.dbPool)
-                initGoogleAccounts(dbPool: manager.dbPool)
-                initSlackAccounts(dbPool: manager.dbPool)
-                initJiraAccounts(dbPool: manager.dbPool)
-                startDigestWatcher(dbPool: manager.dbPool)
-                startMeetingReminders(dbPool: manager.dbPool)
+                initFeatureViewModels(manager: manager)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
@@ -471,6 +463,26 @@ final class AppState {
         }
     }
 
+    /// Builds every feature ViewModel and starts their sync-tolerant polling,
+    /// once the DB is open and splash has decided to hand off to the main UI.
+    /// Pulled out of `initialize()` to keep that function under the lint limit.
+    private func initFeatureViewModels(manager: DatabaseManager) {
+        initCalendar(dbPool: manager.dbPool)
+        initDayPlan(dbPool: manager.dbPool)
+        initCatchUp(dbPool: manager.dbPool)
+        initMemory(dbPool: manager.dbPool)
+        initDashboard(dbManager: manager)
+        initIdeas(dbManager: manager)
+        initSecretaryProfile(dbManager: manager)
+        initEmailAccounts(dbPool: manager.dbPool)
+        initCalendarAccounts(dbPool: manager.dbPool)
+        initGoogleAccounts(dbPool: manager.dbPool)
+        initSlackAccounts(dbPool: manager.dbPool)
+        initJiraAccounts(dbPool: manager.dbPool)
+        startDigestWatcher(dbPool: manager.dbPool)
+        startMeetingReminders(dbPool: manager.dbPool)
+    }
+
     private func initCalendar(dbPool: DatabasePool) {
         calendarViewModel = CalendarViewModel(dbPool: dbPool)
     }
@@ -498,6 +510,15 @@ final class AppState {
         let feedVM = FeedViewModel(dbManager: dbManager)
         feedVM.startObserving()
         feedViewModel = feedVM
+    }
+
+    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
+    /// directly via `@testable import` to prove `ideasViewModel` identity
+    /// persists across accesses.
+    func initIdeas(dbManager: DatabaseManager) {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.startObserving()
+        ideasViewModel = vm
     }
 
     /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it

@@ -22,7 +22,7 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testSectionMembership() {
-        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .briefings, .dayPlan, .inbox, .calendar])
+        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .briefings, .dayPlan, .inbox, .ideas, .calendar])
         XCTAssertEqual(SidebarSection.delivery.items, [.projectMap, .releases, .blockers, .workload])
         XCTAssertEqual(SidebarSection.analytics.items, [.digests, .people, .memory, .statistics])
     }

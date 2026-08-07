@@ -185,6 +185,14 @@ struct MainNavigationView: View {
             }
         case .inbox:
             InboxFeedView()
+        case .ideas:
+            if let vm = appState.ideasViewModel {
+                IdeasView(vm: vm)
+            } else {
+                Text("Ideas unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .calendar:
             CalendarEventsView()
         case .targets:

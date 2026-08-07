@@ -961,7 +961,8 @@ enum TestDatabase {
         notes               TEXT NOT NULL DEFAULT '[]',
         progress            REAL NOT NULL DEFAULT 0.0,
         source_type         TEXT NOT NULL DEFAULT 'manual'
-                            CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem')),
+                            CHECK(source_type IN ('extract','track','digest','briefing','manual','chat',
+                                                   'inbox','jira','slack','promoted_subitem','idea')),
         source_id           TEXT NOT NULL DEFAULT '',
         ai_level_confidence REAL DEFAULT NULL,
         created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
