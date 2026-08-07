@@ -18,6 +18,9 @@ struct MeetingDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var showPrep = false
     @State private var selectedRecordingID: Int64?
+    /// Full-agenda expansion of the header's description preview. Resets on
+    /// entry switch via the host's `.id(entry.id)` wrapper (view recreated).
+    @State private var descriptionExpanded = false
 
     var body: some View {
         switch entry.kind {
@@ -42,6 +45,14 @@ struct MeetingDetailView: View {
     /// Record affordance must not render for a meeting that has already ended.
     static func showsRecordButton(for event: CalendarEvent, now: Date) -> Bool {
         event.endDate > now
+    }
+
+    /// Whether the collapsed 3-line description preview hides content, i.e.
+    /// a "Show more" toggle is warranted. Exact truncation depends on pane
+    /// width, so this is a deliberate heuristic: more than three source lines,
+    /// or a paragraph long enough to wrap past three lines at any sane width.
+    static func descriptionNeedsToggle(_ plain: String) -> Bool {
+        plain.count > 200 || plain.components(separatedBy: "\n").count > 3
     }
 
     /// The transcript id `MeetingDetailView` would embed for `entry` given the
@@ -101,7 +112,16 @@ struct MeetingDetailView: View {
                 Text(plain)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(descriptionExpanded ? nil : 3)
+                    .textSelection(.enabled)
+                if Self.descriptionNeedsToggle(plain) {
+                    Button(descriptionExpanded ? "Show less" : "Show more") {
+                        descriptionExpanded.toggle()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                }
             }
 
             HStack(spacing: 8) {

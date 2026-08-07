@@ -56,6 +56,28 @@ final class MeetingDetailViewTests: XCTestCase {
         XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
     }
 
+    // MARK: - descriptionNeedsToggle
+
+    /// A short one-liner never grows a Show more affordance.
+    func test_descriptionNeedsToggle_falseForShortText() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Weekly sync"))
+    }
+
+    /// Three short lines still fit the collapsed preview — no toggle.
+    func test_descriptionNeedsToggle_falseForThreeShortLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees"))
+    }
+
+    /// A fourth line means the 3-line clamp hides content → toggle shown.
+    func test_descriptionNeedsToggle_trueBeyondThreeLines() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees\nGoals"))
+    }
+
+    /// A long single paragraph wraps past three lines even without newlines.
+    func test_descriptionNeedsToggle_trueForLongSingleLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "status update ", count: 30)))
+    }
+
     // MARK: - embeddedTranscriptID
 
     /// No explicit selection yet on an `.event` entry → falls back to
