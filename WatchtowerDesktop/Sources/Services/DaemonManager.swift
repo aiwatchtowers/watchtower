@@ -77,15 +77,22 @@ final class DaemonManager {
         }
     }
 
+    /// The one place CLI subprocesses are configured (working directory, muted
+    /// output), shared by the unbounded `runProcess` and the bounded stop.
+    nonisolated private static func makeProcess(path: String, arguments: [String]) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        return process
+    }
+
     /// Run a process off the main thread
     nonisolated private static func runProcess(path: String, arguments: [String]) async throws -> Int32 {
         try await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-            process.currentDirectoryURL = Constants.processWorkingDirectory()
-            process.arguments = arguments
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+            let process = makeProcess(path: path, arguments: arguments)
             try process.run()
             process.waitUntilExit()
             return process.terminationStatus
@@ -108,26 +115,28 @@ final class DaemonManager {
         _ = try? await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
     }
 
-    /// Stop the daemon for app quit: `sync stop` (the daemon gets up to 10 s
-    /// of SIGTERM grace from the CLI) with an outer watchdog. If the CLI hangs,
-    /// the watchdog terminates the subprocess after timeout expires, ensuring quit
-    /// never blocks — the next launch adopts or replaces the daemon.
-    nonisolated static func stopForQuit(
+    /// How long a terminated `sync stop` gets to actually die before the wait
+    /// gives up and says so.
+    nonisolated private static let sigtermGrace: Duration = .milliseconds(250)
+
+    /// Stop the daemon with a bounded wait: `sync stop` (the daemon gets up to
+    /// 10 s of SIGTERM grace from the CLI) under an outer watchdog. If the CLI
+    /// hangs, the watchdog terminates the subprocess once the timeout expires,
+    /// so no caller can block forever — the next launch adopts or replaces the
+    /// daemon. Used by both callers that cannot afford an open-ended wait: the
+    /// quit path (`terminateLater` must reply) and the launch path (the store
+    /// sync runs before the database opens, behind the splash).
+    nonisolated static func stopDaemonBounded(
         timeout: Duration = .seconds(12),
         cliPath: String? = Constants.findCLIPath()
     ) async {
         guard let path = cliPath else { return }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
-        process.arguments = ["sync", "stop"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
+        let process = makeProcess(path: path, arguments: ["sync", "stop"])
         do {
             try process.run()
         } catch {
+            NSLog("DaemonManager: could not spawn `sync stop` at %@: %@", path, error.localizedDescription)
             return
         }
 
@@ -136,10 +145,17 @@ final class DaemonManager {
         while process.isRunning && ContinuousClock.now - startTime < timeout {
             try? await Task.sleep(for: .milliseconds(50))
         }
+        guard process.isRunning else { return }
+        let pid = process.processIdentifier
+        process.terminate()
+        // Observe the outcome instead of sleeping blind: SIGTERM is a request,
+        // and a child that ignores it is worth a line in the log.
+        let terminateStart = ContinuousClock.now
+        while process.isRunning && ContinuousClock.now - terminateStart < sigtermGrace {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
         if process.isRunning {
-            process.terminate()
-            // Give it a moment to die from SIGTERM
-            try? await Task.sleep(for: .milliseconds(100))
+            NSLog("DaemonManager: `sync stop` (pid %d) survived SIGTERM; leaving it to the OS", pid)
         }
     }
 
