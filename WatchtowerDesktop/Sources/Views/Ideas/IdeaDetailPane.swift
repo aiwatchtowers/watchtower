@@ -37,6 +37,12 @@ struct IdeaDetailPane: View {
     @State private var showMergeSheet = false
     @State private var mergePreselectID: Int?
 
+    // Discuss chat state lives here (not hoisted like the situation pane's)
+    // because IdeasView already applies `.id(idea.id)` at this pane's call
+    // site, so this @State already resets per idea selection change.
+    @State private var discussExpanded = false
+    @State private var discussVM: IdeaChatViewModel?
+
     init(
         idea: Idea,
         allIdeas: [Idea],
@@ -82,6 +88,11 @@ struct IdeaDetailPane: View {
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if discussExpanded, let discussVM {
+                Divider()
+                IdeaDiscussInputBar(chatVM: discussVM)
             }
 
             Divider()
@@ -311,11 +322,19 @@ struct IdeaDetailPane: View {
         mentionsLoaded = true
     }
 
-    // MARK: - Discuss (Task 14)
+    // MARK: - Discuss
 
+    @ViewBuilder
     private var discussSection: some View {
-        // Discuss chat lands here in the next task.
-        EmptyView()
+        if let dbManager = appState.databaseManager {
+            IdeaDiscussSection(
+                idea: idea,
+                mentions: mentions,
+                dbManager: dbManager,
+                isExpanded: $discussExpanded,
+                chatVM: $discussVM
+            )
+        }
     }
 
     // MARK: - Action bar
