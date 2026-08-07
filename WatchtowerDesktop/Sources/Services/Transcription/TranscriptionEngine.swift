@@ -15,6 +15,10 @@ protocol WhisperWindowEngine: Sendable {
     /// Transcribe one window with the language forced. `prompt` is the previous
     /// speech window's text tail in the SAME language — whisper's long-form
     /// conditioning convention — and is nil when unavailable or disabled.
+    /// Contract: the prompt is ADVISORY. A conformer must not let it turn
+    /// decodable speech into an error or silence — the transcribers keep their
+    /// carried context across a failed window on the strength of this (see
+    /// `decodeWithPromptFallback`, which WhisperKitEngine routes through).
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
 }
 
@@ -145,8 +149,10 @@ func liftWindowSegments(
 /// The 200-char cap is deliberately conservative rather than a technical
 /// limit: the prompt seeds `currentTokens` toward WhisperKit's 223-token
 /// decode budget for the window, so every char of context is bought from the
-/// window's own output allowance (WhisperKit separately trims prompts to 111
-/// tokens, so this cap binds first).
+/// window's own output allowance. WhisperKit additionally suffix-trims the
+/// encoded prompt to 111 tokens — for Cyrillic (multiple tokens per char)
+/// that token trim can bind before this char cap; either way the FRESHEST
+/// tail survives, since both trims take a suffix.
 ///
 /// Known deviation: with the default `overlapSec` 1.0 the tail's final ~second
 /// describes audio the NEXT window re-decodes, so the prompt slightly pre-empts
@@ -165,18 +171,17 @@ func contextPromptTail(
     return String(prevText.suffix(200))
 }
 
-/// Consecutive silent windows that expire the context prompt. Bounds the
-/// prompt+retry tax over a long pause and stops minutes-old context from
-/// conditioning speech it has nothing to do with. Shared by both transcribers
-/// so the expiry point cannot drift; language stickiness is separate and
-/// deliberately unbounded.
-let contextPromptSilenceLimit = 3
-
 /// The rolling conditioning context: the previous speech window's text plus the
 /// silent-window streak that expires it. One shared state machine so batch and
 /// live cannot drift on WHEN context is dropped (`contextPromptTail` decides
 /// whether it is USED for a given window).
 struct ContextPromptState {
+    /// Consecutive silent windows that expire the context. Bounds the
+    /// prompt+retry tax over a long pause and stops minutes-old context from
+    /// conditioning speech it has nothing to do with; language stickiness is
+    /// separate and deliberately unbounded.
+    static let silenceLimit = 3
+
     private(set) var text: String?
     private var silentStreak = 0
 
@@ -187,12 +192,14 @@ struct ContextPromptState {
     }
 
     /// A silent window keeps the context until the streak reaches the limit.
-    /// A FAILED window records neither: an error surfacing from the engine means
-    /// the clean decode failed (`decodeWithPromptFallback` already retried
-    /// without the prompt), so the context is not implicated and survives.
+    /// A FAILED window records neither: an error surfacing from the engine
+    /// means the window yielded no usable speech even without the prompt (see
+    /// `decodeWithPromptFallback`), so the carried context is not implicated
+    /// and survives — an error streak therefore never expires it, a documented
+    /// asymmetry with silence.
     mutating func recordSilence() {
         silentStreak += 1
-        if silentStreak >= contextPromptSilenceLimit { text = nil }
+        if silentStreak >= Self.silenceLimit { text = nil }
     }
 }
 
@@ -221,16 +228,24 @@ func whisperPromptTokens(
 /// A prompted decode can collapse to an immediate end-of-text on audio that
 /// decodes fine clean, and a poisoned prompt must never cascade — the prompt is
 /// advisory, so an empty-or-failed prompted window retries once without it.
-/// Genuine silence stays silent (the clean retry is empty too) and a genuine
-/// failure still surfaces, so an error reaching the transcriber always means the
-/// CLEAN decode failed — which is why a failed window keeps its context.
+/// Genuine silence stays silent (a SUCCESSFUL prompted decode whose clean retry
+/// is also empty), but a prompted THROW is only absorbed when the clean retry
+/// actually produced speech: an empty clean retry after a throw rethrows the
+/// original error, so an engine failure can never masquerade as silence and
+/// `lastEngineError` keeps its "total failure throws" guarantee. An error
+/// reaching the transcriber therefore always means the window yielded no
+/// usable speech even without the prompt (the clean retry failed, was empty
+/// after a throw, or the run was cancelled — a cancelled run discards its
+/// output) — which is why a failed window keeps its carried context.
 ///
 /// Cost: WhisperKit skips its prefill KV cache for any prompted window (an
 /// upstream `TextDecoder` limitation, flagged as unfinished in its own source)
-/// and every prompt token costs a decoder pass;
-/// the retry doubles that, but only on a window that actually collapsed. Once
-/// the task is cancelled nothing is retried — the engine-slot residency bound
-/// is one window, and a cancelled run discards its output anyway.
+/// and every prompt token costs a decoder pass. The retry doubles the decode
+/// on any prompted window that comes back empty — a collapse OR genuine
+/// silence, indistinguishable here, so each pause after speech pays it up to
+/// `ContextPromptState.silenceLimit` times before expiry kicks in. Once the
+/// task is cancelled nothing is retried — the engine-slot residency bound is
+/// one window.
 ///
 /// NOT covered here: the repetition-loop pathology, where a prompt sends the
 /// decoder into a repeating phrase and produces plenty of "speech". WhisperKit's
@@ -247,7 +262,9 @@ func decodeWithPromptFallback(
         return try await decode(nil)
     } catch {
         guard !Task.isCancelled else { throw error }
-        return try await decode(nil)
+        let retried = try await decode(nil)
+        guard containsSpeech(retried) else { throw error }
+        return retried
     }
 }
 

@@ -11,7 +11,7 @@ import Foundation
 /// Silent and failed windows never stick and are not counted in langStats.
 /// Each window is decoded conditioned on the previous *speech* window's text
 /// tail (`contextPromptTail`), so context survives a failed window and short
-/// silence just like language does — until `contextPromptSilenceLimit`
+/// silence just like language does — until `ContextPromptState.silenceLimit`
 /// consecutive silent windows expire it.
 /// If no window produces speech and at least one failed with an engine error,
 /// the last engine error is thrown — total engine failure never masquerades

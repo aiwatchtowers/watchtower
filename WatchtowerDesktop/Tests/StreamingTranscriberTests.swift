@@ -205,6 +205,12 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.transcribedLanguages, ["en", "uk", "en"])
         XCTAssertEqual(output.text, "hello\nagain")
         XCTAssertEqual(output.langStats, ["en": 2])
+        // Detection-driven prompt wiring: the uk-detected window must not be
+        // conditioned by en context (flip drops it), and the failed window
+        // keeps the carried context for the returning en window — the only
+        // streaming pin of `prevLang` feeding `contextPromptTail` under
+        // detection (the equivalence pins all force one language).
+        XCTAssertEqual(engine.prompts, [nil, nil, "hello"])
     }
 
     func testMatchesBatchAcrossErrorAndSilenceStreak() async throws {

@@ -254,6 +254,25 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
     }
 
+    func testSilenceStreakResetsOnSpeech() async throws {
+        // The expiry counts CONSECUTIVE silences: speech in between resets the
+        // streak, so scattered pauses never sum to an expiry. A cumulative
+        // counter would silently turn the feature off for the rest of any
+        // recording with a few pauses.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [
+            .success("one"), .success(""), .success(""),
+            .success("two"), .success(""), .success(""),
+            .success("three")
+        ]
+
+        _ = try await run(engine, config, windows: 7)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", "two", "two", "two"])
+    }
+
     func testPromptIsCappedAtTwoHundredCharacters() async throws {
         var config = tinyConfig()
         config.forcedLanguage = "en"

@@ -127,7 +127,39 @@ struct WhisperPromptFallbackTests {
             try await decodeWithPromptFallback(promptTokens: [1], decode: decoder.decode)
         }
         #expect(decoder.calls == [[1], nil],
-                "an error reaching the transcriber always means the CLEAN decode failed")
+                "an error reaching the transcriber means the window had no usable speech without the prompt")
+    }
+
+    @Test("An empty clean retry after a prompted throw rethrows the original error")
+    func emptyCleanRetryAfterThrowRethrowsOriginal() async throws {
+        // The degenerate branch: throw-with-prompt, empty-without. Returning []
+        // here would classify the window as SILENT, never set lastEngineError,
+        // and disarm the "total engine failure never masquerades as
+        // all-silence" guard — the error must win over the empty retry.
+        let decoder = Decoder()
+        decoder.outcomes = [
+            .failure(Decoder.DecodeError(tag: "prompted")),
+            .success([])
+        ]
+
+        await #expect(throws: Decoder.DecodeError(tag: "prompted")) {
+            try await decodeWithPromptFallback(promptTokens: [1], decode: decoder.decode)
+        }
+        #expect(decoder.calls == [[1], nil])
+    }
+
+    @Test("A blank-only clean retry after a prompted throw rethrows the original error")
+    func blankCleanRetryAfterThrowRethrowsOriginal() async throws {
+        let decoder = Decoder()
+        decoder.outcomes = [
+            .failure(Decoder.DecodeError(tag: "prompted")),
+            .success(speech("  \n "))
+        ]
+
+        await #expect(throws: Decoder.DecodeError(tag: "prompted")) {
+            try await decodeWithPromptFallback(promptTokens: [1], decode: decoder.decode)
+        }
+        #expect(decoder.calls == [[1], nil])
     }
 
     @Test("An unprompted decode that throws surfaces immediately")
