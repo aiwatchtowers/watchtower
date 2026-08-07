@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/ideas"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -73,6 +74,7 @@ type Daemon struct {
 	peoplePipe       *guide.Pipeline
 	briefingPipe     *briefing.Pipeline
 	inboxPipe        *inbox.Pipeline
+	ideasPipe        *ideas.Pipeline
 	memoryPipe       *memory.Pipeline
 	feedPipe         *feed.Pipeline
 	nextStepPipe     *targets.Pipeline
@@ -86,6 +88,7 @@ type Daemon struct {
 	lastJira         time.Time
 	lastPeople       time.Time // when people cards last ran (once per day)
 	lastBriefing     time.Time // when briefing last ran (once per day)
+	lastIdeas        time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
 	lastDayPlanDate  string    // YYYY-MM-DD of last generation, for dedup
 }
 
@@ -134,6 +137,11 @@ func (d *Daemon) SetBriefingPipeline(p *briefing.Pipeline) {
 // SetInboxPipeline sets the inbox detection pipeline.
 func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
+}
+
+// SetIdeasPipeline sets the ideas & decisions registry pipeline.
+func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
+	d.ideasPipe = p
 }
 
 // SetMemoryPipeline sets the memory consolidation pipeline (internal/memory).
@@ -243,6 +251,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Restore last pipeline times from disk so throttle guards survive restarts.
 	d.loadLastPeople()
 	d.loadLastBriefing()
+	d.loadLastIdeas()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -324,6 +333,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.autoMarkRead()
 
 	d.phaseInbox(ctx)
+	d.phaseIdeas(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
 	d.phaseBriefing(ctx)
@@ -795,6 +805,40 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 	})
 }
 
+// phaseIdeas runs the ideas & decisions registry pipeline (Gmail/Jira
+// pre-digests, then the stage-2 consolidator). Runs after inbox so the
+// registry sees fresh digests/transcripts. Throttled to once per
+// ideas.mine_interval_hours (default 6 when unset/non-positive, the
+// DefaultIdeasMineIntervalHours precedent) — the phasePeopleCards pattern.
+func (d *Daemon) phaseIdeas(ctx context.Context) {
+	if d.ideasPipe == nil {
+		return
+	}
+	interval := time.Duration(d.config.Ideas.MineIntervalHours) * time.Hour
+	if d.config.Ideas.MineIntervalHours <= 0 {
+		interval = time.Duration(config.DefaultIdeasMineIntervalHours) * time.Hour
+	}
+	now := time.Now()
+	if !d.lastIdeas.IsZero() && now.Sub(d.lastIdeas) < interval {
+		return
+	}
+
+	d.trackedPipelineRun("ideas", func() pipelineRunStats {
+		proposed, err := d.ideasPipe.Run(ctx)
+		if err != nil {
+			d.logger.Printf("ideas error: %v", err)
+		} else {
+			if proposed > 0 {
+				d.logger.Printf("ideas: proposed %d", proposed)
+			}
+			d.lastIdeas = now
+			d.saveLastIdeas()
+		}
+		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
+		return pipelineRunStats{items: proposed, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+	})
+}
+
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
 // seeding, situation ingest, episode extraction). Runs after inbox so freshly
 // composed situations are visible, before next-step. The pipeline records its
@@ -975,6 +1019,30 @@ func (d *Daemon) saveLastPeople() {
 	data := strconv.FormatInt(d.lastPeople.Unix(), 10)
 	if err := os.WriteFile(d.lastPeoplePath(), []byte(data), 0o600); err != nil {
 		d.logger.Printf("failed to save last people time: %v", err)
+	}
+}
+
+func (d *Daemon) lastIdeasPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_ideas.txt")
+}
+
+func (d *Daemon) loadLastIdeas() {
+	data, err := os.ReadFile(d.lastIdeasPath())
+	if err != nil {
+		return
+	}
+	unix, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return
+	}
+	d.lastIdeas = time.Unix(unix, 0)
+	d.logger.Printf("restored last ideas time: %s", d.lastIdeas.Format(time.RFC3339))
+}
+
+func (d *Daemon) saveLastIdeas() {
+	data := strconv.FormatInt(d.lastIdeas.Unix(), 10)
+	if err := os.WriteFile(d.lastIdeasPath(), []byte(data), 0o600); err != nil {
+		d.logger.Printf("failed to save last ideas time: %v", err)
 	}
 }
 

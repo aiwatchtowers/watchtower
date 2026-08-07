@@ -29,6 +29,7 @@ import (
 	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
+	"watchtower/internal/ideas"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/jira"
@@ -304,6 +305,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 				inboxPipe := inbox.New(database, cfg, gen, logger)
 				inboxPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetInboxPipeline(inboxPipe)
+			}
+			if cfg.Ideas.Enabled {
+				ideasPipe := ideas.New(database, cfg, gen, logger)
+				ideasPipe.SetPromptStore(prompts.New(database, nil))
+				d.SetIdeasPipeline(ideasPipe)
 			}
 			wireMemoryPipeline(d, database, cfg, logger)
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
