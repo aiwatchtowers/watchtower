@@ -6,13 +6,17 @@ import AppKit
 /// without AppKit UI.
 @MainActor
 enum QuitCoordinator {
+    /// `hasBlockingWork` covers everything a quit would destroy that the user
+    /// cannot get back by relaunching — a live capture AND any queued or
+    /// running post-processing job (`MeetingRecorderCenter.isBusy`), not just
+    /// the capture: killing a transcription mid-flight loses the run.
     static func shouldTerminate(
-        isCapturing: Bool,
+        hasBlockingWork: Bool,
         confirmQuit: () -> Bool,
         stopDaemon: @escaping () async -> Void,
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
-        if isCapturing && !confirmQuit() {
+        if hasBlockingWork && !confirmQuit() {
             return .terminateCancel
         }
         Task { @MainActor in

@@ -6,15 +6,19 @@ import AppKit
 struct TrayMenuView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(AppState.self) private var appState
-    @State private var daemonManager = DaemonManager()
 
     var body: some View {
-        TrayMenuContent(isRunning: daemonManager.isRunning, cliStoreError: appState.cliStoreError) {
-            NSApp.setActivationPolicy(.regular)
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
+        TrayMenuContent(
+            isRunning: appState.daemonManager.isRunning,
+            daemonError: appState.daemonManager.errorMessage,
+            cliStoreError: appState.cliStoreError
+        ) {
+            ActivationPolicyDecision.becomeRegularAndActivate()
+            openWindow(id: TrayAppDelegate.mainWindowSceneID)
         }
-        .onAppear { daemonManager.checkStatus() }
+        // The shared DaemonManager polls from AppState.initialize(); this only
+        // refreshes the line the moment the menu is opened.
+        .onAppear { appState.daemonManager.checkStatus() }
     }
 }
 
@@ -26,6 +30,7 @@ struct TrayMenuView: View {
 /// testable view.
 struct TrayMenuContent: View {
     let isRunning: Bool
+    let daemonError: String?
     let cliStoreError: String?
     let openAction: () -> Void
 
@@ -36,6 +41,9 @@ struct TrayMenuContent: View {
     var body: some View {
         Group {
             Text(Self.statusText(isRunning: isRunning))
+            if let daemonError {
+                Text("Daemon: \(daemonError)")
+            }
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
             }

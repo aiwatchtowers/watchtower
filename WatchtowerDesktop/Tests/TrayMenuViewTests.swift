@@ -12,7 +12,7 @@ final class TrayMenuViewTests: XCTestCase {
     // rendering (see RecordingIndicatorView/RecordingJobPill for the same
     // pattern), so it's what gets exercised here.
     func testMenuOffersOpenAndQuit() throws {
-        let view = TrayMenuContent(isRunning: true, cliStoreError: nil) {}
+        let view = TrayMenuContent(isRunning: true, daemonError: nil, cliStoreError: nil) {}
         let openButton = try view.inspect().find(button: "Open Watchtower")
         let quitButton = try view.inspect().find(button: "Quit Watchtower")
         XCTAssertNotNil(openButton)
@@ -22,5 +22,27 @@ final class TrayMenuViewTests: XCTestCase {
     func testStatusLineReflectsDaemonState() throws {
         XCTAssertEqual(TrayMenuContent.statusText(isRunning: true), "Syncing in background")
         XCTAssertEqual(TrayMenuContent.statusText(isRunning: false), "Sync daemon not running")
+    }
+
+    func testNoErrorLinesWhenNothingFailed() throws {
+        let view = TrayMenuContent(isRunning: true, daemonError: nil, cliStoreError: nil) {}
+        XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("CLI store:") })
+        XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Daemon:") })
+    }
+
+    /// The CLI store falling back to the bundle is the one thing the tray can
+    /// say that no other always-available surface does.
+    func testCLIStoreErrorIsRendered() throws {
+        let view = TrayMenuContent(
+            isRunning: false, daemonError: nil, cliStoreError: "rename to /x failed: No such file") {}
+        XCTAssertNoThrow(try view.inspect().find(text: "CLI store: rename to /x failed: No such file"))
+    }
+
+    /// A daemon that could not be started must not fail silently in the one
+    /// surface that is always on screen.
+    func testDaemonErrorIsRendered() throws {
+        let view = TrayMenuContent(
+            isRunning: false, daemonError: "Failed to start daemon (exit code 1)", cliStoreError: nil) {}
+        XCTAssertNoThrow(try view.inspect().find(text: "Daemon: Failed to start daemon (exit code 1)"))
     }
 }
