@@ -1196,6 +1196,43 @@ enum TestDatabase {
         updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         PRIMARY KEY (account_id, uidvalidity, uid)
     );
+
+    CREATE TABLE IF NOT EXISTS ideas (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind            TEXT NOT NULL CHECK(kind IN ('idea','decision','note')),
+        title           TEXT NOT NULL,
+        essence         TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'proposed'
+                        CHECK(status IN ('proposed','active','rejected','not_now',
+                                         'converted','dropped','merged','superseded','reversed')),
+        source          TEXT NOT NULL DEFAULT 'mined' CHECK(source IN ('mined','owner')),
+        snooze_until    TEXT NOT NULL DEFAULT '',
+        needs_review    INTEGER NOT NULL DEFAULT 0,
+        review_reason   TEXT NOT NULL DEFAULT '',
+        similar_to_id   INTEGER,
+        merged_into_id  INTEGER,
+        superseded_by_id INTEGER,
+        converted_target_id INTEGER,
+        owner_rating    INTEGER NOT NULL DEFAULT 0,
+        rating_comment  TEXT NOT NULL DEFAULT '',
+        last_mention_at TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
+
+    CREATE TABLE IF NOT EXISTS idea_mentions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+        source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+        ref         TEXT NOT NULL DEFAULT '',
+        quote       TEXT NOT NULL DEFAULT '',
+        author      TEXT NOT NULL DEFAULT '',
+        said_at     TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
     """
 
     // MARK: - Briefing Fixtures
@@ -1706,6 +1743,62 @@ enum TestDatabase {
             INSERT INTO situation_signals (situation_id, inbox_item_id)
             VALUES (?, ?)
             """, arguments: [situationID, inboxItemID])
+    }
+
+    // MARK: - Idea Fixtures
+
+    @discardableResult
+    static func insertIdea(
+        _ db: Database,
+        kind: String = "idea",
+        title: String = "Ship a weekly digest email",
+        essence: String = "",
+        status: String = "proposed",
+        source: String = "mined",
+        snoozeUntil: String = "",
+        needsReview: Bool = false,
+        reviewReason: String = "",
+        similarToID: Int? = nil,
+        mergedIntoID: Int? = nil,
+        supersededByID: Int? = nil,
+        convertedTargetID: Int? = nil,
+        ownerRating: Int = 0,
+        ratingComment: String = "",
+        lastMentionAt: String = "",
+        createdAt: String? = nil,
+        updatedAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO ideas (kind, title, essence, status, source, snooze_until,
+                needs_review, review_reason, similar_to_id, merged_into_id,
+                superseded_by_id, converted_target_id, owner_rating, rating_comment,
+                last_mention_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [kind, title, essence, status, source, snoozeUntil,
+                             needsReview, reviewReason, similarToID, mergedIntoID,
+                             supersededByID, convertedTargetID, ownerRating, ratingComment,
+                             lastMentionAt, createdAt, updatedAt])
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    static func insertIdeaMention(
+        _ db: Database,
+        ideaID: Int64,
+        source: String = "slack",
+        ref: String = "",
+        quote: String = "",
+        author: String = "",
+        saidAt: String = "",
+        createdAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [ideaID, source, ref, quote, author, saidAt, createdAt])
+        return db.lastInsertedRowID
     }
 
     // MARK: - Memory Fixtures
