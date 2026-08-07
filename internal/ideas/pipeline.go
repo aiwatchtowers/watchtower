@@ -92,11 +92,14 @@ func (p *Pipeline) language() string {
 }
 
 // Run executes the ideas pipeline: the Gmail pre-digest pass, then the Jira
-// pre-digest pass. Stage 2 (the consolidator, Task 8) will slot in after both
-// once it exists — until then Run never proposes any idea, so proposed is
-// always 0. Each pass logs and continues past a single account's failure
-// (see runEmailDigests/runJiraDigests); Run itself returns the first error
-// either pass produced, after giving both a chance to run.
+// pre-digest pass, then — only when both completed cleanly this cycle — the
+// stage-2 consolidator (runConsolidate). Each stage-1 pass logs and continues
+// past a single account's failure (see runEmailDigests/runJiraDigests) and
+// both always get their turn; but the consolidator is skipped for the cycle
+// if either stage-1 pass failed, so it never processes a cycle it can't
+// fully trust — the failed pass's material simply waits for a healthy cycle.
+// Run returns the consolidator's proposed count (0 when it didn't run) and
+// the first error any stage produced.
 func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if p.cfg != nil && !p.cfg.Ideas.Enabled {
 		return 0, nil
@@ -108,5 +111,13 @@ func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if err := p.runJiraDigests(ctx); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	return 0, firstErr
+	if firstErr != nil {
+		return 0, firstErr
+	}
+
+	proposed, err = p.runConsolidate(ctx)
+	if err != nil {
+		return proposed, err
+	}
+	return proposed, nil
 }
