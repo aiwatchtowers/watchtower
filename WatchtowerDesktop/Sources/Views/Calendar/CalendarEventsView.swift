@@ -228,8 +228,8 @@ struct CalendarEventsView: View {
 
     /// With past days in the list, land on "Today" (or the first future day
     /// when today has no entries) instead of two weeks of history. Sections
-    /// are ordered upcoming-ascending-then-past-descending, so the first
-    /// section at or after today is simply the earliest upcoming one.
+    /// are chronological with past days on top, so the target is the first
+    /// section at or after today.
     private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
         guard let target = sections.first(where: { $0.id >= today })?.id else { return }

@@ -117,7 +117,11 @@ final class MeetingListBuilderTests: XCTestCase {
         XCTAssertEqual(recordings.count, 0)
     }
 
-    func testOrderingUpcomingAscendingThenPastDescending() throws {
+    /// Owner decision 2026-08-07 (reverting the unified-view spec's Decision
+    /// 2): the list is one chronology — past days on top ascending into
+    /// today/upcoming, so scrolling up from Today goes back in time (the
+    /// pre-unification behavior; the view auto-scrolls to Today on appear).
+    func testOrderingChronologicalPastFirst() throws {
         let todayStart = calendar.startOfDay(for: now)
         let dayMinus2 = try day(-2, from: todayStart)
         let dayMinus1 = try day(-1, from: todayStart)
@@ -138,12 +142,11 @@ final class MeetingListBuilderTests: XCTestCase {
 
         let sections = MeetingListBuilder.build(days: days, recordings: [], now: now, calendar: calendar)
 
-        XCTAssertEqual(sections.map(\.id), [todayStart, dayPlus1, dayMinus1, dayMinus2])
+        XCTAssertEqual(sections.map(\.id), [dayMinus2, dayMinus1, todayStart, dayPlus1])
 
-        // today: ascending sortDate
-        XCTAssertEqual(sections[0].entries.map(\.id), [.event("today-early"), .event("today-late")])
-        // -1d (past): descending sortDate
-        XCTAssertEqual(sections[2].entries.map(\.id), [.event("past-late"), .event("past-early")])
+        // Ascending sortDate everywhere — past sections included.
+        XCTAssertEqual(sections[1].entries.map(\.id), [.event("past-early"), .event("past-late")])
+        XCTAssertEqual(sections[2].entries.map(\.id), [.event("today-early"), .event("today-late")])
     }
 
     func testRecordingOnlyDayBeyondCalendarWindow() {
@@ -160,14 +163,14 @@ final class MeetingListBuilderTests: XCTestCase {
             days: days, recordings: [old], now: now, calendar: calendar, locale: locale)
 
         let expectedDay = calendar.startOfDay(for: oldCreatedAt)
-        XCTAssertEqual(sections.map(\.id), [todayStart, expectedDay])
-        XCTAssertEqual(sections[1].entries.count, 1)
-        XCTAssertEqual(sections[1].entries[0].id, .recording(5))
+        XCTAssertEqual(sections.map(\.id), [expectedDay, todayStart])
+        XCTAssertEqual(sections[0].entries.count, 1)
+        XCTAssertEqual(sections[0].entries[0].id, .recording(5))
         let fmt = DateFormatter()
         fmt.locale = locale
         fmt.timeZone = calendar.timeZone
         fmt.dateFormat = "EEEE, d MMM"
-        XCTAssertEqual(sections[1].label, fmt.string(from: expectedDay))
+        XCTAssertEqual(sections[0].label, fmt.string(from: expectedDay))
     }
 
     /// Decision: the builder's fallback label (used only for a recording-only
