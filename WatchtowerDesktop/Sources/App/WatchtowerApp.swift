@@ -213,7 +213,12 @@ struct WatchtowerApp: App {
     /// notification response that launched it.
     private static let duplicateGraceWindow: TimeInterval = 5
 
-    @State private var appState = AppState()
+    @NSApplicationDelegateAdaptor(TrayAppDelegate.self) private var trayDelegate
+    /// Seeded from `AppState.shared`, not a fresh instance: the app delegate
+    /// bootstraps the same object before any window exists (a login launch
+    /// never mounts one), and a singleton is what makes "the SwiftUI-managed
+    /// state" and "the state the delegate initialized" provably identical.
+    @State private var appState = AppState.shared
     private let notificationDelegate: NotificationDelegate
     private let isDuplicate: Bool
 
@@ -249,6 +254,7 @@ struct WatchtowerApp: App {
         }
 
         NSApplication.shared.setActivationPolicy(.regular)
+        trayDelegate.managesLifecycle = true
         NSApplication.shared.activate(ignoringOtherApps: true)
         NotificationService.registerMeetingCategories()
         // Only the survivor listens: a duplicate must never route what it forwards.
@@ -288,7 +294,10 @@ struct WatchtowerApp: App {
             // the meeting banner), so the scheme gate has to wrap them.
             .environment(\.openURL, AllowedURLSchemes.openURLAction)
             .onAppear {
-                // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
+                // Both lines are duplicates of the delegate's launch bootstrap
+                // (same singleton, `initialize()` latched by `isInitializing`).
+                // Kept so a window mounting is enough on its own — the app is
+                // never left uninitialized because a delegate callback moved.
                 NotificationDelegate.sharedAppState = appState
                 appState.initialize()
             }
@@ -304,7 +313,7 @@ struct WatchtowerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: TrayAppDelegate.mainWindowSceneID) {
             // A duplicate is headless for its grace window: no UI to flash, and no
             // `AppState.initialize()` running a second time against the shared database.
             if isDuplicate {
@@ -327,6 +336,11 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .background(SettingsWindowAccessor())
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+        }
+
+        MenuBarExtra("Watchtower", systemImage: "binoculars", isInserted: .constant(!isDuplicate)) {
+            TrayMenuView()
+                .environment(appState)
         }
     }
 }
@@ -367,8 +381,9 @@ class OpaqueBackgroundView: NSView {
         super.viewDidMoveToWindow()
         guard let window else { return }
 
-        // Persist window frame (position + size) across launches
-        window.setFrameAutosaveName("WatchtowerMainWindow")
+        // Persist window frame (position + size) across launches. The name is
+        // also the mount-time half of `TrayAppDelegate.isMainWindow`.
+        window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
 
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor

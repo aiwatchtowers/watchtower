@@ -195,18 +195,27 @@ enum Constants {
         return Cache.env
     }
 
-    /// Resolve the watchtower CLI binary path.
-    /// Priority: app bundle → search resolved PATH.
-    nonisolated static func findCLIPath() -> String? {
-        // 1. Inside the app bundle
+    /// The CLI binary shipped inside the app bundle. Live processes must not
+    /// run from this path — rebuilds overwrite it (see CLIBinaryStore).
+    nonisolated static func bundledCLIPath() -> String? {
         if let bundlePath = Bundle.main.executableURL?
             .deletingLastPathComponent()
             .appendingPathComponent("watchtower").path,
            FileManager.default.isExecutableFile(atPath: bundlePath) {
             return bundlePath
         }
+        return nil
+    }
 
-        // 2. Search user's PATH
+    /// Resolve the watchtower CLI binary path.
+    /// Priority: Application Support store copy → app bundle → resolved PATH.
+    /// The store copy is used only while it matches the bundled CLI (validated
+    /// once per launch, see `CLIBinaryStore.resolvedInstalledPath`); a stale or
+    /// tampered copy falls through to the bundle, and a dev run with no bundled
+    /// CLI ignores the store entirely and resolves via PATH.
+    nonisolated static func findCLIPath() -> String? {
+        if let store = CLIBinaryStore.resolvedInstalledPath() { return store }
+        if let bundled = bundledCLIPath() { return bundled }
         return findInPath("watchtower")
     }
 }

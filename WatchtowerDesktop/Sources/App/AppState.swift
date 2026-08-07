@@ -4,9 +4,31 @@ import GRDB
 @MainActor
 @Observable
 final class AppState {
+    /// The one app-wide instance. The App struct seeds its `@State` from it,
+    /// so "the SwiftUI-managed AppState" and "the one the app delegate
+    /// bootstraps before any window exists" are the same object by
+    /// construction — the stale-`@State`-copy trap the H5 note in
+    /// `WatchtowerApp` describes cannot arise. Tests still construct their own
+    /// `AppState()` instances.
+    static let shared = AppState()
+
     var selectedDestination: SidebarDestination = .inbox
     var databaseManager: DatabaseManager?
     var errorMessage: String?
+    /// Non-nil when the CLI binary store could not be synced this launch. The
+    /// path resolver rejects a store copy that does not match the bundled CLI,
+    /// so this launch runs the CLI (daemon included) straight from the app
+    /// bundle instead — correct, but a rebuild of the app while it runs can
+    /// then invalidate a live process's code signature.
+    var cliStoreError: String?
+
+    /// The app's one daemon handle: the tray status line, Settings' read-only
+    /// status section, and the launch-time `ensureDaemonRunning()` all read and
+    /// write this instance, so a start/stop failure is visible wherever the
+    /// daemon is shown (house rule: state behind surviving surfaces lives in
+    /// AppState). Its path lookup is deliberately deferred until after the CLI
+    /// binary store has been synced — see `initialize()`.
+    let daemonManager = DaemonManager()
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// True while initialize() is running (before DB and onboarding check complete).
@@ -258,9 +280,13 @@ final class AppState {
             queue: .main
         ) { [weak self] _ in
             self?.backgroundTaskManager.terminateProcessesSync()
-            DaemonManager.stopDaemonSync()
         }
         Task {
+            await syncCLIBinaryStore()
+            // Only now resolve the CLI path and start polling: before the sync
+            // the store copy may still be the stale one, and DaemonManager
+            // caches whatever path it first resolves.
+            daemonManager.startPolling()
             let splashStart = ContinuousClock.now
             do {
                 let manager = try await Task.detached {
@@ -345,6 +371,25 @@ final class AppState {
         Task { await updateService.checkIfNeeded() }
     }
 
+    /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
+    /// migrations, the daemon, and OAuth logins all run from the store,
+    /// never from the (rebuild-overwritten) bundle binary.
+    private func syncCLIBinaryStore() async {
+        guard let bundled = Constants.bundledCLIPath() else { return }
+        // Bounded stop: this runs before the splash gives way to the UI, so an
+        // unresponsive `sync stop` must not hang the launch forever.
+        let outcome = await CLIBinaryStore.sync(bundleBinary: bundled) {
+            await DaemonManager.stopDaemonBounded()
+        }
+        if case .failed(let reason) = outcome {
+            cliStoreError = reason
+            // Honest about the consequence: the resolver rejects a store copy
+            // that does not match the bundle, so the CLI runs from the bundle
+            // for this launch — including the daemon.
+            NSLog("CLIBinaryStore: sync failed (%@); the CLI runs from the app bundle this launch", reason)
+        }
+    }
+
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
     private func checkNeedsOnboarding(dbPool: DatabasePool) async -> Bool {
         do {
@@ -396,10 +441,9 @@ final class AppState {
         await backgroundTaskManager.stopAll()
 
         // 2. Stop daemon
-        let daemon = DaemonManager()
-        daemon.resolvePathIfNeeded()
+        daemonManager.resolvePathIfNeeded()
         if DaemonManager.checkDaemonRunning() {
-            await daemon.stopDaemon()
+            await daemonManager.stopDaemon()
             try? await Task.sleep(for: .milliseconds(500))
         }
 
@@ -414,17 +458,16 @@ final class AppState {
 
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
-    /// then start a fresh one. Paired with `DaemonManager.stopDaemonSync()` on app terminate
+    /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle.
     private func ensureDaemonRunning() {
         Task {
-            let daemon = DaemonManager()
-            daemon.resolvePathIfNeeded()
+            daemonManager.resolvePathIfNeeded()
             if DaemonManager.checkDaemonRunning() {
-                await daemon.stopDaemon()
+                await daemonManager.stopDaemon()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            await daemon.startDaemon()
+            await daemonManager.startDaemon()
         }
     }
 
