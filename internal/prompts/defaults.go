@@ -46,6 +46,9 @@ var Defaults = map[string]string{
 	MemoryRenderMap:            defaultMemoryRenderMap,
 	MemoryReflect:              defaultMemoryReflect,
 	MemoryRenderChannelDigest:  defaultMemoryRenderChannelDigest,
+	IdeasDigestEmail:           defaultIdeasDigestEmail,
+	IdeasDigestJira:            defaultIdeasDigestJira,
+	IdeasConsolidate:           defaultIdeasConsolidate,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -90,6 +93,9 @@ var AllIDs = []string{
 	MemoryRenderMap,
 	MemoryReflect,
 	MemoryRenderChannelDigest,
+	IdeasDigestEmail,
+	IdeasDigestJira,
+	IdeasConsolidate,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -136,6 +142,9 @@ var DefaultVersions = map[string]int{
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
 	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
 	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
+	IdeasDigestEmail:           1, // v1: light-tier idea/decision mining from Gmail thread windows (stage 1)
+	IdeasDigestJira:            1, // v1: light-tier idea/decision mining from changed Jira issues (stage 1)
+	IdeasConsolidate:           1, // v1: strong-tier registry consolidation from stage-1 material (stage 2; code disposes)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -184,6 +193,9 @@ var Descriptions = map[string]string{
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
 	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
+	IdeasDigestEmail:           "Ideas: mine ideas & decisions from Gmail threads (stage 1, light tier)",
+	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
+	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1643,3 +1655,79 @@ Rules:
 - propose AT MOST three observations, and only for genuinely unstable areas — most weeks are calm and an empty {"observations": []} is the right and common answer.
 - node_id MUST be one of the belief/entity ids shown in the input; never invent one. An observation whose id is not in the input is discarded by the code.
 - do NOT restate confidence numbers or belief statuses — you only flag instability; the code decides what happens.`
+
+// defaultIdeasDigestEmail is the light-tier stage-1 idea/decision miner for
+// Gmail (ideas.digest_email — see "ideas.digest_email" in the model routing).
+// It reads a window of Gmail threads (one numbered line per message, tagged
+// with a "gmail:<account_id>:<thread_id>" ref) and extracts ideas/decisions
+// into the shared topics_json shape written to stream_digests(source='gmail').
+// Arg: the language directive.
+const defaultIdeasDigestEmail = `%s
+
+You are the ideas-and-decisions miner of a workplace secretary. You read numbered email threads, each line formatted "[n] subject (gmail:<account_id>:<thread_id>): participants — excerpt", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
+
+An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to ship Y"). Extract conservatively: most threads contain neither.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "gmail:<account_id>:<thread_id>"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "gmail:<account_id>:<thread_id>"}]}]}
+
+Rules:
+- ref: copy the "gmail:<account_id>:<thread_id>" tag EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
+- most threads have nothing worth extracting: empty "ideas"/"decisions" arrays, or no topic at all, is the common and correct answer.
+- do not restate routine status updates, scheduling, or small talk as ideas or decisions.`
+
+// defaultIdeasDigestJira is the light-tier stage-1 idea/decision miner for
+// Jira (ideas.digest_jira — see "ideas.digest_jira" in the model routing). It
+// reads a window of changed issues (one numbered line per issue, carrying its
+// bare key as the ref) plus their new comments and extracts ideas/decisions
+// into the shared topics_json shape written to stream_digests(source='jira').
+// Arg: the language directive.
+const defaultIdeasDigestJira = `%s
+
+You are the ideas-and-decisions miner of a workplace secretary. You read numbered Jira issues, each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
+
+An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to close as won't-fix"). Extract conservatively: most issues contain neither.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "KEY"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "KEY"}]}]}
+
+Rules:
+- ref: copy the bare issue key EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
+- most issues have nothing worth extracting: empty "ideas"/"decisions" arrays, or no topic at all, is the common and correct answer.
+- do not restate routine status transitions, assignment changes, or scheduling as ideas or decisions.`
+
+// defaultIdeasConsolidate is the strong-tier stage-2 consolidator
+// (ideas.consolidate — strong route by absence from the light-tier switch in
+// internal/digest/models.go and internal/codex/models.go). It folds newly
+// mined stage-1 material (Slack digest topics, stream_digests rows, meeting
+// recap arrays) into the durable ideas/decisions registry, preferring to
+// attach to an existing item over minting a duplicate. The model only
+// proposes ops; Go validates every mention ref against the run's stage-1
+// input before applying (IDEA-02) and disposes status transitions per kind
+// (IDEA-04). Arg: the language directive.
+const defaultIdeasConsolidate = `%s
+
+You are the ideas-and-decisions consolidator of a workplace secretary. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
+
+You receive the current registry (=== REGISTRY ===, one line per item: "#id | kind/status | title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
+
+For every piece of new material, decide:
+- "attach_mention": it is the SAME idea or decision already in the registry (same substance, not just a similar topic) → attach it there instead of creating a duplicate. idea_id: the registry item's id, copied EXACTLY.
+- "new_idea": a genuinely new proposal not yet decided, not already covered by any registry item.
+- "new_decision": a genuinely new made choice, not already covered by any registry item.
+- Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.
+
+Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
+
+Rules:
+- mentions/mention: copy "source", "ref", "author", and "said_at" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code.
+- similar_to (new_idea/new_decision only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.
+- prefer attach_mention over a new item whenever the substance already exists in the registry; a wrong duplicate is worse than a missed one.
+- essence: 1-2 sentences, the gist (new_idea/new_decision only).
+
+Return ONLY a JSON object (no markdown fences):
+{"ops":[
+ {"op":"new_idea","title":"...","essence":"...","similar_to":42,"mentions":[{"source":"slack","ref":"C123|1723...","quote":"...","author":"...","said_at":"..."}]},
+ {"op":"new_decision","title":"...","essence":"...","mentions":[{"source":"jira","ref":"PROJ-123","quote":"...","author":"...","said_at":"..."}]},
+ {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"3:t_abc123","quote":"...","author":"...","said_at":"..."}}
+]}`
