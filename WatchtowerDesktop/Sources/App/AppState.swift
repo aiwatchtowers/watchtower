@@ -7,6 +7,9 @@ final class AppState {
     var selectedDestination: SidebarDestination = .inbox
     var databaseManager: DatabaseManager?
     var errorMessage: String?
+    /// Non-nil when the CLI binary store could not be synced this launch —
+    /// the app is falling back to the bundle binary (status-quo behavior).
+    var cliStoreError: String?
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// True while initialize() is running (before DB and onboarding check complete).
@@ -261,6 +264,20 @@ final class AppState {
             DaemonManager.stopDaemonSync()
         }
         Task {
+            // Sync the out-of-bundle CLI copy before anything spawns the CLI,
+            // so migrations, the daemon, and OAuth logins all run from the
+            // store, never from the (rebuild-overwritten) bundle binary.
+            if let bundled = Constants.bundledCLIPath() {
+                let outcome = await CLIBinaryStore.sync(bundleBinary: bundled) {
+                    let daemon = DaemonManager()
+                    daemon.resolvePathIfNeeded()
+                    await daemon.stopDaemon()
+                }
+                if case .failed(let reason) = outcome {
+                    cliStoreError = reason
+                    NSLog("CLIBinaryStore: sync failed, falling back to bundle CLI: %@", reason)
+                }
+            }
             let splashStart = ContinuousClock.now
             do {
                 let manager = try await Task.detached {
