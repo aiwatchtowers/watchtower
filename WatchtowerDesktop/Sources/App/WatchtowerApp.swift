@@ -306,7 +306,7 @@ struct WatchtowerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             // A duplicate is headless for its grace window: no UI to flash, and no
             // `AppState.initialize()` running a second time against the shared database.
             if isDuplicate {
@@ -329,6 +329,11 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .background(SettingsWindowAccessor())
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+        }
+
+        MenuBarExtra("Watchtower", systemImage: "binoculars", isInserted: .constant(!isDuplicate)) {
+            TrayMenuView()
+                .environment(appState)
         }
     }
 }
