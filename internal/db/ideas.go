@@ -488,3 +488,95 @@ func (db *DB) CountIdeasForReview() (int, error) {
 	}
 	return count, nil
 }
+
+// IdeasEmailFloor returns the ideas registry's per-account Gmail pre-digest
+// watermark (unix seconds, google_accounts.ideas_email_floor) — deliberately
+// separate from memory_gmail_last_extracted_ts (memory extraction) and
+// gmail_last_internal_date (Gmail sync): a THIRD independent Gmail watermark,
+// the MemoryGmailWatermark precedent. A missing account reads as 0.
+func (db *DB) IdeasEmailFloor(accountID int64) (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT ideas_email_floor FROM google_accounts WHERE id = ?`, accountID).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting ideas email floor for account %d: %w", accountID, err)
+	}
+	return ts, nil
+}
+
+// SetIdeasEmailFloor advances the ideas registry's Gmail pre-digest watermark
+// for accountID (see IdeasEmailFloor). The email pre-digest pass only moves
+// this behind a successfully-inserted stream_digests row.
+func (db *DB) SetIdeasEmailFloor(accountID int64, ts float64) error {
+	res, err := db.Exec(`UPDATE google_accounts SET ideas_email_floor = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting ideas email floor for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas email floor: no google_accounts row %d", accountID)
+	}
+	return nil
+}
+
+// IdeasJiraFloor returns the ideas registry's per-account Jira pre-digest
+// watermark (RFC3339, jira_accounts.ideas_jira_floor) — deliberately separate
+// from memory_jira_last_extracted_ts (memory extraction), the
+// IdeasEmailFloor precedent. A missing account reads as "".
+func (db *DB) IdeasJiraFloor(accountID int64) (string, error) {
+	var ts string
+	err := db.QueryRow(`SELECT ideas_jira_floor FROM jira_accounts WHERE id = ?`, accountID).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting ideas jira floor for account %d: %w", accountID, err)
+	}
+	return ts, nil
+}
+
+// SetIdeasJiraFloor advances the ideas registry's Jira pre-digest watermark
+// for accountID (see IdeasJiraFloor). The jira pre-digest pass only moves
+// this behind a successfully-inserted stream_digests row.
+func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
+	res, err := db.Exec(`UPDATE jira_accounts SET ideas_jira_floor = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting ideas jira floor for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas jira floor: no jira_accounts row %d", accountID)
+	}
+	return nil
+}
+
+// ListJiraIssuesUpdatedSince returns accountID's non-deleted Jira issues with
+// updated_at strictly above sinceISO, ascending by updated_at, capped at
+// limit — the raw input the ideas Jira pre-digest pass groups per project.
+// A plain string comparison against the raw Jira timestamp (unlike
+// ListJiraIssuesForExtract's parsed-in-Go approach): sinceISO is always the
+// account's own ideas_jira_floor, itself copied verbatim from a prior row's
+// updated_at, so the comparison is self-consistent within one account even
+// though the stored format is not a normalized unix value.
+func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit int) ([]JiraIssue, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
+		WHERE account_id = ? AND is_deleted = 0 AND updated_at > ?
+		ORDER BY updated_at ASC LIMIT ?`, accountID, sinceISO, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira issues updated since: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JiraIssue
+	for rows.Next() {
+		issue, err := scanJiraIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning jira issue: %w", err)
+		}
+		out = append(out, issue)
+	}
+	return out, rows.Err()
+}
