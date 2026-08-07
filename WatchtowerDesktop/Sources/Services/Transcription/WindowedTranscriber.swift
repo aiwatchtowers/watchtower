@@ -10,7 +10,9 @@ import Foundation
 /// or to `firstWindowDefault` when no speech window has been produced yet.
 /// Silent and failed windows never stick and are not counted in langStats.
 /// Each window is decoded conditioned on the previous *speech* window's text
-/// tail (`contextPromptTail`), so context survives silence just like language.
+/// tail (`contextPromptTail`), so context survives a failed window and short
+/// silence just like language does — until `contextPromptSilenceLimit`
+/// consecutive silent windows expire it.
 /// If no window produces speech and at least one failed with an engine error,
 /// the last engine error is thrown — total engine failure never masquerades
 /// as an all-silence recording.
@@ -33,7 +35,7 @@ struct WindowedTranscriber {
         var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
-        var prevText: String?
+        var promptState = ContextPromptState()
         var lastEngineError: Error?
 
         for (index, range) in ranges.enumerated() {
@@ -46,8 +48,7 @@ struct WindowedTranscriber {
                 language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
 
-            let prompt = contextPromptTail(prevText: prevText, prevLang: prevLang,
-                                           language: language, config: config)
+            let prompt = contextPromptTail(prevText: promptState.text, prevLang: prevLang, language: language, config: config)
             let rawSegments: [TranscribedSegment]
             do {
                 rawSegments = try await engine.transcribeWindow(window, language: language, prompt: prompt)
@@ -62,8 +63,10 @@ struct WindowedTranscriber {
                 texts.append(lifted.windowText)
                 segments.append(contentsOf: lifted.segments)
                 prevLang = language
-                prevText = lifted.windowText
+                promptState.recordSpeech(lifted.windowText)
                 langStats[language, default: 0] += 1
+            } else {
+                promptState.recordSilence()
             }
             progress(index + 1, windowCount)
         }

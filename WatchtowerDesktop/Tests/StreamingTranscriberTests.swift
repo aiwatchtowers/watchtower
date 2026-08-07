@@ -207,55 +207,38 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(output.langStats, ["en": 2])
     }
 
-    // MARK: - Context prompt
+    func testMatchesBatchAcrossErrorAndSilenceStreak() async throws {
+        // The prompt state machine is more than "carry the last text": an error
+        // window preserves the context, a silence streak eventually expires it.
+        // Live and batch must walk that machine identically, so the equivalence
+        // invariant covers the whole prompt SEQUENCE, not just the output.
+        //
+        // w1 speech, w2 throws, w3 speech, w4-w6 silent, w7 speech.
+        let samples = [Float](repeating: 0, count: 11200) // 7 × 1600
+        let cfg = forcedConfig()
+        let script: [Result<String, Error>] = [
+            .success("alpha"),
+            .failure(MockEngine.MockError()),
+            .success("gamma"),
+            .success(""), .success(""), .success(""),
+            .success("delta")
+        ]
 
-    func testPromptCarriesPreviousWindowText() async throws {
-        let engine = MockEngine()
-        engine.texts = [.success("one"), .success("two"), .success("three")]
-        _ = try await StreamingTranscriber(engine: engine, config: forcedConfig())
-            .run(samples: stream(of: [Float](repeating: 0, count: 4800), pieceSize: 700)) { _ in }
-        XCTAssertEqual(engine.prompts, [nil, "one", "two"])
-    }
+        let batchEngine = MockEngine()
+        batchEngine.texts = script
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg)
+            .transcribe(samples: samples) { _, _ in }
 
-    func testSilentWindowKeepsPreviousPrompt() async throws {
-        // Context survives a non-speech window, mirroring sticky language.
-        let engine = MockEngine()
-        engine.texts = [.success("one"), .success(""), .success("three")]
-        _ = try await StreamingTranscriber(engine: engine, config: forcedConfig())
-            .run(samples: stream(of: [Float](repeating: 0, count: 4800), pieceSize: 700)) { _ in }
-        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
-    }
+        let streamEngine = MockEngine()
+        streamEngine.texts = script
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg)
+            .run(samples: stream(of: samples, pieceSize: 333)) { _ in }
 
-    func testLanguageFlipDropsPrompt() async throws {
-        var cfg = forcedConfig()
-        cfg.forcedLanguage = nil
-        let engine = MockEngine()
-        engine.detections = [["en": 0.9, "ru": 0.02], ["uk": 0.9, "ru": 0.02]]
-        engine.texts = [.success("hello"), .success("привіт")]
-        _ = try await StreamingTranscriber(engine: engine, config: cfg)
-            .run(samples: stream(of: [Float](repeating: 0, count: 3200), pieceSize: 700)) { _ in }
-        XCTAssertEqual(engine.transcribedLanguages, ["en", "uk"])
-        XCTAssertEqual(engine.prompts, [nil, nil], "a ru/en prompt must never condition another language")
-    }
-
-    func testDisabledContextPromptNeverPrompts() async throws {
-        var cfg = forcedConfig()
-        cfg.contextPrompt = false
-        let engine = MockEngine()
-        engine.texts = [.success("one"), .success("two"), .success("three")]
-        let output = try await StreamingTranscriber(engine: engine, config: cfg)
-            .run(samples: stream(of: [Float](repeating: 0, count: 4800), pieceSize: 700)) { _ in }
-        XCTAssertEqual(engine.prompts, [nil, nil, nil])
-        XCTAssertEqual(output.text, "one\ntwo\nthree")
-    }
-
-    func testPromptIsCappedAtTwoHundredCharacters() async throws {
-        let engine = MockEngine()
-        let long = String(repeating: "x", count: 150) + String(repeating: "y", count: 150)
-        engine.texts = [.success(long), .success("next")]
-        _ = try await StreamingTranscriber(engine: engine, config: forcedConfig())
-            .run(samples: stream(of: [Float](repeating: 0, count: 3200), pieceSize: 700)) { _ in }
-        let tail = String(repeating: "x", count: 50) + String(repeating: "y", count: 150)
-        XCTAssertEqual(engine.prompts, [nil, tail])
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
+        XCTAssertEqual(batchEngine.prompts,
+                       [nil, "alpha", "alpha", "gamma", "gamma", "gamma", nil],
+                       "error keeps the context; the third silent window expires it")
+        XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
     }
 }

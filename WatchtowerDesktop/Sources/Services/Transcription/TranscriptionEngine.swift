@@ -33,7 +33,9 @@ struct TranscriptionConfig: Equatable {
     var firstWindowDefault: String = "ru"
     var forcedLanguage: String?   // non-nil disables detection entirely
     /// Condition each window's decode on the previous window's text, whisper's
-    /// long-form convention. Off = every window decodes with no prior context.
+    /// long-form convention. Off = every window decodes blind, as before this
+    /// existed. Honoured by the WhisperKit path only — Qwen3, Parakeet and
+    /// Apple run their own windowing and ignore it.
     var contextPrompt: Bool = true
     /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
     var diarization: Bool = true
@@ -136,10 +138,20 @@ func liftWindowSegments(
 
 /// Prompt for the next window: the previous speech window's tail, passed
 /// only while the language sticks — a language flip drops the context so
-/// e.g. a ru prompt never conditions an en window. 200 chars is plenty:
-/// WhisperKit further trims prompt tokens to half the decoder context.
-/// Shared by WindowedTranscriber (batch) and StreamingTranscriber (live) so
-/// their conditioning cannot drift.
+/// e.g. a ru prompt never conditions an en window. Shared by
+/// WindowedTranscriber (batch) and StreamingTranscriber (live) so their
+/// conditioning cannot drift.
+///
+/// The 200-char cap is deliberately conservative rather than a technical
+/// limit: the prompt seeds `currentTokens` toward WhisperKit's 223-token
+/// decode budget for the window, so every char of context is bought from the
+/// window's own output allowance (WhisperKit separately trims prompts to 111
+/// tokens, so this cap binds first).
+///
+/// Known deviation: with the default `overlapSec` 1.0 the tail's final ~second
+/// describes audio the NEXT window re-decodes, so the prompt slightly pre-empts
+/// what the model is about to hear. Accepted for now — watch it at validation;
+/// the fix is a timestamp-based trim of the overlapped tail.
 func contextPromptTail(
     prevText: String?,
     prevLang: String?,
@@ -151,6 +163,98 @@ func contextPromptTail(
           prevLang == language
     else { return nil }
     return String(prevText.suffix(200))
+}
+
+/// Consecutive silent windows that expire the context prompt. Bounds the
+/// prompt+retry tax over a long pause and stops minutes-old context from
+/// conditioning speech it has nothing to do with. Shared by both transcribers
+/// so the expiry point cannot drift; language stickiness is separate and
+/// deliberately unbounded.
+let contextPromptSilenceLimit = 3
+
+/// The rolling conditioning context: the previous speech window's text plus the
+/// silent-window streak that expires it. One shared state machine so batch and
+/// live cannot drift on WHEN context is dropped (`contextPromptTail` decides
+/// whether it is USED for a given window).
+struct ContextPromptState {
+    private(set) var text: String?
+    private var silentStreak = 0
+
+    /// A speech window refreshes the context and ends the streak.
+    mutating func recordSpeech(_ windowText: String) {
+        text = windowText
+        silentStreak = 0
+    }
+
+    /// A silent window keeps the context until the streak reaches the limit.
+    /// A FAILED window records neither: an error surfacing from the engine means
+    /// the clean decode failed (`decodeWithPromptFallback` already retried
+    /// without the prompt), so the context is not implicated and survives.
+    mutating func recordSilence() {
+        silentStreak += 1
+        if silentStreak >= contextPromptSilenceLimit { text = nil }
+    }
+}
+
+/// Encodes a conditioning prompt the way WhisperKit's own CLI does: trimmed,
+/// behind a leading space, with special tokens filtered out (the decoder
+/// prepends `<|startofprev|>` itself). nil — never an empty array — when there
+/// is nothing to condition on, since an empty `promptTokens` would still cost
+/// the prefill cache while conditioning on nothing. The tokenizer is injected
+/// so this stays pure and testable without loading a model.
+func whisperPromptTokens(
+    _ text: String?,
+    specialTokenBegin: Int,
+    encode: (String) -> [Int]
+) -> [Int]? {
+    guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+        return nil
+    }
+    let tokens = encode(" " + trimmed).filter { $0 < specialTokenBegin }
+    return tokens.isEmpty ? nil : tokens
+}
+
+/// Decodes one window, retrying ONCE without the prompt when a prompted decode
+/// comes back empty or throws. Takes the decode step as a closure so the retry
+/// rule is testable without loading a model.
+///
+/// A prompted decode can collapse to an immediate end-of-text on audio that
+/// decodes fine clean, and a poisoned prompt must never cascade — the prompt is
+/// advisory, so an empty-or-failed prompted window retries once without it.
+/// Genuine silence stays silent (the clean retry is empty too) and a genuine
+/// failure still surfaces, so an error reaching the transcriber always means the
+/// CLEAN decode failed — which is why a failed window keeps its context.
+///
+/// Cost: WhisperKit skips its prefill KV cache for any prompted window (an
+/// upstream `TextDecoder` limitation, flagged as unfinished in its own source)
+/// and every prompt token costs a decoder pass;
+/// the retry doubles that, but only on a window that actually collapsed. Once
+/// the task is cancelled nothing is retried — the engine-slot residency bound
+/// is one window, and a cancelled run discards its output anyway.
+///
+/// NOT covered here: the repetition-loop pathology, where a prompt sends the
+/// decoder into a repeating phrase and produces plenty of "speech". WhisperKit's
+/// own compressionRatio/logProb temperature fallback is the active mitigation.
+func decodeWithPromptFallback(
+    promptTokens: [Int]?,
+    decode: ([Int]?) async throws -> [TranscribedSegment]
+) async throws -> [TranscribedSegment] {
+    guard promptTokens != nil else { return try await decode(nil) }
+
+    do {
+        let segments = try await decode(promptTokens)
+        guard !containsSpeech(segments), !Task.isCancelled else { return segments }
+        return try await decode(nil)
+    } catch {
+        guard !Task.isCancelled else { throw error }
+        return try await decode(nil)
+    }
+}
+
+/// Whether a decode produced anything usable, under the same trimming rule
+/// `liftWindowSegments` applies downstream.
+private func containsSpeech(_ segments: [TranscribedSegment]) -> Bool {
+    segments.contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
 /// Detection with sticky fallback, shared by WindowedTranscriber (batch) and

@@ -18,7 +18,8 @@ struct StreamChunk: Equatable, Sendable {
 /// planned with `isFinal` until the truncated last window is emitted. Silent
 /// and failed windows never stick and are not counted; total engine failure
 /// throws rather than masquerading as all-silence. Windows are decoded with the
-/// same `contextPromptTail` conditioning as the batch path.
+/// same `contextPromptTail` conditioning as the batch path, including its
+/// silence-streak expiry, so the prompt sequence is part of the equivalence.
 ///
 /// Cooperatively cancellable: `Task.isCancelled` is checked at the top of the
 /// outer sample loop and before every window transcription, so a caller that
@@ -42,7 +43,7 @@ struct StreamingTranscriber {
         var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
-        var prevText: String?
+        var promptState = ContextPromptState()
         var lastEngineError: Error?
         var chunkIndex = 0
 
@@ -53,8 +54,7 @@ struct StreamingTranscriber {
             } else {
                 language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
             }
-            let prompt = contextPromptTail(prevText: prevText, prevLang: prevLang,
-                                           language: language, config: config)
+            let prompt = contextPromptTail(prevText: promptState.text, prevLang: prevLang, language: language, config: config)
             let rawSegments: [TranscribedSegment]
             do {
                 rawSegments = try await engine.transcribeWindow(window, language: language, prompt: prompt)
@@ -63,12 +63,15 @@ struct StreamingTranscriber {
                 return // skip: not counted, language does not stick
             }
             guard let lifted = liftWindowSegments(rawSegments, windowStart: windowStart, language: language) else {
-                return // silent window: not counted, language does not stick
+                // Silent window: not counted, language does not stick, and a
+                // long enough streak expires the context prompt.
+                promptState.recordSilence()
+                return
             }
             texts.append(lifted.windowText)
             segments.append(contentsOf: lifted.segments)
             prevLang = language
-            prevText = lifted.windowText
+            promptState.recordSpeech(lifted.windowText)
             langStats[language, default: 0] += 1
             chunkIndex += 1
             onChunk(StreamChunk(index: chunkIndex, text: lifted.windowText, language: language))

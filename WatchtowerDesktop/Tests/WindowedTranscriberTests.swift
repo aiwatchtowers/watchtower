@@ -222,6 +222,38 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(output.text, "one\ntwo\nthree")
     }
 
+    func testFailedWindowKeepsPreviousPrompt() async throws {
+        // A window that throws leaves the context untouched: with the engine's
+        // retry-on-throw, an error here means the CLEAN decode failed, so the
+        // prompt is not implicated and the next window still gets it.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .failure(MockEngine.MockError()), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+    }
+
+    func testPromptExpiresAfterThreeSilentWindows() async throws {
+        // Two silent windows still prompt; the third clears the context so a
+        // long pause cannot condition distant speech (and stops paying the
+        // prompt+retry tax on every window of that pause).
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [
+            .success("one"),
+            .success(""), .success(""), .success(""),
+            .success("after the pause")
+        ]
+
+        _ = try await run(engine, config, windows: 5)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+    }
+
     func testPromptIsCappedAtTwoHundredCharacters() async throws {
         var config = tinyConfig()
         config.forcedLanguage = "en"
