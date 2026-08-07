@@ -1,0 +1,612 @@
+package db
+
+import (
+	"database/sql"
+	"testing"
+	"time"
+)
+
+func TestIdeas_CreateGetListRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	id, err := d.CreateIdeaTx(tx, Idea{
+		Kind:    "idea",
+		Title:   "Ship dark mode",
+		Essence: "Users keep asking for it",
+		Status:  "proposed",
+		Source:  "mined",
+	})
+	if err != nil {
+		t.Fatalf("CreateIdeaTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	got, err := d.GetIdea(id)
+	if err != nil {
+		t.Fatalf("GetIdea: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetIdea returned nil for a created idea")
+	}
+	if got.Title != "Ship dark mode" || got.Kind != "idea" || got.Status != "proposed" || got.Source != "mined" {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+
+	list, err := d.ListIdeas(IdeaFilter{})
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != id {
+		t.Errorf("ListIdeas = %+v, want single idea with id %d", list, id)
+	}
+}
+
+func TestIdeas_GetIdeaMissingReturnsNilNil(t *testing.T) {
+	d := openTestDB(t)
+
+	got, err := d.GetIdea(999999)
+	if err != nil {
+		t.Fatalf("GetIdea: %v", err)
+	}
+	if got != nil {
+		t.Errorf("GetIdea for missing id = %+v, want nil", got)
+	}
+}
+
+func TestIdeas_ListIdeasFilters(t *testing.T) {
+	d := openTestDB(t)
+
+	mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Migrate to Postgres", Essence: "scale issue", Status: "proposed"})
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Use SQLite forever", Essence: "simplicity wins", Status: "active"})
+
+	byKind, err := d.ListIdeas(IdeaFilter{Kind: "decision"})
+	if err != nil {
+		t.Fatalf("ListIdeas by kind: %v", err)
+	}
+	if len(byKind) != 1 || byKind[0].Kind != "decision" {
+		t.Errorf("ListIdeas(kind=decision) = %+v", byKind)
+	}
+
+	byStatus, err := d.ListIdeas(IdeaFilter{Status: "proposed"})
+	if err != nil {
+		t.Fatalf("ListIdeas by status: %v", err)
+	}
+	if len(byStatus) != 1 || byStatus[0].Title != "Migrate to Postgres" {
+		t.Errorf("ListIdeas(status=proposed) = %+v", byStatus)
+	}
+
+	byQuery, err := d.ListIdeas(IdeaFilter{Query: "postgres"})
+	if err != nil {
+		t.Fatalf("ListIdeas by query: %v", err)
+	}
+	if len(byQuery) != 1 || byQuery[0].Title != "Migrate to Postgres" {
+		t.Errorf("ListIdeas(query=postgres) = %+v", byQuery)
+	}
+}
+
+func TestIdeas_ListIdeasQueryMatchesMentionQuote(t *testing.T) {
+	d := openTestDB(t)
+
+	id := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Unrelated title", Essence: "unrelated essence", Status: "proposed"})
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := d.InsertIdeaMentionTx(tx, IdeaMention{
+		IdeaID: id, Source: "slack", Quote: "we should really try zeroquantumflux", SaidAt: iso(time.Now()),
+	}); err != nil {
+		t.Fatalf("InsertIdeaMentionTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	got, err := d.ListIdeas(IdeaFilter{Query: "zeroquantumflux"})
+	if err != nil {
+		t.Fatalf("ListIdeas by mention quote: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id {
+		t.Errorf("ListIdeas(query matching mention quote) = %+v, want idea %d", got, id)
+	}
+}
+
+func TestIdeas_InsertMentionBumpsLastMentionAt(t *testing.T) {
+	d := openTestDB(t)
+
+	id := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Add retries", Essence: "flaky network", Status: "proposed"})
+
+	before, err := d.GetIdea(id)
+	if err != nil {
+		t.Fatalf("GetIdea: %v", err)
+	}
+
+	saidAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := d.InsertIdeaMentionTx(tx, IdeaMention{
+		IdeaID: id, Source: "slack", Ref: "C1:123.456", Quote: "we need retries", Author: "U1", SaidAt: saidAt,
+	}); err != nil {
+		t.Fatalf("InsertIdeaMentionTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	after, err := d.GetIdea(id)
+	if err != nil {
+		t.Fatalf("GetIdea: %v", err)
+	}
+	if after.LastMentionAt != saidAt {
+		t.Errorf("LastMentionAt = %q, want %q", after.LastMentionAt, saidAt)
+	}
+	if after.UpdatedAt < before.UpdatedAt {
+		t.Errorf("UpdatedAt went backwards after mention insert: before=%q after=%q", before.UpdatedAt, after.UpdatedAt)
+	}
+
+	mentions, err := d.ListIdeaMentions(id)
+	if err != nil {
+		t.Fatalf("ListIdeaMentions: %v", err)
+	}
+	if len(mentions) != 1 || mentions[0].Quote != "we need retries" {
+		t.Errorf("ListIdeaMentions = %+v", mentions)
+	}
+}
+
+func TestIdeas_ListIdeaMentionsOrderedBySaidAt(t *testing.T) {
+	d := openTestDB(t)
+
+	id := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Order test", Essence: "e", Status: "proposed"})
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	later := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	earlier := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+	if err := d.InsertIdeaMentionTx(tx, IdeaMention{IdeaID: id, Source: "slack", Quote: "second", SaidAt: later}); err != nil {
+		t.Fatalf("InsertIdeaMentionTx (later): %v", err)
+	}
+	if err := d.InsertIdeaMentionTx(tx, IdeaMention{IdeaID: id, Source: "slack", Quote: "first", SaidAt: earlier}); err != nil {
+		t.Fatalf("InsertIdeaMentionTx (earlier): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	mentions, err := d.ListIdeaMentions(id)
+	if err != nil {
+		t.Fatalf("ListIdeaMentions: %v", err)
+	}
+	if len(mentions) != 2 || mentions[0].Quote != "first" || mentions[1].Quote != "second" {
+		t.Errorf("ListIdeaMentions order = %+v, want [first, second]", mentions)
+	}
+}
+
+func TestIdeas_SetIdeaNeedsReviewTx(t *testing.T) {
+	d := openTestDB(t)
+
+	id := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Ambiguous idea", Essence: "e", Status: "proposed"})
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := d.SetIdeaNeedsReviewTx(tx, id, "possible duplicate of #7"); err != nil {
+		t.Fatalf("SetIdeaNeedsReviewTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	got, err := d.GetIdea(id)
+	if err != nil {
+		t.Fatalf("GetIdea: %v", err)
+	}
+	if !got.NeedsReview || got.ReviewReason != "possible duplicate of #7" {
+		t.Errorf("after SetIdeaNeedsReviewTx: %+v", got)
+	}
+}
+
+func TestIdeas_ListIdeasForPrompt(t *testing.T) {
+	d := openTestDB(t)
+
+	// Included: recently updated dropped idea (30 days ago).
+	recentDropped := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Recent dropped", Essence: "e", Status: "dropped"})
+	recentTS := time.Now().AddDate(0, 0, -30).UTC().Format(time.RFC3339)
+	if _, err := d.Exec(`UPDATE ideas SET updated_at = ? WHERE id = ?`, recentTS, recentDropped); err != nil {
+		t.Fatalf("backdating recent dropped idea: %v", err)
+	}
+
+	// Excluded: stale dropped idea (90 days ago).
+	staleDropped := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Stale dropped", Essence: "e", Status: "dropped"})
+	staleTS := time.Now().AddDate(0, 0, -90).UTC().Format(time.RFC3339)
+	if _, err := d.Exec(`UPDATE ideas SET updated_at = ? WHERE id = ?`, staleTS, staleDropped); err != nil {
+		t.Fatalf("backdating stale dropped idea: %v", err)
+	}
+
+	// Included regardless of age: proposed status.
+	proposed := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Still proposed", Essence: "e", Status: "proposed"})
+	if _, err := d.Exec(`UPDATE ideas SET updated_at = ? WHERE id = ?`, staleTS, proposed); err != nil {
+		t.Fatalf("backdating proposed idea: %v", err)
+	}
+
+	list, err := d.ListIdeasForPrompt()
+	if err != nil {
+		t.Fatalf("ListIdeasForPrompt: %v", err)
+	}
+
+	ids := map[int64]bool{}
+	for _, idea := range list {
+		ids[idea.ID] = true
+	}
+	if !ids[recentDropped] {
+		t.Errorf("ListIdeasForPrompt missing recently-updated dropped idea %d: %+v", recentDropped, list)
+	}
+	if ids[staleDropped] {
+		t.Errorf("ListIdeasForPrompt included stale dropped idea %d: %+v", staleDropped, list)
+	}
+	if !ids[proposed] {
+		t.Errorf("ListIdeasForPrompt missing proposed idea %d: %+v", proposed, list)
+	}
+}
+
+func TestIdeas_ListIdeaVerdictExamples(t *testing.T) {
+	d := openTestDB(t)
+
+	rated := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Rated idea", Essence: "e", Status: "active"})
+	if _, err := d.Exec(`UPDATE ideas SET owner_rating = 1 WHERE id = ?`, rated); err != nil {
+		t.Fatalf("rating idea: %v", err)
+	}
+	rejected := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Rejected idea", Essence: "e", Status: "rejected"})
+	_ = mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Irrelevant proposed idea", Essence: "e", Status: "proposed"})
+
+	examples, err := d.ListIdeaVerdictExamples(10)
+	if err != nil {
+		t.Fatalf("ListIdeaVerdictExamples: %v", err)
+	}
+	ids := map[int64]bool{}
+	for _, idea := range examples {
+		ids[idea.ID] = true
+	}
+	if !ids[rated] {
+		t.Errorf("ListIdeaVerdictExamples missing rated idea: %+v", examples)
+	}
+	if !ids[rejected] {
+		t.Errorf("ListIdeaVerdictExamples missing rejected idea: %+v", examples)
+	}
+}
+
+func TestIdeas_FloorsRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	mustSeedWorkspace(t, d)
+
+	digest, stream, transcript, err := d.GetIdeasFloors()
+	if err != nil {
+		t.Fatalf("GetIdeasFloors (default): %v", err)
+	}
+	if digest != 0 || stream != 0 || transcript != 0 {
+		t.Errorf("default floors = (%d,%d,%d), want zeros", digest, stream, transcript)
+	}
+
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := d.SetIdeasFloorsTx(tx, 5, 7, 9); err != nil {
+		t.Fatalf("SetIdeasFloorsTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	digest, stream, transcript, err = d.GetIdeasFloors()
+	if err != nil {
+		t.Fatalf("GetIdeasFloors (after set): %v", err)
+	}
+	if digest != 5 || stream != 7 || transcript != 9 {
+		t.Errorf("floors after set = (%d,%d,%d), want (5,7,9)", digest, stream, transcript)
+	}
+}
+
+func TestIdeas_StreamDigestInsertAndListAfter(t *testing.T) {
+	d := openTestDB(t)
+
+	id1, err := d.InsertStreamDigest(StreamDigest{
+		Source: "gmail", AccountID: 1, Scope: "inbox",
+		PeriodFrom: "2026-01-01T00:00:00Z", PeriodTo: "2026-01-02T00:00:00Z", TopicsJSON: "[]",
+	})
+	if err != nil {
+		t.Fatalf("InsertStreamDigest 1: %v", err)
+	}
+	id2, err := d.InsertStreamDigest(StreamDigest{
+		Source: "jira", AccountID: 2, Scope: "PROJ",
+		PeriodFrom: "2026-01-02T00:00:00Z", PeriodTo: "2026-01-03T00:00:00Z", TopicsJSON: "[]",
+	})
+	if err != nil {
+		t.Fatalf("InsertStreamDigest 2: %v", err)
+	}
+
+	after, err := d.ListStreamDigestsAfter(id1)
+	if err != nil {
+		t.Fatalf("ListStreamDigestsAfter: %v", err)
+	}
+	if len(after) != 1 || after[0].ID != id2 {
+		t.Errorf("ListStreamDigestsAfter(%d) = %+v, want just id %d", id1, after, id2)
+	}
+}
+
+func TestIdeas_UpsertJiraCommentsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	accountID := mustCreateJiraAccount(t, d)
+
+	comments := []JiraComment{
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c1", Author: "alice", BodyText: "first", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+	}
+	if err := d.UpsertJiraComments(comments); err != nil {
+		t.Fatalf("UpsertJiraComments (insert): %v", err)
+	}
+
+	// Idempotent: same id, updated body.
+	comments[0].BodyText = "first edited"
+	comments[0].UpdatedAt = "2026-01-02T00:00:00Z"
+	if err := d.UpsertJiraComments(comments); err != nil {
+		t.Fatalf("UpsertJiraComments (update): %v", err)
+	}
+
+	got, err := d.ListJiraCommentsSince(accountID, []string{"PROJ-1"}, "2025-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListJiraCommentsSince: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListJiraCommentsSince = %+v, want exactly one row (upsert must not duplicate)", got)
+	}
+	if got[0].BodyText != "first edited" {
+		t.Errorf("BodyText = %q, want edited text", got[0].BodyText)
+	}
+}
+
+func TestIdeas_ListJiraCommentsSinceFiltersIssueAndTime(t *testing.T) {
+	d := openTestDB(t)
+	accountID := mustCreateJiraAccount(t, d)
+
+	err := d.UpsertJiraComments([]JiraComment{
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c1", BodyText: "old", CreatedAt: "2020-01-01T00:00:00Z", UpdatedAt: "2020-01-01T00:00:00Z"},
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c2", BodyText: "new", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+		{AccountID: accountID, IssueKey: "PROJ-2", ID: "c3", BodyText: "other issue", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertJiraComments: %v", err)
+	}
+
+	got, err := d.ListJiraCommentsSince(accountID, []string{"PROJ-1"}, "2025-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListJiraCommentsSince: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "c2" {
+		t.Errorf("ListJiraCommentsSince = %+v, want just c2", got)
+	}
+}
+
+func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
+	d := openTestDB(t)
+
+	mustCreateChannel(t, d, "C1", "general")
+
+	digestID := mustCreateChannelDigest(t, d, "C1")
+	topics := []DigestTopic{
+		{Title: "With ideas", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: `[{"title":"x"}]`},
+		{Title: "No ideas or decisions", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: "[]"},
+		{Title: "Only decisions", Summary: "s", Decisions: `[{"title":"y"}]`, ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: "[]"},
+	}
+	if err := d.InsertDigestTopics(int64(digestID), topics); err != nil {
+		t.Fatalf("InsertDigestTopics: %v", err)
+	}
+
+	got, err := d.ListDigestTopicIdeasAfter(0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want 2 rows (ideas-bearing + decisions-bearing)", got)
+	}
+	titles := map[string]bool{}
+	for _, row := range got {
+		if row.ChannelID != "C1" || row.ChannelName != "general" {
+			t.Errorf("row channel mismatch: %+v", row)
+		}
+		titles[row.Ideas] = true
+	}
+
+	// Floor excludes everything.
+	maxID := got[len(got)-1].TopicID
+	after, err := d.ListDigestTopicIdeasAfter(maxID)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter (above floor): %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("ListDigestTopicIdeasAfter(%d) = %+v, want empty", maxID, after)
+	}
+}
+
+func TestIdeas_ListTranscriptsForIdeasAfter_RecapCollision(t *testing.T) {
+	d := openTestDB(t)
+
+	// Event-linked transcript with a meeting_recaps row: recap wins.
+	eventID := mustCreateCalendarEvent(t, d, "evt-1")
+	if _, err := d.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json) VALUES (?, ?, ?)`,
+		eventID, "src", `{"summary":"from recap"}`); err != nil {
+		t.Fatalf("inserting meeting_recaps: %v", err)
+	}
+	linkedID := mustCreateTranscript(t, d, &eventID, `{"summary":"from summary_json"}`)
+
+	// Ad-hoc transcript with no event: falls back to summary_json.
+	adHocID := mustCreateTranscript(t, d, nil, `{"summary":"ad hoc"}`)
+
+	got, err := d.ListTranscriptsForIdeasAfter(0)
+	if err != nil {
+		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
+	}
+	byID := map[int64]TranscriptForIdeas{}
+	for _, row := range got {
+		byID[row.ID] = row
+	}
+	linked, ok := byID[linkedID]
+	if !ok {
+		t.Fatalf("missing linked transcript %d in %+v", linkedID, got)
+	}
+	if linked.RecapJSON != `{"summary":"from recap"}` {
+		t.Errorf("RecapJSON = %q, want the meeting_recaps row to win over summary_json", linked.RecapJSON)
+	}
+
+	adHoc, ok := byID[adHocID]
+	if !ok {
+		t.Fatalf("missing ad-hoc transcript %d in %+v", adHocID, got)
+	}
+	if adHoc.RecapJSON != `{"summary":"ad hoc"}` {
+		t.Errorf("RecapJSON = %q, want summary_json fallback for an ad-hoc transcript", adHoc.RecapJSON)
+	}
+}
+
+func TestIdeas_ListTranscriptsForIdeasAfterFloor(t *testing.T) {
+	d := openTestDB(t)
+
+	id1 := mustCreateTranscript(t, d, nil, "")
+	id2 := mustCreateTranscript(t, d, nil, "")
+
+	got, err := d.ListTranscriptsForIdeasAfter(id1)
+	if err != nil {
+		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != id2 {
+		t.Errorf("ListTranscriptsForIdeasAfter(%d) = %+v, want just id %d", id1, got, id2)
+	}
+}
+
+func TestIdeas_CountIdeasForReview(t *testing.T) {
+	d := openTestDB(t)
+
+	mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Proposed one", Essence: "e", Status: "proposed"})
+	needsReview := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Needs review one", Essence: "e", Status: "active"})
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := d.SetIdeaNeedsReviewTx(tx, needsReview, "ambiguous"); err != nil {
+		t.Fatalf("SetIdeaNeedsReviewTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Neither", Essence: "e", Status: "active"})
+
+	count, err := d.CountIdeasForReview()
+	if err != nil {
+		t.Fatalf("CountIdeasForReview: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("CountIdeasForReview = %d, want 2", count)
+	}
+}
+
+// --- test helpers ---
+
+func mustCreateIdea(t *testing.T, d *DB, idea Idea) int64 {
+	t.Helper()
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	id, err := d.CreateIdeaTx(tx, idea)
+	if err != nil {
+		t.Fatalf("CreateIdeaTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	return id
+}
+
+func mustSeedWorkspace(t *testing.T, d *DB) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+}
+
+func mustCreateJiraAccount(t *testing.T, d *DB) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO jira_accounts (cloud_id, site_url, site_name, label) VALUES (?, ?, ?, ?)`,
+		"cloud-1", "https://example.atlassian.net", "Example", "Primary")
+	if err != nil {
+		t.Fatalf("inserting jira_accounts: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return id
+}
+
+func mustCreateChannel(t *testing.T, d *DB, id, name string) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO channels (id, name, type) VALUES (?, ?, 'public')`, id, name); err != nil {
+		t.Fatalf("inserting channel: %v", err)
+	}
+}
+
+func mustCreateChannelDigest(t *testing.T, d *DB, channelID string) int {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
+		VALUES (?, 0, 0, 'channel', '')`, channelID)
+	if err != nil {
+		t.Fatalf("inserting digest: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return int(id)
+}
+
+func mustCreateCalendarEvent(t *testing.T, d *DB, id string) string {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO calendar_calendars (id, name) VALUES (?, ?)`, "cal-"+id, "Test Calendar"); err != nil {
+		t.Fatalf("inserting calendar_calendars: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z')`,
+		id, "cal-"+id, "Test Event"); err != nil {
+		t.Fatalf("inserting calendar_events: %v", err)
+	}
+	return id
+}
+
+func mustCreateTranscript(t *testing.T, d *DB, eventID *string, summaryJSON string) int64 {
+	t.Helper()
+	var summary sql.NullString
+	if summaryJSON != "" {
+		summary = sql.NullString{String: summaryJSON, Valid: true}
+	}
+	res, err := d.Exec(`INSERT INTO meeting_transcripts (event_id, title, transcript_text, summary_json)
+		VALUES (?, ?, '', ?)`, eventID, "Test Transcript", summary)
+	if err != nil {
+		t.Fatalf("inserting meeting_transcripts: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return id
+}
+
+func iso(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
+}
