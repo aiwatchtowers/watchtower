@@ -63,33 +63,34 @@ var minPollInterval = 1 * time.Second
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
-	orchestrators    []*sync.Orchestrator
-	config           *config.Config
-	logger           *log.Logger
-	wakeCh           <-chan struct{}
-	pidPath          string
-	db               *db.DB
-	digestPipe       *digest.Pipeline
-	tracksPipe       *tracks.Pipeline
-	peoplePipe       *guide.Pipeline
-	briefingPipe     *briefing.Pipeline
-	inboxPipe        *inbox.Pipeline
-	ideasPipe        *ideas.Pipeline
-	memoryPipe       *memory.Pipeline
-	feedPipe         *feed.Pipeline
-	nextStepPipe     *targets.Pipeline
-	customTracksPipe *customtracks.Pipeline
-	calendarSyncers  []*calendar.Syncer
-	calDAVSyncers    []*caldav.Syncer
-	gmailSyncers     []*gmail.Syncer
-	imapSyncers      []*imap.Syncer
-	jiraSyncers      []jiraAccountSyncer
-	dayPlanPipeline  DayPlanRunner
-	lastJira         time.Time
-	lastPeople       time.Time // when people cards last ran (once per day)
-	lastBriefing     time.Time // when briefing last ran (once per day)
-	lastIdeas        time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
-	lastDayPlanDate  string    // YYYY-MM-DD of last generation, for dedup
+	orchestrators     []*sync.Orchestrator
+	config            *config.Config
+	logger            *log.Logger
+	wakeCh            <-chan struct{}
+	pidPath           string
+	db                *db.DB
+	digestPipe        *digest.Pipeline
+	tracksPipe        *tracks.Pipeline
+	peoplePipe        *guide.Pipeline
+	briefingPipe      *briefing.Pipeline
+	inboxPipe         *inbox.Pipeline
+	ideasPipe         *ideas.Pipeline
+	memoryPipe        *memory.Pipeline
+	feedPipe          *feed.Pipeline
+	nextStepPipe      *targets.Pipeline
+	customTracksPipe  *customtracks.Pipeline
+	calendarSyncers   []*calendar.Syncer
+	calDAVSyncers     []*caldav.Syncer
+	gmailSyncers      []*gmail.Syncer
+	imapSyncers       []*imap.Syncer
+	jiraSyncers       []jiraAccountSyncer
+	dayPlanPipeline   DayPlanRunner
+	lastJira          time.Time
+	lastPeople        time.Time // when people cards last ran (once per day)
+	lastBriefing      time.Time // when briefing last ran (once per day)
+	lastIdeas         time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastIdeasLockSkip time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
+	lastDayPlanDate   string    // YYYY-MM-DD of last generation, for dedup
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -805,20 +806,28 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 	})
 }
 
+// ideasLockSkipLogThrottle bounds how often phaseIdeas LOGS a lock-held skip
+// (GB7): the phase is polled every daemon tick, so a long-running CLI
+// backfill would otherwise flood the log with an identical skip line on
+// every single tick for its entire duration. The skip itself is never
+// throttled — only the log line.
+const ideasLockSkipLogThrottle = 10 * time.Minute
+
 // phaseIdeas runs the ideas & decisions registry pipeline (Gmail/Jira
 // pre-digests, then the stage-2 consolidator). Runs after inbox so the
 // registry sees fresh digests/transcripts. Throttled to once per
 // ideas.mine_interval_hours (default 6 when unset/non-positive, the
 // DefaultIdeasMineIntervalHours precedent) — the phasePeopleCards pattern.
-// Skips the cycle entirely while a CLI `ideas mine --from` backfill holds a
-// fresh lock (spec §5): two consolidators racing the same floors would
-// interleave consumption, so the daemon steps aside rather than risk it.
+// When the throttle says it's time to run, phaseIdeas ACQUIRES the same
+// cross-process backfill lock a CLI `ideas mine --from` backfill takes
+// (spec §5, GB7) for the duration of its run, released on return — mutual
+// exclusion now runs both ways: the daemon steps aside for an in-progress
+// CLI backfill exactly as the CLI steps aside for an in-progress daemon
+// cycle, instead of only ever checking freshness read-only. The throttle
+// check runs BEFORE the lock acquire so an idle poll tick (nothing due to
+// run yet) never touches the lock file at all.
 func (d *Daemon) phaseIdeas(ctx context.Context) {
 	if d.ideasPipe == nil {
-		return
-	}
-	if ideas.BackfillLockFresh(d.config.WorkspaceDir()) {
-		d.logger.Printf("ideas: skipping cycle — a backfill is in progress")
 		return
 	}
 	interval := time.Duration(d.config.Ideas.MineIntervalHours) * time.Hour
@@ -829,6 +838,16 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	if !d.lastIdeas.IsZero() && now.Sub(d.lastIdeas) < interval {
 		return
 	}
+
+	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon")
+	if err != nil {
+		if d.lastIdeasLockSkip.IsZero() || now.Sub(d.lastIdeasLockSkip) >= ideasLockSkipLogThrottle {
+			d.logger.Printf("ideas: skipping cycle — %v", err)
+			d.lastIdeasLockSkip = now
+		}
+		return
+	}
+	defer release()
 
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
 		proposed, err := d.ideasPipe.Run(ctx)

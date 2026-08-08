@@ -207,9 +207,10 @@ func TestIdeasMine_InvalidFromDate_Errors(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid --from date")
 }
 
-// TestIdeasMine_Backfill_LockHeld_Errors covers the CLI's lock-acquire step:
-// a fresh backfill lock already held by another process must surface as an
-// error, not silently proceed and race it.
+// TestIdeasMine_Backfill_LockHeld_Errors covers the CLI's lock-acquire step
+// and GB7's bidirectional lock: a fresh backfill lock already held by the
+// DAEMON must surface as a clear error naming the actual holder, not
+// silently proceed and race it.
 func TestIdeasMine_Backfill_LockHeld_Errors(t *testing.T) {
 	database := setupIdeasTestEnv(t)
 	database.Close()
@@ -218,7 +219,7 @@ func TestIdeasMine_Backfill_LockHeld_Errors(t *testing.T) {
 	cfg, err := config.Load(flagConfig)
 	require.NoError(t, err)
 
-	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir())
+	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir(), "daemon")
 	require.NoError(t, err)
 	defer release()
 
@@ -227,6 +228,7 @@ func TestIdeasMine_Backfill_LockHeld_Errors(t *testing.T) {
 
 	err = ideasMineCmd.RunE(ideasMineCmd, nil)
 	require.Error(t, err)
+	require.Contains(t, err.Error(), "the daemon is mining right now")
 }
 
 // TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope covers the happy path:

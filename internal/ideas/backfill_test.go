@@ -523,7 +523,7 @@ func TestBackfill_ProgressCallback_ReportsEachCycle(t *testing.T) {
 
 func TestBackfillLock_AcquireThenFresh(t *testing.T) {
 	dir := t.TempDir()
-	release, err := AcquireBackfillLock(dir)
+	release, err := AcquireBackfillLock(dir, "test")
 	require.NoError(t, err)
 	defer release()
 
@@ -532,17 +532,17 @@ func TestBackfillLock_AcquireThenFresh(t *testing.T) {
 
 func TestBackfillLock_SecondAcquireWhileFreshErrors(t *testing.T) {
 	dir := t.TempDir()
-	release, err := AcquireBackfillLock(dir)
+	release, err := AcquireBackfillLock(dir, "test")
 	require.NoError(t, err)
 	defer release()
 
-	_, err = AcquireBackfillLock(dir)
+	_, err = AcquireBackfillLock(dir, "test")
 	require.Error(t, err)
 }
 
 func TestBackfillLock_ReleaseClearsFreshness(t *testing.T) {
 	dir := t.TempDir()
-	release, err := AcquireBackfillLock(dir)
+	release, err := AcquireBackfillLock(dir, "test")
 	require.NoError(t, err)
 	release()
 
@@ -561,7 +561,7 @@ func TestBackfillLock_StaleLockIsNotFreshAndCanBeReacquired(t *testing.T) {
 
 	assert.False(t, BackfillLockFresh(dir), "a lock older than the freshness window must read as stale")
 
-	release, err := AcquireBackfillLock(dir)
+	release, err := AcquireBackfillLock(dir, "test")
 	require.NoError(t, err, "a stale lock must not block a new acquire")
 	defer release()
 	assert.True(t, BackfillLockFresh(dir))
@@ -581,7 +581,7 @@ func TestBackfillLock_StaleLockReclaimIsExactlyOnce(t *testing.T) {
 	stale := fmt.Sprintf("pid=999999 started=%s\n", time.Now().Add(-3*time.Hour).UTC().Format(time.RFC3339))
 	require.NoError(t, os.WriteFile(path, []byte(stale), 0o644))
 
-	release, err := AcquireBackfillLock(dir)
+	release, err := AcquireBackfillLock(dir, "test")
 	require.NoError(t, err, "a stale lock must be reclaimed in a single retry")
 
 	data, err := os.ReadFile(path)
@@ -590,7 +590,7 @@ func TestBackfillLock_StaleLockReclaimIsExactlyOnce(t *testing.T) {
 		"the reclaimed lock must be rewritten with this process's own pid/timestamp, not the stale one left behind")
 	assert.Contains(t, string(data), fmt.Sprintf("pid=%d", os.Getpid()))
 
-	_, err = AcquireBackfillLock(dir)
+	_, err = AcquireBackfillLock(dir, "test")
 	require.Error(t, err, "a lock this process just reclaimed must not be reclaimable again without a release")
 
 	release()
@@ -608,4 +608,44 @@ func TestBackfillLock_MalformedLockIsNotFresh(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("not a lock file"), 0o644))
 
 	assert.False(t, BackfillLockFresh(dir), "an unparseable lock must read as stale, not permanently fresh")
+}
+
+// TestBackfillLock_ErrorNamesTheCurrentOwner pins GB7's bidirectional-lock
+// error message: a losing AcquireBackfillLock call must name whichever
+// owner tag the CURRENT holder's lock records, not a generic message — so a
+// CLI backfill hitting a daemon-held lock sees "the daemon is mining right
+// now" and vice versa.
+func TestBackfillLock_ErrorNamesTheCurrentOwner(t *testing.T) {
+	dir := t.TempDir()
+	release, err := AcquireBackfillLock(dir, "daemon")
+	require.NoError(t, err)
+	defer release()
+
+	_, err = AcquireBackfillLock(dir, "CLI backfill")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the daemon is mining right now")
+}
+
+// TestBackfillLock_ReleaseDoesNotRemoveAReclaimedLock pins GB7's
+// ownership-checked release: if this process's own lock goes stale and gets
+// reclaimed by a DIFFERENT owner before this process's deferred release
+// fires, that release must not delete the new owner's fresh lock — the
+// blind-Remove-deletes-new-owner hole the ownership check closes.
+func TestBackfillLock_ReleaseDoesNotRemoveAReclaimedLock(t *testing.T) {
+	dir := t.TempDir()
+	release, err := AcquireBackfillLock(dir, "first")
+	require.NoError(t, err)
+
+	// Simulate this lock going stale and a second process reclaiming it —
+	// stand in for a real second AcquireBackfillLock call by writing the
+	// reclaimed contents directly.
+	path := filepath.Join(dir, backfillLockFilename)
+	reclaimed := fmt.Sprintf("pid=999999 started=%s owner=second\n", time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, os.WriteFile(path, []byte(reclaimed), 0o644))
+
+	release() // the FIRST caller's release, now stale relative to the file on disk
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "the second owner's lock must still be there")
+	assert.Equal(t, reclaimed, string(data), "a release must never remove a lock it no longer owns")
 }

@@ -170,7 +170,7 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		return err
 	}
 
-	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir())
+	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir(), "CLI backfill")
 	if err != nil {
 		return err
 	}
