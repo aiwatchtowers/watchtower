@@ -9,7 +9,9 @@ import (
 	"text/tabwriter"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
 	"watchtower/internal/prompts"
 
@@ -57,6 +59,18 @@ func validateEnumFlag(flag, value string, allowed []string) error {
 		return nil
 	}
 	return fmt.Errorf("invalid --%s %q (valid: %s)", flag, value, strings.Join(allowed, ", "))
+}
+
+// wireIdeasPipeline attaches the ideas registry phase to the daemon when
+// enabled (the wireMemoryPipeline precedent — it also keeps runSync under the
+// cyclomatic-complexity gate).
+func wireIdeasPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) {
+	if !cfg.Ideas.Enabled {
+		return
+	}
+	ideasPipe := ideas.New(database, cfg, gen, logger)
+	ideasPipe.SetPromptStore(prompts.New(database, nil))
+	d.SetIdeasPipeline(ideasPipe)
 }
 
 // ideasConfigAndDB loads the config (with the usual workspace/provider flag
