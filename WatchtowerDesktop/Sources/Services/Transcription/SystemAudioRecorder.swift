@@ -72,6 +72,10 @@ private final class TapRecorderImpl {
     /// here is ignored and never latched into `firstWriteError`.
     private var activityAccumulator: MicActivityAccumulator?
     private var activityHandle: FileHandle?
+    /// Adaptive mic gain, fresh per recording so a gain never leaks from one
+    /// recording into the next. nil = the `transcription.micAGC` gate is off,
+    /// and the mix line below is then exactly what it was before the AGC.
+    private var micAGC: MicAGC?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
@@ -129,6 +133,7 @@ private final class TapRecorderImpl {
         } else {
             try? FileManager.default.removeItem(at: activityURL)
         }
+        micAGC = Self.micAGCEnabled() ? MicAGC() : nil
 
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
         var newProcID: AudioDeviceIOProcID?
@@ -197,6 +202,9 @@ private final class TapRecorderImpl {
     /// tap (system) audio. Weights port snoop's record.sh lessons — mic at 0.9
     /// so simultaneous loud speech doesn't slam the ceiling, and a tanh-style
     /// soft clip instead of auto-leveling (which drove the signal INTO clipping).
+    /// `MicAGC` does not walk that back: it scales ONLY the mic term, slowly and
+    /// clamped to 1–6x, with the tanh soft clip still in place as the safety —
+    /// never the mix-wide normalizer that burned snoop.
     private func handleInput(_ inputData: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         guard !buffers.isEmpty else { return }
@@ -239,6 +247,12 @@ private final class TapRecorderImpl {
         }
         mixed.frameLength = AVAudioFrameCount(frameCount)
 
+        // One gain for the whole cycle, read BEFORE the loop and updated after
+        // it: the cycle stays internally consistent and the realtime path does
+        // no per-frame state work. 1x when the AGC is off.
+        let agcGain = micAGC?.gain ?? 1
+        var micSquares: Float = 0
+
         for frame in 0..<frameCount {
             let mic = channelAverage(firstBuffer, frame: frame)
             var system: Float = 0
@@ -249,13 +263,18 @@ private final class TapRecorderImpl {
                 }
                 system = acc / Float(buffers.count - 1)
             }
+            micSquares += mic * mic
+            // The sidecar records the RAW pre-gain mic level on purpose:
+            // RoleAssigner's «Я» heuristic compares mic vs system RMS, so
+            // scaling the mic here would change what that comparison means.
             // Gated on firstWriteError so the sidecar timeline never advances
             // past where the audio file stopped.
             if firstWriteError == nil {
                 activityAccumulator?.add(mic: mic, sys: system)
             }
-            out[frame] = tanhf(system + 0.9 * mic)
+            out[frame] = tanhf(system + 0.9 * agcGain * mic)
         }
+        micAGC?.update(cycleRMS: (micSquares / Float(frameCount)).squareRoot())
         if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
             do {
                 try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
@@ -332,6 +351,15 @@ private final class TapRecorderImpl {
     }
 
     // MARK: Setup helpers
+
+    /// `transcription.micAGC`, default ON — the AGC fixes a measured defect
+    /// (mic 20 dB under the remote stream), so the key is only an escape hatch.
+    /// Read here rather than through `TranscriptionConfig`: the recorder is
+    /// built by a knob-less factory and consumes no transcription config.
+    private static func micAGCEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: "transcription.micAGC") != nil else { return true }
+        return defaults.bool(forKey: "transcription.micAGC")
+    }
 
     /// Creates the private aggregate device combining the default input device
     /// (mic) with the process tap. Sub-devices come before taps in the IOProc's

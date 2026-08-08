@@ -66,6 +66,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
+    @AppStorage("transcription.micAGC") private var transcriptionMicAGC = true
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @State private var showAdvancedTranscription = false
 
@@ -973,6 +974,10 @@ struct GeneralSettings: View {
             Toggle("Speaker roles", isOn: $transcriptionDiarization)
                 .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
 
+            Toggle("Mic auto-gain", isOn: $transcriptionMicAGC)
+                .help("Boost a quiet microphone toward the remote-audio level before mixing, "
+                      + "so in-room speech is not drowned by remote participants")
+
             Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
 
@@ -983,36 +988,41 @@ struct GeneralSettings: View {
             )
             .help("Recording audio is deleted after this many days; transcript text is kept forever. 0 disables cleanup.")
 
-            DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
-                LabeledContent("Window (seconds)") {
-                    TextField("", value: $transcriptionWindowSec, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Language threshold") {
-                    TextField("", value: $transcriptionLangThreshold, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Runner-up margin") {
-                    TextField("", value: $transcriptionMargin, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Diarization threshold") {
-                    TextField("", value: $transcriptionDiarizationThreshold, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
-                    + "Try lowering when different people get merged into one Speaker N.")
-                TextField(
-                    "Force language",
-                    text: $transcriptionForceLang,
-                    prompt: Text("auto-detect")
-                )
-                .help("Set a language code (e.g. ru) to skip detection entirely")
+            transcriptionAdvancedGroup
+        }
+    }
+
+    /// Detection-tuning knobs, collapsed by default.
+    private var transcriptionAdvancedGroup: some View {
+        DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
+            LabeledContent("Window (seconds)") {
+                TextField("", value: $transcriptionWindowSec, format: .number)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
             }
+            LabeledContent("Language threshold") {
+                TextField("", value: $transcriptionLangThreshold, format: .number)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
+            }
+            LabeledContent("Runner-up margin") {
+                TextField("", value: $transcriptionMargin, format: .number)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
+            }
+            LabeledContent("Diarization threshold") {
+                TextField("", value: $transcriptionDiarizationThreshold, format: .number)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
+            }
+            .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
+                + "Try lowering when different people get merged into one Speaker N.")
+            TextField(
+                "Force language",
+                text: $transcriptionForceLang,
+                prompt: Text("auto-detect")
+            )
+            .help("Set a language code (e.g. ru) to skip detection entirely")
         }
     }
 
