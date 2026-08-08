@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
@@ -278,6 +280,9 @@ func TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope(t *testing.T) {
 	require.Contains(t, out, `"proposed":0`)
 	require.Contains(t, out, `"mentions_deduped":0`)
 	require.Contains(t, out, `"capped":false`)
+	require.Contains(t, out, `"input_tokens":0`, "GB15: token usage fields must be present even when zero")
+	require.Contains(t, out, `"output_tokens":0`)
+	require.Contains(t, out, `"api_calls":0`)
 
 	// The lock must be released once the command returns, so a follow-up
 	// backfill (or the daemon) is never left blocked by this one.
@@ -342,4 +347,10 @@ func TestIdeasMine_Backfill_Capped_PrintsEnvelope(t *testing.T) {
 	database.Close()
 
 	require.Contains(t, buf.String(), `"capped":true`)
+
+	var envelope backfillEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope))
+	assert.Positive(t, envelope.InputTokens, "GB15: the backfill envelope must report real accumulated token usage, not zero, once AI calls actually ran")
+	assert.Positive(t, envelope.OutputTokens)
+	assert.Positive(t, envelope.APICalls)
 }

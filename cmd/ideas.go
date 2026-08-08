@@ -115,6 +115,13 @@ type backfillEnvelope struct {
 	Cycles          int  `json:"cycles"`
 	MentionsDeduped int  `json:"mentions_deduped"`
 	Capped          bool `json:"capped"`
+	// InputTokens/OutputTokens/APICalls (GB15) mirror the flagless
+	// incremental path's own "(input tokens: %d, output tokens: %d, API
+	// calls: %d)" reporting — same pipe.AccumulatedUsage() values, just
+	// structured for the machine reader instead of prose.
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	APICalls     int `json:"api_calls"`
 }
 
 func runIdeasMine(cmd *cobra.Command, _ []string) error {
@@ -203,7 +210,10 @@ func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.W
 // runIdeasBackfill implements `ideas mine --from [--to]` (spec §3): parses
 // and validates the window, acquires the cross-process backfill lock (spec
 // §5 — released via defer even on error), runs Pipeline.Backfill with a
-// per-cycle progress line, and prints the final envelope.
+// per-cycle progress line, and prints the final envelope. GB14 (verified):
+// the envelope is the ONLY line this ever writes to stdout — the per-cycle
+// "cycle=N" progress lines go to stderr — so the Desktop "Find ideas" sheet
+// can parse stdout as exactly one JSON object with no interleaved noise.
 func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *ideas.Pipeline, fromStr, toStr string) error {
 	from, to, err := parseBackfillWindow(fromStr, toStr)
 	if err != nil {
@@ -224,11 +234,15 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		return fmt.Errorf("backfilling ideas: %w", err)
 	}
 
+	inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
 	envelope, err := json.Marshal(backfillEnvelope{
 		Proposed:        result.Proposed,
 		Cycles:          result.Cycles,
 		MentionsDeduped: result.MentionsDeduped,
 		Capped:          result.Capped,
+		InputTokens:     inTok,
+		OutputTokens:    outTok,
+		APICalls:        totalAPI,
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling backfill envelope: %w", err)
