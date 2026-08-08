@@ -21,23 +21,62 @@ const backfillLockFilename = "ideas_backfill.lock"
 const backfillLockFreshWindow = 2 * time.Hour
 
 // AcquireBackfillLock takes the ideas backfill lock in workspaceDir: it
-// writes ideas_backfill.lock (contents "pid=<n> started=<RFC3339>") and
-// returns a release func that removes it. Errors if a lock less than
-// backfillLockFreshWindow old already exists — another backfill is in
-// progress. A stale lock (older, or one BackfillLockFresh cannot make sense
-// of) is overwritten rather than blocking forever on a crashed run.
+// exclusively creates ideas_backfill.lock (contents "pid=<n>
+// started=<RFC3339>") and returns a release func that removes it. The
+// freshness check and the create are deliberately NOT a check-then-write
+// (that was a TOCTOU: two concurrent `ideas mine --from` invocations could
+// both pass a freshness check before either wrote the file, and both believe
+// they hold the lock). Instead the create itself is the atomic O_EXCL
+// syscall that decides ownership; a losing create is reclaimed ONLY when the
+// existing file is provably stale (BackfillLockFresh reports false) —
+// removed and the exclusive create retried exactly once. A second collision
+// on the retry means another process won that race, and this call errors out
+// rather than looping.
 func AcquireBackfillLock(workspaceDir string) (release func(), err error) {
 	path := filepath.Join(workspaceDir, backfillLockFilename)
-	if BackfillLockFresh(workspaceDir) {
-		return nil, fmt.Errorf("ideas: a backfill is already in progress (%s)", path)
+
+	if err := createLockFile(path); err != nil {
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("ideas: writing backfill lock: %w", err)
+		}
+		if BackfillLockFresh(workspaceDir) {
+			return nil, fmt.Errorf("ideas: a backfill is already in progress (%s)", path)
+		}
+		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+			return nil, fmt.Errorf("ideas: removing stale backfill lock: %w", rerr)
+		}
+		if err := createLockFile(path); err != nil {
+			if os.IsExist(err) {
+				return nil, fmt.Errorf("ideas: a backfill is already in progress (%s)", path)
+			}
+			return nil, fmt.Errorf("ideas: writing backfill lock: %w", err)
+		}
 	}
-	contents := fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		return nil, fmt.Errorf("ideas: writing backfill lock: %w", err)
-	}
+
 	return func() {
 		_ = os.Remove(path)
 	}, nil
+}
+
+// createLockFile exclusively creates the lock file — os.IsExist(err) is true
+// when one already exists, the race-free primitive AcquireBackfillLock's
+// TOCTOU fix relies on — and writes this process's pid/timestamp into it. A
+// write failure after a successful create removes the (now truncated/bad)
+// file rather than leaving it behind: BackfillLockFresh would read it as
+// stale anyway (unparseable contents), but there is no reason to leave a
+// half-written file around when the create itself can just be undone.
+func createLockFile(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	contents := fmt.Sprintf("pid=%d started=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
+	if _, werr := f.WriteString(contents); werr != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("writing lock contents: %w", werr)
+	}
+	return f.Close()
 }
 
 // BackfillLockFresh reports whether workspaceDir holds a backfill lock less

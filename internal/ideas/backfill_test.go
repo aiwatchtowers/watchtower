@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +213,68 @@ func TestBackfill_CoverageSkip_LeavesCoveredAccountsAlone(t *testing.T) {
 	assert.Equal(t, priorJiraFloor, jiraFloor, "a covered jira account's floor must be untouched by backfill")
 }
 
+// TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins is Phase 1's
+// dedicated consumption test — every other account-touching test in this
+// file (TestBackfill_CoverageSkip_LeavesCoveredAccountsAlone) asserts ZERO
+// generator calls, the covered case. This one drives real, uncovered Gmail
+// and Jira material through Backfill and checks the opposite: the generator
+// IS called, each account's own floor genuinely advances during the drain,
+// and the restore explicitly lands on the REACHED value rather than the
+// pre-backfill saved one — the mirror image of
+// TestBackfill_DrainRespectsBoundAndRestoresAboveHighWaterMark, where saved
+// wins instead because it is the larger of the two there.
+func TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	gmailAcct := seedGoogleAccount(t, d, float64(now.Unix()))
+	savedGmailFloor := float64(from.Add(-2 * time.Hour).Unix())
+	setIdeasEmailFloorRaw(t, d, gmailAcct, savedGmailFloor)
+	msgTS := from.Add(time.Hour).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, gmailAcct, "m1", "thr-1", "a@example.com", "Ann", "Subj", "we should try X", msgTS)
+
+	jiraAcct := seedJiraAccount(t, d)
+	savedJiraFloor := db.FormatJiraTime(from.Add(-2 * time.Hour))
+	setIdeasJiraFloorRaw(t, d, jiraAcct, savedJiraFloor)
+	issueUpdated := db.FormatJiraTime(from.Add(2 * time.Hour))
+	seedJiraIssueIdeas(t, d, jiraAcct, "WT-1", "WT", "Add caching layer", "Open", "new",
+		"We should add a caching layer.", issueUpdated)
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		switch {
+		case strings.Contains(user, "gmail:"):
+			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, gmailAcct), nil
+		case strings.Contains(user, "WT-1"):
+			return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"add caching layer","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
+		default:
+			return `{"ops":[]}`, nil
+		}
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	_, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	assert.Greater(t, gen.calls, 0, "an uncovered account's stage-1 pass must call the generator")
+
+	gmailFloor, err := d.IdeasEmailFloor(gmailAcct)
+	require.NoError(t, err)
+	assert.Equal(t, float64(from.Add(time.Hour).Unix()), gmailFloor, "the gmail floor must advance to the message it actually consumed")
+	assert.Greater(t, gmailFloor, savedGmailFloor, "restore must land on the REACHED value, not the pre-backfill saved one, when reached is the larger of the two")
+
+	jiraFloor, err := d.IdeasJiraFloor(jiraAcct)
+	require.NoError(t, err)
+	assert.Equal(t, issueUpdated, jiraFloor, "the jira floor must advance to the issue it actually consumed")
+	reachedUnix, ok := db.ParseJiraTime(jiraFloor)
+	require.True(t, ok)
+	savedUnix, ok := db.ParseJiraTime(savedJiraFloor)
+	require.True(t, ok)
+	assert.Greater(t, reachedUnix, savedUnix, "restore must land on the REACHED value, not the pre-backfill saved one, when reached is the larger of the two")
+}
+
 // TestBackfill_EmptyWindow_CleanNoOpFloorsRestored is the degenerate case: a
 // one-second window with no material anywhere lowers, drains (finding
 // nothing), and restores the floors right back to their starting values —
@@ -340,6 +403,36 @@ func TestBackfillLock_StaleLockIsNotFreshAndCanBeReacquired(t *testing.T) {
 	require.NoError(t, err, "a stale lock must not block a new acquire")
 	defer release()
 	assert.True(t, BackfillLockFresh(dir))
+}
+
+// TestBackfillLock_StaleLockReclaimIsExactlyOnce covers the O_EXCL
+// exclusive-create fix directly: the create itself (not a prior freshness
+// check) is what decides ownership, so reclaiming a stale lock installs a
+// genuinely fresh one — this process's own pid/timestamp, not the stale
+// content left behind — in a single retry. A further acquire attempt right
+// after, with no release in between, must see that freshly-reclaimed lock as
+// held rather than reclaiming it again (the "second IsExist = held, error
+// out" half of the fix).
+func TestBackfillLock_StaleLockReclaimIsExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, backfillLockFilename)
+	stale := fmt.Sprintf("pid=999999 started=%s\n", time.Now().Add(-3*time.Hour).UTC().Format(time.RFC3339))
+	require.NoError(t, os.WriteFile(path, []byte(stale), 0o644))
+
+	release, err := AcquireBackfillLock(dir)
+	require.NoError(t, err, "a stale lock must be reclaimed in a single retry")
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "pid=999999",
+		"the reclaimed lock must be rewritten with this process's own pid/timestamp, not the stale one left behind")
+	assert.Contains(t, string(data), fmt.Sprintf("pid=%d", os.Getpid()))
+
+	_, err = AcquireBackfillLock(dir)
+	require.Error(t, err, "a lock this process just reclaimed must not be reclaimable again without a release")
+
+	release()
+	assert.False(t, BackfillLockFresh(dir))
 }
 
 func TestBackfillLock_MissingLockIsNotFresh(t *testing.T) {
