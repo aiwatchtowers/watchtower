@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
 // TestE2E_JiraMentionFlow verifies the full Jira-mention → inbox item → feedback → learned rule path.
@@ -31,6 +33,10 @@ func TestE2E_JiraMentionFlow(t *testing.T) {
 
 	// Seed the Jira issue assigned to alice so the jira_assigned detector fires.
 	seedJiraIssue(t, d, issueKey, userID, time.Now().Add(-2*time.Hour))
+
+	// Map alice's Slack id to her Atlassian account id — a [~mention] embeds
+	// the Atlassian id, not the Slack id (see INBOX-02 reconciliation).
+	require.NoError(t, d.UpsertJiraUserMap(db.JiraUserMap{JiraAccountID: "alice", SlackUserID: userID, DisplayName: "Alice"}))
 
 	// Seed a Jira comment by bob mentioning alice ([~alice]).
 	seedJiraComment(t, d, issueKey, senderID, "hey [~alice] please review", time.Now().Add(-30*time.Minute))
