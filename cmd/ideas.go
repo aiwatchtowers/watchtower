@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"slices"
 	"strings"
@@ -141,16 +142,21 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	}
 
 	if fromStr == "" {
-		proposed, err := pipe.Run(ctx)
-		if err != nil {
-			return fmt.Errorf("mining ideas: %w", err)
-		}
-		inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
-		fmt.Fprintf(out, "proposed=%d (input tokens: %d, output tokens: %d, API calls: %d)\n", proposed, inTok, outTok, totalAPI)
-		return nil
+		return runIdeasMineIncremental(ctx, pipe, out)
 	}
-
 	return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
+}
+
+// runIdeasMineIncremental is flagless `ideas mine`'s body: one ordinary
+// (unbounded) pipeline pass.
+func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.Writer) error {
+	proposed, err := pipe.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("mining ideas: %w", err)
+	}
+	inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
+	fmt.Fprintf(out, "proposed=%d (input tokens: %d, output tokens: %d, API calls: %d)\n", proposed, inTok, outTok, totalAPI)
+	return nil
 }
 
 // runIdeasBackfill implements `ideas mine --from [--to]` (spec §3): parses
@@ -158,23 +164,9 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 // §5 — released via defer even on error), runs Pipeline.Backfill with a
 // per-cycle progress line, and prints the final envelope.
 func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *ideas.Pipeline, fromStr, toStr string) error {
-	from, err := time.Parse(ideasMineDateLayout, fromStr)
+	from, to, err := parseBackfillWindow(fromStr, toStr)
 	if err != nil {
-		return fmt.Errorf("invalid --from date: %w", err)
-	}
-	var to time.Time
-	if toStr != "" {
-		to, err = time.Parse(ideasMineDateLayout, toStr)
-		if err != nil {
-			return fmt.Errorf("invalid --to date: %w", err)
-		}
-	}
-	effectiveTo := to
-	if effectiveTo.IsZero() {
-		effectiveTo = time.Now()
-	}
-	if !from.Before(effectiveTo) {
-		return fmt.Errorf("--from must be before --to (or now)")
+		return err
 	}
 
 	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir())
@@ -201,6 +193,30 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), string(envelope))
 	return nil
+}
+
+// parseBackfillWindow parses and validates ideas mine --from/--to (spec §3):
+// --to defaults to now when empty, and --from must be strictly before the
+// effective --to.
+func parseBackfillWindow(fromStr, toStr string) (from, to time.Time, err error) {
+	from, err = time.Parse(ideasMineDateLayout, fromStr)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid --from date: %w", err)
+	}
+	if toStr != "" {
+		to, err = time.Parse(ideasMineDateLayout, toStr)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --to date: %w", err)
+		}
+	}
+	effectiveTo := to
+	if effectiveTo.IsZero() {
+		effectiveTo = time.Now()
+	}
+	if !from.Before(effectiveTo) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--from must be before --to (or now)")
+	}
+	return from, to, nil
 }
 
 func runIdeasList(cmd *cobra.Command, _ []string) error {

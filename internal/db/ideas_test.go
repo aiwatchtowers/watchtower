@@ -452,28 +452,10 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want 2 rows (ideas-bearing + decisions-bearing)", got)
 	}
-	titles := map[string]bool{}
 	for _, row := range got {
 		if row.ChannelID != "C1" || row.ChannelName != "general" {
 			t.Errorf("row channel mismatch: %+v", row)
 		}
-		titles[row.Ideas] = true
-	}
-
-	// Legacy pre-PR-78 rows stored the literal string "null" (json.Marshal
-	// of a nil slice) instead of "[]" for an empty field; a raw insert
-	// simulates one and it must stay excluded.
-	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
-		VALUES (?, 99, 'Legacy null', 's', 'null', '[]', '[]', '[]', 'null')`, digestID); err != nil {
-		t.Fatalf("inserting legacy-null topic: %v", err)
-	}
-
-	stillGot, err := d.ListDigestTopicIdeasAfter(0, 0)
-	if err != nil {
-		t.Fatalf("ListDigestTopicIdeasAfter after legacy insert: %v", err)
-	}
-	if len(stillGot) != 2 {
-		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want legacy-null row still excluded (2 rows)", stillGot)
 	}
 
 	// Floor excludes everything.
@@ -485,10 +467,48 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 	if len(after) != 0 {
 		t.Errorf("ListDigestTopicIdeasAfter(%d) = %+v, want empty", maxID, after)
 	}
+}
 
-	// Inclusion direction: a legacy row with ONE field still "null" but a
-	// real value in the other must be returned, not swept out along with
-	// the all-null rows. Covers both mixed shapes.
+// TestIdeas_ListDigestTopicIdeasAfter_LegacyNullExcluded covers the
+// pre-PR-78 legacy shape: a topic whose ideas AND decisions both still hold
+// the literal string "null" (json.Marshal of a nil slice, instead of "[]")
+// must stay excluded — split out from TestIdeas_ListDigestTopicIdeasAfter
+// (a single self-contained test, own DB) to keep each scenario's setup and
+// assertions independently readable.
+func TestIdeas_ListDigestTopicIdeasAfter_LegacyNullExcluded(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateChannel(t, d, "C1", "general")
+	digestID := mustCreateChannelDigest(t, d, "C1")
+	if err := d.InsertDigestTopics(int64(digestID), []DigestTopic{
+		{Title: "With ideas", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: `[{"title":"x"}]`},
+	}); err != nil {
+		t.Fatalf("InsertDigestTopics: %v", err)
+	}
+
+	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
+		VALUES (?, 99, 'Legacy null', 's', 'null', '[]', '[]', '[]', 'null')`, digestID); err != nil {
+		t.Fatalf("inserting legacy-null topic: %v", err)
+	}
+
+	got, err := d.ListDigestTopicIdeasAfter(0, 0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want the legacy-null row excluded (1 row)", got)
+	}
+}
+
+// TestIdeas_ListDigestTopicIdeasAfter_MixedLegacyNullIncluded pins the
+// inclusion direction the legacy-null filter must NOT sweep too broadly: a
+// row with ONE field still "null" but a real value in the other must be
+// returned, not swept out along with the all-null rows. Covers both mixed
+// shapes.
+func TestIdeas_ListDigestTopicIdeasAfter_MixedLegacyNullIncluded(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateChannel(t, d, "C1", "general")
+	digestID := mustCreateChannelDigest(t, d, "C1")
+
 	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
 		VALUES (?, 100, 'Legacy null ideas, real decisions', 's', '[{"text":"z"}]', '[]', '[]', '[]', 'null')`, digestID); err != nil {
 		t.Fatalf("inserting mixed legacy topic (null ideas): %v", err)
@@ -498,14 +518,14 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		t.Fatalf("inserting mixed legacy topic (null decisions): %v", err)
 	}
 
-	mixed, err := d.ListDigestTopicIdeasAfter(maxID, 0)
+	mixed, err := d.ListDigestTopicIdeasAfter(0, 0)
 	if err != nil {
-		t.Fatalf("ListDigestTopicIdeasAfter after mixed inserts: %v", err)
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
 	if len(mixed) != 2 {
-		t.Fatalf("ListDigestTopicIdeasAfter(%d) = %+v, want the 2 mixed rows present", maxID, mixed)
+		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want the 2 mixed rows present", mixed)
 	}
-	titles = map[string]bool{}
+	titles := map[string]bool{}
 	for _, row := range mixed {
 		titles[row.Decisions] = true
 		titles[row.Ideas] = true

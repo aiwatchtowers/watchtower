@@ -130,8 +130,14 @@ func (db *DB) IdeaMentionRefsKnownTx(tx *sql.Tx, source string, refs []string) (
 		placeholders[i] = "?"
 		args = append(args, ref)
 	}
-	rows, err := tx.Query(`SELECT ref, idea_id FROM idea_mentions WHERE source = ? AND ref IN (`+
-		strings.Join(placeholders, ",")+`)`, args...)
+	// The %s below is exclusively "?" placeholders joined by ",", one per element of refs —
+	// never a column/table name or any value that reaches the query text itself; every actual
+	// value (source, each ref) is bound as a separate arg to Query below. Same dynamic-IN-clause
+	// shape as ListJiraCommentsSince/ListJiraIssuesUpdatedSince in this file.
+	//nolint:gosec // G201: no injectable content — see comment above
+	query := fmt.Sprintf(`SELECT ref, idea_id FROM idea_mentions WHERE source = ? AND ref IN (%s)`,
+		strings.Join(placeholders, ","))
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("looking up known idea mention refs: %w", err)
 	}

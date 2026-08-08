@@ -64,16 +64,40 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 		return result, err
 	}
 
-	var firstErr error
-	cycles := 0
-
 	// Phase 1: drain the Gmail/Jira stage-1 pre-digests until a full cycle
-	// moves no account's floor at all.
+	// moves no account's floor at all. A floor-read failure is fatal — no
+	// point attempting phase 2 once the drain loop can no longer even tell
+	// whether it converged — so it aborts here, before phase 2 ever runs.
+	cycles, softErr, fatalErr := p.drainStage1(ctx, to, googleAccounts, jiraAccounts, progress)
+	if fatalErr != nil {
+		result.Cycles = cycles
+		return result, fatalErr
+	}
+
+	// Phase 2: drain the consolidator until a cycle proposes nothing, dedupes
+	// nothing, and moves no floor. softErr threads phase 1's error through so
+	// the "first error across BOTH phases wins" rule holds even though the
+	// two phases are now two functions.
+	cycles, proposed, mentionsDeduped, err := p.drainConsolidate(ctx, to, cycles, progress, softErr)
+	result.Cycles = cycles
+	result.Proposed = proposed
+	result.MentionsDeduped = mentionsDeduped
+	return result, err
+}
+
+// drainStage1 is Backfill phase 1: repeats the Gmail/Jira stage-1
+// pre-digest passes, bounded by `to`, until a full cycle moves no account's
+// per-source floor at all (or the shared cycle cap is hit). A per-account
+// digest failure is logged and does not stop the loop (matches
+// runEmailDigests/runJiraDigests' own log-and-continue contract) — softErr
+// carries the first one, for the caller to surface only if phase 2 doesn't
+// also fail. fatalErr is reserved for a floor-read failure, which the
+// caller must treat as an immediate abort of the whole Backfill call.
+func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, googleAccounts []db.GoogleAccount, jiraAccounts []db.JiraAccount, progress func(cycle int)) (cycles int, softErr, fatalErr error) {
 	for cycles < backfillMaxCycles {
 		beforeEmail, beforeJira, sferr := p.currentStage1Floors(googleAccounts, jiraAccounts)
 		if sferr != nil {
-			result.Cycles = cycles
-			return result, fmt.Errorf("backfill: reading stage-1 floors: %w", sferr)
+			return cycles, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", sferr)
 		}
 
 		cycles++
@@ -81,36 +105,56 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 			progress(cycles)
 		}
 
-		if perr := p.runEmailDigests(ctx, to); perr != nil {
-			p.logf("ideas: backfill email digest pass: %v", perr)
-			if firstErr == nil {
-				firstErr = perr
-			}
-		}
-		if perr := p.runJiraDigests(ctx, to); perr != nil {
-			p.logf("ideas: backfill jira digest pass: %v", perr)
-			if firstErr == nil {
-				firstErr = perr
-			}
+		if perr := p.runStage1Passes(ctx, to); perr != nil && softErr == nil {
+			softErr = perr
 		}
 
 		afterEmail, afterJira, aferr := p.currentStage1Floors(googleAccounts, jiraAccounts)
 		if aferr != nil {
-			result.Cycles = cycles
-			return result, fmt.Errorf("backfill: reading stage-1 floors: %w", aferr)
+			return cycles, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", aferr)
 		}
 		if stage1FloorsEqual(beforeEmail, beforeJira, afterEmail, afterJira) {
 			break
 		}
 	}
+	return cycles, softErr, nil
+}
 
-	// Phase 2: drain the consolidator until a cycle proposes nothing, dedupes
-	// nothing, and moves no floor.
+// runStage1Passes runs one email pass then one jira pass for the current
+// drainStage1 cycle, logging either failure distinctly (the two sources fail
+// independently and an operator needs to know which), and returning the
+// first of the two (nil if both succeeded) for the caller's own "first
+// error wins" accumulator.
+func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time) error {
+	var firstErr error
+	if perr := p.runEmailDigests(ctx, to); perr != nil {
+		p.logf("ideas: backfill email digest pass: %v", perr)
+		firstErr = perr
+	}
+	if perr := p.runJiraDigests(ctx, to); perr != nil {
+		p.logf("ideas: backfill jira digest pass: %v", perr)
+		if firstErr == nil {
+			firstErr = perr
+		}
+	}
+	return firstErr
+}
+
+// drainConsolidate is Backfill phase 2: repeats consolidateCycle, bounded
+// by the shared cycle cap (continuing from startCycles, wherever phase 1
+// left off), until a cycle proposes nothing, dedupes nothing, and moves no
+// workspace floor. priorErr is phase 1's already-accumulated error, if any —
+// see consolidateCycle for the fatal-vs-soft error split this loop respects.
+// The before-floors read happens here, ahead of the cycle counter, so a
+// cycle that fails before ever attempting any work is never counted or
+// reported to progress.
+func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, err error) {
+	cycles = startCycles
+	firstErr := priorErr
 	for cycles < backfillMaxCycles {
 		beforeDigest, beforeStream, beforeTranscript, gferr := p.db.GetIdeasFloors()
 		if gferr != nil {
-			result.Cycles = cycles
-			return result, fmt.Errorf("backfill: reading consolidate floors: %w", gferr)
+			return cycles, proposed, mentionsDeduped, fmt.Errorf("backfill: reading consolidate floors: %w", gferr)
 		}
 
 		cycles++
@@ -118,40 +162,64 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 			progress(cycles)
 		}
 
-		proposed, mentionsDeduped, cerr := p.runConsolidate(ctx, to)
-		if cerr != nil {
-			p.logf("ideas: backfill consolidate pass: %v", cerr)
+		cProposed, cDeduped, floorsMoved, fatalErr, softErr := p.consolidateCycle(ctx, to, beforeDigest, beforeStream, beforeTranscript)
+		if fatalErr != nil {
+			return cycles, proposed, mentionsDeduped, fatalErr
+		}
+		if softErr != nil {
+			p.logf("ideas: backfill consolidate pass: %v", softErr)
 			if firstErr == nil {
-				firstErr = cerr
+				firstErr = softErr
 			}
 			break // an erroring pass says nothing about convergence — stop draining
 		}
-		result.Proposed += proposed
-		result.MentionsDeduped += mentionsDeduped
-
-		afterDigest, afterStream, afterTranscript, gferr := p.db.GetIdeasFloors()
-		if gferr != nil {
-			result.Cycles = cycles
-			return result, fmt.Errorf("backfill: reading consolidate floors: %w", gferr)
-		}
-		floorsMoved := afterDigest != beforeDigest || afterStream != beforeStream || afterTranscript != beforeTranscript
-		if proposed == 0 && mentionsDeduped == 0 && !floorsMoved {
+		proposed += cProposed
+		mentionsDeduped += cDeduped
+		if consolidateConverged(cProposed, cDeduped, floorsMoved) {
 			break
 		}
 	}
+	return cycles, proposed, mentionsDeduped, firstErr
+}
 
-	result.Cycles = cycles
-	return result, firstErr
+// consolidateConverged reports whether a drainConsolidate cycle found
+// nothing left to do: no idea/decision proposed, no mention deduped, and no
+// workspace floor moved.
+func consolidateConverged(proposed, mentionsDeduped int, floorsMoved bool) bool {
+	return proposed == 0 && mentionsDeduped == 0 && !floorsMoved
+}
+
+// consolidateCycle runs one runConsolidate call against the floors read at
+// the top of this drainConsolidate cycle (before{Digest,Stream,Transcript})
+// and reports whether they moved by the time it finished — drainConsolidate's
+// single-cycle unit, split out to keep the loop itself and this one cycle's
+// bookkeeping each separately readable. fatalErr is a floor-read failure:
+// the caller must abort immediately, discarding any earlier error, since
+// there is nothing left to preserve once convergence itself can no longer be
+// determined. softErr is an ordinary runConsolidate failure, which the
+// caller folds into its own "first error wins" accumulator instead.
+func (p *Pipeline) consolidateCycle(ctx context.Context, to time.Time, beforeDigest, beforeStream, beforeTranscript int64) (proposed, mentionsDeduped int, floorsMoved bool, fatalErr, softErr error) {
+	proposed, mentionsDeduped, cerr := p.runConsolidate(ctx, to)
+	if cerr != nil {
+		return 0, 0, false, nil, cerr
+	}
+
+	afterDigest, afterStream, afterTranscript, gferr := p.db.GetIdeasFloors()
+	if gferr != nil {
+		return proposed, mentionsDeduped, false, fmt.Errorf("backfill: reading consolidate floors: %w", gferr), nil
+	}
+	floorsMoved = afterDigest != beforeDigest || afterStream != beforeStream || afterTranscript != beforeTranscript
+	return proposed, mentionsDeduped, floorsMoved, nil, nil
 }
 
 // lowerBackfillFloors is Backfill's step 2 (spec §3): it lowers the three
-// workspace floors to the window start, then — per account, skipping
-// anything HasStreamDigestCovering already reports fully covered (spec §4
-// layer 2, cost not correctness) — lowers the per-account Gmail/Jira source
-// floors instead of the (unmoved) workspace stream floor, since stream_digests
-// rows are only ever created going forward. savedEmailFloor/savedJiraFloor
-// are filled in as a side effect with every touched account's PRE-lower
-// value, for the deferred restore.
+// workspace floors to the window start, then delegates the per-source
+// account floor lowering to lowerEmailFloors/lowerJiraFloors — each skips
+// (spec §4 layer 2, cost not correctness) any account HasStreamDigestCovering
+// already reports fully covered, and leaves the workspace stream floor
+// untouched, since stream_digests rows are only ever created going forward.
+// savedEmailFloor/savedJiraFloor are filled in as a side effect with every
+// touched account's PRE-lower value, for the deferred restore.
 func (p *Pipeline) lowerBackfillFloors(from, to time.Time, savedStream int64, googleAccounts []db.GoogleAccount, jiraAccounts []db.JiraAccount, savedEmailFloor map[int64]float64, savedJiraFloor map[int64]string) error {
 	fromUnix := from.Unix()
 	fromISO := from.UTC().Format(time.RFC3339)
@@ -169,6 +237,17 @@ func (p *Pipeline) lowerBackfillFloors(from, to time.Time, savedStream int64, go
 		return fmt.Errorf("backfill: lowering ideas floors: %w", err)
 	}
 
+	if err := p.lowerEmailFloors(fromUnix, fromISO, toISO, googleAccounts, savedEmailFloor); err != nil {
+		return err
+	}
+	return p.lowerJiraFloors(from, fromISO, toISO, jiraAccounts, savedJiraFloor)
+}
+
+// lowerEmailFloors lowers each Gmail-enabled account's ideas_email_floor to
+// fromUnix, skipping (and logging) any account already fully covered for
+// [fromISO, toISO] (spec §4 layer 2). savedEmailFloor is filled in with
+// every touched account's PRE-lower value, for the deferred restore.
+func (p *Pipeline) lowerEmailFloors(fromUnix int64, fromISO, toISO string, googleAccounts []db.GoogleAccount, savedEmailFloor map[int64]float64) error {
 	for _, acct := range googleAccounts {
 		if !acct.GmailEnabled {
 			continue
@@ -190,7 +269,13 @@ func (p *Pipeline) lowerBackfillFloors(from, to time.Time, savedStream int64, go
 			return fmt.Errorf("backfill: lowering email floor for account %d: %w", acct.ID, err)
 		}
 	}
+	return nil
+}
 
+// lowerJiraFloors is lowerEmailFloors' Jira sibling: lowers each enabled
+// Jira account's ideas_jira_floor to from (Jira's own dotted-ms format),
+// same coverage-skip and savedJiraFloor-recording shape.
+func (p *Pipeline) lowerJiraFloors(from time.Time, fromISO, toISO string, jiraAccounts []db.JiraAccount, savedJiraFloor map[int64]string) error {
 	for _, acct := range jiraAccounts {
 		floor, err := p.db.IdeasJiraFloor(acct.ID)
 		if err != nil {
@@ -213,23 +298,36 @@ func (p *Pipeline) lowerBackfillFloors(from, to time.Time, savedStream int64, go
 }
 
 // restoreBackfillFloors restores every floor Backfill touched to
-// max(saved, reached) (spec §3 step 4). Errors are logged, not returned —
-// this runs from a defer, after Backfill has already decided its own return
-// value, and a restore failure must not mask whatever real error (or
-// success) the run produced; it is surfaced instead as a log line an
-// operator can act on.
+// max(saved, reached) (spec §3 step 4), delegating each of the three
+// independent restore targets (workspace, per-account email, per-account
+// jira) to its own helper. Errors are logged, not returned — this runs from
+// a defer, after Backfill has already decided its own return value, and a
+// restore failure must not mask whatever real error (or success) the run
+// produced; it is surfaced instead as a log line an operator can act on.
 func (p *Pipeline) restoreBackfillFloors(savedDigest, savedStream, savedTranscript int64, savedEmailFloor map[int64]float64, savedJiraFloor map[int64]string) {
+	p.restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript)
+	p.restoreEmailFloors(savedEmailFloor)
+	p.restoreJiraFloors(savedJiraFloor)
+}
+
+// restoreWorkspaceFloors is restoreBackfillFloors' workspace-floor step.
+func (p *Pipeline) restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript int64) {
 	reachedDigest, reachedStream, reachedTranscript, err := p.db.GetIdeasFloors()
 	if err != nil {
 		p.logf("ideas: backfill: reading ideas floors for restore: %v", err)
-	} else if err := p.db.SetIdeasFloors(
+		return
+	}
+	if err := p.db.SetIdeasFloors(
 		maxInt64(savedDigest, reachedDigest),
 		maxInt64(savedStream, reachedStream),
 		maxInt64(savedTranscript, reachedTranscript),
 	); err != nil {
 		p.logf("ideas: backfill: restoring ideas floors: %v", err)
 	}
+}
 
+// restoreEmailFloors is restoreBackfillFloors' per-account Gmail step.
+func (p *Pipeline) restoreEmailFloors(savedEmailFloor map[int64]float64) {
 	for acctID, saved := range savedEmailFloor {
 		reached, err := p.db.IdeasEmailFloor(acctID)
 		if err != nil {
@@ -240,7 +338,10 @@ func (p *Pipeline) restoreBackfillFloors(savedDigest, savedStream, savedTranscri
 			p.logf("ideas: backfill: restoring email floor for account %d: %v", acctID, err)
 		}
 	}
+}
 
+// restoreJiraFloors is restoreEmailFloors' Jira sibling.
+func (p *Pipeline) restoreJiraFloors(savedJiraFloor map[int64]string) {
 	for acctID, saved := range savedJiraFloor {
 		reached, err := p.db.IdeasJiraFloor(acctID)
 		if err != nil {
