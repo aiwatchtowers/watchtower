@@ -1,6 +1,6 @@
 ---
 name: local-review
-description: Quality gate for Watchtower changes before any PR. Runs the local CI mirror (gofmt + go vet + golangci-lint + go build, plus swift build/lint when Desktop changed) and the affected tests, then reviews — on per-item reviews a panel (codex via the codex-wrapper agent + pr-review-toolkit:code-reviewer + the style-guardian agent, with pr-review-toolkit:silent-failure-hunter as a fourth voice on round 1 only), all deduped before triage; on the final PR into the base branch the deeper debate-review skill instead — and critically triages every finding (accept, reject with reason, defer) before fixing, looping until the reviewers converge. Use before opening a PR, or standalone when the user says "review my changes", "run the checks", "codex review", or wants the local pipelines run before a PR.
+description: Quality gate for Watchtower changes before any PR. Runs the local CI mirror (gofmt + go vet + golangci-lint + go build, plus swift build/lint when Desktop changed) and the affected tests, then reviews — on per-item reviews a round-1 panel (codex via the codex-wrapper agent + pr-review-toolkit:code-reviewer + the style-guardian agent + pr-review-toolkit:silent-failure-hunter), narrowing to a two-voice verification panel (codex + code-reviewer) on rounds 2+; on the final PR into the base branch the deeper debate-review skill instead (full debate round 1, fast mode on rounds 2+) — and critically triages every finding (accept, reject with reason, defer) before fixing, looping until the reviewers converge. Use before opening a PR, or standalone when the user says "review my changes", "run the checks", "codex review", or wants the local pipelines run before a PR.
 ---
 
 # Local Review
@@ -38,29 +38,32 @@ Which reviewer runs depends on the merge target. Set `BASE_BRANCH` to the featur
 
 ### Per-branch review (`BASE_BRANCH = feature/<...>`) — parallel review panel
 
-Three voices — four on round 1 — dispatched in one parallel batch:
+**Round 1** runs the full panel (four voices); **rounds 2+** narrow to a two-voice verification panel — the token cost of a full panel every round is real, and post-fix rounds are about verifying fixes, not re-discovering the diff. Dispatch each round's voices in one parallel batch.
 
-**Core triad** — the always-on lenses:
+**Round-1 panel** — the discovery lenses:
 
 - **Codex (best-effort, correctness)**: dispatch the `codex-wrapper` agent (Agent tool, `subagent_type: "codex-wrapper"`) with `BASE_BRANCH`. The wrapper owns the canonical `codex review` command, output parsing, and `file:line` verification, and returns the codex findings list. **Codex is not a hard gate** — if the wrapper reports "codex unavailable (<reason>)", do NOT block: proceed with the remaining reviewers and record the line in the report.
 - **`pr-review-toolkit:code-reviewer` (broad review)**: dispatch it (Agent tool, `subagent_type: "pr-review-toolkit:code-reviewer"`) on the branch diff. Collect its findings — correctness, reuse, missing assertions, the usual mixed bag.
 - **`style-guardian` (style + simplicity)**: dispatch the `style-guardian` agent (Agent tool, `subagent_type: "style-guardian"`) on the same diff. It narrows to two questions only — "is the code maximally simple, no излишества" and "does it match house style per `docs/review/review-rules.md`". Its findings overlap with the other reviewers on style; the dedup step in Step 3 collapses it.
+- **`pr-review-toolkit:silent-failure-hunter`**: swallowed errors, fallback paths that mask failure. Best-effort like codex; if it fails or times out, proceed and note "silent-failure-hunter unavailable" in the report.
 
-**Round 1 only — `pr-review-toolkit:silent-failure-hunter`** joins as a fourth voice: swallowed errors, fallback paths that mask failure. Best-effort like codex; if it fails or times out, proceed and note "silent-failure-hunter unavailable" in the report.
+**Rounds 2+ panel (verification)** — only **codex** and **`pr-review-toolkit:code-reviewer`**. Point them at the post-fix diff and list the findings fixed last round so they verify the fixes AND look at the changed hunks with fresh eyes. `style-guardian` and `silent-failure-hunter` do not re-run: style and error-handling issues in the fix delta are within the two remaining lenses' coverage, and a whole-diff re-sweep every round costs more than it finds.
 
-Dispatch the whole panel concurrently — the reviewers are independent and read-only, so parallel dispatch is safe. Collect all outputs before triage.
+Dispatch each round's panel concurrently — the reviewers are independent and read-only, so parallel dispatch is safe. Collect all outputs before triage.
 
-**Panel composition is fixed.** The triad plus the round-1 `silent-failure-hunter` IS the complete per-branch panel. Do NOT widen it — extra reviewers' findings collapse as duplicates in dedup while their cost is real. The full four-specialist `pr-review-toolkit` panel is final-PR territory (it runs inside `debate-review`).
+**Panel composition is fixed.** The four round-1 voices and the two rounds-2+ voices ARE the complete per-branch panel. Do NOT widen either — extra reviewers' findings collapse as duplicates in dedup while their cost is real. The full four-specialist `pr-review-toolkit` panel is final-PR territory (it runs inside `debate-review`).
 
 ### Final PR (`BASE_BRANCH = main`) — debate-review instead
 
 On the final PR run the project `debate-review` skill **instead of** the panel above (Skill tool, `skill: "debate-review"`; pass `--base main`, or `fast` for a single round on a small diff). It already runs `codex` internally — in parallel with an advocate, a prosecutor, and the four `pr-review-toolkit` specialists — and a judge synthesises a verdict + prioritised findings across the nine dimensions in `docs/review/review-rules.md`. That makes it a **superset** of the per-branch panel, so do **not** also run codex + the panel on top: stacking re-runs codex 2–3× for no extra signal. `debate-review` appends its own reflection to `docs/review/review-lessons.md` (normal side effect). Feed the judge's prioritised findings into the triage in Step 3.
 
+**Full debate runs once.** The full adversarial cycle (rebuttal rounds included) runs on round 1 only. On rounds 2+ of the convergence loop invoke `debate-review` with `fast` — round-1 lenses + judge, no rebuttal — and tell it which findings were just fixed. A fix-verification round does not need a fresh two-round debate over the whole diff.
+
 ## Step 3 — critical triage
 
 ### 3a — Dedup first (per-branch review only)
 
-You have up to four lists (codex, `pr-review-toolkit:code-reviewer`, `style-guardian`, and — round 1 only — `silent-failure-hunter`) that **will** overlap. Before triaging, collapse them into one prioritised list:
+You have up to four lists on round 1 (codex, `pr-review-toolkit:code-reviewer`, `style-guardian`, `silent-failure-hunter`) and two on rounds 2+ (codex, `pr-review-toolkit:code-reviewer`) that **will** overlap. Before triaging, collapse them into one prioritised list:
 
 1. Group findings by `file:line` + claim. If multiple reviewers raise the same issue, keep one entry and record "raised by N reviewers" — that is signal, not noise.
 2. Near-duplicates count: same file, same rule, slightly different wording → one entry, citing the strongest version.
@@ -99,7 +102,7 @@ loop:
 Notes:
 
 - **Defer and reject do NOT block.** A round with only deferred / rejected findings counts as converged. Defer entries go into the report's `Deferred` section; reject entries go into `Rejected` with their reason. Only `accept` keeps the loop going.
-- **Same reviewer mode each round.** Per-branch `BASE_BRANCH=feature/<...>` → the panel every round (`silent-failure-hunter` joins on round 1 only); final PR `BASE_BRANCH=main` → `debate-review` every round. Don't switch modes mid-loop.
+- **Same reviewer mode each round, narrowed composition after round 1.** Per-branch `BASE_BRANCH=feature/<...>` → the full four-voice panel on round 1, the two-voice verification panel (codex + `pr-review-toolkit:code-reviewer`) on rounds 2+; final PR `BASE_BRANCH=main` → full `debate-review` on round 1, `debate-review` with `fast` on rounds 2+. Don't switch modes (panel ↔ debate) mid-loop.
 - **Codex unavailability is not a cap-hit.** If the wrapper reports unavailable on a round, the round still counts; record `codex unavailable round N` and rely on the remaining reviewers.
 - **Drift detection.** If two consecutive rounds raise the **same** finding that was supposedly fixed, the fix is wrong — escalate early. Record `drift on <file:line> after round N` and stop the loop.
 - **Cap = 7.** Chosen so genuine convergence on a non-trivial diff fits, but a thrashing loop terminates. On cap-hit, return the residual accepted list with `accepted-after-cap: <list>` so the operator decides — never silently proceed.
