@@ -13,7 +13,7 @@ struct IdeaBackfillSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var fromDate: Date
-    @State private var toDate: Date = Date()
+    @State private var toDate = Date()
     @State private var startedAt: Date?
 
     private enum Preset {
