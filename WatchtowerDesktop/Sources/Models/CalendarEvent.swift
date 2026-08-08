@@ -124,19 +124,29 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     /// entry is skipped when already listed as an attendee
     /// (case-insensitive email compare).
     ///
-    /// The organizer joins only a NON-EMPTY attendee list: an empty result
-    /// is the "no identities → treat as ad-hoc" sentinel downstream
-    /// (`VoicePrintMatcher.scoped` falls back to the global pool on []), and
-    /// a zero-guest self-created event (focus block) or an undecodable
-    /// attendees JSON must keep that fallback — an organizer-only set would
-    /// silently narrow the pool to the owner and strip every colleague's
-    /// name.
+    /// The organizer joins only an attendee list with at least one HUMAN
+    /// guest: an empty result is the "no identities → treat as ad-hoc"
+    /// sentinel downstream (`VoicePrintMatcher.scoped` falls back to the
+    /// global pool on []), and a zero-guest self-created event (focus
+    /// block), a room-only booking, or an undecodable attendees JSON must
+    /// keep that fallback — an owner-only set would silently narrow the
+    /// pool to the owner and strip every colleague's name. Google stores
+    /// room resources as ordinary attendees without a parsed resource flag;
+    /// their `@resource.calendar.google.com` address is the one stable
+    /// marker.
     var attendeesIncludingOrganizer: [EventAttendee] {
         let attendees = parsedAttendees
         let organizer = organizerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !attendees.isEmpty, !organizer.isEmpty,
-              !attendees.contains(where: { $0.email.caseInsensitiveCompare(organizer) == .orderedSame })
-        else { return attendees }
+        let hasHumanGuest = attendees.contains {
+            let email = $0.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !email.isEmpty && !email.hasSuffix("@resource.calendar.google.com")
+        }
+        guard hasHumanGuest, !organizer.isEmpty,
+              !attendees.contains(where: {
+                  $0.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                      .caseInsensitiveCompare(organizer) == .orderedSame
+              })
+        else { return hasHumanGuest ? attendees : [] }
         return attendees + [EventAttendee(
             email: organizer, displayName: "", responseStatus: "", slackUserID: "")]
     }

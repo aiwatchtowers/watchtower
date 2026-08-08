@@ -90,4 +90,22 @@ final class AppStateTests: XCTestCase {
         let emails = await loader()
         XCTAssertEqual(emails, ["owner@x.com"])
     }
+
+    /// The print loader is the single wire the whole voice-naming feature
+    /// hangs off — Center tests self-wire it, so only this test notices the
+    /// production assignment disappearing.
+    func testVoicePrintsLoaderReadsVoicePrints() async throws {
+        let appState = AppState()
+        appState.wireMeetingRecorderLoaders(dbPool: dbManager.dbPool)
+        try await dbManager.dbPool.write { db in
+            var print = VoicePrint(id: nil, personKey: "sasha@corp.com", displayName: "Саша",
+                                   embedding: VoicePrintEmbedding.encode([0, 1]),
+                                   sampleCount: 1, updatedAt: "2026-01-01T00:00:00Z")
+            try print.insert(db)
+        }
+        let loader = try XCTUnwrap(appState.meetingRecorderCenter.voicePrintsLoader)
+
+        let prints = await loader()
+        XCTAssertEqual(prints.map(\.personKey), ["sasha@corp.com"])
+    }
 }

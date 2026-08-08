@@ -503,9 +503,14 @@ final class MeetingRecorderCenter {
                                               ownerEmails: ownerEmails)
         }
         let ownerPrints = prints.filter { VoicePrintMatcher.isOwnerPrint($0, ownerEmails: ownerEmails) }
-        let dimension = clusterEmbeddings.values.first?.count
+        // Usable = the print could actually match SOME cluster of this run
+        // (valid vector of a present dimension) — an owner print learned
+        // under an older embedding model must not arm the veto it can never
+        // satisfy. Checked against all clusters, not a sampled one:
+        // Dictionary order is seed-randomized.
+        let dimensions = Set(clusterEmbeddings.values.map(\.count))
         let ownerArmed = ownerPrints.contains {
-            $0.embeddingVector.count == dimension
+            dimensions.contains($0.embeddingVector.count)
                 && VoicePrintMatcher.normalize($0.embeddingVector) != nil
         }
         var names: [String: String] = [:]
@@ -551,10 +556,14 @@ final class MeetingRecorderCenter {
     /// still win «Я» by bare mic share — the legacy under-split behavior,
     /// kept because a wrong «Я» heuristic beats guessing a person's name for
     /// a blob of several people.
+    /// (`ownerVoiceAlike` is deliberately NOT filtered here: the veto — the
+    /// only thing it gates — needs a non-empty voice name, and a suppressed
+    /// cluster has none left, so an unfiltered alike entry cannot change any
+    /// outcome.)
     static func filterMegaClusters(
         voiceNames: [String: String],
         speakers: [SpeakerSegment],
-        ownerClusters: Set<String>? = nil
+        ownerClusters: Set<String>?
     ) -> (names: [String: String], owners: Set<String>?) {
         var speech: [String: Double] = [:]
         for s in speakers {

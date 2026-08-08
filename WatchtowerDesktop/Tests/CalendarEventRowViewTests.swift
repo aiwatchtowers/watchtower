@@ -74,6 +74,22 @@ final class CalendarEventRowViewTests: XCTestCase {
             makeEvent(attendeesJSON: "{broken", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [])
     }
 
+    /// A room resource is an ordinary attendee row in Google's payload —
+    /// a room-only booking has no HUMAN identities and must keep the []
+    /// sentinel; with a human guest present the room row is harmless and
+    /// the full set (room + human + organizer) goes through.
+    func testAttendeesIncludingOrganizerIgnoresRoomResourcesForTheSentinel() {
+        let room = #"{"email":"office-6@resource.calendar.google.com","display_name":"Room 6","response_status":"accepted","slack_user_id":""}"#
+        let human = #"{"email":"alice@corp.com","display_name":"Alice","response_status":"accepted","slack_user_id":""}"#
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[\(room)]", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [],
+            "a room-only booking must degrade to the global pool, not to owner-only")
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[\(room),\(human)]", organizerEmail: "boss@corp.com")
+                .attendeesIncludingOrganizer.map(\.email),
+            ["office-6@resource.calendar.google.com", "alice@corp.com", "boss@corp.com"])
+    }
+
     // MARK: - Tests
 
     /// Title всегда виден.

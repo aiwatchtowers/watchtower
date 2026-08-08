@@ -296,7 +296,15 @@ final class AppState {
                     print("[AppState] event \(eventID) not found, voice matching stays global")
                     return []
                 }
-                return event.attendeesIncludingOrganizer
+                let identities = event.attendeesIncludingOrganizer
+                if identities.isEmpty, event.parsedAttendees.isEmpty,
+                   !event.attendees.isEmpty, event.attendees != "[]" {
+                    // Absent-vs-undecodable: a corrupt attendees blob folds
+                    // into the same global fallback as "no guests" — safe,
+                    // but it must leave a trace.
+                    print("[AppState] event \(eventID) has an undecodable attendees JSON, voice matching stays global")
+                }
+                return identities
             } catch {
                 print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
                 return []

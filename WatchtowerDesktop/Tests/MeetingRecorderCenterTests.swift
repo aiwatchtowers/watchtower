@@ -1411,6 +1411,40 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
                        "the owner's own name-keyed print must not veto «Я» when their email-keyed print resembles the cluster")
     }
 
+    /// An email-keyed owner print learned under an OLDER embedding model
+    /// (dimension mismatch — unusable this run) must not arm the veto: the
+    /// colleague-matched mic winner keeps «Я» via the legacy path instead of
+    /// stripping it with no possible tie-break.
+    func testStaleDimensionOwnerPrintDoesNotArmVeto() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                // The colleague print matches the mic-dominant cluster A —
+                // with an ARMED veto this recording would lose «Я».
+                voicePrint("colleague@x.com", "Коллега", [1, 0]),
+                voicePrint("owner@x.com", "owner@x.com", [0, 1, 0]) // 3-dim: unusable against 2-dim clusters
+            ],
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ",
+                       "an unusable owner print must disarm the veto — «Я» keeps its legacy absolute priority")
+    }
+
     /// Event-linked recording whose event has expired (loader returns []) —
     /// scoping must degrade to the GLOBAL pool, not to an empty one.
     func testEventWithNoAttendeesDegradesToGlobalMatching() async throws {
@@ -1483,7 +1517,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
         let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша", "E": "Егор"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
 
         XCTAssertNil(filtered["C"], "a cluster holding 50% of speech in a 5-cluster meeting must lose its voice name")
         XCTAssertEqual(filtered, ["A": "Аня", "B": "Борис", "D": "Даша", "E": "Егор"],
@@ -1522,7 +1556,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let segments = megaClusterSegments(clusters: 2, dominant: "B", share: 0.6)
         let names = ["A": "Я", "B": "Саша"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
 
         XCTAssertEqual(filtered, names, "two clusters are below the min-clusters gate — a 60% counterparty is normal")
     }
@@ -1536,7 +1570,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         }
         let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
 
         XCTAssertEqual(filtered, names, "four clusters at ~25% each are a plausible real split")
     }
