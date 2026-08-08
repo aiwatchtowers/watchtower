@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -25,7 +27,7 @@ var ideasCmd = &cobra.Command{
 
 var ideasMineCmd = &cobra.Command{
 	Use:   "mine",
-	Short: "Run one ideas registry pass (Gmail/Jira pre-digests, then consolidation)",
+	Short: "Run one ideas registry pass (Gmail/Jira pre-digests, then consolidation), or backfill a historical window with --from",
 	RunE:  runIdeasMine,
 }
 
@@ -41,6 +43,9 @@ func init() {
 
 	ideasListCmd.Flags().String("kind", "", "filter by kind ("+strings.Join(ideaKinds, ", ")+")")
 	ideasListCmd.Flags().String("status", "", "filter by status ("+strings.Join(ideaStatuses, ", ")+")")
+
+	ideasMineCmd.Flags().String("from", "", "backfill start date (YYYY-MM-DD); enables range mining over [from, to]")
+	ideasMineCmd.Flags().String("to", "", "backfill end date (YYYY-MM-DD), defaults to now; requires --from")
 }
 
 // ideaKinds and ideaStatuses mirror the ideas table's CHECK constraints
@@ -95,6 +100,18 @@ func ideasConfigAndDB() (*config.Config, *db.DB, error) {
 	return cfg, database, nil
 }
 
+// ideasMineDateLayout is the CLI's --from/--to date format.
+const ideasMineDateLayout = "2006-01-02"
+
+// backfillEnvelope is `ideas mine --from`'s final one-line JSON summary
+// (spec §3 step 5) — machine-readable so the Desktop "Find ideas" sheet can
+// parse it straight off the CLI child's stdout.
+type backfillEnvelope struct {
+	Proposed        int `json:"proposed"`
+	Cycles          int `json:"cycles"`
+	MentionsDeduped int `json:"mentions_deduped"`
+}
+
 func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	cfg, database, err := ideasConfigAndDB()
 	if err != nil {
@@ -108,6 +125,12 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	fromStr, _ := cmd.Flags().GetString("from")
+	toStr, _ := cmd.Flags().GetString("to")
+	if fromStr == "" && toStr != "" {
+		return fmt.Errorf("--to requires --from")
+	}
+
 	logger := log.New(cmd.ErrOrStderr(), "[ideas] ", log.LstdFlags)
 	pipe := ideas.New(database, cfg, cliGenerator(cfg), logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
@@ -116,13 +139,67 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	proposed, err := pipe.Run(ctx)
-	if err != nil {
-		return fmt.Errorf("mining ideas: %w", err)
+
+	if fromStr == "" {
+		proposed, err := pipe.Run(ctx)
+		if err != nil {
+			return fmt.Errorf("mining ideas: %w", err)
+		}
+		inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
+		fmt.Fprintf(out, "proposed=%d (input tokens: %d, output tokens: %d, API calls: %d)\n", proposed, inTok, outTok, totalAPI)
+		return nil
 	}
 
-	inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
-	fmt.Fprintf(out, "proposed=%d (input tokens: %d, output tokens: %d, API calls: %d)\n", proposed, inTok, outTok, totalAPI)
+	return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
+}
+
+// runIdeasBackfill implements `ideas mine --from [--to]` (spec §3): parses
+// and validates the window, acquires the cross-process backfill lock (spec
+// §5 — released via defer even on error), runs Pipeline.Backfill with a
+// per-cycle progress line, and prints the final envelope.
+func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *ideas.Pipeline, fromStr, toStr string) error {
+	from, err := time.Parse(ideasMineDateLayout, fromStr)
+	if err != nil {
+		return fmt.Errorf("invalid --from date: %w", err)
+	}
+	var to time.Time
+	if toStr != "" {
+		to, err = time.Parse(ideasMineDateLayout, toStr)
+		if err != nil {
+			return fmt.Errorf("invalid --to date: %w", err)
+		}
+	}
+	effectiveTo := to
+	if effectiveTo.IsZero() {
+		effectiveTo = time.Now()
+	}
+	if !from.Before(effectiveTo) {
+		return fmt.Errorf("--from must be before --to (or now)")
+	}
+
+	release, err := ideas.AcquireBackfillLock(cfg.WorkspaceDir())
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	errOut := cmd.ErrOrStderr()
+	result, err := pipe.Backfill(ctx, from, to, func(cycle int) {
+		fmt.Fprintf(errOut, "cycle=%d\n", cycle)
+	})
+	if err != nil {
+		return fmt.Errorf("backfilling ideas: %w", err)
+	}
+
+	envelope, err := json.Marshal(backfillEnvelope{
+		Proposed:        result.Proposed,
+		Cycles:          result.Cycles,
+		MentionsDeduped: result.MentionsDeduped,
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling backfill envelope: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(envelope))
 	return nil
 }
 
