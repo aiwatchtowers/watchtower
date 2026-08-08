@@ -24,7 +24,7 @@ Ideas surface everywhere — meetings, Slack threads, Jira comments, email — a
 - No automatic merge of duplicates — the miner emits `similar_to` hints; merging is an owner action.
 - No memory-vault integration (neither staging idea chats into memory nor mining from memory episodes). Follow-up slice once memory is on by default.
 - No idea sharing/publishing; single-owner like the rest of the app.
-- No backfill over historical data: mining starts from the floors set at migration time (current max ids). A later `ideas mine --since` backfill is a possible follow-up.
+- No backfill over historical data: mining starts from the floors set at migration time (current max ids). **As built:** migration 00050 seeds the three `workspace` floors with `MAX(id)` of `digest_topics` / `stream_digests` / `meeting_transcripts`. The two per-account stage-1 floors are seeded differently — they self-initialize on their first run — because an account connected *after* the migration has no migration of its own to seed it. A later `ideas mine --since` backfill is a possible follow-up.
 
 ## 4. Architecture overview
 
@@ -104,7 +104,7 @@ CREATE TABLE stream_digests (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
     account_id   INTEGER NOT NULL,           -- google_accounts.id / jira_accounts.id
-    scope        TEXT NOT NULL DEFAULT '',   -- gmail: '' (per-account); jira: project key
+    scope        TEXT NOT NULL DEFAULT '',   -- reserved; always '' as built (see §6.4)
     period_from  TEXT NOT NULL,
     period_to    TEXT NOT NULL,
     topics_json  TEXT NOT NULL DEFAULT '[]', -- [{title, summary, ideas[], decisions[], refs[]}]
@@ -158,7 +158,9 @@ Runs inside the ideas daemon phase, before the consolidator. Per enabled Gmail a
 
 ### 6.4 Jira — new `ideas.digest_jira` pass (light tier)
 
-Per enabled Jira account, per project with issues updated since the account's floor (`jira_accounts.ideas_jira_floor`, ISO timestamp): input = changed issues (summary, description excerpt, status transition) + their new comments from `jira_comments`. One light-tier call per project-window produces `topics_json` with refs = issue keys. Same floor semantics.
+Per enabled Jira account, over the issues updated since the account's floor (`jira_accounts.ideas_jira_floor`, a Jira-format timestamp): input = changed issues (summary, description excerpt, status) + their new comments from `jira_comments`. Produces `topics_json` with refs = issue keys. Same floor semantics.
+
+**As built:** one call per *account*, not per project — the issues are grouped under `=== PROJECT <KEY> ===` separators inside a single prompt, and the resulting `stream_digests` row carries `scope = ''` like the Gmail one. Per-project scoping was designed for but not needed at v1 volumes; the `scope` column is left in place, unused, for when it is.
 
 ### 6.5 Prompt registry
 
@@ -218,7 +220,7 @@ New sidebar tab **Ideas** (badge = count of `proposed` + `needs_review=1`). Mast
 ## 11. Testing
 
 - **Go:** consolidator apply unit tests (ref validation, op application per status, transaction atomicity); floor-semantics guard tests for IDEA-01 (AI error, malformed JSON, mid-apply failure, cap truncation) and IDEA-04 (resurfacing); prompt-parse tolerance tests (digest topics with/without `ideas`; recap with/without arrays); jira comment sync bounded-fetch test; migration golden + `TestAllTablesExist`.
-- **Swift:** `IdeaQueries` round-trips, status-transition guards per kind, list projection never selects mention bodies (perf-guard precedent), VM tests for triage actions and badge count.
+- **Swift:** `IdeaQueries` round-trips, list projection never selects mention bodies (perf-guard precedent), VM tests for triage actions and badge count. **As built,** the per-kind status machine is enforced at the *view* layer — `IdeaDetailPane.statusActionsRow` only renders the actions legal for the current kind+status — rather than by a rejecting write in `IdeaQueries`. So the guards are reachability tests (every status a resurfacing can flag offers an action that clears `needs_review`), not rejected-transition tests.
 - **Degenerate inputs** (per house feedback): consolidator run with zero new material is a clean no-op; stage-1 pass with an empty chunk writes nothing and still advances its own floor only on success.
 
 ## 12. Follow-up slices (explicitly out of v1)

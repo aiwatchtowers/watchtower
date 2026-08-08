@@ -18,19 +18,37 @@
 
 **Status:** Enforced
 
-**Observable:** A consolidator run (`internal/ideas.Consolidate`, prompt `ideas.consolidate`) advances the `workspace` floors (`ideas_digest_floor`, `ideas_stream_digest_floor`, `ideas_transcript_floor`) only when the whole run applied cleanly. An AI generator error, malformed/unparseable JSON, or a mid-apply error advances no floor and writes no row — stage-1 material (fresh `digest_topics`, `stream_digests`, `meeting_transcripts` rows) is never consumed without being applied. When the input cap (`ideas.max_prompt_chars`) truncates a run, floors advance only past the rows actually included in that truncated input, so the carried-over remainder is picked up by the next run. A run with zero new material is a clean no-op (degenerate case, no floor movement, no AI call). The same contract applies one level up, per stage-1 source: the Gmail (`ideas.digest_email`) and Jira (`ideas.digest_jira`) pre-digest passes advance their own per-account floors (`google_accounts.ideas_email_floor`, `jira_accounts.ideas_jira_floor`) only after a successful `stream_digests` write.
+**Observable:** A consolidator run (`internal/ideas.Consolidate`, prompt `ideas.consolidate`) advances the `workspace` floors (`ideas_digest_floor`, `ideas_stream_digest_floor`, `ideas_transcript_floor`) only when the whole run applied cleanly. An AI generator error, malformed/unparseable JSON, a reply missing the `ops` key, a mid-apply error, or a floor write that matches no `workspace` row advances no floor and writes no row — stage-1 material (fresh `digest_topics`, `stream_digests`, `meeting_transcripts` rows) is never consumed without being applied. When the input cap (`ideas.max_prompt_chars`) truncates a run, floors advance only past the rows actually included in that truncated input, so the carried-over remainder is picked up by the next run.
+
+The converse also holds — a floor never *stalls* on material that was genuinely consumed. A run with zero new material is a clean no-op (no floor movement, no AI call), but a run whose units were all inert (empty `stream_digests` rows, stale recap-less transcripts, a unit larger than the whole prompt budget) makes no AI call and still persists its advanced floors, so the same rows are not re-read forever. Source windows are tie-safe at their cap: `ListJiraIssuesUpdatedSince` drains the whole boundary timestamp rather than cutting inside it.
+
+The same contract applies one level up, per stage-1 source: the Gmail (`ideas.digest_email`) and Jira (`ideas.digest_jira`) pre-digest passes advance their own per-account floors (`google_accounts.ideas_email_floor`, `jira_accounts.ideas_jira_floor`) only after a successful `stream_digests` write, and treat a reply missing the `topics` key as a failure.
+
+Floors are seeded at install time: migration 00050 stamps the three `workspace` floors at the current top of each source table, so the registry starts from material mined after it shipped instead of backfilling all of history on the first run. The per-account stage-1 floors self-initialize on their first run instead, since an account connected later has no migration to seed it.
 
 **Why locked:** The consolidator is the only place ideas/decisions get created from raw material; if a floor could advance on a failed or partial run, that cycle's candidates would be silently lost — the exact "nothing gets lost" promise this feature exists to deliver would break on its own error path.
 
 **Test guards:**
-- `internal/ideas/consolidate_test.go::TestConsolidate_GeneratorError_NothingWritten`
-- `internal/ideas/consolidate_test.go::TestConsolidate_MalformedJSON_NothingWritten`
-- `internal/ideas/consolidate_test.go::TestConsolidate_MaxPromptChars_TruncatesToWholeUnits`
-- `internal/ideas/consolidate_test.go::TestConsolidate_NoNewMaterial_CleanNoOp`
-- `internal/ideas/email_digest_test.go::TestRunEmailDigests_GeneratorError_NoRowFloorUnchanged`
-- `internal/ideas/email_digest_test.go::TestRunEmailDigests_NoNewMessages_CleanNoOp`
-- `internal/ideas/jira_digest_test.go::TestRunJiraDigests_GeneratorError_NoRowFloorUnchanged`
-- `internal/ideas/jira_digest_test.go::TestRunJiraDigests_NoChangedIssues_CleanNoOp`
+- `internal/ideas/consolidate_test.go::TestIdeas01_GeneratorErrorNothingWritten`
+- `internal/ideas/consolidate_test.go::TestIdeas01_MalformedJSONNothingWritten`
+- `internal/ideas/consolidate_test.go::TestIdeas01_MaxPromptCharsTruncatesToWholeUnits`
+- `internal/ideas/consolidate_test.go::TestIdeas01_NoNewMaterialCleanNoOp`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_ReplyWithoutOpsKey_NothingWritten`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_EmptyOpsArray_FloorsAdvance`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_NoWorkspaceRow_ErrorsAndRollsBack`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_InertStreamDigestRows_FloorAdvancesWithoutAICall`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_StaleRecaplessTranscripts_FloorAdvancesWithoutAICall`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_OversizedUnit_SkippedAndFloorAdvances`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas01_MidApplyFailure_RollsBackEarlierOps`
+- `internal/ideas/email_digest_test.go::TestIdeas01_EmailGeneratorErrorNoRowFloorUnchanged`
+- `internal/ideas/email_digest_test.go::TestIdeas01_EmailNoNewMessagesCleanNoOp`
+- `internal/ideas/jira_digest_test.go::TestIdeas01_JiraGeneratorErrorNoRowFloorUnchanged`
+- `internal/ideas/jira_digest_test.go::TestIdeas01_JiraNoChangedIssuesCleanNoOp`
+- `internal/ideas/stage1_bounds_test.go::TestIdeas01_EmailReplyWithoutTopicsKey_NoRowFloorUnchanged`
+- `internal/ideas/stage1_bounds_test.go::TestIdeas01_JiraReplyWithoutTopicsKey_NoRowFloorUnchanged`
+- `internal/db/ideas_test.go::TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues`
+- `internal/db/ideas_test.go::TestIdeas01_JiraWindowIsDeterministicWithinATimestamp`
+- `internal/digest/topic_ideas_test.go::TestStoreDigest_EmptyIdeasAndDecisionsPersistAsEmptyArrays`
 
 **Locked since:** 2026-08-07
 
@@ -38,15 +56,19 @@
 
 **Status:** Enforced
 
-**Observable:** Every mention `ref` the consolidator emits is validated against the refs actually present in that run's stage-1 input (Slack `<channel_id>|<ts>`, meeting transcript id, Gmail `<account_id>:<thread_id>`, Jira issue key). A ref that does not resolve is dropped; if an op loses all of its mentions this way, the whole op is discarded and a `refs_rejected` counter increments — nothing invented is ever persisted. The same validation applies one level up: the Gmail and Jira stage-1 passes reject a hallucinated ref before it ever reaches `stream_digests`.
+**Observable:** Every mention `ref` the consolidator emits is validated against the refs actually present in that run's stage-1 input (Slack `<channel_id>|<ts>`, `transcript:<id>`, Gmail `gmail:<account_id>:<thread_id>`, Jira issue key). A ref that does not resolve is dropped; if an op loses all of its mentions this way, the whole op is discarded and a `refs_rejected` counter increments — nothing invented is ever persisted. A mention's stored `source` is likewise *derived* from the ref that survived validation, never copied from the model's own `source` token (which is ignored entirely). The same validation applies one level up: the Gmail and Jira stage-1 passes reject a hallucinated ref before it ever reaches `stream_digests`, and a unit dropped for prompt budget is dropped from the valid-ref set too, so nothing can be cited that the model was never shown.
 
 **Why locked:** This is the MEM-13 pattern applied to ideas — an idea whose only evidence is a model-invented Slack timestamp or Jira key would be unverifiable and would corrupt the chronology the whole registry is built around.
 
 **Test guards:**
-- `internal/ideas/consolidate_test.go::TestConsolidate_InventedRef_PartiallyDropped`
-- `internal/ideas/consolidate_test.go::TestConsolidate_InventedRef_AllDropped_OpDiscarded`
-- `internal/ideas/email_digest_test.go::TestRunEmailDigests_HallucinatedRef_Dropped`
-- `internal/ideas/jira_digest_test.go::TestRunJiraDigests_HallucinatedRef_Dropped`
+- `internal/ideas/consolidate_test.go::TestIdeas02_InventedRefPartiallyDropped`
+- `internal/ideas/consolidate_test.go::TestIdeas02_InventedRefAllDroppedOpDiscarded`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas02_TranscriptRef_MentionSourceIsMeeting`
+- `internal/ideas/consolidate_floors_test.go::TestIdeas02_ModelSourceToken_Ignored`
+- `internal/ideas/email_digest_test.go::TestIdeas02_EmailHallucinatedRefDropped`
+- `internal/ideas/jira_digest_test.go::TestIdeas02_JiraHallucinatedRefDropped`
+- `internal/ideas/stage1_bounds_test.go::TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags`
+- `internal/ideas/stage1_bounds_test.go::TestRenderJiraBlock_BudgetDropsIssueFromBlockAndTags`
 
 **Locked since:** 2026-08-07
 
@@ -54,14 +76,20 @@
 
 **Status:** Enforced
 
-**Observable:** Converting an idea to a Target (`converted_target_id`) and merging one item into another (`merged_into_id`) both keep the original `ideas` row — status changes to `converted`/`merged`, but the row, its `idea_mentions`, and any Discuss chat stay in place. Mentions keep accruing on a converted/merged/superseded/reversed item afterwards (a repeat mention of a merged item lands as a mention row on the original, not a resurrected duplicate). Neither Go nor Swift ever cascade-deletes mentions or chat on a status transition.
+**Observable:** Converting an idea to a Target (`converted_target_id`) and merging one item into another (`merged_into_id`) are both *links*, never deletes — the original `ideas` row survives with its status changed to `converted`/`merged`.
+
+- **Convert** keeps everything on the row: the idea, its `idea_mentions`, and its Discuss chat all stay exactly where they are, plus a `converted_target_id` pointing at the new Target.
+- **Merge** re-parents the merged item's `idea_mentions` onto the surviving idea, which becomes their single canonical home, and leaves behind a `merged_into_id` link. Nothing is deleted; the mentions move rather than being duplicated or dropped. The consolidator follows that link, so a later sighting of a merged-away item lands on the survivor instead of resurrecting a duplicate.
+
+Neither Go nor Swift ever cascade-deletes mentions or chat on a status transition.
 
 **Why locked:** The registry's chronology and the target/track/situation history it feeds are the point of mining ideas in the first place; a delete-on-convert or delete-on-merge would discard exactly the provenance trail the owner triaged.
 
 **Test guards:**
-- `internal/ideas/consolidate_test.go::TestConsolidate_AttachMention_MergedIdea_LandsOnTarget`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testMergeReparentsMentionsAndFollowsLink`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testMarkConvertedSetsStatusAndTargetLink`
+- `internal/ideas/consolidate_test.go::TestIdeas03_AttachMentionMergedIdeaLandsOnTarget`
+- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MergeReparentsMentionsAndFollowsLink`
+- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MarkConvertedSetsStatusAndTargetLink`
+- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MarkConvertedKeepsMentionsAndChat`
 
 **Locked since:** 2026-08-07
 
@@ -69,14 +97,18 @@
 
 **Status:** Enforced
 
-**Observable:** When the consolidator attaches a repeat mention to an item whose status is `not_now`, `dropped`, or `rejected`, it inserts the mention row and sets `needs_review=1` with a `review_reason` ("brought up again in #channel") — but never changes `status`. The item surfaces in the Desktop "For review" section, but only an explicit owner action (Approve/Activate/etc., which clears `needs_review`) moves it out of its verdict status.
+**Observable:** When the consolidator attaches a repeat mention to an item whose status is `not_now`, `dropped`, or `rejected`, it inserts the mention row and sets `needs_review=1` with a `review_reason` ("brought up again in #channel") — but never changes `status`. The item surfaces in the Desktop "For review" section, but only an explicit owner action moves it out of its verdict status.
 
-**Why locked:** A repeat mention silently reversing the owner's earlier "not now" or "rejected" call would make triage decisions non-sticky — the owner would have to re-litigate the same idea every time it comes up again, defeating the point of triaging it once.
+The flag must always be *clearable*: every Swift owner action — `setStatus`, `snooze`, `merge`, `supersede`, `markConverted` — clears `needs_review`/`review_reason` in the same write, and the detail pane offers at least one such action for every status a resurfacing can flag (including `rejected` and `dropped`, which get "Activate" alongside "Merge"). An idea that could be flagged but not unflagged would sit in the review queue forever.
+
+**Why locked:** A repeat mention silently reversing the owner's earlier "not now" or "rejected" call would make triage decisions non-sticky — the owner would have to re-litigate the same idea every time it comes up again, defeating the point of triaging it once. The clearability half is the same contract from the other side: a flag with no way out turns the review queue into a graveyard.
 
 **Test guards:**
-- `internal/ideas/consolidate_test.go::TestConsolidate_AttachMention_RejectedIdea_NeedsReview`
-- `internal/db/ideas_test.go::TestIdeas_SetIdeaNeedsReviewTx`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testSetStatusClearsNeedsReview`
+- `internal/ideas/consolidate_test.go::TestIdeas04_AttachMentionRejectedIdeaNeedsReview`
+- `internal/db/ideas_test.go::TestIdeas04_SetIdeaNeedsReviewTx`
+- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas04_SetStatusClearsNeedsReview`
+- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas04_EveryOwnerActionClearsNeedsReview`
+- `WatchtowerDesktop/Tests/IdeasViewModelTests.swift::testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate`
 
 **Locked since:** 2026-08-07
 
