@@ -33,7 +33,7 @@ Dispatch in one parallel batch:
 1. The **advocate** — `subagent_type: "review-advocate"` (Agent tool).
 2. The **prosecutor** — `subagent_type: "review-prosecutor"` (Agent tool).
 3. The **codex** run — dispatch the `codex-wrapper` agent (`subagent_type: "codex-wrapper"`); set `BASE_BRANCH` to the same base as the debate.
-4. The **`pr-review-toolkit` specialist panel** — four subagents, dispatched in the same batch:
+4. The **`pr-review-toolkit` specialist panel** — four subagents, dispatched in the same batch, each with `model: "sonnet"` on the Agent call (they are focused single-lens pattern-matchers; the deep-reasoning budget belongs to the debaters and the judge, which stay on the session model):
    - `subagent_type: "pr-review-toolkit:pr-test-analyzer"` — behavioural coverage gaps (rated 1–10).
    - `subagent_type: "pr-review-toolkit:silent-failure-hunter"` — swallowed errors, unlogged catches.
    - `subagent_type: "pr-review-toolkit:code-simplifier"` — clarity, redundant abstractions.
