@@ -70,18 +70,27 @@ struct TranscriptionSettingsTests {
         #expect(config.diarizationThreshold == 0.6)
     }
 
-    @Test("Absent context prompt keeps the default")
+    @Test("The struct defaults pin the shipped configuration")
+    func structDefaults() throws {
+        let config = TranscriptionConfig()
+        // 30 s windows: raised from 20 after the 2026-08-07 full-recording A/B
+        // (longer context recovers quiet-speaker replies). Conditioning dark.
+        #expect(config.windowSec == 30)
+        #expect(config.contextPrompt == false)
+    }
+
+    @Test("Absent context prompt keeps the dark default")
     func contextPromptDefault() throws {
         let config = TranscriptionConfig.fromDefaults(try makeSuite())
-        #expect(config.contextPrompt)
+        #expect(config.contextPrompt == false)
     }
 
     @Test("Reads the context prompt override")
     func contextPromptOverride() throws {
         let defaults = try makeSuite()
-        defaults.set(false, forKey: "transcription.contextPrompt")
+        defaults.set(true, forKey: "transcription.contextPrompt")
         let config = TranscriptionConfig.fromDefaults(defaults)
-        #expect(config.contextPrompt == false)
+        #expect(config.contextPrompt)
     }
 
     @Test("Empty langset falls back to default")

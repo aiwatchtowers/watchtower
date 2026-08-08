@@ -40,6 +40,7 @@ final class StreamingTranscriberTests: XCTestCase {
         c.overlapSec = overlapSec
         c.boundarySnapSec = 0 // exact window sizes are asserted; snapping is pinned separately
         c.forcedLanguage = "en"
+        c.contextPrompt = true // the suite exercises the conditioning machinery; the shipped default is off
         return c
     }
 

@@ -56,6 +56,7 @@ final class WindowedTranscriberTests: XCTestCase {
         config.windowSec = 0.01
         config.overlapSec = 0
         config.boundarySnapSec = 0 // exact window sizes are asserted below
+        config.contextPrompt = true // the suite exercises the conditioning machinery; the shipped default is off
         return config
     }
 
@@ -381,9 +382,11 @@ final class WindowedTranscriberTests: XCTestCase {
     }
 
     func testWindowingMath() async throws {
-        // Defaults: 20 s window, 1 s overlap → step 19 s. 50 s of audio →
-        // window starts at 0 s, 19 s, 38 s (3 windows), last one truncated to 12 s.
+        // 20 s window (explicit — the shipped default is 30), 1 s overlap →
+        // step 19 s. 50 s of audio → window starts at 0 s, 19 s, 38 s
+        // (3 windows), last one truncated to 12 s.
         var config = TranscriptionConfig()
+        config.windowSec = 20
         config.boundarySnapSec = 0 // exact nominal boundaries are asserted
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -405,7 +408,8 @@ final class WindowedTranscriberTests: XCTestCase {
         // Recording length == window length: a tail start at `step` would lie
         // entirely inside the first window's overlap and only duplicate its
         // audio and lang stats — it must not be emitted.
-        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        var config = TranscriptionConfig() // 1 s overlap; 20 s window set below
+        config.windowSec = 20
         config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -425,7 +429,8 @@ final class WindowedTranscriberTests: XCTestCase {
 
     func testJustOverWindowLengthIsTwoWindows() async throws {
         // 20.5 s: the second window extends past the first one's end → emitted.
-        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        var config = TranscriptionConfig() // 1 s overlap; 20 s window set below
+        config.windowSec = 20
         config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()

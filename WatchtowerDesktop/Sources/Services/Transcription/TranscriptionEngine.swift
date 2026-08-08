@@ -22,11 +22,14 @@ protocol WhisperWindowEngine: Sendable {
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
 }
 
-/// Windowed-transcription parameters. Defaults are ported verbatim from snoop:
-/// 20 s windows with 1 s overlap, langset {ru, uk, en}, confidence threshold 0.6,
-/// margin 0.2 over the runner-up, first-window fallback "ru".
+/// Windowed-transcription parameters. Ported from snoop (1 s overlap, langset
+/// {ru, uk, en}, confidence threshold 0.6, margin 0.2 over the runner-up,
+/// first-window fallback "ru"); the window default was raised 20 → 30 s after
+/// a full-recording A/B showed the longer context recovering quiet-speaker
+/// replies the 20 s windows dropped (2026-08-07), at the price of live chunks
+/// arriving every 30 s instead of 20.
 struct TranscriptionConfig: Equatable {
-    var windowSec: Double = 20
+    var windowSec: Double = 30
     var overlapSec: Double = 1.0
     /// Snap window boundaries to the quietest point within ±boundarySnapSec
     /// of the nominal end (0 disables snapping — exact legacy boundaries).
@@ -37,10 +40,12 @@ struct TranscriptionConfig: Equatable {
     var firstWindowDefault: String = "ru"
     var forcedLanguage: String?   // non-nil disables detection entirely
     /// Condition each window's decode on the previous window's text, whisper's
-    /// long-form convention. Off = every window decodes blind, as before this
-    /// existed. Honoured by the WhisperKit path only — Qwen3, Parakeet and
-    /// Apple run their own windowing and ignore it.
-    var contextPrompt: Bool = true
+    /// long-form convention. Off (the default — a 2026-08-07 full-recording
+    /// validation measured quality parity at ~1.4x decode cost, so it ships
+    /// dark) = every window decodes blind, as before this existed. Exposed as
+    /// a Settings → Transcription toggle. Honoured by the WhisperKit path only
+    /// — Qwen3, Parakeet and Apple run their own windowing and ignore it.
+    var contextPrompt: Bool = false
     /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
     var diarization: Bool = true
     /// Clustering threshold for the diarizer's speaker embeddings; lower splits
@@ -156,8 +161,10 @@ func liftWindowSegments(
 ///
 /// Known deviation: with the default `overlapSec` 1.0 the tail's final ~second
 /// describes audio the NEXT window re-decodes, so the prompt slightly pre-empts
-/// what the model is about to hear. Accepted for now — watch it at validation;
-/// the fix is a timestamp-based trim of the overlapped tail.
+/// what the model is about to hear. A 48-window full-recording validation
+/// (2026-08-07) showed no observable harm from this; accepted as-is, with a
+/// timestamp-based trim of the overlapped tail as the future fix if evidence
+/// ever points here.
 func contextPromptTail(
     prevText: String?,
     prevLang: String?,
