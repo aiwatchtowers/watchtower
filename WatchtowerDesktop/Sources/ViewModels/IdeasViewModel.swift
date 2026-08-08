@@ -20,6 +20,9 @@ final class IdeasViewModel {
     var isBackfilling = false
     var backfillSummary: String?
     var backfillError: String?
+    /// SB7: moved off the sheet's own @State so the elapsed-timer display
+    /// survives dismiss/reopen too, not just isBackfilling/backfillSummary.
+    var backfillStartedAt: Date?
 
     /// Master-detail selection. Lives here — the VM is AppState-owned — so
     /// selection survives tab/sidebar navigation.
@@ -266,6 +269,7 @@ final class IdeasViewModel {
             return
         }
         isBackfilling = true
+        backfillStartedAt = Date()
         backfillError = nil
         let args = [
             "ideas", "mine",
@@ -279,6 +283,7 @@ final class IdeasViewModel {
         do {
             let data = try await runner.run(args: args)
             isBackfilling = false
+            backfillStartedAt = nil
             if Self.parseDisabledEnvelope(data)?.disabled == true {
                 // GB9 (Go wave): ideas.enabled=false on the backfill path
                 // emits {"disabled":true} instead of the usual envelope —
@@ -297,6 +302,7 @@ final class IdeasViewModel {
             load()
         } catch {
             isBackfilling = false
+            backfillStartedAt = nil
             backfillError = error.localizedDescription
             load()
         }

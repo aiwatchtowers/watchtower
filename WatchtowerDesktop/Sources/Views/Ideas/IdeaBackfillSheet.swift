@@ -14,7 +14,6 @@ struct IdeaBackfillSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var fromDate: Date
     @State private var toDate = Date()
-    @State private var startedAt: Date?
 
     private enum Preset {
         case twoWeeks, month, quarter
@@ -34,11 +33,6 @@ struct IdeaBackfillSheet: View {
             sheetFooter
         }
         .frame(width: 440, height: 340)
-        // Starting a run does not dismiss the sheet — the owner watches
-        // progress inline and closes explicitly once done.
-        .onChange(of: vm.isBackfilling) { _, isBackfilling in
-            if isBackfilling { startedAt = Date() }
-        }
     }
 
     private var sheetHeader: some View {
@@ -89,7 +83,7 @@ struct IdeaBackfillSheet: View {
                 Text("Mining ideas…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let startedAt {
+                if let startedAt = vm.backfillStartedAt {
                     TimelineView(.periodic(from: startedAt, by: 1)) { context in
                         Text(Self.elapsedString(from: startedAt, to: context.date))
                             .font(.caption)

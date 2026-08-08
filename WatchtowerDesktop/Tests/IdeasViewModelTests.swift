@@ -312,6 +312,25 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isBackfilling)
     }
 
+    /// SB7: startedAt moves from the sheet's own @State to the VM so the
+    /// elapsed-timer display survives the sheet being dismissed and
+    /// reopened — the same house async-op rule already applied to
+    /// isBackfilling/backfillSummary above.
+    func testBackfillStartedAtSetWhileRunningAndClearedOnTerminal() async {
+        let blocking = FakeCLIRunner()
+        blocking.blockUntilCancelled = true
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
+        XCTAssertNil(vm.backfillStartedAt)
+
+        let task = Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
+        for _ in 0..<1000 where vm.backfillStartedAt == nil { await Task.yield() }
+        XCTAssertNotNil(vm.backfillStartedAt, "must be set while a run is in flight")
+
+        task.cancel()
+        await task.value
+        XCTAssertNil(vm.backfillStartedAt, "cleared once the run reaches a terminal state")
+    }
+
     /// House rule: async ops need VM-owned state so they survive the sheet
     /// being dismissed / the tab switched away from and back — nothing here
     /// holds onto the started Task, mirroring how the sheet's Start button
