@@ -354,6 +354,30 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.backfillStartedAt)
     }
 
+    /// CI flake fix: cancellation can race the CLI's own completion — the
+    /// runner may hand back perfectly valid, parseable data around the same
+    /// moment Cancel is pressed. That must still read as "Cancelled", not a
+    /// parsed (or parse-failed) result — cancellation is authoritative,
+    /// checked BEFORE any envelope parsing is attempted, not inferred only
+    /// from whether the runner happened to throw.
+    func testCancelBackfillReadsAsCancelledEvenWhenRunnerReturnsDataInstead() async {
+        let runner = FakeCLIRunner(stdout: Data(#"{"proposed":9,"cycles":1,"mentions_deduped":0}"#.utf8))
+        runner.blockUntilCancelled = true
+        runner.returnDataOnCancelInsteadOfThrowing = true
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
+        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        XCTAssertTrue(vm.isBackfilling)
+
+        vm.cancelBackfill()
+        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertEqual(vm.backfillError, "Cancelled")
+        XCTAssertNil(vm.backfillSummary, "a cancelled run must never surface a summary, even if the CLI finished around the same moment")
+    }
+
     /// startBackfillTask must not clobber an in-flight run's Task reference
     /// — otherwise a stray second call would leave cancelBackfill() unable
     /// to reach the run that's actually still going.

@@ -311,6 +311,19 @@ final class IdeasViewModel {
             let data = try await runner.run(args: args)
             isBackfilling = false
             backfillStartedAt = nil
+            if Task.isCancelled {
+                // Cancellation is authoritative and checked BEFORE any
+                // envelope parsing: a cancel can race the CLI's own
+                // completion, so `runner.run` may still hand back
+                // perfectly valid data (or throw nothing at all) around the
+                // same moment Cancel is pressed. That must still read as
+                // "Cancelled", never as a parsed (or parse-failed) result —
+                // matches the CancellationError branch in `catch` below,
+                // which only covers the case where run() actually threw.
+                backfillError = "Cancelled"
+                load()
+                return
+            }
             if Self.parseDisabledEnvelope(data)?.disabled == true {
                 // GB9 (Go wave): ideas.enabled=false on the backfill path
                 // emits {"disabled":true} instead of the usual envelope —
