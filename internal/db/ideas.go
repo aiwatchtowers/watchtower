@@ -154,6 +154,26 @@ func (db *DB) IdeaMentionRefsKnownTx(tx *sql.Tx, source string, refs []string) (
 	return out, rows.Err()
 }
 
+// IdeaHasMentionRefTx reports whether ideaID already has a mention recorded
+// under (source, ref) — a deterministic, target-scoped sibling of
+// IdeaMentionRefsKnownTx (GB5). IdeaMentionRefsKnownTx's ref -> idea_id map
+// can only ever report ONE owning idea per ref; if the same ref is
+// legitimately recorded on more than one idea (a message that separately
+// evidences two already-tracked ideas), which idea "wins" that map entry
+// depends on unspecified SQL row order. The attach_mention path needs to
+// know specifically whether THIS idea already has this ref, not which idea
+// some arbitrary row happened to report — this query answers that directly
+// instead of collapsing through a lossy map.
+func (db *DB) IdeaHasMentionRefTx(tx *sql.Tx, ideaID int64, source, ref string) (bool, error) {
+	var exists int
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM idea_mentions WHERE idea_id = ? AND source = ? AND ref = ?)`,
+		ideaID, source, ref).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking idea mention ref for idea %d: %w", ideaID, err)
+	}
+	return exists != 0, nil
+}
+
 // SetIdeaNeedsReviewTx flags an idea for owner review with a reason.
 func (db *DB) SetIdeaNeedsReviewTx(tx *sql.Tx, id int64, reason string) error {
 	_, err := tx.Exec(`UPDATE ideas SET needs_review = 1, review_reason = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,

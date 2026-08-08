@@ -612,3 +612,46 @@ func TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, otherMentions, 1)
 }
+
+// TestGB5_AttachMention_RefKnownOnDifferentIdea_StillInsertsOnTarget pins
+// GB5 (attach dedup stays TARGET-SCOPED, [OWNER] confirmed): a ref already
+// recorded on a DIFFERENT idea must not block attaching it to the target —
+// the two ideas are separately, legitimately evidenced by the same message.
+// The mirror image of TestIdeas05_AttachKnownRef_InsertsNothing, which pins
+// the opposite case (ref known on the TARGET itself). A genuinely new
+// mention on a rejected target must still flag it for review (IDEA-04).
+func TestGB5_AttachMention_RefKnownOnDifferentIdea_StillInsertsOnTarget(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	otherID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Other", Essence: "e", Status: "active"})
+	seedIdeaMention(t, d, otherID, "jira", "WT-9") // same ref, but on a DIFFERENT idea
+
+	targetID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Target", Essence: "e", Status: "rejected"})
+	seedStreamDigestIdeas(t, d, "jira", 1, []streamTopic{{
+		Title: "t", Summary: "s",
+		Ideas: []streamCandidate{{Text: "existing idea again", Author: "Bob", Ref: "WT-9"}},
+	}})
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"jira","ref":"WT-9","quote":"q","author":"Bob","said_at":"2026-08-02T00:00:00Z"}}]}`, targetID), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, mentionsDeduped, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Zero(t, mentionsDeduped, "a ref known on a DIFFERENT idea is not a dedup hit for the target")
+
+	mentions, err := d.ListIdeaMentions(targetID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1, "a ref known on a DIFFERENT idea must not block attaching it to the target")
+	assert.Equal(t, "WT-9", mentions[0].Ref)
+
+	idea, err := d.GetIdea(targetID)
+	require.NoError(t, err)
+	assert.True(t, idea.NeedsReview, "a genuinely new mention on a rejected target must still flag it for review (IDEA-04)")
+	assert.Contains(t, idea.ReviewReason, "WT-9")
+
+	// The other idea's own mention must be untouched.
+	otherMentions, err := d.ListIdeaMentions(otherID)
+	require.NoError(t, err)
+	require.Len(t, otherMentions, 1)
+}

@@ -580,11 +580,16 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				refsRejected++
 				continue
 			}
-			known, kerr := database.IdeaMentionRefsKnownTx(tx, src, []string{op.Mention.Ref})
-			if kerr != nil {
-				return proposed, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, kerr)
+			// Target-scoped by design (GB5, [OWNER] confirmed): checks
+			// specifically whether THIS idea already has this ref, not
+			// whichever idea IdeaMentionRefsKnownTx's ref -> idea_id map
+			// happened to report last for a ref that may legitimately be
+			// recorded on more than one idea.
+			dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, op.Mention.Ref)
+			if derr != nil {
+				return proposed, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
 			}
-			if knownIdeaID, dup := known[op.Mention.Ref]; dup && knownIdeaID == target.ID {
+			if dup {
 				// Already on the target idea — no new evidence, so this must
 				// not resurface a not_now/dropped/rejected verdict either
 				// (IDEA-05 x IDEA-04, mirroring PR #78's IDEA-02x04 finding).
