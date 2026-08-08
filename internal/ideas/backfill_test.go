@@ -325,6 +325,57 @@ func TestGB1_BackfillConsolidatesItsOwnStage1Output(t *testing.T) {
 	require.Len(t, ideasRows, 1)
 }
 
+// TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps pins GB2 directly:
+// with a tiny per-phase cycle budget, stage 1 caps out mid-window (more
+// gmail messages remain than fit in one fetch pass), and the run must both
+// report Capped=true AND still give the consolidate phase its own turn — the
+// shared-counter bug would have left phase 1 exhausting the whole budget
+// and starving phase 2 of every cycle.
+func TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	restore := SetBackfillMaxCyclesForTest(1)
+	defer restore()
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	gmailAcct := seedGoogleAccount(t, d, float64(now.Unix()))
+	setIdeasEmailFloorRaw(t, d, gmailAcct, float64(from.Add(-time.Hour).Unix()))
+
+	// More messages than one gmail pre-digest pass's own fetch window (500),
+	// so a single-cycle stage-1 cap genuinely cuts the drain off mid-window
+	// rather than just finishing a small backlog early.
+	base := from.Add(time.Hour).Unix()
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	for i := 0; i < 501; i++ {
+		ts := time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339)
+		_, ierr := tx.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			gmailAcct, fmt.Sprintf("m%d", i), fmt.Sprintf("thr-%d", i), "a@example.com", "Ann", "s", "we should try X", ts)
+		require.NoError(t, ierr)
+	}
+	require.NoError(t, tx.Commit())
+
+	var consolidateCalled bool
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== REGISTRY ===") {
+			consolidateCalled = true
+			return `{"ops":[]}`, nil
+		}
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-0"}],"decisions":[]}]}`, gmailAcct), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	result, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	assert.True(t, result.Capped, "stage-1 must report Capped when it hits its own per-phase cycle budget without converging")
+	assert.True(t, consolidateCalled, "the consolidate phase must still run after stage-1 hits its own cap — a shared cycle counter would have starved it entirely")
+}
+
 // TestBackfill_EmptyWindow_CleanNoOpFloorsRestored is the degenerate case: a
 // one-second window with no material anywhere lowers, drains (finding
 // nothing), and restores the floors right back to their starting values —

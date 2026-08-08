@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,8 +14,25 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
 )
+
+// fakeCmdGen is a stub digest.Generator for exercising runIdeasBackfill
+// directly, bypassing cliGenerator's real claude/codex subprocess (the
+// internal/ideas fakeGen precedent, duplicated here since it's package-private
+// there).
+type fakeCmdGen struct {
+	reply func(user string) (string, error)
+}
+
+func (g *fakeCmdGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
+	out, err := g.reply(user)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}, "sess", nil
+}
 
 // setupIdeasTestEnv creates a temp HOME with a config file and an empty
 // workspace DB, points flagConfig at it, and returns the opened DB (the
@@ -228,6 +248,7 @@ func TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope(t *testing.T) {
 	out := buf.String()
 	require.Contains(t, out, `"proposed":0`)
 	require.Contains(t, out, `"mentions_deduped":0`)
+	require.Contains(t, out, `"capped":false`)
 
 	// The lock must be released once the command returns, so a follow-up
 	// backfill (or the daemon) is never left blocked by this one.
@@ -236,4 +257,60 @@ func TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope(t *testing.T) {
 		require.NoError(t, cerr)
 		return cfg.WorkspaceDir()
 	}()))
+}
+
+// TestIdeasMine_Backfill_Capped_PrintsEnvelope covers GB2 at the CLI layer:
+// when a drain phase hits its own per-phase cycle cap without converging,
+// the printed envelope must carry "capped":true. Calls runIdeasBackfill
+// directly with a fake generator (bypassing cliGenerator's real claude/codex
+// subprocess) so this stays a fast, hermetic unit test.
+func TestIdeasMine_Backfill_Capped_PrintsEnvelope(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "Test"}))
+
+	restore := ideas.SetBackfillMaxCyclesForTest(1)
+	t.Cleanup(restore)
+
+	res, err := database.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date)
+		VALUES ('acct@example.com', 'Test', 1, 0)`)
+	require.NoError(t, err)
+	acctID, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	fromStr := "2020-01-01"
+	from, err := time.Parse(ideasMineDateLayout, fromStr)
+	require.NoError(t, err)
+	require.NoError(t, database.SetIdeasEmailFloor(acctID, float64(from.Add(-time.Hour).Unix())))
+
+	// More messages than one gmail pre-digest pass's own fetch window (500),
+	// so a single-cycle stage-1 cap genuinely cuts the drain off mid-window.
+	base := from.Add(time.Hour).Unix()
+	tx, err := database.Begin()
+	require.NoError(t, err)
+	for i := 0; i < 501; i++ {
+		ts := time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339)
+		_, ierr := tx.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			acctID, fmt.Sprintf("m%d", i), fmt.Sprintf("thr-%d", i), "a@example.com", "Ann", "s", "we should try X", ts)
+		require.NoError(t, ierr)
+	}
+	require.NoError(t, tx.Commit())
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	gen := &fakeCmdGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== REGISTRY ===") {
+			return `{"ops":[]}`, nil
+		}
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-0"}],"decisions":[]}]}`, acctID), nil
+	}}
+	pipe := ideas.New(database, cfg, gen, nil)
+
+	var buf bytes.Buffer
+	ideasMineCmd.SetOut(&buf)
+	require.NoError(t, runIdeasBackfill(context.Background(), ideasMineCmd, cfg, pipe, fromStr, ""))
+	database.Close()
+
+	require.Contains(t, buf.String(), `"capped":true`)
 }

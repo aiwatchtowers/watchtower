@@ -13,11 +13,24 @@ type BackfillResult struct {
 	Proposed        int
 	Cycles          int
 	MentionsDeduped int
+	// Capped reports whether either drain phase hit its own per-phase
+	// cycle budget (backfillMaxCycles) without converging — a pathological
+	// window still terminates, but the caller (the CLI envelope) needs to
+	// know the window was NOT fully drained, so a re-run may still find
+	// material.
+	Capped bool
 }
 
-// backfillMaxCycles bounds the drain loop as a runaway guard (spec §3): a
-// pathological window (or a bug that never converges) still terminates.
-const backfillMaxCycles = 50
+// backfillMaxCycles bounds each drain phase as a runaway guard (spec §3): a
+// pathological window (or a bug that never converges) still terminates. It
+// is a per-PHASE budget, not shared: drainStage1 and drainConsolidate each
+// get their own full backfillMaxCycles allowance (GB2) — a shared counter
+// would let a slow-converging stage-1 pass exhaust the whole budget and
+// starve the consolidator of its turn entirely, even though stage-1 capping
+// out says nothing about whether stage-2 has material worth consolidating.
+// A package-level var, not a const, so tests can shrink it to force capping
+// deterministically without seeding thousands of rows.
+var backfillMaxCycles = 50
 
 // Backfill mines ideas/decisions over an arbitrary historical window
 // [from, to] (spec §3): it lowers the registry's floors to the window start,
@@ -65,39 +78,47 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 	}
 
 	// Phase 1: drain the Gmail/Jira stage-1 pre-digests until a full cycle
-	// moves no account's floor at all. A floor-read failure is fatal — no
-	// point attempting phase 2 once the drain loop can no longer even tell
-	// whether it converged — so it aborts here, before phase 2 ever runs.
-	cycles, softErr, fatalErr := p.drainStage1(ctx, to, googleAccounts, jiraAccounts, progress)
+	// moves no account's floor at all, or its own per-phase cycle budget
+	// (GB2) runs out. A floor-read failure is fatal — no point attempting
+	// phase 2 once the drain loop can no longer even tell whether it
+	// converged — so it aborts here, before phase 2 ever runs.
+	cycles, capped1, softErr, fatalErr := p.drainStage1(ctx, to, googleAccounts, jiraAccounts, progress)
 	if fatalErr != nil {
 		result.Cycles = cycles
+		result.Capped = capped1
 		return result, fatalErr
 	}
 
 	// Phase 2: drain the consolidator until a cycle proposes nothing, dedupes
-	// nothing, and moves no floor. softErr threads phase 1's error through so
-	// the "first error across BOTH phases wins" rule holds even though the
-	// two phases are now two functions.
-	cycles, proposed, mentionsDeduped, err := p.drainConsolidate(ctx, to, cycles, progress, softErr)
+	// nothing, and moves no floor, or its own per-phase cycle budget runs
+	// out — independent of phase 1's budget (GB2), so a stage-1 pass that
+	// capped out never starves the consolidator of its turn. softErr threads
+	// phase 1's error through so the "first error across BOTH phases wins"
+	// rule holds even though the two phases are now two functions.
+	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, to, cycles, progress, softErr)
 	result.Cycles = cycles
 	result.Proposed = proposed
 	result.MentionsDeduped = mentionsDeduped
+	result.Capped = capped1 || capped2
 	return result, err
 }
 
 // drainStage1 is Backfill phase 1: repeats the Gmail/Jira stage-1
 // pre-digest passes, bounded by `to`, until a full cycle moves no account's
-// per-source floor at all (or the shared cycle cap is hit). A per-account
+// per-source floor at all, or this phase's OWN per-phase cycle budget
+// (backfillMaxCycles) is hit (GB2) — capped reports the latter, distinct
+// from the ordinary converged-with-nothing-left-to-do exit. A per-account
 // digest failure is logged and does not stop the loop (matches
 // runEmailDigests/runJiraDigests' own log-and-continue contract) — softErr
 // carries the first one, for the caller to surface only if phase 2 doesn't
 // also fail. fatalErr is reserved for a floor-read failure, which the
 // caller must treat as an immediate abort of the whole Backfill call.
-func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, googleAccounts []db.GoogleAccount, jiraAccounts []db.JiraAccount, progress func(cycle int)) (cycles int, softErr, fatalErr error) {
+func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, googleAccounts []db.GoogleAccount, jiraAccounts []db.JiraAccount, progress func(cycle int)) (cycles int, capped bool, softErr, fatalErr error) {
+	converged := false
 	for cycles < backfillMaxCycles {
 		beforeEmail, beforeJira, sferr := p.currentStage1Floors(googleAccounts, jiraAccounts)
 		if sferr != nil {
-			return cycles, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", sferr)
+			return cycles, false, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", sferr)
 		}
 
 		cycles++
@@ -111,13 +132,18 @@ func (p *Pipeline) drainStage1(ctx context.Context, to time.Time, googleAccounts
 
 		afterEmail, afterJira, aferr := p.currentStage1Floors(googleAccounts, jiraAccounts)
 		if aferr != nil {
-			return cycles, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", aferr)
+			return cycles, false, softErr, fmt.Errorf("backfill: reading stage-1 floors: %w", aferr)
 		}
 		if stage1FloorsEqual(beforeEmail, beforeJira, afterEmail, afterJira) {
+			converged = true
 			break
 		}
 	}
-	return cycles, softErr, nil
+	if !converged {
+		capped = true
+		p.logf("ideas: backfill stage-1 hit the %d-cycle cap without converging — the window is not fully drained yet", backfillMaxCycles)
+	}
+	return cycles, capped, softErr, nil
 }
 
 // runStage1Passes runs one email pass then one jira pass for the current
@@ -140,21 +166,28 @@ func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time) error {
 	return firstErr
 }
 
-// drainConsolidate is Backfill phase 2: repeats consolidateCycle, bounded
-// by the shared cycle cap (continuing from startCycles, wherever phase 1
-// left off), until a cycle proposes nothing, dedupes nothing, and moves no
-// workspace floor. priorErr is phase 1's already-accumulated error, if any —
-// see consolidateCycle for the fatal-vs-soft error split this loop respects.
-// The before-floors read happens here, ahead of the cycle counter, so a
-// cycle that fails before ever attempting any work is never counted or
-// reported to progress.
-func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, err error) {
+// drainConsolidate is Backfill phase 2: repeats consolidateCycle, bounded by
+// THIS phase's own per-phase cycle budget (GB2 — independent of phase 1's,
+// so a stage-1 pass that capped out never starves phase 2 of its turn),
+// continuing the GLOBAL cycle/progress numbering from startCycles wherever
+// phase 1 left off, until a cycle proposes nothing, dedupes nothing, and
+// moves no workspace floor. capped reports whether this phase's own budget
+// ran out before convergence — never set on the error-break path, since an
+// erroring pass says nothing about whether the phase would have converged
+// given more cycles. priorErr is phase 1's already-accumulated error, if
+// any — see consolidateCycle for the fatal-vs-soft error split this loop
+// respects. The before-floors read happens here, ahead of the cycle
+// counter, so a cycle that fails before ever attempting any work is never
+// counted or reported to progress.
+func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
 	cycles = startCycles
 	firstErr := priorErr
-	for cycles < backfillMaxCycles {
+	converged := false
+	erroredOut := false
+	for phaseCycles := 0; phaseCycles < backfillMaxCycles; phaseCycles++ {
 		beforeDigest, beforeStream, beforeTranscript, gferr := p.db.GetIdeasFloors()
 		if gferr != nil {
-			return cycles, proposed, mentionsDeduped, fmt.Errorf("backfill: reading consolidate floors: %w", gferr)
+			return cycles, proposed, mentionsDeduped, false, fmt.Errorf("backfill: reading consolidate floors: %w", gferr)
 		}
 
 		cycles++
@@ -164,22 +197,28 @@ func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycl
 
 		cProposed, cDeduped, floorsMoved, fatalErr, softErr := p.consolidateCycle(ctx, to, beforeDigest, beforeStream, beforeTranscript)
 		if fatalErr != nil {
-			return cycles, proposed, mentionsDeduped, fatalErr
+			return cycles, proposed, mentionsDeduped, false, fatalErr
 		}
 		if softErr != nil {
 			p.logf("ideas: backfill consolidate pass: %v", softErr)
 			if firstErr == nil {
 				firstErr = softErr
 			}
+			erroredOut = true
 			break // an erroring pass says nothing about convergence — stop draining
 		}
 		proposed += cProposed
 		mentionsDeduped += cDeduped
 		if consolidateConverged(cProposed, cDeduped, floorsMoved) {
+			converged = true
 			break
 		}
 	}
-	return cycles, proposed, mentionsDeduped, firstErr
+	if !converged && !erroredOut {
+		capped = true
+		p.logf("ideas: backfill consolidate hit the %d-cycle cap without converging — the window is not fully drained yet", backfillMaxCycles)
+	}
+	return cycles, proposed, mentionsDeduped, capped, firstErr
 }
 
 // consolidateConverged reports whether a drainConsolidate cycle found
@@ -210,6 +249,20 @@ func (p *Pipeline) consolidateCycle(ctx context.Context, to time.Time, beforeDig
 	}
 	floorsMoved = afterDigest != beforeDigest || afterStream != beforeStream || afterTranscript != beforeTranscript
 	return proposed, mentionsDeduped, floorsMoved, nil, nil
+}
+
+// SetBackfillMaxCyclesForTest overrides the Backfill per-phase cycle budget
+// (backfillMaxCycles, GB2) for the life of a test and returns a restore func
+// — the SetGoogleRevokeEndpointForTest precedent
+// (internal/calendar/auth.go). backfillMaxCycles is package-private and
+// swapped directly by this package's own tests; this exported seam exists
+// for callers OUTSIDE this package (e.g. cmd's `ideas mine --from` CLI
+// tests) that need to force a drain phase to cap out deterministically
+// without seeding an unrealistically large backlog.
+func SetBackfillMaxCyclesForTest(n int) (restore func()) {
+	prev := backfillMaxCycles
+	backfillMaxCycles = n
+	return func() { backfillMaxCycles = prev }
 }
 
 // lowerBackfillFloors is Backfill's step 2 (spec §3): it lowers the three

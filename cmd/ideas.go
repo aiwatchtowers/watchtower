@@ -108,9 +108,10 @@ const ideasMineDateLayout = "2006-01-02"
 // (spec §3 step 5) — machine-readable so the Desktop "Find ideas" sheet can
 // parse it straight off the CLI child's stdout.
 type backfillEnvelope struct {
-	Proposed        int `json:"proposed"`
-	Cycles          int `json:"cycles"`
-	MentionsDeduped int `json:"mentions_deduped"`
+	Proposed        int  `json:"proposed"`
+	Cycles          int  `json:"cycles"`
+	MentionsDeduped int  `json:"mentions_deduped"`
+	Capped          bool `json:"capped"`
 }
 
 func runIdeasMine(cmd *cobra.Command, _ []string) error {
@@ -187,6 +188,7 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 		Proposed:        result.Proposed,
 		Cycles:          result.Cycles,
 		MentionsDeduped: result.MentionsDeduped,
+		Capped:          result.Capped,
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling backfill envelope: %w", err)
