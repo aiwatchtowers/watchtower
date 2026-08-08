@@ -210,6 +210,34 @@ var searchFields = []string{
 	"issuelinks", "sprint", "epic", "parent", "resolutiondate", "fixVersions",
 }
 
+// GetIssueComments fetches every comment on an issue, paginating with
+// startAt/maxResults=50 (the FetchAllBoards shape) until startAt+len(page) >=
+// total. An empty page always stops the loop, guarding against an infinite
+// loop if the API ever reports a total larger than it actually returns.
+func (c *Client) GetIssueComments(ctx context.Context, key string) ([]IssueComment, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/comment", url.PathEscape(key))
+	var all []IssueComment
+	startAt := 0
+	for {
+		params := url.Values{
+			"startAt":    {fmt.Sprintf("%d", startAt)},
+			"maxResults": {"50"},
+		}
+		var page CommentList
+		if err := c.getWithQuery(ctx, path, params, &page); err != nil {
+			return nil, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
+		}
+
+		all = append(all, page.Comments...)
+		startAt += len(page.Comments)
+
+		if len(page.Comments) == 0 || startAt >= page.Total {
+			break
+		}
+	}
+	return all, nil
+}
+
 // GetProjectVersions fetches all fix versions (releases) for a project.
 func (c *Client) GetProjectVersions(ctx context.Context, projectKey string) ([]FixVersion, error) {
 	path := fmt.Sprintf("/rest/api/3/project/%s/versions", url.PathEscape(projectKey))

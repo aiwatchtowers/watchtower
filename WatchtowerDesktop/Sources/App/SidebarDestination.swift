@@ -6,6 +6,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case briefings
     case dayPlan
     case inbox
+    case ideas
     case calendar
     case targets
     case tracks
@@ -32,6 +33,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .briefings: "Briefings"
         case .dayPlan: "Day Plan"
         case .inbox: "Inbox"
+        case .ideas: "Ideas"
         case .calendar: "Calendar"
         case .targets: "Targets"
         case .tracks: "Tracks"
@@ -58,6 +60,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .briefings: "sun.max"
         case .dayPlan: "calendar.day.timeline.left"
         case .inbox: "tray"
+        case .ideas: "lightbulb"
         case .calendar: "calendar"
         case .targets: "scope"
         case .tracks: "binoculars"

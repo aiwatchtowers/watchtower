@@ -58,6 +58,16 @@ type InboxConfig struct {
 	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
 }
 
+// IdeasConfig holds settings for the ideas & decisions registry pipeline
+// (internal/ideas) — stage-1 substrate prep (Gmail/Jira digests) plus the
+// stage-2 consolidator (InboxConfig shape precedent).
+type IdeasConfig struct {
+	Enabled                 bool `mapstructure:"enabled"`                     // enable the ideas registry pipeline (default: true — headline feature, not a dark experiment)
+	MineIntervalHours       int  `mapstructure:"mine_interval_hours"`         // throttle between consolidator runs (default: 6, the phasePeopleCards throttle precedent)
+	MaxCommentIssuesPerSync int  `mapstructure:"max_comment_issues_per_sync"` // max Jira issues fetched for new comments per sync pass (default: 50)
+	MaxPromptChars          int  `mapstructure:"max_prompt_chars"`            // truncate stage-1/consolidator input assembly beyond this (default: 60000)
+}
+
 // FeedConfig holds settings for the dashboard feed publisher (internal/feed).
 type FeedConfig struct {
 	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
@@ -307,6 +317,7 @@ type Config struct {
 	Digest          DigestConfig                `mapstructure:"digest"`
 	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
+	Ideas           IdeasConfig                 `mapstructure:"ideas"`
 	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
@@ -363,6 +374,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
 	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
+	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
+	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
+	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)
+	v.SetDefault("ideas.max_prompt_chars", DefaultIdeasMaxPromptChars)
 	v.SetDefault("feed.enabled", true)
 	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)

@@ -118,6 +118,7 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerJira(srv.s, database)
 	registerMessages(srv.s, database)
 	registerTranscripts(srv.s, database)
+	registerIdeas(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 
 	return srv

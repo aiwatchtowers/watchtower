@@ -55,6 +55,21 @@ When a discussion resolves itself (someone else answered and the question was ac
 
 **Daemon** — The pipeline runs after each sync (Phase 0.5, before channel digests): detect → triage → learn → auto-resolve → compose → situation cards → archive/unsnooze. The daemon also unsnoozes situations whose snooze time has passed, returning them to the open feed.
 
+### Ideas
+A registry for ideas, decisions, and notes that surface in Slack threads, meetings, Jira comments, and email and would otherwise get lost. The pipeline mines candidates from all four sources a few times a day; you only triage what it finds.
+
+**How it works:** Every stream first gets a lightweight pre-digest — Slack and meeting recaps already extract `ideas`/`decisions`, and Gmail/Jira get their own new digest passes over recent threads and issues (comments included). A few times a day, a stronger consolidation pass reads only the new material plus your recent verdicts, and proposes new ideas/decisions or attaches a repeat mention to something already in the registry.
+
+**List (left):** a "For review" section on top — freshly proposed items plus anything resurfaced (a repeat mention of something you'd already said "not now" to or rejected) — then the full registry below, filterable by kind (Idea / Decision / Note) and status, with a text search over titles, essence, and mention quotes.
+
+**Detail (right):** the essence, a 👍/👎 rating with an optional teaching comment, and an action bar that depends on the item's kind and status — **Approve**/**Reject** for a freshly proposed item, **Not now** (with an optional wake date) / **Activate** to toggle it back, **Convert to Target** to graduate an idea into a trackable target, **Merge** (pre-filled when the miner flagged a similar existing item) to fold duplicates together, **Drop**, and **Supersede**/**Reverse** for decisions. Below that: the mentions chronology (quote, author, and a deep link back to the source — Slack, the meeting transcript, the Gmail thread, or the Jira issue), then a collapsed Discuss chat scoped to that item.
+
+**Converting or merging never deletes anything** — the original row stays, linked to the target it became or the item it merged into, so its history stays reachable.
+
+**Create (+):** add an idea, note, or decision by hand — title and free text, no triage needed since it starts out active.
+
+**Sidebar badge** — count of items awaiting review (freshly proposed + resurfaced).
+
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
 

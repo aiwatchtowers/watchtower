@@ -568,7 +568,7 @@ func TestStoreDigest(t *testing.T) {
 	result := &DigestResult{
 		Summary: "test summary",
 		Topics: []Topic{
-			{Title: "topic1", Summary: "about topic 1", Decisions: []Decision{{Text: "decided X", By: "@alice"}}},
+			{Title: "topic1", Summary: "about topic 1", Decisions: []Decision{{Text: "decided X", By: "@alice"}}, Ideas: []IdeaCandidate{{Text: "try X", By: "U1", MessageTS: "123.45"}}},
 			{Title: "topic2", Summary: "about topic 2", ActionItems: []ActionItem{{Text: "do Y", Assignee: "@bob", Status: "open"}}},
 		},
 	}
@@ -598,6 +598,19 @@ func TestStoreDigest(t *testing.T) {
 	assert.Len(t, dbTopics, 2)
 	assert.Equal(t, "topic1", dbTopics[0].Title)
 	assert.Equal(t, "topic2", dbTopics[1].Title)
+
+	// Verify ideas JSON persisted for the topic that had one, and that the
+	// topic without ideas round-trips to an empty slice.
+	var ideas []IdeaCandidate
+	require.NoError(t, json.Unmarshal([]byte(dbTopics[0].Ideas), &ideas))
+	require.Len(t, ideas, 1)
+	assert.Equal(t, "try X", ideas[0].Text)
+	assert.Equal(t, "U1", ideas[0].By)
+	assert.Equal(t, "123.45", ideas[0].MessageTS)
+
+	var noIdeas []IdeaCandidate
+	require.NoError(t, json.Unmarshal([]byte(dbTopics[1].Ideas), &noIdeas))
+	assert.Empty(t, noIdeas)
 }
 
 // capturingGenerator captures the prompt passed to Generate for inspection.
@@ -1726,6 +1739,25 @@ func TestParseDigestResult_WithImportanceField(t *testing.T) {
 	require.Len(t, result.Topics, 1)
 	require.Len(t, result.Topics[0].Decisions, 1)
 	assert.Equal(t, "high", result.Topics[0].Decisions[0].Importance)
+}
+
+func TestParseDigestResult_WithIdeasField(t *testing.T) {
+	input := `{"summary":"test","topics":[{"title":"Infra","summary":"infra topic","decisions":[],"action_items":[],"situations":[],"key_messages":[],"ideas":[{"text":"try X","by":"U1","message_ts":"123.45"}]}]}`
+	result, err := parseDigestResult(input)
+	require.NoError(t, err)
+	require.Len(t, result.Topics, 1)
+	require.Len(t, result.Topics[0].Ideas, 1)
+	assert.Equal(t, "try X", result.Topics[0].Ideas[0].Text)
+	assert.Equal(t, "U1", result.Topics[0].Ideas[0].By)
+	assert.Equal(t, "123.45", result.Topics[0].Ideas[0].MessageTS)
+}
+
+func TestParseDigestResult_WithoutIdeasFieldParsesEmpty(t *testing.T) {
+	input := `{"summary":"test","topics":[{"title":"Infra","summary":"infra topic","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`
+	result, err := parseDigestResult(input)
+	require.NoError(t, err)
+	require.Len(t, result.Topics, 1)
+	assert.Empty(t, result.Topics[0].Ideas)
 }
 
 // --- Tests for pooled.go ---

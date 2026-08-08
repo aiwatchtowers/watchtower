@@ -55,6 +55,7 @@ struct SidebarView: View {
     private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
     private var situationsCount: Int { counts?.situationsCount ?? 0 }
     private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
+    private var ideasCount: Int { counts?.ideasCount ?? 0 }
     private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
@@ -203,6 +204,7 @@ struct SidebarView: View {
             if count > 0 {
                 capsuleBadge(count, color: item == .tracks ? .orange
                     : item == .memory ? .orange
+                    : item == .ideas ? .orange
                     : item == .inbox && inboxHighPriorityCount > 0 ? .red
                     : item == .inbox ? .blue
                     : item == .targets && overdueTaskCount > 0 ? .red
@@ -230,6 +232,7 @@ struct SidebarView: View {
         case .catchUp: catchUpTotalCount
         case .briefings: unreadBriefingCount
         case .inbox: situationsCount
+        case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
         case .digests: unreadDigestCount

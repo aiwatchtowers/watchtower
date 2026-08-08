@@ -15,6 +15,7 @@ type RecapResult struct {
 	KeyDecisions  []string `json:"key_decisions"`
 	ActionItems   []string `json:"action_items"`
 	OpenQuestions []string `json:"open_questions"`
+	Ideas         []string `json:"ideas"`
 }
 
 // GenerateRecap takes the raw text the user pasted and returns a structured
@@ -74,6 +75,7 @@ func (p *Pipeline) GenerateRecap(
 	raw.KeyDecisions = trimNonEmpty(raw.KeyDecisions)
 	raw.ActionItems = trimNonEmpty(raw.ActionItems)
 	raw.OpenQuestions = trimNonEmpty(raw.OpenQuestions)
+	raw.Ideas = trimNonEmpty(raw.Ideas)
 
 	return &raw, nil
 }
@@ -135,4 +137,4 @@ func (p *Pipeline) loadRecapPrompt() string {
 }
 
 const defaultRecapPromptFallback = `Recap the meeting. Event: %s (%s-%s, attendees: %s, description: %s). Topics: %s. Notes: %s. Raw: %s. %s
-Return JSON: {"summary":"","key_decisions":[],"action_items":[],"open_questions":[]}`
+Return JSON: {"summary":"","key_decisions":[],"action_items":[],"open_questions":[],"ideas":[]}`

@@ -26,12 +26,19 @@ const (
 	DefaultInboxMaxTriageMessages = 600
 	DefaultInboxMaxAwarenessCards = 3
 	DefaultFeedMeetingLeadMinutes = 30
-	DefaultTracksMinMsgs          = 3
-	DefaultBatchMaxChannels       = 20
-	DefaultBatchMaxMessages       = 1500
-	DefaultMaxBatchesPerRun       = 25  // max AI calls per digest run (budget cap)
-	DefaultDigestCooldownMins     = 30  // skip channel if digested < N minutes ago with few messages
-	DefaultMessageTruncateLen     = 500 // truncate individual messages longer than this (chars)
+
+	// Ideas & decisions registry defaults
+	DefaultIdeasEnabled                 = true
+	DefaultIdeasMineIntervalHours       = 6
+	DefaultIdeasMaxCommentIssuesPerSync = 50
+	DefaultIdeasMaxPromptChars          = 60000
+
+	DefaultTracksMinMsgs      = 3
+	DefaultBatchMaxChannels   = 20
+	DefaultBatchMaxMessages   = 1500
+	DefaultMaxBatchesPerRun   = 25  // max AI calls per digest run (budget cap)
+	DefaultDigestCooldownMins = 30  // skip channel if digested < N minutes ago with few messages
+	DefaultMessageTruncateLen = 500 // truncate individual messages longer than this (chars)
 
 	// Tiered batching thresholds (visible message count).
 	DefaultBatchHighActivityThreshold = 200 // >200 → individual batch (1 channel)

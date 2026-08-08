@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- Unix ts of last ended calendar event fully folded into an episode by the calendar past-event->episode builder; a fourth independent memory watermark (see 00033)
     -- memory_jira_last_extracted_ts moved to jira_accounts (per-account, see 00049)
     memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
-    memory_focus_fingerprint TEXT NOT NULL DEFAULT ''  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
+    memory_focus_fingerprint TEXT NOT NULL DEFAULT '',  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
+    ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digest_topics.id already consolidated (see 00050)
+    ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest stream_digests.id already consolidated (see 00050)
+    ideas_transcript_floor INTEGER NOT NULL DEFAULT 0  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
 );
 
 -- Users
@@ -216,6 +219,7 @@ CREATE TABLE IF NOT EXISTS digest_topics (
     action_items  TEXT NOT NULL DEFAULT '[]',
     situations    TEXT NOT NULL DEFAULT '[]',
     key_messages  TEXT NOT NULL DEFAULT '[]',
+    ideas         TEXT NOT NULL DEFAULT '[]',  -- ideas registry: idea/decision candidates mined from this topic (see 00050)
     UNIQUE(digest_id, idx)
 );
 CREATE INDEX IF NOT EXISTS idx_digest_topics_digest ON digest_topics(digest_id);
@@ -390,7 +394,7 @@ CREATE TABLE IF NOT EXISTS targets (
     notes               TEXT NOT NULL DEFAULT '[]',
     progress            REAL NOT NULL DEFAULT 0.0,
     source_type         TEXT NOT NULL DEFAULT 'manual'
-                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem')),
+                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem','idea')),
     source_id           TEXT NOT NULL DEFAULT '',
     ai_level_confidence REAL DEFAULT NULL,
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -896,6 +900,7 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     error                         TEXT NOT NULL DEFAULT '',
     enabled                       INTEGER NOT NULL DEFAULT 1,
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was on workspace)
+    ideas_jira_floor              TEXT NOT NULL DEFAULT '',  -- ideas registry floor: per-account Jira comment-sync watermark for the jira pre-digest (see 00050)
     created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
@@ -1139,6 +1144,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     error                          TEXT NOT NULL DEFAULT '',
     gmail_last_internal_date       REAL NOT NULL DEFAULT 0,   -- per-account Gmail sync watermark
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark
+    ideas_email_floor              REAL NOT NULL DEFAULT 0,   -- ideas registry floor: per-account Gmail internalDate watermark for the email pre-digest (see 00050)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
@@ -1489,3 +1495,79 @@ CREATE TABLE IF NOT EXISTS memory_focus_matches (
     node_id TEXT PRIMARY KEY,
     state   TEXT NOT NULL CHECK (state IN ('now','cooled'))
 );
+
+-- Ideas & Decisions Registry (see 00050): durable, dedupable record of
+-- ideas/decisions/notes mined from Slack digests, meeting transcripts,
+-- Gmail and Jira, plus owner-authored ones from chat. Distinct from targets
+-- (actionable goal tracking) — an idea only becomes a target when the
+-- owner converts it (targets.source_type='idea').
+
+CREATE TABLE IF NOT EXISTS ideas (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL CHECK(kind IN ('idea','decision','note')),
+    title           TEXT NOT NULL,
+    essence         TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK(status IN ('proposed','active','rejected','not_now',
+                                     'converted','dropped','merged','superseded','reversed')),
+    source          TEXT NOT NULL DEFAULT 'mined' CHECK(source IN ('mined','owner')),
+    snooze_until    TEXT NOT NULL DEFAULT '',
+    needs_review    INTEGER NOT NULL DEFAULT 0,
+    review_reason   TEXT NOT NULL DEFAULT '',
+    similar_to_id   INTEGER,
+    merged_into_id  INTEGER,
+    superseded_by_id INTEGER,
+    converted_target_id INTEGER,
+    owner_rating    INTEGER NOT NULL DEFAULT 0,
+    rating_comment  TEXT NOT NULL DEFAULT '',
+    last_mention_at TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
+
+-- Individual sightings of an idea across sources; an idea accumulates one
+-- row per mention instead of being overwritten.
+CREATE TABLE IF NOT EXISTS idea_mentions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
+    ref         TEXT NOT NULL DEFAULT '',
+    quote       TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    said_at     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+
+-- Stage-1 pre-digests for streams that have no existing digest pipeline
+-- (Gmail, Jira): a lightweight per-account topic summary the stage-2
+-- consolidator reads alongside Slack digests and meeting recaps.
+CREATE TABLE IF NOT EXISTS stream_digests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+    account_id   INTEGER NOT NULL,
+    scope        TEXT NOT NULL DEFAULT '',
+    period_from  TEXT NOT NULL,
+    period_to    TEXT NOT NULL,
+    topics_json  TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
+
+-- Bounded Jira comment sync (per-account, per-issue) feeding the Jira
+-- stream digest; a small local cache, not a full Jira-comment mirror.
+CREATE TABLE IF NOT EXISTS jira_comments (
+    account_id          INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    issue_key           TEXT NOT NULL,
+    id                  TEXT NOT NULL,
+    author              TEXT NOT NULL DEFAULT '',
+    author_account_id   TEXT NOT NULL DEFAULT '',
+    body_text           TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT '',
+    updated_at          TEXT NOT NULL DEFAULT '',
+    synced_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
