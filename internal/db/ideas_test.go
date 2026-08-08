@@ -854,7 +854,10 @@ func TestIdeas_ListDigestTopicIdeasAfter_UpperBound(t *testing.T) {
 }
 
 // TestIdeas_ListStreamDigestsAfter_UpperBound is the stream-digests half of
-// the same rule: a non-zero toISO excludes rows created after it.
+// the same rule: a non-zero toISO excludes rows whose content window
+// (period_to) is after it — here period_to and created_at coincide, so this
+// alone doesn't distinguish the two; see
+// TestGB1_ListStreamDigestsAfter_BoundsOnPeriodToNotCreatedAt for that.
 func TestIdeas_ListStreamDigestsAfter_UpperBound(t *testing.T) {
 	d := openTestDB(t)
 
@@ -867,7 +870,7 @@ func TestIdeas_ListStreamDigestsAfter_UpperBound(t *testing.T) {
 		t.Fatalf("ListStreamDigestsAfter: %v", err)
 	}
 	if len(bounded) != 2 {
-		t.Fatalf("ListStreamDigestsAfter(0, bound) = %+v, want 2 rows (created_at <= bound)", bounded)
+		t.Fatalf("ListStreamDigestsAfter(0, bound) = %+v, want 2 rows (period_to <= bound)", bounded)
 	}
 
 	unbounded, err := d.ListStreamDigestsAfter(0, "")
@@ -876,6 +879,34 @@ func TestIdeas_ListStreamDigestsAfter_UpperBound(t *testing.T) {
 	}
 	if len(unbounded) != 3 {
 		t.Fatalf("ListStreamDigestsAfter(0, \"\") = %+v, want all 3 rows (empty bound is unbounded)", unbounded)
+	}
+}
+
+// TestGB1_ListStreamDigestsAfter_BoundsOnPeriodToNotCreatedAt pins GB1: a
+// stage-1 row's created_at is always "just now" — even when it summarizes a
+// historical window entirely inside [from, to], the exact shape a backfill
+// produces. Bounding on created_at made a backfill's own stream_digests rows
+// invisible to its own consolidate pass; bounding on period_to (this row's
+// actual content window) is what makes them visible.
+func TestGB1_ListStreamDigestsAfter_BoundsOnPeriodToNotCreatedAt(t *testing.T) {
+	d := openTestDB(t)
+
+	res, err := d.Exec(`INSERT INTO stream_digests (source, account_id, scope, period_from, period_to, topics_json, created_at)
+		VALUES ('gmail', 1, '', '2020-01-01T00:00:00Z', '2020-01-02T00:00:00Z', '[]', '2026-01-01T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("inserting stream digest: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+
+	bounded, err := d.ListStreamDigestsAfter(0, "2020-01-03T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListStreamDigestsAfter: %v", err)
+	}
+	if len(bounded) != 1 || bounded[0].ID != id {
+		t.Fatalf("ListStreamDigestsAfter(0, in-window bound) = %+v, want the row (period_to is in-window even though created_at is far outside it)", bounded)
 	}
 }
 

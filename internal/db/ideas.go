@@ -428,14 +428,23 @@ func (db *DB) InsertStreamDigest(d StreamDigest) (int64, error) {
 }
 
 // ListStreamDigestsAfter returns stream pre-digests with id above the given
-// floor, ordered by id. toISO is an optional upper bound on created_at ("" is
-// unbounded — parity with the pre-bound behavior).
+// floor, ordered by id. toISO is an optional upper bound on the row's OWN
+// content window (period_to), not on created_at ("" is unbounded — parity
+// with the pre-bound behavior). Bounding on created_at would make a backfill
+// invisible to its own consolidate pass (GB1): a backfill's stage-1 rows are
+// always written just now — after `to`, even though the material they
+// summarize is entirely within [from, to] — so an created_at <= to bound
+// would exclude every row the backfill itself just produced.
+// ListDigestTopicIdeasAfter's period_to bound is the precedent shape;
+// period_to is RFC3339 UTC for both Gmail and Jira rows (see GB4 —
+// internal/ideas/jira_digest.go's normalizeJiraStreamPeriod), so the plain
+// string comparison here is format-safe across both sources.
 func (db *DB) ListStreamDigestsAfter(floor int64, toISO string) ([]StreamDigest, error) {
 	query := `SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at
 		FROM stream_digests WHERE id > ?`
 	args := []any{floor}
 	if toISO != "" {
-		query += ` AND created_at <= ?`
+		query += ` AND period_to <= ?`
 		args = append(args, toISO)
 	}
 	query += ` ORDER BY id`

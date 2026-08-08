@@ -246,6 +246,14 @@ func TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins(t *testing.T) {
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		switch {
+		case strings.Contains(user, "=== REGISTRY ==="):
+			// The stage-2 consolidate call — fold both stage-1 units in, so
+			// Proposed pins that phase 1's output actually reaches phase 2
+			// within this same backfill run (GB1).
+			return fmt.Sprintf(`{"ops":[
+				{"op":"new_idea","title":"Try X","essence":"e","mentions":[{"source":"gmail","ref":"gmail:%d:thr-1","quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]},
+				{"op":"new_idea","title":"Add caching layer","essence":"e","mentions":[{"source":"jira","ref":"WT-1","quote":"add caching layer","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}
+			]}`, gmailAcct), nil
 		case strings.Contains(user, "gmail:"):
 			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, gmailAcct), nil
 		case strings.Contains(user, "WT-1"):
@@ -256,9 +264,10 @@ func TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins(t *testing.T) {
 	}}
 	p := New(d, testCfg(), gen, testLogger())
 
-	_, err := p.Backfill(context.Background(), from, to, nil)
+	result, err := p.Backfill(context.Background(), from, to, nil)
 	require.NoError(t, err)
 	assert.Greater(t, gen.calls, 0, "an uncovered account's stage-1 pass must call the generator")
+	assert.Equal(t, 2, result.Proposed, "phase-1 output from both accounts must be visible to and consolidated by phase 2 within this same run (GB1)")
 
 	gmailFloor, err := d.IdeasEmailFloor(gmailAcct)
 	require.NoError(t, err)
@@ -273,6 +282,47 @@ func TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins(t *testing.T) {
 	savedUnix, ok := db.ParseJiraTime(savedJiraFloor)
 	require.True(t, ok)
 	assert.Greater(t, reachedUnix, savedUnix, "restore must land on the REACHED value, not the pre-backfill saved one, when reached is the larger of the two")
+}
+
+// TestGB1_BackfillConsolidatesItsOwnStage1Output pins GB1 directly: a
+// backfill's own stage-1 stream_digests row — written with created_at "now"
+// but a period_to entirely inside [from, to] — must be visible to and folded
+// in by the SAME backfill's stage-2 consolidate pass. Before the fix,
+// ListStreamDigestsAfter bounded on created_at, which is always after `to`
+// for a row a backfill just wrote itself, making phase 1's output invisible
+// to phase 2 in the very run that produced it — this is the test that would
+// have caught the bug.
+func TestGB1_BackfillConsolidatesItsOwnStage1Output(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	gmailAcct := seedGoogleAccount(t, d, float64(now.Unix()))
+	setIdeasEmailFloorRaw(t, d, gmailAcct, float64(from.Add(-time.Hour).Unix()))
+	seedGmailMessageIdeas(t, d, gmailAcct, "m1", "thr-1", "a@example.com", "Ann", "Subj", "we should try X",
+		from.Add(time.Hour).UTC().Format(time.RFC3339))
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== REGISTRY ===") {
+			// The stage-2 consolidate call.
+			return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
+				"mentions":[{"source":"gmail","ref":"gmail:%d:thr-1","quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, gmailAcct), nil
+		}
+		// The stage-1 gmail digest call.
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-1"}],"decisions":[]}]}`, gmailAcct), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	result, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, result.Proposed, 1, "phase-1 output must be consolidated within the same backfill run, not left invisible to phase 2")
+
+	ideasRows, err := d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	require.Len(t, ideasRows, 1)
 }
 
 // TestBackfill_EmptyWindow_CleanNoOpFloorsRestored is the degenerate case: a
