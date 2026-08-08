@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
 // TestRun_IdeasDisabled_ShortCircuits covers Run's cfg.Ideas.Enabled gate:
@@ -25,8 +27,8 @@ func TestRun_IdeasDisabled_ShortCircuits(t *testing.T) {
 
 	jiraAcctID := seedJiraAccount(t, d)
 	jbase := time.Now().Add(-time.Hour)
-	setIdeasJiraFloorRaw(t, d, jiraAcctID, jbase.Format(jiraFloorInitLayout))
-	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", jbase.Add(10*time.Second).Format(jiraFloorInitLayout))
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
 
 	gen := &fakeGen{reply: func(string) (string, error) {
 		t.Fatal("generator must not be called when the ideas registry is disabled")
@@ -67,8 +69,8 @@ func TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
 	// Jira side: set up to fail.
 	jiraAcctID := seedJiraAccount(t, d)
 	jbase := time.Now().Add(-time.Hour)
-	setIdeasJiraFloorRaw(t, d, jiraAcctID, jbase.Format(jiraFloorInitLayout))
-	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", jbase.Add(10*time.Second).Format(jiraFloorInitLayout))
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		switch {
@@ -116,8 +118,8 @@ func TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial(t *
 
 	jiraAcctID := seedJiraAccount(t, d)
 	jbase := time.Now().Add(-time.Hour)
-	setIdeasJiraFloorRaw(t, d, jiraAcctID, jbase.Format(jiraFloorInitLayout))
-	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", jbase.Add(10*time.Second).Format(jiraFloorInitLayout))
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		switch {

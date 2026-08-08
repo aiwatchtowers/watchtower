@@ -31,9 +31,12 @@ type streamTopic struct {
 }
 
 // streamTopics is the top-level JSON shape both stage-1 prompts return, and
-// what stream_digests.topics_json holds (the array of streamTopic).
+// what stream_digests.topics_json holds (the array of streamTopic). Topics is
+// a POINTER for the same reason consolidateResult.Ops is: a reply that omits
+// the key entirely answered nothing and must be treated as a model error (no
+// row, floor unchanged), not as an empty-but-valid verdict.
 type streamTopics struct {
-	Topics []streamTopic `json:"topics"`
+	Topics *[]streamTopic `json:"topics"`
 }
 
 // validateRefs drops every candidate whose Ref is not in validTags — the
@@ -146,13 +149,16 @@ const emailExcerptBytes = 240
 // renderEmailBlock renders one numbered line per thread — "[n] <subject>
 // (gmail:<accountID>:<threadID>): <participants> — <excerpts>" — and returns
 // the set of "gmail:<accountID>:<threadID>" tags a candidate's ref must copy
-// exactly to survive validateRefs.
-func renderEmailBlock(accountID int64, threads []emailThread) (string, map[string]bool) {
+// exactly to survive validateRefs. Threads are appended whole until maxChars
+// is spent; a thread that doesn't fit is left out of BOTH the block and the
+// tag set, so a candidate can never validate against material the model was
+// never shown.
+func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (string, map[string]bool) {
 	var b strings.Builder
 	tags := make(map[string]bool, len(threads))
+	budget := maxChars
 	for i, th := range threads {
 		tag := fmt.Sprintf("gmail:%d:%s", accountID, th.threadID)
-		tags[tag] = true
 		subject := th.subject
 		if subject == "" {
 			subject = "(no subject)"
@@ -163,8 +169,14 @@ func renderEmailBlock(accountID int64, threads []emailThread) (string, map[strin
 				excerpts = append(excerpts, ex)
 			}
 		}
-		fmt.Fprintf(&b, "[%d] %s (%s): %s — %s\n", i+1, subject, tag,
+		line := fmt.Sprintf("[%d] %s (%s): %s — %s\n", i+1, subject, tag,
 			strings.Join(th.participants, ", "), strings.Join(excerpts, " / "))
+		if len(line) > budget {
+			break
+		}
+		budget -= len(line)
+		tags[tag] = true
+		b.WriteString(line)
 	}
 	return b.String(), tags
 }
@@ -189,7 +201,7 @@ func (p *Pipeline) runEmailDigests(ctx context.Context) error {
 			continue
 		}
 		if err := p.runEmailDigestAccount(ctx, acct); err != nil {
-			p.logger.Printf("ideas: email digest account %d: %v", acct.ID, err)
+			p.logf("ideas: email digest account %d: %v", acct.ID, err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -222,7 +234,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		if serr := p.db.SetIdeasEmailFloor(acct.ID, maxTS); serr != nil {
 			return fmt.Errorf("initializing ideas email floor: %w", serr)
 		}
-		p.logger.Printf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
+		p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
 		return nil
 	}
 
@@ -235,7 +247,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 	}
 
 	threads := groupThreads(msgs)
-	block, tags := renderEmailBlock(acct.ID, threads)
+	block, tags := renderEmailBlock(acct.ID, threads, p.maxPromptChars())
 
 	tmpl, _ := p.getPrompt("ideas.digest_email")
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
@@ -254,7 +266,10 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return fmt.Errorf("parsing email digest JSON: %w", err)
 	}
-	topics := validateRefs(parsed.Topics, tags)
+	if parsed.Topics == nil {
+		return fmt.Errorf("email digest reply has no \"topics\" key")
+	}
+	topics := validateRefs(*parsed.Topics, tags)
 	topicsJSON, err := json.Marshal(topics)
 	if err != nil {
 		return fmt.Errorf("marshaling email digest topics: %w", err)

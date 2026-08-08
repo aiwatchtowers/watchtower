@@ -111,7 +111,7 @@ func TestRunEmailDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	assert.Equal(t, float64(base+20), newFloor)
 }
 
-func TestRunEmailDigests_GeneratorError_NoRowFloorUnchanged(t *testing.T) {
+func TestIdeas01_EmailGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
 	acctID := seedGoogleAccount(t, d, float64(base))
@@ -134,11 +134,11 @@ func TestRunEmailDigests_GeneratorError_NoRowFloorUnchanged(t *testing.T) {
 	assert.Equal(t, float64(base-10), floor)
 }
 
-// TestRunEmailDigests_NoNewMessages_CleanNoOp covers the degenerate
+// TestIdeas01_EmailNoNewMessagesCleanNoOp covers the degenerate
 // zero-new-material branch: an already-initialized account with nothing new
 // above its floor must not call the generator, insert a row, or touch the
 // floor (see feedback_test_degenerate_clean_exit).
-func TestRunEmailDigests_NoNewMessages_CleanNoOp(t *testing.T) {
+func TestIdeas01_EmailNoNewMessagesCleanNoOp(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
 	acctID := seedGoogleAccount(t, d, float64(base))
@@ -190,11 +190,11 @@ func TestRunEmailDigests_FloorZero_InitializesAndSkips(t *testing.T) {
 	assert.Empty(t, digests)
 }
 
-// TestRunEmailDigests_HallucinatedRef_Dropped covers ref validation: a
+// TestIdeas02_EmailHallucinatedRefDropped covers ref validation: a
 // candidate whose ref does not match a rendered thread tag is dropped, but
 // the pass still completes normally (row inserted, floor advanced) since the
 // AI call itself succeeded — only the untrustworthy candidate is discarded.
-func TestRunEmailDigests_HallucinatedRef_Dropped(t *testing.T) {
+func TestIdeas02_EmailHallucinatedRefDropped(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
 	acctID := seedGoogleAccount(t, d, float64(base))

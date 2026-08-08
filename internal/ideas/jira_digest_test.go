@@ -12,6 +12,11 @@ import (
 	"watchtower/internal/db"
 )
 
+// jiraTimeLayoutForTest is Jira Cloud's timestamp layout, spelled out
+// independently of the production db.FormatJiraTime so an assertion about the
+// stored format still fails if production drifts.
+const jiraTimeLayoutForTest = "2006-01-02T15:04:05.000-0700"
+
 // seedJiraAccount inserts an enabled jira_accounts row and returns its id.
 func seedJiraAccount(t *testing.T, database *db.DB) int64 {
 	t.Helper()
@@ -89,7 +94,7 @@ func TestRunJiraDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	assert.Equal(t, u2, newFloor)
 }
 
-func TestRunJiraDigests_GeneratorError_NoRowFloorUnchanged(t *testing.T) {
+func TestIdeas01_JiraGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour)
 	acctID := seedJiraAccount(t, d)
@@ -112,11 +117,11 @@ func TestRunJiraDigests_GeneratorError_NoRowFloorUnchanged(t *testing.T) {
 	assert.Equal(t, floor, newFloor)
 }
 
-// TestRunJiraDigests_NoChangedIssues_CleanNoOp covers the degenerate
+// TestIdeas01_JiraNoChangedIssuesCleanNoOp covers the degenerate
 // zero-new-material branch (see feedback_test_degenerate_clean_exit): an
 // already-initialized account with no issue updated past its floor must not
 // call the generator, insert a row, or touch the floor.
-func TestRunJiraDigests_NoChangedIssues_CleanNoOp(t *testing.T) {
+func TestIdeas01_JiraNoChangedIssuesCleanNoOp(t *testing.T) {
 	d := newTestDB(t)
 	acctID := seedJiraAccount(t, d)
 	floor := time.Now().Add(-time.Hour).Format(time.RFC3339)
@@ -162,9 +167,11 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
 	require.NotEmpty(t, newFloor)
-	// The floor is now formatted in Jira's own dotted-millisecond layout
-	// (jiraFloorInitLayout), not bare RFC3339 — round-1 review Finding 1.
-	parsed, perr := time.Parse(jiraFloorInitLayout, newFloor)
+	// The floor is formatted in Jira's own dotted-millisecond layout
+	// (db.FormatJiraTime), not bare RFC3339 — round-1 review Finding 1. The
+	// layout is spelled out here rather than reusing the production helper, so
+	// the assertion would still catch the production side silently changing.
+	parsed, perr := time.Parse(jiraTimeLayoutForTest, newFloor)
 	require.NoError(t, perr)
 	assert.WithinDuration(t, before, parsed, 2*time.Minute, "floor should initialize near now (minus the backoff), got %s", newFloor)
 
@@ -194,7 +201,7 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 	// An issue updated an instant after initialization, in Jira's raw
 	// dotted-millisecond format — the exact shape that used to compare as
 	// lexically "before" a bare RFC3339 floor and get silently dropped.
-	updatedAt := time.Now().UTC().Add(time.Second).Format(jiraFloorInitLayout)
+	updatedAt := db.FormatJiraTime(time.Now().UTC().Add(time.Second))
 	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Same-second issue", "Open", "new", "desc", updatedAt)
 
 	gen := &fakeGen{reply: func(string) (string, error) {
@@ -214,10 +221,10 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 	assert.Equal(t, updatedAt, newFloor)
 }
 
-// TestRunJiraDigests_HallucinatedRef_Dropped covers ref validation: a
+// TestIdeas02_JiraHallucinatedRefDropped covers ref validation: a
 // candidate whose ref is not a bare key from the rendered block is dropped,
 // but the pass still completes normally (row inserted, floor advanced).
-func TestRunJiraDigests_HallucinatedRef_Dropped(t *testing.T) {
+func TestIdeas02_JiraHallucinatedRefDropped(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour)
 	acctID := seedJiraAccount(t, d)

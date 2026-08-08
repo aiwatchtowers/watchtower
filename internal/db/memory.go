@@ -1360,6 +1360,15 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 // colon, so SQLite's strftime cannot parse it; all time math happens in Go).
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
 
+// FormatJiraTime renders t the way Jira Cloud writes jira_issues.updated_at
+// and jira_comments.created_at. Anything compared against those columns with
+// SQL's plain string ordering MUST be formatted this way: bare RFC3339 puts a
+// 'Z' (0x5A) where Jira puts '.' (0x2E), so an RFC3339 bound sorts ABOVE every
+// Jira timestamp in the same second and silently excludes it.
+func FormatJiraTime(t time.Time) string {
+	return t.Format(jiraUpdatedLayout)
+}
+
 // ParseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
 // an unparseable value — the caller skips the row (the Gmail internal_date
 // defensive-skip precedent; the sync guarantees the format).

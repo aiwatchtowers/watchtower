@@ -19,31 +19,28 @@ const jiraIssuesPerAccountLimit = 300
 // jiraExcerptBytes caps each rendered description/comment excerpt.
 const jiraExcerptBytes = 500
 
-// jiraFloorInitLayout mirrors Jira Cloud's own updated_at timestamp shape
-// (internal/db's unexported jiraUpdatedLayout — dotted milliseconds plus a
-// numeric offset, e.g. "2026-08-07T12:00:00.500+0000") so an initialized
-// ideas_jira_floor compares correctly, byte-for-byte, against real
-// jira_issues rows in ListJiraIssuesUpdatedSince's plain string SELECT. A
-// bare RFC3339 floor ("...T12:00:00Z") does NOT: '.' (0x2E) sorts below 'Z'
-// (0x5A), so any issue updated in the very same second as init — but
-// rendered with Jira's dotted-millisecond format — would lexically compare
-// as NOT newer than the floor and be silently, permanently excluded (round-1
-// review finding).
-const jiraFloorInitLayout = "2006-01-02T15:04:05.000-0700"
-
 // jiraFloorInitBackoff biases the init floor a few seconds into the past, on
-// top of matching Jira's own format, so an issue updated within a couple of
-// seconds of initialization is never lost even accounting for clock skew
-// between this process and whatever wrote the issue's updated_at.
+// top of db.FormatJiraTime matching Jira's own format, so an issue updated
+// within a couple of seconds of initialization is never lost even accounting
+// for clock skew between this process and whatever wrote the issue's
+// updated_at.
 const jiraFloorInitBackoff = 5 * time.Second
+
+// maxCommentsPerIssue caps a hot issue at its newest N comments so one
+// thousand-comment ticket cannot dominate the prompt (the
+// maxMessagesPerThread precedent). ListJiraCommentsSince returns each issue's
+// comments oldest-first, so the newest are the tail.
+const maxCommentsPerIssue = 20
 
 // renderJiraBlock groups issues per project ("=== PROJECT <KEY> ==="
 // separators) and renders one numbered line per issue plus its comments —
 // "[n] <KEY> <summary> — <status> — <description excerpt> — comments:"
 // followed by one indented line per comment. Returns the block and the set
 // of bare issue keys a candidate's ref must copy exactly to survive
-// validateRefs.
-func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment) (string, map[string]bool) {
+// validateRefs. Issues are appended whole until maxChars is spent; an issue
+// that doesn't fit is left out of BOTH the block and the tag set, so a
+// candidate can never validate against material the model was never shown.
+func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int) (string, map[string]bool) {
 	var order []string
 	byProject := make(map[string][]db.JiraIssue)
 	for _, is := range issues {
@@ -55,20 +52,52 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 
 	var b strings.Builder
 	tags := make(map[string]bool, len(issues))
+	budget := maxChars
 	n := 0
 	for _, project := range order {
-		fmt.Fprintf(&b, "=== PROJECT %s ===\n", project)
+		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
+		if len(header) > budget {
+			break
+		}
+
+		var unit strings.Builder
+		var unitKeys []string
 		for _, is := range byProject[project] {
 			n++
-			tags[is.Key] = true
 			desc := capBytes(oneLine(is.DescriptionText), jiraExcerptBytes)
-			fmt.Fprintf(&b, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status, desc)
-			for _, c := range commentsByIssue[is.Key] {
-				fmt.Fprintf(&b, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
+			var issueBlock strings.Builder
+			fmt.Fprintf(&issueBlock, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status, desc)
+			for _, c := range newestComments(commentsByIssue[is.Key]) {
+				fmt.Fprintf(&issueBlock, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
 			}
+			if len(header)+unit.Len()+issueBlock.Len() > budget {
+				n--
+				break
+			}
+			unit.WriteString(issueBlock.String())
+			unitKeys = append(unitKeys, is.Key)
+		}
+		if unit.Len() == 0 {
+			break // not even this project's first issue fits — stop entirely
+		}
+
+		b.WriteString(header)
+		b.WriteString(unit.String())
+		budget -= len(header) + unit.Len()
+		for _, key := range unitKeys {
+			tags[key] = true
 		}
 	}
 	return b.String(), tags
+}
+
+// newestComments returns at most maxCommentsPerIssue comments, keeping the
+// newest (the tail of the oldest-first slice ListJiraCommentsSince returns).
+func newestComments(comments []db.JiraComment) []db.JiraComment {
+	if len(comments) <= maxCommentsPerIssue {
+		return comments
+	}
+	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
 // runJiraDigests is the ideas registry's Jira pre-digest pass: one Generate
@@ -87,7 +116,7 @@ func (p *Pipeline) runJiraDigests(ctx context.Context) error {
 	var firstErr error
 	for _, acct := range accounts {
 		if err := p.runJiraDigestAccount(ctx, acct); err != nil {
-			p.logger.Printf("ideas: jira digest account %d: %v", acct.ID, err)
+			p.logf("ideas: jira digest account %d: %v", acct.ID, err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -106,11 +135,11 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return fmt.Errorf("getting ideas jira floor: %w", err)
 	}
 	if floor == "" {
-		now := time.Now().UTC().Add(-jiraFloorInitBackoff).Format(jiraFloorInitLayout)
+		now := db.FormatJiraTime(time.Now().UTC().Add(-jiraFloorInitBackoff))
 		if serr := p.db.SetIdeasJiraFloor(acct.ID, now); serr != nil {
 			return fmt.Errorf("initializing ideas jira floor: %w", serr)
 		}
-		p.logger.Printf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
+		p.logf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
 		return nil
 	}
 
@@ -140,7 +169,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		commentsByIssue[c.IssueKey] = append(commentsByIssue[c.IssueKey], c)
 	}
 
-	block, tags := renderJiraBlock(issues, commentsByIssue)
+	block, tags := renderJiraBlock(issues, commentsByIssue, p.maxPromptChars())
 
 	tmpl, _ := p.getPrompt("ideas.digest_jira")
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
@@ -159,7 +188,10 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return fmt.Errorf("parsing jira digest JSON: %w", err)
 	}
-	topics := validateRefs(parsed.Topics, tags)
+	if parsed.Topics == nil {
+		return fmt.Errorf("jira digest reply has no \"topics\" key")
+	}
+	topics := validateRefs(*parsed.Topics, tags)
 	topicsJSON, err := json.Marshal(topics)
 	if err != nil {
 		return fmt.Errorf("marshaling jira digest topics: %w", err)

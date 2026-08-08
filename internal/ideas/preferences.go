@@ -18,12 +18,21 @@ func buildPreferencesBlock(database *db.DB) string {
 		return ""
 	}
 
+	// An explicit owner rating is the owner speaking directly, so its SIGN
+	// decides the bucket outright; status is only consulted for an unrated
+	// idea. Checking status first would file a thumbs-down on an active idea
+	// under LIKED — teaching the consolidator the opposite of what the owner
+	// said.
 	var liked, disliked []db.Idea
 	for _, idea := range examples {
 		switch {
-		case idea.OwnerRating > 0 || idea.Status == "active":
+		case idea.OwnerRating > 0:
 			liked = append(liked, idea)
-		case idea.OwnerRating < 0 || idea.Status == "rejected" || idea.Status == "dropped":
+		case idea.OwnerRating < 0:
+			disliked = append(disliked, idea)
+		case idea.Status == "active":
+			liked = append(liked, idea)
+		case idea.Status == "rejected" || idea.Status == "dropped":
 			disliked = append(disliked, idea)
 		}
 	}
