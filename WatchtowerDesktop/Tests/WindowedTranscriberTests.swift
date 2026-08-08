@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerDesktop
 
 /// Scripted engine: canned per-window detection results + transcription texts.
-/// Records every forced language and window size passed in.
+/// Records every forced language, window size and context prompt passed in.
 private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     enum Detection {
         case probs([String: Float])
@@ -17,6 +17,7 @@ private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     private(set) var detectCallCount = 0
     private(set) var transcribedLanguages: [String] = []
     private(set) var windowSizes: [Int] = []
+    private(set) var prompts: [String?] = []
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] {
         let idx = detectCallCount
@@ -28,9 +29,10 @@ private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
         }
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
         windowSizes.append(samples.count)
         transcribedLanguages.append(language)
+        prompts.append(prompt)
         let idx = transcribedLanguages.count - 1
         let text = idx < texts.count ? try texts[idx].get() : ""
         return [TranscribedSegment(text: text, startSec: 0,
@@ -54,6 +56,7 @@ final class WindowedTranscriberTests: XCTestCase {
         config.windowSec = 0.01
         config.overlapSec = 0
         config.boundarySnapSec = 0 // exact window sizes are asserted below
+        config.contextPrompt = true // the suite exercises the conditioning machinery; the shipped default is off
         return config
     }
 
@@ -168,6 +171,122 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.transcribedLanguages, ["ru"])
     }
 
+    // MARK: - Context prompt
+
+    func testPromptCarriesPreviousWindowText() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success("two"), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "two"])
+    }
+
+    func testSilentWindowKeepsPreviousPrompt() async throws {
+        // Context survives a non-speech window, mirroring sticky language.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success(""), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+    }
+
+    func testLanguageFlipDropsPrompt() async throws {
+        let engine = MockEngine()
+        engine.detections = [
+            .probs(["en": 0.9, "ru": 0.02]),
+            .probs(["uk": 0.9, "ru": 0.02])
+        ]
+        engine.texts = [.success("hello"), .success("привіт")]
+
+        _ = try await run(engine, tinyConfig(), windows: 2)
+
+        XCTAssertEqual(engine.transcribedLanguages, ["en", "uk"])
+        XCTAssertEqual(engine.prompts, [nil, nil], "a ru/en prompt must never condition another language")
+    }
+
+    func testDisabledContextPromptNeverPrompts() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        config.contextPrompt = false
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success("two"), .success("three")]
+
+        let output = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, nil, nil])
+        XCTAssertEqual(output.text, "one\ntwo\nthree")
+    }
+
+    func testFailedWindowKeepsPreviousPrompt() async throws {
+        // A window that throws leaves the context untouched: with the engine's
+        // retry-on-throw, an error here means the CLEAN decode failed, so the
+        // prompt is not implicated and the next window still gets it.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .failure(MockEngine.MockError()), .success("three")]
+
+        _ = try await run(engine, config, windows: 3)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+    }
+
+    func testPromptExpiresAfterThreeSilentWindows() async throws {
+        // Two silent windows still prompt; the third clears the context so a
+        // long pause cannot condition distant speech (and stops paying the
+        // prompt+retry tax on every window of that pause).
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [
+            .success("one"),
+            .success(""), .success(""), .success(""),
+            .success("after the pause")
+        ]
+
+        _ = try await run(engine, config, windows: 5)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+    }
+
+    func testSilenceStreakResetsOnSpeech() async throws {
+        // The expiry counts CONSECUTIVE silences: speech in between resets the
+        // streak, so scattered pauses never sum to an expiry. A cumulative
+        // counter would silently turn the feature off for the rest of any
+        // recording with a few pauses.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        engine.texts = [
+            .success("one"), .success(""), .success(""),
+            .success("two"), .success(""), .success(""),
+            .success("three")
+        ]
+
+        _ = try await run(engine, config, windows: 7)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", "two", "two", "two"])
+    }
+
+    func testPromptIsCappedAtTwoHundredCharacters() async throws {
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        let engine = MockEngine()
+        let long = String(repeating: "x", count: 150) + String(repeating: "y", count: 150)
+        engine.texts = [.success(long), .success("next")]
+
+        _ = try await run(engine, config, windows: 2)
+
+        let tail = String(repeating: "x", count: 50) + String(repeating: "y", count: 150)
+        XCTAssertEqual(engine.prompts, [nil, tail])
+    }
+
     // MARK: - Errors
 
     func testDetectErrorFallsBack() async throws {
@@ -263,9 +382,11 @@ final class WindowedTranscriberTests: XCTestCase {
     }
 
     func testWindowingMath() async throws {
-        // Defaults: 20 s window, 1 s overlap → step 19 s. 50 s of audio →
-        // window starts at 0 s, 19 s, 38 s (3 windows), last one truncated to 12 s.
+        // 20 s window (explicit — the shipped default is 30), 1 s overlap →
+        // step 19 s. 50 s of audio → window starts at 0 s, 19 s, 38 s
+        // (3 windows), last one truncated to 12 s.
         var config = TranscriptionConfig()
+        config.windowSec = 20
         config.boundarySnapSec = 0 // exact nominal boundaries are asserted
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -287,7 +408,8 @@ final class WindowedTranscriberTests: XCTestCase {
         // Recording length == window length: a tail start at `step` would lie
         // entirely inside the first window's overlap and only duplicate its
         // audio and lang stats — it must not be emitted.
-        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        var config = TranscriptionConfig() // 1 s overlap; 20 s window set below
+        config.windowSec = 20
         config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -307,7 +429,8 @@ final class WindowedTranscriberTests: XCTestCase {
 
     func testJustOverWindowLengthIsTwoWindows() async throws {
         // 20.5 s: the second window extends past the first one's end → emitted.
-        var config = TranscriptionConfig() // 20 s window, 1 s overlap
+        var config = TranscriptionConfig() // 1 s overlap; 20 s window set below
+        config.windowSec = 20
         config.boundarySnapSec = 0
         config.forcedLanguage = "en"
         let engine = MockEngine()
