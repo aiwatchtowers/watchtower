@@ -299,7 +299,10 @@ func (p *Pipeline) lowerBackfillFloors(from, to time.Time, savedStream int64, go
 // lowerEmailFloors lowers each Gmail-enabled account's ideas_email_floor to
 // fromUnix, skipping (and logging) any account already fully covered for
 // [fromISO, toISO] (spec §4 layer 2). savedEmailFloor is filled in with
-// every touched account's PRE-lower value, for the deferred restore.
+// every ACTUALLY-LOWERED account's PRE-lower value, for the deferred
+// restore — a covered/skipped account's floor is never recorded (GB10),
+// since restoreEmailFloors would otherwise write it right back unchanged: a
+// no-op write for every skipped account, on every single Backfill call.
 func (p *Pipeline) lowerEmailFloors(fromUnix int64, fromISO, toISO string, googleAccounts []db.GoogleAccount, savedEmailFloor map[int64]float64) error {
 	for _, acct := range googleAccounts {
 		if !acct.GmailEnabled {
@@ -309,7 +312,6 @@ func (p *Pipeline) lowerEmailFloors(fromUnix int64, fromISO, toISO string, googl
 		if err != nil {
 			return fmt.Errorf("backfill: reading email floor for account %d: %w", acct.ID, err)
 		}
-		savedEmailFloor[acct.ID] = floor
 		covered, err := p.db.HasStreamDigestCovering("gmail", acct.ID, fromISO, toISO)
 		if err != nil {
 			return fmt.Errorf("backfill: checking gmail coverage for account %d: %w", acct.ID, err)
@@ -318,6 +320,7 @@ func (p *Pipeline) lowerEmailFloors(fromUnix int64, fromISO, toISO string, googl
 			p.logf("ideas: backfill account %d already covered for gmail %s..%s, skipping re-digest", acct.ID, fromISO, toISO)
 			continue
 		}
+		savedEmailFloor[acct.ID] = floor
 		if err := p.db.SetIdeasEmailFloor(acct.ID, float64(fromUnix)); err != nil {
 			return fmt.Errorf("backfill: lowering email floor for account %d: %w", acct.ID, err)
 		}
@@ -327,14 +330,14 @@ func (p *Pipeline) lowerEmailFloors(fromUnix int64, fromISO, toISO string, googl
 
 // lowerJiraFloors is lowerEmailFloors' Jira sibling: lowers each enabled
 // Jira account's ideas_jira_floor to from (Jira's own dotted-ms format),
-// same coverage-skip and savedJiraFloor-recording shape.
+// same coverage-skip and savedJiraFloor-recording shape (GB10: only an
+// actually-lowered account is recorded).
 func (p *Pipeline) lowerJiraFloors(from time.Time, fromISO, toISO string, jiraAccounts []db.JiraAccount, savedJiraFloor map[int64]string) error {
 	for _, acct := range jiraAccounts {
 		floor, err := p.db.IdeasJiraFloor(acct.ID)
 		if err != nil {
 			return fmt.Errorf("backfill: reading jira floor for account %d: %w", acct.ID, err)
 		}
-		savedJiraFloor[acct.ID] = floor
 		covered, err := p.db.HasStreamDigestCovering("jira", acct.ID, fromISO, toISO)
 		if err != nil {
 			return fmt.Errorf("backfill: checking jira coverage for account %d: %w", acct.ID, err)
@@ -343,6 +346,7 @@ func (p *Pipeline) lowerJiraFloors(from time.Time, fromISO, toISO string, jiraAc
 			p.logf("ideas: backfill account %d already covered for jira %s..%s, skipping re-digest", acct.ID, fromISO, toISO)
 			continue
 		}
+		savedJiraFloor[acct.ID] = floor
 		if err := p.db.SetIdeasJiraFloor(acct.ID, db.FormatJiraTime(from)); err != nil {
 			return fmt.Errorf("backfill: lowering jira floor for account %d: %w", acct.ID, err)
 		}
@@ -371,9 +375,9 @@ func (p *Pipeline) restoreWorkspaceFloors(savedDigest, savedStream, savedTranscr
 		return
 	}
 	if err := p.db.SetIdeasFloors(
-		maxInt64(savedDigest, reachedDigest),
-		maxInt64(savedStream, reachedStream),
-		maxInt64(savedTranscript, reachedTranscript),
+		max(savedDigest, reachedDigest),
+		max(savedStream, reachedStream),
+		max(savedTranscript, reachedTranscript),
 	); err != nil {
 		p.logf("ideas: backfill: restoring ideas floors: %v", err)
 	}
@@ -387,7 +391,7 @@ func (p *Pipeline) restoreEmailFloors(savedEmailFloor map[int64]float64) {
 			p.logf("ideas: backfill: reading email floor for account %d for restore: %v", acctID, err)
 			continue
 		}
-		if err := p.db.SetIdeasEmailFloor(acctID, maxFloat64(saved, reached)); err != nil {
+		if err := p.db.SetIdeasEmailFloor(acctID, max(saved, reached)); err != nil {
 			p.logf("ideas: backfill: restoring email floor for account %d: %v", acctID, err)
 		}
 	}
@@ -448,20 +452,6 @@ func stage1FloorsEqual(beforeEmail map[int64]float64, beforeJira map[int64]strin
 		}
 	}
 	return true
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func maxFloat64(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // maxJiraFloor returns whichever of a, b is later, comparing via

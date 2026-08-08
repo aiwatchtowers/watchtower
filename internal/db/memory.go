@@ -1500,7 +1500,10 @@ const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // past the limit to include ALL rows sharing the last loaded second (overshoot
 // at most one second of mail). beforeTS is an optional upper bound on the
 // decoded internal_date (0 is unbounded — parity with the pre-bound
-// behavior).
+// behavior). The boundary-drain query below needs no beforeTS of its own
+// (GB12, the ListJiraIssuesUpdatedSince precedent): the boundary second
+// itself already satisfied the bound in the main query, so every row
+// sharing it does too.
 //
 // gmail_messages is a migration-guaranteed base table (00016), so a query
 // failure propagates as a genuine error (freezing the Gmail watermark) rather

@@ -420,6 +420,17 @@ func (db *DB) TranscriptFloorForTime(fromISO string) (int64, error) {
 // re-digested, cost rather than correctness (ref-level dedup already makes a
 // re-digest safe; this just avoids paying for one that cannot find anything
 // new).
+//
+// GB12: for Gmail specifically this check is largely decorative in
+// practice. A stream_digests row's period_from/period_to are the MIN/MAX
+// of whatever messages the run actually fetched (email_digest.go's
+// runEmailDigestAccount), not the requested window's exact boundaries —
+// there is rarely a message at precisely `from` or `to`, so period_from <=
+// fromISO typically fails even for a window that was, in substance,
+// already fully mined. The skip is a cost optimization only; when it
+// doesn't fire, the run just pays for a redundant re-digest that IDEA-05's
+// ref-level dedup still makes safe (owner-confirmed acceptable, not worth
+// a real fix here).
 func (db *DB) HasStreamDigestCovering(source string, accountID int64, fromISO, toISO string) (bool, error) {
 	var exists int
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM stream_digests
@@ -660,6 +671,12 @@ type TranscriptForIdeas struct {
 // ListTranscriptsForIdeasAfter returns meeting transcripts with id above the
 // given floor, ordered by id. toISO is an optional upper bound on
 // mt.created_at ("" is unbounded — parity with the pre-bound behavior).
+// Unlike stream_digests (GB1 — bounding on created_at made a backfill's own
+// stage-1 output invisible to its own consolidate pass, since created_at is
+// always "now"), a meeting_transcripts row's created_at genuinely
+// approximates its content time — the recording happens around when the
+// row is created — so bounding on it here is correct as-is, not a variant
+// of the GB1 bug ([OWNER] confirmed 2026-08-08, GB12).
 func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]TranscriptForIdeas, error) {
 	query := `SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
 			COALESCE(mr.recap_json, mt.summary_json, ''), mt.created_at
