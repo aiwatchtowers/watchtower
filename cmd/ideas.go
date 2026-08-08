@@ -125,12 +125,12 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 	out := cmd.OutOrStdout()
 
+	fromStr, _ := cmd.Flags().GetString("from")
+
 	if !cfg.Ideas.Enabled {
-		fmt.Fprintln(out, "Ideas registry is disabled (ideas.enabled = false in config); nothing to do.")
-		return nil
+		return reportIdeasDisabled(cmd, fromStr, out)
 	}
 
-	fromStr, _ := cmd.Flags().GetString("from")
 	toStr, _ := cmd.Flags().GetString("to")
 	if fromStr == "" && toStr != "" {
 		return fmt.Errorf("--to requires --from")
@@ -156,6 +156,36 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 		return runIdeasMineIncremental(ctx, pipe, out)
 	}
 	return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
+}
+
+// ideasDisabledEnvelope is the backfill path's machine-readable body when
+// ideas.enabled=false (GB9) — the Desktop "Find ideas" sheet parses the
+// CLI child's stdout for exactly this shape, so a disabled registry must
+// still produce a stable, parseable line rather than prose.
+type ideasDisabledEnvelope struct {
+	Disabled bool `json:"disabled"`
+}
+
+// reportIdeasDisabled handles cfg.Ideas.Enabled=false for both `ideas mine`
+// paths (GB9), exiting 0 either way: the backfill path (--from set) is
+// machine-driven, so it emits {"disabled":true} on stdout — the ONLY line
+// on stdout, matching runIdeasBackfill's own envelope-is-the-only-stdout-line
+// contract — plus a human-readable line on stderr for a terminal watcher.
+// The flagless incremental path has no machine reader and keeps its
+// existing prose line on stdout.
+func reportIdeasDisabled(cmd *cobra.Command, fromStr string, out io.Writer) error {
+	const humanLine = "Ideas registry is disabled (ideas.enabled = false in config); nothing to do."
+	if fromStr == "" {
+		fmt.Fprintln(out, humanLine)
+		return nil
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), humanLine)
+	envelope, err := json.Marshal(ideasDisabledEnvelope{Disabled: true})
+	if err != nil {
+		return fmt.Errorf("marshaling disabled envelope: %w", err)
+	}
+	fmt.Fprintln(out, string(envelope))
+	return nil
 }
 
 // runIdeasMineIncremental is flagless `ideas mine`'s body: one ordinary

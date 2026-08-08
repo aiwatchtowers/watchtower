@@ -140,6 +140,33 @@ func TestIdeasMine_Disabled_NoOp(t *testing.T) {
 	require.Contains(t, buf.String(), "disabled")
 }
 
+// TestIdeasMine_Backfill_Disabled_PrintsEnvelope covers GB9: on the --from
+// backfill path, ideas.enabled=false must emit a machine-readable
+// {"disabled":true} envelope on stdout (the Desktop "Find ideas" sheet's
+// parse target) — never prose there — plus a human-readable line on
+// stderr, and still exit 0.
+func TestIdeasMine_Backfill_Disabled_PrintsEnvelope(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+	database.Close()
+	resetIdeasMineFlags(t)
+
+	configPath := flagConfig
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, append(data, []byte("ideas:\n  enabled: false\n")...), 0o600))
+
+	from := time.Now().Add(-48 * time.Hour).Format(ideasMineDateLayout)
+	require.NoError(t, ideasMineCmd.Flags().Set("from", from))
+
+	var outBuf, errBuf bytes.Buffer
+	ideasMineCmd.SetOut(&outBuf)
+	ideasMineCmd.SetErr(&errBuf)
+	require.NoError(t, ideasMineCmd.RunE(ideasMineCmd, nil))
+
+	require.Equal(t, "{\"disabled\":true}\n", outBuf.String(), "stdout must carry ONLY the machine-readable envelope, not prose")
+	require.Contains(t, errBuf.String(), "disabled", "stderr should still carry a human-readable line")
+}
+
 // resetIdeasMineFlags clears --from/--to on the shared package-level
 // ideasMineCmd so one test's flag values never leak into the next (the
 // --kind cleanup precedent above).
