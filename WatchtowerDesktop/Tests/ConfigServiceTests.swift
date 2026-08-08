@@ -77,6 +77,48 @@ struct ConfigServiceTests {
         #expect(svc.maxBacklog == 8)
     }
 
+    @Test("Load applies defaults for missing ideas keys")
+    func loadIdeasDefaults() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == true)
+        #expect(svc.ideasMineIntervalHours == 6)
+    }
+
+    @Test("Load parses ideas section")
+    func loadIdeas() {
+        let path = makeTempConfig("""
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == false)
+        #expect(svc.ideasMineIntervalHours == 12)
+    }
+
+    @Test("Save round-trips ideas settings and preserves unrelated keys")
+    func saveIdeasRoundTrip() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == false)
+        #expect(svc.ideasMineIntervalHours == 12)
+
+        svc.ideasEnabled = true
+        svc.ideasMineIntervalHours = 24
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.ideasEnabled == true)
+        #expect(svc2.ideasMineIntervalHours == 24)
+        #expect(svc2.activeWorkspace == "keep-me", "unrelated keys must survive the save merge")
+    }
+
     @Test("Load parses ai and digest sections")
     func loadAIDigest() {
         let path = makeTempConfig("""
@@ -219,6 +261,7 @@ struct ConfigServiceTests {
         #expect(svc.activeWorkspace == nil)
         #expect(svc.briefingHour == 8) // default
         #expect(svc.dayPlanEnabled == true) // default
+        #expect(svc.ideasEnabled == true) // default
     }
 
     @Test("Save merges onto sections written concurrently by a CLI login, not the stale in-memory snapshot")

@@ -77,6 +77,7 @@ struct GeneralSettings: View {
             digestSection
             briefingSection
             dayPlanSection
+            ideasSection
             aiSection
             calendarSettingsSection
             googleAccountsSection
@@ -357,6 +358,18 @@ struct GeneralSettings: View {
                 )
             }
             .help("Minimum and maximum backlog items shown in the day plan")
+        }
+    }
+
+    private var ideasSection: some View {
+        Section("Ideas") {
+            Toggle("Enable ideas backfill", isOn: $config.ideasEnabled)
+
+            Stepper(
+                "Mining interval (hours): \(config.ideasMineIntervalHours)",
+                value: $config.ideasMineIntervalHours,
+                in: 1...48
+            )
         }
     }
 
