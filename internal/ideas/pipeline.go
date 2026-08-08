@@ -127,7 +127,7 @@ func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 		firstErr = err
 	}
 
-	proposed, _, cerr := p.runConsolidate(ctx, time.Time{})
+	proposed, _, cerr := p.runConsolidate(ctx, time.Time{}, time.Time{})
 	if cerr != nil && firstErr == nil {
 		firstErr = cerr
 	}

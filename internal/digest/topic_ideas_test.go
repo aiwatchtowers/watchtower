@@ -43,7 +43,7 @@ func TestStoreDigest_EmptyIdeasAndDecisionsPersistAsEmptyArrays(t *testing.T) {
 	assert.Equal(t, "[]", ideas)
 	assert.Equal(t, "[]", decisions)
 
-	topics, err := d.ListDigestTopicIdeasAfter(0, 0)
+	topics, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	require.NoError(t, err)
 	assert.Empty(t, topics, "a topic that mined nothing must not reach the ideas consolidator")
 }
@@ -68,7 +68,7 @@ func TestStoreDigest_MinedIdeasAndDecisionsSurvive(t *testing.T) {
 	}
 	require.NoError(t, p.storeDigest("C1", "channel", 100, 200, result, 5, nil, 1))
 
-	topics, err := d.ListDigestTopicIdeasAfter(0, 0)
+	topics, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, topics, 1)
 	assert.Contains(t, topics[0].Ideas, "try a new vendor")

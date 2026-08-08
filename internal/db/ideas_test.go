@@ -445,7 +445,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		t.Fatalf("InsertDigestTopics: %v", err)
 	}
 
-	got, err := d.ListDigestTopicIdeasAfter(0, 0)
+	got, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 
 	// Floor excludes everything.
 	maxID := got[len(got)-1].TopicID
-	after, err := d.ListDigestTopicIdeasAfter(maxID, 0)
+	after, err := d.ListDigestTopicIdeasAfter(maxID, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter (above floor): %v", err)
 	}
@@ -490,7 +490,7 @@ func TestIdeas_ListDigestTopicIdeasAfter_LegacyNullExcluded(t *testing.T) {
 		t.Fatalf("inserting legacy-null topic: %v", err)
 	}
 
-	got, err := d.ListDigestTopicIdeasAfter(0, 0)
+	got, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestIdeas_ListDigestTopicIdeasAfter_MixedLegacyNullIncluded(t *testing.T) {
 		t.Fatalf("inserting mixed legacy topic (null decisions): %v", err)
 	}
 
-	mixed, err := d.ListDigestTopicIdeasAfter(0, 0)
+	mixed, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
@@ -836,7 +836,7 @@ func TestIdeas_ListDigestTopicIdeasAfter_UpperBound(t *testing.T) {
 		}
 	}
 
-	bounded, err := d.ListDigestTopicIdeasAfter(0, 200)
+	bounded, err := d.ListDigestTopicIdeasAfter(0, 0, 200)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
@@ -844,12 +844,93 @@ func TestIdeas_ListDigestTopicIdeasAfter_UpperBound(t *testing.T) {
 		t.Fatalf("ListDigestTopicIdeasAfter(0, 200) = %+v, want 2 rows (period_to <= 200)", bounded)
 	}
 
-	unbounded, err := d.ListDigestTopicIdeasAfter(0, 0)
+	unbounded, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
 	if len(unbounded) != 3 {
 		t.Fatalf("ListDigestTopicIdeasAfter(0, 0) = %+v, want all 3 rows (zero bound is unbounded)", unbounded)
+	}
+}
+
+// TestGB3_DigestTopicFloorForTime_MonotonicAgainstRegeneratedOldDigest pins
+// GB3: id order does not track period_to order once a digest can be
+// regenerated (DELETE+re-INSERT gives a re-digested OLD period a NEW,
+// higher id than an in-window topic already sitting in the table). The
+// floor must be anchored on the in-window topic's own id, and
+// ListDigestTopicIdeasAfter's fromUnix lower bound must keep the
+// regenerated old-period topic — which now sits ABOVE the floor by id alone
+// — from being swept into the window.
+func TestGB3_DigestTopicFloorForTime_MonotonicAgainstRegeneratedOldDigest(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateChannel(t, d, "C1", "general")
+
+	from := float64(time.Now().Unix())
+	oldPeriod := from - 100*24*60*60 // 100 days before the window
+	inWindowPeriod := from + 3600    // inside the window
+
+	topic := []DigestTopic{{Title: "t", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: `[{"title":"x"}]`}}
+
+	// The original old-period digest — inserted first, so it gets a LOW id.
+	oldDigestID := mustCreateChannelDigestAt(t, d, "C1", oldPeriod)
+	if err := d.InsertDigestTopics(oldDigestID, topic); err != nil {
+		t.Fatalf("InsertDigestTopics (old): %v", err)
+	}
+	var oldTopicID int64
+	if err := d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, oldDigestID).Scan(&oldTopicID); err != nil {
+		t.Fatalf("reading old topic id: %v", err)
+	}
+
+	// An in-window digest, inserted SECOND — gets a HIGHER id than the old one.
+	inWindowDigestID := mustCreateChannelDigestAt(t, d, "C1", inWindowPeriod)
+	if err := d.InsertDigestTopics(inWindowDigestID, topic); err != nil {
+		t.Fatalf("InsertDigestTopics (in-window): %v", err)
+	}
+	var inWindowTopicID int64
+	if err := d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, inWindowDigestID).Scan(&inWindowTopicID); err != nil {
+		t.Fatalf("reading in-window topic id: %v", err)
+	}
+	if inWindowTopicID <= oldTopicID {
+		t.Fatalf("test setup broken: in-window topic id %d must be higher than old topic id %d", inWindowTopicID, oldTopicID)
+	}
+
+	// Regenerate the OLD digest: delete it and its topic, re-insert with the
+	// SAME old period — it now gets a NEW id higher than the in-window
+	// topic's, even though its content is still old.
+	if _, err := d.Exec(`DELETE FROM digest_topics WHERE digest_id = ?`, oldDigestID); err != nil {
+		t.Fatalf("deleting old digest topics: %v", err)
+	}
+	if _, err := d.Exec(`DELETE FROM digests WHERE id = ?`, oldDigestID); err != nil {
+		t.Fatalf("deleting old digest: %v", err)
+	}
+	regeneratedOldDigestID := mustCreateChannelDigestAt(t, d, "C1", oldPeriod)
+	if err := d.InsertDigestTopics(regeneratedOldDigestID, topic); err != nil {
+		t.Fatalf("InsertDigestTopics (regenerated old): %v", err)
+	}
+	var regeneratedOldTopicID int64
+	if err := d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, regeneratedOldDigestID).Scan(&regeneratedOldTopicID); err != nil {
+		t.Fatalf("reading regenerated old topic id: %v", err)
+	}
+	if regeneratedOldTopicID <= inWindowTopicID {
+		t.Fatalf("test setup broken: regenerated old topic id %d must be higher than in-window topic id %d", regeneratedOldTopicID, inWindowTopicID)
+	}
+
+	floor, err := d.DigestTopicFloorForTime(int64(from))
+	if err != nil {
+		t.Fatalf("DigestTopicFloorForTime: %v", err)
+	}
+	if floor != inWindowTopicID-1 {
+		t.Fatalf("DigestTopicFloorForTime(from) = %d, want %d (one below the in-window topic's own id, not the regenerated old one's higher id)", floor, inWindowTopicID-1)
+	}
+
+	// Without the fromUnix bound, the regenerated old-period topic (id above
+	// the floor) would be wrongly swept into the window.
+	after, err := d.ListDigestTopicIdeasAfter(floor, int64(from), 0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(after) != 1 || after[0].TopicID != inWindowTopicID {
+		t.Fatalf("ListDigestTopicIdeasAfter(floor, from, 0) = %+v, want just the in-window topic %d — the regenerated old-period topic must NOT be swept in despite its higher id", after, inWindowTopicID)
 	}
 }
 
@@ -1069,7 +1150,7 @@ func TestIdeas_DigestTopicFloorForTime_BoundaryInclusive(t *testing.T) {
 		t.Fatalf("DigestTopicFloorForTime(from) = %d, want %d (the strictly-before topic — the at-from topic must stay re-mineable)", floor, beforeTopicID)
 	}
 
-	after, err := d.ListDigestTopicIdeasAfter(floor, 0)
+	after, err := d.ListDigestTopicIdeasAfter(floor, 0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}

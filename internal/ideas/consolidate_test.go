@@ -125,7 +125,7 @@ func TestConsolidate_NewIdea_ValidRef(t *testing.T) {
 			"mentions":[{"source":"slack","ref":"C1|123.45","quote":"we should try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
 	assert.Equal(t, 1, gen.calls)
@@ -166,7 +166,7 @@ func TestIdeas02_InventedRefPartiallyDropped(t *testing.T) {
 		]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
 
@@ -194,7 +194,7 @@ func TestIdeas02_InventedRefAllDroppedOpDiscarded(t *testing.T) {
 			"mentions":[{"source":"slack","ref":"C1|999.9","quote":"invented","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 
@@ -223,7 +223,7 @@ func TestConsolidate_AttachMention_ActiveIdea(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"jira","ref":"WT-9","quote":"q","author":"Bob","said_at":"2026-08-01T00:00:00Z"}}]}`, ideaID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 
@@ -254,7 +254,7 @@ func TestIdeas04_AttachMentionRejectedIdeaNeedsReview(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"jira","ref":"WT-1","quote":"q","author":"Bob","said_at":"2026-08-02T00:00:00Z"}}]}`, ideaID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, _, err := p.runConsolidate(context.Background(), time.Time{})
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 
 	idea, err := d.GetIdea(ideaID)
@@ -285,7 +285,7 @@ func TestIdeas03_AttachMentionMergedIdeaLandsOnTarget(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"gmail","ref":"gmail:1:thr-1","quote":"q","author":"Ann","said_at":"2026-08-01T00:00:00Z"}}]}`, mergedID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, _, err := p.runConsolidate(context.Background(), time.Time{})
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 
 	targetMentions, err := d.ListIdeaMentions(targetID)
@@ -307,7 +307,7 @@ func TestIdeas01_GeneratorErrorNothingWritten(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("boom") }}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.Error(t, err)
 	assert.Zero(t, proposed)
 
@@ -333,7 +333,7 @@ func TestIdeas01_MalformedJSONNothingWritten(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "not json at all", nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.Error(t, err)
 	assert.Zero(t, proposed)
 
@@ -358,7 +358,7 @@ func TestIdeas01_NoNewMaterialCleanNoOp(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 	assert.Zero(t, gen.calls)
@@ -391,7 +391,7 @@ func TestIdeas01_MaxPromptCharsTruncatesToWholeUnits(t *testing.T) {
 	cfg := testCfg()
 	cfg.Ideas.MaxPromptChars = len(unit1)
 	p := New(d, cfg, gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 	assert.Equal(t, 1, gen.calls)
@@ -421,7 +421,7 @@ func TestConsolidate_TranscriptRecapWait_StopsAtRecentRecaplessTranscript(t *tes
 		return `{"ops":[]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, _, err := p.runConsolidate(context.Background(), time.Time{})
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls)
 
@@ -446,7 +446,7 @@ func TestConsolidate_TranscriptRecapWait_SkipsStaleRecaplessTranscript(t *testin
 		return `{"ops":[]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, _, err := p.runConsolidate(context.Background(), time.Time{})
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls)
 
@@ -500,7 +500,7 @@ func TestIdeas05_RerunSameWindow_NoDuplicates(t *testing.T) {
 	var logBuf bytes.Buffer
 	p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
 
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
 
@@ -519,7 +519,7 @@ func TestIdeas05_RerunSameWindow_NoDuplicates(t *testing.T) {
 	require.NoError(t, tx.Commit())
 
 	logBuf.Reset()
-	proposed, _, err = p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err = p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed, "the ref was already mined — no new idea")
 	assert.Equal(t, 2, gen.calls)
@@ -557,7 +557,7 @@ func TestIdeas05_AttachKnownRef_InsertsNothing(t *testing.T) {
 		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"jira","ref":"WT-9","quote":"q","author":"Bob","said_at":"2026-08-02T00:00:00Z"}}]}`, ideaID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 
@@ -595,7 +595,7 @@ func TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly(t *testing.T) {
 		]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, _, err := p.runConsolidate(context.Background(), time.Time{})
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed, "the op still creates an idea — it wasn't ALL known")
 

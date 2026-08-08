@@ -95,7 +95,7 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 	// capped out never starves the consolidator of its turn. softErr threads
 	// phase 1's error through so the "first error across BOTH phases wins"
 	// rule holds even though the two phases are now two functions.
-	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, to, cycles, progress, softErr)
+	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, cycles, progress, softErr)
 	result.Cycles = cycles
 	result.Proposed = proposed
 	result.MentionsDeduped = mentionsDeduped
@@ -179,7 +179,7 @@ func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time) error {
 // respects. The before-floors read happens here, ahead of the cycle
 // counter, so a cycle that fails before ever attempting any work is never
 // counted or reported to progress.
-func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
+func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
 	cycles = startCycles
 	firstErr := priorErr
 	converged := false
@@ -195,7 +195,7 @@ func (p *Pipeline) drainConsolidate(ctx context.Context, to time.Time, startCycl
 			progress(cycles)
 		}
 
-		cProposed, cDeduped, floorsMoved, fatalErr, softErr := p.consolidateCycle(ctx, to, beforeDigest, beforeStream, beforeTranscript)
+		cProposed, cDeduped, floorsMoved, fatalErr, softErr := p.consolidateCycle(ctx, from, to, beforeDigest, beforeStream, beforeTranscript)
 		if fatalErr != nil {
 			return cycles, proposed, mentionsDeduped, false, fatalErr
 		}
@@ -237,8 +237,8 @@ func consolidateConverged(proposed, mentionsDeduped int, floorsMoved bool) bool 
 // there is nothing left to preserve once convergence itself can no longer be
 // determined. softErr is an ordinary runConsolidate failure, which the
 // caller folds into its own "first error wins" accumulator instead.
-func (p *Pipeline) consolidateCycle(ctx context.Context, to time.Time, beforeDigest, beforeStream, beforeTranscript int64) (proposed, mentionsDeduped int, floorsMoved bool, fatalErr, softErr error) {
-	proposed, mentionsDeduped, cerr := p.runConsolidate(ctx, to)
+func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, beforeDigest, beforeStream, beforeTranscript int64) (proposed, mentionsDeduped int, floorsMoved bool, fatalErr, softErr error) {
+	proposed, mentionsDeduped, cerr := p.runConsolidate(ctx, from, to)
 	if cerr != nil {
 		return 0, 0, false, nil, cerr
 	}

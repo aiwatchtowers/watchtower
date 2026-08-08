@@ -352,17 +352,29 @@ func (db *DB) SetIdeasFloors(digest, stream, transcript int64) error {
 	return nil
 }
 
-// DigestTopicFloorForTime returns the highest digest_topics.id whose parent
-// digest ended strictly before fromUnix — the ideas_digest_floor a backfill
-// run lowers to so the window starting at fromUnix (inclusive) is re-mined.
-// A topic whose parent digest's period_to equals fromUnix exactly is NOT
-// counted here (strict <), so it stays on the "after floor" side and IS
-// re-mined — the window's start is inclusive, matching
-// ListDigestTopicIdeasAfter's toUnix bound being inclusive at the other end.
+// DigestTopicFloorForTime returns the ideas_digest_floor a backfill run
+// lowers to so the window starting at fromUnix (inclusive) is re-mined: one
+// less than the LOWEST id among topics whose parent digest's period_to falls
+// at or after fromUnix (so that topic, the first in-window one by content,
+// stays on the "after floor" side and IS re-mined — the window's start is
+// inclusive, matching ListDigestTopicIdeasAfter's toUnix bound being
+// inclusive at the other end). When no topic is in-window at all, this falls
+// back to the highest existing digest_topics.id (0 for an empty table), so
+// nothing pre-existing is swept in.
+//
+// GB3: this is deliberately NOT "the highest id whose period_to is strictly
+// before fromUnix" (id order does not track period_to order once a digest
+// can be regenerated — DELETE+re-INSERT gives a re-digested OLD period a
+// NEW, higher id). That formulation could return a floor higher than an
+// in-window topic's own id, silently excluding it from
+// ListDigestTopicIdeasAfter's `id > floor` check. Anchoring on the lowest
+// in-window id instead is monotonic regardless of insertion order.
 func (db *DB) DigestTopicFloorForTime(fromUnix int64) (int64, error) {
 	var floor int64
-	err := db.QueryRow(`SELECT COALESCE(MAX(dt.id), 0) FROM digest_topics dt
-		JOIN digests d ON dt.digest_id = d.id WHERE d.period_to < ?`, fromUnix).Scan(&floor)
+	err := db.QueryRow(`SELECT COALESCE(
+			(SELECT MIN(dt.id) FROM digest_topics dt JOIN digests d ON dt.digest_id = d.id WHERE d.period_to >= ?),
+			(SELECT COALESCE(MAX(id), 0) + 1 FROM digest_topics)
+		) - 1`, fromUnix).Scan(&floor)
 	if err != nil {
 		return 0, fmt.Errorf("computing digest topic floor for time: %w", err)
 	}
@@ -574,14 +586,23 @@ type DigestTopicForIdeas struct {
 // rows stored the literal string "null" (json.Marshal of a nil slice)
 // instead of "[]" for an empty field, so both are treated as empty. toUnix is
 // an optional upper bound on the parent digest's period_to (0 is unbounded —
-// parity with the pre-bound behavior).
-func (db *DB) ListDigestTopicIdeasAfter(floor, toUnix int64) ([]DigestTopicForIdeas, error) {
+// parity with the pre-bound behavior). fromUnix is an optional LOWER bound on
+// the same period_to (0 is unbounded, same parity): without it, a topic from
+// a REGENERATED old-period digest — DELETE+re-INSERT gives it a new, higher
+// id even though its content period is old — could sit above `floor` by id
+// alone and get swept into a backfill window it has no business being in
+// (GB3). The ordinary unbounded daemon/incremental path never sets it.
+func (db *DB) ListDigestTopicIdeasAfter(floor, fromUnix, toUnix int64) ([]DigestTopicForIdeas, error) {
 	query := `SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
 		FROM digest_topics dt
 		JOIN digests d ON dt.digest_id = d.id
 		LEFT JOIN channels c ON d.channel_id = c.id
 		WHERE dt.id > ? AND (dt.ideas NOT IN ('[]','null') OR dt.decisions NOT IN ('[]','null')) AND d.type = 'channel'`
 	args := []any{floor}
+	if fromUnix != 0 {
+		query += ` AND d.period_to >= ?`
+		args = append(args, fromUnix)
+	}
 	if toUnix != 0 {
 		query += ` AND d.period_to <= ?`
 		args = append(args, toUnix)

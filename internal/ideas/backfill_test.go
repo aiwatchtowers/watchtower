@@ -65,9 +65,13 @@ func TestBackfill_DrainRespectsBoundAndRestoresAboveHighWaterMark(t *testing.T) 
 	to := now.Add(-24 * time.Hour)
 
 	midRef := "CMID|1.1"
-	// Inserted first, so it gets the LOWER id — matching a real system where
-	// historical topics are older (and thus lower-id) than the "already
-	// synced, near now" material the ordinary daemon consumed past already.
+	// Inserted first, so it gets the LOWER id — matching the ORDINARY case
+	// where historical topics are older (and thus lower-id) than the
+	// "already synced, near now" material the ordinary daemon consumed past
+	// already. This is not a universal guarantee — a regenerated digest can
+	// get a higher id despite an older period, see
+	// TestGB3_Backfill_RegeneratedOldDigestNotSweptIntoWindow — just the
+	// scenario this particular test is pinning.
 	midTopicID := seedDigestTopicIdeasAt(t, d, "CMID", "mid-window",
 		[]digest.IdeaCandidate{{Text: "try X", By: "Ann", MessageTS: "1.1"}}, nil,
 		float64(from.Add(24*time.Hour).Unix()))
@@ -112,7 +116,7 @@ func TestBackfill_DrainRespectsBoundAndRestoresAboveHighWaterMark(t *testing.T) 
 
 	// The post-`to` topic's own material must still be there, unconsumed,
 	// for the ordinary daemon to find whenever its floor genuinely reaches it.
-	after, err := d.ListDigestTopicIdeasAfter(midTopicID, 0)
+	after, err := d.ListDigestTopicIdeasAfter(midTopicID, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, after, 1)
 	assert.Equal(t, postToTopicID, after[0].TopicID)
@@ -374,6 +378,63 @@ func TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Capped, "stage-1 must report Capped when it hits its own per-phase cycle budget without converging")
 	assert.True(t, consolidateCalled, "the consolidate phase must still run after stage-1 hits its own cap — a shared cycle counter would have starved it entirely")
+}
+
+// TestGB3_Backfill_RegeneratedOldDigestNotSweptIntoWindow pins GB3 at the
+// Backfill level: a digest for an OLD period, regenerated (deleted and
+// re-inserted, the digest pipeline's own re-digest shape) after an
+// in-window digest already exists, ends up with a HIGHER topic id than the
+// in-window one despite its content period staying outside [from, to]. The
+// backfill must still consume the in-window topic and must NOT consume the
+// regenerated old-period one, even though its id now sits above the floor.
+func TestGB3_Backfill_RegeneratedOldDigestNotSweptIntoWindow(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+	inWindowRef := "CIN|1.1"
+
+	// The original old-period digest — low id, deleted and regenerated below.
+	oldDigestPeriod := float64(from.Add(-240 * time.Hour).Unix()) // well before the window
+	staleTopicID := seedDigestTopicIdeasAt(t, d, "COLD-ORIG", "stale-original",
+		[]digest.IdeaCandidate{{Text: "stale original", By: "Ann", MessageTS: "0.1"}}, nil, oldDigestPeriod)
+
+	// An in-window digest, inserted SECOND — gets a higher id than the stale one.
+	inWindowTopicID := seedDigestTopicIdeasAt(t, d, "CIN", "in-window",
+		[]digest.IdeaCandidate{{Text: "try X", By: "Ann", MessageTS: "1.1"}}, nil,
+		float64(from.Add(24*time.Hour).Unix()))
+	require.Greater(t, inWindowTopicID, staleTopicID)
+
+	// Regenerate the old digest: delete it, re-insert with the SAME old
+	// period — its new topic id is now HIGHER than the in-window one's, even
+	// though its content period is still outside [from, to].
+	var staleDigestID int64
+	require.NoError(t, d.QueryRow(`SELECT digest_id FROM digest_topics WHERE id = ?`, staleTopicID).Scan(&staleDigestID))
+	_, err := d.Exec(`DELETE FROM digest_topics WHERE digest_id = ?`, staleDigestID)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM digests WHERE id = ?`, staleDigestID)
+	require.NoError(t, err)
+	regeneratedOldTopicID := seedDigestTopicIdeasAt(t, d, "COLD", "regenerated-old",
+		[]digest.IdeaCandidate{{Text: "regenerated old", By: "Ann", MessageTS: "0.2"}}, nil, oldDigestPeriod)
+	require.Greater(t, regeneratedOldTopicID, inWindowTopicID)
+
+	var captured []string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = append(captured, user)
+		return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
+			"mentions":[{"source":"slack","ref":%q,"quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, inWindowRef), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	result, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Proposed, "the in-window topic must still be consumed despite the regenerated old topic sitting above it by id")
+
+	for _, u := range captured {
+		assert.NotContains(t, u, "COLD", "the regenerated old-period topic must never be rendered into the prompt despite its higher id")
+	}
 }
 
 // TestBackfill_EmptyWindow_CleanNoOpFloorsRestored is the degenerate case: a

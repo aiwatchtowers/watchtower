@@ -99,20 +99,24 @@ type transcriptRecap struct {
 // a failure anywhere (the AI call, the parse, or an apply write) leaves the
 // registry, its mentions, and the floors untouched (IDEA-01). Returns the
 // number of ideas/decisions rows created this run. A nil generator (the
-// runEmailDigests/runJiraDigests precedent) is a clean no-op. bound is an
-// optional upper bound on every listing this pass reads (the zero value is
-// unbounded — Run's ordinary daemon/incremental path passes time.Time{}); a
-// non-zero bound is how a backfill run scopes one pass to a slice of history.
+// runEmailDigests/runJiraDigests precedent) is a clean no-op. from/to are an
+// optional [from, to] window on every listing this pass reads (the zero
+// value for either is unbounded — Run's ordinary daemon/incremental path
+// passes time.Time{} for both); a backfill run passes both to scope one pass
+// to a slice of history — from matters only for
+// ListDigestTopicIdeasAfter's lower bound (GB3: a regenerated old-period
+// digest topic can carry a high id despite an old content period, and must
+// not be swept into a window it predates).
 // Returns the number of ideas/decisions rows created and the number of
 // mentions dropped because their ref was already recorded (IDEA-05) — the
 // backfill engine's drain loop watches the latter to know when re-mining an
 // already-mined window has stopped finding anything new.
-func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (proposed, mentionsDeduped int, err error) {
+func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
 		return 0, 0, nil
 	}
 
-	in, err := p.gatherConsolidateInput(p.maxPromptChars(), bound)
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), from, to)
 	if err != nil {
 		return 0, 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
@@ -185,7 +189,8 @@ func (p *Pipeline) maxPromptChars() int {
 }
 
 // gatherConsolidateInput reads the three registry floors, lists everything
-// past them (and, when bound is non-zero, at or before it), and renders a
+// past them (and, when to is non-zero, at or before it — plus, when from is
+// non-zero, at or after it, digest topics only — see GB3), and renders a
 // budget-capped "=== NEW MATERIAL ===" body in deterministic order — Slack
 // digest topics, then stream digests (Gmail/Jira), then meeting transcripts —
 // appending whole units until maxChars is spent. Once a unit doesn't fit,
@@ -193,20 +198,23 @@ func (p *Pipeline) maxPromptChars() int {
 // order), so each source's floor advances only past the units this run
 // actually included; a source that contributed nothing keeps its old floor
 // (IDEA-01).
-func (p *Pipeline) gatherConsolidateInput(maxChars int, bound time.Time) (*consolidateInput, error) {
+func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time) (*consolidateInput, error) {
 	topicFloor, streamFloor, transcriptFloor, err := p.db.GetIdeasFloors()
 	if err != nil {
 		return nil, fmt.Errorf("getting ideas floors: %w", err)
 	}
 
-	var toUnix int64
+	var fromUnix, toUnix int64
 	var toISO string
-	if !bound.IsZero() {
-		toUnix = bound.Unix()
-		toISO = bound.UTC().Format(time.RFC3339)
+	if !from.IsZero() {
+		fromUnix = from.Unix()
+	}
+	if !to.IsZero() {
+		toUnix = to.Unix()
+		toISO = to.UTC().Format(time.RFC3339)
 	}
 
-	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor, toUnix)
+	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor, fromUnix, toUnix)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
