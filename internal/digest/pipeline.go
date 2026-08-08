@@ -49,12 +49,13 @@ type DigestResult struct {
 // Topic is a self-contained thematic unit within a digest.
 // Each topic carries its own decisions, action items, situations, and key messages.
 type Topic struct {
-	Title       string         `json:"title"`
-	Summary     string         `json:"summary"`
-	Decisions   []Decision     `json:"decisions"`
-	ActionItems []ActionItem   `json:"action_items"`
-	Situations  []db.Situation `json:"situations"`
-	KeyMessages []string       `json:"key_messages"`
+	Title       string          `json:"title"`
+	Summary     string          `json:"summary"`
+	Decisions   []Decision      `json:"decisions"`
+	ActionItems []ActionItem    `json:"action_items"`
+	Situations  []db.Situation  `json:"situations"`
+	KeyMessages []string        `json:"key_messages"`
+	Ideas       []IdeaCandidate `json:"ideas"`
 }
 
 // DigestSituationParticipant mirrors db.SituationParticipant for JSON parsing.
@@ -88,6 +89,14 @@ type ActionItem struct {
 	Text     string `json:"text"`
 	Assignee string `json:"assignee"`
 	Status   string `json:"status"`
+}
+
+// IdeaCandidate represents a proposal — something new suggested but not (yet)
+// decided — extracted from messages. Stage-1 material for the ideas registry.
+type IdeaCandidate struct {
+	Text      string `json:"text"`
+	By        string `json:"by"`
+	MessageTS string `json:"message_ts"`
 }
 
 // TrackLinker runs the tracks pipeline between channel digests and rollups.
@@ -1330,7 +1339,6 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	if len(result.Topics) > 0 {
 		var dbTopics []db.DigestTopic
 		for i, t := range result.Topics {
-			dec, _ := json.Marshal(t.Decisions)
 			ai, _ := json.Marshal(t.ActionItems)
 			sit, _ := json.Marshal(t.Situations)
 			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
@@ -1338,10 +1346,11 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 				Idx:         i,
 				Title:       t.Title,
 				Summary:     t.Summary,
-				Decisions:   string(dec),
+				Decisions:   marshalArray(t.Decisions),
 				ActionItems: string(ai),
 				Situations:  string(sit),
 				KeyMessages: string(km),
+				Ideas:       marshalArray(t.Ideas),
 			})
 		}
 		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
@@ -1361,6 +1370,22 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	}
 
 	return nil
+}
+
+// marshalArray renders a slice as JSON, emitting "[]" — never "null" — for an
+// empty or nil one. digest_topics.ideas/decisions are read back by the ideas
+// registry's ListDigestTopicIdeasAfter, whose "carries candidates" filter is a
+// literal `!= '[]'` string compare: a "null" would sail past it and hand the
+// consolidator an inert unit for every topic ever written.
+func marshalArray[T any](items []T) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 // updatePeriodBounds atomically updates the earliest/latest period bounds.

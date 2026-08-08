@@ -511,9 +511,13 @@ func (db *DB) InsertDigestTopics(digestID int64, topics []DigestTopic) error {
 	}
 
 	for i, t := range topics {
-		_, err := db.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			digestID, i, t.Title, t.Summary, t.Decisions, t.ActionItems, t.Situations, t.KeyMessages)
+		ideas := t.Ideas
+		if ideas == "" {
+			ideas = "[]"
+		}
+		_, err := db.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			digestID, i, t.Title, t.Summary, t.Decisions, t.ActionItems, t.Situations, t.KeyMessages, ideas)
 		if err != nil {
 			return fmt.Errorf("inserting digest topic %d: %w", i, err)
 		}
@@ -527,7 +531,7 @@ func (db *DB) InsertDigestTopics(digestID int64, topics []DigestTopic) error {
 
 // GetDigestTopics returns all topics for a digest, ordered by idx.
 func (db *DB) GetDigestTopics(digestID int) ([]DigestTopic, error) {
-	rows, err := db.Query(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages
+	rows, err := db.Query(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas
 		FROM digest_topics WHERE digest_id = ? ORDER BY idx`, digestID)
 	if err != nil {
 		return nil, fmt.Errorf("querying digest topics: %w", err)
@@ -537,7 +541,7 @@ func (db *DB) GetDigestTopics(digestID int) ([]DigestTopic, error) {
 	var topics []DigestTopic
 	for rows.Next() {
 		var t DigestTopic
-		if err := rows.Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages); err != nil {
+		if err := rows.Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages, &t.Ideas); err != nil {
 			return nil, fmt.Errorf("scanning digest topic: %w", err)
 		}
 		topics = append(topics, t)
@@ -558,7 +562,7 @@ func (db *DB) GetDigestTopicsByDigestIDs(digestIDs []int) ([]DigestTopic, error)
 		args[i] = id
 	}
 
-	rows, err := db.Query(fmt.Sprintf(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages
+	rows, err := db.Query(fmt.Sprintf(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas
 		FROM digest_topics WHERE digest_id IN (%s) ORDER BY digest_id, idx`, strings.Join(placeholders, ",")), args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying digest topics by IDs: %w", err)
@@ -568,7 +572,7 @@ func (db *DB) GetDigestTopicsByDigestIDs(digestIDs []int) ([]DigestTopic, error)
 	var topics []DigestTopic
 	for rows.Next() {
 		var t DigestTopic
-		if err := rows.Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages); err != nil {
+		if err := rows.Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages, &t.Ideas); err != nil {
 			return nil, fmt.Errorf("scanning digest topic: %w", err)
 		}
 		topics = append(topics, t)
@@ -579,9 +583,9 @@ func (db *DB) GetDigestTopicsByDigestIDs(digestIDs []int) ([]DigestTopic, error)
 // GetDigestTopicByID returns a single topic by its primary key.
 func (db *DB) GetDigestTopicByID(topicID int) (*DigestTopic, error) {
 	var t DigestTopic
-	err := db.QueryRow(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages
+	err := db.QueryRow(`SELECT id, digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas
 		FROM digest_topics WHERE id = ?`, topicID).
-		Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages)
+		Scan(&t.ID, &t.DigestID, &t.Idx, &t.Title, &t.Summary, &t.Decisions, &t.ActionItems, &t.Situations, &t.KeyMessages, &t.Ideas)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

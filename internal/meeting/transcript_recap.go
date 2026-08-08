@@ -59,5 +59,6 @@ func (p *Pipeline) GenerateTranscriptRecap(ctx context.Context, eventID, transcr
 	raw.KeyDecisions = trimNonEmpty(raw.KeyDecisions)
 	raw.ActionItems = trimNonEmpty(raw.ActionItems)
 	raw.OpenQuestions = trimNonEmpty(raw.OpenQuestions)
+	raw.Ideas = trimNonEmpty(raw.Ideas)
 	return &raw, usage, nil
 }

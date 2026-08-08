@@ -239,6 +239,7 @@ type DigestTopic struct {
 	ActionItems string // JSON array of ActionItem objects
 	Situations  string // JSON array of Situation objects
 	KeyMessages string // JSON array of message timestamps
+	Ideas       string // JSON array of idea/decision candidates mined from this topic (see 00050)
 }
 
 // Situation represents a notable interaction pattern observed in a channel digest.
