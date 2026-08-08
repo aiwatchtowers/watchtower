@@ -116,6 +116,45 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
     }
 
+    /// Everyone identified with the event: attendees plus the organizer —
+    /// the sync stores the organizer in its own column, never in the
+    /// attendees JSON, and an organizer-not-guest event (Zoom/Calendly, a
+    /// self-removed organizer) would otherwise lose them. Used to scope
+    /// voice-print matching and to seed the rename picker; the organizer
+    /// entry is skipped when already listed as an attendee
+    /// (case-insensitive email compare).
+    ///
+    /// Room resources are filtered out FIRST — Google stores them as
+    /// ordinary attendee rows (the client parses no resource flag; the
+    /// `@resource.calendar.google.com` address is the stable marker, and
+    /// the Google client is the only writer of this JSON), and one filter
+    /// here covers all three consumers: the sentinel below, the voice-print
+    /// scoping set, and the rename picker (a room must never be offered as
+    /// a speaker or mint a voice print).
+    ///
+    /// The organizer joins only a NON-EMPTY (human) attendee list: an empty
+    /// result is the "no identities → treat as ad-hoc" sentinel downstream
+    /// (`VoicePrintMatcher.scoped` falls back to the global pool on []),
+    /// and a zero-guest self-created event (focus block), a room-only
+    /// booking, or an undecodable attendees JSON must keep that fallback —
+    /// an owner-only set would silently narrow the pool to the owner and
+    /// strip every colleague's name.
+    var attendeesIncludingOrganizer: [EventAttendee] {
+        let attendees = parsedAttendees.filter {
+            let email = $0.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return !email.hasSuffix("@resource.calendar.google.com")
+        }
+        let organizer = organizerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !attendees.isEmpty, !organizer.isEmpty,
+              !attendees.contains(where: {
+                  $0.email.trimmingCharacters(in: .whitespacesAndNewlines)
+                      .caseInsensitiveCompare(organizer) == .orderedSame
+              })
+        else { return attendees }
+        return attendees + [EventAttendee(
+            email: organizer, displayName: "", responseStatus: "", slackUserID: "")]
+    }
+
     // MARK: - Conference Link
 
     /// The event's meeting link (Meet/Zoom/Teams/Webex) as a URL, or nil when

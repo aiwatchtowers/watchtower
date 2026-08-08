@@ -271,6 +271,66 @@ final class AppState {
 
     private var isInitializing = false
 
+    /// Hands the MeetingRecorderCenter its DB read closures once the shared
+    /// pool opens (the Center is created before the DB). Every loader
+    /// degrades on failure instead of throwing — voice naming is a
+    /// progressive enhancement like roles themselves: no voice prints →
+    /// plain "Speaker N" labels; no attendees → global (unscoped) matching;
+    /// no owner emails → «Я» keeps its legacy absolute mic-dominance
+    /// priority. Failures are printed, never silent (the renderRoles
+    /// diagnostics convention). `func`, not `private func`, so @testable
+    /// tests can wire a test DB through it (the initDashboard precedent).
+    func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
+        meetingRecorderCenter.voicePrintsLoader = {
+            do {
+                return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+            } catch {
+                print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
+                return []
+            }
+        }
+        meetingRecorderCenter.attendeesLoader = { eventID in
+            do {
+                let event = try await dbPool.read { try CalendarQueries.fetchEvent($0, id: eventID) }
+                guard let event else {
+                    // Delayed jobs (FIFO backlog, crash recovery, sidecar
+                    // retry) can outlive the ~24h event retention — the
+                    // silent fall to the global pool must not be
+                    // indistinguishable from ad-hoc.
+                    print("[AppState] event \(eventID) not found, voice matching stays global")
+                    return []
+                }
+                let identities = event.attendeesIncludingOrganizer
+                if identities.isEmpty, event.parsedAttendees.isEmpty,
+                   !event.attendees.isEmpty, event.attendees != "[]" {
+                    // Absent-vs-undecodable: a corrupt attendees blob folds
+                    // into the same global fallback as "no guests" — safe,
+                    // but it must leave a trace.
+                    print("[AppState] event \(eventID) has an undecodable attendees JSON, voice matching stays global")
+                }
+                return identities
+            } catch {
+                print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
+                return []
+            }
+        }
+        meetingRecorderCenter.ownerEmailsLoader = {
+            do {
+                // Deliberately unfiltered by status: a revoked Google account
+                // does not change who owns the machine (a removed one is
+                // hard-deleted and never appears here). IMAP (email_accounts)
+                // identities are deliberately excluded — voice prints are
+                // keyed by attendee emails, which come from Google Calendar.
+                // Owner-reviewed 2026-08-08.
+                let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
+                return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
+            } catch {
+                print("[AppState] owner-email load failed, «Я» stays mic-only: \(error.localizedDescription)")
+                return []
+            }
+        }
+    }
+
     func initialize() {
         guard !isInitializing else { return }
         isInitializing = true
@@ -301,20 +361,7 @@ final class AppState {
                 }.value
                 databaseManager = manager
                 errorMessage = nil
-                // Voice matching needs the DB at diarization time; the Center
-                // is created before the DB opens, so hand it a loader now. A
-                // read failure degrades to "no voice prints" (plain Speaker N
-                // labels), never a thrown error.
-                meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
-                    do {
-                        return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
-                    } catch {
-                        // Documented degradation, but never a silent one
-                        // (the renderRoles diagnostics convention).
-                        print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
-                        return []
-                    }
-                }
+                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)

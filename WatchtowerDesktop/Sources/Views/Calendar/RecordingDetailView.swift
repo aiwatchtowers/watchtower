@@ -270,9 +270,13 @@ struct RecordingDetailView: View {
                         // Lightweight (title + start_time); nil when the event
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)
-                        // Attendees feed the rename picker (attendees first,
-                        // free text after); ad-hoc recordings have none.
-                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
+                        // Attendee identities (incl. the organizer — same set
+                        // the voice-print scoping uses, so a rename mints an
+                        // email-keyed print for an organizer-not-guest too)
+                        // feed the rename picker (attendees first, free text
+                        // after); ad-hoc recordings have none.
+                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?
+                            .attendeesIncludingOrganizer ?? []
                     }
                     return LoadedDetail(row: row, recap: recap, link: link,
                                         utterances: row?.utterances, attendees: eventAttendees,
