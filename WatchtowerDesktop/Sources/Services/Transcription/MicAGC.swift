@@ -55,7 +55,11 @@ struct MicAGC {
     /// Absolute floor below which a cycle is room tone rather than speech.
     /// A plain constant, not a rolling noise estimate: in the measured sidecar
     /// the system-quiet mic histogram has no bimodal gap to track, so an
-    /// adaptive floor has nothing to lock onto and merely adds state.
+    /// adaptive floor has nothing to lock onto and merely adds state. All the
+    /// quoted statistics are over the sidecar's 100 ms bins; production cycles
+    /// are ~10 ms, where RMS spreads wider, so per-cycle crossings are more
+    /// frequent than the bin numbers suggest — absorbed by the 1 s hold, which
+    /// sits two orders of magnitude above either window.
     ///
     /// The floor is porous on purpose. Quiet room-tone-shaped bins do clear it
     /// and dilute the EMA, so on the measured recording the gain converges to
