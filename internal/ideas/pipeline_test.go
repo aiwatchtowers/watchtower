@@ -43,7 +43,7 @@ func TestRun_IdeasDisabled_ShortCircuits(t *testing.T) {
 	assert.Zero(t, proposed)
 	assert.Zero(t, gen.calls)
 
-	digests, derr := d.ListStreamDigestsAfter(0)
+	digests, derr := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, derr)
 	assert.Empty(t, digests)
 }
@@ -93,7 +93,7 @@ func TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
 	assert.Equal(t, 3, gen.calls, "email, jira, and consolidate must all have made their Generate call")
 
 	// The email pass's success is not rolled back by the jira pass's failure.
-	digests, derr := d.ListStreamDigestsAfter(0)
+	digests, derr := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, derr)
 	require.Len(t, digests, 1)
 	assert.Equal(t, "gmail", digests[0].Source)
@@ -147,7 +147,7 @@ func TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial(t *
 	assert.Zero(t, dFloor)
 	assert.Zero(t, tFloor)
 
-	digests, derr := d.ListStreamDigestsAfter(0)
+	digests, derr := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, derr)
 	require.Len(t, digests, 1)
 	assert.Equal(t, digests[0].ID, sFloor, "the stream-digest floor must advance past the healthy gmail material")

@@ -75,11 +75,11 @@ func TestRunJiraDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	}}
 
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runJiraDigests(context.Background())
+	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	sd := digests[0]
@@ -105,10 +105,10 @@ func TestIdeas01_JiraGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("boom") }}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runJiraDigests(context.Background())
+	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.Error(t, err)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
@@ -132,11 +132,11 @@ func TestIdeas01_JiraNoChangedIssuesCleanNoOp(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runJiraDigests(context.Background())
+	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
@@ -160,7 +160,7 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	}}
 	before := time.Now()
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runJiraDigests(context.Background())
+	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
@@ -175,7 +175,7 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	require.NoError(t, perr)
 	assert.WithinDuration(t, before, parsed, 2*time.Minute, "floor should initialize near now (minus the backoff), got %s", newFloor)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 }
@@ -195,7 +195,7 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), initGen, testLogger())
-	require.NoError(t, p.runJiraDigests(context.Background()))
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
 	require.Zero(t, initGen.calls)
 
 	// An issue updated an instant after initialization, in Jira's raw
@@ -208,10 +208,10 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"idea","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
 	}}
 	p2 := New(d, testCfg(), gen, testLogger())
-	require.NoError(t, p2.runJiraDigests(context.Background()))
+	require.NoError(t, p2.runJiraDigests(context.Background(), time.Time{}))
 	assert.Equal(t, 1, gen.calls)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	assert.Contains(t, digests[0].TopicsJSON, `"ref":"WT-1"`)
@@ -236,10 +236,10 @@ func TestIdeas02_JiraHallucinatedRefDropped(t *testing.T) {
 		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"invented","author":"Ann","ref":"WT-999"}],"decisions":[]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runJiraDigests(context.Background())
+	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	assert.Equal(t, "[]", digests[0].TopicsJSON)

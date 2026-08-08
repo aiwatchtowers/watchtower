@@ -93,11 +93,11 @@ func TestRunEmailDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	}}
 
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background())
+	err := p.runEmailDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, gen.calls)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	sd := digests[0]
@@ -122,10 +122,10 @@ func TestIdeas01_EmailGeneratorErrorNoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("boom") }}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background())
+	err := p.runEmailDigests(context.Background(), time.Time{})
 	require.Error(t, err)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
@@ -149,11 +149,11 @@ func TestIdeas01_EmailNoNewMessagesCleanNoOp(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background())
+	err := p.runEmailDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
@@ -177,7 +177,7 @@ func TestRunEmailDigests_FloorZero_InitializesAndSkips(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background())
+	err := p.runEmailDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
@@ -185,7 +185,7 @@ func TestRunEmailDigests_FloorZero_InitializesAndSkips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, float64(base), floor)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 }
@@ -207,10 +207,10 @@ func TestIdeas02_EmailHallucinatedRefDropped(t *testing.T) {
 		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"invented","author":"Ann","ref":"gmail:999:fake-thread"}],"decisions":[]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err := p.runEmailDigests(context.Background())
+	err := p.runEmailDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	assert.Equal(t, "[]", digests[0].TopicsJSON)
@@ -240,7 +240,7 @@ func TestRunEmailDigests_DisabledAccount_Skipped(t *testing.T) {
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	err = p.runEmailDigests(context.Background())
+	err = p.runEmailDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 }

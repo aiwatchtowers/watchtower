@@ -1498,21 +1498,23 @@ const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // reloads with a strict >, which would permanently skip the unloaded rows of
 // that second — so when the limit cuts inside a second this query extends
 // past the limit to include ALL rows sharing the last loaded second (overshoot
-// at most one second of mail).
+// at most one second of mail). beforeTS is an optional upper bound on the
+// decoded internal_date (0 is unbounded — parity with the pre-bound
+// behavior).
 //
 // gmail_messages is a migration-guaranteed base table (00016), so a query
 // failure propagates as a genuine error (freezing the Gmail watermark) rather
 // than being masked as an empty read.
-func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS float64, limit int) ([]GmailExtractMessage, error) {
+func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
-	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, limit)
+	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, beforeTS, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].TSUnix
-	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, -1) // LIMIT -1: unbounded
+	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, 0, -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}
@@ -1525,18 +1527,27 @@ func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS float64, limit
 
 // queryGmailExtractMessages runs the gmail-extract select for accountID with
 // the given comparison operator (">" or "="; never user input) against the
-// decoded internal_date. The ORDER BY ends in id (part of the gmail_messages
-// primary key) so the ordering is fully deterministic within a same-second
-// group, which the boundary-drain above relies on. gmail_messages is a
+// decoded internal_date, plus an optional beforeTS upper bound (0 is
+// unbounded). The ORDER BY ends in id (part of the gmail_messages primary
+// key) so the ordering is fully deterministic within a same-second group,
+// which the boundary-drain above relies on. gmail_messages is a
 // migration-guaranteed base table, so a query failure propagates rather than
 // being masked.
-func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
-	rows, err := db.Query(`
-		SELECT id, thread_id, subject, from_email, from_name, body_text, `+gmailTSUnixExpr+`
+func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
+	query := `
+		SELECT id, thread_id, subject, from_email, from_name, body_text, ` + gmailTSUnixExpr + `
 		FROM gmail_messages
-		WHERE account_id = ? AND internal_date != '' AND `+gmailTSUnixExpr+` `+op+` ?
-		ORDER BY `+gmailTSUnixExpr+`, id
-		LIMIT ?`, accountID, tsArg, limit)
+		WHERE account_id = ? AND internal_date != '' AND ` + gmailTSUnixExpr + ` ` + op + ` ?`
+	args := []any{accountID, tsArg}
+	if beforeTS != 0 {
+		query += ` AND ` + gmailTSUnixExpr + ` <= ?`
+		args = append(args, beforeTS)
+	}
+	query += `
+		ORDER BY ` + gmailTSUnixExpr + `, id
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing gmail threads for extract: %w", err)
 	}

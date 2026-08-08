@@ -99,13 +99,16 @@ type transcriptRecap struct {
 // a failure anywhere (the AI call, the parse, or an apply write) leaves the
 // registry, its mentions, and the floors untouched (IDEA-01). Returns the
 // number of ideas/decisions rows created this run. A nil generator (the
-// runEmailDigests/runJiraDigests precedent) is a clean no-op.
-func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
+// runEmailDigests/runJiraDigests precedent) is a clean no-op. bound is an
+// optional upper bound on every listing this pass reads (the zero value is
+// unbounded — Run's ordinary daemon/incremental path passes time.Time{}); a
+// non-zero bound is how a backfill run scopes one pass to a slice of history.
+func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (int, error) {
 	if p.generator == nil {
 		return 0, nil
 	}
 
-	in, err := p.gatherConsolidateInput(p.maxPromptChars())
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), bound)
 	if err != nil {
 		return 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
@@ -178,28 +181,36 @@ func (p *Pipeline) maxPromptChars() int {
 }
 
 // gatherConsolidateInput reads the three registry floors, lists everything
-// past them, and renders a budget-capped "=== NEW MATERIAL ===" body in
-// deterministic order — Slack digest topics, then stream digests (Gmail/
-// Jira), then meeting transcripts — appending whole units until maxChars is
-// spent. Once a unit doesn't fit, consumption stops entirely (no smaller
-// later unit is smuggled in out of order), so each source's floor advances
-// only past the units this run actually included; a source that contributed
-// nothing keeps its old floor (IDEA-01).
-func (p *Pipeline) gatherConsolidateInput(maxChars int) (*consolidateInput, error) {
+// past them (and, when bound is non-zero, at or before it), and renders a
+// budget-capped "=== NEW MATERIAL ===" body in deterministic order — Slack
+// digest topics, then stream digests (Gmail/Jira), then meeting transcripts —
+// appending whole units until maxChars is spent. Once a unit doesn't fit,
+// consumption stops entirely (no smaller later unit is smuggled in out of
+// order), so each source's floor advances only past the units this run
+// actually included; a source that contributed nothing keeps its old floor
+// (IDEA-01).
+func (p *Pipeline) gatherConsolidateInput(maxChars int, bound time.Time) (*consolidateInput, error) {
 	topicFloor, streamFloor, transcriptFloor, err := p.db.GetIdeasFloors()
 	if err != nil {
 		return nil, fmt.Errorf("getting ideas floors: %w", err)
 	}
 
-	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor)
+	var toUnix int64
+	var toISO string
+	if !bound.IsZero() {
+		toUnix = bound.Unix()
+		toISO = bound.UTC().Format(time.RFC3339)
+	}
+
+	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor, toUnix)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
-	streams, err := p.db.ListStreamDigestsAfter(streamFloor)
+	streams, err := p.db.ListStreamDigestsAfter(streamFloor, toISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream digests: %w", err)
 	}
-	transcripts, err := p.db.ListTranscriptsForIdeasAfter(transcriptFloor)
+	transcripts, err := p.db.ListTranscriptsForIdeasAfter(transcriptFloor, toISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}

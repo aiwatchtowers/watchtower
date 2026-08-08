@@ -335,7 +335,7 @@ func TestIdeas_StreamDigestInsertAndListAfter(t *testing.T) {
 		t.Fatalf("InsertStreamDigest 2: %v", err)
 	}
 
-	after, err := d.ListStreamDigestsAfter(id1)
+	after, err := d.ListStreamDigestsAfter(id1, "")
 	if err != nil {
 		t.Fatalf("ListStreamDigestsAfter: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		t.Fatalf("InsertDigestTopics: %v", err)
 	}
 
-	got, err := d.ListDigestTopicIdeasAfter(0)
+	got, err := d.ListDigestTopicIdeasAfter(0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		t.Fatalf("inserting legacy-null topic: %v", err)
 	}
 
-	stillGot, err := d.ListDigestTopicIdeasAfter(0)
+	stillGot, err := d.ListDigestTopicIdeasAfter(0, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter after legacy insert: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 
 	// Floor excludes everything.
 	maxID := got[len(got)-1].TopicID
-	after, err := d.ListDigestTopicIdeasAfter(maxID)
+	after, err := d.ListDigestTopicIdeasAfter(maxID, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter (above floor): %v", err)
 	}
@@ -498,7 +498,7 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		t.Fatalf("inserting mixed legacy topic (null decisions): %v", err)
 	}
 
-	mixed, err := d.ListDigestTopicIdeasAfter(maxID)
+	mixed, err := d.ListDigestTopicIdeasAfter(maxID, 0)
 	if err != nil {
 		t.Fatalf("ListDigestTopicIdeasAfter after mixed inserts: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestIdeas_ListTranscriptsForIdeasAfter_RecapCollision(t *testing.T) {
 	// Ad-hoc transcript with no event: falls back to summary_json.
 	adHocID := mustCreateTranscript(t, d, nil, `{"summary":"ad hoc"}`)
 
-	got, err := d.ListTranscriptsForIdeasAfter(0)
+	got, err := d.ListTranscriptsForIdeasAfter(0, "")
 	if err != nil {
 		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestIdeas_ListTranscriptsForIdeasAfterFloor(t *testing.T) {
 	id1 := mustCreateTranscript(t, d, nil, "")
 	id2 := mustCreateTranscript(t, d, nil, "")
 
-	got, err := d.ListTranscriptsForIdeasAfter(id1)
+	got, err := d.ListTranscriptsForIdeasAfter(id1, "")
 	if err != nil {
 		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues(t *testing.T) {
 	seen := map[string]bool{}
 	floor := "2026-08-01T00:00:00.000+0000"
 	for run := 0; run < 4; run++ {
-		issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, limit)
+		issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, "", limit)
 		if err != nil {
 			t.Fatalf("run %d: ListJiraIssuesUpdatedSince: %v", run, err)
 		}
@@ -752,7 +752,7 @@ func TestIdeas01_JiraWindowIsDeterministicWithinATimestamp(t *testing.T) {
 		mustCreateJiraIssueAt(t, d, acctID, key, shared)
 	}
 
-	issues, err := d.ListJiraIssuesUpdatedSince(acctID, "2026-08-01T00:00:00.000+0000", 300)
+	issues, err := d.ListJiraIssuesUpdatedSince(acctID, "2026-08-01T00:00:00.000+0000", "", 300)
 	if err != nil {
 		t.Fatalf("ListJiraIssuesUpdatedSince: %v", err)
 	}
@@ -778,5 +778,165 @@ func mustCreateJiraIssueAt(t *testing.T, d *DB, accountID int64, key, updatedAt 
 		Summary: key, Status: "Open", UpdatedAt: updatedAt,
 	}); err != nil {
 		t.Fatalf("UpsertJiraIssue %s: %v", key, err)
+	}
+}
+
+// --- Optional upper bounds (Ideas Backfill Task 3) -------------------------
+
+func mustCreateChannelDigestAt(t *testing.T, d *DB, channelID string, periodTo float64) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary)
+		VALUES (?, 0, ?, 'channel', '')`, channelID, periodTo)
+	if err != nil {
+		t.Fatalf("inserting digest: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return id
+}
+
+// TestIdeas_ListDigestTopicIdeasAfter_UpperBound: a non-zero toUnix excludes
+// topics whose parent digest's period_to is after it, and a zero toUnix stays
+// unbounded (parity with the pre-bound behavior) — rows straddling the bound
+// prove both directions.
+func TestIdeas_ListDigestTopicIdeasAfter_UpperBound(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateChannel(t, d, "C1", "general")
+
+	digestBefore := mustCreateChannelDigestAt(t, d, "C1", 100)
+	digestAt := mustCreateChannelDigestAt(t, d, "C1", 200)
+	digestAfter := mustCreateChannelDigestAt(t, d, "C1", 300)
+
+	topic := []DigestTopic{{Title: "t", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: `[{"title":"x"}]`}}
+	for _, id := range []int64{digestBefore, digestAt, digestAfter} {
+		if err := d.InsertDigestTopics(id, topic); err != nil {
+			t.Fatalf("InsertDigestTopics %d: %v", id, err)
+		}
+	}
+
+	bounded, err := d.ListDigestTopicIdeasAfter(0, 200)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(bounded) != 2 {
+		t.Fatalf("ListDigestTopicIdeasAfter(0, 200) = %+v, want 2 rows (period_to <= 200)", bounded)
+	}
+
+	unbounded, err := d.ListDigestTopicIdeasAfter(0, 0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(unbounded) != 3 {
+		t.Fatalf("ListDigestTopicIdeasAfter(0, 0) = %+v, want all 3 rows (zero bound is unbounded)", unbounded)
+	}
+}
+
+// TestIdeas_ListStreamDigestsAfter_UpperBound is the stream-digests half of
+// the same rule: a non-zero toISO excludes rows created after it.
+func TestIdeas_ListStreamDigestsAfter_UpperBound(t *testing.T) {
+	d := openTestDB(t)
+
+	mustInsertStreamDigestAt(t, d, "gmail", "2026-01-01T00:00:00Z")
+	mustInsertStreamDigestAt(t, d, "gmail", "2026-01-02T00:00:00Z")
+	mustInsertStreamDigestAt(t, d, "gmail", "2026-01-03T00:00:00Z")
+
+	bounded, err := d.ListStreamDigestsAfter(0, "2026-01-02T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListStreamDigestsAfter: %v", err)
+	}
+	if len(bounded) != 2 {
+		t.Fatalf("ListStreamDigestsAfter(0, bound) = %+v, want 2 rows (created_at <= bound)", bounded)
+	}
+
+	unbounded, err := d.ListStreamDigestsAfter(0, "")
+	if err != nil {
+		t.Fatalf("ListStreamDigestsAfter: %v", err)
+	}
+	if len(unbounded) != 3 {
+		t.Fatalf("ListStreamDigestsAfter(0, \"\") = %+v, want all 3 rows (empty bound is unbounded)", unbounded)
+	}
+}
+
+func mustInsertStreamDigestAt(t *testing.T, d *DB, source, createdAtISO string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO stream_digests (source, account_id, scope, period_from, period_to, topics_json, created_at)
+		VALUES (?, 1, '', ?, ?, '[]', ?)`, source, createdAtISO, createdAtISO, createdAtISO)
+	if err != nil {
+		t.Fatalf("inserting stream digest: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return id
+}
+
+// TestIdeas_ListTranscriptsForIdeasAfter_UpperBound is the transcripts half
+// of the same rule: a non-zero toISO excludes transcripts created after it.
+func TestIdeas_ListTranscriptsForIdeasAfter_UpperBound(t *testing.T) {
+	d := openTestDB(t)
+
+	mustCreateTranscriptAt(t, d, "2026-01-01T00:00:00Z")
+	mustCreateTranscriptAt(t, d, "2026-01-02T00:00:00Z")
+	mustCreateTranscriptAt(t, d, "2026-01-03T00:00:00Z")
+
+	bounded, err := d.ListTranscriptsForIdeasAfter(0, "2026-01-02T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
+	}
+	if len(bounded) != 2 {
+		t.Fatalf("ListTranscriptsForIdeasAfter(0, bound) = %+v, want 2 rows (created_at <= bound)", bounded)
+	}
+
+	unbounded, err := d.ListTranscriptsForIdeasAfter(0, "")
+	if err != nil {
+		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
+	}
+	if len(unbounded) != 3 {
+		t.Fatalf("ListTranscriptsForIdeasAfter(0, \"\") = %+v, want all 3 rows (empty bound is unbounded)", unbounded)
+	}
+}
+
+func mustCreateTranscriptAt(t *testing.T, d *DB, createdAtISO string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO meeting_transcripts (title, transcript_text, created_at, updated_at)
+		VALUES ('Test Transcript', '', ?, ?)`, createdAtISO, createdAtISO)
+	if err != nil {
+		t.Fatalf("inserting meeting_transcripts: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("LastInsertId: %v", err)
+	}
+	return id
+}
+
+// TestIdeas_ListJiraIssuesUpdatedSince_UpperBound: a non-zero beforeISO
+// excludes issues updated after it, and an empty beforeISO stays unbounded
+// (parity with the pre-bound behavior).
+func TestIdeas_ListJiraIssuesUpdatedSince_UpperBound(t *testing.T) {
+	d := openTestDB(t)
+	acctID := mustCreateJiraAccount(t, d)
+
+	mustCreateJiraIssueAt(t, d, acctID, "WT-001", "2026-08-01T00:00:00.000+0000")
+	mustCreateJiraIssueAt(t, d, acctID, "WT-002", "2026-08-02T00:00:00.000+0000")
+	mustCreateJiraIssueAt(t, d, acctID, "WT-003", "2026-08-03T00:00:00.000+0000")
+
+	bounded, err := d.ListJiraIssuesUpdatedSince(acctID, "2026-07-01T00:00:00.000+0000", "2026-08-02T00:00:00.000+0000", 300)
+	if err != nil {
+		t.Fatalf("ListJiraIssuesUpdatedSince: %v", err)
+	}
+	if len(bounded) != 2 {
+		t.Fatalf("ListJiraIssuesUpdatedSince(bounded) = %+v, want 2 issues (updated_at <= beforeISO)", bounded)
+	}
+
+	unbounded, err := d.ListJiraIssuesUpdatedSince(acctID, "2026-07-01T00:00:00.000+0000", "", 300)
+	if err != nil {
+		t.Fatalf("ListJiraIssuesUpdatedSince: %v", err)
+	}
+	if len(unbounded) != 3 {
+		t.Fatalf("ListJiraIssuesUpdatedSince(unbounded) = %+v, want all 3 issues (empty bound is unbounded)", unbounded)
 	}
 }

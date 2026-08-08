@@ -359,10 +359,18 @@ func (db *DB) InsertStreamDigest(d StreamDigest) (int64, error) {
 }
 
 // ListStreamDigestsAfter returns stream pre-digests with id above the given
-// floor, ordered by id.
-func (db *DB) ListStreamDigestsAfter(floor int64) ([]StreamDigest, error) {
-	rows, err := db.Query(`SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at
-		FROM stream_digests WHERE id > ? ORDER BY id`, floor)
+// floor, ordered by id. toISO is an optional upper bound on created_at ("" is
+// unbounded — parity with the pre-bound behavior).
+func (db *DB) ListStreamDigestsAfter(floor int64, toISO string) ([]StreamDigest, error) {
+	query := `SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at
+		FROM stream_digests WHERE id > ?`
+	args := []any{floor}
+	if toISO != "" {
+		query += ` AND created_at <= ?`
+		args = append(args, toISO)
+	}
+	query += ` ORDER BY id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream digests: %w", err)
 	}
@@ -486,14 +494,22 @@ type DigestTopicForIdeas struct {
 // ListDigestTopicIdeasAfter returns channel-digest topics with id above the
 // given floor that carry ideas and/or decisions, ordered by id. Pre-PR-78
 // rows stored the literal string "null" (json.Marshal of a nil slice)
-// instead of "[]" for an empty field, so both are treated as empty.
-func (db *DB) ListDigestTopicIdeasAfter(floor int64) ([]DigestTopicForIdeas, error) {
-	rows, err := db.Query(`SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
+// instead of "[]" for an empty field, so both are treated as empty. toUnix is
+// an optional upper bound on the parent digest's period_to (0 is unbounded —
+// parity with the pre-bound behavior).
+func (db *DB) ListDigestTopicIdeasAfter(floor, toUnix int64) ([]DigestTopicForIdeas, error) {
+	query := `SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
 		FROM digest_topics dt
 		JOIN digests d ON dt.digest_id = d.id
 		LEFT JOIN channels c ON d.channel_id = c.id
-		WHERE dt.id > ? AND (dt.ideas NOT IN ('[]','null') OR dt.decisions NOT IN ('[]','null')) AND d.type = 'channel'
-		ORDER BY dt.id`, floor)
+		WHERE dt.id > ? AND (dt.ideas NOT IN ('[]','null') OR dt.decisions NOT IN ('[]','null')) AND d.type = 'channel'`
+	args := []any{floor}
+	if toUnix != 0 {
+		query += ` AND d.period_to <= ?`
+		args = append(args, toUnix)
+	}
+	query += ` ORDER BY dt.id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
@@ -523,14 +539,21 @@ type TranscriptForIdeas struct {
 }
 
 // ListTranscriptsForIdeasAfter returns meeting transcripts with id above the
-// given floor, ordered by id.
-func (db *DB) ListTranscriptsForIdeasAfter(floor int64) ([]TranscriptForIdeas, error) {
-	rows, err := db.Query(`SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
+// given floor, ordered by id. toISO is an optional upper bound on
+// mt.created_at ("" is unbounded — parity with the pre-bound behavior).
+func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]TranscriptForIdeas, error) {
+	query := `SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
 			COALESCE(mr.recap_json, mt.summary_json, ''), mt.created_at
 		FROM meeting_transcripts mt
 		LEFT JOIN meeting_recaps mr ON mr.event_id = mt.event_id
-		WHERE mt.id > ?
-		ORDER BY mt.id`, floor)
+		WHERE mt.id > ?`
+	args := []any{floor}
+	if toISO != "" {
+		query += ` AND mt.created_at <= ?`
+		args = append(args, toISO)
+	}
+	query += ` ORDER BY mt.id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}
@@ -626,7 +649,10 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // ListJiraIssuesForExtract's parsed-in-Go approach): sinceISO is always the
 // account's own ideas_jira_floor, itself copied verbatim from a prior row's
 // updated_at, so the comparison is self-consistent within one account even
-// though the stored format is not a normalized unix value.
+// though the stored format is not a normalized unix value. beforeISO is an
+// optional upper bound on updated_at ("" is unbounded — parity with the
+// pre-bound behavior); like sinceISO it must already be in Jira's dotted-ms
+// format (db.FormatJiraTime) for the plain string compare to be format-safe.
 //
 // The caller advances the floor to the highest updated_at it saw and reloads
 // with a strict >, so a LIMIT cut landing inside a group of issues sharing one
@@ -634,17 +660,19 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // the limit is hit, the query is therefore extended to include EVERY issue
 // sharing the last loaded timestamp (the ListGmailThreadsForExtract
 // boundary-drain precedent) — overshooting the cap by at most one timestamp's
-// worth of issues.
-func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit int) ([]JiraIssue, error) {
+// worth of issues. The boundary-drain query needs no beforeISO of its own:
+// the boundary timestamp itself already satisfied the bound in the main
+// query, so every row sharing it does too.
+func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO, beforeISO string, limit int) ([]JiraIssue, error) {
 	if limit <= 0 {
 		limit = 300
 	}
-	out, err := db.queryJiraIssuesUpdated(accountID, ">", sinceISO, limit)
+	out, err := db.queryJiraIssuesUpdated(accountID, ">", sinceISO, beforeISO, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].UpdatedAt
-	full, err := db.queryJiraIssuesUpdated(accountID, "=", boundary, -1) // LIMIT -1: unbounded
+	full, err := db.queryJiraIssuesUpdated(accountID, "=", boundary, "", -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}
@@ -657,13 +685,21 @@ func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit
 
 // queryJiraIssuesUpdated runs the ideas Jira-window select for accountID with
 // the given comparison operator (">" or "="; never user input) against
-// updated_at. The ORDER BY ends in key (part of the jira_issues primary key)
-// so the ordering is fully deterministic within a same-timestamp group, which
-// the boundary drain above relies on.
-func (db *DB) queryJiraIssuesUpdated(accountID int64, op, tsArg string, limit int) ([]JiraIssue, error) {
-	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
-		WHERE account_id = ? AND is_deleted = 0 AND updated_at `+op+` ?
-		ORDER BY updated_at ASC, key ASC LIMIT ?`, accountID, tsArg, limit)
+// updated_at, plus an optional beforeISO upper bound ("" is unbounded). The
+// ORDER BY ends in key (part of the jira_issues primary key) so the ordering
+// is fully deterministic within a same-timestamp group, which the boundary
+// drain above relies on.
+func (db *DB) queryJiraIssuesUpdated(accountID int64, op, tsArg, beforeISO string, limit int) ([]JiraIssue, error) {
+	query := `SELECT ` + jiraIssueColumns + ` FROM jira_issues
+		WHERE account_id = ? AND is_deleted = 0 AND updated_at ` + op + ` ?`
+	args := []any{accountID, tsArg}
+	if beforeISO != "" {
+		query += ` AND updated_at <= ?`
+		args = append(args, beforeISO)
+	}
+	query += ` ORDER BY updated_at ASC, key ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issues updated since: %w", err)
 	}
