@@ -485,6 +485,37 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 	if len(after) != 0 {
 		t.Errorf("ListDigestTopicIdeasAfter(%d) = %+v, want empty", maxID, after)
 	}
+
+	// Inclusion direction: a legacy row with ONE field still "null" but a
+	// real value in the other must be returned, not swept out along with
+	// the all-null rows. Covers both mixed shapes.
+	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
+		VALUES (?, 100, 'Legacy null ideas, real decisions', 's', '[{"text":"z"}]', '[]', '[]', '[]', 'null')`, digestID); err != nil {
+		t.Fatalf("inserting mixed legacy topic (null ideas): %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
+		VALUES (?, 101, 'Real ideas, legacy null decisions', 's', 'null', '[]', '[]', '[]', '[{"title":"w"}]')`, digestID); err != nil {
+		t.Fatalf("inserting mixed legacy topic (null decisions): %v", err)
+	}
+
+	mixed, err := d.ListDigestTopicIdeasAfter(maxID)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter after mixed inserts: %v", err)
+	}
+	if len(mixed) != 2 {
+		t.Fatalf("ListDigestTopicIdeasAfter(%d) = %+v, want the 2 mixed rows present", maxID, mixed)
+	}
+	titles = map[string]bool{}
+	for _, row := range mixed {
+		titles[row.Decisions] = true
+		titles[row.Ideas] = true
+	}
+	if !titles[`[{"text":"z"}]`] {
+		t.Errorf("mixed rows = %+v, want row with real decisions ([{\"text\":\"z\"}]) present despite ideas='null'", mixed)
+	}
+	if !titles[`[{"title":"w"}]`] {
+		t.Errorf("mixed rows = %+v, want row with real ideas ([{\"title\":\"w\"}]) present despite decisions='null'", mixed)
+	}
 }
 
 func TestIdeas_ListTranscriptsForIdeasAfter_RecapCollision(t *testing.T) {
