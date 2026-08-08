@@ -448,13 +448,15 @@ type DigestTopicForIdeas struct {
 }
 
 // ListDigestTopicIdeasAfter returns channel-digest topics with id above the
-// given floor that carry ideas and/or decisions, ordered by id.
+// given floor that carry ideas and/or decisions, ordered by id. Pre-PR-78
+// rows stored the literal string "null" (json.Marshal of a nil slice)
+// instead of "[]" for an empty field, so both are treated as empty.
 func (db *DB) ListDigestTopicIdeasAfter(floor int64) ([]DigestTopicForIdeas, error) {
 	rows, err := db.Query(`SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
 		FROM digest_topics dt
 		JOIN digests d ON dt.digest_id = d.id
 		LEFT JOIN channels c ON d.channel_id = c.id
-		WHERE dt.id > ? AND (dt.ideas != '[]' OR dt.decisions != '[]') AND d.type = 'channel'
+		WHERE dt.id > ? AND (dt.ideas NOT IN ('[]','null') OR dt.decisions NOT IN ('[]','null')) AND d.type = 'channel'
 		ORDER BY dt.id`, floor)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)

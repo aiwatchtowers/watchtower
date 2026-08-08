@@ -460,6 +460,22 @@ func TestIdeas_ListDigestTopicIdeasAfter(t *testing.T) {
 		titles[row.Ideas] = true
 	}
 
+	// Legacy pre-PR-78 rows stored the literal string "null" (json.Marshal
+	// of a nil slice) instead of "[]" for an empty field; a raw insert
+	// simulates one and it must stay excluded.
+	if _, err := d.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages, ideas)
+		VALUES (?, 99, 'Legacy null', 's', 'null', '[]', '[]', '[]', 'null')`, digestID); err != nil {
+		t.Fatalf("inserting legacy-null topic: %v", err)
+	}
+
+	stillGot, err := d.ListDigestTopicIdeasAfter(0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter after legacy insert: %v", err)
+	}
+	if len(stillGot) != 2 {
+		t.Fatalf("ListDigestTopicIdeasAfter = %+v, want legacy-null row still excluded (2 rows)", stillGot)
+	}
+
 	// Floor excludes everything.
 	maxID := got[len(got)-1].TopicID
 	after, err := d.ListDigestTopicIdeasAfter(maxID)
