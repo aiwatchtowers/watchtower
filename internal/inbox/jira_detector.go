@@ -31,7 +31,11 @@ func DetectJira(ctx context.Context, database *db.DB, currentUserID string, sinc
 		return 0, nil
 	}
 	created := 0
-	sinceISO := sinceTS.UTC().Format(time.RFC3339)
+	// Both comparisons below are plain SQL string compares against columns
+	// holding Jira Cloud's own dotted-millisecond format, so the bound has to
+	// be rendered the same way — an RFC3339 bound sorts above every Jira
+	// timestamp in the same second and hides it (see db.FormatJiraTime).
+	sinceISO := db.FormatJiraTime(sinceTS.UTC())
 
 	// --- jira_assigned: issues assigned to me updated since sinceTS ---
 	// Collect all candidates first; the loop below fully drains rows (Next

@@ -810,32 +810,72 @@ func (p *Pipeline) autoResolveJira(_ context.Context) int {
 		candidates = append(candidates, c)
 	}
 
-	placeholders := make([]string, len(atlassianIDs))
-	idArgs := make([]any, len(atlassianIDs))
-	for i, id := range atlassianIDs {
-		placeholders[i] = "?"
-		idArgs[i] = id
-	}
-	inClause := strings.Join(placeholders, ",")
+	// The two timestamps being compared come from different writers in
+	// different formats: jira_comments.created_at is Jira Cloud's own dotted
+	// -millisecond shape ("...T10:00:00.000+0000"), inbox_items.created_at is
+	// RFC3339 ("...T10:00:00Z"). A SQL string compare between them is
+	// meaningless — '.' (0x2E) sorts below 'Z' (0x5A), so a comment would
+	// have to be a whole second newer to register at all, and one in the same
+	// second never would. Both sides are parsed in Go instead
+	// (db.ParseJiraTime accepts either format).
+	latestByIssue := p.latestOwnJiraCommentPerIssue(atlassianIDs)
 
 	resolved := 0
 	for _, c := range candidates {
-		var n int
-		args := append([]any{c.issueKey}, idArgs...)
-		args = append(args, c.createdAt)
-		p.db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM jira_comments
-			WHERE issue_key=? AND author_account_id IN (%s) AND created_at >= ?`, inClause),
-			args...).Scan(&n) //nolint:errcheck
-		if n > 0 {
-			if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
-				time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
-				p.logger.Printf("inbox: autoResolveJira: update item %d: %v", c.id, err)
-				continue
-			}
-			resolved++
+		itemTS, ok := db.ParseJiraTime(c.createdAt)
+		if !ok {
+			continue
 		}
+		if commentTS, found := latestByIssue[c.issueKey]; !found || commentTS < itemTS {
+			continue
+		}
+		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
+			time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+			p.logger.Printf("inbox: autoResolveJira: update item %d: %v", c.id, err)
+			continue
+		}
+		resolved++
 	}
 	return resolved
+}
+
+// latestOwnJiraCommentPerIssue returns, per issue key, the unix time of the
+// newest comment authored by any of the given Atlassian account ids. One
+// fully-drained query up front, so the caller's loop issues no reads at all
+// (the MaxOpenConns(1) SQLite deadlock rule). An unparseable timestamp is
+// skipped, matching ParseJiraTime's defensive-skip contract.
+func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
+	placeholders := make([]string, len(atlassianIDs))
+	args := make([]any, len(atlassianIDs))
+	for i, id := range atlassianIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := p.db.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
+		WHERE author_account_id IN (%s)`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: comment query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	latest := map[string]int64{}
+	for rows.Next() {
+		var issueKey, createdAt string
+		if err := rows.Scan(&issueKey, &createdAt); err != nil {
+			p.logger.Printf("inbox: autoResolveJira: comment scan: %v", err)
+			return latest
+		}
+		ts, ok := db.ParseJiraTime(createdAt)
+		if !ok {
+			continue
+		}
+		if cur, seen := latest[issueKey]; !seen || ts > cur {
+			latest[issueKey] = ts
+		}
+	}
+	return latest
 }
 
 // autoResolveCalendar resolves pending calendar_invite and calendar_time_change
