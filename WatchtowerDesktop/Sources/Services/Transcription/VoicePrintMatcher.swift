@@ -25,6 +25,24 @@ enum VoicePrintMatcher {
         return zip(na, nb).reduce(Float(0)) { $0 + $1.0 * $1.1 }
     }
 
+    /// Restricts the voice-print pool to the event's attendees: a print is
+    /// kept when its `personKey` or `displayName` matches an attendee's email
+    /// or display name (case-insensitive, empty fields never match — a room
+    /// resource row has an empty email). An empty attendee list means an
+    /// ad-hoc recording — matching stays global, everything is kept. This is
+    /// what keeps a voice-alike stranger from another meeting out of an
+    /// event-linked transcript.
+    static func scoped(_ prints: [VoicePrint], attendees: [EventAttendee]) -> [VoicePrint] {
+        guard !attendees.isEmpty else { return prints }
+        let known = Set(attendees.flatMap { [$0.email, $0.displayName] }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty })
+        return prints.filter {
+            known.contains($0.personKey.lowercased())
+                || known.contains($0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+    }
+
     /// Best voice print for a cluster embedding: the highest cosine similarity
     /// at or above `matchThreshold`. Prints with corrupt or dimension-mismatched
     /// centroids are skipped; nil when nothing clears the threshold (or the

@@ -179,9 +179,10 @@ final class RoleAssignerTests: XCTestCase {
         XCTAssertEqual(text, "[Speaker 1] привет\n[Саша] ответ")
     }
 
-    /// «Я» (mic dominance) has absolute priority: a voice match can never
-    /// claim the owner's cluster.
-    func testSelfClusterKeepsLabelOverVoiceMatch() {
+    /// Without owner identity (`ownerClusters` nil — no Google account, load
+    /// failure), «Я» (mic dominance) keeps absolute priority: a voice match
+    /// can never claim the owner's cluster. This is the legacy default.
+    func testSelfClusterKeepsLabelOverVoiceMatchWithoutOwnerIdentity() {
         let text = RoleAssigner.render(
             segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
             speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
@@ -189,6 +190,78 @@ final class RoleAssignerTests: XCTestCase {
             voiceNames: ["A": "Alice", "B": "Bob"]
         )
         XCTAssertEqual(text, "[Я] привет\n[Bob] ответ")
+    }
+
+    // MARK: - Owner voice identity vs mic dominance (group-meeting fixes)
+
+    /// A mic-dominant cluster that confidently matches the OWNER's voice
+    /// print keeps «Я» even though it also carries a voice name.
+    func testOwnerMatchedSelfClusterKeepsLabel() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "vadym@x.com", "B": "Bob"],
+            ownerClusters: ["A"]
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Bob] ответ")
+    }
+
+    /// Veto: when owner identity IS known and the mic-dominant winner
+    /// confidently matches a colleague (not the owner), the «Я» label is
+    /// withheld — every colleague's words must not render as the owner's.
+    func testStrangerVoiceMatchVetoesSelfLabel() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "Alice", "B": "Bob"],
+            ownerClusters: []
+        )
+        XCTAssertEqual(text, "[Alice] привет\n[Bob] ответ")
+    }
+
+    /// The veto needs a positive stranger match — a mic-dominant cluster with
+    /// no voice name at all stays «Я» (an unnamed owner must not lose the
+    /// label just because their print is missing).
+    func testUnmatchedMicDominantClusterStaysSelf() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["B": "Bob"],
+            ownerClusters: []
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Bob] ответ")
+    }
+
+    /// Meeting-room tie-break: several clusters clear the mic-dominance
+    /// threshold (everyone speaks through the owner's mic); the one matching
+    /// the owner's voice print wins «Я» over the louder one.
+    func testOwnerVoiceMatchWinsSelfTieBreak() {
+        // A: mic-dominant on [0.5, 2.5) of its 2.5 s → share 0.8.
+        // B: mic-dominant on all of [2.5, 5) → share 1.0 (the louder one).
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0.5, selfTo: 5),
+            voiceNames: ["A": "vadym@x.com"],
+            ownerClusters: ["A"]
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Speaker 1] ответ")
+    }
+
+    /// Same tie shape without an owner match: the max-share cluster wins «Я»
+    /// exactly as before — the tie-break never activates on share alone.
+    func testTieBreakWithoutOwnerMatchKeepsMaxShareWinner() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0.5, selfTo: 5),
+            voiceNames: [:],
+            ownerClusters: []
+        )
+        XCTAssertEqual(text, "[Speaker 1] привет\n[Я] ответ")
     }
 
     /// Numbering stays dense over the remaining unnamed clusters.

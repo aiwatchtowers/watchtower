@@ -26,29 +26,43 @@ enum RoleAssigner {
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
         activity: MicActivity?,
-        voiceNames: [String: String] = [:]
+        voiceNames: [String: String] = [:],
+        ownerClusters: Set<String>? = nil
     ) -> String? {
-        assign(segments: segments, speakers: speakers, activity: activity, voiceNames: voiceNames)
+        assign(segments: segments, speakers: speakers, activity: activity,
+               voiceNames: voiceNames, ownerClusters: ownerClusters)
             .map(TranscriptSegments.render)
     }
 
-    /// Final label per cluster ID. Priority per cluster: mic dominance («Я»,
-    /// absolute — a voice match can never claim the owner's cluster) →
-    /// `voiceNames` (display names from confident voice-print matches) →
+    /// Final label per cluster ID. Priority per cluster: mic dominance («Я»)
+    /// → `voiceNames` (display names from confident voice-print matches) →
     /// dense "Speaker N" numbering over the remaining clusters in
     /// first-appearance order. Exposed so the save path can key the persisted
     /// per-cluster embeddings (`speakers_json`) by the same labels the
     /// transcript renders.
+    ///
+    /// `ownerClusters` (clusters whose embedding confidently matches a voice
+    /// print of the machine's OWNER — identity from the connected Google
+    /// accounts) refines «Я» for the meeting-room scenario where every voice
+    /// comes through the owner's mic: (a) among several mic-dominant clusters
+    /// the owner-matched one wins over the merely loudest; (b) a mic-dominant
+    /// winner confidently matched to a colleague (a voice name WITHOUT owner
+    /// match) is vetoed — colleagues' words must not render as the owner's.
+    /// nil = owner identity unknown (no Google account, load failure) — mic
+    /// dominance keeps its legacy absolute priority, a voice match can never
+    /// claim the owner's cluster.
     static func clusterLabels(
         speakers: [SpeakerSegment],
         activity: MicActivity?,
-        voiceNames: [String: String] = [:]
+        voiceNames: [String: String] = [:],
+        ownerClusters: Set<String>? = nil
     ) -> [String: String] {
         var clusterOrder: [String] = []
         for s in speakers.sorted(by: { $0.startSec < $1.startSec }) where !clusterOrder.contains(s.speakerID) {
             clusterOrder.append(s.speakerID)
         }
-        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder)
+        let selfCluster = detectSelfCluster(speakers: speakers, activity: activity, order: clusterOrder,
+                                            voiceNames: voiceNames, ownerClusters: ownerClusters)
         var labels: [String: String] = [:]
         var counter = 0
         for id in clusterOrder {
@@ -73,7 +87,8 @@ enum RoleAssigner {
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
         activity: MicActivity?,
-        voiceNames: [String: String] = [:]
+        voiceNames: [String: String] = [:],
+        ownerClusters: Set<String>? = nil
     ) -> [TranscriptUtterance]? {
         guard !segments.isEmpty, !speakers.isEmpty else { return nil }
 
@@ -101,7 +116,8 @@ enum RoleAssigner {
         }
 
         // 2. Labels: «Я» → voice-matched names → numbered strangers.
-        let labels = clusterLabels(speakers: speakers, activity: activity, voiceNames: voiceNames)
+        let labels = clusterLabels(speakers: speakers, activity: activity,
+                                   voiceNames: voiceNames, ownerClusters: ownerClusters)
 
         // 3. Merge consecutive same-cluster segments into one utterance.
         var utterances: [TranscriptUtterance] = []
@@ -142,7 +158,22 @@ enum RoleAssigner {
     /// machine's owner. nil without an activity sidecar or when no cluster
     /// clears the threshold (then every speaker stays a numbered stranger).
     /// Ties break toward the earliest cluster in `order` for determinism.
-    private static func detectSelfCluster(speakers: [SpeakerSegment], activity: MicActivity?, order: [String]) -> String? {
+    ///
+    /// With owner identity available (`ownerClusters` non-nil) the mic
+    /// heuristic stops being absolute — in a meeting room every voice is
+    /// mic-dominant, so the loudest colleague can out-share the owner:
+    /// among the clusters clearing the threshold an owner-voice-matched one
+    /// wins over a louder unmatched one, and a winner confidently matched to
+    /// a colleague instead of the owner yields no «Я» at all (it renders its
+    /// voice name; mislabeling colleagues' words as the owner's is worse
+    /// than a missing «Я»).
+    private static func detectSelfCluster(
+        speakers: [SpeakerSegment],
+        activity: MicActivity?,
+        order: [String],
+        voiceNames: [String: String] = [:],
+        ownerClusters: Set<String>? = nil
+    ) -> String? {
         guard let activity else { return nil }
         var stats: [String: (dominated: Int, total: Int)] = [:]
         for s in speakers {
@@ -159,13 +190,27 @@ enum RoleAssigner {
                 t += MicActivity.binDuration
             }
         }
-        var best: (id: String, share: Double)?
+        var candidates: [(id: String, share: Double)] = []
         for id in order {
             guard let entry = stats[id], entry.total > 0 else { continue }
             let share = Double(entry.dominated) / Double(entry.total)
-            if share > (best?.share ?? 0) { best = (id, share) } // strict >: earliest wins ties
+            if share > selfShareThreshold { candidates.append((id, share)) }
         }
-        guard let best, best.share > selfShareThreshold else { return nil }
+        guard !candidates.isEmpty else { return nil }
+        if let ownerClusters {
+            // Tie-break: an owner-voice-matched candidate beats a louder one.
+            // Several owner matches (owner split across clusters) → max share.
+            if let owner = candidates.filter({ ownerClusters.contains($0.id) })
+                .max(by: { $0.share < $1.share }) {
+                return owner.id
+            }
+        }
+        // strict >: earliest in `order` wins ties (candidates keep that order)
+        var best = candidates[0]
+        for c in candidates.dropFirst() where c.share > best.share { best = c }
+        if ownerClusters != nil, let name = voiceNames[best.id], !name.isEmpty {
+            return nil // veto: the winner is confidently someone else
+        }
         return best.id
     }
 }

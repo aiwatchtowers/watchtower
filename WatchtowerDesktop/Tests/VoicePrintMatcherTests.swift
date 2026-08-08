@@ -116,6 +116,48 @@ final class VoicePrintMatcherTests: XCTestCase {
         XCTAssertNil(VoicePrintMatcher.updatedCentroid(centroid: [1, 0], sampleCount: 0, embedding: [0, 1]))
     }
 
+    // MARK: - Attendee scoping
+
+    private func makeAttendee(email: String, name: String) -> EventAttendee {
+        EventAttendee(email: email, displayName: name, responseStatus: "accepted", slackUserID: "")
+    }
+
+    func testScopedKeepsOnlyAttendeePrints() {
+        let prints = [
+            makePrint("alice@x.com", "alice@x.com", [1, 0]),
+            makePrint("stranger@y.com", "stranger@y.com", [0, 1])
+        ]
+        let attendees = [makeAttendee(email: "Alice@X.com", name: "Alice")]
+        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees)
+        XCTAssertEqual(scoped.map(\.personKey), ["alice@x.com"],
+                       "a print for someone not on the event must be dropped")
+    }
+
+    func testScopedMatchesByDisplayName() {
+        // A print learned from a free-text rename has no email — its personKey
+        // is the normalized name; the attendee side may only know the display name.
+        let prints = [makePrint("саша петров", "Саша Петров", [1, 0])]
+        let attendees = [makeAttendee(email: "sasha@corp.com", name: "саша петров")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees).count, 1)
+    }
+
+    func testScopedEmptyAttendeesKeepsAll() {
+        // Ad-hoc recording (no event, no attendee list) — matching stays global.
+        let prints = [
+            makePrint("alice@x.com", "Alice", [1, 0]),
+            makePrint("bob@y.com", "Bob", [0, 1])
+        ]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: []).count, 2)
+    }
+
+    func testScopedEmptyAttendeeFieldsNeverMatch() {
+        // A room resource row can carry an empty email — it must not admit
+        // arbitrary prints via ""-to-"" comparisons.
+        let prints = [makePrint("stranger@y.com", "stranger@y.com", [1, 0])]
+        let attendees = [makeAttendee(email: "", name: "Meeting Room 6")]
+        XCTAssertTrue(VoicePrintMatcher.scoped(prints, attendees: attendees).isEmpty)
+    }
+
     // MARK: - SpeakerNaming
 
     func testIsUnnamedMatchesDefaultLabelsOnly() {

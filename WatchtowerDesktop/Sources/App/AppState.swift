@@ -311,6 +311,32 @@ final class AppState {
                         return []
                     }
                 }
+                // Attendees scope the voice-print pool for event-linked
+                // recordings; [] (missing event, load failure) degrades to
+                // global matching, same as before scoping existed.
+                meetingRecorderCenter.attendeesLoader = { [dbPool = manager.dbPool] eventID in
+                    do {
+                        return try await dbPool.read {
+                            try CalendarQueries.fetchEvent($0, id: eventID)?.parsedAttendees ?? []
+                        }
+                    } catch {
+                        print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
+                        return []
+                    }
+                }
+                // Owner identity for the «Я» tie-break/veto: the connected
+                // Google account emails mark which voice prints are the
+                // owner's. [] (no accounts, load failure) means unknown —
+                // «Я» keeps its legacy absolute mic-dominance priority.
+                meetingRecorderCenter.ownerEmailsLoader = { [dbPool = manager.dbPool] in
+                    do {
+                        let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
+                        return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
+                    } catch {
+                        print("[AppState] owner-email load failed, «Я» stays mic-only: \(error.localizedDescription)")
+                        return []
+                    }
+                }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
