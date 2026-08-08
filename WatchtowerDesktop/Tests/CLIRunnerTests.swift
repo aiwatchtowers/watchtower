@@ -96,6 +96,32 @@ struct CLIRunnerTests {
         }
     }
 
+    /// SB3: `run` used to drain stdout to EOF, THEN stderr — a child that
+    /// fills the stderr pipe (default macOS pipe buffer is 64 KiB) before
+    /// closing stdout blocks forever on the write, and `run` never returns.
+    /// Both pipes must be drained concurrently. Bounded by a race against a
+    /// timeout task so a regression fails fast instead of hanging the suite.
+    @Test("ProcessCLIRunner drains stdout and stderr concurrently, large stderr does not deadlock")
+    func processRunnerLargeStderrDoesNotDeadlock() async throws {
+        let runner = ProcessCLIRunner(binaryPath: "/bin/sh")
+        // Well over the 64 KiB default pipe buffer.
+        let script = "yes x | head -c 300000 1>&2; echo done"
+
+        let data = try await withThrowingTaskGroup(of: Data?.self) { group -> Data? in
+            group.addTask { try await runner.run(args: ["-c", script]) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return nil
+            }
+            // Whichever finishes first; the group cancels the other on scope exit.
+            guard let first = try await group.next() else { return nil }
+            return first
+        }
+
+        let out = try #require(data, "runner timed out — stdout/stderr pipes are deadlocking")
+        #expect(String(data: out, encoding: .utf8)?.contains("done") == true)
+    }
+
     @Test("Fake CLIRunnerProtocol can stub runs")
     func fakeRunner() async throws {
         struct FakeRunner: CLIRunnerProtocol {

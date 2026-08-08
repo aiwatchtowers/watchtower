@@ -28,7 +28,7 @@ func TestIdeas01_ReplyWithoutOpsKey_NothingWritten(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, err := p.runConsolidate(context.Background())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.Error(t, err)
 	assert.Zero(t, proposed)
 
@@ -54,7 +54,7 @@ func TestIdeas01_EmptyOpsArray_FloorsAdvance(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{"ops":[]}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, err := p.runConsolidate(context.Background())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 
@@ -79,7 +79,7 @@ func TestIdeas01_NoWorkspaceRow_ErrorsAndRollsBack(t *testing.T) {
 			"mentions":[{"source":"slack","ref":"C1|1.1","quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, err := p.runConsolidate(context.Background())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no workspace row")
 	assert.Zero(t, proposed)
@@ -106,7 +106,7 @@ func TestIdeas01_InertStreamDigestRows_FloorAdvancesWithoutAICall(t *testing.T) 
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, err := p.runConsolidate(context.Background())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
 	assert.Zero(t, gen.calls)
@@ -116,7 +116,7 @@ func TestIdeas01_InertStreamDigestRows_FloorAdvancesWithoutAICall(t *testing.T) 
 	assert.Equal(t, lastID, sFloor, "consumed-but-inert rows must still advance the floor")
 
 	// Second run: the same rows must not come back.
-	remaining, err := d.ListStreamDigestsAfter(sFloor)
+	remaining, err := d.ListStreamDigestsAfter(sFloor, "")
 	require.NoError(t, err)
 	assert.Empty(t, remaining, "the inert rows must not be re-read next run")
 }
@@ -136,7 +136,7 @@ func TestIdeas01_StaleRecaplessTranscripts_FloorAdvancesWithoutAICall(t *testing
 		return "", nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, err := p.runConsolidate(context.Background())
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, gen.calls)
 
@@ -166,7 +166,7 @@ func TestIdeas01_OversizedUnit_SkippedAndFloorAdvances(t *testing.T) {
 	cfg := testCfg()
 	cfg.Ideas.MaxPromptChars = 500
 	p := New(d, cfg, gen, testLogger())
-	_, err := p.runConsolidate(context.Background())
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 
 	assert.NotContains(t, captured, huge, "the oversized unit is never rendered")
@@ -195,7 +195,7 @@ func TestIdeas02_TranscriptRef_MentionSourceIsMeeting(t *testing.T) {
 			"mentions":[{"source":"meeting","ref":"transcript:%d","quote":"spin up a design review ritual","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, transcriptID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	proposed, err := p.runConsolidate(context.Background())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
 
@@ -227,7 +227,7 @@ func TestIdeas02_ModelSourceToken_Ignored(t *testing.T) {
 			existingID, transcriptID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, err := p.runConsolidate(context.Background())
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 
 	mentions, err := d.ListIdeaMentions(existingID)
@@ -262,7 +262,7 @@ func TestIdeas01_MidApplyFailure_RollsBackEarlierOps(t *testing.T) {
 		]}`, ghostID), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
-	_, err := p.runConsolidate(context.Background())
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.Error(t, err)
 
 	ideas, err := d.ListIdeas(db.IdeaFilter{})

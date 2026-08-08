@@ -37,6 +37,8 @@ final class ConfigService {
     var minBacklog: Int = 3
     var maxBacklog: Int = 8
     var transcriptAudioRetentionDays: Int = 30
+    var ideasEnabled: Bool = true
+    var ideasMineIntervalHours: Int = 6
     var parseError: String?
 
     private let configPath: String
@@ -118,6 +120,11 @@ final class ConfigService {
                 transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
             }
 
+            if let ideas = yaml["ideas"] as? [String: Any] {
+                ideasEnabled = (ideas["enabled"] as? Bool) ?? true
+                ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
+            }
+
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
                 dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
                 dayPlanHour = (dayPlan["hour"] as? Int) ?? 8
@@ -184,6 +191,12 @@ final class ConfigService {
         var gmailDict = (yaml["gmail"] as? [String: Any]) ?? [:]
         gmailDict["enabled"] = gmailEnabled
         yaml["gmail"] = gmailDict
+
+        // Ideas section
+        var ideas = (yaml["ideas"] as? [String: Any]) ?? [:]
+        ideas["enabled"] = ideasEnabled
+        ideas["mine_interval_hours"] = ideasMineIntervalHours
+        yaml["ideas"] = ideas
 
         // Day Plan section
         var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]

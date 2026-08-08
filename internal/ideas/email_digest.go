@@ -186,8 +186,11 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (str
 // newer than that account's google_accounts.ideas_email_floor. A nil
 // generator is a clean no-op (the inbox pipeline.go:253 pattern). Per-account
 // errors are logged and the loop continues to the next account; the first
-// error encountered is returned once every account has had a turn.
-func (p *Pipeline) runEmailDigests(ctx context.Context) error {
+// error encountered is returned once every account has had a turn. bound is
+// an optional upper bound on the thread window (the zero value is unbounded
+// — Run's ordinary daemon/incremental path passes time.Time{}); a non-zero
+// bound is how a backfill run scopes one pass to a slice of history.
+func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 	if p.generator == nil {
 		return nil
 	}
@@ -200,7 +203,7 @@ func (p *Pipeline) runEmailDigests(ctx context.Context) error {
 		if !acct.GmailEnabled {
 			continue
 		}
-		if err := p.runEmailDigestAccount(ctx, acct); err != nil {
+		if err := p.runEmailDigestAccount(ctx, acct, bound); err != nil {
 			p.logf("ideas: email digest account %d: %v", acct.ID, err)
 			if firstErr == nil {
 				firstErr = err
@@ -215,7 +218,7 @@ func (p *Pipeline) runEmailDigests(ctx context.Context) error {
 // sync watermark and skips extraction — no backfill, the memory
 // jira_ingest.go:80 precedent. Zero new messages is a clean no-op: no AI
 // call, no row, floor untouched.
-func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount) error {
+func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount, bound time.Time) error {
 	floor, err := p.db.IdeasEmailFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas email floor: %w", err)
@@ -238,7 +241,11 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		return nil
 	}
 
-	msgs, err := p.db.ListGmailThreadsForExtract(acct.ID, floor, 500)
+	var beforeTS float64
+	if !bound.IsZero() {
+		beforeTS = float64(bound.Unix())
+	}
+	msgs, err := p.db.ListGmailThreadsForExtract(acct.ID, floor, beforeTS, 500)
 	if err != nil {
 		return fmt.Errorf("listing gmail threads: %w", err)
 	}

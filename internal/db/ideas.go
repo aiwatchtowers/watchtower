@@ -112,6 +112,68 @@ func (db *DB) InsertIdeaMentionTx(tx *sql.Tx, m IdeaMention) error {
 	return nil
 }
 
+// IdeaMentionRefsKnownTx looks up which of the given refs already have a
+// mention recorded under source, returning a ref -> owning idea_id map for
+// the ones found (a ref absent from the result is genuinely new). Backed by
+// idx_idea_mentions_ref (migration 00051). Empty refs short-circuits to an
+// empty map without touching the database — the ref-level dedup check
+// applyConsolidateOps runs before every insert (IDEA-05).
+func (db *DB) IdeaMentionRefsKnownTx(tx *sql.Tx, source string, refs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(refs))
+	args := make([]any, 0, len(refs)+1)
+	args = append(args, source)
+	for i, ref := range refs {
+		placeholders[i] = "?"
+		args = append(args, ref)
+	}
+	// The %s below is exclusively "?" placeholders joined by ",", one per element of refs —
+	// never a column/table name or any value that reaches the query text itself; every actual
+	// value (source, each ref) is bound as a separate arg to Query below. Same dynamic-IN-clause
+	// shape as ListJiraCommentsSince/ListJiraIssuesUpdatedSince in this file.
+	//nolint:gosec // G201: no injectable content — see comment above
+	query := fmt.Sprintf(`SELECT ref, idea_id FROM idea_mentions WHERE source = ? AND ref IN (%s)`,
+		strings.Join(placeholders, ","))
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("looking up known idea mention refs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ref string
+		var ideaID int64
+		if err := rows.Scan(&ref, &ideaID); err != nil {
+			return nil, fmt.Errorf("scanning known idea mention ref: %w", err)
+		}
+		out[ref] = ideaID
+	}
+	return out, rows.Err()
+}
+
+// IdeaHasMentionRefTx reports whether ideaID already has a mention recorded
+// under (source, ref) — a deterministic, target-scoped sibling of
+// IdeaMentionRefsKnownTx (GB5). IdeaMentionRefsKnownTx's ref -> idea_id map
+// can only ever report ONE owning idea per ref; if the same ref is
+// legitimately recorded on more than one idea (a message that separately
+// evidences two already-tracked ideas), which idea "wins" that map entry
+// depends on unspecified SQL row order. The attach_mention path needs to
+// know specifically whether THIS idea already has this ref, not which idea
+// some arbitrary row happened to report — this query answers that directly
+// instead of collapsing through a lossy map.
+func (db *DB) IdeaHasMentionRefTx(tx *sql.Tx, ideaID int64, source, ref string) (bool, error) {
+	var exists int
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM idea_mentions WHERE idea_id = ? AND source = ? AND ref = ?)`,
+		ideaID, source, ref).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking idea mention ref for idea %d: %w", ideaID, err)
+	}
+	return exists != 0, nil
+}
+
 // SetIdeaNeedsReviewTx flags an idea for owner review with a reason.
 func (db *DB) SetIdeaNeedsReviewTx(tx *sql.Tx, id int64, reason string) error {
 	_, err := tx.Exec(`UPDATE ideas SET needs_review = 1, review_reason = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
@@ -294,6 +356,92 @@ func (db *DB) SetIdeasFloorsTx(tx *sql.Tx, digest, stream, transcript int64) err
 	return nil
 }
 
+// SetIdeasFloors is SetIdeasFloorsTx's non-tx sibling, for the backfill engine's
+// lower/restore steps that happen outside (before and after) a consolidate
+// run's own transaction — there is no in-flight tx to piggyback on at those
+// points. Same RowsAffected-checked shape.
+func (db *DB) SetIdeasFloors(digest, stream, transcript int64) error {
+	res, err := db.Exec(`UPDATE workspace SET ideas_digest_floor = ?, ideas_stream_digest_floor = ?, ideas_transcript_floor = ?`,
+		digest, stream, transcript)
+	if err != nil {
+		return fmt.Errorf("setting ideas floors: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas floors: no workspace row exists")
+	}
+	return nil
+}
+
+// DigestTopicFloorForTime returns the ideas_digest_floor a backfill run
+// lowers to so the window starting at fromUnix (inclusive) is re-mined: one
+// less than the LOWEST id among topics whose parent digest's period_to falls
+// at or after fromUnix (so that topic, the first in-window one by content,
+// stays on the "after floor" side and IS re-mined — the window's start is
+// inclusive, matching ListDigestTopicIdeasAfter's toUnix bound being
+// inclusive at the other end). When no topic is in-window at all, this falls
+// back to the highest existing digest_topics.id (0 for an empty table), so
+// nothing pre-existing is swept in.
+//
+// GB3: this is deliberately NOT "the highest id whose period_to is strictly
+// before fromUnix" (id order does not track period_to order once a digest
+// can be regenerated — DELETE+re-INSERT gives a re-digested OLD period a
+// NEW, higher id). That formulation could return a floor higher than an
+// in-window topic's own id, silently excluding it from
+// ListDigestTopicIdeasAfter's `id > floor` check. Anchoring on the lowest
+// in-window id instead is monotonic regardless of insertion order.
+func (db *DB) DigestTopicFloorForTime(fromUnix int64) (int64, error) {
+	var floor int64
+	err := db.QueryRow(`SELECT COALESCE(
+			(SELECT MIN(dt.id) FROM digest_topics dt JOIN digests d ON dt.digest_id = d.id WHERE d.period_to >= ?),
+			(SELECT COALESCE(MAX(id), 0) + 1 FROM digest_topics)
+		) - 1`, fromUnix).Scan(&floor)
+	if err != nil {
+		return 0, fmt.Errorf("computing digest topic floor for time: %w", err)
+	}
+	return floor, nil
+}
+
+// TranscriptFloorForTime returns the highest meeting_transcripts.id created
+// strictly before fromISO — the ideas_transcript_floor a backfill run lowers
+// to. Same inclusive-at-from boundary as DigestTopicFloorForTime.
+func (db *DB) TranscriptFloorForTime(fromISO string) (int64, error) {
+	var floor int64
+	err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM meeting_transcripts WHERE created_at < ?`, fromISO).Scan(&floor)
+	if err != nil {
+		return 0, fmt.Errorf("computing transcript floor for time: %w", err)
+	}
+	return floor, nil
+}
+
+// HasStreamDigestCovering reports whether accountID already has a
+// stream_digests row for source whose [period_from, period_to] fully covers
+// [fromISO, toISO] — the backfill engine's coverage-skip check (spec §4
+// layer 2): a fully-covered account window is left alone rather than
+// re-digested, cost rather than correctness (ref-level dedup already makes a
+// re-digest safe; this just avoids paying for one that cannot find anything
+// new).
+//
+// GB12: for Gmail specifically this check is largely decorative in
+// practice. A stream_digests row's period_from/period_to are the MIN/MAX
+// of whatever messages the run actually fetched (email_digest.go's
+// runEmailDigestAccount), not the requested window's exact boundaries —
+// there is rarely a message at precisely `from` or `to`, so period_from <=
+// fromISO typically fails even for a window that was, in substance,
+// already fully mined. The skip is a cost optimization only; when it
+// doesn't fire, the run just pays for a redundant re-digest that IDEA-05's
+// ref-level dedup still makes safe (owner-confirmed acceptable, not worth
+// a real fix here).
+func (db *DB) HasStreamDigestCovering(source string, accountID int64, fromISO, toISO string) (bool, error) {
+	var exists int
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM stream_digests
+		WHERE source = ? AND account_id = ? AND period_from <= ? AND period_to >= ?)`,
+		source, accountID, fromISO, toISO).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking stream digest coverage: %w", err)
+	}
+	return exists != 0, nil
+}
+
 // StreamDigest is a stage-1 pre-digest for a stream with no existing digest
 // pipeline (Gmail, Jira) — a lightweight per-account topic summary the
 // stage-2 consolidator reads alongside Slack digests and meeting recaps.
@@ -323,10 +471,27 @@ func (db *DB) InsertStreamDigest(d StreamDigest) (int64, error) {
 }
 
 // ListStreamDigestsAfter returns stream pre-digests with id above the given
-// floor, ordered by id.
-func (db *DB) ListStreamDigestsAfter(floor int64) ([]StreamDigest, error) {
-	rows, err := db.Query(`SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at
-		FROM stream_digests WHERE id > ? ORDER BY id`, floor)
+// floor, ordered by id. toISO is an optional upper bound on the row's OWN
+// content window (period_to), not on created_at ("" is unbounded — parity
+// with the pre-bound behavior). Bounding on created_at would make a backfill
+// invisible to its own consolidate pass (GB1): a backfill's stage-1 rows are
+// always written just now — after `to`, even though the material they
+// summarize is entirely within [from, to] — so an created_at <= to bound
+// would exclude every row the backfill itself just produced.
+// ListDigestTopicIdeasAfter's period_to bound is the precedent shape;
+// period_to is RFC3339 UTC for both Gmail and Jira rows (see GB4 —
+// internal/ideas/jira_digest.go's normalizeJiraStreamPeriod), so the plain
+// string comparison here is format-safe across both sources.
+func (db *DB) ListStreamDigestsAfter(floor int64, toISO string) ([]StreamDigest, error) {
+	query := `SELECT id, source, account_id, scope, period_from, period_to, topics_json, created_at
+		FROM stream_digests WHERE id > ?`
+	args := []any{floor}
+	if toISO != "" {
+		query += ` AND period_to <= ?`
+		args = append(args, toISO)
+	}
+	query += ` ORDER BY id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream digests: %w", err)
 	}
@@ -448,14 +613,33 @@ type DigestTopicForIdeas struct {
 }
 
 // ListDigestTopicIdeasAfter returns channel-digest topics with id above the
-// given floor that carry ideas and/or decisions, ordered by id.
-func (db *DB) ListDigestTopicIdeasAfter(floor int64) ([]DigestTopicForIdeas, error) {
-	rows, err := db.Query(`SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
+// given floor that carry ideas and/or decisions, ordered by id. Pre-PR-78
+// rows stored the literal string "null" (json.Marshal of a nil slice)
+// instead of "[]" for an empty field, so both are treated as empty. toUnix is
+// an optional upper bound on the parent digest's period_to (0 is unbounded —
+// parity with the pre-bound behavior). fromUnix is an optional LOWER bound on
+// the same period_to (0 is unbounded, same parity): without it, a topic from
+// a REGENERATED old-period digest — DELETE+re-INSERT gives it a new, higher
+// id even though its content period is old — could sit above `floor` by id
+// alone and get swept into a backfill window it has no business being in
+// (GB3). The ordinary unbounded daemon/incremental path never sets it.
+func (db *DB) ListDigestTopicIdeasAfter(floor, fromUnix, toUnix int64) ([]DigestTopicForIdeas, error) {
+	query := `SELECT dt.id, d.channel_id, COALESCE(c.name, ''), d.period_to, dt.ideas, dt.decisions
 		FROM digest_topics dt
 		JOIN digests d ON dt.digest_id = d.id
 		LEFT JOIN channels c ON d.channel_id = c.id
-		WHERE dt.id > ? AND (dt.ideas != '[]' OR dt.decisions != '[]') AND d.type = 'channel'
-		ORDER BY dt.id`, floor)
+		WHERE dt.id > ? AND (dt.ideas NOT IN ('[]','null') OR dt.decisions NOT IN ('[]','null')) AND d.type = 'channel'`
+	args := []any{floor}
+	if fromUnix != 0 {
+		query += ` AND d.period_to >= ?`
+		args = append(args, fromUnix)
+	}
+	if toUnix != 0 {
+		query += ` AND d.period_to <= ?`
+		args = append(args, toUnix)
+	}
+	query += ` ORDER BY dt.id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
@@ -485,14 +669,27 @@ type TranscriptForIdeas struct {
 }
 
 // ListTranscriptsForIdeasAfter returns meeting transcripts with id above the
-// given floor, ordered by id.
-func (db *DB) ListTranscriptsForIdeasAfter(floor int64) ([]TranscriptForIdeas, error) {
-	rows, err := db.Query(`SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
+// given floor, ordered by id. toISO is an optional upper bound on
+// mt.created_at ("" is unbounded — parity with the pre-bound behavior).
+// Unlike stream_digests (GB1 — bounding on created_at made a backfill's own
+// stage-1 output invisible to its own consolidate pass, since created_at is
+// always "now"), a meeting_transcripts row's created_at genuinely
+// approximates its content time — the recording happens around when the
+// row is created — so bounding on it here is correct as-is, not a variant
+// of the GB1 bug ([OWNER] confirmed 2026-08-08, GB12).
+func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]TranscriptForIdeas, error) {
+	query := `SELECT mt.id, COALESCE(mt.event_id, ''), mt.title,
 			COALESCE(mr.recap_json, mt.summary_json, ''), mt.created_at
 		FROM meeting_transcripts mt
 		LEFT JOIN meeting_recaps mr ON mr.event_id = mt.event_id
-		WHERE mt.id > ?
-		ORDER BY mt.id`, floor)
+		WHERE mt.id > ?`
+	args := []any{floor}
+	if toISO != "" {
+		query += ` AND mt.created_at <= ?`
+		args = append(args, toISO)
+	}
+	query += ` ORDER BY mt.id`
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}
@@ -588,7 +785,10 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // ListJiraIssuesForExtract's parsed-in-Go approach): sinceISO is always the
 // account's own ideas_jira_floor, itself copied verbatim from a prior row's
 // updated_at, so the comparison is self-consistent within one account even
-// though the stored format is not a normalized unix value.
+// though the stored format is not a normalized unix value. beforeISO is an
+// optional upper bound on updated_at ("" is unbounded — parity with the
+// pre-bound behavior); like sinceISO it must already be in Jira's dotted-ms
+// format (db.FormatJiraTime) for the plain string compare to be format-safe.
 //
 // The caller advances the floor to the highest updated_at it saw and reloads
 // with a strict >, so a LIMIT cut landing inside a group of issues sharing one
@@ -596,17 +796,19 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // the limit is hit, the query is therefore extended to include EVERY issue
 // sharing the last loaded timestamp (the ListGmailThreadsForExtract
 // boundary-drain precedent) — overshooting the cap by at most one timestamp's
-// worth of issues.
-func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit int) ([]JiraIssue, error) {
+// worth of issues. The boundary-drain query needs no beforeISO of its own:
+// the boundary timestamp itself already satisfied the bound in the main
+// query, so every row sharing it does too.
+func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO, beforeISO string, limit int) ([]JiraIssue, error) {
 	if limit <= 0 {
 		limit = 300
 	}
-	out, err := db.queryJiraIssuesUpdated(accountID, ">", sinceISO, limit)
+	out, err := db.queryJiraIssuesUpdated(accountID, ">", sinceISO, beforeISO, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].UpdatedAt
-	full, err := db.queryJiraIssuesUpdated(accountID, "=", boundary, -1) // LIMIT -1: unbounded
+	full, err := db.queryJiraIssuesUpdated(accountID, "=", boundary, "", -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}
@@ -619,13 +821,21 @@ func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit
 
 // queryJiraIssuesUpdated runs the ideas Jira-window select for accountID with
 // the given comparison operator (">" or "="; never user input) against
-// updated_at. The ORDER BY ends in key (part of the jira_issues primary key)
-// so the ordering is fully deterministic within a same-timestamp group, which
-// the boundary drain above relies on.
-func (db *DB) queryJiraIssuesUpdated(accountID int64, op, tsArg string, limit int) ([]JiraIssue, error) {
-	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
-		WHERE account_id = ? AND is_deleted = 0 AND updated_at `+op+` ?
-		ORDER BY updated_at ASC, key ASC LIMIT ?`, accountID, tsArg, limit)
+// updated_at, plus an optional beforeISO upper bound ("" is unbounded). The
+// ORDER BY ends in key (part of the jira_issues primary key) so the ordering
+// is fully deterministic within a same-timestamp group, which the boundary
+// drain above relies on.
+func (db *DB) queryJiraIssuesUpdated(accountID int64, op, tsArg, beforeISO string, limit int) ([]JiraIssue, error) {
+	query := `SELECT ` + jiraIssueColumns + ` FROM jira_issues
+		WHERE account_id = ? AND is_deleted = 0 AND updated_at ` + op + ` ?`
+	args := []any{accountID, tsArg}
+	if beforeISO != "" {
+		query += ` AND updated_at <= ?`
+		args = append(args, beforeISO)
+	}
+	query += ` ORDER BY updated_at ASC, key ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issues updated since: %w", err)
 	}
