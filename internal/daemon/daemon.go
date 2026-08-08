@@ -810,8 +810,15 @@ func (d *Daemon) phaseInbox(ctx context.Context) {
 // registry sees fresh digests/transcripts. Throttled to once per
 // ideas.mine_interval_hours (default 6 when unset/non-positive, the
 // DefaultIdeasMineIntervalHours precedent) — the phasePeopleCards pattern.
+// Skips the cycle entirely while a CLI `ideas mine --from` backfill holds a
+// fresh lock (spec §5): two consolidators racing the same floors would
+// interleave consumption, so the daemon steps aside rather than risk it.
 func (d *Daemon) phaseIdeas(ctx context.Context) {
 	if d.ideasPipe == nil {
+		return
+	}
+	if ideas.BackfillLockFresh(d.config.WorkspaceDir()) {
+		d.logger.Printf("ideas: skipping cycle — a backfill is in progress")
 		return
 	}
 	interval := time.Duration(d.config.Ideas.MineIntervalHours) * time.Hour
