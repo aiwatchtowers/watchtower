@@ -48,10 +48,15 @@ final class IdeasViewModel {
     /// the registry needs a periodic reload to surface daemon-mined ideas.
     private let pollInterval: Duration = .seconds(30)
 
+    /// SB1: pinned to UTC so the `--from`/`--to` calendar day the CLI parses
+    /// matches what the owner picked, regardless of the machine's local time
+    /// zone (the house dual-path rule — a date-only field must not silently
+    /// roll to the adjacent day near midnight).
     private static let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
         return fmt
     }()
 

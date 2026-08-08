@@ -289,6 +289,30 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.backfillError)
     }
 
+    // MARK: - date formatting (SB1)
+
+    /// SB1: the `--from`/`--to` formatter must render the UTC calendar day,
+    /// not the machine's local day. 2026-01-01T23:30 UTC rolls to Jan 2nd
+    /// local time in any zone east of UTC (this machine included), so an
+    /// unpinned formatter would send the wrong date.
+    func testStartBackfillFormatsDatesAsTheUTCCalendarDay() async {
+        let runner = FakeCLIRunner(stdout: Data(#"{"proposed":0,"cycles":0,"mentions_deduped":0}"#.utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        var comps = DateComponents()
+        comps.timeZone = TimeZone(identifier: "UTC")
+        comps.year = 2026
+        comps.month = 1
+        comps.day = 1
+        comps.hour = 23
+        comps.minute = 30
+        let date = Calendar(identifier: .gregorian).date(from: comps)!
+
+        await vm.startBackfill(from: date, to: date)
+
+        XCTAssertEqual(runner.invocations.first, ["ideas", "mine", "--from", "2026-01-01", "--to", "2026-01-01"])
+    }
+
     // MARK: - parseBackfillEnvelope()
 
     func testParseBackfillEnvelopeIgnoresProgressLinesBeforeTheJSONLine() {

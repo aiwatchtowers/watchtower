@@ -49,7 +49,7 @@ func init() {
 	ideasListCmd.Flags().String("status", "", "filter by status ("+strings.Join(ideaStatuses, ", ")+")")
 
 	ideasMineCmd.Flags().String("from", "", "backfill start date (YYYY-MM-DD); enables range mining over [from, to]")
-	ideasMineCmd.Flags().String("to", "", "backfill end date (YYYY-MM-DD), defaults to now; requires --from")
+	ideasMineCmd.Flags().String("to", "", "backfill end date (YYYY-MM-DD, inclusive), defaults to now; requires --from")
 }
 
 // ideaKinds and ideaStatuses mirror the ideas table's CHECK constraints
@@ -253,17 +253,21 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 
 // parseBackfillWindow parses and validates ideas mine --from/--to (spec §3):
 // --to defaults to now when empty, and --from must be strictly before the
-// effective --to.
+// effective --to. --to is inclusive of its whole calendar day (SB1): the
+// returned to, when set, is midnight of the day AFTER the named date, so a
+// window like --from 2026-08-01 --to 2026-08-01 covers all of August 1st
+// rather than excluding it entirely.
 func parseBackfillWindow(fromStr, toStr string) (from, to time.Time, err error) {
 	from, err = time.Parse(ideasMineDateLayout, fromStr)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("invalid --from date: %w", err)
 	}
 	if toStr != "" {
-		to, err = time.Parse(ideasMineDateLayout, toStr)
-		if err != nil {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid --to date: %w", err)
+		toDate, perr := time.Parse(ideasMineDateLayout, toStr)
+		if perr != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --to date: %w", perr)
 		}
+		to = toDate.AddDate(0, 0, 1)
 	}
 	effectiveTo := to
 	if effectiveTo.IsZero() {

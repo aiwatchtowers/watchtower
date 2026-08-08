@@ -208,14 +208,33 @@ func TestIdeasMine_FromAfterTo_Errors(t *testing.T) {
 	require.Contains(t, err.Error(), "--from must be before --to")
 }
 
-// TestIdeasMine_FromEqualsTo_Errors covers the equal-boundary half of
-// "from >= to = error".
-func TestIdeasMine_FromEqualsTo_Errors(t *testing.T) {
+// TestIdeasMine_FromEqualsTo_SingleDayWindow_Succeeds covers SB1: --to is
+// inclusive of its whole calendar day, so --from and --to naming the same
+// date is a valid one-day window (not the "from >= to" error it used to be
+// before the effective upper bound was midnight of the following day).
+func TestIdeasMine_FromEqualsTo_SingleDayWindow_Succeeds(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "Test"}))
+	database.Close()
+	resetIdeasMineFlags(t)
+
+	require.NoError(t, ideasMineCmd.Flags().Set("from", "2020-01-01"))
+	require.NoError(t, ideasMineCmd.Flags().Set("to", "2020-01-01"))
+
+	var buf bytes.Buffer
+	ideasMineCmd.SetOut(&buf)
+	require.NoError(t, ideasMineCmd.RunE(ideasMineCmd, nil))
+	require.Contains(t, buf.String(), `"proposed":0`)
+}
+
+// TestIdeasMine_FromAfterToDay_Errors covers "from's date after to's date =
+// error" now that --to's effective bound is midnight of the following day.
+func TestIdeasMine_FromAfterToDay_Errors(t *testing.T) {
 	database := setupIdeasTestEnv(t)
 	database.Close()
 	resetIdeasMineFlags(t)
 
-	require.NoError(t, ideasMineCmd.Flags().Set("from", "2026-08-01"))
+	require.NoError(t, ideasMineCmd.Flags().Set("from", "2026-08-02"))
 	require.NoError(t, ideasMineCmd.Flags().Set("to", "2026-08-01"))
 
 	err := ideasMineCmd.RunE(ideasMineCmd, nil)
@@ -234,6 +253,26 @@ func TestIdeasMine_InvalidFromDate_Errors(t *testing.T) {
 	err := ideasMineCmd.RunE(ideasMineCmd, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid --from date")
+}
+
+// TestParseBackfillWindow_ToIsInclusiveOfWholeDay pins SB1 directly against
+// the parser: a --to date's effective upper bound is midnight of the
+// following day, so the whole named day is included in the window.
+func TestParseBackfillWindow_ToIsInclusiveOfWholeDay(t *testing.T) {
+	from, to, err := parseBackfillWindow("2026-08-01", "2026-08-01")
+	require.NoError(t, err)
+	require.Equal(t, "2026-08-01", from.Format(ideasMineDateLayout))
+	require.Equal(t, "2026-08-02", to.Format(ideasMineDateLayout))
+}
+
+// TestParseBackfillWindow_EmptyTo_StaysZero covers the "--to omitted"
+// branch: the returned to must stay the zero value so Pipeline.Backfill
+// substitutes time.Now() itself, not midnight-tomorrow of some fabricated
+// date.
+func TestParseBackfillWindow_EmptyTo_StaysZero(t *testing.T) {
+	_, to, err := parseBackfillWindow("2026-08-01", "")
+	require.NoError(t, err)
+	require.True(t, to.IsZero())
 }
 
 // TestIdeasMine_Backfill_LockHeld_Errors covers the CLI's lock-acquire step
