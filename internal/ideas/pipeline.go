@@ -15,6 +15,7 @@ package ideas
 import (
 	"context"
 	"log"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -119,14 +120,14 @@ func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 		return 0, nil
 	}
 	var firstErr error
-	if err := p.runEmailDigests(ctx); err != nil {
+	if err := p.runEmailDigests(ctx, time.Time{}); err != nil {
 		firstErr = err
 	}
-	if err := p.runJiraDigests(ctx); err != nil && firstErr == nil {
+	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
 		firstErr = err
 	}
 
-	proposed, cerr := p.runConsolidate(ctx)
+	proposed, _, cerr := p.runConsolidate(ctx, time.Time{}, time.Time{})
 	if cerr != nil && firstErr == nil {
 		firstErr = cerr
 	}

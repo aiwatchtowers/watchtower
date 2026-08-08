@@ -29,9 +29,9 @@ func TestIdeas01_EmailReplyWithoutTopicsKey_NoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.Error(t, p.runEmailDigests(context.Background()))
+	require.Error(t, p.runEmailDigests(context.Background(), time.Time{}))
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 
@@ -50,9 +50,9 @@ func TestIdeas01_JiraReplyWithoutTopicsKey_NoRowFloorUnchanged(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) { return `{}`, nil }}
 	p := New(d, testCfg(), gen, testLogger())
-	require.Error(t, p.runJiraDigests(context.Background()))
+	require.Error(t, p.runJiraDigests(context.Background(), time.Time{}))
 
-	digests, err := d.ListStreamDigestsAfter(0)
+	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
 	assert.Empty(t, digests)
 

@@ -99,27 +99,38 @@ type transcriptRecap struct {
 // a failure anywhere (the AI call, the parse, or an apply write) leaves the
 // registry, its mentions, and the floors untouched (IDEA-01). Returns the
 // number of ideas/decisions rows created this run. A nil generator (the
-// runEmailDigests/runJiraDigests precedent) is a clean no-op.
-func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
+// runEmailDigests/runJiraDigests precedent) is a clean no-op. from/to are an
+// optional [from, to] window on every listing this pass reads (the zero
+// value for either is unbounded — Run's ordinary daemon/incremental path
+// passes time.Time{} for both); a backfill run passes both to scope one pass
+// to a slice of history — from matters only for
+// ListDigestTopicIdeasAfter's lower bound (GB3: a regenerated old-period
+// digest topic can carry a high id despite an old content period, and must
+// not be swept into a window it predates).
+// Returns the number of ideas/decisions rows created and the number of
+// mentions dropped because their ref was already recorded (IDEA-05) — the
+// backfill engine's drain loop watches the latter to know when re-mining an
+// already-mined window has stopped finding anything new.
+func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
 
-	in, err := p.gatherConsolidateInput(p.maxPromptChars())
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), from, to)
 	if err != nil {
-		return 0, fmt.Errorf("gathering consolidate input: %w", err)
+		return 0, 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
 	if in.included == 0 {
 		// Nothing rendered — no AI call. But units may still have been
 		// CONSUMED (empty stage-1 rows, stale recap-less transcripts, a unit
 		// too big to ever fit): their floors have to land, or every future
 		// run re-reads the same inert material forever.
-		return 0, persistFloorsOnly(p.db, in)
+		return 0, 0, persistFloorsOnly(p.db, in)
 	}
 
 	registry, err := p.db.ListIdeasForPrompt()
 	if err != nil {
-		return 0, fmt.Errorf("listing registry for prompt: %w", err)
+		return 0, 0, fmt.Errorf("listing registry for prompt: %w", err)
 	}
 
 	tmpl, _ := p.getPrompt("ideas.consolidate")
@@ -129,22 +140,22 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.consolidate"), system, userMsg, "")
 	p.accumulateUsage(usage)
 	if err != nil {
-		return 0, fmt.Errorf("consolidate AI call: %w", err)
+		return 0, 0, fmt.Errorf("consolidate AI call: %w", err)
 	}
 
 	raw, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return 0, fmt.Errorf("extracting consolidate JSON: %w", err)
+		return 0, 0, fmt.Errorf("extracting consolidate JSON: %w", err)
 	}
 	var res consolidateResult
 	if err := json.Unmarshal([]byte(raw), &res); err != nil {
-		return 0, fmt.Errorf("parsing consolidate JSON: %w", err)
+		return 0, 0, fmt.Errorf("parsing consolidate JSON: %w", err)
 	}
 	if res.Ops == nil {
 		// Valid JSON that answers nothing is a model failure, not an empty
 		// verdict — treat it exactly like malformed JSON: no commit, no floor
 		// advance, so the material comes back next run.
-		return 0, fmt.Errorf("consolidate reply has no \"ops\" key")
+		return 0, 0, fmt.Errorf("consolidate reply has no \"ops\" key")
 	}
 
 	// Parsing succeeded — only now do we start mutating (compose.go:123
@@ -154,14 +165,17 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 		registryByID[idea.ID] = idea
 	}
 
-	proposed, refsRejected, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
+	proposed, refsRejected, mentionsDeduped, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if refsRejected > 0 {
 		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
 	}
-	return proposed, nil
+	if mentionsDeduped > 0 {
+		p.logf("ideas: consolidate deduped %d already-mined mention(s)", mentionsDeduped)
+	}
+	return proposed, mentionsDeduped, nil
 }
 
 // maxPromptChars returns the configured input-assembly budget, falling back
@@ -175,28 +189,31 @@ func (p *Pipeline) maxPromptChars() int {
 }
 
 // gatherConsolidateInput reads the three registry floors, lists everything
-// past them, and renders a budget-capped "=== NEW MATERIAL ===" body in
-// deterministic order — Slack digest topics, then stream digests (Gmail/
-// Jira), then meeting transcripts — appending whole units until maxChars is
-// spent. Once a unit doesn't fit, consumption stops entirely (no smaller
-// later unit is smuggled in out of order), so each source's floor advances
-// only past the units this run actually included; a source that contributed
-// nothing keeps its old floor (IDEA-01).
-func (p *Pipeline) gatherConsolidateInput(maxChars int) (*consolidateInput, error) {
+// past them (and, when to is non-zero, at or before it — plus, when from is
+// non-zero, at or after it, digest topics only — see GB3), and renders a
+// budget-capped "=== NEW MATERIAL ===" body in deterministic order — Slack
+// digest topics, then stream digests (Gmail/Jira), then meeting transcripts —
+// appending whole units until maxChars is spent. Once a unit doesn't fit,
+// consumption stops entirely (no smaller later unit is smuggled in out of
+// order), so each source's floor advances only past the units this run
+// actually included; a source that contributed nothing keeps its old floor
+// (IDEA-01).
+func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time) (*consolidateInput, error) {
 	topicFloor, streamFloor, transcriptFloor, err := p.db.GetIdeasFloors()
 	if err != nil {
 		return nil, fmt.Errorf("getting ideas floors: %w", err)
 	}
+	fromUnix, toUnix, toISO := consolidateWindowBounds(from, to)
 
-	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor)
+	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor, fromUnix, toUnix)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
-	streams, err := p.db.ListStreamDigestsAfter(streamFloor)
+	streams, err := p.db.ListStreamDigestsAfter(streamFloor, toISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream digests: %w", err)
 	}
-	transcripts, err := p.db.ListTranscriptsForIdeasAfter(transcriptFloor)
+	transcripts, err := p.db.ListTranscriptsForIdeasAfter(transcriptFloor, toISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}
@@ -206,73 +223,127 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int) (*consolidateInput, erro
 		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor,
 		validRefs: map[string]string{},
 	}
-	var b strings.Builder
-	budget := maxChars
-	stopped := false
+	m := newMaterialAssembler(p, in, maxChars)
+	m.addTopics(topics)
+	m.addStreams(streams)
+	m.addTranscripts(transcripts)
 
-	// include appends a rendered unit if it still fits the budget. An empty
-	// unit (a stage-1 row that ended up with no surviving candidates) costs
-	// nothing and is always "included" for floor-advancement purposes. A unit
-	// bigger than the WHOLE budget can never fit in any run, so it is skipped
-	// and consumed rather than left wedging the floor forever. Once stopped
-	// is set it stays set: no later, possibly-smaller unit is allowed to jump
-	// the queue.
-	include := func(id, unit string, refs map[string]string) bool {
-		if unit == "" {
-			return true
-		}
-		if stopped {
-			return false
-		}
-		if len(unit) > maxChars {
-			p.logf("ideas: consolidate skipping oversized unit %s (%d chars > %d budget)", id, len(unit), maxChars)
-			return true
-		}
-		if len(unit) > budget {
-			stopped = true
-			return false
-		}
-		b.WriteString(unit)
-		budget -= len(unit)
-		in.included++
-		for ref, src := range refs {
-			in.validRefs[ref] = src
-		}
+	in.block = m.b.String()
+	return in, nil
+}
+
+// consolidateWindowBounds converts gatherConsolidateInput's optional
+// [from, to] time.Time window (GB3: from matters only for
+// ListDigestTopicIdeasAfter's lower bound) into the unix/ISO forms its
+// three listing calls each need — split out to keep gatherConsolidateInput
+// itself down to "read floors, list, delegate, done" (sentrux's complexity
+// gate: this conversion was inline there before GB3 added the from half).
+func consolidateWindowBounds(from, to time.Time) (fromUnix, toUnix int64, toISO string) {
+	if !from.IsZero() {
+		fromUnix = from.Unix()
+	}
+	if !to.IsZero() {
+		toUnix = to.Unix()
+		toISO = to.UTC().Format(time.RFC3339)
+	}
+	return fromUnix, toUnix, toISO
+}
+
+// materialAssembler accumulates gatherConsolidateInput's budget-capped
+// "=== NEW MATERIAL ===" body across all three sources (Slack digest
+// topics, then stream digests, then meeting transcripts, in that
+// deterministic order) — split out of gatherConsolidateInput itself to keep
+// each piece's own branching small. Once a unit doesn't fit, consumption
+// stops entirely (no smaller later unit is smuggled in out of order), so
+// each source's floor advances only past the units this run actually
+// included; a source that contributed nothing keeps its old floor
+// (IDEA-01).
+type materialAssembler struct {
+	p        *Pipeline
+	in       *consolidateInput
+	b        strings.Builder
+	maxChars int
+	budget   int
+	stopped  bool
+}
+
+func newMaterialAssembler(p *Pipeline, in *consolidateInput, maxChars int) *materialAssembler {
+	return &materialAssembler{p: p, in: in, maxChars: maxChars, budget: maxChars}
+}
+
+// include appends a rendered unit if it still fits the budget. An empty
+// unit (a stage-1 row that ended up with no surviving candidates) costs
+// nothing and is always "included" for floor-advancement purposes. A unit
+// bigger than the WHOLE budget can never fit in any run, so it is skipped
+// and consumed rather than left wedging the floor forever. Once stopped is
+// set it stays set: no later, possibly-smaller unit is allowed to jump the
+// queue.
+func (m *materialAssembler) include(id, unit string, refs map[string]string) bool {
+	if unit == "" {
 		return true
 	}
+	if m.stopped {
+		return false
+	}
+	if len(unit) > m.maxChars {
+		m.p.logf("ideas: consolidate skipping oversized unit %s (%d chars > %d budget)", id, len(unit), m.maxChars)
+		return true
+	}
+	if len(unit) > m.budget {
+		m.stopped = true
+		return false
+	}
+	m.b.WriteString(unit)
+	m.budget -= len(unit)
+	m.in.included++
+	for ref, src := range refs {
+		m.in.validRefs[ref] = src
+	}
+	return true
+}
 
+// addTopics is materialAssembler's Slack-digest-topics pass.
+func (m *materialAssembler) addTopics(topics []db.DigestTopicForIdeas) {
 	for _, t := range topics {
-		unit, refs := p.renderTopicUnit(t)
-		if !include(fmt.Sprintf("digest topic %d", t.TopicID), unit, refs) {
-			break
+		unit, refs := m.p.renderTopicUnit(t)
+		if !m.include(fmt.Sprintf("digest topic %d", t.TopicID), unit, refs) {
+			return
 		}
-		in.maxTopicID = t.TopicID
+		m.in.maxTopicID = t.TopicID
 	}
+}
+
+// addStreams is materialAssembler's stream-digests (Gmail/Jira) pass.
+func (m *materialAssembler) addStreams(streams []db.StreamDigest) {
 	for _, s := range streams {
-		unit, refs := p.renderStreamUnit(s)
-		if !include(fmt.Sprintf("stream digest %d", s.ID), unit, refs) {
-			break
+		unit, refs := m.p.renderStreamUnit(s)
+		if !m.include(fmt.Sprintf("stream digest %d", s.ID), unit, refs) {
+			return
 		}
-		in.maxStreamID = s.ID
+		m.in.maxStreamID = s.ID
 	}
+}
+
+// addTranscripts is materialAssembler's meeting-transcripts pass: a
+// recap-less transcript is skipped-and-counted (free) once it's no longer
+// recent enough to still be waiting on its recap (spec §7); a still-recent
+// one stops the pass entirely, giving the recap a chance to arrive next run.
+func (m *materialAssembler) addTranscripts(transcripts []db.TranscriptForIdeas) {
 	for _, t := range transcripts {
 		recap := parseTranscriptRecap(t.RecapJSON)
 		if len(recap.Ideas) == 0 && len(recap.KeyDecisions) == 0 {
 			if transcriptIsRecent(t.CreatedAt) {
-				break // give the recap a chance to still arrive next run
+				return
 			}
-			in.maxTranscriptID = t.ID // stale and recap-less — skip and count, free
+			m.in.maxTranscriptID = t.ID
 			continue
 		}
 		unit, refs := renderTranscriptUnit(t, recap)
-		if !include(fmt.Sprintf("transcript %d", t.ID), unit, refs) {
-			break
+		if !m.include(fmt.Sprintf("transcript %d", t.ID), unit, refs) {
+			return
 		}
-		in.maxTranscriptID = t.ID
+		m.in.maxTranscriptID = t.ID
 	}
-
-	in.block = b.String()
-	return in, nil
 }
 
 // persistFloorsOnly commits the floors a run advanced when it produced no
@@ -455,93 +526,198 @@ func registrySection(registry []db.Idea) string {
 // floors inside a single transaction: any error rolls back every mutation
 // from this pass, so a partial write can never leave the registry, its
 // mentions, or the floors disagreeing with each other (IDEA-01). Returns the
-// number of ideas/decisions rows created and the number of invented refs
-// dropped along the way.
-func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (proposed, refsRejected int, err error) {
+// number of ideas/decisions rows created, the number of invented refs
+// dropped (IDEA-02), and the number of mentions dropped because their ref
+// was already recorded — re-mining already-mined material (IDEA-05).
+func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (proposed, refsRejected, mentionsDeduped int, err error) {
 	tx, err := database.Begin()
 	if err != nil {
-		return 0, 0, fmt.Errorf("beginning consolidate apply tx: %w", err)
+		return 0, 0, 0, fmt.Errorf("beginning consolidate apply tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	// mintedThisTx tracks (source, ref) mentions inserted by an EARLIER
+	// new_idea/new_decision op in THIS SAME apply pass — see
+	// applyNewIdeaOp's doc comment (GB6, [OWNER] confirmed 2026-08-08).
+	mintedThisTx := map[string]map[string]struct{}{}
 
 	for _, op := range ops {
 		switch op.Op {
 		case "new_idea", "new_decision":
-			kind := "idea"
-			if op.Op == "new_decision" {
-				kind = "decision"
+			created, rejected, deduped, aerr := applyNewIdeaOp(tx, database, op, registryByID, in, mintedThisTx)
+			refsRejected += rejected
+			mentionsDeduped += deduped
+			if aerr != nil {
+				return proposed, refsRejected, mentionsDeduped, aerr
 			}
-			valid := make([]db.IdeaMention, 0, len(op.Mentions))
-			for _, m := range op.Mentions {
-				src, ok := in.validRefs[m.Ref]
-				if !ok {
-					refsRejected++
-					continue
-				}
-				valid = append(valid, db.IdeaMention{
-					Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt,
-				})
+			if created {
+				proposed++
 			}
-			if len(valid) == 0 {
-				continue // nothing survived — drop the whole op (IDEA-02)
-			}
-
-			idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence}
-			if op.SimilarTo > 0 {
-				if _, ok := registryByID[op.SimilarTo]; ok {
-					idea.SimilarToID = sql.NullInt64{Int64: op.SimilarTo, Valid: true}
-				}
-			}
-			id, cerr := database.CreateIdeaTx(tx, idea)
-			if cerr != nil {
-				return proposed, refsRejected, fmt.Errorf("creating %s %q: %w", kind, op.Title, cerr)
-			}
-			for _, m := range valid {
-				m.IdeaID = id
-				if merr := database.InsertIdeaMentionTx(tx, m); merr != nil {
-					return proposed, refsRejected, fmt.Errorf("recording mention for idea %d: %w", id, merr)
-				}
-			}
-			proposed++
 
 		case "attach_mention":
-			if op.Mention == nil {
-				continue
-			}
-			target, ok := registryByID[op.IdeaID]
-			if !ok {
-				continue // hallucinated idea id — skip (compose.go merge-op precedent)
-			}
-			if target.MergedIntoID.Valid {
-				if merged, ok2 := registryByID[target.MergedIntoID.Int64]; ok2 {
-					target = merged // follow merged_into_id exactly one hop
-				}
-			}
-			src, refOK := in.validRefs[op.Mention.Ref]
-			if !refOK {
-				refsRejected++
-				continue
-			}
-			if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-				IdeaID: target.ID, Source: src, Ref: op.Mention.Ref,
-				Quote: op.Mention.Quote, Author: op.Mention.Author, SaidAt: op.Mention.SaidAt,
-			}); merr != nil {
-				return proposed, refsRejected, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
-			}
-			if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {
-				reason := fmt.Sprintf("brought up again: %s %s", src, op.Mention.Ref)
-				if rerr := database.SetIdeaNeedsReviewTx(tx, target.ID, reason); rerr != nil {
-					return proposed, refsRejected, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
-				}
+			deduped, rejected, aerr := applyAttachMentionOp(tx, database, op, registryByID, in)
+			refsRejected += rejected
+			mentionsDeduped += deduped
+			if aerr != nil {
+				return proposed, refsRejected, mentionsDeduped, aerr
 			}
 		}
 	}
 
 	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
-		return proposed, refsRejected, fmt.Errorf("advancing ideas floors: %w", err)
+		return proposed, refsRejected, mentionsDeduped, fmt.Errorf("advancing ideas floors: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return proposed, refsRejected, fmt.Errorf("committing consolidate apply: %w", err)
+		return proposed, refsRejected, mentionsDeduped, fmt.Errorf("committing consolidate apply: %w", err)
 	}
-	return proposed, refsRejected, nil
+	return proposed, refsRejected, mentionsDeduped, nil
+}
+
+// applyNewIdeaOp applies one new_idea/new_decision op inside tx (split out
+// of applyConsolidateOps to keep that function's own branching down to just
+// the op-kind dispatch): validates the op's mention refs against a real
+// rendered candidate (IDEA-02), drops any ref already mined anywhere in
+// idea_mentions (IDEA-05) — EXCEPT a ref mintedThisTx itself just inserted
+// for an earlier op in this same pass, which does not count as "already
+// known" (GB6, [OWNER] confirmed 2026-08-08): SQLite's same-connection reads
+// see this tx's own uncommitted writes, so without that exclusion a ref
+// minted by an earlier op would make a later op's IDENTICAL ref look
+// pre-existing and get it dropped, even though nothing was known before
+// this pass began — silently losing one of two genuinely distinct new
+// ideas evidenced by the same message. A ref only ever lands in
+// mintedThisTx after surviving its OWN IDEA-05 check, so by construction it
+// was not pre-existing — excluding it here can never let a genuinely
+// already-mined ref slip through. If anything survives both drops, creates
+// the idea/decision row plus one idea_mentions row per surviving mention.
+// Returns whether a row was created, the invented-ref count, the
+// already-mined count, and any error.
+func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput, mintedThisTx map[string]map[string]struct{}) (created bool, refsRejected, mentionsDeduped int, err error) {
+	kind := "idea"
+	if op.Op == "new_decision" {
+		kind = "decision"
+	}
+
+	// First pass: drop invented refs (IDEA-02).
+	type candidate struct {
+		m   mentionInput
+		src string
+	}
+	candidates := make([]candidate, 0, len(op.Mentions))
+	for _, m := range op.Mentions {
+		src, ok := in.validRefs[m.Ref]
+		if !ok {
+			refsRejected++
+			continue
+		}
+		candidates = append(candidates, candidate{m: m, src: src})
+	}
+
+	// Second pass: drop refs already mined before this pass began (IDEA-05)
+	// — batched per source, one lookup per distinct source in this op
+	// (almost always exactly one).
+	refsBySrc := map[string][]string{}
+	for _, c := range candidates {
+		refsBySrc[c.src] = append(refsBySrc[c.src], c.m.Ref)
+	}
+	knownBySrc := make(map[string]map[string]int64, len(refsBySrc))
+	for src, refs := range refsBySrc {
+		known, kerr := database.IdeaMentionRefsKnownTx(tx, src, refs)
+		if kerr != nil {
+			return false, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention refs: %w", kerr)
+		}
+		for ref := range mintedThisTx[src] {
+			delete(known, ref)
+		}
+		knownBySrc[src] = known
+	}
+
+	valid := make([]db.IdeaMention, 0, len(candidates))
+	for _, c := range candidates {
+		if _, dup := knownBySrc[c.src][c.m.Ref]; dup {
+			mentionsDeduped++
+			continue
+		}
+		valid = append(valid, db.IdeaMention{
+			Source: c.src, Ref: c.m.Ref, Quote: c.m.Quote, Author: c.m.Author, SaidAt: c.m.SaidAt,
+		})
+	}
+	if len(valid) == 0 {
+		return false, refsRejected, mentionsDeduped, nil // invented (IDEA-02) or already mined (IDEA-05)
+	}
+
+	idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence}
+	if op.SimilarTo > 0 {
+		if _, ok := registryByID[op.SimilarTo]; ok {
+			idea.SimilarToID = sql.NullInt64{Int64: op.SimilarTo, Valid: true}
+		}
+	}
+	id, cerr := database.CreateIdeaTx(tx, idea)
+	if cerr != nil {
+		return false, refsRejected, mentionsDeduped, fmt.Errorf("creating %s %q: %w", kind, op.Title, cerr)
+	}
+	for _, m := range valid {
+		m.IdeaID = id
+		if merr := database.InsertIdeaMentionTx(tx, m); merr != nil {
+			return false, refsRejected, mentionsDeduped, fmt.Errorf("recording mention for idea %d: %w", id, merr)
+		}
+		if mintedThisTx[m.Source] == nil {
+			mintedThisTx[m.Source] = map[string]struct{}{}
+		}
+		mintedThisTx[m.Source][m.Ref] = struct{}{}
+	}
+	return true, refsRejected, mentionsDeduped, nil
+}
+
+// applyAttachMentionOp applies one attach_mention op inside tx (split out of
+// applyConsolidateOps, the applyNewIdeaOp precedent): resolves the target
+// idea (following merged_into_id exactly one hop), validates the ref
+// against a real rendered candidate (IDEA-02), and — unless the ref is
+// already recorded on the TARGET specifically (IDEA-05, target-scoped by
+// design — GB5, [OWNER] confirmed: attach dedup stays target-scoped, via
+// db.IdeaHasMentionRefTx rather than the ref -> idea_id map
+// IdeaMentionRefsKnownTx uses for clause 2, since a ref may legitimately be
+// recorded on more than one idea) — inserts the mention and, if the
+// target's status is not_now/dropped/rejected, flags it for review
+// (IDEA-04). Returns the already-mined count, the invented-ref count, and
+// any error.
+func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (mentionsDeduped, refsRejected int, err error) {
+	if op.Mention == nil {
+		return 0, 0, nil
+	}
+	target, ok := registryByID[op.IdeaID]
+	if !ok {
+		return 0, 0, nil // hallucinated idea id — skip (compose.go merge-op precedent)
+	}
+	if target.MergedIntoID.Valid {
+		if merged, ok2 := registryByID[target.MergedIntoID.Int64]; ok2 {
+			target = merged // follow merged_into_id exactly one hop
+		}
+	}
+	src, refOK := in.validRefs[op.Mention.Ref]
+	if !refOK {
+		return 0, 1, nil
+	}
+	dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, op.Mention.Ref)
+	if derr != nil {
+		return 0, 0, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
+	}
+	if dup {
+		// Already on the target idea — no new evidence, so this must not
+		// resurface a not_now/dropped/rejected verdict either (IDEA-05 x
+		// IDEA-04, mirroring PR #78's IDEA-02x04 finding).
+		return 1, 0, nil
+	}
+	if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
+		IdeaID: target.ID, Source: src, Ref: op.Mention.Ref,
+		Quote: op.Mention.Quote, Author: op.Mention.Author, SaidAt: op.Mention.SaidAt,
+	}); merr != nil {
+		return 0, 0, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
+	}
+	if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {
+		reason := fmt.Sprintf("brought up again: %s %s", src, op.Mention.Ref)
+		if rerr := database.SetIdeaNeedsReviewTx(tx, target.ID, reason); rerr != nil {
+			return 0, 0, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
+		}
+	}
+	return 0, 0, nil
 }

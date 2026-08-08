@@ -86,6 +86,9 @@ CREATE INDEX idx_gmail_messages_thread ON gmail_messages(thread_id)
 index	idx_idea_mentions_idea
 CREATE INDEX idx_idea_mentions_idea ON idea_mentions(idea_id)
 
+index	idx_idea_mentions_ref
+CREATE INDEX idx_idea_mentions_ref ON idea_mentions(source, ref)
+
 index	idx_ideas_kind
 CREATE INDEX idx_ideas_kind ON ideas(kind, status)
 

@@ -100,12 +100,35 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
+// normalizeJiraStreamPeriod converts a Jira-format timestamp (raw
+// updated_at, which can carry any offset the API returned, e.g. "+0300") to
+// RFC3339 UTC for storage in stream_digests.period_from/period_to — the
+// email pre-digest pass already writes RFC3339 UTC there, and
+// ListStreamDigestsAfter/HasStreamDigestCovering compare both sources'
+// periods with plain string ordering, which is only offset-safe when every
+// row shares one format (GB4). An unparseable input (should not happen for a
+// value this pipeline itself produced) is stored verbatim rather than
+// blocking the whole pass — the worst case is one wrong coverage/window skip
+// for that single row, not a dropped digest. Pre-existing rows written before
+// this normalization may still carry a raw Jira offset; see
+// docs/inventory/ideas.md.
+func normalizeJiraStreamPeriod(raw string) string {
+	unix, ok := db.ParseJiraTime(raw)
+	if !ok {
+		return raw
+	}
+	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
+}
+
 // runJiraDigests is the ideas registry's Jira pre-digest pass: one Generate
 // call per enabled Jira account, over the issues (plus their new comments)
 // updated since that account's jira_accounts.ideas_jira_floor. Mirrors
 // runEmailDigests' nil-generator guard and per-account log-and-continue
-// error handling.
-func (p *Pipeline) runJiraDigests(ctx context.Context) error {
+// error handling. bound is an optional upper bound on the issue window (the
+// zero value is unbounded — Run's ordinary daemon/incremental path passes
+// time.Time{}); a non-zero bound is how a backfill run scopes one pass to a
+// slice of history.
+func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 	if p.generator == nil {
 		return nil
 	}
@@ -115,7 +138,7 @@ func (p *Pipeline) runJiraDigests(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, acct := range accounts {
-		if err := p.runJiraDigestAccount(ctx, acct); err != nil {
+		if err := p.runJiraDigestAccount(ctx, acct, bound); err != nil {
 			p.logf("ideas: jira digest account %d: %v", acct.ID, err)
 			if firstErr == nil {
 				firstErr = err
@@ -129,7 +152,7 @@ func (p *Pipeline) runJiraDigests(ctx context.Context) error {
 // empty floor (never initialized) initializes to now and skips extraction —
 // no backfill, the runEmailDigestAccount precedent. Zero changed issues is a
 // clean no-op: no AI call, no row, floor untouched.
-func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount) error {
+func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount, bound time.Time) error {
 	floor, err := p.db.IdeasJiraFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas jira floor: %w", err)
@@ -143,7 +166,11 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return nil
 	}
 
-	issues, err := p.db.ListJiraIssuesUpdatedSince(acct.ID, floor, jiraIssuesPerAccountLimit)
+	var beforeISO string
+	if !bound.IsZero() {
+		beforeISO = db.FormatJiraTime(bound)
+	}
+	issues, err := p.db.ListJiraIssuesUpdatedSince(acct.ID, floor, beforeISO, jiraIssuesPerAccountLimit)
 	if err != nil {
 		return fmt.Errorf("listing jira issues: %w", err)
 	}
@@ -201,8 +228,8 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		Source:     "jira",
 		AccountID:  acct.ID,
 		Scope:      "",
-		PeriodFrom: floor,
-		PeriodTo:   maxUpdated,
+		PeriodFrom: normalizeJiraStreamPeriod(floor),
+		PeriodTo:   normalizeJiraStreamPeriod(maxUpdated),
 		TopicsJSON: string(topicsJSON),
 	})
 	if err != nil {

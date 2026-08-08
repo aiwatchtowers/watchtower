@@ -1540,6 +1540,7 @@ CREATE TABLE IF NOT EXISTS idea_mentions (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 
 -- Stage-1 pre-digests for streams that have no existing digest pipeline
 -- (Gmail, Jira): a lightweight per-account topic summary the stage-2
