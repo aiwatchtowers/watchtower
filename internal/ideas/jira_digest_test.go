@@ -3,6 +3,7 @@ package ideas
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,6 +220,55 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
 	assert.Equal(t, updatedAt, newFloor)
+}
+
+// TestGB4_JiraStreamPeriodNormalizedToRFC3339UTC pins GB4: a Jira account's
+// raw updated_at timestamps (dotted-ms with a non-UTC offset, e.g. "+0300")
+// must land in stream_digests.period_from/period_to as plain RFC3339 UTC —
+// the same format the Gmail pre-digest pass already writes — so
+// ListStreamDigestsAfter/HasStreamDigestCovering's plain string comparisons
+// stay format-safe across both sources.
+func TestGB4_JiraStreamPeriodNormalizedToRFC3339UTC(t *testing.T) {
+	d := newTestDB(t)
+	acctID := seedJiraAccount(t, d)
+	floor := "2026-08-01T10:00:00.000+0300"
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+	updatedAt := "2026-08-01T12:30:00.000+0300"
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Issue", "Open", "new", "desc", updatedAt)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+
+	digests, err := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	sd := digests[0]
+
+	parsedFrom, ferr := time.Parse(time.RFC3339, sd.PeriodFrom)
+	require.NoError(t, ferr, "period_from must be stored as RFC3339 UTC, got %q", sd.PeriodFrom)
+	parsedTo, terr := time.Parse(time.RFC3339, sd.PeriodTo)
+	require.NoError(t, terr, "period_to must be stored as RFC3339 UTC, got %q", sd.PeriodTo)
+	assert.True(t, strings.HasSuffix(sd.PeriodFrom, "Z"), "RFC3339 UTC must end in Z, not a raw offset, got %q", sd.PeriodFrom)
+	assert.True(t, strings.HasSuffix(sd.PeriodTo, "Z"), "RFC3339 UTC must end in Z, not a raw offset, got %q", sd.PeriodTo)
+
+	wantFrom, ok := db.ParseJiraTime(floor)
+	require.True(t, ok)
+	wantTo, ok := db.ParseJiraTime(updatedAt)
+	require.True(t, ok)
+	assert.Equal(t, wantFrom, parsedFrom.Unix())
+	assert.Equal(t, wantTo, parsedTo.Unix())
+
+	// Boundary compare: HasStreamDigestCovering must correctly recognize the
+	// normalized period against an RFC3339 UTC window built from the same
+	// instants.
+	covered, cerr := d.HasStreamDigestCovering("jira", acctID,
+		time.Unix(wantFrom, 0).UTC().Format(time.RFC3339),
+		time.Unix(wantTo, 0).UTC().Format(time.RFC3339))
+	require.NoError(t, cerr)
+	assert.True(t, covered, "coverage check must correctly match the normalized RFC3339 period")
 }
 
 // TestIdeas02_JiraHallucinatedRefDropped covers ref validation: a

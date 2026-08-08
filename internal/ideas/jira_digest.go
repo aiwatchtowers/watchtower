@@ -100,6 +100,26 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
+// normalizeJiraStreamPeriod converts a Jira-format timestamp (raw
+// updated_at, which can carry any offset the API returned, e.g. "+0300") to
+// RFC3339 UTC for storage in stream_digests.period_from/period_to — the
+// email pre-digest pass already writes RFC3339 UTC there, and
+// ListStreamDigestsAfter/HasStreamDigestCovering compare both sources'
+// periods with plain string ordering, which is only offset-safe when every
+// row shares one format (GB4). An unparseable input (should not happen for a
+// value this pipeline itself produced) is stored verbatim rather than
+// blocking the whole pass — the worst case is one wrong coverage/window skip
+// for that single row, not a dropped digest. Pre-existing rows written before
+// this normalization may still carry a raw Jira offset; see
+// docs/inventory/ideas.md.
+func normalizeJiraStreamPeriod(raw string) string {
+	unix, ok := db.ParseJiraTime(raw)
+	if !ok {
+		return raw
+	}
+	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
+}
+
 // runJiraDigests is the ideas registry's Jira pre-digest pass: one Generate
 // call per enabled Jira account, over the issues (plus their new comments)
 // updated since that account's jira_accounts.ideas_jira_floor. Mirrors
@@ -208,8 +228,8 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		Source:     "jira",
 		AccountID:  acct.ID,
 		Scope:      "",
-		PeriodFrom: floor,
-		PeriodTo:   maxUpdated,
+		PeriodFrom: normalizeJiraStreamPeriod(floor),
+		PeriodTo:   normalizeJiraStreamPeriod(maxUpdated),
 		TopicsJSON: string(topicsJSON),
 	})
 	if err != nil {
