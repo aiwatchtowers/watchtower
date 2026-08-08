@@ -67,6 +67,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @AppStorage("transcription.contextPrompt") private var transcriptionContextPrompt = false
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
+    @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @State private var showAdvancedTranscription = false
 
@@ -977,6 +978,12 @@ struct GeneralSettings: View {
             Toggle("Cross-window context (experimental)", isOn: $transcriptionContextPrompt)
                 .help("Feed each window's decode the previous window's text (Whisper long-form conditioning). "
                     + "May help continuity on clean audio; costs roughly 1.4x decode time. WhisperKit engine only.")
+
+            Toggle("Mic auto-gain (experimental)", isOn: $transcriptionMicAGC)
+                .help("Boost a quiet microphone toward a healthy recording level while you are the "
+                    + "dominant sound in it, so your own voice is not lost in the recording. "
+                    + "Moments where remote participants are the dominant sound are left untouched, "
+                    + "so their audio leaking into your mic is never amplified.")
 
             Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
