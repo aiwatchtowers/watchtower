@@ -128,7 +128,7 @@ final class VoicePrintMatcherTests: XCTestCase {
             makePrint("stranger@y.com", "stranger@y.com", [0, 1])
         ]
         let attendees = [makeAttendee(email: "Alice@X.com", name: "Alice")]
-        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees)
+        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: [])
         XCTAssertEqual(scoped.map(\.personKey), ["alice@x.com"],
                        "a print for someone not on the event must be dropped")
     }
@@ -138,7 +138,7 @@ final class VoicePrintMatcherTests: XCTestCase {
         // is the normalized name; the attendee side may only know the display name.
         let prints = [makePrint("саша петров", "Саша Петров", [1, 0])]
         let attendees = [makeAttendee(email: "sasha@corp.com", name: "саша петров")]
-        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees).count, 1)
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
     }
 
     func testScopedEmptyAttendeesKeepsAll() {
@@ -147,7 +147,15 @@ final class VoicePrintMatcherTests: XCTestCase {
             makePrint("alice@x.com", "Alice", [1, 0]),
             makePrint("bob@y.com", "Bob", [0, 1])
         ]
-        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: []).count, 2)
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: [], ownerEmails: []).count, 2)
+    }
+
+    func testScopedDisplayNameBranchAloneKeepsPrint() {
+        // The print's displayName (not its personKey) matches the attendee —
+        // isolates the displayName alternative of the filter.
+        let prints = [makePrint("куратор", "Пётр Кузнецов", [1, 0])]
+        let attendees = [makeAttendee(email: "petr@corp.com", name: " пётр кузнецов ")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
     }
 
     func testScopedEmptyAttendeeFieldsNeverMatch() {
@@ -155,7 +163,7 @@ final class VoicePrintMatcherTests: XCTestCase {
         // arbitrary prints via ""-to-"" comparisons.
         let prints = [makePrint("stranger@y.com", "stranger@y.com", [1, 0])]
         let attendees = [makeAttendee(email: "", name: "Meeting Room 6")]
-        XCTAssertTrue(VoicePrintMatcher.scoped(prints, attendees: attendees).isEmpty)
+        XCTAssertTrue(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).isEmpty)
     }
 
     func testScopedAlwaysKeepsOwnerPrints() {
@@ -178,7 +186,7 @@ final class VoicePrintMatcherTests: XCTestCase {
         // and the reader must not silently depend on that.
         let prints = [makePrint(" Alice@X.com ", "Alice", [1, 0])]
         let attendees = [makeAttendee(email: "alice@x.com", name: "")]
-        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees).count, 1)
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
     }
 
     func testIsOwnerPrintMatchesNormalizedEmailKey() {

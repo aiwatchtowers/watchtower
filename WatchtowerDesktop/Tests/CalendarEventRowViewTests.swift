@@ -63,6 +63,17 @@ final class CalendarEventRowViewTests: XCTestCase {
         XCTAssertEqual(makeEvent(attendeesJSON: "[]").attendeesIncludingOrganizer, [])
     }
 
+    /// A zero-guest event (focus block; also an undecodable attendees JSON)
+    /// must stay [] even with an organizer — [] is the "treat as ad-hoc →
+    /// global voice-print pool" sentinel, and an organizer-only set would
+    /// narrow the pool to the owner and strip every colleague's name.
+    func testAttendeesIncludingOrganizerStaysEmptyWithoutGuests() {
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[]", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [])
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "{broken", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [])
+    }
+
     // MARK: - Tests
 
     /// Title всегда виден.

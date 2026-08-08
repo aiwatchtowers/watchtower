@@ -289,6 +289,50 @@ final class RoleAssignerTests: XCTestCase {
         XCTAssertEqual(labels["A"], "vadym@x.com")
     }
 
+    /// The conservative owner rule: an `ownerVoiceAlike` cluster (an owner
+    /// print also matches it ≥ threshold, even though its winning match is a
+    /// colleague) is protected from the veto — but never PROMOTED to «Я»
+    /// beyond what mic dominance already gives it.
+    func testOwnerVoiceAlikeWinnerIsNotVetoed() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "Alice", "B": "Bob"],
+            ownerClusters: [],
+            ownerVoiceAlike: ["A"]
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Bob] ответ",
+                       "a cluster the owner's print also matches must keep «Я», not be vetoed")
+    }
+
+    /// The veto needs at least two distinct clusters: a single-cluster
+    /// recording is an under-split 1:1, where a confident colleague match on
+    /// the whole blob must not strip «Я» (the mega-cluster guard is off
+    /// below 4 clusters by design, so this gate is the only protection).
+    func testSingleClusterIsNeverVetoed() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 5),
+            voiceNames: ["A": "Alice"],
+            ownerClusters: []
+        )
+        XCTAssertEqual(text, "[Я] привет ответ")
+    }
+
+    /// An empty-string voice name is "no match", never a veto reason.
+    func testEmptyVoiceNameDoesNotVeto() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "", "B": "Bob"],
+            ownerClusters: []
+        )
+        XCTAssertEqual(text, "[Я] привет\n[Bob] ответ")
+    }
+
     /// Pinned design decision (owner-reviewed): an owner voice match BELOW
     /// the mic-dominance threshold is not a «Я» candidate — the veto on a
     /// colleague-matched winner then leaves the transcript with no «Я» at

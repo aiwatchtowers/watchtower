@@ -274,8 +274,9 @@ final class AppState {
     /// plain "Speaker N" labels; no attendees → global (unscoped) matching;
     /// no owner emails → «Я» keeps its legacy absolute mic-dominance
     /// priority. Failures are printed, never silent (the renderRoles
-    /// diagnostics convention).
-    private func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
+    /// diagnostics convention). `func`, not `private func`, so @testable
+    /// tests can wire a test DB through it (the initDashboard precedent).
+    func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
         meetingRecorderCenter.voicePrintsLoader = {
             do {
                 return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
@@ -303,11 +304,12 @@ final class AppState {
         }
         meetingRecorderCenter.ownerEmailsLoader = {
             do {
-                // Deliberately unfiltered by status: a revoked/removed Google
-                // account does not change who owns the machine. IMAP
-                // (email_accounts) identities are deliberately excluded —
-                // voice prints are keyed by attendee emails, which come from
-                // Google Calendar. Owner-reviewed 2026-08-08.
+                // Deliberately unfiltered by status: a revoked Google account
+                // does not change who owns the machine (a removed one is
+                // hard-deleted and never appears here). IMAP (email_accounts)
+                // identities are deliberately excluded — voice prints are
+                // keyed by attendee emails, which come from Google Calendar.
+                // Owner-reviewed 2026-08-08.
                 let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
                 return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
             } catch {

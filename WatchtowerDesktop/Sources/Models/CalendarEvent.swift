@@ -120,12 +120,21 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     /// the sync stores the organizer in its own column, never in the
     /// attendees JSON, and an organizer-not-guest event (Zoom/Calendly, a
     /// self-removed organizer) would otherwise lose them. Used to scope
-    /// voice-print matching; the organizer entry is skipped when already
-    /// listed as an attendee (case-insensitive email compare).
+    /// voice-print matching and to seed the rename picker; the organizer
+    /// entry is skipped when already listed as an attendee
+    /// (case-insensitive email compare).
+    ///
+    /// The organizer joins only a NON-EMPTY attendee list: an empty result
+    /// is the "no identities → treat as ad-hoc" sentinel downstream
+    /// (`VoicePrintMatcher.scoped` falls back to the global pool on []), and
+    /// a zero-guest self-created event (focus block) or an undecodable
+    /// attendees JSON must keep that fallback — an organizer-only set would
+    /// silently narrow the pool to the owner and strip every colleague's
+    /// name.
     var attendeesIncludingOrganizer: [EventAttendee] {
         let attendees = parsedAttendees
         let organizer = organizerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !organizer.isEmpty,
+        guard !attendees.isEmpty, !organizer.isEmpty,
               !attendees.contains(where: { $0.email.caseInsensitiveCompare(organizer) == .orderedSame })
         else { return attendees }
         return attendees + [EventAttendee(

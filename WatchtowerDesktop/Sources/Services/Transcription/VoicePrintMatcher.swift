@@ -41,7 +41,6 @@ enum VoicePrintMatcher {
     /// the owner's — callers must disarm owner-dependent logic in that case
     /// rather than treat the owner as a stranger.
     static func isOwnerPrint(_ print: VoicePrint, ownerEmails: Set<String>) -> Bool {
-        guard !ownerEmails.isEmpty else { return false }
         let printKey = key(print.personKey)
         return ownerEmails.contains { key($0) == printKey }
     }
@@ -52,13 +51,15 @@ enum VoicePrintMatcher {
     /// resource row has an empty email). An empty attendee list means an
     /// ad-hoc recording — matching stays global, everything is kept. This is
     /// what keeps a voice-alike stranger from another meeting out of an
-    /// event-linked transcript. The OWNER's prints (`ownerEmails`) always
-    /// survive scoping — the owner is present at their own recording by
-    /// definition, whatever the attendee list says.
+    /// event-linked transcript. The owner's EMAIL-KEYED prints (`ownerEmails`,
+    /// via `isOwnerPrint`) always survive scoping — the owner is present at
+    /// their own recording by definition, whatever the attendee list says; a
+    /// name-keyed owner print is not recognizable as the owner's and follows
+    /// the ordinary attendee rules.
     static func scoped(
         _ prints: [VoicePrint],
         attendees: [EventAttendee],
-        ownerEmails: Set<String> = []
+        ownerEmails: Set<String>
     ) -> [VoicePrint] {
         guard !attendees.isEmpty else { return prints }
         let known = Set(attendees.flatMap { [key($0.email), key($0.displayName)] }
