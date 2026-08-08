@@ -239,6 +239,20 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.backfillError, "watchtower exited with error: boom")
     }
 
+    /// SB5: GB9 on the Go side emits {"disabled":true} on the backfill path
+    /// when ideas.enabled=false, instead of the usual proposed/cycles
+    /// envelope. That must not read as an opaque parse failure.
+    func testStartBackfillDisabledRegistrySetsActionableError() async {
+        let runner = FakeCLIRunner(stdout: Data(#"{"disabled":true}"#.utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertNil(vm.backfillSummary)
+        XCTAssertEqual(vm.backfillError, "The ideas registry is disabled in Settings.")
+    }
+
     func testStartBackfillMalformedOutputSetsErrorNotCrash() async {
         let runner = FakeCLIRunner(stdout: Data("not json at all".utf8))
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)

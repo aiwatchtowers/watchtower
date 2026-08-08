@@ -275,6 +275,14 @@ final class IdeasViewModel {
         do {
             let data = try await runner.run(args: args)
             isBackfilling = false
+            if Self.parseDisabledEnvelope(data)?.disabled == true {
+                // GB9 (Go wave): ideas.enabled=false on the backfill path
+                // emits {"disabled":true} instead of the usual envelope —
+                // that must read as an actionable message, not an opaque
+                // parse failure.
+                backfillError = "The ideas registry is disabled in Settings."
+                return
+            }
             guard let envelope = Self.parseBackfillEnvelope(data) else {
                 backfillError = "Could not parse the backfill result."
                 return
@@ -296,6 +304,14 @@ final class IdeasViewModel {
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
         return try? JSONDecoder().decode(IdeaBackfillEnvelope.self, from: Data(lastLine.utf8))
     }
+
+    /// Mirrors `parseBackfillEnvelope`'s last-line parse, for GB9's
+    /// {"disabled":true} envelope (`cmd/ideas.go`'s `ideasDisabledEnvelope`).
+    static func parseDisabledEnvelope(_ data: Data) -> IdeasDisabledEnvelope? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
+        return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
+    }
 }
 
 /// Mirrors `backfillEnvelope` in `cmd/ideas.go` — `ideas mine --from`'s final
@@ -309,4 +325,10 @@ struct IdeaBackfillEnvelope: Decodable, Equatable {
         case proposed, cycles
         case mentionsDeduped = "mentions_deduped"
     }
+}
+
+/// Mirrors `ideasDisabledEnvelope` in `cmd/ideas.go` — the backfill path's
+/// stdout body when `ideas.enabled=false` (GB9).
+struct IdeasDisabledEnvelope: Decodable, Equatable {
+    let disabled: Bool
 }
