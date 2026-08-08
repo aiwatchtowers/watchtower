@@ -41,6 +41,9 @@ final class IdeasViewModel {
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    /// SB4: retained so cancelBackfill() has something to cancel — started
+    /// and cleared by startBackfillTask, the sheet's Start-button entry point.
+    private var backfillTask: Task<Void, Never>?
 
     /// Overrides CLI resolution for tests; production falls back to
     /// `ProcessCLIRunner.makeDefault()` (mirrors `DashboardViewModel`).
@@ -255,6 +258,30 @@ final class IdeasViewModel {
 
     // MARK: - Find-ideas backfill
 
+    /// SB4: the sheet's Start button's entry point — creates and retains the
+    /// backfill Task on the VM (rather than the view firing an unstructured
+    /// `Task { await vm.startBackfill(...) }` itself) so cancelBackfill() has
+    /// something to cancel. Guarded before creating the Task too, so a stray
+    /// second call while a run is in flight can't replace the retained
+    /// reference to the run actually still going (startBackfill's own
+    /// synchronous guard already covers the race between the two guards).
+    func startBackfillTask(from: Date, to: Date) {
+        guard !isBackfilling else { return }
+        backfillTask = Task { [weak self] in
+            await self?.startBackfill(from: from, to: to)
+            self?.backfillTask = nil
+        }
+    }
+
+    /// Cancels the in-flight backfill Task. ProcessCLIRunner's cancellation
+    /// handler sends SIGTERM to the CLI child on cancellation, which the Go
+    /// wave's GB8 now catches as a real interrupt (releasing the backfill
+    /// lock and restoring floors) instead of leaving an orphaned process —
+    /// see the CancellationError branch below.
+    func cancelBackfill() {
+        backfillTask?.cancel()
+    }
+
     /// Runs `watchtower ideas mine --from --to` over a historical window (the
     /// Settings/sheet-driven backfill — separate from the daemon's regular
     /// mining pass). Guarded synchronously against double-start: the check and
@@ -303,7 +330,10 @@ final class IdeasViewModel {
         } catch {
             isBackfilling = false
             backfillStartedAt = nil
-            backfillError = Self.friendlyBackfillError(for: error)
+            // SB4: a Cancel-button cancellation must read as a plain
+            // "Cancelled", not CancellationError's generic localized
+            // description.
+            backfillError = error is CancellationError ? "Cancelled" : Self.friendlyBackfillError(for: error)
             load()
         }
     }

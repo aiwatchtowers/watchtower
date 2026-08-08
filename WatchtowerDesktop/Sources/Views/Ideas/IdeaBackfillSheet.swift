@@ -4,10 +4,11 @@ import SwiftUI
 //
 // "Find ideas" backfill: runs `watchtower ideas mine --from --to` over a
 // historical window (Settings-driven default; this sheet is the on-demand
-// entry point). Run state (`isBackfilling`/`backfillSummary`/`backfillError`)
-// lives on `IdeasViewModel`, not here — so dismissing the sheet and reopening
+// entry point). Run state (`isBackfilling`/`backfillSummary`/`backfillError`/
+// `backfillStartedAt`) and the retained Task itself (`backfillTask`, SB4)
+// live on `IdeasViewModel`, not here — so dismissing the sheet and reopening
 // it (or switching tabs and back) still shows an in-flight or just-finished
-// run instead of losing it.
+// run instead of losing it, and Cancel still reaches the right run.
 struct IdeaBackfillSheet: View {
     let vm: IdeasViewModel
 
@@ -117,6 +118,10 @@ struct IdeaBackfillSheet: View {
     private var sheetFooter: some View {
         HStack {
             Spacer()
+            if vm.isBackfilling {
+                Button("Cancel") { vm.cancelBackfill() }
+                    .buttonStyle(.bordered)
+            }
             Button("Start", action: start)
                 .buttonStyle(.borderedProminent)
                 .disabled(vm.isBackfilling)
@@ -125,12 +130,11 @@ struct IdeaBackfillSheet: View {
         .padding(.vertical, 12)
     }
 
-    /// Fires an unstructured `Task`, not a view-scoped `.task` — the run must
-    /// keep going even if this sheet is dismissed (state lives on the VM).
+    /// The VM owns Task creation now (SB4) — it retains the Task so
+    /// cancelBackfill() has something to cancel, and the run keeps going
+    /// even if this sheet is dismissed (state lives on the VM either way).
     private func start() {
-        let from = fromDate
-        let to = toDate
-        Task { await vm.startBackfill(from: from, to: to) }
+        vm.startBackfillTask(from: fromDate, to: toDate)
     }
 
     private func apply(_ preset: Preset) {

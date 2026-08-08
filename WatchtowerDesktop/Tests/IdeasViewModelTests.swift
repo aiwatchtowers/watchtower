@@ -326,6 +326,52 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isBackfilling)
     }
 
+    // MARK: - cancelBackfill() (SB4)
+
+    /// The VM must retain the Task it starts (so a Cancel button in the
+    /// sheet has something to cancel) and settle to a clean, specific state:
+    /// isBackfilling clears, backfillError reads "Cancelled" (not a raw
+    /// CancellationError description), and no summary from the aborted run
+    /// appears. ProcessCLIRunner's cancellation handler sends SIGTERM to the
+    /// CLI child, which the Go wave's GB8 now handles as a real interrupt
+    /// (release the backfill lock, restore floors) rather than an orphaned
+    /// process — see startBackfill's catch-branch comment.
+    func testCancelBackfillSettlesStateAsCancelled() async {
+        let blocking = FakeCLIRunner()
+        blocking.blockUntilCancelled = true
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
+
+        vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
+        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        XCTAssertTrue(vm.isBackfilling)
+
+        vm.cancelBackfill()
+        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertEqual(vm.backfillError, "Cancelled")
+        XCTAssertNil(vm.backfillSummary)
+        XCTAssertNil(vm.backfillStartedAt)
+    }
+
+    /// startBackfillTask must not clobber an in-flight run's Task reference
+    /// — otherwise a stray second call would leave cancelBackfill() unable
+    /// to reach the run that's actually still going.
+    func testStartBackfillTaskWhileRunningDoesNotReplaceTheInFlightTask() async {
+        let blocking = FakeCLIRunner()
+        blocking.blockUntilCancelled = true
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
+
+        vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
+        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
+        XCTAssertEqual(blocking.invocations.count, 1, "the second call must not invoke the CLI again")
+
+        vm.cancelBackfill()
+        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+        XCTAssertFalse(vm.isBackfilling, "cancelBackfill must still reach the original in-flight task")
+    }
+
     /// SB7: startedAt moves from the sheet's own @State to the VM so the
     /// elapsed-timer display survives the sheet being dismissed and
     /// reopened — the same house async-op rule already applied to
