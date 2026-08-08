@@ -1550,6 +1550,19 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(result.names, ["B": "owner@x.com"])
     }
 
+    /// Pins the owner-status proxy contract: above the gate, "still has a
+    /// name" stands for "not suppressed" — an owner cluster with NO
+    /// voiceNames entry loses its status even though nothing was suppressed.
+    /// Valid only because matchVoiceNames inserts names and owner status
+    /// together; this test is the tripwire for a future caller that does not.
+    func testOwnerClusterWithoutNameLosesStatusAboveGate() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let result = MeetingRecorderCenter.filterMegaClusters(
+            voiceNames: ["D": "Даша"], speakers: segments, ownerClusters: ["A"])
+        XCTAssertEqual(result.owners, [],
+                       "a nameless owner cluster falls out of the set above the gate — documented proxy edge")
+    }
+
     /// The 1:1 case: the counterparty legitimately owns most of the speech, so
     /// the guard must not fire below `megaClusterMinClusters`.
     func testDominantClusterInOneOnOneKeepsItsVoiceName() throws {

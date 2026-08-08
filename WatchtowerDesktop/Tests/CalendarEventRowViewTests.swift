@@ -75,10 +75,10 @@ final class CalendarEventRowViewTests: XCTestCase {
     }
 
     /// A room resource is an ordinary attendee row in Google's payload —
-    /// a room-only booking has no HUMAN identities and must keep the []
-    /// sentinel; with a human guest present the room row is harmless and
-    /// the full set (room + human + organizer) goes through.
-    func testAttendeesIncludingOrganizerIgnoresRoomResourcesForTheSentinel() {
+    /// it is filtered out entirely (never offered as a speaker, never in
+    /// the print pool), so a room-only booking keeps the [] sentinel and a
+    /// mixed list yields humans + organizer only.
+    func testAttendeesIncludingOrganizerFiltersRoomResources() {
         let room = #"{"email":"office-6@resource.calendar.google.com","display_name":"Room 6","response_status":"accepted","slack_user_id":""}"#
         let human = #"{"email":"alice@corp.com","display_name":"Alice","response_status":"accepted","slack_user_id":""}"#
         XCTAssertEqual(
@@ -87,7 +87,8 @@ final class CalendarEventRowViewTests: XCTestCase {
         XCTAssertEqual(
             makeEvent(attendeesJSON: "[\(room),\(human)]", organizerEmail: "boss@corp.com")
                 .attendeesIncludingOrganizer.map(\.email),
-            ["office-6@resource.calendar.google.com", "alice@corp.com", "boss@corp.com"])
+            ["alice@corp.com", "boss@corp.com"],
+            "the room row must not reach the picker or the print pool")
     }
 
     // MARK: - Tests

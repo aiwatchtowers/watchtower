@@ -47,9 +47,11 @@ enum VoicePrintMatcher {
 
     /// Restricts the voice-print pool to the event's attendees: a print is
     /// kept when its `personKey` or `displayName` matches an attendee's email
-    /// or display name (case-insensitive, empty fields never match — a room
-    /// resource row has an empty email). An empty attendee list means an
-    /// ad-hoc recording — matching stays global, everything is kept. This is
+    /// or display name (case-insensitive, empty fields never match — some
+    /// rows legitimately carry only one of the two; room resources are
+    /// filtered upstream in `CalendarEvent.attendeesIncludingOrganizer`).
+    /// An empty attendee list means an ad-hoc recording — matching stays
+    /// global, everything is kept. This is
     /// what keeps a voice-alike stranger from another meeting out of an
     /// event-linked transcript. The owner's EMAIL-KEYED prints (`ownerEmails`,
     /// via `isOwnerPrint`) always survive scoping — the owner is present at
