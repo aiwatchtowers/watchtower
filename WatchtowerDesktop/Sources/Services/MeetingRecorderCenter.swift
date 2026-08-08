@@ -122,6 +122,20 @@ final class MeetingRecorderCenter {
     /// throw: voice naming is a progressive enhancement like roles themselves.
     var voicePrintsLoader: (@Sendable () async -> [VoicePrint])?
 
+    /// Reads an event's attendee identities (attendees + organizer — the
+    /// organizer is NOT in the attendees JSON) to scope the voice-print pool
+    /// for an event-linked recording (`VoicePrintMatcher.scoped`). Same
+    /// contract as `voicePrintsLoader`: set by AppState, nil or a failure
+    /// returns [] — which degrades to today's global matching, never to no
+    /// matching.
+    var attendeesLoader: (@Sendable (String) async -> [EventAttendee])?
+
+    /// The owner's email identities (`google_accounts` emails, lowercased) —
+    /// they mark which voice prints are the OWNER's for the «Я»
+    /// tie-break/veto (semantics: `RoleAssigner.clusterLabels`'s doc). nil
+    /// loader or an empty set = owner identity unknown = legacy «Я» behavior.
+    var ownerEmailsLoader: (@Sendable () async -> Set<String>)?
+
     /// `.waiting` = a recording is capturing but a job still owns the engine
     /// slot, so the live engine is deliberately not loaded yet.
     enum LiveEngineState: Equatable { case off, waiting, loading, running, unavailable }
@@ -371,7 +385,8 @@ final class MeetingRecorderCenter {
         output: TranscriptionOutput,
         audioURL: URL,
         samples: [Float]?,
-        config: TranscriptionConfig
+        config: TranscriptionConfig,
+        eventID: String?
     ) async -> (text: String, utterances: [TranscriptUtterance]?, speakers: [SpeakerEmbedding]?) {
         guard config.diarization, !output.segments.isEmpty else { return (output.text, nil, nil) }
         updateJob(jobID) { $0.phase = .diarizing }
@@ -401,12 +416,23 @@ final class MeetingRecorderCenter {
             // One dict for both RoleAssigner calls below, so the mega-cluster
             // suppression cannot apply to the transcript labels but not to the
             // embedding keys (or vice versa).
-            let voiceNames = Self.filterMegaClusters(
-                voiceNames: await matchVoiceNames(clusterEmbeddings: clusterEmbeddings),
-                speakers: speakers)
+            let (rawNames, rawOwners, ownerVoiceAlike) = await matchVoiceNames(
+                clusterEmbeddings: clusterEmbeddings, eventID: eventID)
+            let (voiceNames, ownerClusters) = Self.filterMegaClusters(
+                voiceNames: rawNames, speakers: speakers, ownerClusters: rawOwners)
+            // The «Я» veto silently removing the label would look like mic
+            // detection randomly stopped working — log it once, here (the
+            // mega-cluster suppression precedent; RoleAssigner stays pure).
+            if case let .vetoed(cluster, name) = RoleAssigner.detectSelf(
+                speakers: speakers, activity: activity, voiceNames: voiceNames,
+                ownerClusters: ownerClusters, ownerVoiceAlike: ownerVoiceAlike) {
+                print("[MeetingRecorder] «Я» veto: mic-dominant cluster \(cluster) confidently "
+                      + "matches \"\(name)\", not the owner — no «Я» in this transcript")
+            }
             if let utterances = RoleAssigner.assign(
                 segments: output.segments, speakers: speakers,
-                activity: activity, voiceNames: voiceNames
+                activity: activity, voiceNames: voiceNames, ownerClusters: ownerClusters,
+                ownerVoiceAlike: ownerVoiceAlike
             ) {
                 // Key the persisted embeddings by the SAME labels the
                 // transcript renders (clusterLabels is what assign used).
@@ -415,7 +441,9 @@ final class MeetingRecorderCenter {
                 // in the transcript, and shipping it would make the Go save
                 // drop it as an orphan.
                 let labels = RoleAssigner.clusterLabels(
-                    speakers: speakers, activity: activity, voiceNames: voiceNames)
+                    speakers: speakers, activity: activity,
+                    voiceNames: voiceNames, ownerClusters: ownerClusters,
+                    ownerVoiceAlike: ownerVoiceAlike)
                 let usedLabels = Set(utterances.map(\.speaker))
                 let speakerEmbeddings = clusterEmbeddings
                     .compactMap { cluster, embedding -> SpeakerEmbedding? in
@@ -440,21 +468,67 @@ final class MeetingRecorderCenter {
 
     /// Voice matching (Level 1): each cluster embedding against the
     /// voice-print database, cosine ≥ threshold → the person's display name.
-    /// Empty when there is nothing to match against — no loader (no DB),
-    /// empty database, or no embeddings — which degrades to plain
-    /// "Speaker N" labels. «Я» keeps absolute priority downstream
-    /// (RoleAssigner.clusterLabels ignores a voiceName for the self cluster).
-    private func matchVoiceNames(clusterEmbeddings: [String: [Float]]) async -> [String: String] {
-        guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return [:] }
-        let prints = await voicePrintsLoader()
-        guard !prints.isEmpty else { return [:] }
+    /// For an event-linked recording the pool is first scoped to the event's
+    /// attendees (`VoicePrintMatcher.scoped`) so a voice-alike from another
+    /// meeting cannot claim a cluster; ad-hoc recordings (or an attendee-load
+    /// failure) keep the global pool, and the owner's EMAIL-KEYED prints are
+    /// never scoped out. Empty when there is nothing to match against — no
+    /// loader (no DB), empty database, or no embeddings — which degrades to
+    /// plain "Speaker N" labels.
+    ///
+    /// `ownerClusters` marks the matched clusters whose winning print is the
+    /// OWNER's (see `VoicePrintMatcher.isOwnerPrint`; semantics in
+    /// `RoleAssigner.clusterLabels`' doc). It is non-nil ONLY when the pool
+    /// holds an owner-identified print USABLE in this run (valid embedding
+    /// of this run's dimension) — owner identity without such a print
+    /// (typical for a name-keyed print minted by an ad-hoc rename, or a
+    /// print learned under an older embedding model) must NOT arm the veto,
+    /// or an unmatchable owner would lose «Я» with no possible tie-break.
+    ///
+    /// `ownerVoiceAlike` is the veto-suppression set: clusters ANY owner
+    /// print matches at ≥ threshold, even when the globally best match is
+    /// someone else's print (the mixed name-keyed + email-keyed owner case).
+    /// Conservative by owner decision: it protects a cluster from the veto,
+    /// it never promotes one to «Я».
+    private func matchVoiceNames(
+        clusterEmbeddings: [String: [Float]], eventID: String?
+    ) async -> (names: [String: String], ownerClusters: Set<String>?, ownerVoiceAlike: Set<String>) {
+        guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return ([:], nil, []) }
+        let allPrints = await voicePrintsLoader()
+        guard !allPrints.isEmpty else { return ([:], nil, []) }
+        let ownerEmails = await ownerEmailsLoader?() ?? []
+        var prints = allPrints
+        if let eventID, let attendeesLoader {
+            prints = VoicePrintMatcher.scoped(allPrints, attendees: await attendeesLoader(eventID),
+                                              ownerEmails: ownerEmails)
+        }
+        let ownerPrints = prints.filter { VoicePrintMatcher.isOwnerPrint($0, ownerEmails: ownerEmails) }
+        // Usable = the print could actually match SOME cluster of this run
+        // (valid vector of a present dimension) — an owner print learned
+        // under an older embedding model must not arm the veto it can never
+        // satisfy. Checked against all clusters, not a sampled one:
+        // Dictionary order is seed-randomized.
+        let dimensions = Set(clusterEmbeddings.values.map(\.count))
+        let ownerArmed = ownerPrints.contains {
+            dimensions.contains($0.embeddingVector.count)
+                && VoicePrintMatcher.normalize($0.embeddingVector) != nil
+        }
         var names: [String: String] = [:]
+        var ownerClusters: Set<String> = []
+        var ownerVoiceAlike: Set<String> = []
         for (cluster, embedding) in clusterEmbeddings {
             if let match = VoicePrintMatcher.bestMatch(embedding: embedding, prints: prints) {
                 names[cluster] = match.displayName
+                if VoicePrintMatcher.isOwnerPrint(match, ownerEmails: ownerEmails) {
+                    ownerClusters.insert(cluster)
+                }
+            }
+            if ownerArmed,
+               VoicePrintMatcher.bestMatch(embedding: embedding, prints: ownerPrints) != nil {
+                ownerVoiceAlike.insert(cluster)
             }
         }
-        return names
+        return (names, ownerArmed ? ownerClusters : nil, ownerVoiceAlike)
     }
 
     /// Share of total diarized speech above which a cluster is read as a
@@ -475,14 +549,30 @@ final class MeetingRecorderCenter {
     /// in multi-speaker meetings; see `megaClusterShareThreshold` /
     /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
     /// without driving the whole Center).
-    static func filterMegaClusters(voiceNames: [String: String],
-                                   speakers: [SpeakerSegment]) -> [String: String] {
+    ///
+    /// A suppressed cluster also loses its owner status (`ownerClusters`) — a
+    /// merged blob must not win the «Я» tie-break as "the owner". Deliberate
+    /// residue: with no name left the blob cannot be vetoed either, so it MAY
+    /// still win «Я» by bare mic share — the legacy under-split behavior,
+    /// kept because a wrong «Я» heuristic beats guessing a person's name for
+    /// a blob of several people.
+    /// (`ownerVoiceAlike` is deliberately NOT filtered here: the veto — the
+    /// only thing it gates — needs a non-empty voice name, and a suppressed
+    /// cluster has none left, so an unfiltered alike entry cannot change any
+    /// outcome.)
+    static func filterMegaClusters(
+        voiceNames: [String: String],
+        speakers: [SpeakerSegment],
+        ownerClusters: Set<String>?
+    ) -> (names: [String: String], owners: Set<String>?) {
         var speech: [String: Double] = [:]
         for s in speakers {
             speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
         }
         let total = speech.values.reduce(0, +)
-        guard speech.count >= megaClusterMinClusters, total > 0 else { return voiceNames }
+        guard speech.count >= megaClusterMinClusters, total > 0 else {
+            return (voiceNames, ownerClusters)
+        }
         var filtered = voiceNames
         for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
             let share = duration / total
@@ -494,7 +584,11 @@ final class MeetingRecorderCenter {
                   + "\"\(name)\" (likely diarization under-split)")
             filtered[cluster] = nil
         }
-        return filtered
+        // "Still has a name" is a valid suppression proxy ONLY because every
+        // owner cluster is inserted together with its name in matchVoiceNames
+        // — an owner cluster without a voiceNames entry would silently lose
+        // its status here even though nothing was suppressed.
+        return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
     }
 
     // MARK: - Capture
@@ -975,7 +1069,7 @@ final class MeetingRecorderCenter {
         // live path's release.
         updateJob(jobID) { $0.transcriber = nil }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
-                                         samples: samples, config: config)
+                                         samples: samples, config: config, eventID: job.eventID)
         // Persist the (role-tagged) transcript next to the audio so a failed
         // save is retried from the file instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).

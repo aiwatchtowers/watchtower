@@ -116,6 +116,95 @@ final class VoicePrintMatcherTests: XCTestCase {
         XCTAssertNil(VoicePrintMatcher.updatedCentroid(centroid: [1, 0], sampleCount: 0, embedding: [0, 1]))
     }
 
+    // MARK: - Attendee scoping
+
+    private func makeAttendee(email: String, name: String) -> EventAttendee {
+        EventAttendee(email: email, displayName: name, responseStatus: "accepted", slackUserID: "")
+    }
+
+    func testScopedKeepsOnlyAttendeePrints() {
+        let prints = [
+            makePrint("alice@x.com", "alice@x.com", [1, 0]),
+            makePrint("stranger@y.com", "stranger@y.com", [0, 1])
+        ]
+        let attendees = [makeAttendee(email: "Alice@X.com", name: "Alice")]
+        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: [])
+        XCTAssertEqual(scoped.map(\.personKey), ["alice@x.com"],
+                       "a print for someone not on the event must be dropped")
+    }
+
+    func testScopedMatchesByDisplayName() {
+        // A print learned from a free-text rename has no email — its personKey
+        // is the normalized name; the attendee side may only know the display name.
+        let prints = [makePrint("саша петров", "Саша Петров", [1, 0])]
+        let attendees = [makeAttendee(email: "sasha@corp.com", name: "саша петров")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
+    }
+
+    func testScopedEmptyAttendeesKeepsAll() {
+        // Ad-hoc recording (no event, no attendee list) — matching stays global.
+        let prints = [
+            makePrint("alice@x.com", "Alice", [1, 0]),
+            makePrint("bob@y.com", "Bob", [0, 1])
+        ]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: [], ownerEmails: []).count, 2)
+    }
+
+    func testScopedDisplayNameBranchAloneKeepsPrint() {
+        // The print's displayName (not its personKey) matches the attendee —
+        // isolates the displayName alternative of the filter.
+        let prints = [makePrint("куратор", "Пётр Кузнецов", [1, 0])]
+        let attendees = [makeAttendee(email: "petr@corp.com", name: " пётр кузнецов ")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
+    }
+
+    func testScopedEmptyAttendeeFieldsNeverMatch() {
+        // A room resource row can carry an empty email — it must not admit
+        // arbitrary prints via ""-to-"" comparisons.
+        let prints = [makePrint("stranger@y.com", "stranger@y.com", [1, 0])]
+        let attendees = [makeAttendee(email: "", name: "Meeting Room 6")]
+        XCTAssertTrue(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).isEmpty)
+    }
+
+    func testScopedAlwaysKeepsOwnerPrints() {
+        // The owner is present at their own recording by definition (it is
+        // their mic), even when the attendee list does not carry their email
+        // (organizer-only entry, group alias, CalDAV/ICS event).
+        let prints = [
+            makePrint("owner@x.com", "owner@x.com", [1, 0]),
+            makePrint("stranger@y.com", "stranger@y.com", [0, 1])
+        ]
+        let attendees = [makeAttendee(email: "alice@z.com", name: "Alice")]
+        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: ["owner@x.com"])
+        XCTAssertEqual(scoped.map(\.personKey), ["owner@x.com"],
+                       "the owner's print must survive scoping; the stranger's must not")
+    }
+
+    func testScopedNormalizesPersonKeyLikeDisplayName() {
+        // Trim + case-fold must be symmetric on both sides of the compare —
+        // the print writer (SpeakerNaming.personKey) already trims+lowercases,
+        // and the reader must not silently depend on that.
+        let prints = [makePrint(" Alice@X.com ", "Alice", [1, 0])]
+        let attendees = [makeAttendee(email: "alice@x.com", name: "")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: []).count, 1)
+    }
+
+    func testIsOwnerPrintMatchesNormalizedEmailKey() {
+        XCTAssertTrue(VoicePrintMatcher.isOwnerPrint(
+            makePrint(" Owner@X.com ", "Owner", [1, 0]), ownerEmails: ["owner@x.com"]))
+        // Normalization is symmetric — a loader that forgets to lowercase
+        // must not silently kill owner detection.
+        XCTAssertTrue(VoicePrintMatcher.isOwnerPrint(
+            makePrint("owner@x.com", "Owner", [1, 0]), ownerEmails: ["Owner@X.com "]))
+        // A name-keyed print (ad-hoc/free-text rename mint path) is NOT
+        // recognizable as the owner's — callers must then disarm the owner
+        // logic rather than treat the owner as a stranger.
+        XCTAssertFalse(VoicePrintMatcher.isOwnerPrint(
+            makePrint("vadym", "vadym", [1, 0]), ownerEmails: ["owner@x.com"]))
+        XCTAssertFalse(VoicePrintMatcher.isOwnerPrint(
+            makePrint("owner@x.com", "Owner", [1, 0]), ownerEmails: []))
+    }
+
     // MARK: - SpeakerNaming
 
     func testIsUnnamedMatchesDefaultLabelsOnly() {

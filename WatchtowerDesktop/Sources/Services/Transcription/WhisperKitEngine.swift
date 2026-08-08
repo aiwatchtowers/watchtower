@@ -67,13 +67,30 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         return probs
     }
 
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    /// nil when the tokenizer is not loaded — the window then decodes exactly
+    /// as it did before prompts existed. Encoding rules live in the pure
+    /// `whisperPromptTokens`.
+    private func promptTokens(for prompt: String?) -> [Int]? {
+        guard let tokenizer = whisperKit.tokenizer else { return nil }
+        return whisperPromptTokens(prompt, specialTokenBegin: tokenizer.specialTokens.specialTokenBegin) {
+            tokenizer.encode(text: $0)
+        }
+    }
+
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+        try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
+            try await decode(samples, language: language, promptTokens: tokens)
+        }
+    }
+
+    private func decode(_ samples: [Float], language: String, promptTokens: [Int]?) async throws -> [TranscribedSegment] {
         let options = DecodingOptions(
             task: .transcribe,
             language: language,
             detectLanguage: false,
             skipSpecialTokens: true,
-            withoutTimestamps: false
+            withoutTimestamps: false,
+            promptTokens: promptTokens
         )
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
