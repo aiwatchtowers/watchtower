@@ -154,12 +154,15 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 		registryByID[idea.ID] = idea
 	}
 
-	proposed, refsRejected, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
+	proposed, refsRejected, mentionsDeduped, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
 	if err != nil {
 		return 0, err
 	}
 	if refsRejected > 0 {
 		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
+	}
+	if mentionsDeduped > 0 {
+		p.logf("ideas: consolidate deduped %d already-mined mention(s)", mentionsDeduped)
 	}
 	return proposed, nil
 }
@@ -455,12 +458,13 @@ func registrySection(registry []db.Idea) string {
 // floors inside a single transaction: any error rolls back every mutation
 // from this pass, so a partial write can never leave the registry, its
 // mentions, or the floors disagreeing with each other (IDEA-01). Returns the
-// number of ideas/decisions rows created and the number of invented refs
-// dropped along the way.
-func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (proposed, refsRejected int, err error) {
+// number of ideas/decisions rows created, the number of invented refs
+// dropped (IDEA-02), and the number of mentions dropped because their ref
+// was already recorded — re-mining already-mined material (IDEA-05).
+func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (proposed, refsRejected, mentionsDeduped int, err error) {
 	tx, err := database.Begin()
 	if err != nil {
-		return 0, 0, fmt.Errorf("beginning consolidate apply tx: %w", err)
+		return 0, 0, 0, fmt.Errorf("beginning consolidate apply tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
@@ -471,19 +475,50 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 			if op.Op == "new_decision" {
 				kind = "decision"
 			}
-			valid := make([]db.IdeaMention, 0, len(op.Mentions))
+
+			// First pass: drop invented refs (IDEA-02).
+			type candidate struct {
+				m   mentionInput
+				src string
+			}
+			candidates := make([]candidate, 0, len(op.Mentions))
 			for _, m := range op.Mentions {
 				src, ok := in.validRefs[m.Ref]
 				if !ok {
 					refsRejected++
 					continue
 				}
+				candidates = append(candidates, candidate{m: m, src: src})
+			}
+
+			// Second pass: drop refs already mined anywhere in idea_mentions
+			// (IDEA-05) — batched per source, one lookup per distinct source
+			// in this op (almost always exactly one).
+			refsBySrc := map[string][]string{}
+			for _, c := range candidates {
+				refsBySrc[c.src] = append(refsBySrc[c.src], c.m.Ref)
+			}
+			knownBySrc := make(map[string]map[string]int64, len(refsBySrc))
+			for src, refs := range refsBySrc {
+				known, kerr := database.IdeaMentionRefsKnownTx(tx, src, refs)
+				if kerr != nil {
+					return proposed, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention refs: %w", kerr)
+				}
+				knownBySrc[src] = known
+			}
+
+			valid := make([]db.IdeaMention, 0, len(candidates))
+			for _, c := range candidates {
+				if _, dup := knownBySrc[c.src][c.m.Ref]; dup {
+					mentionsDeduped++
+					continue
+				}
 				valid = append(valid, db.IdeaMention{
-					Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt,
+					Source: c.src, Ref: c.m.Ref, Quote: c.m.Quote, Author: c.m.Author, SaidAt: c.m.SaidAt,
 				})
 			}
 			if len(valid) == 0 {
-				continue // nothing survived — drop the whole op (IDEA-02)
+				continue // nothing survived — invented (IDEA-02) or already mined (IDEA-05)
 			}
 
 			idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence}
@@ -494,12 +529,12 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 			}
 			id, cerr := database.CreateIdeaTx(tx, idea)
 			if cerr != nil {
-				return proposed, refsRejected, fmt.Errorf("creating %s %q: %w", kind, op.Title, cerr)
+				return proposed, refsRejected, mentionsDeduped, fmt.Errorf("creating %s %q: %w", kind, op.Title, cerr)
 			}
 			for _, m := range valid {
 				m.IdeaID = id
 				if merr := database.InsertIdeaMentionTx(tx, m); merr != nil {
-					return proposed, refsRejected, fmt.Errorf("recording mention for idea %d: %w", id, merr)
+					return proposed, refsRejected, mentionsDeduped, fmt.Errorf("recording mention for idea %d: %w", id, merr)
 				}
 			}
 			proposed++
@@ -522,26 +557,37 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				refsRejected++
 				continue
 			}
+			known, kerr := database.IdeaMentionRefsKnownTx(tx, src, []string{op.Mention.Ref})
+			if kerr != nil {
+				return proposed, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, kerr)
+			}
+			if knownIdeaID, dup := known[op.Mention.Ref]; dup && knownIdeaID == target.ID {
+				// Already on the target idea — no new evidence, so this must
+				// not resurface a not_now/dropped/rejected verdict either
+				// (IDEA-05 x IDEA-04, mirroring PR #78's IDEA-02x04 finding).
+				mentionsDeduped++
+				continue
+			}
 			if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
 				IdeaID: target.ID, Source: src, Ref: op.Mention.Ref,
 				Quote: op.Mention.Quote, Author: op.Mention.Author, SaidAt: op.Mention.SaidAt,
 			}); merr != nil {
-				return proposed, refsRejected, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
+				return proposed, refsRejected, mentionsDeduped, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
 			}
 			if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {
 				reason := fmt.Sprintf("brought up again: %s %s", src, op.Mention.Ref)
 				if rerr := database.SetIdeaNeedsReviewTx(tx, target.ID, reason); rerr != nil {
-					return proposed, refsRejected, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
+					return proposed, refsRejected, mentionsDeduped, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
 				}
 			}
 		}
 	}
 
 	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
-		return proposed, refsRejected, fmt.Errorf("advancing ideas floors: %w", err)
+		return proposed, refsRejected, mentionsDeduped, fmt.Errorf("advancing ideas floors: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return proposed, refsRejected, fmt.Errorf("committing consolidate apply: %w", err)
+		return proposed, refsRejected, mentionsDeduped, fmt.Errorf("committing consolidate apply: %w", err)
 	}
-	return proposed, refsRejected, nil
+	return proposed, refsRejected, mentionsDeduped, nil
 }

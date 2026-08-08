@@ -112,6 +112,42 @@ func (db *DB) InsertIdeaMentionTx(tx *sql.Tx, m IdeaMention) error {
 	return nil
 }
 
+// IdeaMentionRefsKnownTx looks up which of the given refs already have a
+// mention recorded under source, returning a ref -> owning idea_id map for
+// the ones found (a ref absent from the result is genuinely new). Backed by
+// idx_idea_mentions_ref (migration 00051). Empty refs short-circuits to an
+// empty map without touching the database — the ref-level dedup check
+// applyConsolidateOps runs before every insert (IDEA-05).
+func (db *DB) IdeaMentionRefsKnownTx(tx *sql.Tx, source string, refs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(refs))
+	args := make([]any, 0, len(refs)+1)
+	args = append(args, source)
+	for i, ref := range refs {
+		placeholders[i] = "?"
+		args = append(args, ref)
+	}
+	rows, err := tx.Query(`SELECT ref, idea_id FROM idea_mentions WHERE source = ? AND ref IN (`+
+		strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("looking up known idea mention refs: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ref string
+		var ideaID int64
+		if err := rows.Scan(&ref, &ideaID); err != nil {
+			return nil, fmt.Errorf("scanning known idea mention ref: %w", err)
+		}
+		out[ref] = ideaID
+	}
+	return out, rows.Err()
+}
+
 // SetIdeaNeedsReviewTx flags an idea for owner review with a reason.
 func (db *DB) SetIdeaNeedsReviewTx(tx *sql.Tx, id int64, reason string) error {
 	_, err := tx.Exec(`UPDATE ideas SET needs_review = 1, review_reason = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,

@@ -1,10 +1,12 @@
 package ideas
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -94,6 +96,19 @@ func seedIdeaRow(t *testing.T, d *db.DB, idea db.Idea) int64 {
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit())
 	return id
+}
+
+// seedIdeaMention records a mention directly (bypassing the consolidator) —
+// used by the IDEA-05 tests to put a ref already "mined" into idea_mentions
+// before the consolidator ever sees it.
+func seedIdeaMention(t *testing.T, d *db.DB, ideaID int64, source, ref string) {
+	t.Helper()
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.InsertIdeaMentionTx(tx, db.IdeaMention{
+		IdeaID: ideaID, Source: source, Ref: ref, Quote: "q", Author: "Ann", SaidAt: "2026-08-01T00:00:00Z",
+	}))
+	require.NoError(t, tx.Commit())
 }
 
 // TestConsolidate_NewIdea_ValidRef covers case 1: a new_idea op citing a ref
@@ -461,4 +476,139 @@ func TestRun_CallsConsolidate_ReturnsProposedCount(t *testing.T) {
 	proposed, err := p.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, proposed)
+}
+
+// --- IDEA-05: re-mining idempotency (ref-level dedup) ----------------------
+
+// TestIdeas05_RerunSameWindow_NoDuplicates re-mines the SAME material twice —
+// the backfill scenario, simulated here by rewinding the digest floor back to
+// zero after the first run so gatherConsolidateInput re-reads the same topic.
+// The second run must create nothing new: the op's only mention cites a ref
+// already recorded on the idea the first run minted, so the whole op is
+// dropped (IDEA-02's "nothing survived" path, now also reachable via
+// IDEA-05) and the dedup count is surfaced on the run's log line.
+func TestIdeas05_RerunSameWindow_NoDuplicates(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	topicID := seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "we should try X", By: "Ann", MessageTS: "1.1"}}, nil)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
+			"mentions":[{"source":"slack","ref":"C1|1.1","quote":"we should try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+	}}
+	var logBuf bytes.Buffer
+	p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
+
+	proposed, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed)
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	require.Len(t, ideas, 1)
+	mentions, err := d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1)
+
+	// Rewind the floor — the backfill precedent — so the same topic is
+	// re-read on the next run.
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.SetIdeasFloorsTx(tx, 0, 0, 0))
+	require.NoError(t, tx.Commit())
+
+	logBuf.Reset()
+	proposed, err = p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed, "the ref was already mined — no new idea")
+	assert.Equal(t, 2, gen.calls)
+
+	ideas, err = d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	assert.Len(t, ideas, 1, "no duplicate idea")
+	mentions, err = d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	assert.Len(t, mentions, 1, "no duplicate mention")
+
+	dFloor, _, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Equal(t, topicID, dFloor, "the floor still advances — the rerun still fully consumed the topic")
+
+	assert.Contains(t, logBuf.String(), "deduped 1 already-mined mention", "mentionsDeduped must be surfaced on the run's log line")
+}
+
+// TestIdeas05_AttachKnownRef_InsertsNothing covers layer 1's attach_mention
+// half of the contract: attaching a ref that's already recorded on the
+// target idea inserts nothing. It also pins the IDEA-05 x IDEA-04
+// intersection from the design doc: since the dedup drop is not-new-evidence,
+// it must NOT resurface a rejected/dropped/not_now verdict via needs_review.
+func TestIdeas05_AttachKnownRef_InsertsNothing(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	ideaID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Old idea", Essence: "e", Status: "rejected"})
+	seedIdeaMention(t, d, ideaID, "jira", "WT-9") // already mined by an earlier cycle
+	seedStreamDigestIdeas(t, d, "jira", 1, []streamTopic{{
+		Title: "t", Summary: "s",
+		Ideas: []streamCandidate{{Text: "existing idea again", Author: "Bob", Ref: "WT-9"}},
+	}})
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"source":"jira","ref":"WT-9","quote":"q","author":"Bob","said_at":"2026-08-02T00:00:00Z"}}]}`, ideaID), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+
+	mentions, err := d.ListIdeaMentions(ideaID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1, "the already-known ref must not be inserted a second time")
+
+	idea, err := d.GetIdea(ideaID)
+	require.NoError(t, err)
+	assert.Equal(t, "rejected", idea.Status)
+	assert.False(t, idea.NeedsReview, "a deduped attach carries no new evidence, so it must not resurface the verdict (IDEA-05 x IDEA-04)")
+	assert.Empty(t, idea.ReviewReason)
+}
+
+// TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly covers layer 1's
+// new_idea/new_decision half: an op citing two mentions, one already mined
+// (against a DIFFERENT idea, simulating a stale AI clustering decision) and
+// one genuinely new, still creates the idea but keeps only the unknown ref —
+// the known one is dropped, not duplicated.
+func TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	otherID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Other", Essence: "e", Status: "active"})
+	seedIdeaMention(t, d, otherID, "slack", "C1|1.1") // already mined, elsewhere in the registry
+
+	seedDigestTopicIdeas(t, d, "C1", "general", []digest.IdeaCandidate{
+		{Text: "we should try X", By: "Ann", MessageTS: "1.1"},
+		{Text: "we should try Y", By: "Ann", MessageTS: "2.2"},
+	}, nil)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[{"op":"new_idea","title":"Try X and Y","essence":"e","mentions":[
+			{"source":"slack","ref":"C1|1.1","quote":"we should try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"},
+			{"source":"slack","ref":"C1|2.2","quote":"we should try Y","author":"Ann","said_at":"2026-08-01T00:00:00Z"}
+		]}]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed, "the op still creates an idea — it wasn't ALL known")
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{Status: "proposed"})
+	require.NoError(t, err)
+	require.Len(t, ideas, 1)
+	mentions, err := d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1, "only the unknown ref survives")
+	assert.Equal(t, "C1|2.2", mentions[0].Ref)
+
+	// The known ref was not duplicated onto the new idea either.
+	otherMentions, err := d.ListIdeaMentions(otherID)
+	require.NoError(t, err)
+	assert.Len(t, otherMentions, 1)
 }

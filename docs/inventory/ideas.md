@@ -112,6 +112,26 @@ The flag must always be *clearable*: every Swift owner action — `setStatus`, `
 
 **Locked since:** 2026-08-07
 
+## IDEA-05 — Re-mining idempotency (ref-level dedup)
+
+**Status:** Enforced
+
+**Observable:** Re-mining any already-mined material never duplicates registry state. Mechanically: (1) an `attach_mention` whose ref already exists on the target idea inserts nothing; (2) a `new_idea`/`new_decision` op whose mention refs ALL already exist anywhere in `idea_mentions` creates nothing (the material was already mined — `mentions_deduped` counts it); a partially-known op keeps only its unknown refs. The check runs inside the apply transaction against `idea_mentions.ref` + source.
+
+The check is a single indexed lookup per mention (`db.IdeaMentionRefsKnownTx`, backed by `idx_idea_mentions_ref ON idea_mentions(source, ref)`, migration 00051) inside `applyConsolidateOps` — it protects the everyday pipeline too, not only the backfill re-mining path that motivated it, since floor manipulation of any kind can no longer double-mint. `mentionsDeduped` is threaded up through `applyConsolidateOps`'s return and surfaced on the consolidator's log line next to `refs_rejected`.
+
+**IDEA-05 x IDEA-04:** when an `attach_mention` is dropped because its ref is already recorded on the target idea, `needs_review` must NOT be set even if the target's status is `not_now`/`dropped`/`rejected` — a deduped attach carries no new evidence, so it must not resurface a verdict the owner already made. IDEA-04's needs_review flag is reserved for a mention that actually lands.
+
+**Why locked:** The backfill feature (spec `docs/superpowers/specs/2026-08-08-ideas-backfill-design.md`) deliberately re-mines material the ordinary pipeline may have already seen — a lowered floor, a re-run over an overlapping window, or a retried cycle after a crash. Without ref-level dedup, any of those would silently double-mint ideas/decisions or duplicate mentions, corrupting the registry's chronology and counts.
+
+**Test guards:**
+- `internal/ideas/consolidate_test.go::TestIdeas05_RerunSameWindow_NoDuplicates`
+- `internal/ideas/consolidate_test.go::TestIdeas05_AttachKnownRef_InsertsNothing`
+- `internal/ideas/consolidate_test.go::TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly`
+
+**Locked since:** 2026-08-08
+
 ## Changelog
 
+- 2026-08-08: added IDEA-05 (re-mining idempotency, ref-level dedup), Enforced. Introduced by the Ideas Backfill feature (spec `docs/superpowers/specs/2026-08-08-ideas-backfill-design.md`) ahead of the backfill engine itself, so the ordinary consolidator pipeline is already protected against double-minting before backfill starts re-mining old windows.
 - 2026-08-07: file created with 4 contracts (IDEA-01..04), all Enforced. Introduced by the Ideas & Decisions Registry feature (spec `docs/superpowers/specs/2026-08-07-ideas-registry-design.md`), a two-stage pipeline that mines ideas/decisions/notes out of Slack, meeting transcripts, Gmail, and Jira (incl. comments) into a triaged registry with its own Desktop tab.
