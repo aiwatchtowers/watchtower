@@ -158,6 +158,45 @@ final class VoicePrintMatcherTests: XCTestCase {
         XCTAssertTrue(VoicePrintMatcher.scoped(prints, attendees: attendees).isEmpty)
     }
 
+    func testScopedAlwaysKeepsOwnerPrints() {
+        // The owner is present at their own recording by definition (it is
+        // their mic), even when the attendee list does not carry their email
+        // (organizer-only entry, group alias, CalDAV/ICS event).
+        let prints = [
+            makePrint("owner@x.com", "owner@x.com", [1, 0]),
+            makePrint("stranger@y.com", "stranger@y.com", [0, 1])
+        ]
+        let attendees = [makeAttendee(email: "alice@z.com", name: "Alice")]
+        let scoped = VoicePrintMatcher.scoped(prints, attendees: attendees, ownerEmails: ["owner@x.com"])
+        XCTAssertEqual(scoped.map(\.personKey), ["owner@x.com"],
+                       "the owner's print must survive scoping; the stranger's must not")
+    }
+
+    func testScopedNormalizesPersonKeyLikeDisplayName() {
+        // Trim + case-fold must be symmetric on both sides of the compare —
+        // the print writer (SpeakerNaming.personKey) already trims+lowercases,
+        // and the reader must not silently depend on that.
+        let prints = [makePrint(" Alice@X.com ", "Alice", [1, 0])]
+        let attendees = [makeAttendee(email: "alice@x.com", name: "")]
+        XCTAssertEqual(VoicePrintMatcher.scoped(prints, attendees: attendees).count, 1)
+    }
+
+    func testIsOwnerPrintMatchesNormalizedEmailKey() {
+        XCTAssertTrue(VoicePrintMatcher.isOwnerPrint(
+            makePrint(" Owner@X.com ", "Owner", [1, 0]), ownerEmails: ["owner@x.com"]))
+        // Normalization is symmetric — a loader that forgets to lowercase
+        // must not silently kill owner detection.
+        XCTAssertTrue(VoicePrintMatcher.isOwnerPrint(
+            makePrint("owner@x.com", "Owner", [1, 0]), ownerEmails: ["Owner@X.com "]))
+        // A name-keyed print (ad-hoc/free-text rename mint path) is NOT
+        // recognizable as the owner's — callers must then disarm the owner
+        // logic rather than treat the owner as a stranger.
+        XCTAssertFalse(VoicePrintMatcher.isOwnerPrint(
+            makePrint("vadym", "vadym", [1, 0]), ownerEmails: ["owner@x.com"]))
+        XCTAssertFalse(VoicePrintMatcher.isOwnerPrint(
+            makePrint("owner@x.com", "Owner", [1, 0]), ownerEmails: []))
+    }
+
     // MARK: - SpeakerNaming
 
     func testIsUnnamedMatchesDefaultLabelsOnly() {

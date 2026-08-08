@@ -1042,7 +1042,10 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true,
-        voicePrints: [VoicePrint] = []
+        voicePrints: [VoicePrint] = [],
+        eventID: String? = nil,
+        attendees: [EventAttendee]? = nil,
+        ownerEmails: Set<String>? = nil
     ) async throws -> DiarizationFlowResult {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
@@ -1059,11 +1062,15 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
         // Always wire a loader (production has one once the DB opens); an
-        // empty array behaves exactly like no voice-print database.
+        // empty array behaves exactly like no voice-print database. The
+        // attendee/owner loaders stay nil unless a test supplies them —
+        // mirroring an install with no DB-backed identity.
         center.voicePrintsLoader = { voicePrints }
+        if let attendees { center.attendeesLoader = { _ in attendees } }
+        if let ownerEmails { center.ownerEmailsLoader = { ownerEmails } }
         var config = threeWindowConfig()
         config.diarization = rolesEnabled
-        await center.startRecording(eventID: nil, title: "Roles")
+        await center.startRecording(eventID: eventID, title: "Roles")
         await center.stopAndProcess(config: config)
         return DiarizationFlowResult(savedText: runner.savedTranscripts.first,
                                      savedSegments: runner.savedSegments.first.flatMap { $0 },
@@ -1222,6 +1229,103 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
                        "the owner's cluster stays «Я» even when a voice print matches it")
     }
 
+    // MARK: - Owner identity vs «Я» (Center-level wiring)
+
+    /// The blocker scenario from review: the owner's own print is NAME-keyed
+    /// (minted by an ad-hoc/free-text rename), so it cannot be recognized as
+    /// the owner's. Owner identity alone must NOT arm the veto — otherwise
+    /// the owner's mic-dominant cluster carries a voice name, is "confidently
+    /// someone else", and «Я» disappears from every transcript.
+    func testNameKeyedOwnerPrintDoesNotArmVetoAndSelfSurvives() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("vadym", "vadym", [1, 0])], // name-keyed: NOT recognizable as owner
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ",
+                       "with no owner-identified print in the pool «Я» must keep its legacy absolute priority")
+    }
+
+    /// End-to-end tie-break: both clusters mic-dominant (meeting room), the
+    /// owner's EMAIL-keyed print matches the later/quieter one — «Я» goes to
+    /// the owner-matched cluster, not the earliest.
+    func testOwnerEmailKeyedPrintWinsSelfTieBreakEndToEnd() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        // Every bin mic-dominated → both clusters are «Я» candidates at share
+        // 1.0; legacy would give «Я» to the earliest (A).
+        try "0.500000 0.010000\n0.500000 0.010000\n0.500000 0.010000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("owner@x.com", "owner@x.com", [0, 1])],
+            ownerEmails: ["Owner@X.com "] // case/trim variance must not break the compare
+        ).savedText
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Я] ответ",
+                       "the owner-voice-matched cluster must win «Я» over the earlier equally-dominant one")
+    }
+
+    /// Event-linked recording: the eventID reaches the attendee loader
+    /// (plumb-through), a non-attendee stranger's print is scoped out, and
+    /// the owner's print survives scoping even though the owner is NOT on
+    /// the attendee list (organizer-only/alias case).
+    func testEventScopingDropsStrangerButKeepsOwnerPrint() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.500000 0.010000\n0.500000 0.010000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                voicePrint("stranger@other.com", "Чужой", [1, 0]), // not an attendee → scoped out
+                voicePrint("owner@x.com", "owner@x.com", [0, 1])   // owner: survives scoping
+            ],
+            eventID: "evt-1",
+            attendees: [EventAttendee(email: "alice@corp.com", displayName: "Alice",
+                                      responseStatus: "accepted", slackUserID: "")],
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Я] ответ",
+                       "stranger must not be named (scoped out); owner print must survive scoping and win «Я»")
+    }
+
     /// Diarizers without embeddings (non-FluidAudio) fully degrade: no voice
     /// names, no speakers file — byte-identical to the pre-identity behavior.
     func testNilEmbeddingsDegradeToNumberedSpeakers() async throws {
@@ -1269,11 +1373,27 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
         let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша", "E": "Егор"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
 
         XCTAssertNil(filtered["C"], "a cluster holding 50% of speech in a 5-cluster meeting must lose its voice name")
         XCTAssertEqual(filtered, ["A": "Аня", "B": "Борис", "D": "Даша", "E": "Егор"],
                        "only the dominant cluster is suppressed")
+    }
+
+    /// A mega-suppressed cluster loses its OWNER status along with its name —
+    /// a merged blob must not win the «Я» tie-break as "the owner". (By
+    /// design it may still win «Я» by bare mic share: the legacy under-split
+    /// behavior, see filterMegaClusters' doc.)
+    func testMegaClusterLosesOwnerStatusWithItsName() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let names = ["C": "owner@x.com", "D": "Даша"]
+
+        let result = MeetingRecorderCenter.filterMegaClusters(
+            voiceNames: names, ownerClusters: ["C"], speakers: segments)
+
+        XCTAssertEqual(result.owners, [],
+                       "the suppressed blob must leave the owner set, but the set stays non-nil (identity still known)")
+        XCTAssertEqual(result.names, ["D": "Даша"])
     }
 
     /// The 1:1 case: the counterparty legitimately owns most of the speech, so
@@ -1282,7 +1402,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let segments = megaClusterSegments(clusters: 2, dominant: "B", share: 0.6)
         let names = ["A": "Я", "B": "Саша"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
 
         XCTAssertEqual(filtered, names, "two clusters are below the min-clusters gate — a 60% counterparty is normal")
     }
@@ -1296,7 +1416,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         }
         let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша"]
 
-        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments)
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments).names
 
         XCTAssertEqual(filtered, names, "four clusters at ~25% each are a plausible real split")
     }

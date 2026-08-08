@@ -15,6 +15,7 @@ final class CalendarEventRowViewTests: XCTestCase {
         title: String = "Sync",
         location: String = "",
         attendeesJSON: String = "[]",
+        organizerEmail: String = "",
         startTime: String = "2099-01-01T10:00:00Z",
         endTime: String = "2099-01-01T11:00:00Z"
     ) -> CalendarEvent {
@@ -26,7 +27,7 @@ final class CalendarEventRowViewTests: XCTestCase {
             "location": location,
             "start_time": startTime,
             "end_time": endTime,
-            "organizer_email": "",
+            "organizer_email": organizerEmail,
             "attendees": attendeesJSON,
             "is_recurring": 0,
             "is_all_day": 0,
@@ -38,6 +39,28 @@ final class CalendarEventRowViewTests: XCTestCase {
             "updated_at": ""
         ]
         return CalendarEvent(row: row)
+    }
+
+    // MARK: - attendeesIncludingOrganizer
+
+    /// The organizer lives in its own column, never in the attendees JSON —
+    /// the identity union must add them (with an empty display name).
+    func testAttendeesIncludingOrganizerAddsNonGuestOrganizer() {
+        let event = makeEvent(
+            attendeesJSON: #"[{"email":"alice@corp.com","display_name":"Alice","response_status":"accepted","slack_user_id":""}]"#,
+            organizerEmail: "boss@corp.com")
+        XCTAssertEqual(event.attendeesIncludingOrganizer.map(\.email),
+                       ["alice@corp.com", "boss@corp.com"])
+    }
+
+    /// An organizer already on the guest list must not be duplicated
+    /// (case-insensitive), and an empty organizer adds nothing.
+    func testAttendeesIncludingOrganizerSkipsDuplicateAndEmpty() {
+        let event = makeEvent(
+            attendeesJSON: #"[{"email":"boss@corp.com","display_name":"Boss","response_status":"accepted","slack_user_id":""}]"#,
+            organizerEmail: "Boss@Corp.com")
+        XCTAssertEqual(event.attendeesIncludingOrganizer.map(\.email), ["boss@corp.com"])
+        XCTAssertEqual(makeEvent(attendeesJSON: "[]").attendeesIncludingOrganizer, [])
     }
 
     // MARK: - Tests

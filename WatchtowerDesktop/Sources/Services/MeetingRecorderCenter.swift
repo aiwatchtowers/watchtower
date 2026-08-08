@@ -122,17 +122,18 @@ final class MeetingRecorderCenter {
     /// throw: voice naming is a progressive enhancement like roles themselves.
     var voicePrintsLoader: (@Sendable () async -> [VoicePrint])?
 
-    /// Reads an event's attendees to scope the voice-print pool for an
-    /// event-linked recording (`VoicePrintMatcher.scoped`). Same contract as
-    /// `voicePrintsLoader`: set by AppState, nil or a failure returns [] —
-    /// which degrades to today's global matching, never to no matching.
+    /// Reads an event's attendee identities (attendees + organizer — the
+    /// organizer is NOT in the attendees JSON) to scope the voice-print pool
+    /// for an event-linked recording (`VoicePrintMatcher.scoped`). Same
+    /// contract as `voicePrintsLoader`: set by AppState, nil or a failure
+    /// returns [] — which degrades to today's global matching, never to no
+    /// matching.
     var attendeesLoader: (@Sendable (String) async -> [EventAttendee])?
 
-    /// The owner's email identities (connected `google_accounts`, lowercased)
-    /// — they mark which voice prints are the OWNER's, feeding the «Я»
-    /// tie-break/veto in `RoleAssigner`. nil loader or an empty set means
-    /// owner identity unknown: «Я» falls back to its legacy absolute
-    /// mic-dominance priority (never a degradation to no-«Я»).
+    /// The owner's email identities (`google_accounts` emails, lowercased) —
+    /// they mark which voice prints are the OWNER's for the «Я»
+    /// tie-break/veto (semantics: `RoleAssigner.clusterLabels`'s doc). nil
+    /// loader or an empty set = owner identity unknown = legacy «Я» behavior.
     var ownerEmailsLoader: (@Sendable () async -> Set<String>)?
 
     /// `.waiting` = a recording is capturing but a job still owns the engine
@@ -415,11 +416,10 @@ final class MeetingRecorderCenter {
             // One dict for both RoleAssigner calls below, so the mega-cluster
             // suppression cannot apply to the transcript labels but not to the
             // embedding keys (or vice versa).
-            let match = await matchVoiceNames(clusterEmbeddings: clusterEmbeddings, eventID: eventID)
-            let voiceNames = Self.filterMegaClusters(voiceNames: match.names, speakers: speakers)
-            // A mega-suppressed cluster loses its owner status with its name —
-            // a merged blob must not win the «Я» tie-break either.
-            let ownerClusters = match.ownerClusters.map { $0.filter { voiceNames[$0] != nil } }
+            let (rawNames, rawOwners) = await matchVoiceNames(
+                clusterEmbeddings: clusterEmbeddings, eventID: eventID)
+            let (voiceNames, ownerClusters) = Self.filterMegaClusters(
+                voiceNames: rawNames, ownerClusters: rawOwners, speakers: speakers)
             if let utterances = RoleAssigner.assign(
                 segments: output.segments, speakers: speakers,
                 activity: activity, voiceNames: voiceNames, ownerClusters: ownerClusters
@@ -460,37 +460,42 @@ final class MeetingRecorderCenter {
     /// For an event-linked recording the pool is first scoped to the event's
     /// attendees (`VoicePrintMatcher.scoped`) so a voice-alike from another
     /// meeting cannot claim a cluster; ad-hoc recordings (or an attendee-load
-    /// failure) keep the global pool. Empty when there is nothing to match
-    /// against — no loader (no DB), empty database, or no embeddings — which
-    /// degrades to plain "Speaker N" labels.
+    /// failure) keep the global pool, and the OWNER's prints are never scoped
+    /// out. Empty when there is nothing to match against — no loader (no DB),
+    /// empty database, or no embeddings — which degrades to plain "Speaker N"
+    /// labels.
     ///
-    /// `ownerClusters` marks the matched clusters whose winning print belongs
-    /// to the OWNER (print `personKey` ∈ connected Google account emails) —
-    /// RoleAssigner uses it for the «Я» tie-break/veto. nil when owner
-    /// identity is unavailable (no loader / no accounts): «Я» then keeps its
-    /// legacy absolute mic-dominance priority.
+    /// `ownerClusters` marks the matched clusters whose winning print is the
+    /// OWNER's (see `VoicePrintMatcher.isOwnerPrint`; semantics in
+    /// `RoleAssigner.clusterLabels`' doc). It is non-nil ONLY when the pool
+    /// actually holds an owner-identified print — owner identity without an
+    /// owner print (typical for a name-keyed print minted by an ad-hoc
+    /// rename) must NOT arm the veto, or the owner's own unrecognizable
+    /// print would strip «Я» from every transcript.
     private func matchVoiceNames(
         clusterEmbeddings: [String: [Float]], eventID: String?
     ) async -> (names: [String: String], ownerClusters: Set<String>?) {
         guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return ([:], nil) }
-        var prints = await voicePrintsLoader()
-        if let eventID, let attendeesLoader {
-            prints = VoicePrintMatcher.scoped(prints, attendees: await attendeesLoader(eventID))
-        }
+        let allPrints = await voicePrintsLoader()
+        guard !allPrints.isEmpty else { return ([:], nil) }
         let ownerEmails = await ownerEmailsLoader?() ?? []
-        let ownerKnown = !ownerEmails.isEmpty
-        guard !prints.isEmpty else { return ([:], ownerKnown ? [] : nil) }
+        var prints = allPrints
+        if let eventID, let attendeesLoader {
+            prints = VoicePrintMatcher.scoped(allPrints, attendees: await attendeesLoader(eventID),
+                                              ownerEmails: ownerEmails)
+        }
+        let ownerArmed = prints.contains { VoicePrintMatcher.isOwnerPrint($0, ownerEmails: ownerEmails) }
         var names: [String: String] = [:]
         var ownerClusters: Set<String> = []
         for (cluster, embedding) in clusterEmbeddings {
             if let match = VoicePrintMatcher.bestMatch(embedding: embedding, prints: prints) {
                 names[cluster] = match.displayName
-                if ownerEmails.contains(match.personKey.lowercased()) {
+                if VoicePrintMatcher.isOwnerPrint(match, ownerEmails: ownerEmails) {
                     ownerClusters.insert(cluster)
                 }
             }
         }
-        return (names, ownerKnown ? ownerClusters : nil)
+        return (names, ownerArmed ? ownerClusters : nil)
     }
 
     /// Share of total diarized speech above which a cluster is read as a
@@ -511,14 +516,26 @@ final class MeetingRecorderCenter {
     /// in multi-speaker meetings; see `megaClusterShareThreshold` /
     /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
     /// without driving the whole Center).
-    static func filterMegaClusters(voiceNames: [String: String],
-                                   speakers: [SpeakerSegment]) -> [String: String] {
+    ///
+    /// A suppressed cluster also loses its owner status (`ownerClusters`) — a
+    /// merged blob must not win the «Я» tie-break as "the owner". Deliberate
+    /// residue: with no name left the blob cannot be vetoed either, so it MAY
+    /// still win «Я» by bare mic share — the legacy under-split behavior,
+    /// kept because a wrong «Я» heuristic beats guessing a person's name for
+    /// a blob of several people.
+    static func filterMegaClusters(
+        voiceNames: [String: String],
+        ownerClusters: Set<String>? = nil,
+        speakers: [SpeakerSegment]
+    ) -> (names: [String: String], owners: Set<String>?) {
         var speech: [String: Double] = [:]
         for s in speakers {
             speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
         }
         let total = speech.values.reduce(0, +)
-        guard speech.count >= megaClusterMinClusters, total > 0 else { return voiceNames }
+        guard speech.count >= megaClusterMinClusters, total > 0 else {
+            return (voiceNames, ownerClusters)
+        }
         var filtered = voiceNames
         for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
             let share = duration / total
@@ -530,7 +547,7 @@ final class MeetingRecorderCenter {
                   + "\"\(name)\" (likely diarization under-split)")
             filtered[cluster] = nil
         }
-        return filtered
+        return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
     }
 
     // MARK: - Capture

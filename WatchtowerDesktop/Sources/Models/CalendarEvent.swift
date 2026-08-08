@@ -116,6 +116,22 @@ struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
     }
 
+    /// Everyone identified with the event: attendees plus the organizer —
+    /// the sync stores the organizer in its own column, never in the
+    /// attendees JSON, and an organizer-not-guest event (Zoom/Calendly, a
+    /// self-removed organizer) would otherwise lose them. Used to scope
+    /// voice-print matching; the organizer entry is skipped when already
+    /// listed as an attendee (case-insensitive email compare).
+    var attendeesIncludingOrganizer: [EventAttendee] {
+        let attendees = parsedAttendees
+        let organizer = organizerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !organizer.isEmpty,
+              !attendees.contains(where: { $0.email.caseInsensitiveCompare(organizer) == .orderedSame })
+        else { return attendees }
+        return attendees + [EventAttendee(
+            email: organizer, displayName: "", responseStatus: "", slackUserID: "")]
+    }
+
     // MARK: - Conference Link
 
     /// The event's meeting link (Meet/Zoom/Teams/Webex) as a URL, or nil when

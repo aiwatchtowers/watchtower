@@ -264,6 +264,49 @@ final class RoleAssignerTests: XCTestCase {
         XCTAssertEqual(text, "[Speaker 1] привет\n[Я] ответ")
     }
 
+    /// The legacy (nil ownerClusters) path over the SAME multi-candidate
+    /// shape: max share wins, byte-identical to pre-refactor behavior — pins
+    /// the threshold-then-argmax rewrite of detectSelfCluster.
+    func testLegacyNilPathKeepsMaxShareWinnerAcrossMultipleCandidates() {
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0.5, selfTo: 5)
+        )
+        XCTAssertEqual(text, "[Speaker 1] привет\n[Я] ответ")
+    }
+
+    /// Owner split across clusters by the diarizer: with several
+    /// owner-matched mic-dominant candidates the max-share one wins «Я».
+    func testMultipleOwnerCandidatesMaxShareWins() {
+        let labels = RoleAssigner.clusterLabels(
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0.5, selfTo: 5), // A: 0.8, B: 1.0
+            voiceNames: ["A": "vadym@x.com", "B": "vadym@x.com"],
+            ownerClusters: ["A", "B"]
+        )
+        XCTAssertEqual(labels["B"], "Я")
+        XCTAssertEqual(labels["A"], "vadym@x.com")
+    }
+
+    /// Pinned design decision (owner-reviewed): an owner voice match BELOW
+    /// the mic-dominance threshold is not a «Я» candidate — the veto on a
+    /// colleague-matched winner then leaves the transcript with no «Я» at
+    /// all, which the owner ranked better than a wrong «Я».
+    func testOwnerBelowThresholdDoesNotRescueVetoedWinner() {
+        // A mic-dominant on [0, 2.5) only → cluster B (owner-matched) has
+        // share 0 (below threshold); A is the sole candidate and matches
+        // Alice → veto → nobody is «Я».
+        let text = RoleAssigner.render(
+            segments: [seg("привет", 0, 2), seg("ответ", 3, 5)],
+            speakers: [spk("A", 0, 2.5), spk("B", 2.5, 5)],
+            activity: activity(duration: 5, selfFrom: 0, selfTo: 2.5),
+            voiceNames: ["A": "Alice", "B": "vadym@x.com"],
+            ownerClusters: ["B"]
+        )
+        XCTAssertEqual(text, "[Alice] привет\n[vadym@x.com] ответ")
+    }
+
     /// Numbering stays dense over the remaining unnamed clusters.
     func testNumberingSkipsVoiceMatchedClusters() {
         let text = RoleAssigner.render(

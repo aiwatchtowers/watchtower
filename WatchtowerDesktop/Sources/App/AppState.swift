@@ -286,9 +286,16 @@ final class AppState {
         }
         meetingRecorderCenter.attendeesLoader = { eventID in
             do {
-                return try await dbPool.read {
-                    try CalendarQueries.fetchEvent($0, id: eventID)?.parsedAttendees ?? []
+                let event = try await dbPool.read { try CalendarQueries.fetchEvent($0, id: eventID) }
+                guard let event else {
+                    // Delayed jobs (FIFO backlog, crash recovery, sidecar
+                    // retry) can outlive the ~24h event retention — the
+                    // silent fall to the global pool must not be
+                    // indistinguishable from ad-hoc.
+                    print("[AppState] event \(eventID) not found, voice matching stays global")
+                    return []
                 }
+                return event.attendeesIncludingOrganizer
             } catch {
                 print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
                 return []
@@ -296,6 +303,11 @@ final class AppState {
         }
         meetingRecorderCenter.ownerEmailsLoader = {
             do {
+                // Deliberately unfiltered by status: a revoked/removed Google
+                // account does not change who owns the machine. IMAP
+                // (email_accounts) identities are deliberately excluded —
+                // voice prints are keyed by attendee emails, which come from
+                // Google Calendar. Owner-reviewed 2026-08-08.
                 let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
                 return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
             } catch {

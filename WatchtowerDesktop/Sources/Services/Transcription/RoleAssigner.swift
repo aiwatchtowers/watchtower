@@ -81,8 +81,8 @@ enum RoleAssigner {
     /// Structured form of `render`: the merged same-speaker utterances with
     /// their time ranges, ready to persist as `segments_json`. nil under the
     /// same conditions as `render`. `voiceNames` (cluster ID → display name,
-    /// from voice-print matching) renames matched clusters; the mic-dominated
-    /// «Я» cluster always keeps its label (see `clusterLabels`).
+    /// from voice-print matching) renames matched clusters; how «Я» and
+    /// voice names interact is defined in `clusterLabels`' doc.
     static func assign(
         segments: [TranscriptSegment],
         speakers: [SpeakerSegment],
@@ -158,21 +158,14 @@ enum RoleAssigner {
     /// machine's owner. nil without an activity sidecar or when no cluster
     /// clears the threshold (then every speaker stays a numbered stranger).
     /// Ties break toward the earliest cluster in `order` for determinism.
-    ///
-    /// With owner identity available (`ownerClusters` non-nil) the mic
-    /// heuristic stops being absolute — in a meeting room every voice is
-    /// mic-dominant, so the loudest colleague can out-share the owner:
-    /// among the clusters clearing the threshold an owner-voice-matched one
-    /// wins over a louder unmatched one, and a winner confidently matched to
-    /// a colleague instead of the owner yields no «Я» at all (it renders its
-    /// voice name; mislabeling colleagues' words as the owner's is worse
-    /// than a missing «Я»).
+    /// The «Я» vs owner-voice semantics (`ownerClusters` tri-state) are
+    /// defined in `clusterLabels`' doc.
     private static func detectSelfCluster(
         speakers: [SpeakerSegment],
         activity: MicActivity?,
         order: [String],
-        voiceNames: [String: String] = [:],
-        ownerClusters: Set<String>? = nil
+        voiceNames: [String: String],
+        ownerClusters: Set<String>?
     ) -> String? {
         guard let activity else { return nil }
         var stats: [String: (dominated: Int, total: Int)] = [:]
@@ -196,21 +189,27 @@ enum RoleAssigner {
             let share = Double(entry.dominated) / Double(entry.total)
             if share > selfShareThreshold { candidates.append((id, share)) }
         }
-        guard !candidates.isEmpty else { return nil }
-        if let ownerClusters {
-            // Tie-break: an owner-voice-matched candidate beats a louder one.
-            // Several owner matches (owner split across clusters) → max share.
-            if let owner = candidates.filter({ ownerClusters.contains($0.id) })
-                .max(by: { $0.share < $1.share }) {
-                return owner.id
-            }
+        // Max share; strict > keeps the earliest on ties (candidates are in
+        // `order`).
+        func loudest(_ xs: [(id: String, share: Double)]) -> String? {
+            var best: (id: String, share: Double)?
+            for c in xs where c.share > (best?.share ?? 0) { best = c }
+            return best?.id
         }
-        // strict >: earliest in `order` wins ties (candidates keep that order)
-        var best = candidates[0]
-        for c in candidates.dropFirst() where c.share > best.share { best = c }
-        if ownerClusters != nil, let name = voiceNames[best.id], !name.isEmpty {
-            return nil // veto: the winner is confidently someone else
+        guard let ownerClusters else { return loudest(candidates) }
+        // Tie-break: an owner-voice-matched candidate beats a louder one;
+        // several owner matches (owner split across clusters) → max share.
+        if let owner = loudest(candidates.filter { ownerClusters.contains($0.id) }) {
+            return owner
         }
-        return best.id
+        guard let best = loudest(candidates) else { return nil }
+        if let name = voiceNames[best], !name.isEmpty {
+            // The veto silently removing «Я» would look like mic detection
+            // randomly stopped working (the mega-cluster suppression
+            // precedent) — say why.
+            print("[RoleAssigner] «Я» veto: mic-dominant cluster \(best) confidently matches \"\(name)\", not the owner — no «Я» in this transcript")
+            return nil
+        }
+        return best
     }
 }
