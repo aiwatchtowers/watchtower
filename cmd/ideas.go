@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -141,6 +144,13 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A Ctrl-C/SIGTERM mid-run must still hit runIdeasBackfill's deferred
+	// lock-release-and-floor-restore (and, for the incremental path, let an
+	// in-flight AI call unwind cleanly) instead of the process dying with
+	// the lock or a lowered floor left behind (cmd/sync.go:271 precedent,
+	// GB8). Covers both paths below, since they share this same ctx.
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	if fromStr == "" {
 		return runIdeasMineIncremental(ctx, pipe, out)
