@@ -191,7 +191,7 @@ func TestIdeas_ListIdeaMentionsOrderedBySaidAt(t *testing.T) {
 	}
 }
 
-func TestIdeas_SetIdeaNeedsReviewTx(t *testing.T) {
+func TestIdeas04_SetIdeaNeedsReviewTx(t *testing.T) {
 	d := openTestDB(t)
 
 	id := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Ambiguous idea", Essence: "e", Status: "proposed"})
@@ -643,4 +643,93 @@ func mustCreateTranscript(t *testing.T, d *DB, eventID *string, summaryJSON stri
 
 func iso(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
+}
+
+// TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues covers the
+// cap-cuts-inside-a-timestamp case. The ideas Jira pre-digest advances its
+// floor to the highest updated_at it saw and reloads with a strict >, so an
+// issue sharing that timestamp but left outside the LIMIT would be skipped
+// forever. More same-timestamp issues than the cap must therefore still all
+// arrive — across at most two runs, with nothing lost in between.
+func TestIdeas01_JiraWindowBoundaryDrainKeepsSameTimestampIssues(t *testing.T) {
+	d := openTestDB(t)
+	acctID := mustCreateJiraAccount(t, d)
+
+	const shared = "2026-08-05T10:00:00.000+0000"
+	const later = "2026-08-06T10:00:00.000+0000"
+	const limit = 3
+
+	// One issue strictly before the tie group, then a tie group larger than
+	// the cap, then one after it.
+	mustCreateJiraIssueAt(t, d, acctID, "WT-001", "2026-08-04T10:00:00.000+0000")
+	tied := []string{"WT-010", "WT-011", "WT-012", "WT-013", "WT-014"}
+	for _, key := range tied {
+		mustCreateJiraIssueAt(t, d, acctID, key, shared)
+	}
+	mustCreateJiraIssueAt(t, d, acctID, "WT-020", later)
+
+	seen := map[string]bool{}
+	floor := "2026-08-01T00:00:00.000+0000"
+	for run := 0; run < 4; run++ {
+		issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, limit)
+		if err != nil {
+			t.Fatalf("run %d: ListJiraIssuesUpdatedSince: %v", run, err)
+		}
+		if len(issues) == 0 {
+			break
+		}
+		for _, is := range issues {
+			seen[is.Key] = true
+			if is.UpdatedAt > floor {
+				floor = is.UpdatedAt
+			}
+		}
+	}
+
+	for _, key := range append([]string{"WT-001", "WT-020"}, tied...) {
+		if !seen[key] {
+			t.Errorf("issue %s was never returned — the boundary cut dropped it permanently", key)
+		}
+	}
+}
+
+// TestIdeas01_JiraWindowIsDeterministicWithinATimestamp pins the tie-breaking
+// order the boundary drain relies on: within one updated_at value the rows
+// come back ordered by key, so the drain can splice on a stable prefix.
+func TestIdeas01_JiraWindowIsDeterministicWithinATimestamp(t *testing.T) {
+	d := openTestDB(t)
+	acctID := mustCreateJiraAccount(t, d)
+
+	const shared = "2026-08-05T10:00:00.000+0000"
+	for _, key := range []string{"WT-030", "WT-010", "WT-020"} {
+		mustCreateJiraIssueAt(t, d, acctID, key, shared)
+	}
+
+	issues, err := d.ListJiraIssuesUpdatedSince(acctID, "2026-08-01T00:00:00.000+0000", 300)
+	if err != nil {
+		t.Fatalf("ListJiraIssuesUpdatedSince: %v", err)
+	}
+	var got []string
+	for _, is := range issues {
+		got = append(got, is.Key)
+	}
+	want := []string{"WT-010", "WT-020", "WT-030"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func mustCreateJiraIssueAt(t *testing.T, d *DB, accountID int64, key, updatedAt string) {
+	t.Helper()
+	if err := d.UpsertJiraIssue(JiraIssue{
+		AccountID: accountID, Key: key, ID: key, ProjectKey: "WT",
+		Summary: key, Status: "Open", UpdatedAt: updatedAt,
+	}); err != nil {
+		t.Fatalf("UpsertJiraIssue %s: %v", key, err)
+	}
 }

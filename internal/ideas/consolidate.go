@@ -29,11 +29,16 @@ type consolidateOp struct {
 }
 
 // mentionInput is one sighting the AI cites, copied verbatim from a
-// new-material line. Every field is validated against this run's rendered
-// material before it is trusted — the model only proposes a ref, Go disposes
-// (IDEA-02).
+// new-material line. The ref is validated against this run's rendered material
+// before it is trusted — the model only proposes a ref, Go disposes (IDEA-02).
+//
+// Source is parsed for completeness but NEVER used: the authoritative source
+// is whatever the run's own validRefs map recorded for that ref. A model token
+// is not a second gate a ref has to pass — it is only another way to get a
+// legitimate sighting silently dropped, or (worse, before this) to write a
+// source string outside idea_mentions' CHECK and abort the whole transaction.
 type mentionInput struct {
-	Source string `json:"source"`
+	Source string `json:"source"` // ignored — see the type comment
 	Ref    string `json:"ref"`
 	Quote  string `json:"quote"`
 	Author string `json:"author"`
@@ -41,21 +46,36 @@ type mentionInput struct {
 }
 
 // consolidateResult is the structured AI response for a consolidate cycle.
+// Ops is a POINTER so a syntactically-valid reply that simply omits the "ops"
+// key is distinguishable from one that explicitly returns none: the former is
+// a model error (it answered nothing), the latter is the ordinary "no changes
+// this run" answer. Only the latter may advance the floors.
 type consolidateResult struct {
-	Ops []consolidateOp `json:"ops"`
+	Ops *[]consolidateOp `json:"ops"`
 }
 
 // consolidateInput is the gathered, budget-capped stage-1 material for one
 // consolidate cycle: the rendered "=== NEW MATERIAL ===" body, the set of
 // refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|
 // "jira"), and the per-source floor each should advance to — the highest id
-// among the units this run actually included, never past a unit that was
-// left out for lack of budget (IDEA-01).
+// among the units this run actually consumed, never past a unit that was
+// left out for lack of budget (IDEA-01). The start* fields hold the floors as
+// read, so a run that consumed units without rendering any of them can still
+// tell that its floors moved.
 type consolidateInput struct {
-	maxTopicID, maxStreamID, maxTranscriptID int64
-	validRefs                                map[string]string
-	block                                    string
-	included                                 int
+	startTopicID, startStreamID, startTranscriptID int64
+	maxTopicID, maxStreamID, maxTranscriptID       int64
+	validRefs                                      map[string]string
+	block                                          string
+	included                                       int
+}
+
+// floorsAdvanced reports whether this run consumed any unit at all — whether
+// or not the unit produced material for the prompt.
+func (in *consolidateInput) floorsAdvanced() bool {
+	return in.maxTopicID != in.startTopicID ||
+		in.maxStreamID != in.startStreamID ||
+		in.maxTranscriptID != in.startTranscriptID
 }
 
 // transcriptRecapWaitWindow is how long a just-finished transcript is given
@@ -85,12 +105,16 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	in, err := gatherConsolidateInput(p.db, p.maxPromptChars())
+	in, err := p.gatherConsolidateInput(p.maxPromptChars())
 	if err != nil {
 		return 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
 	if in.included == 0 {
-		return 0, nil // nothing new to fold in — no AI call, floors untouched
+		// Nothing rendered — no AI call. But units may still have been
+		// CONSUMED (empty stage-1 rows, stale recap-less transcripts, a unit
+		// too big to ever fit): their floors have to land, or every future
+		// run re-reads the same inert material forever.
+		return 0, persistFloorsOnly(p.db, in)
 	}
 
 	registry, err := p.db.ListIdeasForPrompt()
@@ -116,6 +140,12 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 	if err := json.Unmarshal([]byte(raw), &res); err != nil {
 		return 0, fmt.Errorf("parsing consolidate JSON: %w", err)
 	}
+	if res.Ops == nil {
+		// Valid JSON that answers nothing is a model failure, not an empty
+		// verdict — treat it exactly like malformed JSON: no commit, no floor
+		// advance, so the material comes back next run.
+		return 0, fmt.Errorf("consolidate reply has no \"ops\" key")
+	}
 
 	// Parsing succeeded — only now do we start mutating (compose.go:123
 	// parse-before-mutate precedent).
@@ -124,12 +154,12 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (int, error) {
 		registryByID[idea.ID] = idea
 	}
 
-	proposed, refsRejected, err := applyConsolidateOps(p.db, res.Ops, registryByID, in)
+	proposed, refsRejected, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
 	if err != nil {
 		return 0, err
 	}
-	if refsRejected > 0 && p.logger != nil {
-		p.logger.Printf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
+	if refsRejected > 0 {
+		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
 	}
 	return proposed, nil
 }
@@ -152,30 +182,29 @@ func (p *Pipeline) maxPromptChars() int {
 // later unit is smuggled in out of order), so each source's floor advances
 // only past the units this run actually included; a source that contributed
 // nothing keeps its old floor (IDEA-01).
-func gatherConsolidateInput(database *db.DB, maxChars int) (*consolidateInput, error) {
-	topicFloor, streamFloor, transcriptFloor, err := database.GetIdeasFloors()
+func (p *Pipeline) gatherConsolidateInput(maxChars int) (*consolidateInput, error) {
+	topicFloor, streamFloor, transcriptFloor, err := p.db.GetIdeasFloors()
 	if err != nil {
 		return nil, fmt.Errorf("getting ideas floors: %w", err)
 	}
 
-	topics, err := database.ListDigestTopicIdeasAfter(topicFloor)
+	topics, err := p.db.ListDigestTopicIdeasAfter(topicFloor)
 	if err != nil {
 		return nil, fmt.Errorf("listing digest topic ideas: %w", err)
 	}
-	streams, err := database.ListStreamDigestsAfter(streamFloor)
+	streams, err := p.db.ListStreamDigestsAfter(streamFloor)
 	if err != nil {
 		return nil, fmt.Errorf("listing stream digests: %w", err)
 	}
-	transcripts, err := database.ListTranscriptsForIdeasAfter(transcriptFloor)
+	transcripts, err := p.db.ListTranscriptsForIdeasAfter(transcriptFloor)
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}
 
 	in := &consolidateInput{
-		maxTopicID:      topicFloor,
-		maxStreamID:     streamFloor,
-		maxTranscriptID: transcriptFloor,
-		validRefs:       map[string]string{},
+		startTopicID: topicFloor, startStreamID: streamFloor, startTranscriptID: transcriptFloor,
+		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor,
+		validRefs: map[string]string{},
 	}
 	var b strings.Builder
 	budget := maxChars
@@ -183,14 +212,23 @@ func gatherConsolidateInput(database *db.DB, maxChars int) (*consolidateInput, e
 
 	// include appends a rendered unit if it still fits the budget. An empty
 	// unit (a stage-1 row that ended up with no surviving candidates) costs
-	// nothing and is always "included" for floor-advancement purposes. Once
-	// stopped is set it stays set: no later, possibly-smaller unit is
-	// allowed to jump the queue.
-	include := func(unit string, refs map[string]string) bool {
+	// nothing and is always "included" for floor-advancement purposes. A unit
+	// bigger than the WHOLE budget can never fit in any run, so it is skipped
+	// and consumed rather than left wedging the floor forever. Once stopped
+	// is set it stays set: no later, possibly-smaller unit is allowed to jump
+	// the queue.
+	include := func(id, unit string, refs map[string]string) bool {
 		if unit == "" {
 			return true
 		}
-		if stopped || len(unit) > budget {
+		if stopped {
+			return false
+		}
+		if len(unit) > maxChars {
+			p.logf("ideas: consolidate skipping oversized unit %s (%d chars > %d budget)", id, len(unit), maxChars)
+			return true
+		}
+		if len(unit) > budget {
 			stopped = true
 			return false
 		}
@@ -204,15 +242,15 @@ func gatherConsolidateInput(database *db.DB, maxChars int) (*consolidateInput, e
 	}
 
 	for _, t := range topics {
-		unit, refs := renderTopicUnit(t)
-		if !include(unit, refs) {
+		unit, refs := p.renderTopicUnit(t)
+		if !include(fmt.Sprintf("digest topic %d", t.TopicID), unit, refs) {
 			break
 		}
 		in.maxTopicID = t.TopicID
 	}
 	for _, s := range streams {
-		unit, refs := renderStreamUnit(s)
-		if !include(unit, refs) {
+		unit, refs := p.renderStreamUnit(s)
+		if !include(fmt.Sprintf("stream digest %d", s.ID), unit, refs) {
 			break
 		}
 		in.maxStreamID = s.ID
@@ -227,7 +265,7 @@ func gatherConsolidateInput(database *db.DB, maxChars int) (*consolidateInput, e
 			continue
 		}
 		unit, refs := renderTranscriptUnit(t, recap)
-		if !include(unit, refs) {
+		if !include(fmt.Sprintf("transcript %d", t.ID), unit, refs) {
 			break
 		}
 		in.maxTranscriptID = t.ID
@@ -237,16 +275,45 @@ func gatherConsolidateInput(database *db.DB, maxChars int) (*consolidateInput, e
 	return in, nil
 }
 
+// persistFloorsOnly commits the floors a run advanced when it produced no
+// material to send the model (every consumed unit was inert). Without this the
+// same empty stream-digest rows and stale recap-less transcripts are re-read on
+// every single run, forever. A run that consumed nothing writes nothing.
+func persistFloorsOnly(database *db.DB, in *consolidateInput) error {
+	if !in.floorsAdvanced() {
+		return nil
+	}
+	tx, err := database.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning ideas floor-only tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
+		return fmt.Errorf("advancing ideas floors: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing ideas floor-only advance: %w", err)
+	}
+	return nil
+}
+
 // renderTopicUnit renders one Slack digest topic's idea/decision candidates,
 // one line each, ending in " ref=<channel_id>|<message_ts>" — the exact ref
 // shape a consolidate mention must copy to survive validation. Returns ""
-// when the topic carries no candidates (defensive; ListDigestTopicIdeasAfter
-// already filters these out).
-func renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string) {
+// when the topic carries no candidates, which ListDigestTopicIdeasAfter's
+// `!= '[]'` filter catches for every row written since the digest pipeline
+// started marshaling empty arrays as "[]" (marshalArray), but not for a
+// legacy row that stored a bare "null".
+func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string) {
 	var ideas []digest.IdeaCandidate
-	_ = json.Unmarshal([]byte(t.Ideas), &ideas)
+	if err := json.Unmarshal([]byte(t.Ideas), &ideas); err != nil {
+		p.logf("ideas: digest topic %d has unreadable ideas JSON: %v", t.TopicID, err)
+	}
 	var decisions []digest.Decision
-	_ = json.Unmarshal([]byte(t.Decisions), &decisions)
+	if err := json.Unmarshal([]byte(t.Decisions), &decisions); err != nil {
+		p.logf("ideas: digest topic %d has unreadable decisions JSON: %v", t.TopicID, err)
+	}
 	if len(ideas) == 0 && len(decisions) == 0 {
 		return "", nil
 	}
@@ -277,9 +344,10 @@ func renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string) {
 // runEmailDigestAccount/runJiraDigestAccount's json.Marshal(topics) — not
 // wrapped in a streamTopics envelope). Returns "" for a row whose candidates
 // were all stripped at stage 1 (topics_json == "[]").
-func renderStreamUnit(s db.StreamDigest) (string, map[string]string) {
+func (p *Pipeline) renderStreamUnit(s db.StreamDigest) (string, map[string]string) {
 	var topics []streamTopic
 	if err := json.Unmarshal([]byte(s.TopicsJSON), &topics); err != nil {
+		p.logf("ideas: stream digest %d has unreadable topics JSON: %v", s.ID, err)
 		return "", nil
 	}
 	refs := map[string]string{}
@@ -403,13 +471,16 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 			if op.Op == "new_decision" {
 				kind = "decision"
 			}
-			valid := make([]mentionInput, 0, len(op.Mentions))
+			valid := make([]db.IdeaMention, 0, len(op.Mentions))
 			for _, m := range op.Mentions {
-				if src, ok := in.validRefs[m.Ref]; ok && src == m.Source {
-					valid = append(valid, m)
-				} else {
+				src, ok := in.validRefs[m.Ref]
+				if !ok {
 					refsRejected++
+					continue
 				}
+				valid = append(valid, db.IdeaMention{
+					Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt,
+				})
 			}
 			if len(valid) == 0 {
 				continue // nothing survived — drop the whole op (IDEA-02)
@@ -426,9 +497,8 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				return proposed, refsRejected, fmt.Errorf("creating %s %q: %w", kind, op.Title, cerr)
 			}
 			for _, m := range valid {
-				if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-					IdeaID: id, Source: m.Source, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt,
-				}); merr != nil {
+				m.IdeaID = id
+				if merr := database.InsertIdeaMentionTx(tx, m); merr != nil {
 					return proposed, refsRejected, fmt.Errorf("recording mention for idea %d: %w", id, merr)
 				}
 			}
@@ -448,18 +518,18 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				}
 			}
 			src, refOK := in.validRefs[op.Mention.Ref]
-			if !refOK || src != op.Mention.Source {
+			if !refOK {
 				refsRejected++
 				continue
 			}
 			if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-				IdeaID: target.ID, Source: op.Mention.Source, Ref: op.Mention.Ref,
+				IdeaID: target.ID, Source: src, Ref: op.Mention.Ref,
 				Quote: op.Mention.Quote, Author: op.Mention.Author, SaidAt: op.Mention.SaidAt,
 			}); merr != nil {
 				return proposed, refsRejected, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
 			}
 			if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {
-				reason := fmt.Sprintf("brought up again: %s %s", op.Mention.Source, op.Mention.Ref)
+				reason := fmt.Sprintf("brought up again: %s %s", src, op.Mention.Ref)
 				if rerr := database.SetIdeaNeedsReviewTx(tx, target.ID, reason); rerr != nil {
 					return proposed, refsRejected, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
 				}

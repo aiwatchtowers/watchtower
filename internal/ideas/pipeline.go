@@ -70,6 +70,15 @@ func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
 	p.totalAPITokens += usage.TotalAPITokens
 }
 
+// logf logs through the pipeline's logger, which may be nil (a pipeline built
+// without one, as several tests and the MCP path do).
+func (p *Pipeline) logf(format string, args ...any) {
+	if p.logger == nil {
+		return
+	}
+	p.logger.Printf(format, args...)
+}
+
 // getPrompt returns a prompt template and its version, preferring an
 // owner-customized version from the prompt store over the compiled default.
 func (p *Pipeline) getPrompt(id string) (string, int) {

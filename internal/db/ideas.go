@@ -203,15 +203,22 @@ func (db *DB) ListIdeaMentions(ideaID int64) ([]IdeaMention, error) {
 	return out, rows.Err()
 }
 
+// ideasForPromptLimit caps the registry section of the consolidator prompt.
+// The WHERE clause alone is unbounded — every still-open idea qualifies
+// forever — so a long-lived registry would grow the prompt without limit.
+// Newest-updated first, so the cap sheds the stalest items.
+const ideasForPromptLimit = 300
+
 // ListIdeasForPrompt returns the ideas fed into the consolidator prompt for
 // dedup/merge context: everything still open (proposed/active/not_now)
 // regardless of age, plus anything touched in the last 60 days so a recent
-// verdict stays visible for a little while after it lands.
+// verdict stays visible for a little while after it lands, capped at
+// ideasForPromptLimit.
 func (db *DB) ListIdeasForPrompt() ([]Idea, error) {
-	rows, err := db.Query(`SELECT ` + ideaSelectCols + ` FROM ideas
+	rows, err := db.Query(`SELECT `+ideaSelectCols+` FROM ideas
 		WHERE status IN ('proposed','active','not_now')
 		   OR updated_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-60 days')
-		ORDER BY updated_at DESC`)
+		ORDER BY updated_at DESC LIMIT ?`, ideasForPromptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("listing ideas for prompt: %w", err)
 	}
@@ -255,7 +262,7 @@ func (db *DB) ListIdeaVerdictExamples(limit int) ([]Idea, error) {
 }
 
 // GetIdeasFloors returns the three registry watermarks: the highest
-// digests/stream_digests/meeting_transcripts id already folded into the
+// digest_topics/stream_digests/meeting_transcripts id already folded into the
 // registry by the consolidator. A fresh workspace without its singleton row
 // reads as zeros (the MemoryWatermark precedent).
 func (db *DB) GetIdeasFloors() (digest, stream, transcript int64, err error) {
@@ -270,12 +277,19 @@ func (db *DB) GetIdeasFloors() (digest, stream, transcript int64, err error) {
 	return digest, stream, transcript, nil
 }
 
-// SetIdeasFloorsTx updates the three registry watermarks.
+// SetIdeasFloorsTx updates the three registry watermarks. A workspace row that
+// does not exist yet is an error, not a silent zero-row update (the
+// SetIdeasEmailFloor sibling shape): the caller's transaction must roll back
+// rather than commit registry rows whose floors were never actually advanced,
+// which would re-feed the same material on every subsequent run (IDEA-01).
 func (db *DB) SetIdeasFloorsTx(tx *sql.Tx, digest, stream, transcript int64) error {
-	_, err := tx.Exec(`UPDATE workspace SET ideas_digest_floor = ?, ideas_stream_digest_floor = ?, ideas_transcript_floor = ?`,
+	res, err := tx.Exec(`UPDATE workspace SET ideas_digest_floor = ?, ideas_stream_digest_floor = ?, ideas_transcript_floor = ?`,
 		digest, stream, transcript)
 	if err != nil {
 		return fmt.Errorf("setting ideas floors: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas floors: no workspace row exists")
 	}
 	return nil
 }
@@ -346,13 +360,21 @@ type JiraComment struct {
 	UpdatedAt       string
 }
 
-// UpsertJiraComments inserts or updates comments keyed on (account_id, id).
+// UpsertJiraComments inserts or updates comments keyed on (account_id, id),
+// as one transaction: a batch either lands whole or not at all, and SQLite
+// pays for a single commit instead of one per comment.
 func (db *DB) UpsertJiraComments(comments []JiraComment) error {
 	if len(comments) == 0 {
 		return nil
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning jira comment upsert: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
 	for _, c := range comments {
-		_, err := db.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at)
+		_, err := tx.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(account_id, id) DO UPDATE SET
 				issue_key = excluded.issue_key,
@@ -367,27 +389,36 @@ func (db *DB) UpsertJiraComments(comments []JiraComment) error {
 			return fmt.Errorf("upserting jira comment %s/%s: %w", c.IssueKey, c.ID, err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing jira comment upsert: %w", err)
+	}
 	return nil
 }
 
+// jiraCommentsPerWindowLimit bounds how many comments one ideas Jira
+// pre-digest window loads. Without it a burst of comment activity across the
+// window's issues is unbounded input for renderJiraBlock.
+const jiraCommentsPerWindowLimit = 500
+
 // ListJiraCommentsSince returns comments for the given account and issue
-// keys updated at or after sinceISO.
+// keys updated at or after sinceISO, oldest first per issue, capped at
+// jiraCommentsPerWindowLimit.
 func (db *DB) ListJiraCommentsSince(accountID int64, issueKeys []string, sinceISO string) ([]JiraComment, error) {
 	if len(issueKeys) == 0 {
 		return nil, nil
 	}
 	placeholders := make([]string, len(issueKeys))
-	args := make([]any, 0, len(issueKeys)+2)
+	args := make([]any, 0, len(issueKeys)+3)
 	args = append(args, accountID)
 	for i, key := range issueKeys {
 		placeholders[i] = "?"
 		args = append(args, key)
 	}
-	args = append(args, sinceISO)
+	args = append(args, sinceISO, jiraCommentsPerWindowLimit)
 
 	query := fmt.Sprintf(`SELECT account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at
 		FROM jira_comments WHERE account_id = ? AND issue_key IN (%s) AND updated_at >= ?
-		ORDER BY issue_key, updated_at`, strings.Join(placeholders, ","))
+		ORDER BY issue_key, updated_at LIMIT ?`, strings.Join(placeholders, ","))
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira comments: %w", err)
@@ -558,13 +589,43 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // account's own ideas_jira_floor, itself copied verbatim from a prior row's
 // updated_at, so the comparison is self-consistent within one account even
 // though the stored format is not a normalized unix value.
+//
+// The caller advances the floor to the highest updated_at it saw and reloads
+// with a strict >, so a LIMIT cut landing inside a group of issues sharing one
+// updated_at would drop the unloaded members of that group permanently. When
+// the limit is hit, the query is therefore extended to include EVERY issue
+// sharing the last loaded timestamp (the ListGmailThreadsForExtract
+// boundary-drain precedent) — overshooting the cap by at most one timestamp's
+// worth of issues.
 func (db *DB) ListJiraIssuesUpdatedSince(accountID int64, sinceISO string, limit int) ([]JiraIssue, error) {
 	if limit <= 0 {
 		limit = 300
 	}
+	out, err := db.queryJiraIssuesUpdated(accountID, ">", sinceISO, limit)
+	if err != nil || len(out) < limit {
+		return out, err
+	}
+	boundary := out[len(out)-1].UpdatedAt
+	full, err := db.queryJiraIssuesUpdated(accountID, "=", boundary, -1) // LIMIT -1: unbounded
+	if err != nil {
+		return nil, err
+	}
+	i := len(out)
+	for i > 0 && out[i-1].UpdatedAt == boundary {
+		i--
+	}
+	return append(out[:i], full...), nil
+}
+
+// queryJiraIssuesUpdated runs the ideas Jira-window select for accountID with
+// the given comparison operator (">" or "="; never user input) against
+// updated_at. The ORDER BY ends in key (part of the jira_issues primary key)
+// so the ordering is fully deterministic within a same-timestamp group, which
+// the boundary drain above relies on.
+func (db *DB) queryJiraIssuesUpdated(accountID int64, op, tsArg string, limit int) ([]JiraIssue, error) {
 	rows, err := db.Query(`SELECT `+jiraIssueColumns+` FROM jira_issues
-		WHERE account_id = ? AND is_deleted = 0 AND updated_at > ?
-		ORDER BY updated_at ASC LIMIT ?`, accountID, sinceISO, limit)
+		WHERE account_id = ? AND is_deleted = 0 AND updated_at `+op+` ?
+		ORDER BY updated_at ASC, key ASC LIMIT ?`, accountID, tsArg, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issues updated since: %w", err)
 	}

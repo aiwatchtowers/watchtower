@@ -135,10 +135,10 @@ func TestConsolidate_NewIdea_ValidRef(t *testing.T) {
 	assert.Zero(t, tFloor)
 }
 
-// TestConsolidate_InventedRef_PartiallyDropped covers case 2 (partial): a
+// TestIdeas02_InventedRefPartiallyDropped covers case 2 (partial): a
 // new_idea op with two mentions, one real and one invented, keeps only the
 // real one — the idea is still created.
-func TestConsolidate_InventedRef_PartiallyDropped(t *testing.T) {
+func TestIdeas02_InventedRefPartiallyDropped(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	seedDigestTopicIdeas(t, d, "C1", "general",
@@ -164,11 +164,11 @@ func TestConsolidate_InventedRef_PartiallyDropped(t *testing.T) {
 	assert.Equal(t, "C1|1.1", mentions[0].Ref)
 }
 
-// TestConsolidate_InventedRef_AllDropped_OpDiscarded covers case 2 (full):
+// TestIdeas02_InventedRefAllDroppedOpDiscarded covers case 2 (full):
 // an op whose every mention is invented is dropped entirely — nothing is
 // written for it (IDEA-02) — while the run itself still succeeds and the
 // floor still advances past the topic that was genuinely processed.
-func TestConsolidate_InventedRef_AllDropped_OpDiscarded(t *testing.T) {
+func TestIdeas02_InventedRefAllDroppedOpDiscarded(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	topicID := seedDigestTopicIdeas(t, d, "C1", "general",
@@ -223,10 +223,10 @@ func TestConsolidate_AttachMention_ActiveIdea(t *testing.T) {
 	assert.Equal(t, "2026-08-01T00:00:00Z", idea.LastMentionAt)
 }
 
-// TestConsolidate_AttachMention_RejectedIdea_NeedsReview covers case 4
+// TestIdeas04_AttachMentionRejectedIdeaNeedsReview covers case 4
 // (IDEA-04): attaching a fresh sighting to a rejected idea flags it for
 // owner review with a reason, but never overturns the rejected verdict.
-func TestConsolidate_AttachMention_RejectedIdea_NeedsReview(t *testing.T) {
+func TestIdeas04_AttachMentionRejectedIdeaNeedsReview(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	ideaID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Old idea", Essence: "e", Status: "rejected"})
@@ -250,10 +250,10 @@ func TestConsolidate_AttachMention_RejectedIdea_NeedsReview(t *testing.T) {
 	assert.Contains(t, idea.ReviewReason, "WT-1")
 }
 
-// TestConsolidate_AttachMention_MergedIdea_LandsOnTarget covers case 5: a
+// TestIdeas03_AttachMentionMergedIdeaLandsOnTarget covers case 5: a
 // mention cited against an idea that has since been merged away lands on its
 // merged_into_id target instead — the merged idea itself gets nothing.
-func TestConsolidate_AttachMention_MergedIdea_LandsOnTarget(t *testing.T) {
+func TestIdeas03_AttachMentionMergedIdeaLandsOnTarget(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	targetID := seedIdeaRow(t, d, db.Idea{Kind: "idea", Title: "Target", Essence: "e", Status: "active"})
@@ -282,9 +282,9 @@ func TestConsolidate_AttachMention_MergedIdea_LandsOnTarget(t *testing.T) {
 	assert.Empty(t, mergedMentions)
 }
 
-// TestConsolidate_GeneratorError_NothingWritten covers case 6 (IDEA-01): a
+// TestIdeas01_GeneratorErrorNothingWritten covers case 6 (IDEA-01): a
 // failed AI call writes no rows and leaves every floor untouched.
-func TestConsolidate_GeneratorError_NothingWritten(t *testing.T) {
+func TestIdeas01_GeneratorErrorNothingWritten(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	seedDigestTopicIdeas(t, d, "C1", "general",
@@ -307,10 +307,10 @@ func TestConsolidate_GeneratorError_NothingWritten(t *testing.T) {
 	assert.Zero(t, tFloor)
 }
 
-// TestConsolidate_MalformedJSON_NothingWritten covers case 7: same as a
+// TestIdeas01_MalformedJSONNothingWritten covers case 7: same as a
 // generator error — a reply with no parseable JSON object writes nothing and
 // leaves the floors untouched.
-func TestConsolidate_MalformedJSON_NothingWritten(t *testing.T) {
+func TestIdeas01_MalformedJSONNothingWritten(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 	seedDigestTopicIdeas(t, d, "C1", "general",
@@ -331,11 +331,11 @@ func TestConsolidate_MalformedJSON_NothingWritten(t *testing.T) {
 	assert.Zero(t, dFloor)
 }
 
-// TestConsolidate_NoNewMaterial_CleanNoOp covers case 8 (the degenerate
+// TestIdeas01_NoNewMaterialCleanNoOp covers case 8 (the degenerate
 // clean-exit branch, see feedback_test_degenerate_clean_exit): with nothing
 // new above any floor — including a workspace row that doesn't exist yet —
 // the generator must never be called.
-func TestConsolidate_NoNewMaterial_CleanNoOp(t *testing.T) {
+func TestIdeas01_NoNewMaterialCleanNoOp(t *testing.T) {
 	d := newTestDB(t) // no workspace row seeded — exercises the fresh-workspace floor fallback too
 
 	gen := &fakeGen{reply: func(string) (string, error) {
@@ -349,18 +349,19 @@ func TestConsolidate_NoNewMaterial_CleanNoOp(t *testing.T) {
 	assert.Zero(t, gen.calls)
 }
 
-// TestConsolidate_MaxPromptChars_TruncatesToWholeUnits covers case 9: with a
+// TestIdeas01_MaxPromptCharsTruncatesToWholeUnits covers case 9: with a
 // budget that exactly fits the first of two digest topics, only the first is
 // included in the material sent to the model, and the digest floor advances
 // only past it — the second topic is left for a future run.
-func TestConsolidate_MaxPromptChars_TruncatesToWholeUnits(t *testing.T) {
+func TestIdeas01_MaxPromptCharsTruncatesToWholeUnits(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 
 	topic1Ideas := []digest.IdeaCandidate{{Text: "idea one", By: "Ann", MessageTS: "1.1"}}
 	ideasJSON, err := json.Marshal(topic1Ideas)
 	require.NoError(t, err)
-	unit1, _ := renderTopicUnit(db.DigestTopicForIdeas{ChannelID: "C1", Ideas: string(ideasJSON), Decisions: "[]"})
+	unit1, _ := New(d, testCfg(), nil, testLogger()).
+		renderTopicUnit(db.DigestTopicForIdeas{ChannelID: "C1", Ideas: string(ideasJSON), Decisions: "[]"})
 	require.NotEmpty(t, unit1)
 
 	id1 := seedDigestTopicIdeas(t, d, "C1", "general", topic1Ideas, nil)

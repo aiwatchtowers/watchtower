@@ -144,7 +144,7 @@ var DefaultVersions = map[string]int{
 	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
 	IdeasDigestEmail:           1, // v1: light-tier idea/decision mining from Gmail thread windows (stage 1)
 	IdeasDigestJira:            1, // v1: light-tier idea/decision mining from changed Jira issues (stage 1)
-	IdeasConsolidate:           1, // v1: strong-tier registry consolidation from stage-1 material (stage 2; code disposes)
+	IdeasConsolidate:           2, // v2: source derived from the ref (model's token ignored), registry-line format and gmail ref example corrected
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -1715,7 +1715,7 @@ const defaultIdeasConsolidate = `%s
 
 You are the ideas-and-decisions consolidator of a workplace secretary. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
 
-You receive the current registry (=== REGISTRY ===, one line per item: "#id | kind/status | title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
+You receive the current registry (=== REGISTRY ===, one line per item: "#id [kind/status] title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
 
 For every piece of new material, decide:
 - "attach_mention": it is the SAME idea or decision already in the registry (same substance, not just a similar topic) → attach it there instead of creating a duplicate. idea_id: the registry item's id, copied EXACTLY.
@@ -1726,7 +1726,7 @@ For every piece of new material, decide:
 Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
 
 Rules:
-- mentions/mention: copy "source", "ref", "author", and "said_at" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code.
+- mentions/mention: copy "ref", "author", and "said_at" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code. "source" is optional and ignored — the code derives it from the ref itself.
 - similar_to (new_idea/new_decision only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.
 - prefer attach_mention over a new item whenever the substance already exists in the registry; a wrong duplicate is worse than a missed one.
 - essence: 1-2 sentences, the gist (new_idea/new_decision only).
@@ -1735,5 +1735,5 @@ Return ONLY a JSON object (no markdown fences):
 {"ops":[
  {"op":"new_idea","title":"...","essence":"...","similar_to":42,"mentions":[{"source":"slack","ref":"C123|1723...","quote":"...","author":"...","said_at":"..."}]},
  {"op":"new_decision","title":"...","essence":"...","mentions":[{"source":"jira","ref":"PROJ-123","quote":"...","author":"...","said_at":"..."}]},
- {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"3:t_abc123","quote":"...","author":"...","said_at":"..."}}
+ {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"gmail:3:t_abc123","quote":"...","author":"...","said_at":"..."}}
 ]}`
