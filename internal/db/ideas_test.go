@@ -940,3 +940,189 @@ func TestIdeas_ListJiraIssuesUpdatedSince_UpperBound(t *testing.T) {
 		t.Fatalf("ListJiraIssuesUpdatedSince(unbounded) = %+v, want all 3 issues (empty bound is unbounded)", unbounded)
 	}
 }
+
+// TestIdeas_ListJiraIssuesUpdatedSince_BoundaryDrainWithUpperBound combines a
+// non-zero upper bound with a limit-cut that lands inside a same-timestamp
+// group — the exact combination the backfill engine's drain loop exercises
+// on a real historical window (deferred from Task 3's plan into Task 4). The
+// boundary-drain extension query must still respect the outer bound: an
+// issue sharing the cut-off timestamp is kept, one past the bound is not.
+func TestIdeas_ListJiraIssuesUpdatedSince_BoundaryDrainWithUpperBound(t *testing.T) {
+	d := openTestDB(t)
+	acctID := mustCreateJiraAccount(t, d)
+
+	base := time.Now().Add(-48 * time.Hour)
+	floor := FormatJiraTime(base.Add(-2 * time.Hour))
+	before := FormatJiraTime(base.Add(-time.Hour))
+	shared := FormatJiraTime(base)
+	after := FormatJiraTime(base.Add(time.Hour))
+	bound := FormatJiraTime(base.Add(30 * time.Minute)) // between shared and after
+
+	mustCreateJiraIssueAt(t, d, acctID, "WT-001", before)
+	tied := []string{"WT-010", "WT-011", "WT-012", "WT-013", "WT-014"}
+	for _, key := range tied {
+		mustCreateJiraIssueAt(t, d, acctID, key, shared)
+	}
+	mustCreateJiraIssueAt(t, d, acctID, "WT-020", after)
+
+	const limit = 3
+	issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, bound, limit)
+	if err != nil {
+		t.Fatalf("ListJiraIssuesUpdatedSince: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, is := range issues {
+		seen[is.Key] = true
+	}
+	for _, key := range append([]string{"WT-001"}, tied...) {
+		if !seen[key] {
+			t.Errorf("issue %s was dropped by the boundary-drain extension under a non-zero upper bound", key)
+		}
+	}
+	if seen["WT-020"] {
+		t.Error("issue WT-020 is after the upper bound and must not be returned even via the boundary-drain extension")
+	}
+}
+
+// TestIdeas_DigestTopicFloorForTime_BoundaryInclusive pins the exact-at-from
+// boundary the backfill engine relies on: a topic whose parent digest's
+// period_to equals "from" exactly must NOT be folded into the floor (so it
+// stays re-mineable), while one strictly before "from" must be.
+func TestIdeas_DigestTopicFloorForTime_BoundaryInclusive(t *testing.T) {
+	d := openTestDB(t)
+	mustCreateChannel(t, d, "C1", "general")
+
+	from := float64(time.Now().Unix())
+	beforeID := mustCreateChannelDigestAt(t, d, "C1", from-100)
+	atID := mustCreateChannelDigestAt(t, d, "C1", from)
+	topic := []DigestTopic{{Title: "t", Summary: "s", Decisions: "[]", ActionItems: "[]", Situations: "[]", KeyMessages: "[]", Ideas: `[{"title":"x"}]`}}
+	for _, id := range []int64{beforeID, atID} {
+		if err := d.InsertDigestTopics(id, topic); err != nil {
+			t.Fatalf("InsertDigestTopics %d: %v", id, err)
+		}
+	}
+	var beforeTopicID, atTopicID int64
+	if err := d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, beforeID).Scan(&beforeTopicID); err != nil {
+		t.Fatalf("reading before topic id: %v", err)
+	}
+	if err := d.QueryRow(`SELECT id FROM digest_topics WHERE digest_id = ?`, atID).Scan(&atTopicID); err != nil {
+		t.Fatalf("reading at topic id: %v", err)
+	}
+
+	floor, err := d.DigestTopicFloorForTime(int64(from))
+	if err != nil {
+		t.Fatalf("DigestTopicFloorForTime: %v", err)
+	}
+	if floor != beforeTopicID {
+		t.Fatalf("DigestTopicFloorForTime(from) = %d, want %d (the strictly-before topic — the at-from topic must stay re-mineable)", floor, beforeTopicID)
+	}
+
+	after, err := d.ListDigestTopicIdeasAfter(floor, 0)
+	if err != nil {
+		t.Fatalf("ListDigestTopicIdeasAfter: %v", err)
+	}
+	if len(after) != 1 || after[0].TopicID != atTopicID {
+		t.Fatalf("ListDigestTopicIdeasAfter(floor, 0) = %+v, want just the at-from topic %d", after, atTopicID)
+	}
+}
+
+// TestIdeas_TranscriptFloorForTime_BoundaryInclusive is the transcript half
+// of the same rule.
+func TestIdeas_TranscriptFloorForTime_BoundaryInclusive(t *testing.T) {
+	d := openTestDB(t)
+
+	from := time.Now().UTC()
+	beforeID := mustCreateTranscriptAt(t, d, from.Add(-time.Hour).Format(time.RFC3339))
+	atID := mustCreateTranscriptAt(t, d, from.Format(time.RFC3339))
+
+	fromISO := from.Format(time.RFC3339)
+	floor, err := d.TranscriptFloorForTime(fromISO)
+	if err != nil {
+		t.Fatalf("TranscriptFloorForTime: %v", err)
+	}
+	if floor != beforeID {
+		t.Fatalf("TranscriptFloorForTime(from) = %d, want %d (the strictly-before transcript — the at-from one must stay re-mineable)", floor, beforeID)
+	}
+
+	after, err := d.ListTranscriptsForIdeasAfter(floor, "")
+	if err != nil {
+		t.Fatalf("ListTranscriptsForIdeasAfter: %v", err)
+	}
+	if len(after) != 1 || after[0].ID != atID {
+		t.Fatalf("ListTranscriptsForIdeasAfter(floor, \"\") = %+v, want just the at-from transcript %d", after, atID)
+	}
+}
+
+// TestIdeas_HasStreamDigestCovering pins the three coverage shapes the
+// backfill engine's coverage-skip check relies on: a row whose
+// [period_from, period_to] fully contains the window reports covered; a row
+// that only partially overlaps does not; no row at all does not.
+func TestIdeas_HasStreamDigestCovering(t *testing.T) {
+	d := openTestDB(t)
+
+	if _, err := d.InsertStreamDigest(StreamDigest{
+		Source: "gmail", AccountID: 1, PeriodFrom: "2026-01-01T00:00:00Z", PeriodTo: "2026-02-01T00:00:00Z", TopicsJSON: "[]",
+	}); err != nil {
+		t.Fatalf("InsertStreamDigest: %v", err)
+	}
+
+	covered, err := d.HasStreamDigestCovering("gmail", 1, "2026-01-05T00:00:00Z", "2026-01-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("HasStreamDigestCovering (fully inside): %v", err)
+	}
+	if !covered {
+		t.Error("HasStreamDigestCovering: want true for a window fully inside the existing row")
+	}
+
+	partial, err := d.HasStreamDigestCovering("gmail", 1, "2026-01-20T00:00:00Z", "2026-02-15T00:00:00Z")
+	if err != nil {
+		t.Fatalf("HasStreamDigestCovering (partial overlap): %v", err)
+	}
+	if partial {
+		t.Error("HasStreamDigestCovering: want false for a window only partially covered")
+	}
+
+	otherSource, err := d.HasStreamDigestCovering("jira", 1, "2026-01-05T00:00:00Z", "2026-01-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("HasStreamDigestCovering (other source): %v", err)
+	}
+	if otherSource {
+		t.Error("HasStreamDigestCovering: want false for a source with no covering row")
+	}
+
+	otherAccount, err := d.HasStreamDigestCovering("gmail", 2, "2026-01-05T00:00:00Z", "2026-01-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("HasStreamDigestCovering (other account): %v", err)
+	}
+	if otherAccount {
+		t.Error("HasStreamDigestCovering: want false for an account with no covering row")
+	}
+}
+
+// TestIdeas_SetIdeasFloorsRoundTrip is SetIdeasFloorsTx's non-tx sibling test.
+func TestIdeas_SetIdeasFloorsRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	mustSeedWorkspace(t, d)
+
+	if err := d.SetIdeasFloors(3, 4, 5); err != nil {
+		t.Fatalf("SetIdeasFloors: %v", err)
+	}
+	digest, stream, transcript, err := d.GetIdeasFloors()
+	if err != nil {
+		t.Fatalf("GetIdeasFloors: %v", err)
+	}
+	if digest != 3 || stream != 4 || transcript != 5 {
+		t.Errorf("floors after SetIdeasFloors = (%d,%d,%d), want (3,4,5)", digest, stream, transcript)
+	}
+}
+
+// TestIdeas_SetIdeasFloorsNoWorkspaceRow pins the same "no silent zero-row
+// update" contract as SetIdeasFloorsTx: without a workspace row the UPDATE
+// matches nothing and must error rather than succeed silently.
+func TestIdeas_SetIdeasFloorsNoWorkspaceRow(t *testing.T) {
+	d := openTestDB(t) // deliberately no mustSeedWorkspace
+	if err := d.SetIdeasFloors(1, 2, 3); err == nil {
+		t.Fatal("SetIdeasFloors: want an error with no workspace row, got nil")
+	}
+}

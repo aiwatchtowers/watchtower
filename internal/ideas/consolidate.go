@@ -103,26 +103,30 @@ type transcriptRecap struct {
 // optional upper bound on every listing this pass reads (the zero value is
 // unbounded — Run's ordinary daemon/incremental path passes time.Time{}); a
 // non-zero bound is how a backfill run scopes one pass to a slice of history.
-func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (int, error) {
+// Returns the number of ideas/decisions rows created and the number of
+// mentions dropped because their ref was already recorded (IDEA-05) — the
+// backfill engine's drain loop watches the latter to know when re-mining an
+// already-mined window has stopped finding anything new.
+func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	in, err := p.gatherConsolidateInput(p.maxPromptChars(), bound)
 	if err != nil {
-		return 0, fmt.Errorf("gathering consolidate input: %w", err)
+		return 0, 0, fmt.Errorf("gathering consolidate input: %w", err)
 	}
 	if in.included == 0 {
 		// Nothing rendered — no AI call. But units may still have been
 		// CONSUMED (empty stage-1 rows, stale recap-less transcripts, a unit
 		// too big to ever fit): their floors have to land, or every future
 		// run re-reads the same inert material forever.
-		return 0, persistFloorsOnly(p.db, in)
+		return 0, 0, persistFloorsOnly(p.db, in)
 	}
 
 	registry, err := p.db.ListIdeasForPrompt()
 	if err != nil {
-		return 0, fmt.Errorf("listing registry for prompt: %w", err)
+		return 0, 0, fmt.Errorf("listing registry for prompt: %w", err)
 	}
 
 	tmpl, _ := p.getPrompt("ideas.consolidate")
@@ -132,22 +136,22 @@ func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (int, er
 	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.consolidate"), system, userMsg, "")
 	p.accumulateUsage(usage)
 	if err != nil {
-		return 0, fmt.Errorf("consolidate AI call: %w", err)
+		return 0, 0, fmt.Errorf("consolidate AI call: %w", err)
 	}
 
 	raw, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return 0, fmt.Errorf("extracting consolidate JSON: %w", err)
+		return 0, 0, fmt.Errorf("extracting consolidate JSON: %w", err)
 	}
 	var res consolidateResult
 	if err := json.Unmarshal([]byte(raw), &res); err != nil {
-		return 0, fmt.Errorf("parsing consolidate JSON: %w", err)
+		return 0, 0, fmt.Errorf("parsing consolidate JSON: %w", err)
 	}
 	if res.Ops == nil {
 		// Valid JSON that answers nothing is a model failure, not an empty
 		// verdict — treat it exactly like malformed JSON: no commit, no floor
 		// advance, so the material comes back next run.
-		return 0, fmt.Errorf("consolidate reply has no \"ops\" key")
+		return 0, 0, fmt.Errorf("consolidate reply has no \"ops\" key")
 	}
 
 	// Parsing succeeded — only now do we start mutating (compose.go:123
@@ -159,7 +163,7 @@ func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (int, er
 
 	proposed, refsRejected, mentionsDeduped, err := applyConsolidateOps(p.db, *res.Ops, registryByID, in)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if refsRejected > 0 {
 		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
@@ -167,7 +171,7 @@ func (p *Pipeline) runConsolidate(ctx context.Context, bound time.Time) (int, er
 	if mentionsDeduped > 0 {
 		p.logf("ideas: consolidate deduped %d already-mined mention(s)", mentionsDeduped)
 	}
-	return proposed, nil
+	return proposed, mentionsDeduped, nil
 }
 
 // maxPromptChars returns the configured input-assembly budget, falling back

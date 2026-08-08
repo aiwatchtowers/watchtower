@@ -330,6 +330,69 @@ func (db *DB) SetIdeasFloorsTx(tx *sql.Tx, digest, stream, transcript int64) err
 	return nil
 }
 
+// SetIdeasFloors is SetIdeasFloorsTx's non-tx sibling, for the backfill engine's
+// lower/restore steps that happen outside (before and after) a consolidate
+// run's own transaction — there is no in-flight tx to piggyback on at those
+// points. Same RowsAffected-checked shape.
+func (db *DB) SetIdeasFloors(digest, stream, transcript int64) error {
+	res, err := db.Exec(`UPDATE workspace SET ideas_digest_floor = ?, ideas_stream_digest_floor = ?, ideas_transcript_floor = ?`,
+		digest, stream, transcript)
+	if err != nil {
+		return fmt.Errorf("setting ideas floors: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas floors: no workspace row exists")
+	}
+	return nil
+}
+
+// DigestTopicFloorForTime returns the highest digest_topics.id whose parent
+// digest ended strictly before fromUnix — the ideas_digest_floor a backfill
+// run lowers to so the window starting at fromUnix (inclusive) is re-mined.
+// A topic whose parent digest's period_to equals fromUnix exactly is NOT
+// counted here (strict <), so it stays on the "after floor" side and IS
+// re-mined — the window's start is inclusive, matching
+// ListDigestTopicIdeasAfter's toUnix bound being inclusive at the other end.
+func (db *DB) DigestTopicFloorForTime(fromUnix int64) (int64, error) {
+	var floor int64
+	err := db.QueryRow(`SELECT COALESCE(MAX(dt.id), 0) FROM digest_topics dt
+		JOIN digests d ON dt.digest_id = d.id WHERE d.period_to < ?`, fromUnix).Scan(&floor)
+	if err != nil {
+		return 0, fmt.Errorf("computing digest topic floor for time: %w", err)
+	}
+	return floor, nil
+}
+
+// TranscriptFloorForTime returns the highest meeting_transcripts.id created
+// strictly before fromISO — the ideas_transcript_floor a backfill run lowers
+// to. Same inclusive-at-from boundary as DigestTopicFloorForTime.
+func (db *DB) TranscriptFloorForTime(fromISO string) (int64, error) {
+	var floor int64
+	err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM meeting_transcripts WHERE created_at < ?`, fromISO).Scan(&floor)
+	if err != nil {
+		return 0, fmt.Errorf("computing transcript floor for time: %w", err)
+	}
+	return floor, nil
+}
+
+// HasStreamDigestCovering reports whether accountID already has a
+// stream_digests row for source whose [period_from, period_to] fully covers
+// [fromISO, toISO] — the backfill engine's coverage-skip check (spec §4
+// layer 2): a fully-covered account window is left alone rather than
+// re-digested, cost rather than correctness (ref-level dedup already makes a
+// re-digest safe; this just avoids paying for one that cannot find anything
+// new).
+func (db *DB) HasStreamDigestCovering(source string, accountID int64, fromISO, toISO string) (bool, error) {
+	var exists int
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM stream_digests
+		WHERE source = ? AND account_id = ? AND period_from <= ? AND period_to >= ?)`,
+		source, accountID, fromISO, toISO).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking stream digest coverage: %w", err)
+	}
+	return exists != 0, nil
+}
+
 // StreamDigest is a stage-1 pre-digest for a stream with no existing digest
 // pipeline (Gmail, Jira) — a lightweight per-account topic summary the
 // stage-2 consolidator reads alongside Slack digests and meeting recaps.
