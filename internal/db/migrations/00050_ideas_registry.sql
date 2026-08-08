@@ -78,11 +78,25 @@ CREATE TABLE IF NOT EXISTS jira_comments (
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
 
 ALTER TABLE digest_topics ADD COLUMN ideas TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE workspace ADD COLUMN ideas_digest_floor INTEGER NOT NULL DEFAULT 0;  -- ideas registry floor: highest digests.id already consolidated
+ALTER TABLE workspace ADD COLUMN ideas_digest_floor INTEGER NOT NULL DEFAULT 0;  -- ideas registry floor: highest digest_topics.id already consolidated
 ALTER TABLE workspace ADD COLUMN ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0;  -- ideas registry floor: highest stream_digests.id already consolidated
 ALTER TABLE workspace ADD COLUMN ideas_transcript_floor INTEGER NOT NULL DEFAULT 0;  -- ideas registry floor: highest meeting_transcripts.id already consolidated
 ALTER TABLE google_accounts ADD COLUMN ideas_email_floor REAL NOT NULL DEFAULT 0;  -- ideas registry floor: per-account Gmail internalDate watermark for the email pre-digest
 ALTER TABLE jira_accounts ADD COLUMN ideas_jira_floor TEXT NOT NULL DEFAULT '';  -- ideas registry floor: per-account Jira comment-sync watermark for the jira pre-digest
+
+-- Seed the three workspace floors at the current top of each source table:
+-- the registry starts from material mined AFTER it shipped, never by
+-- backfilling every historical digest topic and meeting transcript in one
+-- enormous first consolidate run. This mirrors the per-account stage-1
+-- floors' first-run self-initialization (runEmailDigestAccount /
+-- runJiraDigestAccount), which those need because an account added after
+-- this migration has no migration of its own to seed it.
+-- stream_digests is created by this very migration, so its MAX is 0 — kept
+-- for symmetry with the other two.
+UPDATE workspace SET
+    ideas_digest_floor = (SELECT COALESCE(MAX(id), 0) FROM digest_topics),
+    ideas_stream_digest_floor = (SELECT COALESCE(MAX(id), 0) FROM stream_digests),
+    ideas_transcript_floor = (SELECT COALESCE(MAX(id), 0) FROM meeting_transcripts);
 
 -- Expand targets.source_type CHECK to include 'idea' (converted from the
 -- registry). Table-recreation dance (SQLite has no ADD CONSTRAINT); targets

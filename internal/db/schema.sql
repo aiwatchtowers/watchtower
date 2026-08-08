@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS workspace (
     -- memory_jira_last_extracted_ts moved to jira_accounts (per-account, see 00049)
     memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0,  -- 5D interaction-ingest floor over feedback(entity_type='situation') — the dashboard's situation-level thumbs; sibling of memory_last_interaction_id (see 00036, M8)
     memory_focus_fingerprint TEXT NOT NULL DEFAULT '',  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
-    ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digests.id already consolidated (see 00050)
+    ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digest_topics.id already consolidated (see 00050)
     ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest stream_digests.id already consolidated (see 00050)
     ideas_transcript_floor INTEGER NOT NULL DEFAULT 0  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
 );

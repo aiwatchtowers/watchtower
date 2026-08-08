@@ -1339,20 +1339,18 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	if len(result.Topics) > 0 {
 		var dbTopics []db.DigestTopic
 		for i, t := range result.Topics {
-			dec, _ := json.Marshal(t.Decisions)
 			ai, _ := json.Marshal(t.ActionItems)
 			sit, _ := json.Marshal(t.Situations)
 			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
-			ideas, _ := json.Marshal(t.Ideas)
 			dbTopics = append(dbTopics, db.DigestTopic{
 				Idx:         i,
 				Title:       t.Title,
 				Summary:     t.Summary,
-				Decisions:   string(dec),
+				Decisions:   marshalArray(t.Decisions),
 				ActionItems: string(ai),
 				Situations:  string(sit),
 				KeyMessages: string(km),
-				Ideas:       string(ideas),
+				Ideas:       marshalArray(t.Ideas),
 			})
 		}
 		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
@@ -1372,6 +1370,22 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	}
 
 	return nil
+}
+
+// marshalArray renders a slice as JSON, emitting "[]" — never "null" — for an
+// empty or nil one. digest_topics.ideas/decisions are read back by the ideas
+// registry's ListDigestTopicIdeasAfter, whose "carries candidates" filter is a
+// literal `!= '[]'` string compare: a "null" would sail past it and hand the
+// consolidator an inert unit for every topic ever written.
+func marshalArray[T any](items []T) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 // updatePeriodBounds atomically updates the earliest/latest period bounds.
