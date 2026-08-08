@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"text/tabwriter"
 
 	"watchtower/internal/config"
@@ -35,8 +37,26 @@ func init() {
 	rootCmd.AddCommand(ideasCmd)
 	ideasCmd.AddCommand(ideasMineCmd, ideasListCmd)
 
-	ideasListCmd.Flags().String("kind", "", "filter by kind (idea, decision, note)")
-	ideasListCmd.Flags().String("status", "", "filter by status (proposed, active, rejected, merged, superseded, converted)")
+	ideasListCmd.Flags().String("kind", "", "filter by kind ("+strings.Join(ideaKinds, ", ")+")")
+	ideasListCmd.Flags().String("status", "", "filter by status ("+strings.Join(ideaStatuses, ", ")+")")
+}
+
+// ideaKinds and ideaStatuses mirror the ideas table's CHECK constraints
+// (migration 00050). An unknown filter value would otherwise be accepted
+// silently and return an empty list, which reads as "you have no ideas"
+// rather than "you typoed the flag".
+var (
+	ideaKinds    = []string{"idea", "decision", "note"}
+	ideaStatuses = []string{"proposed", "active", "rejected", "not_now", "converted", "dropped", "merged", "superseded", "reversed"}
+)
+
+// validateEnumFlag returns an error naming the valid values when value is set
+// but not among them. An empty value means "unfiltered" and always passes.
+func validateEnumFlag(flag, value string, allowed []string) error {
+	if value == "" || slices.Contains(allowed, value) {
+		return nil
+	}
+	return fmt.Errorf("invalid --%s %q (valid: %s)", flag, value, strings.Join(allowed, ", "))
 }
 
 // ideasConfigAndDB loads the config (with the usual workspace/provider flag
@@ -95,6 +115,12 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 func runIdeasList(cmd *cobra.Command, _ []string) error {
 	kind, _ := cmd.Flags().GetString("kind")
 	status, _ := cmd.Flags().GetString("status")
+	if err := validateEnumFlag("kind", kind, ideaKinds); err != nil {
+		return err
+	}
+	if err := validateEnumFlag("status", status, ideaStatuses); err != nil {
+		return err
+	}
 
 	_, database, err := ideasConfigAndDB()
 	if err != nil {

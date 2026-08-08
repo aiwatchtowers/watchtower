@@ -827,13 +827,17 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		proposed, err := d.ideasPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("ideas error: %v", err)
-		} else {
-			if proposed > 0 {
-				d.logger.Printf("ideas: proposed %d", proposed)
-			}
-			d.lastIdeas = now
-			d.saveLastIdeas()
+		} else if proposed > 0 {
+			d.logger.Printf("ideas: proposed %d", proposed)
 		}
+		// The throttle advances whenever the pipeline RAN, error or not.
+		// ideas.Run's partial-failure contract already carries the state:
+		// every floor is honest about what was actually consumed, so
+		// unconsumed material simply waits. Retrying an erroring pipeline on
+		// the very next cycle buys nothing but repeated AI cost — and one
+		// stuck account would otherwise pin the whole phase to every cycle.
+		d.lastIdeas = now
+		d.saveLastIdeas()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
 		return pipelineRunStats{items: proposed, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
 	})
