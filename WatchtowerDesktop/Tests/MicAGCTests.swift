@@ -44,6 +44,47 @@ final class MicAGCTests: XCTestCase {
         XCTAssertEqual(agc.appliedGain, 2.5, accuracy: 0.01)
     }
 
+    func testConvergesProportionallyInTheMeasuredOperatingBand() {
+        var agc = MicAGC()
+        // 0.0125 is where the real recording's own speech actually sits, and
+        // it is still inside the proportional region: target / 0.0125 = 4.
+        feed(&agc, mic: 0.0125, system: silentSystem, count: cyclesToConverge)
+        XCTAssertEqual(agc.appliedGain, 4, accuracy: 0.01)
+    }
+
+    func testConvergedGainDoesNotDependOnTheIOBufferSize() {
+        // Same 20 s of the same speech, delivered as small and large buffers.
+        var small = MicAGC()
+        let smallCycle = 256.0 / 48_000.0
+        for _ in 0..<Int(20 / smallCycle) {
+            small.update(cycleRMS: quiet, systemRMS: silentSystem, cycleDuration: smallCycle)
+        }
+
+        var large = MicAGC()
+        let largeCycle = 2048.0 / 48_000.0
+        for _ in 0..<Int(20 / largeCycle) {
+            large.update(cycleRMS: quiet, systemRMS: silentSystem, cycleDuration: largeCycle)
+        }
+
+        XCTAssertEqual(small.appliedGain, large.appliedGain, accuracy: 0.05,
+                       "wall-clock time constants, not per-callback ones")
+    }
+
+    // MARK: Glide
+
+    func testGlideStartsAtTheCurrentGainAndStepsToTheTarget() {
+        let (start, step) = MicAGC.glide(from: 2, to: 5, frameCount: 3)
+        XCTAssertEqual(start, 2)
+        XCTAssertEqual(step, 1)
+    }
+
+    func testGlideBetweenEqualGainsHasNoStep() {
+        let (start, step) = MicAGC.glide(from: 1, to: 1, frameCount: 512)
+        XCTAssertEqual(start, 1)
+        XCTAssertEqual(step, 0)
+        XCTAssertFalse(step.sign == .minus, "an off-gate cycle adds +0.0, leaving the mix untouched")
+    }
+
     func testGainNeverExceedsMaxGain() {
         var agc = MicAGC()
         // Just over the floor: an unclamped desired gain would be ~8x.
@@ -103,8 +144,9 @@ final class MicAGCTests: XCTestCase {
     func testRecoversFromASingleLoudTransient() {
         var agc = MicAGC()
         feed(&agc, mic: quiet, system: silentSystem, count: cyclesToConverge)
+        let beforeTransient = agc.speechGain
         agc.update(cycleRMS: 0.4, systemRMS: 0, cycleDuration: cycle)
-        XCTAssertLessThan(agc.speechGain, MicAGC.maxGain, "the outlier pulled the gain down")
+        XCTAssertLessThan(agc.speechGain, beforeTransient - 0.01, "the outlier pulled the gain down")
         feed(&agc, mic: quiet, system: silentSystem, count: cyclesToConverge)
         XCTAssertEqual(agc.appliedGain, MicAGC.maxGain, accuracy: 0.01,
                        "quiet speech re-converges after the transient")
@@ -128,11 +170,76 @@ final class MicAGCTests: XCTestCase {
         var agc = MicAGC()
         feed(&agc, mic: quiet, system: silentSystem, count: cyclesToConverge)
         let ramped = agc.speechGain
+
+        // Clearly system-dominant, so the hold is cancelled and the mix drops
+        // to unity at once.
         feed(&agc, mic: 0.013, system: 0.079, count: 500)
+        XCTAssertEqual(agc.appliedGain, 1)
+
+        // The owner speaking again picks the held gain straight back up
+        // instead of ramping from 1.
+        agc.update(cycleRMS: quiet, systemRMS: silentSystem, cycleDuration: cycle)
+        XCTAssertEqual(agc.appliedGain, agc.speechGain)
+        XCTAssertEqual(agc.appliedGain, ramped, accuracy: 0.01,
+                       "the owner's next word resumes at the ramped gain")
+    }
+
+    // MARK: Hold (apply-gate vs adapt-gate)
+
+    func testGainHoldsThroughAnIntraPhraseGap() {
+        var agc = MicAGC()
+        feed(&agc, mic: quiet, system: silentSystem, count: 20)
+        let speaking = agc.appliedGain
+
+        // ~32 ms of a consonant/breath gap: below the floor, but nowhere near
+        // system-dominant. The owner is still mid-phrase.
+        for _ in 0..<3 {
+            agc.update(cycleRMS: 0.004, systemRMS: 0, cycleDuration: cycle)
+            XCTAssertEqual(agc.appliedGain, agc.speechGain,
+                           "the gap must not drop the mix to unity mid-phrase")
+        }
+        XCTAssertEqual(agc.appliedGain, speaking, accuracy: 0.0001)
 
         agc.update(cycleRMS: quiet, systemRMS: silentSystem, cycleDuration: cycle)
-        XCTAssertGreaterThan(agc.appliedGain, ramped * 0.99,
-                             "the owner's next word resumes at the ramped gain")
+        XCTAssertEqual(agc.appliedGain, agc.speechGain)
+    }
+
+    func testHoldExpiresAfterHoldSec() {
+        var agc = MicAGC()
+        feed(&agc, mic: quiet, system: silentSystem, count: cyclesToConverge)
+        let ramped = agc.speechGain
+
+        let cyclesPastHold = Int(MicAGC.holdSec / cycle) + 5
+        feed(&agc, mic: 0.004, system: 0, count: cyclesPastHold)
+
+        XCTAssertEqual(agc.appliedGain, 1, "the hold runs out on a long silence")
+        XCTAssertEqual(agc.speechGain, ramped, "but the learned speech level survives it")
+    }
+
+    func testClearBleedReleasesTheHoldImmediately() {
+        var agc = MicAGC()
+        feed(&agc, mic: quiet, system: silentSystem, count: 20)
+        XCTAssertGreaterThan(agc.appliedGain, 1)
+
+        // One unambiguous remote-audio cycle, well inside the hold window.
+        agc.update(cycleRMS: 0.013, systemRMS: 0.079, cycleDuration: cycle)
+        XCTAssertEqual(agc.appliedGain, 1, "bleed cancels the hold rather than coasting through it")
+    }
+
+    func testDominanceChatterDoesNotModulateTheGain() {
+        var agc = MicAGC()
+        feed(&agc, mic: quiet, system: silentSystem, count: 20)
+
+        // Alternating either side of the 2x dominance line with a quiet system
+        // channel — the syllable-rate flicker that made the per-cycle switch
+        // amplitude-modulate the owner's own speech.
+        let system: Float = 0.005
+        for i in 0..<200 {
+            let mic: Float = i.isMultiple(of: 2) ? 0.0102 : 0.0098
+            agc.update(cycleRMS: mic, systemRMS: system, cycleDuration: cycle)
+            XCTAssertEqual(agc.appliedGain, agc.speechGain,
+                           "gain must not flicker to unity around the threshold")
+        }
     }
 
     func testGainRampsAfterAStretchOfBleed() {

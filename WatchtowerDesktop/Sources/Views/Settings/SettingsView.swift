@@ -975,10 +975,10 @@ struct GeneralSettings: View {
                 .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
 
             Toggle("Mic auto-gain (experimental)", isOn: $transcriptionMicAGC)
-                .help("Boost a quiet microphone toward the remote-audio level before mixing, "
-                    + "so in-room speech is not drowned by remote participants. Only cycles where "
-                    + "the mic clearly dominates system audio are boosted, so remote audio leaking "
-                    + "into the mic is not amplified.")
+                .help("Boost a quiet microphone toward a healthy recording level while you are the "
+                    + "dominant sound in it, so your own voice is not lost in the recording. "
+                    + "Moments where remote participants are the dominant sound are left untouched, "
+                    + "so their audio leaking into your mic is never amplified.")
 
             Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")

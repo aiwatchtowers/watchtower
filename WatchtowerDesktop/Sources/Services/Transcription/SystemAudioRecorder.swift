@@ -258,8 +258,10 @@ private final class TapRecorderImpl {
         mixed.frameLength = AVAudioFrameCount(frameCount)
 
         // The AGC decides on THIS cycle's levels, before they are mixed, so a
-        // cycle carrying only remote-audio bleed is never boosted — not even
-        // for the one cycle of latency a measure-after-mix order would cost.
+        // bleed cycle is judged on its own samples rather than the previous
+        // cycle's. It still carries the tail of the previous gain: the glide
+        // below starts where the last cycle ended, so the first bleed cycle
+        // ramps down across its own ~10 ms rather than starting at unity.
         // Skipped wholesale when the AGC is off: no per-frame work, and the
         // mix below is then bit-identical to the pre-AGC recorder.
         let previousGain = micAGC?.appliedGain ?? 1
@@ -279,11 +281,14 @@ private final class TapRecorderImpl {
                 cycleDuration: frames / format.sampleRate
             )
         }
-        // Glide to the new gain across the cycle instead of stepping to it at
+        // Ramp to the new gain across the cycle instead of stepping to it at
         // the boundary — a jump of up to 6x between adjacent samples is an
-        // audible click.
-        var agcGain = previousGain
-        let agcGainStep = ((micAGC?.appliedGain ?? 1) - previousGain) / Float(frameCount)
+        // audible click. The last frame lands one step short of the target,
+        // which the next cycle's ramp starts from.
+        let glide = MicAGC.glide(
+            from: previousGain, to: micAGC?.appliedGain ?? 1, frameCount: frameCount
+        )
+        var agcGain = glide.start
 
         for frame in 0..<frameCount {
             let mic = channelAverage(firstBuffer, frame: frame)
@@ -297,7 +302,7 @@ private final class TapRecorderImpl {
                 activityAccumulator?.add(mic: mic, sys: system)
             }
             out[frame] = tanhf(system + 0.9 * agcGain * mic)
-            agcGain += agcGainStep
+            agcGain += glide.step
         }
         if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
             do {
