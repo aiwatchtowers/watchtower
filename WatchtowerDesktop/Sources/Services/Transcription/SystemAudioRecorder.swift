@@ -133,7 +133,7 @@ private final class TapRecorderImpl {
         } else {
             try? FileManager.default.removeItem(at: activityURL)
         }
-        micAGC = Self.micAGCEnabled() ? MicAGC() : nil
+        micAGC = MicAGC.isEnabled() ? MicAGC() : nil
 
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
         var newProcID: AudioDeviceIOProcID?
@@ -202,9 +202,8 @@ private final class TapRecorderImpl {
     /// tap (system) audio. Weights port snoop's record.sh lessons — mic at 0.9
     /// so simultaneous loud speech doesn't slam the ceiling, and a tanh-style
     /// soft clip instead of auto-leveling (which drove the signal INTO clipping).
-    /// `MicAGC` does not walk that back: it scales ONLY the mic term, slowly and
-    /// clamped to 1–6x, with the tanh soft clip still in place as the safety —
-    /// never the mix-wide normalizer that burned snoop.
+    /// The mic term is additionally scaled by `MicAGC` — see that file for why
+    /// this is not the mix-wide leveling snoop was burned on.
     private func handleInput(_ inputData: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputData))
         guard !buffers.isEmpty else { return }
@@ -224,6 +223,17 @@ private final class TapRecorderImpl {
                 sum += samples[frame * channels + ch]
             }
             return sum / Float(channels)
+        }
+
+        /// Mean of every tap (system) buffer at `frame`; 0 when the mic is the
+        /// only buffer in the cycle.
+        func systemAverage(frame: Int) -> Float {
+            guard buffers.count > 1 else { return 0 }
+            var acc: Float = 0
+            for i in 1..<buffers.count {
+                acc += channelAverage(buffers[i], frame: frame)
+            }
+            return acc / Float(buffers.count - 1)
         }
 
         let firstBuffer = buffers[0]
@@ -247,23 +257,37 @@ private final class TapRecorderImpl {
         }
         mixed.frameLength = AVAudioFrameCount(frameCount)
 
-        // One gain for the whole cycle, read BEFORE the loop and updated after
-        // it: the cycle stays internally consistent and the realtime path does
-        // no per-frame state work. 1x when the AGC is off.
-        let agcGain = micAGC?.gain ?? 1
-        var micSquares: Float = 0
+        // The AGC decides on THIS cycle's levels, before they are mixed, so a
+        // cycle carrying only remote-audio bleed is never boosted — not even
+        // for the one cycle of latency a measure-after-mix order would cost.
+        // Skipped wholesale when the AGC is off: no per-frame work, and the
+        // mix below is then bit-identical to the pre-AGC recorder.
+        let previousGain = micAGC?.appliedGain ?? 1
+        if micAGC != nil {
+            var micSquares: Double = 0
+            var sysSquares: Double = 0
+            for frame in 0..<frameCount {
+                let mic = channelAverage(firstBuffer, frame: frame)
+                let system = systemAverage(frame: frame)
+                micSquares += Double(mic * mic)
+                sysSquares += Double(system * system)
+            }
+            let frames = Double(frameCount)
+            micAGC?.update(
+                cycleRMS: Float((micSquares / frames).squareRoot()),
+                systemRMS: Float((sysSquares / frames).squareRoot()),
+                cycleDuration: frames / format.sampleRate
+            )
+        }
+        // Glide to the new gain across the cycle instead of stepping to it at
+        // the boundary — a jump of up to 6x between adjacent samples is an
+        // audible click.
+        var agcGain = previousGain
+        let agcGainStep = ((micAGC?.appliedGain ?? 1) - previousGain) / Float(frameCount)
 
         for frame in 0..<frameCount {
             let mic = channelAverage(firstBuffer, frame: frame)
-            var system: Float = 0
-            if buffers.count > 1 {
-                var acc: Float = 0
-                for i in 1..<buffers.count {
-                    acc += channelAverage(buffers[i], frame: frame)
-                }
-                system = acc / Float(buffers.count - 1)
-            }
-            micSquares += mic * mic
+            let system = systemAverage(frame: frame)
             // The sidecar records the RAW pre-gain mic level on purpose:
             // RoleAssigner's «Я» heuristic compares mic vs system RMS, so
             // scaling the mic here would change what that comparison means.
@@ -273,8 +297,8 @@ private final class TapRecorderImpl {
                 activityAccumulator?.add(mic: mic, sys: system)
             }
             out[frame] = tanhf(system + 0.9 * agcGain * mic)
+            agcGain += agcGainStep
         }
-        micAGC?.update(cycleRMS: (micSquares / Float(frameCount)).squareRoot())
         if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
             do {
                 try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
@@ -351,15 +375,6 @@ private final class TapRecorderImpl {
     }
 
     // MARK: Setup helpers
-
-    /// `transcription.micAGC`, default ON — the AGC fixes a measured defect
-    /// (mic 20 dB under the remote stream), so the key is only an escape hatch.
-    /// Read here rather than through `TranscriptionConfig`: the recorder is
-    /// built by a knob-less factory and consumes no transcription config.
-    private static func micAGCEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: "transcription.micAGC") != nil else { return true }
-        return defaults.bool(forKey: "transcription.micAGC")
-    }
 
     /// Creates the private aggregate device combining the default input device
     /// (mic) with the process tap. Sub-devices come before taps in the IOProc's
