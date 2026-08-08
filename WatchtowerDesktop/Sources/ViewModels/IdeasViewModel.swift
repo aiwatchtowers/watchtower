@@ -309,9 +309,13 @@ final class IdeasViewModel {
     }
 
     /// Parses the LAST non-empty line of the CLI's stdout as the backfill
-    /// envelope, ignoring any `cycle=N` progress lines that may precede it
-    /// (`cmd/ideas.go`'s `backfillEnvelope`). A small testable static so the
-    /// parsing logic is covered independently of the CLI subprocess.
+    /// envelope (`cmd/ideas.go`'s `backfillEnvelope`). In practice `data` is
+    /// already just the envelope: `cycle=N` progress lines go to stderr,
+    /// which `CLIRunnerProtocol.run` never mixes into the stdout it returns.
+    /// The last-line parse is defensive — cheap insurance against a stray
+    /// leading line — not a real ignoring-progress-lines requirement. A
+    /// small testable static so the parsing logic is covered independently
+    /// of the CLI subprocess.
     static func parseBackfillEnvelope(_ data: Data) -> IdeaBackfillEnvelope? {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }

@@ -376,7 +376,10 @@ final class IdeasViewModelTests: XCTestCase {
 
     // MARK: - parseBackfillEnvelope()
 
-    func testParseBackfillEnvelopeIgnoresProgressLinesBeforeTheJSONLine() {
+    /// SB9: `cycle=N` progress lines actually go to stderr and never reach
+    /// this parser in practice — this pins the defensive last-line-parse
+    /// behavior, not a real "ignores progress lines" requirement.
+    func testParseBackfillEnvelopeDefensivelyTakesTheLastLine() {
         let stdout = Data("""
         cycle=1
         cycle=2
