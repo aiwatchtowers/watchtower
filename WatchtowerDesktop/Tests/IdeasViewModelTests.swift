@@ -239,6 +239,34 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.backfillError, "watchtower exited with error: boom")
     }
 
+    /// SB6: the CLI can fail (nonzero exit, or a malformed final envelope)
+    /// AFTER already committing ideas to the DB mid-run, so every terminal
+    /// path — not just success — must reload, or newly-mined ideas would
+    /// stay invisible until the next unrelated reload.
+    func testStartBackfillFailureStillReloadsList() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, title: "Committed before the failure", status: "proposed")
+        }
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Committed before the failure"])
+    }
+
+    func testStartBackfillMalformedOutputStillReloadsList() async throws {
+        let runner = FakeCLIRunner(stdout: Data("not json at all".utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, title: "Committed before the parse failure", status: "proposed")
+        }
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Committed before the parse failure"])
+    }
+
     /// SB5: GB9 on the Go side emits {"disabled":true} on the backfill path
     /// when ideas.enabled=false, instead of the usual proposed/cycles
     /// envelope. That must not read as an opaque parse failure.

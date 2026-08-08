@@ -272,6 +272,10 @@ final class IdeasViewModel {
             "--from", Self.dateFormatter.string(from: from),
             "--to", Self.dateFormatter.string(from: to)
         ]
+        // SB6: load() runs on every terminal path below, not just success —
+        // a nonzero exit or a malformed final envelope can still follow a
+        // run that already committed ideas to the DB, and those must not
+        // stay invisible until some unrelated reload.
         do {
             let data = try await runner.run(args: args)
             isBackfilling = false
@@ -281,10 +285,12 @@ final class IdeasViewModel {
                 // that must read as an actionable message, not an opaque
                 // parse failure.
                 backfillError = "The ideas registry is disabled in Settings."
+                load()
                 return
             }
             guard let envelope = Self.parseBackfillEnvelope(data) else {
                 backfillError = "Could not parse the backfill result."
+                load()
                 return
             }
             backfillSummary = "Proposed \(envelope.proposed) ideas (\(envelope.cycles) cycles, \(envelope.mentionsDeduped) duplicates skipped)"
@@ -292,6 +298,7 @@ final class IdeasViewModel {
         } catch {
             isBackfilling = false
             backfillError = error.localizedDescription
+            load()
         }
     }
 
