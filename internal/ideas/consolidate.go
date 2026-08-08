@@ -491,6 +491,19 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	// mintedThisTx tracks (source, ref) mentions inserted by an EARLIER op in
+	// THIS SAME apply pass (new_idea/new_decision only — GB6, [OWNER]
+	// confirmed 2026-08-08). SQLite's same-connection reads see this tx's own
+	// uncommitted writes, so without this exclusion a ref minted by op 1
+	// would make op 2's IDEA-05 check see it as "already known" and drop it —
+	// even though it was never known BEFORE this pass began. That silently
+	// killed a message evidencing two genuinely distinct new ideas: op 1
+	// survives, op 2 loses its only ref and gets discarded entirely. A ref
+	// only ever lands in mintedThisTx after surviving its OWN IDEA-05 check,
+	// so by construction it was not pre-existing — excluding it here can
+	// never let a genuinely already-mined ref slip through.
+	mintedThisTx := map[string]map[string]struct{}{}
+
 	for _, op := range ops {
 		switch op.Op {
 		case "new_idea", "new_decision":
@@ -527,6 +540,12 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				if kerr != nil {
 					return proposed, refsRejected, mentionsDeduped, fmt.Errorf("checking known mention refs: %w", kerr)
 				}
+				// Exclude refs this SAME apply pass minted itself (GB6): they
+				// are not "already known" for IDEA-05's purposes, only known
+				// because an earlier op in this pass just inserted them.
+				for ref := range mintedThisTx[src] {
+					delete(known, ref)
+				}
 				knownBySrc[src] = known
 			}
 
@@ -559,6 +578,10 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 				if merr := database.InsertIdeaMentionTx(tx, m); merr != nil {
 					return proposed, refsRejected, mentionsDeduped, fmt.Errorf("recording mention for idea %d: %w", id, merr)
 				}
+				if mintedThisTx[m.Source] == nil {
+					mintedThisTx[m.Source] = map[string]struct{}{}
+				}
+				mintedThisTx[m.Source][m.Ref] = struct{}{}
 			}
 			proposed++
 

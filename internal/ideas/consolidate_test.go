@@ -613,6 +613,45 @@ func TestIdeas05_PartiallyKnownNewIdea_KeepsUnknownRefsOnly(t *testing.T) {
 	assert.Len(t, otherMentions, 1)
 }
 
+// TestGB6_TwoNewIdeasShareSameRefInOnePass_BothSurvive pins the 2026-08-08
+// [OWNER] ruling on IDEA-05 clause 2: a ref minted by an EARLIER new_idea/
+// new_decision op in the SAME apply pass must not make a LATER op's
+// identical ref look "already known" — a single message can genuinely
+// evidence two distinct new ideas, and both must survive. Without the
+// same-tx exclusion, op 2's only mention would be seen as a duplicate of
+// what op 1 just inserted moments earlier in this same transaction, and op
+// 2 would be silently discarded entirely.
+func TestGB6_TwoNewIdeasShareSameRefInOnePass_BothSurvive(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	seedDigestTopicIdeas(t, d, "C1", "general", []digest.IdeaCandidate{
+		{Text: "we should try X and also Y", By: "Ann", MessageTS: "1.1"},
+	}, nil)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[
+			{"op":"new_idea","title":"Try X","essence":"e","mentions":[{"source":"slack","ref":"C1|1.1","quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]},
+			{"op":"new_idea","title":"Try Y","essence":"e","mentions":[{"source":"slack","ref":"C1|1.1","quote":"try Y","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}
+		]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, mentionsDeduped, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, proposed, "two distinct ideas citing the same ref within one pass must both survive")
+	assert.Zero(t, mentionsDeduped, "the second op's ref must not be treated as already-mined just because the first op minted it earlier in this same pass")
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{Status: "proposed"})
+	require.NoError(t, err)
+	require.Len(t, ideas, 2)
+	for _, idea := range ideas {
+		mentions, err := d.ListIdeaMentions(idea.ID)
+		require.NoError(t, err)
+		require.Len(t, mentions, 1)
+		assert.Equal(t, "C1|1.1", mentions[0].Ref)
+	}
+}
+
 // TestGB5_AttachMention_RefKnownOnDifferentIdea_StillInsertsOnTarget pins
 // GB5 (attach dedup stays TARGET-SCOPED, [OWNER] confirmed): a ref already
 // recorded on a DIFFERENT idea must not block attaching it to the target —
