@@ -363,13 +363,15 @@ struct GeneralSettings: View {
 
     private var ideasSection: some View {
         Section("Ideas") {
-            Toggle("Enable ideas backfill", isOn: $config.ideasEnabled)
+            Toggle("Enable ideas registry", isOn: $config.ideasEnabled)
+                .help("Mines ideas, notes, and decisions from Slack, meetings, email, and Jira into the Ideas registry")
 
             Stepper(
                 "Mining interval (hours): \(config.ideasMineIntervalHours)",
                 value: $config.ideasMineIntervalHours,
                 in: 1...48
             )
+            .help("How often the daemon's regular (non-backfill) mining pass runs")
         }
     }
 
