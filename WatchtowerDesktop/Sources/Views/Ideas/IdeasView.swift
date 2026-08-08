@@ -11,6 +11,7 @@ struct IdeasView: View {
     @Environment(AppState.self) private var appState
 
     @State private var showCreateSheet = false
+    @State private var showBackfillSheet = false
     @State private var searchDebounceTask: Task<Void, Never>?
 
     var body: some View {
@@ -34,6 +35,9 @@ struct IdeasView: View {
         .navigationTitle("Ideas")
         .sheet(isPresented: $showCreateSheet) {
             IdeaCreateSheet(vm: vm)
+        }
+        .sheet(isPresented: $showBackfillSheet) {
+            IdeaBackfillSheet(vm: vm)
         }
         .onAppear {
             // startObserving() already loads; the extra refresh() is the
@@ -96,6 +100,14 @@ struct IdeasView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
+                Button {
+                    showBackfillSheet = true
+                } label: {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.body)
+                }
+                .buttonStyle(.plain)
+                .help("Find ideas in a past date range")
                 Button {
                     showCreateSheet = true
                 } label: {

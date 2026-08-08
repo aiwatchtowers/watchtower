@@ -203,4 +203,110 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(idea?.status, .merged)
         XCTAssertEqual(idea?.needsReview, false)
     }
+
+    // MARK: - startBackfill()
+
+    /// `watchtower ideas mine --from --to` writes new idea rows directly to
+    /// the DB; GRDB's in-process observation can't see a separate process's
+    /// writes, so a successful run must explicitly reload.
+    func testStartBackfillSuccessSetsSummaryClearsFlagAndReloadsList() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"proposed":5,"cycles":2,"mentions_deduped":1}"#.utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+        XCTAssertTrue(vm.reviewItems.isEmpty)
+
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, title: "Mined idea", status: "proposed")
+        }
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertEqual(vm.backfillSummary, "Proposed 5 ideas (2 cycles, 1 duplicates skipped)")
+        XCTAssertNil(vm.backfillError)
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Mined idea"], "success reloads the list")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(runner.invocations.first.map { Array($0.prefix(2)) }, ["ideas", "mine"])
+    }
+
+    func testStartBackfillFailureSetsErrorNotSummary() async {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertNil(vm.backfillSummary)
+        XCTAssertEqual(vm.backfillError, "watchtower exited with error: boom")
+    }
+
+    func testStartBackfillMalformedOutputSetsErrorNotCrash() async {
+        let runner = FakeCLIRunner(stdout: Data("not json at all".utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertNil(vm.backfillSummary)
+        XCTAssertNotNil(vm.backfillError)
+    }
+
+    /// A second `startBackfill` while one is already in flight must not
+    /// invoke the CLI again — guarded synchronously before the first await,
+    /// so the check can't race the in-flight run.
+    func testStartBackfillDoubleStartIsGuarded() async {
+        let blocking = FakeCLIRunner()
+        blocking.blockUntilCancelled = true
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
+
+        let firstTask = Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
+        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        XCTAssertTrue(vm.isBackfilling)
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+        XCTAssertEqual(blocking.invocations.count, 1, "the guarded call must not invoke the CLI a second time")
+
+        firstTask.cancel()
+        await firstTask.value
+        XCTAssertFalse(vm.isBackfilling)
+    }
+
+    /// House rule: async ops need VM-owned state so they survive the sheet
+    /// being dismissed / the tab switched away from and back — nothing here
+    /// holds onto the started Task, mirroring how the sheet's Start button
+    /// fires an unstructured Task rather than a view-scoped `.task`.
+    func testStartBackfillStateSurvivesNavigationAwayAndBack() async {
+        let runner = FakeCLIRunner(stdout: Data(#"{"proposed":4,"cycles":3,"mentions_deduped":2}"#.utf8))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
+
+        for _ in 0..<1000 where vm.isBackfilling || vm.backfillSummary == nil {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(vm.isBackfilling)
+        XCTAssertEqual(vm.backfillSummary, "Proposed 4 ideas (3 cycles, 2 duplicates skipped)")
+        XCTAssertNil(vm.backfillError)
+    }
+
+    // MARK: - parseBackfillEnvelope()
+
+    func testParseBackfillEnvelopeIgnoresProgressLinesBeforeTheJSONLine() {
+        let stdout = Data("""
+        cycle=1
+        cycle=2
+        cycle=3
+        {"proposed":7,"cycles":3,"mentions_deduped":4}
+        """.utf8)
+
+        let envelope = IdeasViewModel.parseBackfillEnvelope(stdout)
+
+        XCTAssertEqual(envelope?.proposed, 7)
+        XCTAssertEqual(envelope?.cycles, 3)
+        XCTAssertEqual(envelope?.mentionsDeduped, 4)
+    }
+
+    func testParseBackfillEnvelopeReturnsNilOnMalformedOutput() {
+        XCTAssertNil(IdeasViewModel.parseBackfillEnvelope(Data("not json at all".utf8)))
+    }
 }

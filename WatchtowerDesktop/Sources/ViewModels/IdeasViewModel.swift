@@ -13,6 +13,14 @@ final class IdeasViewModel {
     var isLoading = false
     var errorMessage: String?
 
+    /// State for the "Find ideas" backfill sheet. Lives here rather than on
+    /// the sheet's own @State — the house async-op rule — so a run started
+    /// from the sheet keeps going (and its result is still there) if the
+    /// sheet is dismissed and reopened, or the user switches tabs and back.
+    var isBackfilling = false
+    var backfillSummary: String?
+    var backfillError: String?
+
     /// Master-detail selection. Lives here — the VM is AppState-owned — so
     /// selection survives tab/sidebar navigation.
     var selectedID: Int?
@@ -31,6 +39,10 @@ final class IdeasViewModel {
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
+    /// Overrides CLI resolution for tests; production falls back to
+    /// `ProcessCLIRunner.makeDefault()` (mirrors `DashboardViewModel`).
+    private let cliRunner: CLIRunnerProtocol?
+
     /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
     /// from the Go daemon (separate process, separate SQLite update hooks), so
     /// the registry needs a periodic reload to surface daemon-mined ideas.
@@ -48,8 +60,9 @@ final class IdeasViewModel {
         return reviewItems.first { $0.id == id } ?? registryItems.first { $0.id == id }
     }
 
-    init(dbManager: DatabaseManager) {
+    init(dbManager: DatabaseManager, cliRunner: CLIRunnerProtocol? = nil) {
         self.dbManager = dbManager
+        self.cliRunner = cliRunner
     }
 
     func select(_ id: Int?) {
@@ -230,5 +243,65 @@ final class IdeasViewModel {
             errorMessage = "Failed to \(label): \(error.localizedDescription)"
             return false
         }
+    }
+
+    // MARK: - Find-ideas backfill
+
+    /// Runs `watchtower ideas mine --from --to` over a historical window (the
+    /// Settings/sheet-driven backfill — separate from the daemon's regular
+    /// mining pass). Guarded synchronously against double-start: the check and
+    /// the `isBackfilling = true` flip both happen before the first `await`,
+    /// so a second call made while the first is in flight can't race past it.
+    /// Errors do not clear a prior success's `backfillSummary` — only a new
+    /// success replaces it (clear-only-on-success).
+    func startBackfill(from: Date, to: Date) async {
+        guard !isBackfilling else { return }
+        guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
+            backfillError = "watchtower CLI not found in PATH"
+            return
+        }
+        isBackfilling = true
+        backfillError = nil
+        let args = [
+            "ideas", "mine",
+            "--from", Self.dateFormatter.string(from: from),
+            "--to", Self.dateFormatter.string(from: to)
+        ]
+        do {
+            let data = try await runner.run(args: args)
+            isBackfilling = false
+            guard let envelope = Self.parseBackfillEnvelope(data) else {
+                backfillError = "Could not parse the backfill result."
+                return
+            }
+            backfillSummary = "Proposed \(envelope.proposed) ideas (\(envelope.cycles) cycles, \(envelope.mentionsDeduped) duplicates skipped)"
+            load()
+        } catch {
+            isBackfilling = false
+            backfillError = error.localizedDescription
+        }
+    }
+
+    /// Parses the LAST non-empty line of the CLI's stdout as the backfill
+    /// envelope, ignoring any `cycle=N` progress lines that may precede it
+    /// (`cmd/ideas.go`'s `backfillEnvelope`). A small testable static so the
+    /// parsing logic is covered independently of the CLI subprocess.
+    static func parseBackfillEnvelope(_ data: Data) -> IdeaBackfillEnvelope? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
+        return try? JSONDecoder().decode(IdeaBackfillEnvelope.self, from: Data(lastLine.utf8))
+    }
+}
+
+/// Mirrors `backfillEnvelope` in `cmd/ideas.go` — `ideas mine --from`'s final
+/// one-line JSON summary.
+struct IdeaBackfillEnvelope: Decodable, Equatable {
+    let proposed: Int
+    let cycles: Int
+    let mentionsDeduped: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case proposed, cycles
+        case mentionsDeduped = "mentions_deduped"
     }
 }
