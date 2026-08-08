@@ -68,7 +68,11 @@ A registry for ideas, decisions, and notes that surface in Slack threads, meetin
 
 **Create (+):** add an idea, note, or decision by hand — title and free text, no triage needed since it starts out active.
 
+**Find Ideas:** the sparkle-search button next to Create opens a range picker — presets for the last two weeks, month, or quarter, or your own from/to dates — and mines that historical window on demand. The daemon's regular pass only looks at recent activity, so this is how you backfill ideas and decisions from before you turned the feature on, or catch up after time away. Progress shows inline while it runs (you can switch tabs and come back, the run keeps going), and it finishes with a summary of how much was proposed. Re-running the same range, or an overlapping one, is always safe — it never creates duplicate items or mentions.
+
 **Sidebar badge** — count of items awaiting review (freshly proposed + resurfaced).
+
+**Settings:** the Ideas card lets you turn the whole registry on or off and adjust how often it mines in the background (1–48 hours, default 6).
 
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
