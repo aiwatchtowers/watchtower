@@ -114,7 +114,8 @@ struct CLIRunnerTests {
                 return nil
             }
             // Whichever finishes first; the group cancels the other on scope exit.
-            return try await group.next() ?? nil
+            guard let first = try await group.next() else { return nil }
+            return first
         }
 
         let out = try #require(data, "runner timed out — stdout/stderr pipes are deadlocking")

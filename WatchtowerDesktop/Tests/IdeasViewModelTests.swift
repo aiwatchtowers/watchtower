@@ -416,7 +416,7 @@ final class IdeasViewModelTests: XCTestCase {
     /// not the machine's local day. 2026-01-01T23:30 UTC rolls to Jan 2nd
     /// local time in any zone east of UTC (this machine included), so an
     /// unpinned formatter would send the wrong date.
-    func testStartBackfillFormatsDatesAsTheUTCCalendarDay() async {
+    func testStartBackfillFormatsDatesAsTheUTCCalendarDay() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"proposed":0,"cycles":0,"mentions_deduped":0}"#.utf8))
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
 
@@ -427,7 +427,7 @@ final class IdeasViewModelTests: XCTestCase {
         comps.day = 1
         comps.hour = 23
         comps.minute = 30
-        let date = Calendar(identifier: .gregorian).date(from: comps)!
+        let date = try XCTUnwrap(Calendar(identifier: .gregorian).date(from: comps))
 
         await vm.startBackfill(from: date, to: date)
 
