@@ -447,23 +447,30 @@ func newPipelineForTest(t *testing.T, d *db.DB, userID, email string) *Pipeline 
 	return p
 }
 
-// seedJiraComment creates the jira_comments table (if absent) and inserts a row.
-func seedJiraComment(t *testing.T, d *db.DB, issueKey, authorID, body string, createdAt time.Time) {
+// seedJiraComment inserts a row into the real jira_comments table (migration
+// 00050; account_id=1, seeding a default test Jira account if none exists
+// yet). authorAccountID is stored as BOTH the display name and the
+// Atlassian account id (jira_comments.author_account_id) — tests don't care
+// about a distinct display name, and it's the account id that a [~mention]
+// and autoResolveJira's identity match actually key off.
+//
+// created_at/updated_at are written in Jira Cloud's own dotted-millisecond
+// format (db.FormatJiraTime), exactly as the real comment sync writes them —
+// the detector's window bound is a plain SQL string compare against this
+// column, so a fixture in bare RFC3339 would compare differently from
+// production and hide a real format mismatch.
+func seedJiraComment(t *testing.T, d *db.DB, issueKey, authorAccountID, body string, createdAt time.Time) {
 	t.Helper()
-	_, err := d.Exec(`CREATE TABLE IF NOT EXISTS jira_comments (
-		id          TEXT PRIMARY KEY,
-		issue_key   TEXT NOT NULL,
-		author_id   TEXT NOT NULL,
-		body        TEXT NOT NULL DEFAULT '',
-		created_at  TEXT NOT NULL,
-		updated_at  TEXT NOT NULL
-	)`)
-	require.NoError(t, err, "create jira_comments table")
-	ts := createdAt.UTC().Format(time.RFC3339)
-	_, err = d.Exec(`INSERT INTO jira_comments (id, issue_key, author_id, body, created_at, updated_at)
-		VALUES (?,?,?,?,?,?)`,
-		fmt.Sprintf("%s-%s-%d", issueKey, authorID, createdAt.UnixNano()),
-		issueKey, authorID, body, ts, ts)
+	var accounts int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM jira_accounts`).Scan(&accounts))
+	if accounts == 0 {
+		db.SeedTestJiraAccount(t, d)
+	}
+	ts := db.FormatJiraTime(createdAt.UTC())
+	_, err := d.Exec(`INSERT INTO jira_comments (account_id, issue_key, id, author, author_account_id, body_text, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)`,
+		1, issueKey, fmt.Sprintf("%s-%s-%d", issueKey, authorAccountID, createdAt.UnixNano()),
+		authorAccountID, authorAccountID, body, ts, ts)
 	require.NoError(t, err, "insert jira_comment")
 }
 
@@ -472,8 +479,13 @@ func TestInbox02_AutoResolveJiraOnUserComment(t *testing.T) {
 	// User comments on a Jira issue → jira_comment_mention auto-resolves.
 	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
-	// Open jira_comment_mention for WT-1, then user adds comment to the issue.
 	seedJiraIssue(t, d, "WT-1", "alice", time.Now().Add(-1*time.Hour))
+	// Map alice's Slack id to her Atlassian account id — the real schema's
+	// [~mention] text and jira_comments.author_account_id are keyed on
+	// Atlassian ids, not Slack ids (INBOX-02 reconciliation with the real
+	// jira_comments shape from migration 00050).
+	require.NoError(t, d.UpsertJiraUserMap(db.JiraUserMap{JiraAccountID: "alice", SlackUserID: "alice", DisplayName: "Alice"}))
+	// Open jira_comment_mention for WT-1, then user adds comment to the issue.
 	seedJiraComment(t, d, "WT-1", "bob", "hey [~alice]", time.Now().Add(-30*time.Minute))
 	p := newPipelineForTest(t, d, "alice", "alice@x.com")
 	_, _, err := p.Run(context.Background())

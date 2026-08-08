@@ -13,6 +13,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
 | Catch-up | [catchup.md](catchup.md) | `internal/catchup/`, `internal/db/catchup_store.go`, `internal/db/digests.go` (`MarkDigestRead` decision cascade), `WatchtowerDesktop/Sources/{Views,ViewModels}/CatchUp*`, `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift` |
 | Secretary Memory | [memory.md](memory.md) | `internal/memory/`, `internal/db/memory.go`, `internal/daemon/daemon.go` (`phaseMemory`), `internal/mcp/memory.go`, `cmd/memory.go` |
+| Ideas & Decisions Registry | [ideas.md](ideas.md) | `internal/ideas/`, `internal/db/ideas.go`, `internal/jira/sync.go` (bounded comment sync), `internal/daemon/daemon.go` (`phaseIdeas`), `internal/mcp/ideas.go`, `cmd/ideas.go`, `WatchtowerDesktop/Sources/Views/Ideas/`, `WatchtowerDesktop/Sources/Database/Queries/IdeaQueries.swift` |
 
 (Other modules will be added as their inventories are written.)
 

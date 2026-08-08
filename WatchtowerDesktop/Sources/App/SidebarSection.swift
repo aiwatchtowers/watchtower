@@ -21,7 +21,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var items: [SidebarDestination] {
         switch self {
-        case .today: [.catchUp, .briefings, .dayPlan, .inbox, .calendar]
+        case .today: [.catchUp, .briefings, .dayPlan, .inbox, .ideas, .calendar]
         case .delivery: [.projectMap, .releases, .blockers, .workload]
         case .analytics: [.digests, .people, .memory, .statistics]
         }

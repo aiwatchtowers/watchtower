@@ -60,12 +60,14 @@ struct GeneralSettings: View {
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
     @AppStorage("transcription.langset") private var transcriptionLangset = "ru,uk,en"
-    @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 20.0
+    @AppStorage("transcription.windowSec") private var transcriptionWindowSec = 30.0
     @AppStorage("transcription.langThreshold") private var transcriptionLangThreshold = 0.6
     @AppStorage("transcription.margin") private var transcriptionMargin = 0.2
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
+    @AppStorage("transcription.contextPrompt") private var transcriptionContextPrompt = false
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
+    @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @State private var showAdvancedTranscription = false
 
@@ -973,6 +975,16 @@ struct GeneralSettings: View {
             Toggle("Speaker roles", isOn: $transcriptionDiarization)
                 .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
 
+            Toggle("Cross-window context (experimental)", isOn: $transcriptionContextPrompt)
+                .help("Feed each window's decode the previous window's text (Whisper long-form conditioning). "
+                    + "May help continuity on clean audio; costs roughly 1.4x decode time. WhisperKit engine only.")
+
+            Toggle("Mic auto-gain (experimental)", isOn: $transcriptionMicAGC)
+                .help("Boost a quiet microphone toward a healthy recording level while you are the "
+                    + "dominant sound in it, so your own voice is not lost in the recording. "
+                    + "Moments where remote participants are the dominant sound are left untouched, "
+                    + "so their audio leaking into your mic is never amplified.")
+
             Toggle("Auto-record on join", isOn: $autoRecordOnJoin)
                 .help("Pressing Join on a calendar event also starts an event-linked recording (unless one is already running)")
 
@@ -984,36 +996,41 @@ struct GeneralSettings: View {
             .help("Recording audio is deleted after this many days; transcript text is kept forever. 0 disables cleanup.")
 
             DisclosureGroup("Advanced", isExpanded: $showAdvancedTranscription) {
-                LabeledContent("Window (seconds)") {
-                    TextField("", value: $transcriptionWindowSec, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Language threshold") {
-                    TextField("", value: $transcriptionLangThreshold, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Runner-up margin") {
-                    TextField("", value: $transcriptionMargin, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Diarization threshold") {
-                    TextField("", value: $transcriptionDiarizationThreshold, format: .number)
-                        .frame(width: 70)
-                        .multilineTextAlignment(.trailing)
-                }
-                .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
-                    + "Try lowering when different people get merged into one Speaker N.")
-                TextField(
-                    "Force language",
-                    text: $transcriptionForceLang,
-                    prompt: Text("auto-detect")
-                )
-                .help("Set a language code (e.g. ru) to skip detection entirely")
+                advancedTranscriptionControls
             }
         }
+    }
+
+    @ViewBuilder
+    private var advancedTranscriptionControls: some View {
+        LabeledContent("Window (seconds)") {
+            TextField("", value: $transcriptionWindowSec, format: .number)
+                .frame(width: 70)
+                .multilineTextAlignment(.trailing)
+        }
+        LabeledContent("Language threshold") {
+            TextField("", value: $transcriptionLangThreshold, format: .number)
+                .frame(width: 70)
+                .multilineTextAlignment(.trailing)
+        }
+        LabeledContent("Runner-up margin") {
+            TextField("", value: $transcriptionMargin, format: .number)
+                .frame(width: 70)
+                .multilineTextAlignment(.trailing)
+        }
+        LabeledContent("Diarization threshold") {
+            TextField("", value: $transcriptionDiarizationThreshold, format: .number)
+                .frame(width: 70)
+                .multilineTextAlignment(.trailing)
+        }
+        .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
+            + "Try lowering when different people get merged into one Speaker N.")
+        TextField(
+            "Force language",
+            text: $transcriptionForceLang,
+            prompt: Text("auto-detect")
+        )
+        .help("Set a language code (e.g. ru) to skip detection entirely")
     }
 
     /// One-line summary of what the selected engine/model can do, so the

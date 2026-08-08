@@ -143,3 +143,29 @@ func TestGenerateTranscriptRecapBadAIJSON(t *testing.T) {
 		t.Fatal("expected error for malformed AI JSON, got nil")
 	}
 }
+
+func TestGenerateTranscriptRecapIdeasTrimmed(t *testing.T) {
+	mock := &recordingMockGenerator{response: `{"summary":"s","key_decisions":[],"action_items":[],"open_questions":[],"ideas":["idea one",""]}`}
+	pipe := &Pipeline{generator: mock}
+
+	res, _, err := pipe.GenerateTranscriptRecap(context.Background(), "", "real transcript text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Ideas) != 1 || res.Ideas[0] != "idea one" {
+		t.Errorf("expected 1 trimmed idea, got %v", res.Ideas)
+	}
+}
+
+func TestGenerateTranscriptRecapIdeasAbsentIsEmpty(t *testing.T) {
+	mock := &recordingMockGenerator{response: transcriptRecapMockResponse}
+	pipe := &Pipeline{generator: mock}
+
+	res, _, err := pipe.GenerateTranscriptRecap(context.Background(), "", "real transcript text")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Ideas) != 0 {
+		t.Errorf("expected no ideas when field is absent, got %v", res.Ideas)
+	}
+}

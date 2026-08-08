@@ -113,4 +113,35 @@ final class SidebarCountsViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.situationsCount, 0)
     }
+
+    /// The Ideas badge is the count of ideas awaiting owner review — matches
+    /// `IdeaQueries.countForReview` exactly (proposed OR flagged needs_review).
+    func testIdeasCountMatchesCountForReview() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try await manager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, status: "proposed")
+            try TestDatabase.insertIdea(db, status: "active", needsReview: true)
+            try TestDatabase.insertIdea(db, status: "active")
+            try TestDatabase.insertIdea(db, status: "dropped")
+        }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        let expected = try await manager.dbPool.read { try IdeaQueries.countForReview($0) }
+        XCTAssertEqual(vm.ideasCount, expected)
+        XCTAssertEqual(vm.ideasCount, 2)
+    }
+
+    func testIdeasCountIsZeroOnEmptyDB() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        XCTAssertEqual(vm.ideasCount, 0)
+    }
 }

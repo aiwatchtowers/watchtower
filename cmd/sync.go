@@ -305,6 +305,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 				inboxPipe.SetPromptStore(prompts.New(database, nil))
 				d.SetInboxPipeline(inboxPipe)
 			}
+			wireIdeasPipeline(d, database, cfg, gen, logger)
 			wireMemoryPipeline(d, database, cfg, logger)
 			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
@@ -544,6 +545,11 @@ func wireJiraSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logg
 		}
 		syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
 		syncer.SetLogger(logger)
+		// Bounded comment sync feeds the Ideas registry's Jira pre-digest; it
+		// stays off (0 = disabled) unless the registry itself is on.
+		if cfg.Ideas.Enabled {
+			syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
+		}
 		// Wire board analyzer for auto-refresh of changed configs.
 		if cfg.Digest.Enabled {
 			aiProvider := newAIClient(cfg, cfg.DBPath())

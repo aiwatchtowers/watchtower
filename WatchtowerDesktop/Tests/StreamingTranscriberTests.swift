@@ -1,22 +1,25 @@
 import XCTest
 @testable import WatchtowerDesktop
 
-/// Records forced languages + window sizes; returns canned texts in call order.
+/// Records forced languages, window sizes + context prompts; returns canned
+/// texts in call order.
 private final class MockEngine: WhisperWindowEngine, @unchecked Sendable {
     var texts: [Result<String, Error>] = []
     var detections: [[String: Float]] = []
     struct MockError: Error {}
     private(set) var transcribedLanguages: [String] = []
     private(set) var windowSizes: [Int] = []
+    private(set) var prompts: [String?] = []
     private var detectIdx = 0
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] {
         defer { detectIdx += 1 }
         return detectIdx < detections.count ? detections[detectIdx] : [:]
     }
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
+    func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
         windowSizes.append(samples.count)
         transcribedLanguages.append(language)
+        prompts.append(prompt)
         let idx = transcribedLanguages.count - 1
         let text = idx < texts.count ? try texts[idx].get() : ""
         return [TranscribedSegment(text: text, startSec: 0,
@@ -37,6 +40,7 @@ final class StreamingTranscriberTests: XCTestCase {
         c.overlapSec = overlapSec
         c.boundarySnapSec = 0 // exact window sizes are asserted; snapping is pinned separately
         c.forcedLanguage = "en"
+        c.contextPrompt = true // the suite exercises the conditioning machinery; the shipped default is off
         return c
     }
 
@@ -87,6 +91,7 @@ final class StreamingTranscriberTests: XCTestCase {
 
         XCTAssertEqual(streamOut, batchOut)
         XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
     }
 
     func testMatchesBatchWithOverlap() async throws {
@@ -113,6 +118,7 @@ final class StreamingTranscriberTests: XCTestCase {
 
         XCTAssertEqual(streamOut, batchOut)
         XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
         XCTAssertEqual(batchEngine.windowSizes, [1600, 1600, 1600, 1600, 1300],
                        "sanity check: four overlapping full windows plus a truncated tail")
     }
@@ -140,6 +146,7 @@ final class StreamingTranscriberTests: XCTestCase {
 
         XCTAssertEqual(streamOut, batchOut)
         XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
         XCTAssertNotEqual(batchEngine.windowSizes.first, 1600,
                           "sanity: snapping actually moved the first boundary")
     }
@@ -199,5 +206,46 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.transcribedLanguages, ["en", "uk", "en"])
         XCTAssertEqual(output.text, "hello\nagain")
         XCTAssertEqual(output.langStats, ["en": 2])
+        // Detection-driven prompt wiring: the uk-detected window must not be
+        // conditioned by en context (flip drops it), and the failed window
+        // keeps the carried context for the returning en window — the only
+        // streaming pin of `prevLang` feeding `contextPromptTail` under
+        // detection (the equivalence pins all force one language).
+        XCTAssertEqual(engine.prompts, [nil, nil, "hello"])
+    }
+
+    func testMatchesBatchAcrossErrorAndSilenceStreak() async throws {
+        // The prompt state machine is more than "carry the last text": an error
+        // window preserves the context, a silence streak eventually expires it.
+        // Live and batch must walk that machine identically, so the equivalence
+        // invariant covers the whole prompt SEQUENCE, not just the output.
+        //
+        // w1 speech, w2 throws, w3 speech, w4-w6 silent, w7 speech.
+        let samples = [Float](repeating: 0, count: 11200) // 7 × 1600
+        let cfg = forcedConfig()
+        let script: [Result<String, Error>] = [
+            .success("alpha"),
+            .failure(MockEngine.MockError()),
+            .success("gamma"),
+            .success(""), .success(""), .success(""),
+            .success("delta")
+        ]
+
+        let batchEngine = MockEngine()
+        batchEngine.texts = script
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg)
+            .transcribe(samples: samples) { _, _ in }
+
+        let streamEngine = MockEngine()
+        streamEngine.texts = script
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg)
+            .run(samples: stream(of: samples, pieceSize: 333)) { _ in }
+
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
+        XCTAssertEqual(batchEngine.prompts,
+                       [nil, "alpha", "alpha", "gamma", "gamma", "gamma", nil],
+                       "error keeps the context; the third silent window expires it")
+        XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
     }
 }
