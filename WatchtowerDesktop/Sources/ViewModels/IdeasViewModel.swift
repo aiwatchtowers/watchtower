@@ -98,14 +98,14 @@ final class IdeasViewModel {
         do {
             let (review, registry) = try dbManager.dbPool.read { db -> ([Idea], [Idea]) in
                 let review = try IdeaQueries.fetchForReview(db)
-                let browsed = try IdeaQueries.fetchList(
+                let registry = try IdeaQueries.fetchList(
                     db,
                     kind: kindFilter,
                     status: statusFilter,
                     query: searchText.isEmpty ? nil : searchText,
-                    limit: registryLimit
+                    limit: registryLimit,
+                    excludingReviewQueue: true
                 )
-                let registry = browsed.filter { !$0.isForReview }
                 return (review, registry)
             }
             reviewItems = review
@@ -165,7 +165,10 @@ final class IdeasViewModel {
         write("reverse idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
     }
 
-    func setRating(_ idea: Idea, rating: Int, comment: String = "") {
+    /// Returns whether the rating landed, so the view can keep the owner's
+    /// typed comment on screen when it did not (clear-only-on-success).
+    @discardableResult
+    func setRating(_ idea: Idea, rating: Int, comment: String = "") -> Bool {
         write("set rating") { db in try IdeaQueries.setRating(db, id: idea.id, rating: rating, comment: comment) }
     }
 
@@ -215,12 +218,17 @@ final class IdeasViewModel {
     }
 
     /// Shared write-then-reload helper for the simple status-flip actions above.
-    private func write(_ label: String, _ body: @escaping (Database) throws -> Void) {
+    /// Returns whether the write succeeded, so callers that clear owner-typed
+    /// input can gate on it.
+    @discardableResult
+    private func write(_ label: String, _ body: @escaping (Database) throws -> Void) -> Bool {
         do {
             try dbManager.dbPool.write(body)
             load()
+            return true
         } catch {
             errorMessage = "Failed to \(label): \(error.localizedDescription)"
+            return false
         }
     }
 }

@@ -12,6 +12,7 @@ struct IdeaCreateSheet: View {
     @State private var kind: Idea.Kind = .idea
     @State private var title: String = ""
     @State private var essence: String = ""
+    @State private var createError: String?
 
     private var canCreate: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -74,16 +75,29 @@ struct IdeaCreateSheet: View {
 
     private var sheetFooter: some View {
         HStack {
-            Spacer()
-            Button("Create") {
-                vm.createManual(kind: kind.rawValue, title: title, essence: essence)
-                dismiss()
+            if let createError {
+                Label(createError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canCreate)
-            .keyboardShortcut(.return, modifiers: [.command])
+            Spacer()
+            Button("Create", action: create)
+                .buttonStyle(.borderedProminent)
+                .disabled(!canCreate)
+                .keyboardShortcut(.return, modifiers: [.command])
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
+    }
+
+    /// Dismisses only once the row actually exists. Closing regardless would
+    /// throw away the owner's typed title and essence on a failed write, with
+    /// the sheet gone before its error could be read.
+    private func create() {
+        guard vm.createManual(kind: kind.rawValue, title: title, essence: essence) != nil else {
+            createError = vm.errorMessage ?? "Couldn't create the idea."
+            return
+        }
+        dismiss()
     }
 }

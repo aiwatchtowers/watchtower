@@ -11,17 +11,23 @@ struct IdeasView: View {
     @Environment(AppState.self) private var appState
 
     @State private var showCreateSheet = false
+    @State private var searchDebounceTask: Task<Void, Never>?
 
     var body: some View {
-        Group {
-            if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
-                emptyState
-            } else {
-                HSplitView {
-                    listPanel
-                        .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
-                    detailPanel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            if let errorMessage = vm.errorMessage {
+                errorBanner(errorMessage)
+            }
+            Group {
+                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
+                    emptyState
+                } else {
+                    HSplitView {
+                        listPanel
+                            .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+                        detailPanel
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
         }
@@ -30,12 +36,30 @@ struct IdeasView: View {
             IdeaCreateSheet(vm: vm)
         }
         .onAppear {
+            // startObserving() already loads; the extra refresh() is the
+            // cross-process daemon-writes rule — the consolidator mines ideas
+            // in the Go daemon, which ValueObservation cannot see — and is
+            // what every RE-appear needs. startObserving is idempotent.
             vm.startObserving()
-            // Cross-process daemon writes rule: the consolidator mines ideas
-            // in the Go daemon, a separate process ValueObservation cannot
-            // see, so a tab-appear reload is needed on top of the poll.
             vm.refresh()
         }
+    }
+
+    /// Write failures otherwise vanish into `vm.errorMessage` with nothing
+    /// rendering it — the owner sees a button that silently did nothing
+    /// (DashboardView:31 precedent).
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
     }
 
     // MARK: - Left: list panel
@@ -118,7 +142,19 @@ struct IdeasView: View {
         .padding(12)
         .onChange(of: vm.kindFilter) { vm.load() }
         .onChange(of: vm.statusFilter) { vm.load() }
-        .onChange(of: vm.searchText) { vm.load() }
+        // Search runs a triple-LIKE query across ideas AND their mentions;
+        // firing it per keystroke reloads the whole screen on every letter.
+        .onChange(of: vm.searchText) { debounceSearch() }
+        .onDisappear { searchDebounceTask?.cancel() }
+    }
+
+    private func debounceSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            vm.load()
+        }
     }
 
     // MARK: - Right: detail panel

@@ -7,15 +7,25 @@ enum IdeaQueries {
 
     /// Ideas filtered by kind/status and a free-text query, most-recently-updated first.
     /// The query matches an idea's title/essence or any of its mentions' quotes.
+    ///
+    /// `excludingReviewQueue` drops what `fetchForReview` already returns —
+    /// mirroring `Idea.isForReview` in SQL. Filtering those out in Swift after
+    /// the fact silently shrinks the page: with the limit spent on review items
+    /// the registry list comes back short, and worse as the queue grows.
     static func fetchList(
         _ db: Database,
         kind: String?,
         status: String?,
         query: String?,
-        limit: Int
+        limit: Int,
+        excludingReviewQueue: Bool = false
     ) throws -> [Idea] {
         var conditions: [String] = []
         var args: [any DatabaseValueConvertible] = []
+
+        if excludingReviewQueue {
+            conditions.append("NOT (status = 'proposed' OR needs_review = 1)")
+        }
 
         if let kind {
             conditions.append("kind = ?")
@@ -62,10 +72,15 @@ enum IdeaQueries {
         try Idea.fetchOne(db, sql: "SELECT * FROM ideas WHERE id = ?", arguments: [id])
     }
 
-    /// An idea's mentions, oldest first.
+    /// An idea's mentions, oldest first. Ordered by `said_at, id` to match the
+    /// Go reader (`db.ListIdeaMentions`) exactly — a dual path, so the two
+    /// sides must agree. `created_at` is when the row was WRITTEN, which for a
+    /// batch the consolidator wrote in one transaction is the same value for
+    /// every mention, leaving the chronology in insert order rather than the
+    /// order things were actually said.
     static func fetchMentions(_ db: Database, ideaID: Int) throws -> [IdeaMention] {
         try IdeaMention.fetchAll(db, sql: """
-            SELECT * FROM idea_mentions WHERE idea_id = ? ORDER BY created_at ASC
+            SELECT * FROM idea_mentions WHERE idea_id = ? ORDER BY said_at, id
             """, arguments: [ideaID])
     }
 
@@ -82,7 +97,7 @@ enum IdeaQueries {
     static func setStatus(_ db: Database, id: Int, status: String) throws {
         try db.execute(
             sql: """
-                UPDATE ideas SET status = ?, needs_review = 0, review_reason = '',
+                UPDATE ideas SET status = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
@@ -90,10 +105,17 @@ enum IdeaQueries {
         )
     }
 
+    /// Every owner action clears the pending review flag, `setStatus` included:
+    /// `needs_review` means "the owner has not looked at this since it
+    /// resurfaced", and each of these IS the owner looking at it. An action
+    /// that left the flag set would leave the idea stuck in the "For review"
+    /// list with no reachable way out (IDEA-04).
+    private static let clearReviewFlag = "needs_review = 0, review_reason = ''"
+
     static func snooze(_ db: Database, id: Int, until: String?) throws {
         try db.execute(
             sql: """
-                UPDATE ideas SET status = 'not_now', snooze_until = ?,
+                UPDATE ideas SET status = 'not_now', snooze_until = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
@@ -110,7 +132,7 @@ enum IdeaQueries {
         )
         try db.execute(
             sql: """
-                UPDATE ideas SET status = 'merged', merged_into_id = ?,
+                UPDATE ideas SET status = 'merged', merged_into_id = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
@@ -122,7 +144,7 @@ enum IdeaQueries {
     static func supersede(_ db: Database, id: Int, by newID: Int?) throws {
         try db.execute(
             sql: """
-                UPDATE ideas SET status = 'superseded', superseded_by_id = ?,
+                UPDATE ideas SET status = 'superseded', superseded_by_id = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
@@ -142,32 +164,37 @@ enum IdeaQueries {
     }
 
     /// Creates an owner-authored idea directly, active and free of review, with
-    /// an 'owner' mention carrying the essence text.
+    /// an 'owner' mention carrying the essence text. `said_at`/`last_mention_at`
+    /// are stamped with now, the way `InsertIdeaMentionTx` does on the Go side —
+    /// otherwise a hand-written idea sorts to the bottom of every
+    /// `last_mention_at` list with an empty timestamp.
     @discardableResult
     static func createManual(_ db: Database, kind: String, title: String, essence: String) throws -> Int64 {
+        let now = try String.fetchOne(db, sql: "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')") ?? ""
         try db.execute(
             sql: """
-                INSERT INTO ideas (kind, title, essence, status, source)
-                VALUES (?, ?, ?, 'active', 'owner')
+                INSERT INTO ideas (kind, title, essence, status, source, last_mention_at)
+                VALUES (?, ?, ?, 'active', 'owner', ?)
                 """,
-            arguments: [kind, title, essence]
+            arguments: [kind, title, essence, now]
         )
         let ideaID = db.lastInsertedRowID
         try db.execute(
             sql: """
-                INSERT INTO idea_mentions (idea_id, source, quote)
-                VALUES (?, 'owner', ?)
+                INSERT INTO idea_mentions (idea_id, source, quote, said_at)
+                VALUES (?, 'owner', ?, ?)
                 """,
-            arguments: [ideaID, essence]
+            arguments: [ideaID, essence, now]
         )
         return ideaID
     }
 
-    /// Marks an idea converted into a Target, recording the link.
+    /// Marks an idea converted into a Target, recording the link. Keeps the row,
+    /// its mentions, and its chat — a link, not a delete (IDEA-03).
     static func markConverted(_ db: Database, id: Int, targetID: Int64) throws {
         try db.execute(
             sql: """
-                UPDATE ideas SET status = 'converted', converted_target_id = ?,
+                UPDATE ideas SET status = 'converted', converted_target_id = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,

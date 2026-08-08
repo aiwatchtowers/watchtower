@@ -152,4 +152,55 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(convertedIdea?.status, .converted)
         XCTAssertEqual(convertedIdea?.convertedTargetID, newTargetID)
     }
+
+    // MARK: - IDEA-04 reachability
+
+    /// A rejected idea the consolidator flagged `needs_review` shows up in the
+    /// review queue. The owner must have an action that gets it back OUT —
+    /// "Activate" is the one the detail pane offers for `rejected`/`dropped`.
+    /// Without it the item is stuck in "For review" permanently.
+    func testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate() throws {
+        let ideaID = try dbManager.dbPool.write {
+            try TestDatabase.insertIdea($0, title: "Weekly metrics email", status: "rejected",
+                                        needsReview: true, reviewReason: "brought up again: slack C1|1.1")
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Weekly metrics email"],
+                       "a resurfaced rejected idea starts in the review queue")
+        let flagged = try XCTUnwrap(vm.reviewItems.first)
+
+        vm.activate(flagged)
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertTrue(vm.reviewItems.isEmpty, "the owner's action must clear it out of the review queue")
+        XCTAssertEqual(vm.registryItems.map(\.title), ["Weekly metrics email"])
+
+        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        XCTAssertEqual(idea?.status, .active)
+        XCTAssertEqual(idea?.needsReview, false)
+    }
+
+    /// The same reachability, via the other action `rejected`/`dropped` offers.
+    func testIdeas04_ResurfacedDroppedIdeaLeavesReviewQueueViaMerge() throws {
+        let (droppedID, survivorID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let dropped = try TestDatabase.insertIdea(db, title: "Dropped idea", status: "dropped",
+                                                      needsReview: true, reviewReason: "brought up again: jira WT-1")
+            let survivor = try TestDatabase.insertIdea(db, title: "Canonical idea", status: "active")
+            return (dropped, survivor)
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        let flagged = try XCTUnwrap(vm.reviewItems.first { $0.id == Int(droppedID) })
+
+        vm.merge(flagged, into: Int(survivorID))
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertTrue(vm.reviewItems.isEmpty)
+
+        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(droppedID)) }
+        XCTAssertEqual(idea?.status, .merged)
+        XCTAssertEqual(idea?.needsReview, false)
+    }
 }

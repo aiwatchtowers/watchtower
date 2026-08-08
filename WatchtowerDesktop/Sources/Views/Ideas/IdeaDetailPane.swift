@@ -27,12 +27,13 @@ struct IdeaDetailPane: View {
     let onConvert: () -> Void
     let onSupersede: () -> Void
     let onReverse: () -> Void
-    let onRating: (Int, String) -> Void
+    let onRating: (Int, String) -> Bool
 
     @State private var comment: String
     @State private var rating: Int?
     @State private var mentions: [IdeaMention] = []
     @State private var mentionsLoaded = false
+    @State private var mentionsError: String?
     @State private var jiraSiteURL: String?
     @State private var showMergeSheet = false
     @State private var mergePreselectID: Int?
@@ -55,7 +56,7 @@ struct IdeaDetailPane: View {
         onConvert: @escaping () -> Void,
         onSupersede: @escaping () -> Void,
         onReverse: @escaping () -> Void,
-        onRating: @escaping (Int, String) -> Void
+        onRating: @escaping (Int, String) -> Bool
     ) {
         self.idea = idea
         self.allIdeas = allIdeas
@@ -98,7 +99,7 @@ struct IdeaDetailPane: View {
             Divider()
             actionBar
         }
-        .task(id: idea.id) { loadMentions() }
+        .task(id: idea.id) { await loadMentions() }
         .task { jiraSiteURL = JiraConfigHelper.readSiteURL() }
         .sheet(isPresented: $showMergeSheet) {
             IdeaMergeSheet(
@@ -237,6 +238,10 @@ struct IdeaDetailPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            } else if let mentionsError {
+                Label("Couldn't load mentions: \(mentionsError)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             } else if mentions.isEmpty {
                 Text("No mentions recorded.")
                     .font(.caption)
@@ -289,17 +294,23 @@ struct IdeaDetailPane: View {
         }
     }
 
+    private func mentionURL(_ mention: IdeaMention) -> URL? {
+        Self.mentionURL(mention, jiraSiteURL: jiraSiteURL)
+    }
+
     /// A wrong link is worse than no link — only the two sources with a
     /// well-established, easy-to-build URL (Slack's generic archives host, no
     /// workspace domain needed; Jira via the resolved site) get a Link.
     /// Gmail and meeting mentions render a plain source label.
-    private func mentionURL(_ mention: IdeaMention) -> URL? {
+    ///
+    /// Static so the URL-building rules are testable without a view.
+    static func mentionURL(_ mention: IdeaMention, jiraSiteURL: String?) -> URL? {
         switch mention.sourceKind {
         case .slack:
             let parts = mention.ref.split(separator: "|")
             guard parts.count == 2 else { return nil }
             let ts = parts[1].replacingOccurrences(of: ".", with: "")
-            return URL(string: "https://slack.com/archives/\(parts[0])/p\(ts)")
+            return URL(string: "https://slack.com/archives/\(rawSlackChannelID(parts[0]))/p\(ts)")
         case .jira:
             guard let jiraSiteURL, !jiraSiteURL.isEmpty else { return nil }
             return URL(string: "\(jiraSiteURL)/browse/\(mention.ref)")
@@ -308,16 +319,37 @@ struct IdeaDetailPane: View {
         }
     }
 
-    private func loadMentions() {
+    /// Strips the Slack multi-account namespace ("<accountID>:") that
+    /// `channels.id`/`messages.channel_id` carry since migration 00048 — Slack's
+    /// own archives URL wants the bare channel id. Anything that isn't a
+    /// leading integer followed by ':' is passed through untouched, so a
+    /// pre-migration bare id still works.
+    private static func rawSlackChannelID(_ namespaced: Substring) -> Substring {
+        guard let colon = namespaced.firstIndex(of: ":"),
+              !namespaced[namespaced.startIndex..<colon].isEmpty,
+              namespaced[namespaced.startIndex..<colon].allSatisfy(\.isNumber)
+        else { return namespaced }
+        return namespaced[namespaced.index(after: colon)...]
+    }
+
+    private func loadMentions() async {
         guard let db = appState.databaseManager else {
             mentions = []
+            mentionsError = nil
             mentionsLoaded = true
             return
         }
         do {
-            mentions = try db.dbPool.read { conn in try IdeaQueries.fetchMentions(conn, ideaID: idea.id) }
+            // An async read: a mentions list is unbounded, and a synchronous
+            // dbPool.read here blocks the main actor behind whatever the daemon
+            // is writing.
+            mentions = try await db.dbPool.read { conn in try IdeaQueries.fetchMentions(conn, ideaID: idea.id) }
+            mentionsError = nil
         } catch {
+            // "No mentions recorded." is a real, meaningful state — an idea can
+            // genuinely have none. A failed read must not impersonate it.
             mentions = []
+            mentionsError = error.localizedDescription
         }
         mentionsLoaded = true
     }
@@ -350,9 +382,7 @@ struct IdeaDetailPane: View {
     private var ratingRow: some View {
         HStack(spacing: 8) {
             Button {
-                onRating(1, comment)
-                comment = ""
-                rating = 1
+                submitRating(1)
             } label: {
                 Image(systemName: rating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
                     .foregroundStyle(rating == 1 ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
@@ -361,9 +391,7 @@ struct IdeaDetailPane: View {
             .help("Helpful")
 
             Button {
-                onRating(-1, comment)
-                comment = ""
-                rating = -1
+                submitRating(-1)
             } label: {
                 Image(systemName: rating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                     .foregroundStyle(rating == -1 ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
@@ -374,6 +402,14 @@ struct IdeaDetailPane: View {
             TextField("Comment to teach the secretary…", text: $comment)
                 .textFieldStyle(.roundedBorder)
         }
+    }
+
+    /// Clears the owner's typed comment only once the write actually landed —
+    /// wiping it on a failed write throws away something they cannot get back.
+    private func submitRating(_ value: Int) {
+        guard onRating(value, comment) else { return }
+        comment = ""
+        rating = value
     }
 
     /// Buttons offered depend on kind+status per the lifecycle in the design
@@ -415,6 +451,17 @@ struct IdeaDetailPane: View {
             if idea.kind == .note, idea.status == .active {
                 Button("Drop", role: .destructive, action: onDrop)
                     .buttonStyle(.bordered)
+            }
+
+            // A rejected or dropped item is not frozen: the consolidator flags
+            // it needs_review when the same idea comes up again (IDEA-04), and
+            // it then shows in "For review". Without an action here the owner
+            // could see the flag but never clear it — the item would sit in the
+            // review queue permanently. Reconsidering is the whole point of the
+            // resurfacing flag.
+            if idea.status == .rejected || idea.status == .dropped {
+                Button("Activate", action: onActivate)
+                    .buttonStyle(.borderedProminent)
             }
 
             if idea.kind == .decision, idea.status == .active {
