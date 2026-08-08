@@ -281,6 +281,20 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.backfillError, "The ideas registry is disabled in Settings.")
     }
 
+    /// SB8: `internal/ideas/lock.go`'s alreadyMiningError names the lock
+    /// file's absolute path — fine on a terminal, a path leak in a
+    /// user-facing dialog. The lock-held case must map to a plain message
+    /// naming neither the path nor an internal detail.
+    func testStartBackfillLockHeldErrorIsFriendlyAndDoesNotLeakThePath() async {
+        let stderr = "ideas: the daemon is mining right now (/Users/owner/Library/Application Support/Watchtower/ideas_backfill.lock)"
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: stderr))
+        let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
+
+        await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
+
+        XCTAssertEqual(vm.backfillError, "Another mining run is in progress (daemon or CLI). Try again later.")
+    }
+
     func testStartBackfillMalformedOutputSetsErrorNotCrash() async {
         let runner = FakeCLIRunner(stdout: Data("not json at all".utf8))
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)

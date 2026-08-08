@@ -303,9 +303,28 @@ final class IdeasViewModel {
         } catch {
             isBackfilling = false
             backfillStartedAt = nil
-            backfillError = error.localizedDescription
+            backfillError = Self.friendlyBackfillError(for: error)
             load()
         }
+    }
+
+    /// SB8: `internal/ideas/lock.go`'s alreadyMiningError names the lock
+    /// file's absolute path — useful on a terminal, a path leak in a
+    /// user-facing dialog. Maps the lock-held case to a plain, actionable
+    /// message that names neither the path nor the daemon-vs-CLI internals;
+    /// every other error passes through unchanged.
+    ///
+    /// A pre-flight "Start" button disable (checking lock freshness before
+    /// even attempting a run) is deferred: it would need a Go-side status
+    /// probe Desktop doesn't have today, since the Desktop layer must not
+    /// reach into WorkspaceDir internals it doesn't already know.
+    static func friendlyBackfillError(for error: Error) -> String {
+        if let cliError = error as? CLIRunnerError,
+           case let .nonZeroExit(_, stderr) = cliError,
+           stderr.contains("is mining right now") {
+            return "Another mining run is in progress (daemon or CLI). Try again later."
+        }
+        return error.localizedDescription
     }
 
     /// Parses the LAST non-empty line of the CLI's stdout as the backfill
