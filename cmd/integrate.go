@@ -99,11 +99,11 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 
 	if scope.touchSkills {
 		results, err := devpack.Install(scope.dir)
+		fmt.Printf("Skills (%s):\n", scope.dir)
+		printSkillStatuses(results)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Skills (%s):\n", scope.dir)
-		printSkillStatuses(results)
 	} else {
 		fmt.Println("Skipping skill pack install (--mcp-only).")
 	}
@@ -121,11 +121,11 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	results, err := devpack.Status(dir)
+	fmt.Printf("Skills (%s):\n", dir)
+	printSkillStatuses(results)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Skills (%s):\n", dir)
-	printSkillStatuses(results)
 
 	bin, err := os.Executable()
 	if err == nil {
@@ -142,11 +142,11 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 
 	if scope.touchSkills {
 		results, err := devpack.Remove(scope.dir)
+		fmt.Printf("Skills (%s):\n", scope.dir)
+		printSkillStatuses(results)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Skills (%s):\n", scope.dir)
-		printSkillStatuses(results)
 	} else {
 		fmt.Println("Skipping skill pack removal (--mcp-only).")
 	}
