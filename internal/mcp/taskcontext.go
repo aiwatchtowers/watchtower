@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -167,7 +168,13 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 			continue
 		}
 		anchors, err := database.GetMessagesByTS(l.ChannelID, []string{l.MessageTS})
-		if err != nil || len(anchors) == 0 {
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("linked message unavailable for %s|%s: %v", l.ChannelID, l.MessageTS, err))
+			continue
+		}
+		if len(anchors) == 0 {
+			// Genuinely nothing to show — the linked message was never
+			// synced (or was since deleted). Not a failure, so no note.
 			continue
 		}
 		anchor := anchors[0]
@@ -183,7 +190,13 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 
 		msgs := []db.Message{anchor}
 		replies, err := database.GetThreadReplies(l.ChannelID, threadTS)
-		if err == nil {
+		if err != nil {
+			// Degrade, don't fabricate: a thread rendered with only its
+			// anchor message is indistinguishable from "nobody replied" —
+			// the note is what tells the caller this shape is incomplete,
+			// not authoritative.
+			notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", l.ChannelID, threadTS, err))
+		} else {
 			msgs = append(msgs, replies...)
 		}
 		if len(msgs) > taskContextMaxReplies {

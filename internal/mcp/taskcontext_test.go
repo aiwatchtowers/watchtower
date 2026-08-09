@@ -173,6 +173,80 @@ func seedTaskContextFixture(t *testing.T, database *db.DB) {
 	}
 }
 
+// TestGetTaskContextThreadWithNoRepliesHasNoNote pins the distinction the
+// degrade-to-a-note contract depends on: a thread that genuinely has no
+// replies must come back with just the anchor message and NO note, so it
+// reads differently from a thread whose replies could not be read (which
+// gets a note — see collectTaskThreads). Forcing GetThreadReplies itself to
+// fail is not practical here: it queries the same messages table and
+// connection as GetMessagesByTS (the anchor lookup), which runs first in
+// the same loop iteration — any read-only-safe way to break the table
+// (e.g. dropping it before the session goes query_only) breaks the anchor
+// lookup too, and the anchor lookup already has its own error path. So this
+// test asserts the reachable half of the contract only.
+func TestGetTaskContextThreadWithNoRepliesHasNoNote(t *testing.T) {
+	database := seedDB(t)
+	seedTaskContextNoReplyThreadFixture(t, database)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_task_context",
+		Arguments: map[string]any{"key": "PROJ-3"},
+	})
+	if err != nil {
+		t.Fatalf("calling get_task_context: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %s", textContent(t, res))
+	}
+	out := textContent(t, res)
+
+	if !contains(out, "no one has replied yet") {
+		t.Fatalf("dossier missing the anchor message; got: %s", out)
+	}
+	if contains(out, "unavailable") {
+		t.Fatalf("a thread with genuinely no replies must carry no note, got: %s", out)
+	}
+}
+
+// seedTaskContextNoReplyThreadFixture seeds an issue linked to a single
+// Slack message with no replies — the genuinely-empty case that must stay
+// silent (no note), as opposed to a read failure (which must produce one).
+func seedTaskContextNoReplyThreadFixture(t *testing.T, database *db.DB) {
+	t.Helper()
+	accountID := db.SeedTestJiraAccount(t, database)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID:      accountID,
+		Key:            "PROJ-3",
+		ID:             "10003",
+		ProjectKey:     "PROJ",
+		Summary:        "A quiet ticket",
+		Status:         "To Do",
+		StatusCategory: "To Do",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		SyncedAt:       now,
+	}); err != nil {
+		t.Fatalf("seeding jira issue: %v", err)
+	}
+	if err := database.EnsureChannel("C002", "eng-quiet", "public", ""); err != nil {
+		t.Fatalf("seeding channel: %v", err)
+	}
+	anchorTS := "1690000500.000100"
+	if err := database.UpsertMessage(db.Message{
+		ChannelID: "C002", TS: anchorTS, UserID: "U003",
+		Text: "PROJ-3: no one has replied yet", RawJSON: "{}",
+	}); err != nil {
+		t.Fatalf("seeding anchor message: %v", err)
+	}
+	if err := database.UpsertJiraSlackLink(db.JiraSlackLink{
+		IssueKey: "PROJ-3", ChannelID: "C002", MessageTS: anchorTS, LinkType: "mention",
+	}); err != nil {
+		t.Fatalf("seeding jira slack link: %v", err)
+	}
+}
+
 // seedJiraIssueOnly seeds a bare issue with nothing else attached, so the
 // dossier's other sections have no material.
 func seedJiraIssueOnly(t *testing.T, database *db.DB) {
