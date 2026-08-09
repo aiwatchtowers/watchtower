@@ -200,7 +200,7 @@ func printSkillStatuses(results []devpack.SkillStatus) {
 		note := ""
 		switch r.State {
 		case devpack.StateDrifted:
-			note = "  (you edited this — left alone)"
+			note = "  (left alone — differs from what we ship)"
 		case devpack.StateForeign:
 			note = "  (not ours — left alone)"
 		}
