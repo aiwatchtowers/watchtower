@@ -229,6 +229,24 @@ struct IdeasView: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+            // The header buttons live in filterBar, which the empty state
+            // replaces wholesale — without these a fresh install (zero mined
+            // ideas) has no way to trigger a backfill or create an idea.
+            HStack(spacing: 12) {
+                Button {
+                    showBackfillSheet = true
+                } label: {
+                    Label("Find Ideas", systemImage: "sparkle.magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    showCreateSheet = true
+                } label: {
+                    Label("Create", systemImage: "plus.circle")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 4)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
