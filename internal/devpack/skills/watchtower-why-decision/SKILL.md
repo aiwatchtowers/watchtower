@@ -13,7 +13,7 @@ Code that looks wrong is often code that was argued about. Find the argument bef
 1. Call `list_ideas` with `kind: "decision"` and a `query` naming the subject — the registry searches mention quotes, not just titles. Expand promising hits with `get_idea` to get the mention trail.
 2. Call `memory_recall` for the same subject — the memory vault holds beliefs and episodes the registry does not.
 3. Call `list_messages` with a `query` for the original discussion.
-4. Search meeting material for the subject, and pull the full text with `get_transcript` when a hit looks load-bearing.
+4. Call `list_transcripts` with `query` naming the subject — it full-text searches meeting content and returns matches with a snippet. Pull the full text with `get_transcript` when a hit looks load-bearing.
 
 ## Present
 

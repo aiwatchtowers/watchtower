@@ -179,6 +179,7 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 		{Name: "list_situations"}, {Name: "get_situation", Arguments: map[string]any{"id": 1}},
 		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "find_experts", Arguments: map[string]any{"topic": "guard"}},
+		{Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},
 	}
 	for _, c := range calls {
 		if _, err := cs.CallTool(ctx, &c); err != nil {

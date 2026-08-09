@@ -37,6 +37,24 @@ func TestSkillsShipWithValidFrontmatter(t *testing.T) {
 	}
 }
 
+func TestHasMarkerIgnoresTheMarkerStringInTheBody(t *testing.T) {
+	// A user's own skill that happens to mention the marker string outside
+	// its frontmatter — in prose, in a code sample — must never be treated
+	// as one we shipped.
+	foreign := "---\nname: someones-own-skill\ndescription: not ours\n---\n\n" +
+		"This skill talks about the " + MarkerKey + ": v1 convention as an example.\n"
+	if HasMarker(foreign) {
+		t.Fatalf("HasMarker must not match the marker string outside the frontmatter block")
+	}
+}
+
+func TestHasMarkerMatchesWithinFrontmatter(t *testing.T) {
+	own := "---\nname: watchtower-who-to-ask\n" + MarkerKey + ": v1\n---\n\nBody.\n"
+	if !HasMarker(own) {
+		t.Fatalf("HasMarker must match the marker string inside the frontmatter block")
+	}
+}
+
 func TestSkillsAreSortedAndStable(t *testing.T) {
 	a, b := Skills(), Skills()
 	for i := range a {

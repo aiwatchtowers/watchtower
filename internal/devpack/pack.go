@@ -59,8 +59,21 @@ func Skills() []Skill {
 	return out
 }
 
-// HasMarker reports whether content carries the pack marker, i.e. whether the
-// installer is allowed to touch the file at all.
+// HasMarker reports whether content's YAML frontmatter carries the pack
+// marker, i.e. whether the installer is allowed to touch the file at all.
+// Scoped to the frontmatter block (between the leading "---" and the next
+// one) rather than the whole file, so a user's own skill that merely
+// mentions the marker string in its body — in prose, a code sample, a
+// changelog entry — is never mistaken for one we shipped.
 func HasMarker(content string) bool {
-	return strings.Contains(content, MarkerKey+":")
+	if !strings.HasPrefix(content, "---\n") {
+		return false
+	}
+	rest := content[len("---\n"):]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return false
+	}
+	frontmatter := rest[:end]
+	return strings.Contains(frontmatter, MarkerKey+":")
 }
