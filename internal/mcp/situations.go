@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strconv"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -93,7 +95,10 @@ func registerSituations(s *mcpsdk.Server, database *db.DB) {
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getSituationArgs) (*mcpsdk.CallToolResult, any, error) {
 		situation, err := database.GetSituation(args.ID)
 		if err != nil {
-			return errResult("no situation with id " + strconv.Itoa(args.ID)), nil, nil
+			if errors.Is(err, sql.ErrNoRows) {
+				return errResult("no situation with id " + strconv.Itoa(args.ID)), nil, nil
+			}
+			return errResult("getting situation: " + err.Error()), nil, nil
 		}
 		signals, err := database.ListSituationSignals(args.ID)
 		if err != nil {
