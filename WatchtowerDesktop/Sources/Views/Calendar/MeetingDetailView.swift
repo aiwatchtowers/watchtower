@@ -49,10 +49,17 @@ struct MeetingDetailView: View {
 
     /// Whether the collapsed 3-line description preview hides content, i.e.
     /// a "Show more" toggle is warranted. Exact truncation depends on pane
-    /// width, so this is a deliberate heuristic: more than three source lines,
-    /// or a paragraph long enough to wrap past three lines at any sane width.
+    /// width, so this is a deliberate heuristic: estimate rendered lines at a
+    /// conservative ~70 characters per wrapped line (caption font at the
+    /// pane's 400pt minWidth) — every source line consumes at least one clamp
+    /// line, a long one its wrapped count — and toggle once the estimate
+    /// exceeds the 3-line clamp. The inputs compose (rather than a source-line
+    /// count OR a flat length threshold) so that short lines plus one long
+    /// paragraph still get their toggle.
     static func descriptionNeedsToggle(_ plain: String) -> Bool {
-        plain.count > 200 || plain.components(separatedBy: "\n").count > 3
+        let estimatedLines = plain.components(separatedBy: "\n")
+            .reduce(0) { $0 + max(1, ($1.count + 69) / 70) }
+        return estimatedLines > 3
     }
 
     /// The transcript id `MeetingDetailView` would embed for `entry` given the

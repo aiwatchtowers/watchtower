@@ -71,6 +71,12 @@ enum MeetingListBuilder {
     /// with id < startOfDay(now) descending ("past"). Entries inside a
     /// section ascending by sortDate for today/future days, descending for
     /// past days.
+    /// [Reversed by owner decision 2026-08-07 — see the spec's Decision 2
+    /// note: the shipped ordering is one ascending chronology (past days on
+    /// top, entries ascending everywhere); the ordering test below is now
+    /// testOrderingChronologicalPastFirst, and the unparseable-createdAt dump
+    /// section of rule 2 sits at the list TOP, above the auto-scroll's
+    /// Today landing, rather than at the bottom.]
     static func build(days: [DayEvents], recordings: [RecordingListItem],
                       now: Date, calendar: Calendar) -> [MeetingDaySection]
     /// Longest recording wins (the real one beats a 1-second test blip);

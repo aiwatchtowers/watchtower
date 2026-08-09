@@ -78,6 +78,21 @@ final class MeetingDetailViewTests: XCTestCase {
         XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "status update ", count: 30)))
     }
 
+    /// Two short lines plus one long paragraph: only 3 source lines and under
+    /// any flat length threshold per line, but the long line wraps past the
+    /// 3-line clamp — the wrap estimate composes the inputs instead of
+    /// OR-ing a source-line count with a total-length cutoff.
+    func test_descriptionNeedsToggle_trueForShortLinesPlusLongLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("A\nB\n" + String(repeating: "x", count: 190)))
+    }
+
+    /// Pin the estimate boundary at the ~70-chars-per-line budget: 3 wrapped
+    /// lines (210 chars) still fit the clamp, one character past does not.
+    func test_descriptionNeedsToggle_boundaryAtEstimatedThreeLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 210)))
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 211)))
+    }
+
     // MARK: - embeddedTranscriptID
 
     /// No explicit selection yet on an `.event` entry → falls back to
