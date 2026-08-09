@@ -33,31 +33,61 @@ type SkillStatus struct {
 // did not ship — or one a user has edited since we shipped it — is left
 // untouched and reported (DEV-04). Every shipped version's digest is recorded
 // in a sidecar so a later run can tell "user edited it" from "we changed it".
+//
+// On a per-skill failure the statuses gathered for every skill processed so
+// far are still returned alongside the error, so a caller (e.g. the CLI) can
+// report what actually happened rather than losing that information because
+// one later skill failed.
 func Install(skillsDir string) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
-		dir := filepath.Join(skillsDir, s.Name)
-		file := filepath.Join(dir, "SKILL.md")
-
-		state, err := planFor(file, s)
+		status, err := installSkill(skillsDir, s)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
-		if state == StateInstalled || state == StateUpdated {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return nil, fmt.Errorf("creating %s: %w", dir, err)
-			}
-			if err := os.WriteFile(file, []byte(s.Content), 0o644); err != nil {
-				return nil, fmt.Errorf("writing %s: %w", file, err)
-			}
-			if err := writeShippedDigest(dir, s.SHA256); err != nil {
-				return nil, err
-			}
-		}
-		out = append(out, SkillStatus{Name: s.Name, State: state, Path: file})
+		out = append(out, status)
 	}
 	return out, nil
+}
+
+// installSkill applies Install's decision for exactly one skill and returns
+// its resulting status. Kept separate from Install's loop so the crash-window
+// self-heal below can be exercised directly against a synthetic Skill in
+// tests, without needing the embedded pack to have multiple real versions.
+func installSkill(skillsDir string, s Skill) (SkillStatus, error) {
+	dir := filepath.Join(skillsDir, s.Name)
+	file := filepath.Join(dir, "SKILL.md")
+
+	state, err := planFor(file, s)
+	if err != nil {
+		return SkillStatus{}, err
+	}
+	switch state {
+	case StateInstalled, StateUpdated:
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return SkillStatus{}, fmt.Errorf("creating %s: %w", dir, err)
+		}
+		if err := os.WriteFile(file, []byte(s.Content), 0o644); err != nil {
+			return SkillStatus{}, fmt.Errorf("writing %s: %w", file, err)
+		}
+		if err := writeShippedDigest(dir, s.SHA256); err != nil {
+			return SkillStatus{}, err
+		}
+	case StateUnchanged:
+		// The file on disk is already byte-identical to what we ship, so
+		// recording its digest here is always safe. This repairs the sidecar
+		// whenever it is missing or stale — most notably after a previous
+		// Install wrote SKILL.md but crashed before writing the sidecar.
+		// Left unrepaired, the NEXT pack upgrade would find no matching
+		// sidecar and mislabel this untouched file as user-drifted forever;
+		// this closes that window on the very next ordinary Install call,
+		// well before another upgrade can land.
+		if err := writeShippedDigest(dir, s.SHA256); err != nil {
+			return SkillStatus{}, err
+		}
+	}
+	return SkillStatus{Name: s.Name, State: state, Path: file}, nil
 }
 
 // planFor decides what Install would do to one file, without writing.
@@ -72,6 +102,16 @@ func planFor(file string, s Skill) (State, error) {
 	content := string(existing)
 	if !HasMarker(content) {
 		// Someone else's file living under a name we also use.
+		//
+		// This check decides the REPORTED label, not the safety verdict: a
+		// foreign file's bytes can never equal a digest we ever shipped or
+		// recorded, because every version we ship carries the marker, so a
+		// byte-for-byte match would carry it too. The digest comparison
+		// below would already reach the same "leave it alone" outcome
+		// (Drifted, not Unchanged/Updated) on its own. Kept anyway because
+		// it gives the CLI a truthful label — Foreign vs. Drifted mean
+		// different things to a user reading a report — and because it is
+		// the cheaper check to fail on.
 		return StateForeign, nil
 	}
 	sum := sha256.Sum256(existing)
@@ -104,7 +144,7 @@ func Status(skillsDir string) ([]SkillStatus, error) {
 		}
 		state, err := planFor(file, s)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		if state == StateInstalled {
 			state = StateMissing
@@ -117,6 +157,13 @@ func Status(skillsDir string) ([]SkillStatus, error) {
 // Remove deletes only the skills we shipped and still own: the file must
 // carry our marker. A user-edited copy is kept (it is theirs now) and
 // reported as drifted; anything without the marker is left as foreign.
+//
+// It deletes exactly the two files we ourselves ever write — SKILL.md and
+// its shipped-digest sidecar — by name, never the directory as a whole.
+// Claude skill directories conventionally hold companion resources
+// (scripts/, references/, a user's own notes); those must survive even when
+// SKILL.md next to them is ours to remove. The directory itself is dropped
+// only as a best-effort tidy-up once it is empty.
 func Remove(skillsDir string) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
@@ -130,7 +177,7 @@ func Remove(skillsDir string) ([]SkillStatus, error) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", file, err)
+			return out, fmt.Errorf("reading %s: %w", file, err)
 		}
 		if !HasMarker(string(existing)) {
 			out = append(out, SkillStatus{Name: s.Name, State: StateForeign, Path: file})
@@ -138,23 +185,33 @@ func Remove(skillsDir string) ([]SkillStatus, error) {
 		}
 		state, err := planFor(file, s)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		if state == StateDrifted {
 			out = append(out, SkillStatus{Name: s.Name, State: StateDrifted, Path: file})
 			continue
 		}
-		if err := os.RemoveAll(dir); err != nil {
-			return nil, fmt.Errorf("removing %s: %w", dir, err)
+
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			return out, fmt.Errorf("removing %s: %w", file, err)
 		}
+		if err := os.Remove(filepath.Join(dir, shippedDigestFile)); err != nil && !os.IsNotExist(err) {
+			return out, fmt.Errorf("removing sidecar in %s: %w", dir, err)
+		}
+		// Best-effort: only an empty directory is dropped. Any companion
+		// file left inside — ours or the user's — keeps the directory alive.
+		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+			_ = os.Remove(dir)
+		}
+
 		out = append(out, SkillStatus{Name: s.Name, State: StateRemoved, Path: file})
 	}
 	return out, nil
 }
 
 // The sidecar records the digest of what WE last wrote, which is how a pack
-// upgrade is told apart from a user edit. It lives next to the skill so
-// removing the directory removes it too.
+// upgrade is told apart from a user edit. It lives next to the skill file and
+// is deleted alongside it, by name, in Remove.
 const shippedDigestFile = ".watchtower-shipped"
 
 func writeShippedDigest(dir, digest string) error {
