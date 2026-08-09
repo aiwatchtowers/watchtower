@@ -56,6 +56,43 @@ final class MeetingDetailViewTests: XCTestCase {
         XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
     }
 
+    // MARK: - descriptionNeedsToggle
+
+    /// A short one-liner never grows a Show more affordance.
+    func test_descriptionNeedsToggle_falseForShortText() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Weekly sync"))
+    }
+
+    /// Three short lines still fit the collapsed preview — no toggle.
+    func test_descriptionNeedsToggle_falseForThreeShortLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees"))
+    }
+
+    /// A fourth line means the 3-line clamp hides content → toggle shown.
+    func test_descriptionNeedsToggle_trueBeyondThreeLines() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees\nGoals"))
+    }
+
+    /// A long single paragraph wraps past three lines even without newlines.
+    func test_descriptionNeedsToggle_trueForLongSingleLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "status update ", count: 30)))
+    }
+
+    /// Two short lines plus one long paragraph: only 3 source lines and under
+    /// any flat length threshold per line, but the long line wraps past the
+    /// 3-line clamp — the wrap estimate composes the inputs instead of
+    /// OR-ing a source-line count with a total-length cutoff.
+    func test_descriptionNeedsToggle_trueForShortLinesPlusLongLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("A\nB\n" + String(repeating: "x", count: 190)))
+    }
+
+    /// Pin the estimate boundary at the ~70-chars-per-line budget: 3 wrapped
+    /// lines (210 chars) still fit the clamp, one character past does not.
+    func test_descriptionNeedsToggle_boundaryAtEstimatedThreeLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 210)))
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 211)))
+    }
+
     // MARK: - embeddedTranscriptID
 
     /// No explicit selection yet on an `.event` entry → falls back to

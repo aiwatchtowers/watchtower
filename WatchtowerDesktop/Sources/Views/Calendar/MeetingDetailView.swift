@@ -18,6 +18,9 @@ struct MeetingDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var showPrep = false
     @State private var selectedRecordingID: Int64?
+    /// Full-agenda expansion of the header's description preview. Resets on
+    /// entry switch via the host's `.id(entry.id)` wrapper (view recreated).
+    @State private var descriptionExpanded = false
 
     var body: some View {
         switch entry.kind {
@@ -42,6 +45,21 @@ struct MeetingDetailView: View {
     /// Record affordance must not render for a meeting that has already ended.
     static func showsRecordButton(for event: CalendarEvent, now: Date) -> Bool {
         event.endDate > now
+    }
+
+    /// Whether the collapsed 3-line description preview hides content, i.e.
+    /// a "Show more" toggle is warranted. Exact truncation depends on pane
+    /// width, so this is a deliberate heuristic: estimate rendered lines at a
+    /// conservative ~70 characters per wrapped line (caption font at the
+    /// pane's 400pt minWidth) — every source line consumes at least one clamp
+    /// line, a long one its wrapped count — and toggle once the estimate
+    /// exceeds the 3-line clamp. The inputs compose (rather than a source-line
+    /// count OR a flat length threshold) so that short lines plus one long
+    /// paragraph still get their toggle.
+    static func descriptionNeedsToggle(_ plain: String) -> Bool {
+        let estimatedLines = plain.components(separatedBy: "\n")
+            .reduce(0) { $0 + max(1, ($1.count + 69) / 70) }
+        return estimatedLines > 3
     }
 
     /// The transcript id `MeetingDetailView` would embed for `entry` given the
@@ -101,7 +119,16 @@ struct MeetingDetailView: View {
                 Text(plain)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(descriptionExpanded ? nil : 3)
+                    .textSelection(.enabled)
+                if Self.descriptionNeedsToggle(plain) {
+                    Button(descriptionExpanded ? "Show less" : "Show more") {
+                        descriptionExpanded.toggle()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                }
             }
 
             HStack(spacing: 8) {

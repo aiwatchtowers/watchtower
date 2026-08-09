@@ -33,6 +33,10 @@ struct CalendarEventsView: View {
     /// Event id the meetings list should scroll to on next appearance/change —
     /// set by the recording→event deep link, consumed once.
     @State private var scrollTargetEventID: String?
+    /// One-shot latch for the Today landing (`autoScrollToTodayOnce`): armed
+    /// per screen life, consumed by the first scroll attempt that has
+    /// non-empty `sections` — or by a deep link superseding it.
+    @State private var didAutoScrollToToday = false
     @State private var showAddEmailAccountSheet = false
     @State private var showAddCalendarAccountSheet = false
     /// Derived tri-state position of the now-line marker relative to the
@@ -116,6 +120,9 @@ struct CalendarEventsView: View {
                     onDeleted: handleRecordingDeleted,
                     onChanged: loadRecordings
                 ) { link in openLinkedEvent(link, in: vm) }
+                // Recreates the pane per entry — the detail view's @State
+                // (`selectedRecordingID`, `descriptionExpanded`) relies on
+                // this wrapper for its reset-on-switch semantics.
                 .id(entry.id)
                 .frame(minWidth: 400, idealWidth: 500)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -208,11 +215,21 @@ struct CalendarEventsView: View {
                 // first appears); otherwise land on "Today" past the history days.
                 .onAppear {
                     if scrollTargetEventID != nil {
+                        // A deep link supersedes the Today landing for this
+                        // appearance — consume the latch so the retrigger
+                        // below can never fight the deep-link scroll.
+                        didAutoScrollToToday = true
                         scrollToTargetIfNeeded(proxy)
                     } else {
-                        scrollToToday(proxy)
+                        autoScrollToTodayOnce(proxy)
                     }
                 }
+                // SwiftUI defines no order between this ScrollView's .onAppear
+                // and the parent HStack's (which builds `sections`): on a
+                // first render `sections` can still be empty here, so re-arm
+                // the one-shot Today landing for the empty→populated
+                // transition.
+                .onChange(of: sections) { _, _ in autoScrollToTodayOnce(proxy) }
                 .onChange(of: scrollTargetEventID) { _, _ in scrollToTargetIfNeeded(proxy) }
             }
         }
@@ -226,14 +243,33 @@ struct CalendarEventsView: View {
         }
     }
 
+    /// One-shot Today landing: runs on the first non-empty `sections`,
+    /// whether that happens before or after this view's `.onAppear`.
+    private func autoScrollToTodayOnce(_ proxy: ScrollViewProxy) {
+        guard !didAutoScrollToToday, !sections.isEmpty else { return }
+        didAutoScrollToToday = true
+        scrollToToday(proxy)
+    }
+
     /// With past days in the list, land on "Today" (or the first future day
     /// when today has no entries) instead of two weeks of history. Sections
-    /// are ordered upcoming-ascending-then-past-descending, so the first
-    /// section at or after today is simply the earliest upcoming one.
+    /// are chronological with past days on top, so the target is the first
+    /// section at or after today — or the LAST section when the window holds
+    /// only history (see `todayScrollTarget`).
     private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
-        guard let target = sections.first(where: { $0.id >= today })?.id else { return }
+        guard let target = Self.todayScrollTarget(in: sections, today: today) else { return }
         proxy.scrollTo(target, anchor: .top)
+    }
+
+    /// Pure target selection for the Today landing (testable without a view):
+    /// the first section at/after `today`, else the last (most recent past)
+    /// section — a window with no events ahead and nothing recorded today has
+    /// no today-or-future section (`CalendarViewModel.loadEvents` emits only
+    /// non-empty days), and resting at the natural list top would open on the
+    /// OLDEST history day under the chronological ordering.
+    static func todayScrollTarget(in sections: [MeetingDaySection], today: Date) -> Date? {
+        sections.first { $0.id >= today }?.id ?? sections.last?.id
     }
 
     // MARK: - Header

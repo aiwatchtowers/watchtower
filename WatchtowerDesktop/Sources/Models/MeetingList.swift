@@ -93,15 +93,17 @@ enum MeetingListBuilder {
             sectionsByDay[targetKey] = section
         }
 
-        let entriesByDay = sectionsByDay.map { (key: $0.key, section: $0.value) }
-        let upcoming = entriesByDay.filter { $0.key >= todayStart }.sorted { $0.key < $1.key }
-        let past = entriesByDay.filter { $0.key < todayStart }.sorted { $0.key > $1.key }
-
-        return (upcoming + past).map { key, section in
-            let isPast = key < todayStart
-            let entries = section.entries.sorted { isPast ? $0.sortDate > $1.sortDate : $0.sortDate < $1.sortDate }
-            return MeetingDaySection(id: key, label: section.label, entries: entries)
-        }
+        // One chronology, past days on top ascending into today/upcoming —
+        // scrolling up from Today goes back in time (owner decision
+        // 2026-08-07, reverting the unified-view spec's Decision 2; the view
+        // auto-scrolls to Today on appear).
+        return sectionsByDay
+            .sorted { $0.key < $1.key }
+            .map { key, section in
+                MeetingDaySection(
+                    id: key, label: section.label,
+                    entries: section.entries.sorted { $0.sortDate < $1.sortDate })
+            }
     }
 
     /// Longest recording wins (the real one beats a 1-second test blip);

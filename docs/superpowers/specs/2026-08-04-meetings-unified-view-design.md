@@ -13,7 +13,7 @@ Secondary fix rolled into this work: the per-event Record button currently rende
 ## Decisions (owner-approved)
 
 1. **One screen.** The `CalendarMode` Events|Recordings segmented control dies. The Calendar tab becomes a single master-detail "Meetings" screen.
-2. **One list.** Left column: one chronology — upcoming meetings on top (ascending, "Today" anchored like today's scroll behavior), then the past in descending day sections. An ad-hoc recording is a list item of its own, placed at its recording time. An event with recordings is ONE item (badge `N rec`).
+2. **One list.** Left column: one chronology — upcoming meetings on top (ascending, "Today" anchored like today's scroll behavior), then the past in descending day sections. An ad-hoc recording is a list item of its own, placed at its recording time. An event with recordings is ONE item (badge `N rec`). *Reversed by owner decision 2026-08-07: the shipped upcoming-first ordering broke the habitual "scroll up for history" — the list is now fully chronological (past days on top, ascending), with the existing auto-scroll landing on "Today".*
 3. **Recording content lives inside the meeting.** The right pane is a meeting detail that embeds the existing `RecordingDetailView` (player + Recap/Notes/Transcript/Chat tabs) — no duplicated UI, the Recordings master list is deleted.
 4. **Multiple recordings → selector.** The meeting detail shows a compact recordings selector (start time, duration, language badges); the selected recording renders the embedded detail below. A single-recording meeting shows no selector chrome — just the embedded detail.
 5. **Record button gated by time.** Hidden when `event.endDate < now`. (Join is already conditional on a conference link.)
