@@ -29,7 +29,7 @@ Watchtower already ingests exactly the material that answers all three — Slack
 - **No write path to the world** — no replying to Slack, no commenting on issues from the session. The MCP surface stays read-only (the existing `SetReadOnly` guarantee is preserved verbatim).
 - **No AI inside the new tools.** Every new tool is mechanical SQL over existing tables. The reasoning happens in the dev's own agent, on the dev's own tokens.
 - **No new ingestion source.** No GitHub/GitLab/CI connector in this slice; the value comes from composing what Watchtower already has.
-- **No Desktop change.** This slice is Go-only (CLI + MCP + embedded skill files).
+- **No Desktop change.** This slice is Go-only (CLI + MCP + embedded skill files + one migration).
 - **No non-Claude-Code target.** `integrate` takes the client as an argument so Codex/Cursor can follow, but v1 implements `claude-code` only.
 
 ## 4. Architecture overview
@@ -135,7 +135,7 @@ The three tools are mechanical, but four query gaps stand between them and the d
 
 1. **`ListSituations(filter)`** — status / `since` (on `last_signal_at`) / limit. Today only `ListOpenSituations()` exists.
 2. **Jira comments by key** — the sole reader is `ListJiraCommentsSince(accountID, keys, since)`, which demands an account id and a time bound. A dossier wants "this issue's comments, newest last".
-3. **Transcript text search** — **there is no keyword search over transcripts at all**: no FTS table, and not a single `transcript_text LIKE` in the repo. `get_task_context` needs a bounded `LIKE` over `transcript_text` for the issue key, and `why-decision` needs the same for a topic. v1 uses `LIKE` on a recency- and count-bounded window; an FTS table over transcripts is the obvious follow-up if this proves slow or imprecise, and is deliberately deferred rather than guessed at.
+3. **Transcript text search** — **there is no keyword search over transcripts at all**: no FTS table, and not a single `transcript_text LIKE` in the repo. Resolved by building `transcripts_fts` (§11 decision 4): an FTS5 virtual table over `meeting_transcripts.transcript_text` + `notes_md`, kept in sync by triggers, mirroring `messages_fts`. The one migration this design carries; it backfills existing rows on creation.
 4. **Track participants** — `tracks.participants` / `channel_ids` are raw JSON columns with no decoder anywhere in Go (`GetTracks` filters channels with a `LIKE` over the JSON). The `track` evidence kind needs one small decode helper.
 
 Gap 3 is the one to weigh: it is the difference between "the sync where this was decided" being findable or not. Meeting material is the highest-signal source Watchtower has and currently the least searchable.
@@ -200,7 +200,7 @@ To be catalogued alongside the existing INBOX/DASH/MEM/IDEA families:
 
 ## 9. Slices
 
-**Slice 1 — data layer.** The four db query gaps of §5.4, then `list_situations`/`get_situation`, `get_task_context`, `find_experts`, with tests. Independently useful: an agent with the MCP server already configured gains all of it with no skills at all.
+**Slice 1 — data layer.** The `transcripts_fts` migration and the four db query gaps of §5.4, then `list_situations`/`get_situation`, `get_task_context`, `find_experts`, with tests. Independently useful: an agent with the MCP server already configured gains all of it with no skills at all.
 
 **Slice 2 — know-how + control.** The four skills, the embed, `watchtower integrate` (+ `status`/`remove`), and the docs. Depends on slice 1 only for the tools its skills reference.
 
@@ -211,9 +211,9 @@ To be catalogued alongside the existing INBOX/DASH/MEM/IDEA families:
 - **Installer tests** run against a temp HOME: fresh install, idempotent re-run, user-edited file left untouched and reported as drift (DEV-04), `remove` deleting only marker files.
 - **Skill files** are lint-checked for frontmatter validity (name/description present, marker present) so a malformed skill can never ship.
 
-## 11. Open questions for the owner
+## 11. Decisions taken (owner: "just build it", 2026-08-09)
 
-1. **Tool naming.** `get_task_context` reads well from a skill, but the surface already leans on `get_`/`list_` over domain nouns. Alternative: `get_issue_context`.
-2. **`find_experts` beyond Slack-identified people.** People who exist in Jira/Gmail but have no Slack user row currently cannot be candidates. Accept for v1, or resolve identities across sources?
-3. **Project-scope skills.** Is `--scope project` (skills committed into the dev's repo, shared with teammates) wanted in v1, or is user-scope enough?
-4. **Transcript search (§5.4 gap 3).** Ship v1 on a bounded `LIKE` over `transcript_text`, or build a `transcripts_fts` table now (the `messages_fts` pattern, triggers included) and have proper meeting search from day one? Meetings are the highest-signal, least-searchable source we hold.
+1. **Tool naming** — `get_task_context` stands. It is what the skill calls it and what the dev means.
+2. **`find_experts` candidates** — Slack-identified people only in v1. Someone present in Jira or Gmail but with no `users` row cannot be a candidate; unmatched git authors are reported as unmatched (§5.2) rather than dropped, so the gap is visible instead of silent. Cross-source identity stitching is a later slice.
+3. **Skill scope** — both `--scope user` (default) and `--scope project` ship in v1. The second is a few lines of path resolution and lets a team commit the pack into its own repo.
+4. **Transcript search** — build `transcripts_fts` properly (migration, FTS5 virtual table + INSERT/UPDATE/DELETE triggers, mirroring `messages_fts` at `schema.sql:90-120`). A bounded `LIKE` was the cheap option, but meetings are the highest-signal material Watchtower holds and the only one with no search at all; shipping the dev surface on top of a half-search would undercut the two skills that need it most. This makes slice 1 carry one migration.
