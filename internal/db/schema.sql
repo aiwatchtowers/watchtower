@@ -1092,6 +1092,36 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 
+-- FTS5 virtual table for full-text search on meeting transcripts
+CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+    text,
+    transcript_id UNINDEXED,
+    title UNINDEXED,
+    tokenize='porter unicode61'
+);
+
+-- Triggers to keep the FTS index in sync with meeting_transcripts
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
+WHEN NEW.transcript_text != ''
+BEGIN
+    DELETE FROM transcripts_fts WHERE transcript_id = NEW.id;
+    INSERT INTO transcripts_fts(text, transcript_id, title)
+    VALUES (NEW.transcript_text, NEW.id, NEW.title);
+END;
+
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
+BEGIN
+    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
+BEGIN
+    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+    INSERT INTO transcripts_fts(text, transcript_id, title)
+    SELECT NEW.transcript_text, NEW.id, NEW.title
+    WHERE NEW.transcript_text != '';
+END;
+
 -- Voice prints: one row per known person's voice, learned from manual speaker
 -- renames in the Desktop transcript view. person_key = attendee email (or a
 -- normalized display name when no email). embedding = L2-normalized 256-dim

@@ -1251,3 +1251,55 @@ func TestSetReadOnlyBlocksWrites(t *testing.T) {
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT count(*) FROM users`).Scan(&n), "reads must keep working")
 }
+
+func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
+	database := openTestDB(t)
+
+	id, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Roadmap sync",
+		TranscriptText: "[Я] we decided to postpone the payments migration",
+	})
+	require.NoError(t, err)
+
+	// Insert is indexed.
+	var got int64
+	err = database.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err)
+	assert.Equal(t, id, got)
+
+	// Porter stemming works the same way it does for messages_fts.
+	var n int
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'decide'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Update re-indexes rather than duplicating.
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = ? WHERE id = ?`,
+		"[Я] we shipped the invoicing rewrite", id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "stale text must not survive an update")
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'invoicing'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Delete removes the row from the index.
+	_, err = database.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(`SELECT count(*) FROM transcripts_fts`).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
