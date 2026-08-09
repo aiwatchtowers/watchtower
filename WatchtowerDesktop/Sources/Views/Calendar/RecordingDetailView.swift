@@ -444,7 +444,7 @@ struct RecordingDetailView: View {
     private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
         guard let db = appState.databaseManager else { return }
         do {
-            try db.dbPool.write { conn in
+            _ = try db.dbPool.write { conn in
                 try MeetingTranscriptQueries.convertActionItemToTarget(
                     conn, transcriptID: transcriptID,
                     chapterIdx: chapterIdx, itemIdx: itemIdx)
