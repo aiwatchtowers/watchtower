@@ -10,8 +10,8 @@
 > else is secondary.
 
 Project-specific binding review rules, assembled over time from merged PRs and `debate-review`
-reflections. Every review agent (advocate, prosecutor, codex, judge, style-guardian) reads this
-file. Empty sections are fine — agents fall back to the dimension definitions in
+reflections. Every review agent (prosecutor, codex, judge, style-guardian, the pr-review-toolkit
+specialists) reads this file. Empty sections are fine — agents fall back to the dimension definitions in
 `.claude/skills/debate-review/references/agent-prompts.md` plus `CLAUDE.md` and `docs/inventory/`
 until rules are filled in here.
 
