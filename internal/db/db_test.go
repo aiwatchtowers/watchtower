@@ -1295,6 +1295,18 @@ func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 
+	// Update to empty text leaves no stale row behind (the _au trigger's
+	// INSERT ... SELECT ... WHERE NEW.transcript_text != '' guard).
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = '' WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, id,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "clearing transcript_text must not leave a stale FTS row")
+
 	// Delete removes the row from the index.
 	_, err = database.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, id)
 	require.NoError(t, err)

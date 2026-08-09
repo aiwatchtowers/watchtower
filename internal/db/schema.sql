@@ -1115,6 +1115,7 @@ BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
+WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
 BEGIN
     DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
     INSERT INTO transcripts_fts(text, transcript_id, title)
