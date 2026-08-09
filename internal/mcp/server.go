@@ -119,6 +119,7 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerMessages(srv.s, database)
 	registerTranscripts(srv.s, database)
 	registerIdeas(srv.s, database)
+	registerSituations(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 
 	return srv
