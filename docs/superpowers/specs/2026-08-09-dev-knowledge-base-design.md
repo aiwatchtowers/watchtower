@@ -111,11 +111,14 @@ Evidence kinds, all derived mechanically:
 | kind | source | reads as |
 |---|---|---|
 | `messages` | `db.SearchMessages` (FTS5) matches, grouped by author, recency-weighted via `SearchOpts.FromUnix` | "14 messages on this in #payments, last 3 days ago" |
-| `thread` | participation in threads linked to the issue (`jira_slack_links`) | "replied in the thread on PROJ-123" |
-| `jira` | assignee / reporter / commenter on the issue | "assignee of the parent issue" |
-| `meeting` | speaker in a transcript segment mentioning the topic | "spoke about this on the sync, Aug 3" |
-| `track` | participant in a track covering the topic | "participant in track 'payments migration'" |
-| `code` | supplied `emails` matched to `users.email` | "authored 60% of the file (per git blame)" |
+| `thread` | participation in threads linked to the issue (`jira_slack_links` → `messages` → `GetThreadReplies`) | "replied in the thread on PROJ-123" |
+| `jira` | assignee / reporter / commenter on the issue — resolved to Slack identities for free via `jira_issues.assignee_slack_id` / `reporter_slack_id` and `jira_user_map.slack_user_id` | "assignee of the parent issue" |
+| `code` | supplied `emails` matched to `users.email` (case-folded) | "authored 60% of the file (per git blame)" |
+
+**Two evidence kinds deliberately excluded from v1**, because neither has a mechanically honest implementation yet:
+
+- *Meeting speaker.* Transcript speaker labels are rendered names (`[Я]`, `[Speaker 2]`, or a voice-print name) with no stable link to a `users` row, so "who spoke about this" would be a guess wearing evidence's clothing. Meeting material still reaches the dev — as *topic* evidence inside `get_task_context` (§5.1), where it makes a claim about the subject rather than about a person.
+- *Track participant.* `tracks.participants` is an undecoded JSON column and `TrackFilter` has no text search, so track evidence would need two new mechanisms to restate what the message and Jira signals already say.
 
 Ranking is a transparent weighted sum over recency-decayed evidence counts, and **the weights ship in the response** so the agent can explain the order. No AI, no opaque score.
 
@@ -131,14 +134,12 @@ Today's only list function is `db.ListOpenSituations()` — no status filter, no
 
 ### 5.4 New db functions required
 
-The three tools are mechanical, but four query gaps stand between them and the data. All are plain SQL over existing tables — no migration, no schema change:
+The three tools are mechanical, but three query gaps stand between them and the data — two plain SQL over existing tables, one carrying the design's single migration:
 
 1. **`ListSituations(filter)`** — status / `since` (on `last_signal_at`) / limit. Today only `ListOpenSituations()` exists.
 2. **Jira comments by key** — the sole reader is `ListJiraCommentsSince(accountID, keys, since)`, which demands an account id and a time bound. A dossier wants "this issue's comments, newest last".
 3. **Transcript text search** — **there is no keyword search over transcripts at all**: no FTS table, and not a single `transcript_text LIKE` in the repo. Resolved by building `transcripts_fts` (§11 decision 4): an FTS5 virtual table over `meeting_transcripts.transcript_text` + `notes_md`, kept in sync by triggers, mirroring `messages_fts`. The one migration this design carries; it backfills existing rows on creation.
-4. **Track participants** — `tracks.participants` / `channel_ids` are raw JSON columns with no decoder anywhere in Go (`GetTracks` filters channels with a `LIKE` over the JSON). The `track` evidence kind needs one small decode helper.
-
-Gap 3 is the one to weigh: it is the difference between "the sync where this was decided" being findable or not. Meeting material is the highest-signal source Watchtower has and currently the least searchable.
+Gap 3 is the one that carried weight: it is the difference between "the sync where this was decided" being findable or not. Meeting material is the highest-signal source Watchtower has and currently the least searchable — hence the decision to build the index properly (§11).
 
 ## 6. Know-how layer — the skill pack
 
