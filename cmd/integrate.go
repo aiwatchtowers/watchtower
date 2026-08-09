@@ -1,0 +1,193 @@
+package cmd
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
+
+	"watchtower/internal/devpack"
+)
+
+var integrateCmd = &cobra.Command{
+	Use:   "integrate",
+	Short: "Wire Watchtower into your coding agent",
+	Long: `Install Watchtower's MCP server and skill pack into a coding agent.
+
+Nothing installs itself: this command is the only thing that writes to your
+agent's configuration, and 'integrate remove' undoes exactly what it wrote.`,
+}
+
+var integrateClaudeCodeCmd = &cobra.Command{
+	Use:   "claude-code",
+	Short: "Register the MCP server and install the skill pack for Claude Code",
+	RunE:  runIntegrateClaudeCode,
+}
+
+var integrateStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Report what is installed, missing, or edited",
+	RunE:  runIntegrateStatus,
+}
+
+var integrateRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove the skill pack (and unregister the MCP server)",
+	RunE:  runIntegrateRemove,
+}
+
+var (
+	integrateScope      string
+	integratePath       string
+	integrateSkillsOnly bool
+)
+
+func init() {
+	rootCmd.AddCommand(integrateCmd)
+	integrateCmd.AddCommand(integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd)
+
+	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
+		c.Flags().StringVar(&integrateScope, "scope", "user",
+			"where skills live: user (~/.claude/skills) or project (./.claude/skills)")
+		c.Flags().StringVar(&integratePath, "path", "",
+			"explicit skills directory (overrides --scope)")
+	}
+	integrateClaudeCodeCmd.Flags().BoolVar(&integrateSkillsOnly, "skills-only", false,
+		"install the skill pack without registering the MCP server")
+}
+
+// resolveSkillsDir turns --scope/--path into one directory. An explicit path
+// always wins; otherwise user scope is the home directory and project scope
+// is the current working directory.
+func resolveSkillsDir(scope, explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	switch scope {
+	case "user":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("determining home directory: %w", err)
+		}
+		return filepath.Join(home, ".claude", "skills"), nil
+	case "project":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("determining working directory: %w", err)
+		}
+		return filepath.Join(cwd, ".claude", "skills"), nil
+	default:
+		return "", fmt.Errorf("unknown scope %q: use user or project", scope)
+	}
+}
+
+func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
+	dir, err := resolveSkillsDir(integrateScope, integratePath)
+	if err != nil {
+		return err
+	}
+	results, err := devpack.Install(dir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Skills (%s):\n", dir)
+	printSkillStatuses(results)
+
+	if integrateSkillsOnly {
+		return nil
+	}
+	return registerMCPWithClaudeCode()
+}
+
+func runIntegrateStatus(cmd *cobra.Command, args []string) error {
+	dir, err := resolveSkillsDir(integrateScope, integratePath)
+	if err != nil {
+		return err
+	}
+	results, err := devpack.Status(dir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Skills (%s):\n", dir)
+	printSkillStatuses(results)
+
+	bin, err := os.Executable()
+	if err == nil {
+		fmt.Printf("\nCLI binary: %s\n", bin)
+	}
+	return nil
+}
+
+func runIntegrateRemove(cmd *cobra.Command, args []string) error {
+	dir, err := resolveSkillsDir(integrateScope, integratePath)
+	if err != nil {
+		return err
+	}
+	results, err := devpack.Remove(dir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Skills (%s):\n", dir)
+	printSkillStatuses(results)
+
+	if _, err := exec.LookPath("claude"); err != nil {
+		fmt.Println("\nclaude CLI not found — remove the MCP server yourself with:")
+		fmt.Println("  claude mcp remove watchtower")
+		return nil
+	}
+	out, err := exec.Command("claude", "mcp", "remove", "watchtower").CombinedOutput()
+	if err != nil {
+		fmt.Printf("\nCould not unregister the MCP server (%v). Remove it with:\n", err)
+		fmt.Println("  claude mcp remove watchtower")
+		fmt.Printf("%s\n", out)
+		return nil
+	}
+	fmt.Println("\nMCP server unregistered.")
+	return nil
+}
+
+func printSkillStatuses(results []devpack.SkillStatus) {
+	for _, r := range results {
+		note := ""
+		switch r.State {
+		case devpack.StateDrifted:
+			note = "  (you edited this — left alone)"
+		case devpack.StateForeign:
+			note = "  (not ours — left alone)"
+		}
+		fmt.Printf("  %-26s %s%s\n", r.Name, r.State, note)
+	}
+}
+
+// registerMCPWithClaudeCode registers this binary as the watchtower MCP
+// server. When the claude CLI is absent we print the exact command instead of
+// failing: the skills are already installed and useful, and the user may be
+// configuring a different client.
+func registerMCPWithClaudeCode() error {
+	bin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("determining the watchtower binary path: %w", err)
+	}
+	if _, err := exec.LookPath("claude"); err != nil {
+		fmt.Println("\nclaude CLI not found. Register the MCP server yourself with:")
+		fmt.Printf("  claude mcp add watchtower -- %s mcp\n", bin)
+		return nil
+	}
+	out, err := exec.Command("claude", "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// Most commonly: already registered. Report, do not fail — the
+			// user's existing registration is theirs to keep.
+			fmt.Printf("\nMCP registration reported: %s", out)
+			fmt.Printf("If it is not registered, run:\n  claude mcp add watchtower -- %s mcp\n", bin)
+			return nil
+		}
+		return fmt.Errorf("registering the MCP server: %w", err)
+	}
+	fmt.Printf("\nMCP server registered: %s mcp\n", bin)
+	return nil
+}
