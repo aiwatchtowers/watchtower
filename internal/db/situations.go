@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -90,6 +91,58 @@ func (db *DB) ListOpenSituations() ([]DashboardSituation, error) {
 		WHERE status = 'open' ORDER BY rank DESC, updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("listing open situations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DashboardSituation
+	for rows.Next() {
+		s, err := scanSituation(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning situation: %w", err)
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
+// SituationFilter narrows ListSituations. The zero value lists every
+// situation, newest-ranked first, capped at the default limit.
+type SituationFilter struct {
+	Status   string // "" = any status
+	SinceISO string // "" = no bound; filters on last_signal_at
+	Limit    int    // <= 0 = 50
+}
+
+// ListSituations lists dashboard situations with optional status/recency
+// filters. ListOpenSituations remains the pipeline's unfiltered read; this is
+// the filtered surface the MCP tools and any recency-scoped caller need.
+func (db *DB) ListSituations(f SituationFilter) ([]DashboardSituation, error) {
+	query := `SELECT ` + situationSelectCols + ` FROM situations`
+	var conds []string
+	var args []any
+
+	if f.Status != "" {
+		conds = append(conds, "status = ?")
+		args = append(args, f.Status)
+	}
+	if f.SinceISO != "" {
+		conds = append(conds, "last_signal_at >= ?")
+		args = append(args, f.SinceISO)
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query += " ORDER BY rank DESC, updated_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing situations: %w", err)
 	}
 	defer rows.Close()
 

@@ -329,6 +329,46 @@ func TestMarkSituationConverted(t *testing.T) {
 	require.Nil(t, s.ConvertedTrackID)
 }
 
+func TestListSituationsFiltersByStatusAndSince(t *testing.T) {
+	d := openTestDB(t)
+
+	mk := func(title, status, lastSignal string, rank float64) int {
+		t.Helper()
+		res, err := d.Exec(`INSERT INTO situations (title, status, rank, last_signal_at)
+			VALUES (?, ?, ?, ?)`, title, status, rank, lastSignal)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return int(id)
+	}
+
+	openNew := mk("fresh open", "open", "2026-08-08T10:00:00Z", 5)
+	mk("old open", "open", "2026-08-01T10:00:00Z", 9)
+	mk("done one", "done", "2026-08-08T11:00:00Z", 7)
+
+	// Status filter.
+	got, err := d.ListSituations(SituationFilter{Status: "open"})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Equal(t, "old open", got[0].Title, "highest rank first")
+
+	// Since filter applies to last_signal_at.
+	got, err = d.ListSituations(SituationFilter{Status: "open", SinceISO: "2026-08-05T00:00:00Z"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, openNew, got[0].ID)
+
+	// No filter returns every status.
+	got, err = d.ListSituations(SituationFilter{})
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+
+	// Limit is honored.
+	got, err = d.ListSituations(SituationFilter{Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+}
+
 func TestSuggestedResolutionSetAndClear(t *testing.T) {
 	d := openTestDB(t)
 	id, err := d.CreateSituation(DashboardSituation{Title: "story", Kind: "external", Priority: "medium"})
