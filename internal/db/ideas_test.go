@@ -1252,6 +1252,40 @@ func TestIdeas_SetIdeasFloorsRoundTrip(t *testing.T) {
 // TestIdeas_SetIdeasFloorsNoWorkspaceRow pins the same "no silent zero-row
 // update" contract as SetIdeasFloorsTx: without a workspace row the UPDATE
 // matches nothing and must error rather than succeed silently.
+func TestGetJiraCommentsByIssueKeyReturnsChronologically(t *testing.T) {
+	d := openTestDB(t)
+	accountID := mustCreateJiraAccount(t, d)
+
+	err := d.UpsertJiraComments([]JiraComment{
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c2", BodyText: "second", CreatedAt: "2026-08-02T10:00:00Z", UpdatedAt: "2026-08-02T10:00:00Z"},
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c1", BodyText: "first", CreatedAt: "2026-08-01T10:00:00Z", UpdatedAt: "2026-08-01T10:00:00Z"},
+		{AccountID: accountID, IssueKey: "OTHER-9", ID: "c3", BodyText: "other issue", CreatedAt: "2026-08-03T10:00:00Z", UpdatedAt: "2026-08-03T10:00:00Z"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertJiraComments: %v", err)
+	}
+
+	got, err := d.GetJiraCommentsByIssueKey("PROJ-1", 0)
+	if err != nil {
+		t.Fatalf("GetJiraCommentsByIssueKey: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetJiraCommentsByIssueKey = %+v, want 2 rows", got)
+	}
+	if got[0].BodyText != "first" || got[1].BodyText != "second" {
+		t.Errorf("GetJiraCommentsByIssueKey order = [%q, %q], want [first, second] (oldest first)", got[0].BodyText, got[1].BodyText)
+	}
+
+	// Unknown key is empty, not an error.
+	none, err := d.GetJiraCommentsByIssueKey("NOPE-1", 0)
+	if err != nil {
+		t.Fatalf("GetJiraCommentsByIssueKey (unknown key): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("GetJiraCommentsByIssueKey (unknown key) = %+v, want empty", none)
+	}
+}
+
 func TestIdeas_SetIdeasFloorsNoWorkspaceRow(t *testing.T) {
 	d := openTestDB(t) // deliberately no mustSeedWorkspace
 	if err := d.SetIdeasFloors(1, 2, 3); err == nil {

@@ -601,6 +601,38 @@ func (db *DB) ListJiraCommentsSince(accountID int64, issueKeys []string, sinceIS
 	return out, rows.Err()
 }
 
+// GetJiraCommentsByIssueKey returns one issue's comments oldest-first.
+// Deliberately NOT account-scoped: an issue key is site-ambiguous by nature
+// (the documented v1 limitation of the Jira multi-account design), and the
+// dossier's caller addresses issues by bare key like every other reader.
+func (db *DB) GetJiraCommentsByIssueKey(issueKey string, limit int) ([]JiraComment, error) {
+	if issueKey == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := db.Query(`SELECT account_id, issue_key, id, author, author_account_id,
+			body_text, created_at, updated_at
+		FROM jira_comments WHERE issue_key = ?
+		ORDER BY updated_at ASC, id ASC LIMIT ?`, issueKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("getting comments for %s: %w", issueKey, err)
+	}
+	defer rows.Close()
+
+	var out []JiraComment
+	for rows.Next() {
+		var c JiraComment
+		if err := rows.Scan(&c.AccountID, &c.IssueKey, &c.ID, &c.Author,
+			&c.AuthorAccountID, &c.BodyText, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning jira comment: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // DigestTopicForIdeas is a digest_topics row carrying idea/decision
 // candidates, joined with its parent digest and channel for display.
 type DigestTopicForIdeas struct {
