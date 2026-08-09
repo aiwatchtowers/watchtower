@@ -59,3 +59,30 @@ func TestResolveSkillsDirRejectsUnknownScope(t *testing.T) {
 		t.Fatalf("expected an error for an unknown scope")
 	}
 }
+
+func TestShouldTouchMCPSkipsWhenTargetIsNarrowed(t *testing.T) {
+	// An explicit --path (or a non-default --scope) resolves to something
+	// other than the real default location — that must never reach the
+	// global MCP registration on its own.
+	if shouldTouchMCP(false, false, "/tmp/scratch/skills", "/home/dev/.claude/skills") {
+		t.Fatalf("a narrowed target must not touch the global MCP registration")
+	}
+}
+
+func TestShouldTouchMCPRunsOnDefaultTarget(t *testing.T) {
+	if !shouldTouchMCP(false, false, "/home/dev/.claude/skills", "/home/dev/.claude/skills") {
+		t.Fatalf("the default target should still unregister the MCP server")
+	}
+}
+
+func TestShouldTouchMCPSkillsOnlyAlwaysSkips(t *testing.T) {
+	if shouldTouchMCP(true, false, "/home/dev/.claude/skills", "/home/dev/.claude/skills") {
+		t.Fatalf("--skills-only must never touch the MCP registration, even at the default target")
+	}
+}
+
+func TestShouldTouchMCPMCPOnlyOverridesNarrowedTarget(t *testing.T) {
+	if !shouldTouchMCP(false, true, "/tmp/scratch/skills", "/home/dev/.claude/skills") {
+		t.Fatalf("--mcp-only must reach the MCP registration even with a narrowed target")
+	}
+}

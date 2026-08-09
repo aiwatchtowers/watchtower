@@ -43,6 +43,7 @@ var (
 	integrateScope      string
 	integratePath       string
 	integrateSkillsOnly bool
+	integrateMCPOnly    bool
 )
 
 func init() {
@@ -57,6 +58,10 @@ func init() {
 	}
 	integrateClaudeCodeCmd.Flags().BoolVar(&integrateSkillsOnly, "skills-only", false,
 		"install the skill pack without registering the MCP server")
+	integrateRemoveCmd.Flags().BoolVar(&integrateSkillsOnly, "skills-only", false,
+		"remove only the skill pack; never touch the MCP registration")
+	integrateRemoveCmd.Flags().BoolVar(&integrateMCPOnly, "mcp-only", false,
+		"unregister only the MCP server; never touch the skill pack")
 }
 
 // resolveSkillsDir turns --scope/--path into one directory. An explicit path
@@ -122,16 +127,40 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateRemove(cmd *cobra.Command, args []string) error {
+	if integrateSkillsOnly && integrateMCPOnly {
+		return fmt.Errorf("--skills-only and --mcp-only are mutually exclusive")
+	}
+
 	dir, err := resolveSkillsDir(integrateScope, integratePath)
 	if err != nil {
 		return err
 	}
-	results, err := devpack.Remove(dir)
+	defaultDir, err := resolveSkillsDir("user", "")
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Skills (%s):\n", dir)
-	printSkillStatuses(results)
+	touchMCP := shouldTouchMCP(integrateSkillsOnly, integrateMCPOnly, dir, defaultDir)
+
+	if integrateMCPOnly {
+		fmt.Println("Skipping skill pack removal (--mcp-only).")
+	} else {
+		results, err := devpack.Remove(dir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Skills (%s):\n", dir)
+		printSkillStatuses(results)
+	}
+
+	if !touchMCP {
+		if integrateSkillsOnly {
+			fmt.Println("\nSkipping MCP unregistration (--skills-only).")
+		} else {
+			fmt.Printf("\nSkipping MCP unregistration: %s is not the default Claude Code skills location (%s), and the MCP registration is global — narrowing --path/--scope must not reach outside it.\n", dir, defaultDir)
+			fmt.Println("Run with --mcp-only (or without --path/--scope) to unregister it too.")
+		}
+		return nil
+	}
 
 	if _, err := exec.LookPath("claude"); err != nil {
 		fmt.Println("\nclaude CLI not found — remove the MCP server yourself with:")
@@ -147,6 +176,23 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("\nMCP server unregistered.")
 	return nil
+}
+
+// shouldTouchMCP decides whether "integrate remove" should also unregister
+// the global MCP server. Skill-pack removal is scoped by --path/--scope, but
+// MCP registration is global, so by default we only touch it when the
+// resolved skills directory is the real default location — an explicitly
+// narrowed target (a scratch --path, a non-default --scope) must not
+// silently reach outside itself. --skills-only/--mcp-only override the
+// default explicitly, in either direction.
+func shouldTouchMCP(skillsOnly, mcpOnly bool, resolvedDir, defaultDir string) bool {
+	if skillsOnly {
+		return false
+	}
+	if mcpOnly {
+		return true
+	}
+	return resolvedDir == defaultDir
 }
 
 func printSkillStatuses(results []devpack.SkillStatus) {
