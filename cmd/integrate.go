@@ -172,13 +172,15 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// shouldTouchMCP decides whether "integrate remove" should also unregister
-// the global MCP server. Skill-pack removal is scoped by --path/--scope, but
-// MCP registration is global, so by default we only touch it when the
-// resolved skills directory is the real default location — an explicitly
-// narrowed target (a scratch --path, a non-default --scope) must not
-// silently reach outside itself. --skills-only/--mcp-only override the
-// default explicitly, in either direction.
+// shouldTouchMCP decides whether "integrate claude-code" should also
+// register, or "integrate remove" should also unregister, the global MCP
+// server — the shared rule resolveMCPScope applies to both. Skill-pack
+// install/removal is scoped by --path/--scope, but MCP registration is
+// global, so by default we only touch it when the resolved skills directory
+// is the real default location — an explicitly narrowed target (a scratch
+// --path, a non-default --scope) must not silently reach outside itself.
+// --skills-only/--mcp-only override the default explicitly, in either
+// direction.
 func shouldTouchMCP(skillsOnly, mcpOnly bool, resolvedDir, defaultDir string) bool {
 	if skillsOnly {
 		return false

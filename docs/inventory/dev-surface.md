@@ -43,16 +43,21 @@ read-only session, calls a fixed list of tools, and asserts table row counts
 are unchanged, on top of asserting a direct write against the same
 connection fails. This branch's four new tools (`list_situations`,
 `get_situation`, `get_task_context`, `find_experts`) are all in that explicit
-call list.
+call list. `list_transcripts` — a pre-existing tool this branch extended with
+an optional `query` argument (`db.SearchTranscripts`) — is exercised with
+both its bare and `query` forms.
 
-**Known gap found during this branch's work (not fixed here):** the explicit
-call list in `TestNoToolMutatesDatabase` had already drifted before this
-branch — several tools added in earlier features (`list_messages`,
-`list_transcripts`, `get_transcript`, `list_ideas`, `get_idea`) are
-registered and read-only in practice, but are not exercised by this test, so
-a regression in any of them would not be caught by this guard. This branch
-did not introduce the gap and does not close it — flagging it here so the
-next person doesn't assume every tool is covered.
+**Known gap (pre-existing, not introduced or closed by this branch):** the
+explicit call list in `TestNoToolMutatesDatabase` still omits four tools
+added in earlier features — `list_messages`, `get_transcript`, `list_ideas`,
+`get_idea` — which are registered and read-only in practice but not
+exercised by this test, so a regression in any of them would not be caught
+by this guard. (The `memory_map`/`memory_open`/`memory_recall` tools are a
+separate case: they have a documented deliberate-write exception and their
+own dedicated tests in `internal/mcp/memory_test.go`, so their absence from
+this list is by design, not drift.) This branch did not introduce the gap
+and does not close it — flagging it here so the next person doesn't assume
+every tool is covered.
 
 **Why locked:** This surface exists specifically so a customer's coding
 agent can be pointed at Watchtower's data with no write risk. A write path
