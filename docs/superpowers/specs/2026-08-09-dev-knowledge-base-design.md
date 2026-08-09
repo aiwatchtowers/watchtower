@@ -62,9 +62,10 @@ Nothing here needs new ingestion or new schema — the substrate is in place:
 
 - `internal/mcp/server.go` — the server, its `SetReadOnly` connection, `listLimit` clamping, and the `register<Domain>(s, database)` registration pattern the new tools follow.
 - `messages_fts` (FTS5 over Slack messages) with `db.SearchMessages(query string, opts SearchOpts)` — channel/user/time filters and FTS5 query sanitisation already handled.
-- `jira_slack_links(issue_key, channel_id, message_ts, track_id, digest_id, link_type)` with an index on `issue_key` — the ticket↔thread bridge.
-- `situations` / `situation_signals` — the dashboard's storage, including `status`, `priority`, `rank`, the secretary card fields, and `last_signal_at` (which is what a `since` filter keys on).
-- `users.email` populated from Slack — the join that maps a git author to a real person.
+- `jira_slack_links(issue_key, channel_id, message_ts, track_id, digest_id, link_type)` with an index on `issue_key`, read by `db.GetJiraSlackLinksByIssue(issueKey)` — the ticket↔conversation bridge. **Note:** a row points at a *single message*, not a thread; `link_type='track'`/`'decision'` rows carry no `message_ts` at all.
+- `situations` / `situation_signals` — the dashboard's storage, including `status`, `priority`, `rank`, the secretary card fields, and `last_signal_at`. Read by `db.GetSituation(id)` and `db.ListSituationSignals(id)` (signals are `inbox_items` rows).
+- `users.email` populated from Slack, with `db.GetUserByEmail(email)` plus the `calendar_attendee_map` cache (`db.GetSlackUserIDByEmail`) — the join that maps a git author to a real person.
+- `idea_mentions(source, ref)` with an index on `(source, ref)`, and a **bare issue key** as the `ref` for `source='jira'` — so "decisions about this ticket" is an exact indexed lookup, not a search.
 - `people_cards.decision_role` / `communication_guide` / `communication_style` / `tactics` / `active_hours_json` — the "who decides" and "how to approach" answers, already computed.
 - `//go:embed` precedent (`internal/db/migrations.go`, `internal/db/schema_embed.go`) for shipping the skill pack inside the binary.
 
@@ -78,12 +79,14 @@ All three follow the existing `internal/mcp` conventions: registered in `NewServ
 
 **Input:** `key` — a Jira issue key (`PROJ-123`). **Output:** a single JSON document assembling everything Watchtower knows about that work item:
 
-- the issue itself (summary, description, status, assignee, reporter, labels, sprint/board) and its comments;
-- **linked Slack threads** via `jira_slack_links` — the conversations where this key was discussed, with the messages themselves (capped and recency-ordered), not just links;
-- **meeting mentions** — transcripts and recaps whose text contains the issue key (a literal match on the key is precise enough to need no scoring; title-term matching is deliberately excluded as a false-positive generator);
-- **registry hits** — ideas and decisions whose mentions reference this issue;
-- **memory** — vault nodes provenanced to this key;
+- the issue itself (`db.GetJiraIssueByKey`) and its comments;
+- **linked Slack conversations** via `db.GetJiraSlackLinksByIssue`. Each link names one message; the tool resolves it to its **thread** — fetch the message, follow `thread_ts`, pull replies with `db.GetThreadReplies` — because the value is in the discussion, not the one line that happened to name the ticket. Links without a `message_ts` (`link_type='track'`/`'decision'`) contribute their track/digest reference instead;
+- **meeting mentions** — transcripts whose text contains the issue key. A literal key match is precise enough to need no scoring; title-term matching is deliberately excluded as a false-positive generator;
+- **registry hits** — ideas and decisions whose mentions reference this issue, via the exact indexed lookup `idea_mentions(source='jira', ref=<KEY>)`;
+- **memory** — vault nodes provenanced to `jira:<KEY>`;
 - **people** — the humans attached to the above (assignee, reporter, commenters, thread participants), each as a compact reference the agent can expand with `get_person`.
+
+**Multi-account caveat (inherited, documented):** `GetJiraIssueByKey` resolves a bare key without an `account_id` filter, so two connected Atlassian sites sharing a key resolve to an arbitrary row. This is the existing v1 ambiguity of the Jira multi-account design (the `mail:`/`jiraissue:` precedent), and this tool inherits it rather than inventing a different answer.
 
 Every section is capped independently, so the dossier stays context-window-sized. Sections with nothing to show are omitted rather than emitted empty.
 
@@ -107,7 +110,7 @@ Evidence kinds, all derived mechanically:
 
 | kind | source | reads as |
 |---|---|---|
-| `messages` | `messages_fts` matches, grouped by author, recency-weighted | "14 messages on this in #payments, last 3 days ago" |
+| `messages` | `db.SearchMessages` (FTS5) matches, grouped by author, recency-weighted via `SearchOpts.FromUnix` | "14 messages on this in #payments, last 3 days ago" |
 | `thread` | participation in threads linked to the issue (`jira_slack_links`) | "replied in the thread on PROJ-123" |
 | `jira` | assignee / reporter / commenter on the issue | "assignee of the parent issue" |
 | `meeting` | speaker in a transcript segment mentioning the topic | "spoke about this on the sync, Aug 3" |
@@ -116,11 +119,26 @@ Evidence kinds, all derived mechanically:
 
 Ranking is a transparent weighted sum over recency-decayed evidence counts, and **the weights ship in the response** so the agent can explain the order. No AI, no opaque score.
 
+**Email matching must be forgiving.** `db.GetUserByEmail` is an exact, case-sensitive match, while git authorship carries mixed case and provider noise (`Name.Surname@…`, GitHub `…@users.noreply.github.com`). The tool lowercases both sides and falls back to the `calendar_attendee_map` cache before giving up; an unmatched author is reported as unmatched, never silently dropped, so the dev knows the code signal was incomplete.
+
 Three enrichments come along for free from `people_cards`, and they are what turns a list of names into an actionable answer: `decision_role` (who *decides*, not just who knows), `communication_guide` / `communication_style` / `tactics` (how to approach), and `active_hours_json` (when they are actually online — presented honestly as *observed activity*, never as calendar free/busy, which we do not have for other people).
 
 ### 5.3 `list_situations` / `get_situation`
 
-The secretary's dashboard — the product's central artifact — is currently reachable only from the Desktop app. These two tools expose it read-only: `list_situations` (filter by status, `since`, limit) and `get_situation` (the situation with its signals, secretary card, and links to the converted target/track). This is what makes "what changed while I was heads-down" answerable at all.
+The secretary's dashboard — the product's central artifact — is currently reachable only from the Desktop app. These two tools expose it read-only: `list_situations` (filter by status, `since`, limit) and `get_situation` (the situation with its signals via `db.ListSituationSignals`, the secretary card, and links to the converted target/track).
+
+Today's only list function is `db.ListOpenSituations()` — no status filter, no `since`, no limit — so this tool needs a new filtered query (§5.4). That is the honest cost of the dashboard having lived in one screen: its read path was written for exactly that screen.
+
+### 5.4 New db functions required
+
+The three tools are mechanical, but four query gaps stand between them and the data. All are plain SQL over existing tables — no migration, no schema change:
+
+1. **`ListSituations(filter)`** — status / `since` (on `last_signal_at`) / limit. Today only `ListOpenSituations()` exists.
+2. **Jira comments by key** — the sole reader is `ListJiraCommentsSince(accountID, keys, since)`, which demands an account id and a time bound. A dossier wants "this issue's comments, newest last".
+3. **Transcript text search** — **there is no keyword search over transcripts at all**: no FTS table, and not a single `transcript_text LIKE` in the repo. `get_task_context` needs a bounded `LIKE` over `transcript_text` for the issue key, and `why-decision` needs the same for a topic. v1 uses `LIKE` on a recency- and count-bounded window; an FTS table over transcripts is the obvious follow-up if this proves slow or imprecise, and is deliberately deferred rather than guessed at.
+4. **Track participants** — `tracks.participants` / `channel_ids` are raw JSON columns with no decoder anywhere in Go (`GetTracks` filters channels with a `LIKE` over the JSON). The `track` evidence kind needs one small decode helper.
+
+Gap 3 is the one to weigh: it is the difference between "the sync where this was decided" being findable or not. Meeting material is the highest-signal source Watchtower has and currently the least searchable.
 
 ## 6. Know-how layer — the skill pack
 
@@ -150,7 +168,7 @@ Four skills, shipped as markdown embedded in the Go binary (the `//go:embed` pre
 ### 6.4 `watchtower-why-decision`
 
 **Triggers:** "why is this done this way", archaeology on a constraint, an agent about to "clean up" something that looks wrong, or a design choice being revisited.
-**Does:** `list_ideas`/`get_idea` (the decisions registry), `memory_recall`, `list_messages` (FTS), and `list_transcripts`/`get_transcript` for meeting material.
+**Does:** `list_ideas`/`get_idea` (the decisions registry — `ListIdeas` already searches mention quotes, not just titles), `memory_recall`, `list_messages` (FTS), and meeting material via the transcript search added in §5.4.
 **Presentation rule:** every claim carries provenance — who, where, when, with the ref. An unprovenanced "we decided X" is worse than no answer, because it will be believed.
 
 **Dropped from v1 (YAGNI):** a separate `meeting-recall` skill and a separate `who-is` skill. Meeting transcripts are a *source*, consumed by the two skills above; a person's card is one step of `who-to-ask`. Neither earns its own scenario yet.
@@ -182,7 +200,7 @@ To be catalogued alongside the existing INBOX/DASH/MEM/IDEA families:
 
 ## 9. Slices
 
-**Slice 1 — data layer.** `list_situations`/`get_situation`, `get_task_context`, `find_experts`, with tests. Independently useful: an agent with the MCP server already configured gains all of it with no skills at all.
+**Slice 1 — data layer.** The four db query gaps of §5.4, then `list_situations`/`get_situation`, `get_task_context`, `find_experts`, with tests. Independently useful: an agent with the MCP server already configured gains all of it with no skills at all.
 
 **Slice 2 — know-how + control.** The four skills, the embed, `watchtower integrate` (+ `status`/`remove`), and the docs. Depends on slice 1 only for the tools its skills reference.
 
@@ -198,3 +216,4 @@ To be catalogued alongside the existing INBOX/DASH/MEM/IDEA families:
 1. **Tool naming.** `get_task_context` reads well from a skill, but the surface already leans on `get_`/`list_` over domain nouns. Alternative: `get_issue_context`.
 2. **`find_experts` beyond Slack-identified people.** People who exist in Jira/Gmail but have no Slack user row currently cannot be candidates. Accept for v1, or resolve identities across sources?
 3. **Project-scope skills.** Is `--scope project` (skills committed into the dev's repo, shared with teammates) wanted in v1, or is user-scope enough?
+4. **Transcript search (§5.4 gap 3).** Ship v1 on a bounded `LIKE` over `transcript_text`, or build a `transcripts_fts` table now (the `messages_fts` pattern, triggers included) and have proper meeting search from day one? Meetings are the highest-signal, least-searchable source we hold.
