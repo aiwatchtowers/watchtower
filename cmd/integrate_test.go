@@ -71,7 +71,7 @@ func TestShouldTouchMCPSkipsWhenTargetIsNarrowed(t *testing.T) {
 
 func TestShouldTouchMCPRunsOnDefaultTarget(t *testing.T) {
 	if !shouldTouchMCP(false, false, "/home/dev/.claude/skills", "/home/dev/.claude/skills") {
-		t.Fatalf("the default target should still unregister the MCP server")
+		t.Fatalf("the default target should still touch the MCP registration")
 	}
 }
 
@@ -84,5 +84,73 @@ func TestShouldTouchMCPSkillsOnlyAlwaysSkips(t *testing.T) {
 func TestShouldTouchMCPMCPOnlyOverridesNarrowedTarget(t *testing.T) {
 	if !shouldTouchMCP(false, true, "/tmp/scratch/skills", "/home/dev/.claude/skills") {
 		t.Fatalf("--mcp-only must reach the MCP registration even with a narrowed target")
+	}
+}
+
+// resolveMCPScope is the single decision "integrate claude-code" and
+// "integrate remove" both route through, so testing it once pins the
+// symmetry between the two subcommands rather than assuming it holds.
+
+func TestResolveMCPScopeDefaultTouchesBoth(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	scope, err := resolveMCPScope("user", "", false, false)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	if !scope.touchSkills || !scope.touchMCP {
+		t.Fatalf("a default invocation should touch both halves, got touchSkills=%v touchMCP=%v", scope.touchSkills, scope.touchMCP)
+	}
+}
+
+func TestResolveMCPScopeNarrowedPathSkipsMCPButNotSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	scope, err := resolveMCPScope("user", "/tmp/scratch/skills", false, false)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	if !scope.touchSkills {
+		t.Fatalf("an explicit --path should still touch the skill pack")
+	}
+	if scope.touchMCP {
+		t.Fatalf("an explicit --path must not touch the global MCP registration by default")
+	}
+}
+
+func TestResolveMCPScopeSkillsOnlySkipsMCPAtDefaultTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	scope, err := resolveMCPScope("user", "", true, false)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	if scope.touchMCP {
+		t.Fatalf("--skills-only must skip the MCP half even at the default target")
+	}
+}
+
+func TestResolveMCPScopeMCPOnlySkipsSkillsAndForcesMCP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	scope, err := resolveMCPScope("user", "/tmp/scratch/skills", false, true)
+	if err != nil {
+		t.Fatalf("resolving: %v", err)
+	}
+	if scope.touchSkills {
+		t.Fatalf("--mcp-only must skip the skill pack")
+	}
+	if !scope.touchMCP {
+		t.Fatalf("--mcp-only must reach the MCP registration even with a narrowed --path")
+	}
+}
+
+func TestResolveMCPScopeRejectsBothOnlyFlags(t *testing.T) {
+	if _, err := resolveMCPScope("user", "", true, true); err == nil {
+		t.Fatalf("expected an error when --skills-only and --mcp-only are both set")
 	}
 }
