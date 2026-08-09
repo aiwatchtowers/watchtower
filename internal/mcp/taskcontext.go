@@ -188,16 +188,20 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 		}
 		seen[dedupeKey] = true
 
-		msgs := []db.Message{anchor}
-		replies, err := database.GetThreadReplies(l.ChannelID, threadTS)
+		// GetThreadReplies is parent-inclusive (its own doc comment, and its
+		// SQL matches ts = threadTS OR thread_ts = threadTS) and orders
+		// chronologically — so it already carries the anchor exactly once,
+		// in place. Prepending the anchor separately would duplicate it,
+		// out of order, at index 0.
+		msgs, err := database.GetThreadReplies(l.ChannelID, threadTS)
 		if err != nil {
 			// Degrade, don't fabricate: a thread rendered with only its
 			// anchor message is indistinguishable from "nobody replied" —
 			// the note is what tells the caller this shape is incomplete,
-			// not authoritative.
+			// not authoritative. The anchor is the one message we already
+			// know exists, so it's still worth surfacing alone.
 			notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", l.ChannelID, threadTS, err))
-		} else {
-			msgs = append(msgs, replies...)
+			msgs = []db.Message{anchor}
 		}
 		if len(msgs) > taskContextMaxReplies {
 			msgs = msgs[:taskContextMaxReplies]
@@ -258,6 +262,7 @@ func collectTaskDecisions(database *db.DB, key string, notes []string) ([]taskDe
 		}
 		mentions, err := database.ListIdeaMentions(ideas[i].ID)
 		if err != nil {
+			notes = append(notes, fmt.Sprintf("mentions unavailable for idea %d: %v", ideas[i].ID, err))
 			continue
 		}
 		for _, m := range mentions {

@@ -3,12 +3,21 @@ package mcp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
+)
+
+// taskContextFixtureParentTS/ReplyTS are shared between
+// seedTaskContextFixture and TestGetTaskContextThreadMessagesAreUniqueAndOrdered
+// so the test can assert on the exact timestamps the fixture wrote.
+const (
+	taskContextFixtureParentTS = "1690000000.000100"
+	taskContextFixtureReplyTS  = "1690000000.000200"
 )
 
 func TestGetTaskContextAssemblesTheDossier(t *testing.T) {
@@ -38,6 +47,43 @@ func TestGetTaskContextAssemblesTheDossier(t *testing.T) {
 		if !contains(out, want) {
 			t.Fatalf("dossier missing %q; got: %s", want, out)
 		}
+	}
+}
+
+// TestGetTaskContextThreadMessagesAreUniqueAndOrdered pins the fix for a bug
+// where the anchor message was prepended manually on top of
+// GetThreadReplies's own (parent-inclusive) result, duplicating it out of
+// chronological order. A substring/containment check cannot catch this
+// class of defect — it has to count messages and check their sequence.
+func TestGetTaskContextThreadMessagesAreUniqueAndOrdered(t *testing.T) {
+	database := seedDB(t)
+	seedTaskContextFixture(t, database)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_task_context",
+		Arguments: map[string]any{"key": "PROJ-1"},
+	})
+	if err != nil {
+		t.Fatalf("calling get_task_context: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %s", textContent(t, res))
+	}
+
+	var got taskContext
+	if err := json.Unmarshal([]byte(textContent(t, res)), &got); err != nil {
+		t.Fatalf("unmarshaling dossier: %v", err)
+	}
+	if len(got.Threads) != 1 {
+		t.Fatalf("expected exactly 1 thread, got %d: %+v", len(got.Threads), got.Threads)
+	}
+	msgs := got.Threads[0].Messages
+	if len(msgs) != 2 {
+		t.Fatalf("expected exactly 2 messages (parent + reply, no duplicate), got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[0].TS != taskContextFixtureParentTS || msgs[1].TS != taskContextFixtureReplyTS {
+		t.Fatalf("expected chronological order [parent, reply], got %+v", msgs)
 	}
 }
 
@@ -120,8 +166,8 @@ func seedTaskContextFixture(t *testing.T, database *db.DB) {
 	if err := database.EnsureChannel("C001", "eng-payments", "public", ""); err != nil {
 		t.Fatalf("seeding channel: %v", err)
 	}
-	parentTS := "1690000000.000100"
-	replyTS := "1690000000.000200"
+	parentTS := taskContextFixtureParentTS
+	replyTS := taskContextFixtureReplyTS
 	if err := database.UpsertMessage(db.Message{
 		ChannelID: "C001", TS: parentTS, UserID: "U001",
 		Text: "does PROJ-1 touch the legacy adapter?", RawJSON: "{}",
