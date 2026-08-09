@@ -80,6 +80,7 @@ func TestToolsList(t *testing.T) {
 		"list_transcripts", "get_transcript",
 		"list_ideas", "get_idea",
 		"list_situations", "get_situation",
+		"get_task_context",
 		"memory_map", "memory_open", "memory_recall",
 	}
 	for _, name := range want {
