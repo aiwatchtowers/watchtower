@@ -312,6 +312,19 @@ struct WatchtowerApp: App {
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
     }
 
+    /// Template (auto-tinted) tray icon — the app-icon tower glyph, rendered
+    /// monochrome by scripts/generate-menubar-icon.swift. Falls back to the
+    /// old SF Symbol when the processed resource is missing.
+    private static let trayIcon: NSImage = {
+        if let url = AppBundle.resources.url(forResource: "menubar-icon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            return img
+        }
+        return NSImage(systemSymbolName: "binoculars", accessibilityDescription: "Watchtower") ?? NSImage()
+    }()
+
     var body: some Scene {
         WindowGroup(id: TrayAppDelegate.mainWindowSceneID) {
             // A duplicate is headless for its grace window: no UI to flash, and no
@@ -338,9 +351,12 @@ struct WatchtowerApp: App {
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
         }
 
-        MenuBarExtra("Watchtower", systemImage: "binoculars", isInserted: .constant(!isDuplicate)) {
+        MenuBarExtra(isInserted: .constant(!isDuplicate)) {
             TrayMenuView()
                 .environment(appState)
+        } label: {
+            Image(nsImage: Self.trayIcon)
+                .accessibilityLabel("Watchtower")
         }
     }
 }
