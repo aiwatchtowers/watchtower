@@ -255,3 +255,35 @@ func TestSearchMessagesDefaultLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 50, len(results))
 }
+
+func TestSearchTranscriptsFindsAndSnippets(t *testing.T) {
+	database := openTestDB(t)
+
+	hit, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Payments sync",
+		TranscriptText: "[Я] the decision is to keep tokens in a file, not the keychain",
+	})
+	require.NoError(t, err)
+	_, err = database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Unrelated",
+		TranscriptText: "[Я] discussed hiring",
+	})
+	require.NoError(t, err)
+
+	got, err := database.SearchTranscripts("keychain", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, hit, got[0].ID)
+	assert.Equal(t, "Payments sync", got[0].Title)
+	assert.Contains(t, got[0].Snippet, "keychain")
+
+	// Empty query is a no-op, not an error — mirrors SearchMessages.
+	empty, err := database.SearchTranscripts("", 10)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+
+	// FTS5 operators are sanitized away rather than erroring.
+	safe, err := database.SearchTranscripts(`keychain OR "`, 10)
+	require.NoError(t, err)
+	assert.NotEmpty(t, safe)
+}
