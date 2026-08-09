@@ -108,9 +108,13 @@ func (db *DB) ListOpenSituations() ([]DashboardSituation, error) {
 // SituationFilter narrows ListSituations. The zero value lists every
 // situation, newest-ranked first, capped at the default limit.
 type SituationFilter struct {
-	Status   string // "" = any status
-	SinceISO string // "" = no bound; filters on last_signal_at
-	Limit    int    // <= 0 = 50
+	Status string // "" = any status
+	// SinceISO bounds last_signal_at ("" = no bound). A situation that has
+	// never received a signal has last_signal_at = '', which sorts below any
+	// real timestamp — so it is deliberately excluded whenever a bound is
+	// given, since a recency filter should not surface signal-less stories.
+	SinceISO string
+	Limit    int // <= 0 = 50
 }
 
 // ListSituations lists dashboard situations with optional status/recency
