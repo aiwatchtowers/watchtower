@@ -81,6 +81,7 @@ func TestToolsList(t *testing.T) {
 		"list_ideas", "get_idea",
 		"list_situations", "get_situation",
 		"get_task_context",
+		"find_experts",
 		"memory_map", "memory_open", "memory_recall",
 	}
 	for _, name := range want {
@@ -104,8 +105,13 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	}
 	// The memory_ tools are read surfaces over the vault + index; memory_open
 	// additionally bumps memory_node_stats — best-effort usage telemetry, not
-	// domain data — the one deliberate exception to "no writes".
-	readVerbs := map[string]bool{"memory_map": true, "memory_open": true, "memory_recall": true}
+	// domain data — the one deliberate exception to "no writes". find_experts
+	// is a pure read (mechanical SQL + arithmetic over existing tables) that
+	// just doesn't fit the list_/get_ naming.
+	readVerbs := map[string]bool{
+		"memory_map": true, "memory_open": true, "memory_recall": true,
+		"find_experts": true,
+	}
 	for _, tool := range res.Tools {
 		if !strings.HasPrefix(tool.Name, "list_") &&
 			!strings.HasPrefix(tool.Name, "get_") &&

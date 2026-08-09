@@ -78,6 +78,43 @@ func TestGetUserByIDNotFound(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestGetUserByEmailFoldCaseInsensitive(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", Email: "alice@example.com"}))
+
+	got, err := db.GetUserByEmailFold("ALICE@Example.COM")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "U001", got.ID)
+}
+
+func TestGetUserByEmailFoldNotFound(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	got, err := db.GetUserByEmailFold("nobody@example.com")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestGetUserByEmailFoldEmptyGuard(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// A user with no email must never match an empty lookup — the same guard
+	// GetUserByEmail has (email != '').
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", Email: ""}))
+
+	got, err := db.GetUserByEmailFold("")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
 func TestGetUserByNameNotFound(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

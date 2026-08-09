@@ -106,6 +106,17 @@ func (db *DB) GetUserByEmail(email string) (*User, error) {
 	return scanUser(row)
 }
 
+// GetUserByEmailFold matches an email case-insensitively. GetUserByEmail's
+// exact match is right for synced Slack data (which is consistently cased),
+// but wrong for anything a human typed or a tool authored, such as git commit
+// author emails, where case varies freely.
+func (db *DB) GetUserByEmailFold(email string) (*User, error) {
+	row := db.QueryRow(`
+		SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at
+		FROM users WHERE LOWER(email) = LOWER(?) AND email != ''`, email)
+	return scanUser(row)
+}
+
 // EnsureUser inserts a minimal stub user record if not already present.
 // Stubs are marked with is_stub=1 so syncUserProfiles can backfill them.
 // Does NOT update existing records (INSERT ON CONFLICT DO NOTHING).

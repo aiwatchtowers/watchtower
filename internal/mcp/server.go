@@ -121,6 +121,7 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerIdeas(srv.s, database)
 	registerSituations(srv.s, database)
 	registerTaskContext(srv.s, database)
+	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 
 	return srv
