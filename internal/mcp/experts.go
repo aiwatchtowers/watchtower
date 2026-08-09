@@ -246,7 +246,13 @@ func collectIssueEvidence(database *db.DB, key string, acc *expertAccumulator, n
 	}
 	for atlassianID, n := range byAuthor {
 		m, err := database.GetJiraUserMapByAccountID(atlassianID)
-		if err != nil || m == nil || m.SlackUserID == "" {
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("user map unavailable for jira account %s: %v", atlassianID, err))
+			continue
+		}
+		if m == nil || m.SlackUserID == "" {
+			// Genuinely no Slack mapping for this Atlassian account — not a
+			// failure, so no note.
 			continue
 		}
 		acc.add(m.SlackUserID, expertEvidence{
@@ -270,7 +276,13 @@ func collectLinkedThreadEvidence(database *db.DB, key string, acc *expertAccumul
 			continue
 		}
 		anchors, err := database.GetMessagesByTS(l.ChannelID, []string{l.MessageTS})
-		if err != nil || len(anchors) == 0 {
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("linked message unavailable for %s|%s: %v", l.ChannelID, l.MessageTS, err))
+			continue
+		}
+		if len(anchors) == 0 {
+			// Genuinely nothing to show — the linked message was never
+			// synced (or was since deleted). Not a failure, so no note.
 			continue
 		}
 		threadTS := anchors[0].TS
@@ -282,7 +294,19 @@ func collectLinkedThreadEvidence(database *db.DB, key string, acc *expertAccumul
 		}
 		seen[l.ChannelID+"|"+threadTS] = true
 
-		msgs := append([]db.Message{anchors[0]}, mustReplies(database, l.ChannelID, threadTS)...)
+		// GetThreadReplies is parent-inclusive (its own doc comment, and its
+		// SQL matches ts = threadTS OR thread_ts = threadTS) — so on success
+		// it already carries the anchor exactly once; prepending it again
+		// would double-count that author's evidence. Only on a read failure
+		// do we fall back to the anchor alone, which is still usable evidence.
+		replies, err := mustReplies(database, l.ChannelID, threadTS)
+		var msgs []db.Message
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", l.ChannelID, threadTS, err))
+			msgs = []db.Message{anchors[0]}
+		} else {
+			msgs = replies
+		}
 		byUser := map[string]int{}
 		latest := map[string]float64{}
 		for _, m := range msgs {
@@ -307,14 +331,15 @@ func collectLinkedThreadEvidence(database *db.DB, key string, acc *expertAccumul
 	return notes
 }
 
-// mustReplies returns thread replies, treating a read failure as "no replies"
-// — the anchor message alone is still usable evidence.
-func mustReplies(database *db.DB, channelID, threadTS string) []db.Message {
+// mustReplies returns thread replies, or nil plus the error on a read
+// failure — the anchor message alone is still usable evidence, but the
+// caller notes the gap rather than passing it through silently.
+func mustReplies(database *db.DB, channelID, threadTS string) ([]db.Message, error) {
 	replies, err := database.GetThreadReplies(channelID, threadTS)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return replies
+	return replies, nil
 }
 
 // collectCodeEvidence resolves email addresses (typically git commit authors)
