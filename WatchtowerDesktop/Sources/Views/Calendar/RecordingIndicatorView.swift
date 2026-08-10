@@ -27,13 +27,16 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    @AppStorage("transcription.liveTranscription") private var transcriptionLive = true
 
     /// Whether the currently-selected engine can produce a live transcript at
-    /// all. When it cannot, the live-chunks panel/chevron affordance never
-    /// makes sense (there is nothing to expand into) — the recording shows
-    /// only the plain capsule, and the transcript appears after Stop.
+    /// all — and the Settings toggle wants one. When it cannot (or live is
+    /// off), the live-chunks panel/chevron affordance never makes sense
+    /// (there is nothing to expand into) — the recording shows only the plain
+    /// capsule, and the transcript appears after Stop.
     private var activeProviderSupportsLive: Bool {
-        TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).supportsLive
+        transcriptionLive
+            && TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).supportsLive
     }
 
     var body: some View {

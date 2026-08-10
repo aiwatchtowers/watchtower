@@ -842,6 +842,44 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertNil(center.pendingAudioURL)
     }
 
+    func testLiveDisabledSkipsLivePassAndBatchTranscribesAfterStop() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        var decodeCalls = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: ["batch text"])) },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+
+        await center.startRecording(eventID: nil, title: "No live", config: config)
+        recorder.emitLive([Float](repeating: 0, count: 3200))
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertEqual(center.liveEngineState, .off, "no live pass may start while disabled")
+        XCTAssertEqual(engineLoads, 0, "no engine loads during capture")
+        XCTAssertTrue(center.liveChunks.isEmpty)
+
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(engineLoads, 1, "the batch path loads the engine after Stop")
+        XCTAssertEqual(decodeCalls, 1, "the transcript comes from the file, not a live pass")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertNil(center.pendingAudioURL)
+    }
+
     func testLiveChunksAccumulateAndSurviveViewLifetime() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }

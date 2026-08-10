@@ -66,6 +66,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.forceLang") private var transcriptionForceLang = ""
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @AppStorage("transcription.contextPrompt") private var transcriptionContextPrompt = false
+    @AppStorage("transcription.liveTranscription") private var transcriptionLive = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
@@ -989,6 +990,10 @@ struct GeneralSettings: View {
 
             Toggle("Speaker roles", isOn: $transcriptionDiarization)
                 .help("Label transcript lines with who was speaking ([Я] / [Speaker N]) using on-device diarization")
+
+            Toggle("Live transcription", isOn: $transcriptionLive)
+                .help("Transcribe while recording so text appears during the meeting. "
+                    + "Off = record only and transcribe after Stop, keeping the machine idle during the call.")
 
             Toggle("Cross-window context (experimental)", isOn: $transcriptionContextPrompt)
                 .help("Feed each window's decode the previous window's text (Whisper long-form conditioning). "

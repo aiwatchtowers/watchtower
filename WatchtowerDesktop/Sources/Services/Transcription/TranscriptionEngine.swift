@@ -46,6 +46,9 @@ struct TranscriptionConfig: Equatable {
     /// a Settings → Transcription toggle. Honoured by the WhisperKit path only
     /// — Qwen3, Parakeet and Apple run their own windowing and ignore it.
     var contextPrompt: Bool = false
+    /// Run the live (in-progress) transcription pass while recording. Off =
+    /// capture only; the batch path transcribes from the file after Stop.
+    var liveTranscription: Bool = true
     /// Speaker roles: diarization post-pass renders [Я]/[Speaker N] labels.
     var diarization: Bool = true
     /// Clustering threshold for the diarizer's speaker embeddings; lower splits
@@ -103,6 +106,9 @@ extension TranscriptionConfig {
         }
         if defaults.object(forKey: "transcription.contextPrompt") != nil {
             config.contextPrompt = defaults.bool(forKey: "transcription.contextPrompt")
+        }
+        if defaults.object(forKey: "transcription.liveTranscription") != nil {
+            config.liveTranscription = defaults.bool(forKey: "transcription.liveTranscription")
         }
         if defaults.object(forKey: "transcription.diarization") != nil {
             config.diarization = defaults.bool(forKey: "transcription.diarization")
