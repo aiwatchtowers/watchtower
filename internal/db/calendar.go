@@ -84,7 +84,24 @@ func (db *DB) SetCalendarSelected(id string, selected bool) error {
 	return nil
 }
 
-// UpsertCalendarEvent inserts or replaces a calendar event.
+// calendarEventUpdateSet is the ON CONFLICT(id) DO UPDATE clause shared by the
+// single and batch event upserts — every column except the id. The upserts
+// must NEVER use INSERT OR REPLACE: with foreign_keys=ON, REPLACE resolves a
+// PK conflict as DELETE+INSERT, firing the FK actions on the children — it
+// NULLs meeting_transcripts.event_id (ON DELETE SET NULL) and deletes the
+// event's meeting_recaps row (ON DELETE CASCADE) on every sync cycle.
+const calendarEventUpdateSet = `ON CONFLICT(id) DO UPDATE SET
+		calendar_id=excluded.calendar_id, title=excluded.title, description=excluded.description,
+		location=excluded.location, start_time=excluded.start_time, end_time=excluded.end_time,
+		organizer_email=excluded.organizer_email, attendees=excluded.attendees,
+		is_recurring=excluded.is_recurring, is_all_day=excluded.is_all_day,
+		event_status=excluded.event_status, event_type=excluded.event_type,
+		html_link=excluded.html_link, conference_url=excluded.conference_url,
+		raw_json=excluded.raw_json, ical_uid=excluded.ical_uid,
+		synced_at=excluded.synced_at, updated_at=excluded.updated_at`
+
+// UpsertCalendarEvent inserts or updates a calendar event (never REPLACE —
+// see calendarEventUpdateSet for why that would wipe FK children).
 // syncedAt is an ISO8601 timestamp used to track when the event was last synced.
 // If empty, the current time from SQLite is used as a fallback.
 func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
@@ -100,11 +117,12 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 		args = append(args, syncedAt[0])
 	}
 	args = append(args, ev.UpdatedAt)
-	_, err := db.Exec(`INSERT OR REPLACE INTO calendar_events
+	_, err := db.Exec(`INSERT INTO calendar_events
 		(id, calendar_id, title, description, location, start_time, end_time,
 		 organizer_email, attendees, is_recurring, is_all_day, event_status,
 		 event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)
+		`+calendarEventUpdateSet,
 		args...)
 	if err != nil {
 		return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
@@ -112,7 +130,9 @@ func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
 	return nil
 }
 
-// UpsertCalendarEvents inserts or replaces multiple calendar events in a single transaction.
+// UpsertCalendarEvents inserts or updates multiple calendar events in a single
+// transaction (never REPLACE — see calendarEventUpdateSet for why that would
+// wipe FK children).
 func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 	if len(events) == 0 {
 		return nil
@@ -124,11 +144,12 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 	defer tx.Rollback()
 
 	for _, ev := range events {
-		_, err := tx.Exec(`INSERT OR REPLACE INTO calendar_events
+		_, err := tx.Exec(`INSERT INTO calendar_events
 			(id, calendar_id, title, description, location, start_time, end_time,
 			 organizer_email, attendees, is_recurring, is_all_day, event_status,
 			 event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)
+			`+calendarEventUpdateSet,
 			ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 			ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 			ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,

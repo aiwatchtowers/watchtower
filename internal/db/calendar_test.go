@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -276,6 +277,75 @@ func TestUpsertCalendarEvents_Batch(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "b1@google.com", got.ICalUID)
+}
+
+// TestUpsertCalendarEvent_PreservesFKChildren guards the sync-cycle wipe bug:
+// calendar_events upserts must never be INSERT OR REPLACE. With foreign_keys=ON
+// a REPLACE on a PK conflict is DELETE+INSERT, which fires the FK actions on
+// the children — meeting_transcripts.event_id (ON DELETE SET NULL) loses its
+// link and the event's meeting_recaps row (ON DELETE CASCADE) is physically
+// deleted, on EVERY sync cycle that re-upserts the window's events.
+func TestUpsertCalendarEvent_PreservesFKChildren(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-fk", CalendarID: "primary", Title: "Planning",
+		StartTime: "2026-04-02T09:00:00Z", EndTime: "2026-04-02T10:00:00Z",
+	}))
+
+	transcriptID, err := db.InsertMeetingTranscript(MeetingTranscript{
+		EventID:        sql.NullString{String: "evt-fk", Valid: true},
+		Title:          "Planning",
+		TranscriptText: "hello world",
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertMeetingRecap("evt-fk", "hello world", `{"summary":"ok"}`))
+
+	// Per-path assertions so a REPLACE regression in either call site fails on
+	// its own step, not only via the combined end state.
+	assertChildrenIntact := func(path string) {
+		t.Helper()
+		tr, err := db.GetMeetingTranscript(transcriptID)
+		require.NoError(t, err)
+		require.NotNil(t, tr)
+		assert.True(t, tr.EventID.Valid, "transcript event link must survive an event re-upsert (%s)", path)
+		assert.Equal(t, "evt-fk", tr.EventID.String)
+		recap, err := db.GetMeetingRecap("evt-fk")
+		require.NoError(t, err)
+		require.NotNil(t, recap, "meeting recap must survive an event re-upsert (%s)", path)
+	}
+
+	// Re-upsert the same event id with changed fields — a normal sync cycle,
+	// using the explicit-syncedAt branch the calendar/CalDAV syncers call.
+	// The stale-event cleanup deletes rows with synced_at < the sync's stamp,
+	// so excluded.synced_at must carry the explicit value through the UPDATE
+	// branch — a stale synced_at here re-opens the wipe via the delete path.
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-fk", CalendarID: "primary", Title: "Planning (moved)",
+		StartTime: "2026-04-02T11:00:00Z", EndTime: "2026-04-02T12:00:00Z",
+	}, "2026-04-03T08:00:00Z"))
+	got, err := db.GetCalendarEventByID("evt-fk")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "Planning (moved)", got.Title)
+	assert.Equal(t, "2026-04-03T08:00:00Z", got.SyncedAt,
+		"explicit syncedAt must be refreshed on the conflict-update branch")
+	assertChildrenIntact("single path")
+
+	// And again through the batch path (strftime-now synced_at).
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{{
+		ID: "evt-fk", CalendarID: "primary", Title: "Planning (moved again)",
+		StartTime: "2026-04-02T13:00:00Z", EndTime: "2026-04-02T14:00:00Z",
+	}}))
+	got, err = db.GetCalendarEventByID("evt-fk")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "Planning (moved again)", got.Title)
+	assert.Equal(t, "2026-04-02T13:00:00Z", got.StartTime)
+	assert.NotEqual(t, "2026-04-03T08:00:00Z", got.SyncedAt,
+		"batch upsert must restamp synced_at on the conflict-update branch")
+	assertChildrenIntact("batch path")
 }
 
 func TestDeleteStaleCalendarEvents(t *testing.T) {
