@@ -251,13 +251,17 @@ struct CalendarEventsView: View {
         scrollToToday(proxy)
     }
 
-    /// With past days in the list, land on "Today" (or the first future day
-    /// when today has no entries) instead of two weeks of history. Sections
-    /// are chronological with past days on top, so the target is the first
-    /// section at or after today — or the LAST section when the window holds
-    /// only history (see `todayScrollTarget`).
+    /// With past days in the list, land on the now-line when today has a
+    /// section (the marker always renders inside it), so the viewport opens
+    /// at the current time instead of the morning's past meetings. Without a
+    /// today section fall back to `todayScrollTarget`: the first future day,
+    /// or the LAST section when the window holds only history.
     private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
+        if sections.contains(where: { $0.id == today }) {
+            proxy.scrollTo(NowLine.nowLineID, anchor: .center)
+            return
+        }
         guard let target = Self.todayScrollTarget(in: sections, today: today) else { return }
         proxy.scrollTo(target, anchor: .top)
     }
