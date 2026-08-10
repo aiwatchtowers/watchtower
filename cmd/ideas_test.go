@@ -322,6 +322,8 @@ func TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope(t *testing.T) {
 	require.Contains(t, out, `"input_tokens":0`, "GB15: token usage fields must be present even when zero")
 	require.Contains(t, out, `"output_tokens":0`)
 	require.Contains(t, out, `"api_calls":0`)
+	require.Contains(t, out, `"slack_refs_dropped":0`, "the IDEA-02 drop counters must be present even when zero")
+	require.Contains(t, out, `"refs_rejected":0`)
 
 	// The lock must be released once the command returns, so a follow-up
 	// backfill (or the daemon) is never left blocked by this one.
@@ -330,6 +332,52 @@ func TestIdeasMine_Backfill_EmptyWindow_PrintsEnvelope(t *testing.T) {
 		require.NoError(t, cerr)
 		return cfg.WorkspaceDir()
 	}()))
+}
+
+// TestIdeasMine_Incremental_ReportsDropCounters pins the flagless path's
+// reporting of the two IDEA-02 drop counters. They were log-only before, which
+// left the owner reading "proposed=0" unable to tell a quiet day apart from a
+// run that mined a Slack candidate whose timestamp resolved to no live message
+// and then discarded the model's citation of it. One topic here carries a real
+// candidate and a hallucinated one, and the model cites the hallucinated ref:
+// one unverifiable Slack ref dropped, one invented ref rejected, nothing
+// written.
+func TestIdeasMine_Incremental_ReportsDropCounters(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "Test"}))
+
+	require.NoError(t, database.UpsertMessage(db.Message{
+		ChannelID: "C1", TS: "1785746329.642879", UserID: "U1", Text: "we should try X", RawJSON: "{}",
+	}))
+	ideasJSON, err := json.Marshal([]digest.IdeaCandidate{
+		{Text: "real idea", By: "Ann", MessageTS: "1785746329.642879"},
+		{Text: "hallucinated idea", By: "Ann", MessageTS: "1754131080.000000"},
+	})
+	require.NoError(t, err)
+	now := float64(time.Now().Unix())
+	digestID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel", PeriodFrom: now, PeriodTo: now + 60,
+		Summary: "s", Topics: "[]", Decisions: "[]", ActionItems: "[]", PeopleSignals: "[]", Situations: "[]",
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.InsertDigestTopics(digestID, []db.DigestTopic{{
+		Idx: 0, Title: "general", Summary: "s", Decisions: "[]", ActionItems: "[]",
+		Situations: "[]", KeyMessages: "[]", Ideas: string(ideasJSON),
+	}}))
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	gen := &fakeCmdGen{reply: func(string) (string, error) {
+		return `{"ops":[{"op":"new_idea","title":"Ghost","essence":"e",
+			"mentions":[{"source":"slack","ref":"C1|1754131080.000000","quote":"hallucinated idea","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+	}}
+	pipe := ideas.New(database, cfg, gen, nil)
+
+	var buf bytes.Buffer
+	require.NoError(t, runIdeasMineIncremental(context.Background(), pipe, &buf))
+	database.Close()
+
+	assert.Contains(t, buf.String(), "proposed=0 slack_refs_dropped=1 refs_rejected=1")
 }
 
 // TestIdeasMine_Backfill_Capped_PrintsEnvelope covers GB2 at the CLI layer:

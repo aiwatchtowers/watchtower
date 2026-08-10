@@ -553,9 +553,11 @@ final class DigestViewModel {
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)")
     }
 
-    /// Build Slack message deep link (opens Slack app directly)
+    /// Build Slack message deep link (opens Slack app directly). An empty
+    /// messageTS yields nil, not a channel-only link — the digest pipeline
+    /// blanks a message_ts it could not verify, so "" is a routine value.
     func slackMessageURL(channelID: String, messageTS: String) -> URL? {
-        guard let teamID = workspaceTeamID, !teamID.isEmpty else { return nil }
+        guard let teamID = workspaceTeamID, !teamID.isEmpty, !messageTS.isEmpty else { return nil }
         return URL(string: "slack://channel?team=\(teamID)&id=\(channelID)&message=\(messageTS)")
     }
 

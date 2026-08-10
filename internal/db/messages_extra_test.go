@@ -213,6 +213,51 @@ func TestEnsureChannel(t *testing.T) {
 	assert.Equal(t, "general", ch.Name) // not changed
 }
 
+// TestIdeas02_FilterExistingMessageTS_DeletedAndForeignChannelExcluded pins the
+// predicate the ideas consolidator's Slack-ref validation rests on (IDEA-02):
+// a ts only counts as verified when a message carrying it lives in THAT
+// channel and is not tombstoned. Both exclusions are load-bearing — leaking a
+// neighbouring channel's ts would validate a ref pointing at a message the
+// topic never covered, and accepting a deleted one would validate a ref that
+// 404s for the owner exactly like a hallucinated timestamp.
+func TestIdeas02_FilterExistingMessageTS_DeletedAndForeignChannelExcluded(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1.1", UserID: "U1", Text: "live", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "2.2", UserID: "U1", Text: "tombstoned", IsDeleted: true, RawJSON: "{}"}))
+	// The same ts as C1's live message, but in another channel entirely.
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C2", TS: "3.3", UserID: "U1", Text: "elsewhere", RawJSON: "{}"}))
+
+	found, err := db.FilterExistingMessageTS("C1", []string{"1.1", "2.2", "3.3"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]struct{}{"1.1": {}}, found)
+}
+
+func TestFilterExistingMessageTS_MultipleTS_ReturnsFoundSubset(t *testing.T) {
+	db := openTestDB(t)
+
+	for _, ts := range []string{"1.1", "2.2", "3.3"} {
+		require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: ts, UserID: "U1", Text: "m", RawJSON: "{}"}))
+	}
+
+	found, err := db.FilterExistingMessageTS("C1", []string{"1.1", "3.3", "9.9"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]struct{}{"1.1": {}, "3.3": {}}, found)
+}
+
+// TestFilterExistingMessageTS_EmptyInput_NoQuery covers the degenerate
+// clean-exit branch: a topic with no candidates must not reach the database at
+// all. Dropping the table first is what proves it — a query would fail.
+func TestFilterExistingMessageTS_EmptyInput_NoQuery(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.Exec(`DROP TABLE messages`)
+	require.NoError(t, err)
+
+	found, err := db.FilterExistingMessageTS("C1", nil)
+	require.NoError(t, err)
+	assert.Nil(t, found)
+}
+
 func TestEnsureChannel_WithDMUserID(t *testing.T) {
 	db := openTestDB(t)
 

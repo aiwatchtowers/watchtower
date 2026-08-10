@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1361,6 +1362,137 @@ func TestFormatMessages_SelfReferencingParent(t *testing.T) {
 	assert.NotContains(t, lines[0], "↳")
 	assert.Contains(t, lines[1], "↳")
 	assert.Contains(t, lines[1], "child reply")
+}
+
+// TestFormatMessages_RendersRawTimestamps pins the raw Slack ts into every
+// rendered line — top-level, grouped reply and orphan reply alike. The digest
+// prompts tell the model to copy message_ts exactly from the messages shown; if
+// the raw ts never reaches the prompt the model can only construct one, and
+// every decision/idea ref becomes unverifiable provenance.
+func TestFormatMessages_RendersRawTimestamps(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	seedUser(t, database, "U1", "alice", "alice")
+	seedUser(t, database, "U2", "bob", "bob")
+	p := New(database, cfg, gen, testLogger())
+	p.loadCaches()
+
+	msgs := []db.Message{
+		{TS: "1000.000100", UserID: "U1", Text: "parent msg", TSUnix: 1000, ReplyCount: 1},
+		{TS: "1001.000200", UserID: "U2", Text: "grouped reply", TSUnix: 1001, ThreadTS: sql.NullString{String: "1000.000100", Valid: true}},
+		{TS: "2001.000300", UserID: "U1", Text: "orphan reply", TSUnix: 2001, ThreadTS: sql.NullString{String: "999.000000", Valid: true}},
+		{TS: "2002.000400", UserID: "U2", Text: "top level", TSUnix: 2002},
+	}
+
+	formatted := p.formatMessages(msgs, nil)
+
+	assert.Contains(t, formatted, "ts=1000.000100 @alice (U1)] parent msg")
+	assert.Contains(t, formatted, "↳ [")
+	assert.Contains(t, formatted, "ts=1001.000200 @bob (U2)] grouped reply")
+	assert.Contains(t, formatted, "ts=2001.000300 @alice (U1)] orphan reply")
+	assert.Contains(t, formatted, "ts=2002.000400 @bob (U2)] top level")
+	// HH:MM stays alongside the raw ts — the model reads it for narrative order.
+	assert.Regexp(t, `\[\d{2}:\d{2} ts=1000\.000100 @alice`, formatted)
+	assert.Regexp(t, `↳ \[\d{2}:\d{2} ts=1001\.000200 @bob`, formatted)
+}
+
+// TestGenerateChannelDigest_BlanksInventedMessageRefs covers the single-channel
+// path: a decision/idea citing a ts that was never rendered into the prompt
+// keeps its text but loses the fake ref. Digest content is user-visible and
+// stays; only the invented provenance dies.
+func TestGenerateChannelDigest_BlanksInventedMessageRefs(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "alice")
+
+	var logBuf bytes.Buffer
+	gen := &mockGenerator{response: `{"summary":"s","topics":[{"title":"T","summary":"s",
+		"decisions":[
+			{"text":"real ref","by":"@alice","message_ts":"1000.000100"},
+			{"text":"invented ref","by":"@alice","message_ts":"1785746329.642879"},
+			{"text":"skipped-message ref","by":"@alice","message_ts":"1000.000500"}],
+		"ideas":[
+			{"text":"real idea","by":"@alice","message_ts":"1000.000100"},
+			{"text":"invented idea","by":"@alice","message_ts":"1785746330.000000"}],
+		"action_items":[],"situations":[],"key_messages":[]}]}`}
+	p := New(database, testConfig(), gen, log.New(&logBuf, "", 0))
+	p.loadCaches()
+
+	msgs := []db.Message{
+		{TS: "1000.000100", UserID: "U1", Text: "real message", TSUnix: 1000},
+		// Deleted — formatMessages skips it, so its ts never reaches the model.
+		{TS: "1000.000500", UserID: "U1", Text: "gone", TSUnix: 1000, IsDeleted: true},
+	}
+
+	result, _, _, err := p.generateChannelDigest(context.Background(), "C1", "general", msgs, 900, 1100)
+	require.NoError(t, err)
+	require.Len(t, result.Topics, 1)
+
+	decs := result.Topics[0].Decisions
+	require.Len(t, decs, 3, "a fake ref blanks the ref, it never drops the decision")
+	assert.Equal(t, "1000.000100", decs[0].MessageTS)
+	assert.Empty(t, decs[1].MessageTS)
+	assert.Equal(t, "invented ref", decs[1].Text)
+	assert.Empty(t, decs[2].MessageTS, "a ts the model never saw is not citable either")
+	assert.Equal(t, "skipped-message ref", decs[2].Text)
+
+	ideas := result.Topics[0].Ideas
+	require.Len(t, ideas, 2)
+	assert.Equal(t, "1000.000100", ideas[0].MessageTS)
+	assert.Empty(t, ideas[1].MessageTS)
+	assert.Equal(t, "invented idea", ideas[1].Text)
+
+	assert.Contains(t, logBuf.String(), "blanked 3 invented message_ts ref(s) in #general")
+}
+
+// TestPersistBatchResults_BlanksInventedMessageRefs is the batch half of
+// TestGenerateChannelDigest_BlanksInventedMessageRefs, asserted against what
+// actually lands in digest_topics.
+func TestPersistBatchResults_BlanksInventedMessageRefs(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "C1", "general")
+
+	var logBuf bytes.Buffer
+	p := New(database, testConfig(), &mockGenerator{}, log.New(&logBuf, "", 0))
+
+	batch := []batchEntry{{
+		channelID:   "C1",
+		channelName: "general",
+		msgs: []db.Message{
+			{TS: "1000.000100", UserID: "U1", Text: "real message", TSUnix: 1000},
+		},
+		visibleCount: 1,
+	}}
+	results := []BatchChannelResult{{ChannelID: "C1", Summary: "s", Topics: []Topic{{
+		Title:   "T",
+		Summary: "s",
+		Decisions: []Decision{
+			{Text: "real ref", MessageTS: "1000.000100"},
+			{Text: "invented ref", MessageTS: "1785746329.642879"},
+		},
+		Ideas: []IdeaCandidate{
+			{Text: "real idea", MessageTS: "1000.000100"},
+			{Text: "invented idea", MessageTS: "1785746330.000000"},
+		},
+	}}}}
+
+	saved := p.persistBatchResults(batch, results, 900, nil, 1, &batchAggregator{})
+	require.Equal(t, 1, saved)
+
+	topics, err := database.ListDigestTopicIdeasAfter(0, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, topics, 1)
+
+	assert.Contains(t, topics[0].Decisions, `"message_ts":"1000.000100"`)
+	assert.Contains(t, topics[0].Decisions, "invented ref", "the decision text survives")
+	assert.NotContains(t, topics[0].Decisions, "1785746329.642879")
+	assert.Contains(t, topics[0].Ideas, `"message_ts":"1000.000100"`)
+	assert.Contains(t, topics[0].Ideas, "invented idea", "the idea text survives")
+	assert.NotContains(t, topics[0].Ideas, "1785746330.000000")
+
+	assert.Contains(t, logBuf.String(), "blanked 2 invented message_ts ref(s) in #general")
 }
 
 func TestFormatProfileContext_WithAllFields(t *testing.T) {

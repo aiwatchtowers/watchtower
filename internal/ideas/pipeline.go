@@ -36,6 +36,18 @@ type Pipeline struct {
 	totalInputTokens  int
 	totalOutputTokens int
 	totalAPITokens    int
+
+	// Accumulated provenance drops across this pipeline's passes, the same
+	// per-instance accumulation shape as the usage totals above:
+	// slackRefsDropped counts digest-topic candidates whose message_ts
+	// resolved to no live message (renderTopicUnit), refsRejected counts
+	// mention refs the model cited that this run never rendered
+	// (applyConsolidateOps) — both IDEA-02 drops. They were log-only before,
+	// which left an owner unable to tell "no Slack ideas came out of this run"
+	// apart from "every Slack idea this run had was discarded as
+	// unverifiable".
+	slackRefsDropped int
+	refsRejected     int
 }
 
 // New creates a new ideas pipeline.
@@ -58,6 +70,15 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 // inbox pipeline precedent — and total API tokens).
 func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 	return p.totalInputTokens, p.totalOutputTokens, 0, p.totalAPITokens
+}
+
+// AccumulatedDrops returns the provenance drops accumulated across this
+// pipeline's passes (IDEA-02): unverifiable Slack refs dropped at
+// material-assembly time, and model-invented mention refs rejected at apply
+// time. Reported by `ideas mine` on both its paths so a silent registry is
+// distinguishable from a discarded one — the AccumulatedUsage precedent.
+func (p *Pipeline) AccumulatedDrops() (slackRefsDropped, refsRejected int) {
+	return p.slackRefsDropped, p.refsRejected
 }
 
 // accumulateUsage folds one Generate call's token usage into the pipeline's

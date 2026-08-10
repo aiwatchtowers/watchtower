@@ -850,11 +850,17 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	defer release()
 
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
+		// The pipeline instance outlives this cycle, so its drop counters are
+		// lifetime totals — log this run's delta, not the running sum.
+		dropped0, rejected0 := d.ideasPipe.AccumulatedDrops()
 		proposed, err := d.ideasPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("ideas error: %v", err)
 		} else if proposed > 0 {
 			d.logger.Printf("ideas: proposed %d", proposed)
+		}
+		if dropped, rejected := d.ideasPipe.AccumulatedDrops(); dropped > dropped0 || rejected > rejected0 {
+			d.logger.Printf("ideas: slack_refs_dropped=%d refs_rejected=%d", dropped-dropped0, rejected-rejected0)
 		}
 		// The throttle advances whenever the pipeline RAN, error or not.
 		// ideas.Run's partial-failure contract already carries the state:
