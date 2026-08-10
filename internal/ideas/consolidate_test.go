@@ -313,13 +313,14 @@ func TestIdeas02_SlackRefDeletedMessage_Dropped(t *testing.T) {
 	seedMessage(t, d, "C1", "1.1", false)
 	seedMessage(t, d, "C1", "2.2", true) // deleted after the digest cited it
 
+	var logBuf bytes.Buffer
 	var capturedUser string
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		capturedUser = user
 		return `{"ops":[{"op":"new_decision","title":"Ghost decision","essence":"e",
 			"mentions":[{"source":"slack","ref":"C1|2.2","quote":"deleted decision","author":"Bob","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
 	}}
-	p := New(d, testCfg(), gen, testLogger())
+	p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
 	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
 	require.NoError(t, err)
 	assert.Zero(t, proposed)
@@ -330,6 +331,12 @@ func TestIdeas02_SlackRefDeletedMessage_Dropped(t *testing.T) {
 	ideas, err := d.ListIdeas(db.IdeaFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, ideas)
+
+	assert.Contains(t, logBuf.String(), "dropped 1 unverifiable slack ref",
+		"a tombstoned message's drop must be as visible in the log as a missing one's")
+	slackDropped, refsRejected := p.AccumulatedDrops()
+	assert.Equal(t, 1, slackDropped)
+	assert.Equal(t, 1, refsRejected, "the op citing the dropped ref counts as an invented ref")
 
 	dFloor, _, _, err := d.GetIdeasFloors()
 	require.NoError(t, err)
@@ -421,6 +428,61 @@ func TestIdeas02_MessageLookupError_FailsRunFloorsUntouched(t *testing.T) {
 	dFloor, _, _, err := d.GetIdeasFloors()
 	require.NoError(t, err)
 	assert.Zero(t, dFloor, "an unverifiable run consumes nothing")
+}
+
+// sqliteMaxVariables is modernc.org/sqlite's SQLITE_MAX_VARIABLE_NUMBER. A
+// statement carrying MORE bound parameters than this fails to prepare with
+// "too many SQL variables" — which is how the test below forces the SECOND of
+// two topics to fail its messages lookup while the first one renders cleanly,
+// something no in-memory DB error injection can express (both topics share one
+// real *db.DB). Should a future driver raise the limit, the test fails loudly
+// on its require.Error rather than passing silently, and this constant is what
+// needs bumping.
+const sqliteMaxVariables = 32766
+
+// TestIdeas01_SecondTopicLookupFails_WholeInputDiscardedNoPartialFloor is the
+// IDEA-01 crux for the Slack-ref validation's error path: topic 1 renders
+// successfully and topic 2's messages lookup then fails, and the run must
+// discard the WHOLE gathered input — no AI call on topic 1 alone, and above
+// all no floor advanced past topic 1. Advancing it would consume topic 1's
+// material without ever applying it, which is exactly the loss IDEA-01 exists
+// to prevent; the pre-run stream/transcript floors must survive untouched too,
+// since a partial write is what we are ruling out, not merely a wrong value.
+func TestIdeas01_SecondTopicLookupFails_WholeInputDiscardedNoPartialFloor(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	// Non-zero starting floors on the two sources this run never reaches, so
+	// "unchanged" is a real assertion rather than "still the zero value".
+	require.NoError(t, d.SetIdeasFloors(0, 42, 7))
+
+	topic1 := seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "verifiable idea", By: "Ann", MessageTS: "1.1"}}, nil)
+
+	// Topic 2 carries one more candidate than the driver can bind in a single
+	// IN (...) lookup (its channel_id argument takes the last slot), so
+	// renderTopicUnit's verification query cannot even be prepared.
+	oversized := make([]digest.IdeaCandidate, sqliteMaxVariables)
+	for i := range oversized {
+		oversized[i] = digest.IdeaCandidate{Text: "c", By: "Ann", MessageTS: fmt.Sprintf("%d.1", i)}
+	}
+	topic2 := seedDigestTopicIdeasUnverified(t, d, "C1", "general", oversized, nil)
+	require.Greater(t, topic2, topic1, "the failing topic must be listed second")
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("generator must not be called when part of the material could not be verified")
+		return "", nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("verifying slack refs for digest topic %d", topic2))
+	assert.Zero(t, gen.calls)
+
+	dFloor, sFloor, tFloor, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Zero(t, dFloor, "the successfully rendered topic must NOT be consumed by a failed run")
+	assert.EqualValues(t, 42, sFloor)
+	assert.EqualValues(t, 7, tFloor)
 }
 
 // TestConsolidate_AttachMention_ActiveIdea covers case 3: attaching to an

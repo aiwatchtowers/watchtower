@@ -235,13 +235,13 @@ Rules:
   * Expected behaviors ("caching delay is normal")
   * Routine operations (deploys, releases, merges) UNLESS they involve a non-obvious choice
   * Changelog-style records of an already-performed routine action ("nginx reload (#79 close internal endpoint)", "restarted service X") — these are status updates even when they name a task number or imply an earlier choice
-  Include message_ts for traceability: copy it EXACTLY from one of the messages shown below — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
+  Include message_ts for traceability: copy it EXACTLY from that message's ts= tag in the MESSAGES data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
   importance levels:
   * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
-- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from one of the messages shown below — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from that message's ts= tag in the MESSAGES data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Capture dynamics BETWEEN people, not individual behavior. Each situation has:
@@ -798,13 +798,13 @@ Rules:
   * Notifications or FYIs ("users were notified about X")
   * Routine operations (deploys, releases, merges) UNLESS they involve a non-obvious choice
   * Changelog-style records of an already-performed routine action ("nginx reload (#79 close internal endpoint)", "restarted service X") — these are status updates even when they name a task number or imply an earlier choice
-  Include message_ts for traceability: copy it EXACTLY from one of the messages shown below — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
+  Include message_ts for traceability: copy it EXACTLY from that message's ts= tag in the CHANNELS data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
   importance levels:
   * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
-- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from one of the messages shown below — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from that message's ts= tag in the CHANNELS data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Each situation has:
@@ -1724,7 +1724,7 @@ For every piece of new material, decide:
 - "new_idea": a genuinely new proposal not yet decided, not already covered by any registry item.
 - "new_decision": a genuinely new made choice, not already covered by any registry item.
 - Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.
-- An execution record of a routine operational action — "nginx reload", "restarted service X", "config change applied", "deployed version Y" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when the material itself shows the choice being made or discussed (who chose, what the alternatives or reasons were) or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.
+- An execution record of a routine operational action — "nginx reload", "restarted service X", "config change applied", "deployed version Y" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when its line names an actual choice — what was chosen and by whom, not merely an action performed — or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.
 
 Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
 

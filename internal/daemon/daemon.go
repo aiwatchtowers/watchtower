@@ -856,6 +856,9 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		} else if proposed > 0 {
 			d.logger.Printf("ideas: proposed %d", proposed)
 		}
+		if dropped, rejected := d.ideasPipe.AccumulatedDrops(); dropped > 0 || rejected > 0 {
+			d.logger.Printf("ideas: slack_refs_dropped=%d refs_rejected=%d", dropped, rejected)
+		}
 		// The throttle advances whenever the pipeline RAN, error or not.
 		// ideas.Run's partial-failure contract already carries the state:
 		// every floor is honest about what was actually consumed, so

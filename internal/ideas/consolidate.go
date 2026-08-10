@@ -170,6 +170,7 @@ func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (prop
 		return 0, 0, err
 	}
 	if refsRejected > 0 {
+		p.refsRejected += refsRejected
 		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
 	}
 	if mentionsDeduped > 0 {
@@ -396,8 +397,11 @@ func persistFloorsOnly(database *db.DB, in *consolidateInput) error {
 // non-deleted messages row here, at material-assembly time (IDEA-02) — an
 // unresolvable one is dropped from the rendered unit AND from the run's
 // valid-ref set, so the model is never shown, and can never cite, evidence
-// nobody could follow. The match is exact: no normalization, no prefix repair
-// (MEM-13's strict-set precedent).
+// nobody could follow. One batched db.FilterExistingMessageTS per topic does
+// the resolving; the match is exact: no normalization, no prefix repair
+// (MEM-13's strict-set precedent). Every drop is counted onto the pipeline
+// (slackRefsDropped) as well as logged, so a caller can tell "this run mined
+// no Slack ideas" apart from "this run discarded every Slack idea it had".
 func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string, error) {
 	var ideas []digest.IdeaCandidate
 	if err := json.Unmarshal([]byte(t.Ideas), &ideas); err != nil {
@@ -418,19 +422,12 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 	for _, c := range decisions {
 		tss = append(tss, c.MessageTS)
 	}
-	msgs, err := p.db.GetMessagesByTS(t.ChannelID, tss)
+	verified, err := p.db.FilterExistingMessageTS(t.ChannelID, tss)
 	if err != nil {
 		// An unreachable messages table is an infrastructure failure, not a
 		// verdict that every candidate is invented — fail the run and leave the
 		// floors where they are (IDEA-01).
 		return "", nil, fmt.Errorf("verifying slack refs for digest topic %d: %w", t.TopicID, err)
-	}
-	verified := make(map[string]struct{}, len(msgs))
-	for _, msg := range msgs {
-		if msg.IsDeleted {
-			continue // a tombstoned message is as unfollowable as an invented one
-		}
-		verified[msg.TS] = struct{}{}
 	}
 
 	label := t.ChannelName
@@ -459,6 +456,7 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 		fmt.Fprintf(&b, "[#%s] decision: %q — %s ref=%s\n", label, c.Text, c.By, ref)
 	}
 	if dropped > 0 {
+		p.slackRefsDropped += dropped
 		p.logf("ideas: digest topic %d: dropped %d unverifiable slack ref(s)", t.TopicID, dropped)
 	}
 	if b.Len() == 0 {

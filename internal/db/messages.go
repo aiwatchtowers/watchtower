@@ -383,6 +383,52 @@ func (db *DB) GetMessagesByTS(channelID string, timestamps []string) ([]Message,
 	return scanMessages(rows)
 }
 
+// FilterExistingMessageTS returns the subset of tss that a live (non-deleted)
+// message row in channelID actually carries — the batched, existence-only form
+// of MessageExists (internal/db/memory.go), sharing its `is_deleted = 0`
+// predicate: a tombstoned message counts as absent, since a ref pointing at
+// one is as unfollowable for the owner as an invented one.
+//
+// It is the gate the ideas consolidator resolves a digest topic's
+// model-emitted message_ts values through at material-assembly time, before
+// any of them may be rendered or cited (IDEA-02), so it selects ts alone
+// rather than the twelve-column row
+// GetMessagesByTS returns — a verification pass has no use for the message
+// bodies, least of all raw_json. Matching is exact: no normalization, no
+// prefix repair (MEM-13's strict-set precedent). An empty tss is a no-op —
+// nil map, nil error, no query.
+func (db *DB) FilterExistingMessageTS(channelID string, tss []string) (map[string]struct{}, error) {
+	if len(tss) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(tss))
+	args := make([]any, 0, len(tss)+1)
+	args = append(args, channelID)
+	for i, ts := range tss {
+		placeholders[i] = "?"
+		args = append(args, ts)
+	}
+	rows, err := db.Query(`
+		SELECT ts FROM messages
+		WHERE channel_id = ? AND ts IN (`+strings.Join(placeholders, ",")+`) AND is_deleted = 0`,
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("filtering existing message ts in %s: %w", channelID, err)
+	}
+	defer rows.Close()
+
+	found := make(map[string]struct{}, len(tss))
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("scanning message ts row: %w", err)
+		}
+		found[ts] = struct{}{}
+	}
+	return found, rows.Err()
+}
+
 // GetThreadRepliesAfterTS returns thread replies in a channel where
 // thread_ts matches the given parent TS and the message TS is strictly
 // greater than afterTS. Results are ordered oldest-first, capped at 200.

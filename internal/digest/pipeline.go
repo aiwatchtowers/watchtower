@@ -946,6 +946,9 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 			Topics:         r.Topics,
 			RunningSummary: r.RunningSummary,
 		}
+		if n := blankInventedMessageRefs(dr.Topics, entry.msgs); n > 0 {
+			p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, entry.channelName)
+		}
 
 		lastMsgTS := sinceUnix
 		for _, m := range entry.msgs {
@@ -1280,7 +1283,13 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 	}
 
 	result, err := parseDigestResult(raw)
-	return result, usage, pv, err
+	if err != nil {
+		return nil, usage, pv, err
+	}
+	if n := blankInventedMessageRefs(result.Topics, msgs); n > 0 {
+		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, channelName)
+	}
+	return result, usage, pv, nil
 }
 
 func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int) error {
@@ -1615,6 +1624,10 @@ func (p *Pipeline) lastDigestTime() float64 {
 	return since
 }
 
+// formatMessages renders messages for a digest prompt. Every line carries the
+// raw Slack ts ("ts=") next to the human-readable HH:MM: the prompts ask the
+// model to copy message_ts exactly from the messages it is shown, so the ref it
+// cites must be present verbatim — HH:MM alone leaves it constructing one.
 func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.ReactionSummary) string {
 	truncateLimit := config.DefaultMessageTruncateLen
 
@@ -1672,7 +1685,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 				userName := p.userName(r.UserID)
 				ts := time.Unix(int64(r.TSUnix), 0).Local().Format("15:04")
 				reactStr := db.FormatReactions(reactions[r.TS])
-				fmt.Fprintf(&sb, "  ↳ [%s @%s (%s)] %s%s\n", ts, userName, r.UserID, sanitizeText(r.Text), reactStr)
+				fmt.Fprintf(&sb, "  ↳ [%s ts=%s @%s (%s)] %s%s\n", ts, r.TS, userName, r.UserID, sanitizeText(r.Text), reactStr)
 			}
 			continue
 		}
@@ -1680,7 +1693,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 		userName := p.userName(m.UserID)
 		ts := time.Unix(int64(m.TSUnix), 0).Local().Format("15:04")
 		reactStr := db.FormatReactions(reactions[m.TS])
-		fmt.Fprintf(&sb, "[%s @%s (%s)] %s%s\n", ts, userName, m.UserID, sanitizeText(m.Text), reactStr)
+		fmt.Fprintf(&sb, "[%s ts=%s @%s (%s)] %s%s\n", ts, m.TS, userName, m.UserID, sanitizeText(m.Text), reactStr)
 		// Emit grouped replies if this is a thread parent.
 		if replies, ok := threadReplies[m.TS]; ok {
 			emitted[m.TS] = true
@@ -1688,7 +1701,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 				rUserName := p.userName(r.UserID)
 				rTS := time.Unix(int64(r.TSUnix), 0).Local().Format("15:04")
 				rReactStr := db.FormatReactions(reactions[r.TS])
-				fmt.Fprintf(&sb, "  ↳ [%s @%s (%s)] %s%s\n", rTS, rUserName, r.UserID, sanitizeText(r.Text), rReactStr)
+				fmt.Fprintf(&sb, "  ↳ [%s ts=%s @%s (%s)] %s%s\n", rTS, r.TS, rUserName, r.UserID, sanitizeText(r.Text), rReactStr)
 			}
 		}
 	}
@@ -1923,6 +1936,41 @@ func filterValidTimestamps(msgs []string) []string {
 		}
 	}
 	return filtered
+}
+
+// blankInventedMessageRefs clears every decision/idea message_ts that does not
+// match a message actually rendered into the prompt (formatMessages skips empty
+// and deleted ones, so a ts the model never saw is not citable either). The item
+// itself is kept — digest content is user-visible and a fabricated ref is no
+// reason to lose it; only the ref dies, leaving the candidate uncitable
+// downstream instead of pointing at a message that does not exist. Returns the
+// number of refs blanked.
+func blankInventedMessageRefs(topics []Topic, msgs []db.Message) int {
+	rendered := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if m.Text == "" || m.IsDeleted {
+			continue
+		}
+		rendered[m.TS] = true
+	}
+
+	blanked := 0
+	for i := range topics {
+		t := &topics[i]
+		for j := range t.Decisions {
+			if ts := t.Decisions[j].MessageTS; ts != "" && !rendered[ts] {
+				t.Decisions[j].MessageTS = ""
+				blanked++
+			}
+		}
+		for j := range t.Ideas {
+			if ts := t.Ideas[j].MessageTS; ts != "" && !rendered[ts] {
+				t.Ideas[j].MessageTS = ""
+				blanked++
+			}
+		}
+	}
+	return blanked
 }
 
 // parseDigestResult extracts a DigestResult from Claude's response.

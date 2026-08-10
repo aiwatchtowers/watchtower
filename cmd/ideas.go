@@ -115,6 +115,13 @@ type backfillEnvelope struct {
 	Cycles          int  `json:"cycles"`
 	MentionsDeduped int  `json:"mentions_deduped"`
 	Capped          bool `json:"capped"`
+	// SlackRefsDropped/RefsRejected surface the run's two IDEA-02 provenance
+	// drops (pipe.AccumulatedDrops), which used to be visible only in the log:
+	// without them a zero-yield backfill reads as "that window held nothing"
+	// even when it actually held candidates whose Slack timestamps resolved to
+	// no live message, or ops citing refs the run never rendered.
+	SlackRefsDropped int `json:"slack_refs_dropped"`
+	RefsRejected     int `json:"refs_rejected"`
 	// InputTokens/OutputTokens/APICalls (GB15) mirror the flagless
 	// incremental path's own "(input tokens: %d, output tokens: %d, API
 	// calls: %d)" reporting — same pipe.AccumulatedUsage() values, just
@@ -203,7 +210,9 @@ func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.W
 		return fmt.Errorf("mining ideas: %w", err)
 	}
 	inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
-	fmt.Fprintf(out, "proposed=%d (input tokens: %d, output tokens: %d, API calls: %d)\n", proposed, inTok, outTok, totalAPI)
+	slackDropped, refsRejected := pipe.AccumulatedDrops()
+	fmt.Fprintf(out, "proposed=%d slack_refs_dropped=%d refs_rejected=%d (input tokens: %d, output tokens: %d, API calls: %d)\n",
+		proposed, slackDropped, refsRejected, inTok, outTok, totalAPI)
 	return nil
 }
 
@@ -235,14 +244,17 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	}
 
 	inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
+	slackDropped, refsRejected := pipe.AccumulatedDrops()
 	envelope, err := json.Marshal(backfillEnvelope{
-		Proposed:        result.Proposed,
-		Cycles:          result.Cycles,
-		MentionsDeduped: result.MentionsDeduped,
-		Capped:          result.Capped,
-		InputTokens:     inTok,
-		OutputTokens:    outTok,
-		APICalls:        totalAPI,
+		Proposed:         result.Proposed,
+		Cycles:           result.Cycles,
+		MentionsDeduped:  result.MentionsDeduped,
+		Capped:           result.Capped,
+		SlackRefsDropped: slackDropped,
+		RefsRejected:     refsRejected,
+		InputTokens:      inTok,
+		OutputTokens:     outTok,
+		APICalls:         totalAPI,
 	})
 	if err != nil {
 		return fmt.Errorf("marshaling backfill envelope: %w", err)
