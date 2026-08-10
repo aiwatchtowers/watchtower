@@ -26,9 +26,45 @@ func seedWorkspace(t *testing.T, d *db.DB) {
 	require.NoError(t, err)
 }
 
+// seedMessage inserts one Slack message row — the real, non-deleted message a
+// digest topic's candidate message_ts has to resolve to before its ref can be
+// rendered or cited (IDEA-02).
+func seedMessage(t *testing.T, d *db.DB, channelID, ts string, deleted bool) {
+	t.Helper()
+	require.NoError(t, d.UpsertMessage(db.Message{
+		ChannelID: channelID, TS: ts, UserID: "U1", Text: "message text", IsDeleted: deleted, RawJSON: "{}",
+	}))
+}
+
+// seedCandidateMessages inserts the real message every candidate's message_ts
+// points at, so a seeded topic's refs survive renderTopicUnit's IDEA-02
+// validation. A test that wants an UNVERIFIABLE candidate (the hallucinated-ts
+// shape) seeds its topic with seedDigestTopicIdeasUnverified instead.
+func seedCandidateMessages(t *testing.T, d *db.DB, channelID string, ideas []digest.IdeaCandidate, decisions []digest.Decision) {
+	t.Helper()
+	for _, c := range ideas {
+		seedMessage(t, d, channelID, c.MessageTS, false)
+	}
+	for _, c := range decisions {
+		seedMessage(t, d, channelID, c.MessageTS, false)
+	}
+}
+
 // seedDigestTopicIdeas inserts a channel-type digest plus one digest_topics
-// row carrying the given idea/decision candidates, and returns the topic id.
+// row carrying the given idea/decision candidates — each backed by a real
+// message row, the ordinary case — and returns the topic id.
 func seedDigestTopicIdeas(t *testing.T, d *db.DB, channelID, title string, ideas []digest.IdeaCandidate, decisions []digest.Decision) int64 {
+	t.Helper()
+	seedCandidateMessages(t, d, channelID, ideas, decisions)
+	return seedDigestTopicIdeasUnverified(t, d, channelID, title, ideas, decisions)
+}
+
+// seedDigestTopicIdeasUnverified is seedDigestTopicIdeas without the backing
+// messages rows: the shape a hallucinating digest model produces, where
+// digest_topics cites a message_ts no message in that channel actually
+// carries. A test that wants only SOME of its candidates verifiable seeds the
+// real ones with seedMessage afterwards.
+func seedDigestTopicIdeasUnverified(t *testing.T, d *db.DB, channelID, title string, ideas []digest.IdeaCandidate, decisions []digest.Decision) int64 {
 	t.Helper()
 	if ideas == nil {
 		ideas = []digest.IdeaCandidate{}
@@ -207,6 +243,186 @@ func TestIdeas02_InventedRefAllDroppedOpDiscarded(t *testing.T) {
 	assert.Equal(t, topicID, dFloor, "the run still succeeded — the floor still advances past the processed topic")
 }
 
+// --- IDEA-02: a digest topic's Slack ts must resolve to a real message -----
+
+// TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable pins the
+// stage-1 half of IDEA-02 for Slack. A digest topic's `message_ts` is emitted
+// by the digest model, so it can be hallucinated — the real incident that
+// motivated this validation (2026-08-10) had a topic citing ts
+// 1754131080.000000 in a channel where the genuine message was
+// 1785746329.642879, the model having shifted the year. A candidate whose ts
+// resolves to no message is not rendered, is not citable, and an op that cites
+// it anyway is discarded whole.
+func TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	topicID := seedDigestTopicIdeasUnverified(t, d, "C1", "general", []digest.IdeaCandidate{
+		{Text: "real idea", By: "Ann", MessageTS: "1785746329.642879"},
+		{Text: "hallucinated idea", By: "Ann", MessageTS: "1754131080.000000"},
+	}, nil)
+	seedMessage(t, d, "C1", "1785746329.642879", false) // only the first candidate has a message
+
+	var logBuf bytes.Buffer
+	var capturedUser string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		capturedUser = user
+		return `{"ops":[{"op":"new_idea","title":"Ghost","essence":"e",
+			"mentions":[{"source":"slack","ref":"C1|1754131080.000000","quote":"hallucinated idea","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+	}}
+	p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
+
+	// The valid-ref set itself, before any op is applied: only the real
+	// message's ref is offered.
+	in, err := p.gatherConsolidateInput(p.maxPromptChars(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"C1|1785746329.642879": "slack"}, in.validRefs)
+
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+
+	assert.Contains(t, capturedUser, "real idea", "the verifiable candidate is still rendered")
+	assert.NotContains(t, capturedUser, "hallucinated idea", "an unverifiable candidate must never reach the model")
+	assert.NotContains(t, capturedUser, "1754131080.000000", "nor may its ref be offered as citable")
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, ideas, "an op whose only ref was never rendered must write nothing")
+
+	assert.Contains(t, logBuf.String(), "dropped 1 unverifiable slack ref")
+	assert.Contains(t, logBuf.String(), "dropped 1 invented ref", "the op's citation of the dropped ref counts as refs_rejected")
+
+	dFloor, _, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Equal(t, topicID, dFloor, "the run still succeeded — the floor advances past the processed topic")
+}
+
+// TestIdeas02_SlackRefDeletedMessage_Dropped covers the other way a ts fails
+// to resolve: the message existed when the digest was written and has since
+// been deleted. A tombstoned row is treated as absent (db.MessageExists'
+// is_deleted = 0 precedent), so its ref is no more citable than an invented
+// one — the evidence a reader would follow the ref to is gone.
+func TestIdeas02_SlackRefDeletedMessage_Dropped(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	topicID := seedDigestTopicIdeasUnverified(t, d, "C1", "general", []digest.IdeaCandidate{
+		{Text: "live idea", By: "Ann", MessageTS: "1.1"},
+	}, []digest.Decision{
+		{Text: "deleted decision", By: "Bob", MessageTS: "2.2", Importance: "high"},
+	})
+	seedMessage(t, d, "C1", "1.1", false)
+	seedMessage(t, d, "C1", "2.2", true) // deleted after the digest cited it
+
+	var capturedUser string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		capturedUser = user
+		return `{"ops":[{"op":"new_decision","title":"Ghost decision","essence":"e",
+			"mentions":[{"source":"slack","ref":"C1|2.2","quote":"deleted decision","author":"Bob","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+
+	assert.Contains(t, capturedUser, "live idea")
+	assert.NotContains(t, capturedUser, "deleted decision", "a deleted message's candidate must not be rendered")
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, ideas)
+
+	dFloor, _, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Equal(t, topicID, dFloor)
+}
+
+// TestIdeas02_SlackRefRealMessage_SurvivesValidation is the happy-path pin for
+// the same validation: a candidate whose ts really is in the channel is
+// rendered, citable, and its mention persists — the validation must not cost
+// the ordinary case anything.
+func TestIdeas02_SlackRefRealMessage_SurvivesValidation(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "we should try X", By: "Ann", MessageTS: "1785746329.642879"}}, nil)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
+			"mentions":[{"source":"slack","ref":"C1|1785746329.642879","quote":"we should try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed)
+
+	ideas, err := d.ListIdeas(db.IdeaFilter{})
+	require.NoError(t, err)
+	require.Len(t, ideas, 1)
+	mentions, err := d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1)
+	assert.Equal(t, "slack", mentions[0].Source)
+	assert.Equal(t, "C1|1785746329.642879", mentions[0].Ref)
+}
+
+// TestIdeas02_AllSlackRefsUnverifiable_NoMaterialFloorAdvances is the
+// valid-but-degenerate input for the same path (see the "test the degenerate
+// clean-exit branch" house rule): a topic whose EVERY candidate is
+// unverifiable renders to nothing, so it behaves exactly like a candidate-less
+// topic — no AI call at all, yet the floor still advances so the same dead
+// topic is not re-read forever (IDEA-01).
+func TestIdeas02_AllSlackRefsUnverifiable_NoMaterialFloorAdvances(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	topicID := seedDigestTopicIdeasUnverified(t, d, "C1", "general", []digest.IdeaCandidate{
+		{Text: "ghost one", By: "Ann", MessageTS: "1754131080.000000"},
+		{Text: "ghost two", By: "Ann", MessageTS: "1754131081.000000"},
+	}, nil)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("generator must not be called when every candidate was dropped")
+		return "", nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+	assert.Zero(t, gen.calls)
+
+	dFloor, _, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Equal(t, topicID, dFloor, "a fully-dropped topic is consumed like an empty one, not left blocking")
+}
+
+// TestIdeas02_MessageLookupError_FailsRunFloorsUntouched pins the other half
+// of the same validation: an unreadable messages table is an INFRASTRUCTURE
+// failure, not a verdict that every candidate was invented. Swallowing it
+// would render every topic as candidate-less and quietly advance the floors
+// over real material (IDEA-01) — so the run fails instead, with nothing
+// consumed and no AI call made.
+func TestIdeas02_MessageLookupError_FailsRunFloorsUntouched(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "try X", By: "Ann", MessageTS: "1.1"}}, nil)
+	_, err := d.Exec(`DROP TABLE messages`)
+	require.NoError(t, err)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("generator must not be called when the material could not be verified")
+		return "", nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err = p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verifying slack refs")
+	assert.Zero(t, gen.calls)
+
+	dFloor, _, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Zero(t, dFloor, "an unverifiable run consumes nothing")
+}
+
 // TestConsolidate_AttachMention_ActiveIdea covers case 3: attaching to an
 // active idea records the mention, bumps last_mention_at, and leaves status
 // and needs_review untouched.
@@ -375,11 +591,16 @@ func TestIdeas01_MaxPromptCharsTruncatesToWholeUnits(t *testing.T) {
 	topic1Ideas := []digest.IdeaCandidate{{Text: "idea one", By: "Ann", MessageTS: "1.1"}}
 	ideasJSON, err := json.Marshal(topic1Ideas)
 	require.NoError(t, err)
-	unit1, _ := New(d, testCfg(), nil, testLogger()).
+
+	// Seeded before the unit is rendered: renderTopicUnit now resolves every
+	// candidate ts against a real message, so a unit measured against an
+	// unseeded channel would come back empty (IDEA-02).
+	id1 := seedDigestTopicIdeas(t, d, "C1", "general", topic1Ideas, nil)
+	unit1, _, err := New(d, testCfg(), nil, testLogger()).
 		renderTopicUnit(db.DigestTopicForIdeas{ChannelID: "C1", Ideas: string(ideasJSON), Decisions: "[]"})
+	require.NoError(t, err)
 	require.NotEmpty(t, unit1)
 
-	id1 := seedDigestTopicIdeas(t, d, "C1", "general", topic1Ideas, nil)
 	seedDigestTopicIdeas(t, d, "C1", "general",
 		[]digest.IdeaCandidate{{Text: "idea two", By: "Ann", MessageTS: "2.2"}}, nil)
 

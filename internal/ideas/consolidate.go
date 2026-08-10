@@ -224,7 +224,9 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time) (*co
 		validRefs: map[string]string{},
 	}
 	m := newMaterialAssembler(p, in, maxChars)
-	m.addTopics(topics)
+	if err := m.addTopics(topics); err != nil {
+		return nil, err
+	}
 	m.addStreams(streams)
 	m.addTranscripts(transcripts)
 
@@ -302,15 +304,23 @@ func (m *materialAssembler) include(id, unit string, refs map[string]string) boo
 	return true
 }
 
-// addTopics is materialAssembler's Slack-digest-topics pass.
-func (m *materialAssembler) addTopics(topics []db.DigestTopicForIdeas) {
+// addTopics is materialAssembler's Slack-digest-topics pass. It is the only
+// pass that can fail: rendering a topic reads the messages table to verify
+// each candidate's ts (IDEA-02), and that read failing is an infrastructure
+// error the whole run must surface rather than silently render a topic as
+// candidate-less.
+func (m *materialAssembler) addTopics(topics []db.DigestTopicForIdeas) error {
 	for _, t := range topics {
-		unit, refs := m.p.renderTopicUnit(t)
+		unit, refs, err := m.p.renderTopicUnit(t)
+		if err != nil {
+			return err
+		}
 		if !m.include(fmt.Sprintf("digest topic %d", t.TopicID), unit, refs) {
-			return
+			return nil
 		}
 		m.in.maxTopicID = t.TopicID
 	}
+	return nil
 }
 
 // addStreams is materialAssembler's stream-digests (Gmail/Jira) pass.
@@ -375,8 +385,20 @@ func persistFloorsOnly(database *db.DB, in *consolidateInput) error {
 // when the topic carries no candidates, which ListDigestTopicIdeasAfter's
 // `!= '[]'` filter catches for every row written since the digest pipeline
 // started marshaling empty arrays as "[]" (marshalArray), but not for a
-// legacy row that stored a bare "null".
-func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string) {
+// legacy row that stored a bare "null" — and equally when no candidate's ts
+// survived validation.
+//
+// Unlike a stream digest's refs (validated at stage 1) or a transcript's
+// (code-constructed), a topic's message_ts is emitted by the digest model and
+// can be hallucinated: a real 2026-08-10 incident had a topic citing
+// 1754131080.000000 where the genuine message was 1785746329.642879, the model
+// having shifted the year. So each candidate's ts is resolved against a real,
+// non-deleted messages row here, at material-assembly time (IDEA-02) — an
+// unresolvable one is dropped from the rendered unit AND from the run's
+// valid-ref set, so the model is never shown, and can never cite, evidence
+// nobody could follow. The match is exact: no normalization, no prefix repair
+// (MEM-13's strict-set precedent).
+func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string]string, error) {
 	var ideas []digest.IdeaCandidate
 	if err := json.Unmarshal([]byte(t.Ideas), &ideas); err != nil {
 		p.logf("ideas: digest topic %d has unreadable ideas JSON: %v", t.TopicID, err)
@@ -386,7 +408,29 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 		p.logf("ideas: digest topic %d has unreadable decisions JSON: %v", t.TopicID, err)
 	}
 	if len(ideas) == 0 && len(decisions) == 0 {
-		return "", nil
+		return "", nil, nil
+	}
+
+	tss := make([]string, 0, len(ideas)+len(decisions))
+	for _, c := range ideas {
+		tss = append(tss, c.MessageTS)
+	}
+	for _, c := range decisions {
+		tss = append(tss, c.MessageTS)
+	}
+	msgs, err := p.db.GetMessagesByTS(t.ChannelID, tss)
+	if err != nil {
+		// An unreachable messages table is an infrastructure failure, not a
+		// verdict that every candidate is invented — fail the run and leave the
+		// floors where they are (IDEA-01).
+		return "", nil, fmt.Errorf("verifying slack refs for digest topic %d: %w", t.TopicID, err)
+	}
+	verified := make(map[string]struct{}, len(msgs))
+	for _, msg := range msgs {
+		if msg.IsDeleted {
+			continue // a tombstoned message is as unfollowable as an invented one
+		}
+		verified[msg.TS] = struct{}{}
 	}
 
 	label := t.ChannelName
@@ -395,17 +439,32 @@ func (p *Pipeline) renderTopicUnit(t db.DigestTopicForIdeas) (string, map[string
 	}
 	refs := map[string]string{}
 	var b strings.Builder
+	dropped := 0
 	for _, c := range ideas {
+		if _, ok := verified[c.MessageTS]; !ok {
+			dropped++
+			continue
+		}
 		ref := t.ChannelID + "|" + c.MessageTS
 		refs[ref] = "slack"
 		fmt.Fprintf(&b, "[#%s] idea: %q — %s ref=%s\n", label, c.Text, c.By, ref)
 	}
 	for _, c := range decisions {
+		if _, ok := verified[c.MessageTS]; !ok {
+			dropped++
+			continue
+		}
 		ref := t.ChannelID + "|" + c.MessageTS
 		refs[ref] = "slack"
 		fmt.Fprintf(&b, "[#%s] decision: %q — %s ref=%s\n", label, c.Text, c.By, ref)
 	}
-	return b.String(), refs
+	if dropped > 0 {
+		p.logf("ideas: digest topic %d: dropped %d unverifiable slack ref(s)", t.TopicID, dropped)
+	}
+	if b.Len() == 0 {
+		return "", nil, nil
+	}
+	return b.String(), refs, nil
 }
 
 // renderStreamUnit renders one stream_digests row's (Gmail or Jira) already

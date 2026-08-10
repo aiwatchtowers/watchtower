@@ -23,6 +23,7 @@ import (
 // itself at "now".
 func seedDigestTopicIdeasAt(t *testing.T, d *db.DB, channelID, title string, ideas []digest.IdeaCandidate, decisions []digest.Decision, periodTo float64) int64 {
 	t.Helper()
+	seedCandidateMessages(t, d, channelID, ideas, decisions)
 	if ideas == nil {
 		ideas = []digest.IdeaCandidate{}
 	}
