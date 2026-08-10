@@ -1,27 +1,39 @@
 import SwiftUI
 import AppKit
 
-/// Menu-bar tray content: status line + the only two actions the tray offers
-/// (open the desktop window, quit Watchtower completely — daemon included).
+/// Menu-bar tray content: status line + the only actions the tray offers
+/// (open the desktop window, open Settings, quit Watchtower completely —
+/// daemon included).
 struct TrayMenuView: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(AppState.self) private var appState
 
     var body: some View {
         TrayMenuContent(
             isRunning: appState.daemonManager.isRunning,
             daemonError: appState.daemonManager.errorMessage,
-            cliStoreError: appState.cliStoreError
-        ) {
-            // Opening from the tray is a deliberate "become regular" move —
-            // it must win over a still-armed login-launch close observer
-            // (see `TrayAppDelegate.endLoginLaunchClosing`), or a window
-            // opened right after a login launch gets closed out from under
-            // the user.
-            (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
-            ActivationPolicyDecision.becomeRegularAndActivate()
-            openWindow(id: TrayAppDelegate.mainWindowSceneID)
-        }
+            cliStoreError: appState.cliStoreError,
+            openAction: {
+                // Opening from the tray is a deliberate "become regular" move —
+                // it must win over a still-armed login-launch close observer
+                // (see `TrayAppDelegate.endLoginLaunchClosing`), or a window
+                // opened right after a login launch gets closed out from under
+                // the user.
+                (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+                ActivationPolicyDecision.becomeRegularAndActivate()
+                openWindow(id: TrayAppDelegate.mainWindowSceneID)
+            },
+            settingsAction: {
+                // The policy watcher recomputes only on window CLOSE, so an
+                // accessory-mode app must become regular here or Settings
+                // opens with no menu bar. The login-launch close grace is NOT
+                // ended: it targets the main window, which the user did not
+                // ask for.
+                ActivationPolicyDecision.becomeRegularAndActivate()
+                openSettings()
+            }
+        )
         // The shared DaemonManager polls from AppState.initialize(); this only
         // refreshes the line the moment the menu is opened.
         .onAppear { appState.daemonManager.checkStatus() }
@@ -39,6 +51,7 @@ struct TrayMenuContent: View {
     let daemonError: String?
     let cliStoreError: String?
     let openAction: () -> Void
+    let settingsAction: () -> Void
 
     static func statusText(isRunning: Bool) -> String {
         isRunning ? "Syncing in background" : "Sync daemon not running"
@@ -55,6 +68,7 @@ struct TrayMenuContent: View {
             }
             Divider()
             Button("Open Watchtower", action: openAction)
+            Button("Settings…", action: settingsAction)
             Divider()
             Button("Quit Watchtower") {
                 NSApp.terminate(nil)

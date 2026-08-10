@@ -11,11 +11,15 @@ final class TrayMenuViewTests: XCTestCase {
     // `TrayMenuContent` is the environment-free split that carries the actual
     // rendering (see RecordingIndicatorView/RecordingJobPill for the same
     // pattern), so it's what gets exercised here.
-    func testMenuOffersOpenAndQuit() throws {
-        let view = TrayMenuContent(isRunning: true, daemonError: nil, cliStoreError: nil) {}
+    func testMenuOffersOpenSettingsAndQuit() throws {
+        let view = TrayMenuContent(
+            isRunning: true, daemonError: nil, cliStoreError: nil,
+            openAction: {}, settingsAction: {})
         let openButton = try view.inspect().find(button: "Open Watchtower")
+        let settingsButton = try view.inspect().find(button: "Settings…")
         let quitButton = try view.inspect().find(button: "Quit Watchtower")
         XCTAssertNotNil(openButton)
+        XCTAssertNotNil(settingsButton)
         XCTAssertNotNil(quitButton)
     }
 
@@ -25,7 +29,9 @@ final class TrayMenuViewTests: XCTestCase {
     }
 
     func testNoErrorLinesWhenNothingFailed() throws {
-        let view = TrayMenuContent(isRunning: true, daemonError: nil, cliStoreError: nil) {}
+        let view = TrayMenuContent(
+            isRunning: true, daemonError: nil, cliStoreError: nil,
+            openAction: {}, settingsAction: {})
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("CLI store:") })
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Daemon:") })
     }
@@ -34,7 +40,8 @@ final class TrayMenuViewTests: XCTestCase {
     /// say that no other always-available surface does.
     func testCLIStoreErrorIsRendered() throws {
         let view = TrayMenuContent(
-            isRunning: false, daemonError: nil, cliStoreError: "rename to /x failed: No such file") {}
+            isRunning: false, daemonError: nil, cliStoreError: "rename to /x failed: No such file",
+            openAction: {}, settingsAction: {})
         XCTAssertNoThrow(try view.inspect().find(text: "CLI store: rename to /x failed: No such file"))
     }
 
@@ -42,7 +49,8 @@ final class TrayMenuViewTests: XCTestCase {
     /// surface that is always on screen.
     func testDaemonErrorIsRendered() throws {
         let view = TrayMenuContent(
-            isRunning: false, daemonError: "Failed to start daemon (exit code 1)", cliStoreError: nil) {}
+            isRunning: false, daemonError: "Failed to start daemon (exit code 1)", cliStoreError: nil,
+            openAction: {}, settingsAction: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Daemon: Failed to start daemon (exit code 1)"))
     }
 }
