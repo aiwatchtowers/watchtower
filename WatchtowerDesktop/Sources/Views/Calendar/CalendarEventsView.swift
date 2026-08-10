@@ -251,15 +251,34 @@ struct CalendarEventsView: View {
         scrollToToday(proxy)
     }
 
-    /// With past days in the list, land on "Today" (or the first future day
-    /// when today has no entries) instead of two weeks of history. Sections
-    /// are chronological with past days on top, so the target is the first
-    /// section at or after today — or the LAST section when the window holds
-    /// only history (see `todayScrollTarget`).
+    /// With past days in the list, land on the now-line when today has a
+    /// section (the marker always renders inside it), so the viewport opens
+    /// at the current time instead of the morning's past meetings. Without a
+    /// today section fall back to `todayScrollTarget`: the first future day,
+    /// or the LAST section when the window holds only history.
     private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
-        guard let target = Self.todayScrollTarget(in: sections, today: today) else { return }
-        proxy.scrollTo(target, anchor: .top)
+        switch Self.initialScrollTarget(in: sections, today: today) {
+        case .nowLine:
+            proxy.scrollTo(NowLine.nowLineID, anchor: .center)
+        case .day(let target):
+            proxy.scrollTo(target, anchor: .top)
+        case nil:
+            break
+        }
+    }
+
+    /// Where the one-shot landing goes (pure — unit-tested directly, the
+    /// `todayScrollTarget` pattern): the now-line when today has a section,
+    /// else the `todayScrollTarget` fallback day, nil on an empty list.
+    enum InitialScrollTarget: Equatable {
+        case nowLine
+        case day(Date)
+    }
+
+    static func initialScrollTarget(in sections: [MeetingDaySection], today: Date) -> InitialScrollTarget? {
+        if sections.contains(where: { $0.id == today }) { return .nowLine }
+        return todayScrollTarget(in: sections, today: today).map { .day($0) }
     }
 
     /// Pure target selection for the Today landing (testable without a view):

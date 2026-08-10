@@ -56,4 +56,37 @@ final class CalendarEventsViewTests: XCTestCase {
     func test_todayScrollTarget_nilForEmptySections() {
         XCTAssertNil(CalendarEventsView.todayScrollTarget(in: [], today: calendar.startOfDay(for: now)))
     }
+
+    // MARK: - initialScrollTarget (the one-shot landing decision)
+
+    /// Today present → the landing is the now-line marker, not the day top
+    /// (`NowLine.rows` always inserts the marker in a today section, even
+    /// with zero timed entries).
+    func test_initialScrollTarget_todayPresentLandsOnNowLine() throws {
+        let today = calendar.startOfDay(for: now)
+        let sections = [
+            section(try day(-1, from: today)), section(today), section(try day(1, from: today))
+        ]
+        XCTAssertEqual(CalendarEventsView.initialScrollTarget(in: sections, today: today), .nowLine)
+    }
+
+    /// No today section → the `todayScrollTarget` fallback day, top-anchored.
+    func test_initialScrollTarget_fallsBackToFirstFutureDay() throws {
+        let today = calendar.startOfDay(for: now)
+        let plus2 = try day(2, from: today)
+        let sections = [section(try day(-1, from: today)), section(plus2)]
+        XCTAssertEqual(CalendarEventsView.initialScrollTarget(in: sections, today: today), .day(plus2))
+    }
+
+    /// History-only window → the most recent past day, same as the fallback.
+    func test_initialScrollTarget_historyOnlyLandsOnMostRecentPastDay() throws {
+        let today = calendar.startOfDay(for: now)
+        let minus1 = try day(-1, from: today)
+        let sections = [section(try day(-2, from: today)), section(minus1)]
+        XCTAssertEqual(CalendarEventsView.initialScrollTarget(in: sections, today: today), .day(minus1))
+    }
+
+    func test_initialScrollTarget_nilForEmptySections() {
+        XCTAssertNil(CalendarEventsView.initialScrollTarget(in: [], today: calendar.startOfDay(for: now)))
+    }
 }

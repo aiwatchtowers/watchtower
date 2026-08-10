@@ -14,15 +14,23 @@ struct IdeaBackfillSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var fromDate: Date
-    @State private var toDate = Date()
+    @State private var toDate: Date
+    /// Mirrors the picker's half-picked first click; Start is held while set,
+    /// so a highlighted-but-uncommitted selection can't silently submit the
+    /// previous range.
+    @State private var pendingAnchor = false
 
     private enum Preset {
         case twoWeeks, month, quarter
     }
 
+    /// Seeds from the VM's last requested window when one exists — a sheet
+    /// reopened mid-run (via the mining badge) must show the range that is
+    /// actually mining, not re-initialised defaults.
     init(vm: IdeasViewModel) {
         self.vm = vm
-        _fromDate = State(initialValue: Self.date(monthsAgo: 0, weeksAgo: 2))
+        _fromDate = State(initialValue: vm.backfillFrom ?? Self.date(monthsAgo: 0, weeksAgo: 2))
+        _toDate = State(initialValue: vm.backfillTo ?? Date())
     }
 
     var body: some View {
@@ -33,7 +41,7 @@ struct IdeaBackfillSheet: View {
             Divider()
             sheetFooter
         }
-        .frame(width: 440, height: 340)
+        .frame(width: 440, height: 520)
     }
 
     private var sheetHeader: some View {
@@ -63,10 +71,15 @@ struct IdeaBackfillSheet: View {
             .buttonStyle(.bordered)
             .disabled(vm.isBackfilling)
 
-            DatePicker("From", selection: $fromDate, in: ...toDate, displayedComponents: .date)
-                .disabled(vm.isBackfilling)
-            DatePicker("To", selection: $toDate, in: ...Date(), displayedComponents: .date)
-                .disabled(vm.isBackfilling)
+            Text("\(Self.rangeFormatter.string(from: fromDate)) — \(Self.rangeFormatter.string(from: toDate))")
+                .font(.callout)
+                .fontWeight(.medium)
+
+            CalendarRangePicker(
+                fromDate: $fromDate, toDate: $toDate,
+                hasPendingAnchor: $pendingAnchor, isDisabled: vm.isBackfilling
+            )
+            .frame(maxWidth: .infinity)
 
             runningIndicator
             resultText
@@ -124,7 +137,10 @@ struct IdeaBackfillSheet: View {
             }
             Button("Start", action: start)
                 .buttonStyle(.borderedProminent)
-                .disabled(vm.isBackfilling)
+                // pendingAnchor: a half-picked range hasn't reached the
+                // bindings yet — submitting now would silently mine the OLD
+                // range while the user sees their new click highlighted.
+                .disabled(vm.isBackfilling || pendingAnchor)
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
@@ -133,8 +149,11 @@ struct IdeaBackfillSheet: View {
     /// The VM owns Task creation now (SB4) — it retains the Task so
     /// cancelBackfill() has something to cancel, and the run keeps going
     /// even if this sheet is dismissed (state lives on the VM either way).
+    /// The sheet closes right away: the run shows as the header badge in
+    /// `IdeasView` (click = back here), so mining never blocks the app.
     private func start() {
         vm.startBackfillTask(from: fromDate, to: toDate)
+        dismiss()
     }
 
     private func apply(_ preset: Preset) {
@@ -157,7 +176,14 @@ struct IdeaBackfillSheet: View {
         return calendar.date(byAdding: .weekOfYear, value: -weeksAgo, to: afterMonths) ?? afterMonths
     }
 
-    private static func elapsedString(from start: Date, to end: Date) -> String {
+    private static let rangeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .medium
+        return fmt
+    }()
+
+    /// Also drives the `IdeasView` header badge — internal, not private.
+    static func elapsedString(from start: Date, to end: Date) -> String {
         let seconds = max(0, Int(end.timeIntervalSince(start)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }

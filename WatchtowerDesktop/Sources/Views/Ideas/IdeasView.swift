@@ -100,6 +100,7 @@ struct IdeasView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
+                backfillStatusBadge
                 Button {
                     showBackfillSheet = true
                 } label: {
@@ -158,6 +159,61 @@ struct IdeasView: View {
         // firing it per keystroke reloads the whole screen on every letter.
         .onChange(of: vm.searchText) { debounceSearch() }
         .onDisappear { searchDebounceTask?.cancel() }
+    }
+
+    /// The backfill run's always-visible surface (the sheet dismisses on
+    /// Start so mining never blocks the app): an in-flight pill while mining,
+    /// then the terminal outcome — error or summary — since the dismissed
+    /// sheet is otherwise the only reader of those fields (including the
+    /// pre-flight "CLI not found" failure, which never sets isBackfilling at
+    /// all). Click = back into the sheet for details/Cancel.
+    @ViewBuilder
+    private var backfillStatusBadge: some View {
+        if vm.isBackfilling {
+            badgeCapsule(help: "Idea mining is running — click for details") {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                Text("Mining…")
+                    .font(.caption)
+                if let startedAt = vm.backfillStartedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(IdeaBackfillSheet.elapsedString(from: startedAt, to: context.date))
+                            .font(.caption)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        } else if let error = vm.backfillError {
+            badgeCapsule(help: error) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text("Mining failed")
+                    .font(.caption)
+            }
+        } else if let summary = vm.backfillSummary {
+            badgeCapsule(help: summary) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.green)
+                Text(summary)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func badgeCapsule(help: String, @ViewBuilder content: () -> some View) -> some View {
+        Button {
+            showBackfillSheet = true
+        } label: {
+            HStack(spacing: 6, content: content)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func debounceSearch() {
@@ -247,6 +303,11 @@ struct IdeasView: View {
                 .buttonStyle(.bordered)
             }
             .padding(.top, 4)
+            // The empty state replaces filterBar wholesale, and a fresh
+            // install's very first backfill runs exactly here — without this
+            // the dismissed sheet leaves no trace of the run (or its failure).
+            backfillStatusBadge
+                .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

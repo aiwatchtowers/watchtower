@@ -281,6 +281,14 @@ final class MeetingRecorderCenter {
 
     private var pendingLiveStart: PendingLiveStart?
 
+    /// Whether the active capture wants a live pass at all
+    /// (`config.liveTranscription` snapshotted at start). False means Stop must
+    /// neither await nor cancel `liveTask` — one still standing belongs to a
+    /// PREVIOUS recording's draining tail, never to this capture. Readable so
+    /// the indicator gates the live affordance on what THIS capture actually
+    /// started with, not on a live Settings read a mid-recording toggle flips.
+    private(set) var captureLiveEnabled = true
+
     /// The job the queue is currently working; nil when the queue is parked.
     /// Readable so the indicator stack can promote the pill of the job that is
     /// genuinely being worked, rather than guessing from a phase (with
@@ -624,7 +632,16 @@ final class MeetingRecorderCenter {
             captureAudioURL = url
             captureState = .recording(startedAt: Date())
             captureError = nil
-            if activeJobID == nil, liveTask == nil {
+            captureLiveEnabled = config.liveTranscription
+            if !config.liveTranscription {
+                // Live pass disabled in Settings: capture only, the batch path
+                // transcribes from the file after Stop. The generation bump
+                // fences a previous recording's still-draining pass out of the
+                // just-cleared list (the `startLivePass` precedent).
+                liveGeneration += 1
+                liveChunks = []
+                liveEngineState = .off
+            } else if activeJobID == nil, liveTask == nil {
                 startLivePass(recorder: recorder, config: config)
             } else {
                 // A job — or the previous recording's still-draining live tail —
@@ -806,9 +823,10 @@ final class MeetingRecorderCenter {
     /// live pass, clearing the parked start either way (this recorder is
     /// finished). One still `.waiting` for the engine slot has no live output,
     /// and the `liveTask` standing at that point belongs to the PREVIOUS
-    /// recording, whose own Stop owns it — never this job.
+    /// recording, whose own Stop owns it — never this job. A capture that
+    /// disabled the live pass never owns one either.
     private func consumeLivePassOwnership() -> Bool {
-        let owns = pendingLiveStart == nil
+        let owns = captureLiveEnabled && pendingLiveStart == nil
         pendingLiveStart = nil
         return owns
     }
