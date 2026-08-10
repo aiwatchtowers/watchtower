@@ -1528,6 +1528,29 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 CHECK(origin IN ('auto','custom')), instruction TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, last_run_at TEXT NOT NULL DEFAULT '', linked_target_id INTEGER
 REFERENCES targets(id) ON DELETE SET NULL)
 
+table	transcripts_fts
+CREATE VIRTUAL TABLE transcripts_fts USING fts5(
+text,
+transcript_id UNINDEXED,
+title UNINDEXED,
+tokenize='porter unicode61'
+)
+
+table	transcripts_fts_config
+CREATE TABLE 'transcripts_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+
+table	transcripts_fts_content
+CREATE TABLE 'transcripts_fts_content'(id INTEGER PRIMARY KEY, c0, c1, c2)
+
+table	transcripts_fts_data
+CREATE TABLE 'transcripts_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+
+table	transcripts_fts_docsize
+CREATE TABLE 'transcripts_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+
+table	transcripts_fts_idx
+CREATE TABLE 'transcripts_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+
 table	user_analyses
 CREATE TABLE user_analyses (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1655,6 +1678,31 @@ domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
 , secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0)
+
+trigger	meeting_transcripts_ad
+CREATE TRIGGER meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
+BEGIN
+DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+END
+
+trigger	meeting_transcripts_ai
+CREATE TRIGGER meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
+WHEN NEW.transcript_text != ''
+BEGIN
+DELETE FROM transcripts_fts WHERE transcript_id = NEW.id;
+INSERT INTO transcripts_fts(text, transcript_id, title)
+VALUES (NEW.transcript_text, NEW.id, NEW.title);
+END
+
+trigger	meeting_transcripts_au
+CREATE TRIGGER meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
+WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
+BEGIN
+DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+INSERT INTO transcripts_fts(text, transcript_id, title)
+SELECT NEW.transcript_text, NEW.id, NEW.title
+WHERE NEW.transcript_text != '';
+END
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
@@ -2734,6 +2782,34 @@ END
 34	enabled	INTEGER	notnull=1	dflt=1	pk=0
 35	last_run_at	TEXT	notnull=1	dflt=''	pk=0
 36	linked_target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts
+0	text		notnull=0	dflt=NULL	pk=0
+1	transcript_id		notnull=0	dflt=NULL	pk=0
+2	title		notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts_config
+0	k		notnull=1	dflt=NULL	pk=1
+1	v		notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts_content
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	c0		notnull=0	dflt=NULL	pk=0
+2	c1		notnull=0	dflt=NULL	pk=0
+3	c2		notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts_data
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	block	BLOB	notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts_docsize
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	sz	BLOB	notnull=0	dflt=NULL	pk=0
+
+## transcripts_fts_idx
+0	segid		notnull=1	dflt=NULL	pk=1
+1	term		notnull=1	dflt=NULL	pk=2
+2	pgno		notnull=0	dflt=NULL	pk=0
 
 ## user_analyses
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

@@ -1251,3 +1251,118 @@ func TestSetReadOnlyBlocksWrites(t *testing.T) {
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT count(*) FROM users`).Scan(&n), "reads must keep working")
 }
+
+func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
+	database := openTestDB(t)
+
+	id, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Roadmap sync",
+		TranscriptText: "[Я] we decided to postpone the payments migration",
+	})
+	require.NoError(t, err)
+
+	// Insert is indexed.
+	var got int64
+	err = database.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err)
+	assert.Equal(t, id, got)
+
+	// Porter stemming works the same way it does for messages_fts.
+	var n int
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'decide'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Update re-indexes rather than duplicating.
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = ? WHERE id = ?`,
+		"[Я] we shipped the invoicing rewrite", id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "stale text must not survive an update")
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'invoicing'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Update to empty text leaves no stale row behind (the _au trigger's
+	// INSERT ... SELECT ... WHERE NEW.transcript_text != '' guard).
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = '' WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, id,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "clearing transcript_text must not leave a stale FTS row")
+
+	// Delete removes the row from the index.
+	_, err = database.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(`SELECT count(*) FROM transcripts_fts`).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+// TestTranscriptsFTSBackfillIndexesPreExistingTranscripts proves the one-shot
+// backfill statement at the tail of 00052 — the line every installation that
+// predates this migration actually depends on, since transcripts have shipped
+// since v74 and every historical meeting is only searchable through that
+// single INSERT ... SELECT. TestTranscriptsFTSIndexesAndTracksRows above only
+// exercises the AFTER INSERT/UPDATE/DELETE triggers on rows written after
+// transcripts_fts already exists; it never runs against a database that had
+// transcripts BEFORE the migration, so it cannot catch a wrong column order
+// or a wrong predicate in the backfill SELECT.
+func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcripts-fts-backfill.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+
+	// Roll back to just before 00052: meeting_transcripts exists (since
+	// 00020) but transcripts_fts and its triggers do not yet, matching a
+	// pre-migration installation.
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 51))
+
+	res, err := d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Roadmap sync", "we decided to postpone the payments migration")
+	require.NoError(t, err)
+	withText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	res, err = d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Empty one", "")
+	require.NoError(t, err)
+	withoutText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	// Apply 00052: creates transcripts_fts + triggers, then runs the backfill
+	// against the two rows seeded above.
+	require.NoError(t, goose.UpTo(d.DB, "migrations", 52))
+
+	var got int64
+	err = d.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err, "the pre-migration transcript must be findable through transcripts_fts after the backfill")
+	assert.Equal(t, withText, got)
+
+	var n int
+	err = d.QueryRow(`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, withoutText).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "the empty-text transcript must not be backfilled into transcripts_fts")
+}

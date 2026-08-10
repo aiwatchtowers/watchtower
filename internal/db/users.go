@@ -106,6 +106,26 @@ func (db *DB) GetUserByEmail(email string) (*User, error) {
 	return scanUser(row)
 }
 
+// GetUserByEmailFold matches an email case-insensitively. GetUserByEmail's
+// exact match is right for synced Slack data (which is consistently cased),
+// but wrong for anything a human typed or a tool authored, such as git commit
+// author emails, where case varies freely.
+//
+// Since the Slack multi-account migration, one email legitimately maps to
+// several rows — the same human has one users row per connected workspace
+// (namespaced ids), so a duplicate email is the EXPECTED shape, not an edge
+// case. Deleted rows are excluded (a deactivated account is never the right
+// attribution target), and among the remaining candidates the lowest id wins
+// — an arbitrary but STABLE tiebreak, so the same email always resolves to
+// the same row rather than whatever order SQLite happens to return.
+func (db *DB) GetUserByEmailFold(email string) (*User, error) {
+	row := db.QueryRow(`
+		SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at
+		FROM users WHERE LOWER(email) = LOWER(?) AND email != '' AND is_deleted = 0
+		ORDER BY id ASC LIMIT 1`, email)
+	return scanUser(row)
+}
+
 // EnsureUser inserts a minimal stub user record if not already present.
 // Stubs are marked with is_stub=1 so syncUserProfiles can backfill them.
 // Does NOT update existing records (INSERT ON CONFLICT DO NOTHING).

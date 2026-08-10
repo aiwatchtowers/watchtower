@@ -182,3 +182,50 @@ func sanitizeFTS5Query(query string) string {
 	}
 	return strings.Join(safe, " ")
 }
+
+// TranscriptHit is one full-text match in a meeting transcript: enough to
+// decide whether to fetch the whole thing, never the whole thing itself.
+type TranscriptHit struct {
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	EventID   string `json:"event_id,omitempty"`
+	CreatedAt string `json:"created_at"`
+	Snippet   string `json:"snippet"`
+}
+
+// SearchTranscripts runs a full-text search over meeting transcripts via
+// transcripts_fts, newest first. The query is sanitized the same way
+// SearchMessages sanitizes its input, so caller text can never inject FTS5
+// operators. An empty query returns no rows and no error.
+func (db *DB) SearchTranscripts(query string, limit int) ([]TranscriptHit, error) {
+	sanitized := sanitizeFTS5Query(query)
+	if sanitized == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := db.Query(`
+		SELECT mt.id, mt.title, COALESCE(mt.event_id, ''), mt.created_at,
+		       snippet(transcripts_fts, 0, '', '', '…', 40)
+		FROM transcripts_fts
+		JOIN meeting_transcripts mt ON mt.id = transcripts_fts.transcript_id
+		WHERE transcripts_fts MATCH ?
+		ORDER BY mt.created_at DESC
+		LIMIT ?`, sanitized, limit)
+	if err != nil {
+		return nil, fmt.Errorf("searching transcripts: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TranscriptHit
+	for rows.Next() {
+		var h TranscriptHit
+		if err := rows.Scan(&h.ID, &h.Title, &h.EventID, &h.CreatedAt, &h.Snippet); err != nil {
+			return nil, fmt.Errorf("scanning transcript hit: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}

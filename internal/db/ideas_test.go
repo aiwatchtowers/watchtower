@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -1252,6 +1253,108 @@ func TestIdeas_SetIdeasFloorsRoundTrip(t *testing.T) {
 // TestIdeas_SetIdeasFloorsNoWorkspaceRow pins the same "no silent zero-row
 // update" contract as SetIdeasFloorsTx: without a workspace row the UPDATE
 // matches nothing and must error rather than succeed silently.
+// TestGetJiraCommentsByIssueKeyReturnsChronologically pins ordering by
+// created_at, not updated_at: "first" was posted before "second" but edited
+// well after it, so an updated_at ordering would put it second. The doc
+// comment on GetJiraCommentsByIssueKey promises "oldest-first", and
+// get_task_context renders a chronological timeline from the result — a
+// comment edited later than a subsequent comment was posted must not jump
+// out of position.
+func TestGetJiraCommentsByIssueKeyReturnsChronologically(t *testing.T) {
+	d := openTestDB(t)
+	accountID := mustCreateJiraAccount(t, d)
+
+	err := d.UpsertJiraComments([]JiraComment{
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c1", BodyText: "first", CreatedAt: "2026-08-01T10:00:00Z", UpdatedAt: "2026-08-05T10:00:00Z"},
+		{AccountID: accountID, IssueKey: "PROJ-1", ID: "c2", BodyText: "second", CreatedAt: "2026-08-02T10:00:00Z", UpdatedAt: "2026-08-02T10:00:00Z"},
+		{AccountID: accountID, IssueKey: "OTHER-9", ID: "c3", BodyText: "other issue", CreatedAt: "2026-08-03T10:00:00Z", UpdatedAt: "2026-08-03T10:00:00Z"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertJiraComments: %v", err)
+	}
+
+	got, err := d.GetJiraCommentsByIssueKey("PROJ-1", 0)
+	if err != nil {
+		t.Fatalf("GetJiraCommentsByIssueKey: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("GetJiraCommentsByIssueKey = %+v, want 2 rows", got)
+	}
+	if got[0].BodyText != "first" || got[1].BodyText != "second" {
+		t.Errorf("GetJiraCommentsByIssueKey order = [%q, %q], want [first, second] (created-at order, "+
+			"despite \"first\" being edited after \"second\")", got[0].BodyText, got[1].BodyText)
+	}
+
+	// Unknown key is empty, not an error.
+	none, err := d.GetJiraCommentsByIssueKey("NOPE-1", 0)
+	if err != nil {
+		t.Fatalf("GetJiraCommentsByIssueKey (unknown key): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("GetJiraCommentsByIssueKey (unknown key) = %+v, want empty", none)
+	}
+}
+
+// TestIdeas_ListIdeasByMentionRef proves the lookup is a direct indexed join,
+// not a page-then-scan: the target idea's own updated_at is backdated to
+// well before 205 filler ideas, and its mention is inserted directly (not
+// via InsertIdeaMentionTx, which would bump updated_at back to "now" and
+// defeat the point) — so it sits outside a plain 200-row ListIdeas page.
+// A naive "ListIdeas(200) then scan each idea's mentions" implementation
+// would silently miss it; this must not.
+func TestIdeas_ListIdeasByMentionRef(t *testing.T) {
+	d := openTestDB(t)
+
+	targetID := mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Ship the retry queue", Essence: "e", Status: "active"})
+	if _, err := d.Exec(`UPDATE ideas SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, targetID); err != nil {
+		t.Fatalf("backdating target idea: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at)
+		VALUES (?, 'jira', 'WT-500', 'q', 'a', '2000-01-01T00:00:00Z')`, targetID); err != nil {
+		t.Fatalf("seeding target mention: %v", err)
+	}
+
+	// A decoy idea whose own mention is for a different ref — must never match.
+	decoyID := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Unrelated", Essence: "e", Status: "proposed"})
+	if _, err := d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at)
+		VALUES (?, 'jira', 'WT-999', 'q', 'a', '2026-01-01T00:00:00Z')`, decoyID); err != nil {
+		t.Fatalf("seeding decoy mention: %v", err)
+	}
+
+	for i := 0; i < 205; i++ {
+		mustCreateIdea(t, d, Idea{Kind: "idea", Title: fmt.Sprintf("Filler %d", i), Essence: "e", Status: "proposed"})
+	}
+
+	// Confirm the premise: the target must NOT be on a plain, capped
+	// ListIdeas page — that's exactly the condition the old
+	// page-then-scan implementation depended on to find it.
+	page, err := d.ListIdeas(IdeaFilter{Limit: 200})
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
+	}
+	for _, idea := range page {
+		if idea.ID == targetID {
+			t.Fatalf("test premise broken: target idea %d is still on the first ListIdeas page", targetID)
+		}
+	}
+
+	got, err := d.ListIdeasByMentionRef("jira", "WT-500", 0)
+	if err != nil {
+		t.Fatalf("ListIdeasByMentionRef: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != targetID {
+		t.Fatalf("ListIdeasByMentionRef(jira, WT-500) = %+v, want just idea %d", got, targetID)
+	}
+
+	none, err := d.ListIdeasByMentionRef("jira", "WT-999-NOPE", 0)
+	if err != nil {
+		t.Fatalf("ListIdeasByMentionRef (no match): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("ListIdeasByMentionRef for an unmentioned ref = %+v, want empty", none)
+	}
+}
+
 func TestIdeas_SetIdeasFloorsNoWorkspaceRow(t *testing.T) {
 	d := openTestDB(t) // deliberately no mustSeedWorkspace
 	if err := d.SetIdeasFloors(1, 2, 3); err == nil {

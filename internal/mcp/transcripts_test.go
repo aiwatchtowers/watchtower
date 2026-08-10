@@ -177,6 +177,97 @@ func TestListTranscripts_BadDateErrors(t *testing.T) {
 	}
 }
 
+func TestListTranscripts_QueryFindsAndSnippets(t *testing.T) {
+	database, _ := seedTranscriptsDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_transcripts",
+		Arguments: map[string]any{"query": "brainstorm"},
+	})
+	if err != nil {
+		t.Fatalf("call list_transcripts: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	got := textContent(t, res)
+	if !strings.Contains(got, "Ad-hoc brainstorm") {
+		t.Fatalf("expected the matching transcript, got: %s", got)
+	}
+	if strings.Contains(got, "Roadmap Sync recording") || strings.Contains(got, "Hallway chat") {
+		t.Fatalf("query must exclude non-matching transcripts, got: %s", got)
+	}
+	// The FTS snippet is surfaced (it happens to equal the whole sentence
+	// here, since this seed text is well under the snippet window); the
+	// transcript_text field itself must never appear in a search result.
+	if !strings.Contains(got, "\"snippet\"") {
+		t.Fatalf("expected a snippet field in a search result, got: %s", got)
+	}
+	if strings.Contains(got, "transcript_text") {
+		t.Fatalf("query results must not include the full transcript text, got: %s", got)
+	}
+}
+
+func TestListTranscripts_QueryOnEventLinkedHitResolvesEventTitle(t *testing.T) {
+	database, _ := seedTranscriptsDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_transcripts",
+		Arguments: map[string]any{"query": "roadmap sync"},
+	})
+	if err != nil {
+		t.Fatalf("call list_transcripts: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	got := textContent(t, res)
+	if !strings.Contains(got, "Roadmap Sync recording") {
+		t.Fatalf("expected the matching transcript, got: %s", got)
+	}
+	if !strings.Contains(got, "\"event_title\": \"Roadmap Sync\"") {
+		t.Fatalf("expected event_title resolved for a search hit, got: %s", got)
+	}
+}
+
+func TestListTranscripts_QueryCannotCombineWithFilters(t *testing.T) {
+	database, _ := seedTranscriptsDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_transcripts",
+		Arguments: map[string]any{"query": "brainstorm", "event_id": "EV1"},
+	})
+	if err != nil {
+		t.Fatalf("call list_transcripts: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected an error when combining query with event_id, got: %s", textContent(t, res))
+	}
+}
+
+func TestListTranscripts_QueryNoMatchReturnsEmpty(t *testing.T) {
+	database, _ := seedTranscriptsDB(t)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "list_transcripts",
+		Arguments: map[string]any{"query": "nonexistent-subject-xyz"},
+	})
+	if err != nil {
+		t.Fatalf("call list_transcripts: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", textContent(t, res))
+	}
+	got := textContent(t, res)
+	if strings.TrimSpace(got) != "[]" {
+		t.Fatalf("expected an empty array for no matches, got: %s", got)
+	}
+}
+
 func TestGetTranscript_FullText(t *testing.T) {
 	database, ids := seedTranscriptsDB(t)
 	cs := newTestSession(t, database)
