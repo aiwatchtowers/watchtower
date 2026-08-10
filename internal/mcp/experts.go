@@ -45,6 +45,13 @@ type expertEvidence struct {
 	Count    int    `json:"count"`
 	LastSeen string `json:"last_seen,omitempty"`
 	Ref      string `json:"ref"`
+	// Undated is true when this evidence genuinely has no timestamp (e.g. a
+	// supplied email — there is no "when" for code authorship) and therefore
+	// never decays, unlike every other entry the response's RecencyHalfLife
+	// claims to apply to. Made explicit rather than silently exempted, so
+	// the caller can see which entries the advertised half-life does not
+	// govern.
+	Undated bool `json:"undated,omitempty"`
 }
 
 type expertCandidate struct {
@@ -170,16 +177,31 @@ func (a *expertAccumulator) rank(database *db.DB, limit int) []expertCandidate {
 	return out
 }
 
+// evidenceRef returns permalink when it resolves to something the caller can
+// actually open, or an explicit statement that none is available — never the
+// bare namespaced channelID|ts pair that used to stand in for it. Since the
+// Slack multi-account migration, channelID is namespaced ("1:C0123"), a
+// shape no tool on this surface's resolveChannel (internal/mcp/messages.go)
+// accepts — it is not a "C..." id by that function's own prefix check and
+// not a channel name either, so it fails both branches and resolves nowhere
+// (DEV-03 requires a resolvable ref, not merely a non-empty one).
+func evidenceRef(permalink string) string {
+	if permalink != "" {
+		return permalink
+	}
+	return "no permalink available for this message"
+}
+
 func collectMessageEvidence(database *db.DB, topic string, acc *expertAccumulator, notes []string) []string {
 	msgs, err := database.SearchMessages(topic, db.SearchOpts{Limit: expertMessageScanLimit})
 	if err != nil {
 		return append(notes, "message search unavailable: "+err.Error())
 	}
 	type agg struct {
-		count   int
-		lastTS  string
-		lastTSU float64
-		channel string
+		count     int
+		lastTSU   float64
+		channel   string
+		permalink string
 	}
 	byUser := map[string]*agg{}
 	for _, m := range msgs {
@@ -193,7 +215,7 @@ func collectMessageEvidence(database *db.DB, topic string, acc *expertAccumulato
 		}
 		a.count++
 		if m.TSUnix > a.lastTSU {
-			a.lastTSU, a.lastTS, a.channel = m.TSUnix, m.TS, m.ChannelID
+			a.lastTSU, a.channel, a.permalink = m.TSUnix, m.ChannelID, m.Permalink
 		}
 	}
 	for userID, a := range byUser {
@@ -206,7 +228,7 @@ func collectMessageEvidence(database *db.DB, topic string, acc *expertAccumulato
 			Detail:   fmt.Sprintf("%d messages matching %q, most recently in %s", a.count, topic, channelName),
 			Count:    a.count,
 			LastSeen: time.Unix(int64(a.lastTSU), 0).UTC().Format("2006-01-02"),
-			Ref:      a.channel + "|" + a.lastTS,
+			Ref:      evidenceRef(a.permalink),
 		}, a.lastTSU)
 	}
 	if len(msgs) == expertMessageScanLimit {
@@ -214,6 +236,51 @@ func collectMessageEvidence(database *db.DB, topic string, acc *expertAccumulato
 			"message evidence capped at the %d most relevant matches", expertMessageScanLimit))
 	}
 	return notes
+}
+
+// jiraEvidenceTime converts a Jira Cloud timestamp into the (tsUnix,
+// lastSeen) pair expertAccumulator.add and expertEvidence.LastSeen need. ok
+// is false when raw cannot be parsed — the caller must mark that evidence
+// Undated rather than silently letting it decay-as-if-fresh (tsUnix=0) or
+// pretending it has a date it doesn't.
+func jiraEvidenceTime(raw string) (tsUnix float64, lastSeen string, ok bool) {
+	u, parsed := db.ParseJiraTime(raw)
+	if !parsed {
+		return 0, "", false
+	}
+	return float64(u), time.Unix(u, 0).UTC().Format("2006-01-02"), true
+}
+
+// commentAgg is one Atlassian account's comment activity on an issue: how
+// many comments, and the most recent one's time for decay/LastSeen.
+type commentAgg struct {
+	count    int
+	lastTS   float64
+	lastSeen string
+	dated    bool
+}
+
+// aggregateCommentAuthors groups comments by Atlassian account id, tracking
+// each author's count and most recent comment time (by CreatedAt — the
+// chronological anchor GetJiraCommentsByIssueKey now sorts on).
+func aggregateCommentAuthors(comments []db.JiraComment) map[string]*commentAgg {
+	byAuthor := map[string]*commentAgg{}
+	for _, c := range comments {
+		if c.AuthorAccountID == "" {
+			continue
+		}
+		a, ok := byAuthor[c.AuthorAccountID]
+		if !ok {
+			a = &commentAgg{}
+			byAuthor[c.AuthorAccountID] = a
+		}
+		a.count++
+		ts, lastSeen, dated := jiraEvidenceTime(c.CreatedAt)
+		if ts > a.lastTS {
+			a.lastTS, a.lastSeen, a.dated = ts, lastSeen, dated
+		}
+	}
+	return byAuthor
 }
 
 func collectIssueEvidence(database *db.DB, key string, acc *expertAccumulator, notes []string) []string {
@@ -224,29 +291,25 @@ func collectIssueEvidence(database *db.DB, key string, acc *expertAccumulator, n
 	if issue == nil {
 		return append(notes, "no issue with key "+key)
 	}
+	issueTS, issueLastSeen, issueDated := jiraEvidenceTime(issue.UpdatedAt)
 	if issue.AssigneeSlackID != "" {
 		acc.add(issue.AssigneeSlackID, expertEvidence{
 			Kind: "jira", Detail: "assignee of " + key, Count: 1, Ref: key,
-		}, 0)
+			LastSeen: issueLastSeen, Undated: !issueDated,
+		}, issueTS)
 	}
 	if issue.ReporterSlackID != "" {
 		acc.add(issue.ReporterSlackID, expertEvidence{
 			Kind: "jira", Detail: "reporter of " + key, Count: 1, Ref: key,
-		}, 0)
+			LastSeen: issueLastSeen, Undated: !issueDated,
+		}, issueTS)
 	}
 
 	comments, err := database.GetJiraCommentsByIssueKey(key, 100)
 	if err != nil {
 		return append(notes, "issue comments unavailable: "+err.Error())
 	}
-	byAuthor := map[string]int{}
-	for _, c := range comments {
-		if c.AuthorAccountID == "" {
-			continue
-		}
-		byAuthor[c.AuthorAccountID]++
-	}
-	for atlassianID, n := range byAuthor {
+	for atlassianID, a := range aggregateCommentAuthors(comments) {
 		m, err := database.GetJiraUserMapByAccountID(atlassianID)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("user map unavailable for jira account %s: %v", atlassianID, err))
@@ -258,13 +321,44 @@ func collectIssueEvidence(database *db.DB, key string, acc *expertAccumulator, n
 			continue
 		}
 		acc.add(m.SlackUserID, expertEvidence{
-			Kind:   "jira",
-			Detail: fmt.Sprintf("%d comments on %s", n, key),
-			Count:  n,
-			Ref:    key,
-		}, 0)
+			Kind:     "jira",
+			Detail:   fmt.Sprintf("%d comments on %s", a.count, key),
+			Count:    a.count,
+			Ref:      key,
+			LastSeen: a.lastSeen,
+			Undated:  !a.dated,
+		}, a.lastTS)
 	}
 	return notes
+}
+
+// threadAgg is one user's participation in a linked Slack thread: how many
+// messages, and the permalink/time of the most recent one for decay/ref.
+type threadAgg struct {
+	count     int
+	lastTS    float64
+	permalink string
+}
+
+// aggregateThreadAuthors groups a thread's messages by author, tracking each
+// author's count and most recent message's time and permalink.
+func aggregateThreadAuthors(msgs []db.Message) map[string]*threadAgg {
+	byUser := map[string]*threadAgg{}
+	for _, m := range msgs {
+		if m.UserID == "" {
+			continue
+		}
+		a, ok := byUser[m.UserID]
+		if !ok {
+			a = &threadAgg{}
+			byUser[m.UserID] = a
+		}
+		a.count++
+		if m.TSUnix > a.lastTS {
+			a.lastTS, a.permalink = m.TSUnix, m.Permalink
+		}
+	}
+	return byUser
 }
 
 func collectLinkedThreadEvidence(database *db.DB, key string, acc *expertAccumulator, notes []string) []string {
@@ -309,25 +403,14 @@ func collectLinkedThreadEvidence(database *db.DB, key string, acc *expertAccumul
 		} else {
 			msgs = replies
 		}
-		byUser := map[string]int{}
-		latest := map[string]float64{}
-		for _, m := range msgs {
-			if m.UserID == "" {
-				continue
-			}
-			byUser[m.UserID]++
-			if m.TSUnix > latest[m.UserID] {
-				latest[m.UserID] = m.TSUnix
-			}
-		}
-		for userID, n := range byUser {
+		for userID, a := range aggregateThreadAuthors(msgs) {
 			acc.add(userID, expertEvidence{
 				Kind:     "thread",
-				Detail:   fmt.Sprintf("%d messages in the thread discussing %s", n, key),
-				Count:    n,
-				LastSeen: time.Unix(int64(latest[userID]), 0).UTC().Format("2006-01-02"),
-				Ref:      l.ChannelID + "|" + threadTS,
-			}, latest[userID])
+				Detail:   fmt.Sprintf("%d messages in the thread discussing %s", a.count, key),
+				Count:    a.count,
+				LastSeen: time.Unix(int64(a.lastTS), 0).UTC().Format("2006-01-02"),
+				Ref:      evidenceRef(a.permalink),
+			}, a.lastTS)
 		}
 	}
 	return notes
@@ -391,7 +474,10 @@ func collectCodeEvidence(database *db.DB, emails []string, acc *expertAccumulato
 			continue
 		}
 		acc.add(userID, expertEvidence{
-			Kind: "code", Detail: "authored code as " + email, Count: 1, Ref: email,
+			// A supplied email carries no "when" — genuinely undated, not
+			// merely unresolved, so it is marked rather than left to decay
+			// as if it happened today.
+			Kind: "code", Detail: "authored code as " + email, Count: 1, Ref: email, Undated: true,
 		}, 0)
 	}
 	return unmatched, notes

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -84,6 +85,133 @@ func TestGetTaskContextThreadMessagesAreUniqueAndOrdered(t *testing.T) {
 	}
 	if msgs[0].TS != taskContextFixtureParentTS || msgs[1].TS != taskContextFixtureReplyTS {
 		t.Fatalf("expected chronological order [parent, reply], got %+v", msgs)
+	}
+}
+
+// TestGetTaskContextThreadTruncationKeepsRecentReplies pins the fix for a
+// bug where truncateThreadReplies used to keep the OLDEST taskContextMaxReplies
+// messages (a plain msgs[:max] slice) — the opposite of the file's own
+// stated intent that a capped section should not silently lose "the tail,
+// usually the recent material". A thread with more than
+// taskContextMaxReplies messages must keep the linked (anchor) message plus
+// the newest ones, in order, and say how many were dropped.
+func TestGetTaskContextThreadTruncationKeepsRecentReplies(t *testing.T) {
+	database := seedDB(t)
+	seedTaskContextManyRepliesFixture(t, database)
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "get_task_context",
+		Arguments: map[string]any{"key": "PROJ-4"},
+	})
+	if err != nil {
+		t.Fatalf("calling get_task_context: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %s", textContent(t, res))
+	}
+
+	var got taskContext
+	if err := json.Unmarshal([]byte(textContent(t, res)), &got); err != nil {
+		t.Fatalf("unmarshaling dossier: %v", err)
+	}
+	if len(got.Threads) != 1 {
+		t.Fatalf("expected exactly 1 thread, got %d: %+v", len(got.Threads), got.Threads)
+	}
+	msgs := got.Threads[0].Messages
+	if len(msgs) > taskContextMaxReplies {
+		t.Fatalf("thread has %d messages, want at most %d", len(msgs), taskContextMaxReplies)
+	}
+
+	var texts []string
+	for _, m := range msgs {
+		texts = append(texts, m.Text)
+	}
+	if !sliceContains(texts, "PROJ-4: the anchor question") {
+		t.Fatalf("the linked anchor message must survive truncation, got: %+v", texts)
+	}
+	if !sliceContains(texts, "reply 30: the decision that matters") {
+		t.Fatalf("the newest reply must survive truncation, got: %+v", texts)
+	}
+	if sliceContains(texts, "reply 1: ancient chatter") {
+		t.Fatalf("an old, superseded reply must be dropped when the thread is truncated, got: %+v", texts)
+	}
+
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i-1].TS >= msgs[i].TS {
+			t.Fatalf("truncated thread messages are out of order at index %d: %+v", i, msgs)
+		}
+	}
+
+	out := textContent(t, res)
+	if !contains(out, "more replies than shown") {
+		t.Fatalf("expected a truncation note, got: %s", out)
+	}
+}
+
+func sliceContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// seedTaskContextManyRepliesFixture seeds an issue linked to a Slack thread
+// with an anchor message plus 30 replies — more than taskContextMaxReplies
+// (25) — so the dossier must truncate. Reply 1 is old and disposable; reply
+// 30 is the newest and carries the substantive content.
+func seedTaskContextManyRepliesFixture(t *testing.T, database *db.DB) {
+	t.Helper()
+	accountID := db.SeedTestJiraAccount(t, database)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID:      accountID,
+		Key:            "PROJ-4",
+		ID:             "10004",
+		ProjectKey:     "PROJ",
+		Summary:        "A busy ticket",
+		Status:         "In Progress",
+		StatusCategory: "In Progress",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		SyncedAt:       now,
+	}); err != nil {
+		t.Fatalf("seeding jira issue: %v", err)
+	}
+	if err := database.EnsureChannel("C003", "eng-busy", "public", ""); err != nil {
+		t.Fatalf("seeding channel: %v", err)
+	}
+	anchorTS := "1690001000.000100"
+	if err := database.UpsertMessage(db.Message{
+		ChannelID: "C003", TS: anchorTS, UserID: "U004",
+		Text: "PROJ-4: the anchor question", RawJSON: "{}",
+	}); err != nil {
+		t.Fatalf("seeding anchor message: %v", err)
+	}
+	if err := database.UpsertJiraSlackLink(db.JiraSlackLink{
+		IssueKey: "PROJ-4", ChannelID: "C003", MessageTS: anchorTS, LinkType: "mention",
+	}); err != nil {
+		t.Fatalf("seeding jira slack link: %v", err)
+	}
+	for i := 1; i <= 30; i++ {
+		text := fmt.Sprintf("reply %d: filler discussion", i)
+		if i == 1 {
+			text = "reply 1: ancient chatter"
+		}
+		if i == 30 {
+			text = "reply 30: the decision that matters"
+		}
+		replyTS := fmt.Sprintf("1690001%03d.000100", i)
+		if err := database.UpsertMessage(db.Message{
+			ChannelID: "C003", TS: replyTS, UserID: fmt.Sprintf("U%03d", 100+i),
+			Text:     text,
+			ThreadTS: sql.NullString{String: anchorTS, Valid: true},
+			RawJSON:  "{}",
+		}); err != nil {
+			t.Fatalf("seeding reply %d: %v", i, err)
+		}
 	}
 }
 

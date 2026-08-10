@@ -197,8 +197,11 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 
 // buildTaskThread renders one resolved anchor message into a taskThread: it
 // fetches the thread's replies, falls back to the anchor alone if that read
-// fails, caps the reply count, resolves the channel name, and records every
-// sender in people.
+// fails, caps the reply count (keeping the linked message plus the most
+// recent replies — see truncateThreadReplies — never the oldest ones,
+// which per the file header would silently drop the recent material a
+// reader most needs), resolves the channel name, and records every sender
+// in people.
 func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Message, people *personSet, notes []string) (taskThread, []string) {
 	// GetThreadReplies is parent-inclusive (its own doc comment, and its
 	// SQL matches ts = threadTS OR thread_ts = threadTS) and orders
@@ -216,7 +219,11 @@ func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Mess
 		msgs = []db.Message{anchor}
 	}
 	if len(msgs) > taskContextMaxReplies {
-		msgs = msgs[:taskContextMaxReplies]
+		var dropped int
+		msgs, dropped = truncateThreadReplies(msgs, anchor.TS, taskContextMaxReplies)
+		notes = append(notes, fmt.Sprintf(
+			"thread %s|%s has %d more replies than shown; kept the linked message and the most recent ones",
+			channelID, threadTS, dropped))
 	}
 
 	thread := taskThread{ChannelID: channelID}
@@ -234,6 +241,38 @@ func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Mess
 		})
 	}
 	return thread, notes
+}
+
+// truncateThreadReplies keeps the linked (anchor) message plus the newest
+// maxKept-1 replies, in chronological order — never the oldest maxKept,
+// which would silently drop the recent material a reader needs most to see
+// what was actually decided. msgs must already be ordered ascending by time
+// (as GetThreadReplies returns them) and is assumed to contain a message
+// whose TS equals anchorTS (GetThreadReplies is parent-inclusive, so the
+// anchor is always one of its rows) — if that assumption ever breaks, this
+// falls back to just the newest maxKept. Returns the kept slice and how many
+// were dropped.
+func truncateThreadReplies(msgs []db.Message, anchorTS string, maxKept int) (kept []db.Message, dropped int) {
+	if len(msgs) <= maxKept || maxKept <= 0 {
+		return msgs, 0
+	}
+	recentCount := maxKept - 1
+	recent := msgs[len(msgs)-recentCount:]
+	for _, m := range recent {
+		if m.TS == anchorTS {
+			// The anchor is already inside the recent window — no need to
+			// prepend it separately.
+			return recent, len(msgs) - len(recent)
+		}
+	}
+	for _, m := range msgs {
+		if m.TS == anchorTS {
+			kept = append([]db.Message{m}, recent...)
+			return kept, len(msgs) - len(kept)
+		}
+	}
+	kept = msgs[len(msgs)-maxKept:]
+	return kept, len(msgs) - len(kept)
 }
 
 func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMeeting, []string) {
@@ -255,8 +294,9 @@ func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMee
 
 func collectTaskDecisions(database *db.DB, key string, notes []string) ([]taskDecision, []string) {
 	// idea_mentions stores a bare issue key as the ref for source='jira'
-	// (see the consolidate prompt's mention shape in internal/prompts/defaults.go),
-	// and (source, ref) is indexed (migration 00051) — ListIdeasByMentionRef
+	// (see how mentions are validated and written in the consolidate op
+	// handlers, internal/ideas/consolidate.go), and (source, ref) is
+	// indexed (migration 00051) — ListIdeasByMentionRef
 	// joins on it directly, so a decision is found regardless of how large
 	// the registry has grown.
 	ideas, err := database.ListIdeasByMentionRef("jira", key, taskContextMaxIdeas)
