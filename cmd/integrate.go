@@ -157,9 +157,12 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, err := exec.LookPath("claude"); err != nil {
+		// The skill pack removal above already happened; the absence of the
+		// claude CLI just means we cannot also unregister the MCP server
+		// ourselves. Report and continue rather than failing the command.
 		fmt.Println("\nclaude CLI not found — remove the MCP server yourself with:")
 		fmt.Println("  claude mcp remove watchtower")
-		return nil
+		return nil //nolint:nilerr
 	}
 	out, err := exec.Command("claude", "mcp", "remove", "watchtower").CombinedOutput()
 	if err != nil {
@@ -244,6 +247,9 @@ func printSkillStatuses(results []devpack.SkillStatus) {
 			note = "  (left alone — differs from what we ship)"
 		case devpack.StateForeign:
 			note = "  (not ours — left alone)"
+		default:
+			// Installed/Updated/Unchanged/Missing/Removed carry no extra
+			// annotation — the state name in the column already says it.
 		}
 		fmt.Printf("  %-26s %s%s\n", r.Name, r.State, note)
 	}
@@ -259,9 +265,12 @@ func registerMCPWithClaudeCode() error {
 		return fmt.Errorf("determining the watchtower binary path: %w", err)
 	}
 	if _, err := exec.LookPath("claude"); err != nil {
+		// The skills are already installed and useful on their own, and the
+		// user may be configuring a different client — report the command
+		// they'd need instead of failing the whole integrate step.
 		fmt.Println("\nclaude CLI not found. Register the MCP server yourself with:")
 		fmt.Printf("  claude mcp add watchtower -- %s mcp\n", bin)
-		return nil
+		return nil //nolint:nilerr
 	}
 	out, err := exec.Command("claude", "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
 	if err != nil {

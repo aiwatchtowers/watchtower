@@ -188,42 +188,52 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 		}
 		seen[dedupeKey] = true
 
-		// GetThreadReplies is parent-inclusive (its own doc comment, and its
-		// SQL matches ts = threadTS OR thread_ts = threadTS) and orders
-		// chronologically — so it already carries the anchor exactly once,
-		// in place. Prepending the anchor separately would duplicate it,
-		// out of order, at index 0.
-		msgs, err := database.GetThreadReplies(l.ChannelID, threadTS)
-		if err != nil {
-			// Degrade, don't fabricate: a thread rendered with only its
-			// anchor message is indistinguishable from "nobody replied" —
-			// the note is what tells the caller this shape is incomplete,
-			// not authoritative. The anchor is the one message we already
-			// know exists, so it's still worth surfacing alone.
-			notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", l.ChannelID, threadTS, err))
-			msgs = []db.Message{anchor}
-		}
-		if len(msgs) > taskContextMaxReplies {
-			msgs = msgs[:taskContextMaxReplies]
-		}
-
-		thread := taskThread{ChannelID: l.ChannelID}
-		if ch, err := database.GetChannelByID(l.ChannelID); err == nil && ch != nil {
-			thread.ChannelName = ch.Name
-		}
-		for _, m := range msgs {
-			name, err := database.UserNameByID(m.UserID)
-			if err != nil || name == "" {
-				name = m.UserID
-			}
-			people.add(name)
-			thread.Messages = append(thread.Messages, taskMessage{
-				Sender: name, Text: m.Text, TS: m.TS, Permalink: m.Permalink,
-			})
-		}
+		var thread taskThread
+		thread, notes = buildTaskThread(database, l.ChannelID, threadTS, anchor, people, notes)
 		out = append(out, thread)
 	}
 	return out, notes
+}
+
+// buildTaskThread renders one resolved anchor message into a taskThread: it
+// fetches the thread's replies, falls back to the anchor alone if that read
+// fails, caps the reply count, resolves the channel name, and records every
+// sender in people.
+func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Message, people *personSet, notes []string) (taskThread, []string) {
+	// GetThreadReplies is parent-inclusive (its own doc comment, and its
+	// SQL matches ts = threadTS OR thread_ts = threadTS) and orders
+	// chronologically — so it already carries the anchor exactly once,
+	// in place. Prepending the anchor separately would duplicate it,
+	// out of order, at index 0.
+	msgs, err := database.GetThreadReplies(channelID, threadTS)
+	if err != nil {
+		// Degrade, don't fabricate: a thread rendered with only its
+		// anchor message is indistinguishable from "nobody replied" —
+		// the note is what tells the caller this shape is incomplete,
+		// not authoritative. The anchor is the one message we already
+		// know exists, so it's still worth surfacing alone.
+		notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", channelID, threadTS, err))
+		msgs = []db.Message{anchor}
+	}
+	if len(msgs) > taskContextMaxReplies {
+		msgs = msgs[:taskContextMaxReplies]
+	}
+
+	thread := taskThread{ChannelID: channelID}
+	if ch, err := database.GetChannelByID(channelID); err == nil && ch != nil {
+		thread.ChannelName = ch.Name
+	}
+	for _, m := range msgs {
+		name, err := database.UserNameByID(m.UserID)
+		if err != nil || name == "" {
+			name = m.UserID
+		}
+		people.add(name)
+		thread.Messages = append(thread.Messages, taskMessage{
+			Sender: name, Text: m.Text, TS: m.TS, Permalink: m.Permalink,
+		})
+	}
+	return thread, notes
 }
 
 func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMeeting, []string) {

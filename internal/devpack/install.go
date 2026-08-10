@@ -86,6 +86,10 @@ func installSkill(skillsDir string, s Skill) (SkillStatus, error) {
 		if err := writeShippedDigest(dir, s.SHA256); err != nil {
 			return SkillStatus{}, err
 		}
+	default:
+		// Drifted/Foreign: someone else's content, left untouched (DEV-04).
+		// Missing/Removed never reach planFor's return here — they belong to
+		// Status/Remove's own bookkeeping. Either way, nothing to write.
 	}
 	return SkillStatus{Name: s.Name, State: state, Path: file}, nil
 }
