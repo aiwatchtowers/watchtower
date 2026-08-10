@@ -25,6 +25,7 @@ type expertsEnvelope struct {
 	} `json:"candidates"`
 	Weights   map[string]float64 `json:"weights"`
 	Unmatched []string           `json:"unmatched_emails,omitempty"`
+	Notes     []string           `json:"notes,omitempty"`
 }
 
 // seedExpertsFixture inserts a payments channel, two users (petya: heavy
@@ -123,6 +124,41 @@ func TestFindExpertsReportsUnmatchedEmails(t *testing.T) {
 	// The unmatchable address is reported, never silently dropped.
 	if len(env.Unmatched) != 1 || env.Unmatched[0] != "ghost@nowhere.invalid" {
 		t.Fatalf("expected the unmatched email reported, got %+v", env.Unmatched)
+	}
+}
+
+// TestFindExpertsDistinguishesLookupFailureFromUnmatched forces a genuine DB
+// failure on the email->user lookup (dropping the table the lookup depends
+// on, before the session flips the connection read-only) and asserts it is
+// reported as a note, never folded into unmatched_emails — the DEV-03
+// contract the watchtower-who-to-ask skill relies on: an address the tool
+// simply failed to check must not be reported as "not a Watchtower person".
+func TestFindExpertsDistinguishesLookupFailureFromUnmatched(t *testing.T) {
+	database := seedDB(t)
+	if _, err := database.Exec(`DROP TABLE users`); err != nil {
+		t.Fatalf("dropping users table: %v", err)
+	}
+	cs := newTestSession(t, database)
+
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "find_experts",
+		Arguments: map[string]any{"emails": []string{"ghost@nowhere.invalid"}},
+	})
+	if err != nil {
+		t.Fatalf("calling find_experts: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool error: %s", textContent(t, res))
+	}
+	var env expertsEnvelope
+	if err := json.Unmarshal([]byte(textContent(t, res)), &env); err != nil {
+		t.Fatalf("decoding result: %v", err)
+	}
+	if len(env.Unmatched) != 0 {
+		t.Fatalf("a lookup failure must not be reported as unmatched, got %+v", env.Unmatched)
+	}
+	if len(env.Notes) == 0 {
+		t.Fatalf("a lookup failure must surface as a note")
 	}
 }
 

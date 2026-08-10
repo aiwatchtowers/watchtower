@@ -256,34 +256,19 @@ func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMee
 func collectTaskDecisions(database *db.DB, key string, notes []string) ([]taskDecision, []string) {
 	// idea_mentions stores a bare issue key as the ref for source='jira'
 	// (see the consolidate prompt's mention shape in internal/prompts/defaults.go),
-	// and (source, ref) is indexed — so this is an exact lookup, not a search.
-	//
-	// Bounded N+1: at most 200 ideas × their mentions. The registry is
-	// owner-triaged and small; if it ever grows, replace this with a single
-	// join over idea_mentions(source, ref) — the index already exists.
-	ideas, err := database.ListIdeas(db.IdeaFilter{Limit: 200})
+	// and (source, ref) is indexed (migration 00051) — ListIdeasByMentionRef
+	// joins on it directly, so a decision is found regardless of how large
+	// the registry has grown.
+	ideas, err := database.ListIdeasByMentionRef("jira", key, taskContextMaxIdeas)
 	if err != nil {
 		return nil, append(notes, "registry unavailable: "+err.Error())
 	}
-	var out []taskDecision
-	for i := range ideas {
-		if len(out) >= taskContextMaxIdeas {
-			break
-		}
-		mentions, err := database.ListIdeaMentions(ideas[i].ID)
-		if err != nil {
-			notes = append(notes, fmt.Sprintf("mentions unavailable for idea %d: %v", ideas[i].ID, err))
-			continue
-		}
-		for _, m := range mentions {
-			if m.Source == "jira" && strings.EqualFold(m.Ref, key) {
-				out = append(out, taskDecision{
-					ID: ideas[i].ID, Kind: ideas[i].Kind, Title: ideas[i].Title,
-					Essence: ideas[i].Essence, Status: ideas[i].Status,
-				})
-				break
-			}
-		}
+	out := make([]taskDecision, 0, len(ideas))
+	for _, idea := range ideas {
+		out = append(out, taskDecision{
+			ID: idea.ID, Kind: idea.Kind, Title: idea.Title,
+			Essence: idea.Essence, Status: idea.Status,
+		})
 	}
 	if len(out) == 0 {
 		return nil, notes

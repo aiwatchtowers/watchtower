@@ -265,6 +265,40 @@ func (db *DB) ListIdeaMentions(ideaID int64) ([]IdeaMention, error) {
 	return out, rows.Err()
 }
 
+// ListIdeasByMentionRef returns the ideas that have at least one mention
+// with the given source and ref, newest-updated first, capped at limit.
+// Backed by idx_idea_mentions_ref (migration 00051): an indexed join over
+// idea_mentions(source, ref), so a match is found regardless of how large
+// the registry has grown — unlike paging through ListIdeas and scanning each
+// page's mentions, which misses a match whose idea falls past the page cap.
+func (db *DB) ListIdeasByMentionRef(source, ref string, limit int) ([]Idea, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	query := `SELECT DISTINCT i.id, i.kind, i.title, i.essence, i.status, i.source, i.snooze_until,
+			i.needs_review, i.review_reason, i.similar_to_id, i.merged_into_id, i.superseded_by_id,
+			i.converted_target_id, i.owner_rating, i.rating_comment, i.last_mention_at, i.created_at, i.updated_at
+		FROM ideas i
+		JOIN idea_mentions m ON m.idea_id = i.id
+		WHERE m.source = ? AND m.ref = ?
+		ORDER BY i.updated_at DESC LIMIT ?`
+	rows, err := db.Query(query, source, ref, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing ideas by mention ref: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Idea
+	for rows.Next() {
+		idea, err := scanIdea(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning idea: %w", err)
+		}
+		out = append(out, *idea)
+	}
+	return out, rows.Err()
+}
+
 // ideasForPromptLimit caps the registry section of the consolidator prompt.
 // The WHERE clause alone is unbounded — every still-open idea qualifies
 // forever — so a long-lived registry would grow the prompt without limit.
@@ -615,7 +649,7 @@ func (db *DB) GetJiraCommentsByIssueKey(issueKey string, limit int) ([]JiraComme
 	rows, err := db.Query(`SELECT account_id, issue_key, id, author, author_account_id,
 			body_text, created_at, updated_at
 		FROM jira_comments WHERE issue_key = ?
-		ORDER BY updated_at ASC, id ASC LIMIT ?`, issueKey, limit)
+		ORDER BY created_at ASC, id ASC LIMIT ?`, issueKey, limit)
 	if err != nil {
 		return nil, fmt.Errorf("getting comments for %s: %w", issueKey, err)
 	}

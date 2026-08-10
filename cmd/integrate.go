@@ -276,9 +276,17 @@ func registerMCPWithClaudeCode() error {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			// Most commonly: already registered. Report, do not fail — the
-			// user's existing registration is theirs to keep.
-			fmt.Printf("\nMCP registration reported: %s", out)
+			// claude mcp add's exit code and output do not distinguish
+			// "already registered" from a malformed invocation, a corrupted
+			// config, or a permissions problem — so say plainly that this
+			// did NOT succeed rather than guessing which one it was. The
+			// skill pack install above already succeeded and the message
+			// below is actionable, so the command still exits 0 instead of
+			// failing the whole invocation over the MCP half alone — but
+			// nothing here reads as success.
+			fmt.Printf("\nMCP registration did not succeed (%v):\n%s\n", err, out)
+			fmt.Println("The most common cause is that watchtower is already registered. Check with:")
+			fmt.Println("  claude mcp list")
 			fmt.Printf("If it is not registered, run:\n  claude mcp add watchtower -- %s mcp\n", bin)
 			return nil
 		}

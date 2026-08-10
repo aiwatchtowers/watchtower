@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -99,7 +101,7 @@ func registerExperts(s *mcpsdk.Server, database *db.DB) {
 			result.Notes = collectLinkedThreadEvidence(database, args.IssueKey, acc, result.Notes)
 		}
 		if len(args.Emails) > 0 {
-			result.UnmatchedEmails = collectCodeEvidence(database, args.Emails, acc)
+			result.UnmatchedEmails, result.Notes = collectCodeEvidence(database, args.Emails, acc, result.Notes)
 		}
 
 		result.Candidates = acc.rank(database, limit)
@@ -342,25 +344,47 @@ func mustReplies(database *db.DB, channelID, threadTS string) ([]db.Message, err
 	return replies, nil
 }
 
-// collectCodeEvidence resolves email addresses (typically git commit authors)
-// to people. Matching is case-folded because git authorship carries mixed
-// case; an address that resolves to nobody is RETURNED as unmatched, never
-// dropped, so the caller can see the code signal was incomplete.
-func collectCodeEvidence(database *db.DB, emails []string, acc *expertAccumulator) []string {
+// resolveEmailToUserID resolves one email to a Slack user id via
+// GetUserByEmailFold then GetSlackUserIDByEmail. failNote is non-empty only
+// on a genuine DB failure — GetUserByEmailFold reports not-found as (nil,
+// nil), and GetSlackUserIDByEmail reports it as sql.ErrNoRows, so errors.Is
+// is what separates a real failure from an ordinary "nobody has this email"
+// (DEV-03): the caller must not fold a failure into "unmatched", because the
+// shipped watchtower-who-to-ask skill tells the caller to report
+// unmatched_emails as "these authors could not be resolved to people", which
+// is false for an address we simply failed to check.
+func resolveEmailToUserID(database *db.DB, raw string) (userID, failNote string) {
+	email := strings.ToLower(strings.TrimSpace(raw))
+	u, err := database.GetUserByEmailFold(email)
+	if err != nil {
+		return "", fmt.Sprintf("user lookup unavailable for %s: %v", raw, err)
+	}
+	if u != nil {
+		return u.ID, ""
+	}
+	id, err := database.GetSlackUserIDByEmail(email)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Sprintf("slack user lookup unavailable for %s: %v", raw, err)
+	}
+	return id, ""
+}
+
+// collectCodeEvidence resolves email addresses (typically git commit
+// authors) to people. An address that resolves to nobody is RETURNED as
+// unmatched, never dropped, so the caller can see the code signal was
+// incomplete; an address whose lookup genuinely failed is noted instead (see
+// resolveEmailToUserID) and left out of both.
+func collectCodeEvidence(database *db.DB, emails []string, acc *expertAccumulator, notes []string) ([]string, []string) {
 	var unmatched []string
 	for _, raw := range emails {
 		email := strings.ToLower(strings.TrimSpace(raw))
 		if email == "" {
 			continue
 		}
-		userID := ""
-		if u, err := database.GetUserByEmailFold(email); err == nil && u != nil {
-			userID = u.ID
-		}
-		if userID == "" {
-			if id, err := database.GetSlackUserIDByEmail(email); err == nil && id != "" {
-				userID = id
-			}
+		userID, failNote := resolveEmailToUserID(database, raw)
+		if failNote != "" {
+			notes = append(notes, failNote)
+			continue
 		}
 		if userID == "" {
 			unmatched = append(unmatched, raw)
@@ -370,5 +394,5 @@ func collectCodeEvidence(database *db.DB, emails []string, acc *expertAccumulato
 			Kind: "code", Detail: "authored code as " + email, Count: 1, Ref: email,
 		}, 0)
 	}
-	return unmatched
+	return unmatched, notes
 }
