@@ -867,6 +867,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         await center.startRecording(eventID: nil, title: "No live", config: config)
         recorder.emitLive([Float](repeating: 0, count: 3200))
         for _ in 0..<12 { await Task.yield() }
+        XCTAssertFalse(center.captureLiveEnabled, "the capture snapshots the disabled toggle")
         XCTAssertEqual(center.liveEngineState, .off, "no live pass may start while disabled")
         XCTAssertEqual(engineLoads, 0, "no engine loads during capture")
         XCTAssertTrue(center.liveChunks.isEmpty)
@@ -878,6 +879,85 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(decodeCalls, 1, "the transcript comes from the file, not a live pass")
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertNil(center.pendingAudioURL)
+    }
+
+    func testLiveDisabledRecordingOverDrainingOrphanTailDoesNotAdoptIt() async throws {
+        // The scenario `consumeLivePassOwnership`'s `captureLiveEnabled` term
+        // guards: a live-DISABLED recording runs while a PREVIOUS recording's
+        // stop-error orphan tail still holds the engine slot. The disabled
+        // recording's Stop must not adopt the orphan's live output nor its
+        // engine — its job loads a fresh engine and batch-decodes the file.
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        let gateEngine = GateEngine(texts: ["stale-first-recording"])
+        let secondEngine = ScriptedEngine(texts: ["fresh-second-recording"])
+        var engineFactoryCalls = 0
+        var recorderFactoryCalls = 0
+        var decodeCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: {
+                recorderFactoryCalls += 1
+                return recorderFactoryCalls == 1 ? recorder1 : recorder2
+            },
+            engineFactory: { _ in
+                engineFactoryCalls += 1
+                return engineFactoryCalls == 1 ? TestTranscriber(gateEngine) : TestTranscriber(secondEngine)
+            },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let liveConfig = threeWindowConfig()
+
+        // Recording 1 (live ON): park its live pass inside the gate engine,
+        // then error the stop — the orphan tail keeps draining.
+        await center.startRecording(eventID: nil, title: "First", config: liveConfig)
+        recorder1.emitLive([Float](repeating: 0, count: 3200))
+        var entered = gateEngine.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        recorder1.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: liveConfig)
+
+        // Recording 2 (live OFF) starts over the draining orphan.
+        var config = liveConfig
+        config.liveTranscription = false
+        let audio2 = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio2)
+            removeSidecars(audio2)
+        }
+        recorder2.stopResult = RecordingResult(audioURL: audio2, durationSec: 1)
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        XCTAssertEqual(center.liveEngineState, .off)
+
+        // Stop recording 2 while the orphan is still parked; its job waits on
+        // the engine slot, so release the gate concurrently.
+        let stopTask = Task { await center.stopAndProcess(config: config) }
+        for _ in 0..<12 { await Task.yield() }
+        gateEngine.release()
+        await stopTask.value
+
+        // Recording 1's failed job stays in the queue as retriable, so the
+        // legacy head-of-queue `phase` still reads .failed — assert on the
+        // second recording's own outcome instead.
+        XCTAssertEqual(runner.invocations.count, 1, "recording 2 saved exactly once")
+        XCTAssertEqual(decodeCalls, 1, "the disabled recording batch-decodes its own file")
+        XCTAssertEqual(engineFactoryCalls, 2,
+                       "the job loads a fresh engine — adopting the orphan's would mean Stop consumed a live pass it never owned")
+        XCTAssertEqual(center.liveEngineState, .off,
+                       "no parked live start may fire when the orphan frees the slot")
+        let savedText = runner.invocations.first.flatMap { inv in
+            inv.firstIndex(of: "--transcript-file").flatMap { idx in
+                inv.indices.contains(idx + 1) ? try? String(contentsOfFile: inv[idx + 1], encoding: .utf8) : nil
+            }
+        }
+        // nil = the temp file was already cleaned up post-save; only an actual
+        // read-back containing the orphan's text is a failure.
+        XCTAssertNotEqual(savedText?.contains("stale-first-recording"), true,
+                          "the orphan's live text must never reach the second recording's save")
     }
 
     func testLiveChunksAccumulateAndSurviveViewLifetime() async throws {

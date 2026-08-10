@@ -27,15 +27,16 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
-    @AppStorage("transcription.liveTranscription") private var transcriptionLive = true
 
-    /// Whether the currently-selected engine can produce a live transcript at
-    /// all — and the Settings toggle wants one. When it cannot (or live is
-    /// off), the live-chunks panel/chevron affordance never makes sense
-    /// (there is nothing to expand into) — the recording shows only the plain
-    /// capsule, and the transcript appears after Stop.
-    private var activeProviderSupportsLive: Bool {
-        transcriptionLive
+    /// Whether the active capture has a live transcript to offer: the engine
+    /// can produce one AND the capture opted in — the Center's start-time
+    /// snapshot (`captureLiveEnabled`), never a live Settings read, so a
+    /// mid-recording toggle can neither hide a pass that is still running nor
+    /// dangle "Listening…" over a pass that was never started. When false,
+    /// the recording shows only the plain capsule and the transcript appears
+    /// after Stop.
+    private func showsLiveAffordance(_ center: MeetingRecorderCenter) -> Bool {
+        center.captureLiveEnabled
             && TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider).supportsLive
     }
 
@@ -121,7 +122,7 @@ struct RecordingIndicatorView: View {
 
     @ViewBuilder
     private func recordingView(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {
-        if activeProviderSupportsLive && expanded {
+        if showsLiveAffordance(center) && expanded {
             expandedPanel(center, startedAt: startedAt)
         } else {
             recordingCapsule(center, startedAt: startedAt)
@@ -135,7 +136,7 @@ struct RecordingIndicatorView: View {
                 Text(Self.elapsed(from: startedAt, to: context.date))
                     .font(.callout.monospacedDigit())
             }
-            if activeProviderSupportsLive {
+            if showsLiveAffordance(center) {
                 liveEngineIndicator(center.liveEngineState)
                 Button { expanded = true } label: { Image(systemName: "chevron.up") }
                     .buttonStyle(.plain)

@@ -23,6 +23,11 @@ final class IdeasViewModel {
     /// SB7: moved off the sheet's own @State so the elapsed-timer display
     /// survives dismiss/reopen too, not just isBackfilling/backfillSummary.
     var backfillStartedAt: Date?
+    /// The last requested mining window — seeds the sheet's date state on
+    /// reopen, so a sheet opened mid-run (or right after one) shows the range
+    /// that is actually mining instead of re-initialised defaults.
+    var backfillFrom: Date?
+    var backfillTo: Date?
 
     /// Master-detail selection. Lives here — the VM is AppState-owned — so
     /// selection survives tab/sidebar navigation.
@@ -267,6 +272,8 @@ final class IdeasViewModel {
     /// synchronous guard already covers the race between the two guards).
     func startBackfillTask(from: Date, to: Date) {
         guard !isBackfilling else { return }
+        backfillFrom = from
+        backfillTo = to
         backfillTask = Task { [weak self] in
             await self?.startBackfill(from: from, to: to)
             self?.backfillTask = nil

@@ -258,12 +258,27 @@ struct CalendarEventsView: View {
     /// or the LAST section when the window holds only history.
     private func scrollToToday(_ proxy: ScrollViewProxy) {
         let today = Calendar.current.startOfDay(for: Date())
-        if sections.contains(where: { $0.id == today }) {
+        switch Self.initialScrollTarget(in: sections, today: today) {
+        case .nowLine:
             proxy.scrollTo(NowLine.nowLineID, anchor: .center)
-            return
+        case .day(let target):
+            proxy.scrollTo(target, anchor: .top)
+        case nil:
+            break
         }
-        guard let target = Self.todayScrollTarget(in: sections, today: today) else { return }
-        proxy.scrollTo(target, anchor: .top)
+    }
+
+    /// Where the one-shot landing goes (pure — unit-tested directly, the
+    /// `todayScrollTarget` pattern): the now-line when today has a section,
+    /// else the `todayScrollTarget` fallback day, nil on an empty list.
+    enum InitialScrollTarget: Equatable {
+        case nowLine
+        case day(Date)
+    }
+
+    static func initialScrollTarget(in sections: [MeetingDaySection], today: Date) -> InitialScrollTarget? {
+        if sections.contains(where: { $0.id == today }) { return .nowLine }
+        return todayScrollTarget(in: sections, today: today).map { .day($0) }
     }
 
     /// Pure target selection for the Today landing (testable without a view):

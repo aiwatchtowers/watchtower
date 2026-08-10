@@ -284,8 +284,10 @@ final class MeetingRecorderCenter {
     /// Whether the active capture wants a live pass at all
     /// (`config.liveTranscription` snapshotted at start). False means Stop must
     /// neither await nor cancel `liveTask` — one still standing belongs to a
-    /// PREVIOUS recording's draining tail, never to this capture.
-    private var captureLiveEnabled = true
+    /// PREVIOUS recording's draining tail, never to this capture. Readable so
+    /// the indicator gates the live affordance on what THIS capture actually
+    /// started with, not on a live Settings read a mid-recording toggle flips.
+    private(set) var captureLiveEnabled = true
 
     /// The job the queue is currently working; nil when the queue is parked.
     /// Readable so the indicator stack can promote the pill of the job that is
@@ -633,7 +635,10 @@ final class MeetingRecorderCenter {
             captureLiveEnabled = config.liveTranscription
             if !config.liveTranscription {
                 // Live pass disabled in Settings: capture only, the batch path
-                // transcribes from the file after Stop.
+                // transcribes from the file after Stop. The generation bump
+                // fences a previous recording's still-draining pass out of the
+                // just-cleared list (the `startLivePass` precedent).
+                liveGeneration += 1
                 liveChunks = []
                 liveEngineState = .off
             } else if activeJobID == nil, liveTask == nil {

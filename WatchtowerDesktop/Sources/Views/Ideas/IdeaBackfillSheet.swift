@@ -14,15 +14,23 @@ struct IdeaBackfillSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var fromDate: Date
-    @State private var toDate = Date()
+    @State private var toDate: Date
+    /// Mirrors the picker's half-picked first click; Start is held while set,
+    /// so a highlighted-but-uncommitted selection can't silently submit the
+    /// previous range.
+    @State private var pendingAnchor = false
 
     private enum Preset {
         case twoWeeks, month, quarter
     }
 
+    /// Seeds from the VM's last requested window when one exists — a sheet
+    /// reopened mid-run (via the mining badge) must show the range that is
+    /// actually mining, not re-initialised defaults.
     init(vm: IdeasViewModel) {
         self.vm = vm
-        _fromDate = State(initialValue: Self.date(monthsAgo: 0, weeksAgo: 2))
+        _fromDate = State(initialValue: vm.backfillFrom ?? Self.date(monthsAgo: 0, weeksAgo: 2))
+        _toDate = State(initialValue: vm.backfillTo ?? Date())
     }
 
     var body: some View {
@@ -67,8 +75,11 @@ struct IdeaBackfillSheet: View {
                 .font(.callout)
                 .fontWeight(.medium)
 
-            CalendarRangePicker(fromDate: $fromDate, toDate: $toDate, isDisabled: vm.isBackfilling)
-                .frame(maxWidth: .infinity)
+            CalendarRangePicker(
+                fromDate: $fromDate, toDate: $toDate,
+                hasPendingAnchor: $pendingAnchor, isDisabled: vm.isBackfilling
+            )
+            .frame(maxWidth: .infinity)
 
             runningIndicator
             resultText
@@ -126,7 +137,10 @@ struct IdeaBackfillSheet: View {
             }
             Button("Start", action: start)
                 .buttonStyle(.borderedProminent)
-                .disabled(vm.isBackfilling)
+                // pendingAnchor: a half-picked range hasn't reached the
+                // bindings yet — submitting now would silently mine the OLD
+                // range while the user sees their new click highlighted.
+                .disabled(vm.isBackfilling || pendingAnchor)
         }
         .padding(.horizontal)
         .padding(.vertical, 12)

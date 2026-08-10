@@ -55,10 +55,58 @@ final class CalendarRangePickerTests: XCTestCase {
         XCTAssertTrue(cal.isDate(normalized, inSameDayAs: day))
     }
 
-    func testNormalizedClampsTodayToNow() {
-        // Degenerate-but-valid input: today, when noon may still be ahead.
-        let normalized = CalendarRangePicker.normalized(Date(), calendar: .current)
-        XCTAssertLessThanOrEqual(normalized, Date())
+    /// Today picked before local noon must still anchor to noon — clamping
+    /// to now would roll the UTC-formatted day backwards in positive-offset
+    /// zones (the formatter is UTC-pinned and day-granular, so a same-day
+    /// instant a few hours ahead of now is harmless).
+    func testNormalizedAnchorsTodayToNoonEvenBeforeNoon() {
+        let cal = Calendar.current
+        let normalized = CalendarRangePicker.normalized(Date(), calendar: cal)
+        XCTAssertEqual(cal.component(.hour, from: normalized), 12)
+        XCTAssertTrue(cal.isDate(normalized, inSameDayAs: Date()))
+    }
+
+    func testCommitRangeOrdersEitherClickOrder() throws {
+        let cal = try gregorian(firstWeekday: 2)
+        let early = try date(2026, 8, 3, calendar: cal)
+        let late = try date(2026, 8, 9, calendar: cal)
+        let forward = CalendarRangePicker.commitRange(anchor: early, day: late, calendar: cal)
+        let reverse = CalendarRangePicker.commitRange(anchor: late, day: early, calendar: cal)
+        XCTAssertEqual(forward.from, reverse.from)
+        XCTAssertEqual(forward.to, reverse.to)
+        XCTAssertTrue(cal.isDate(forward.from, inSameDayAs: early))
+        XCTAssertTrue(cal.isDate(forward.to, inSameDayAs: late))
+        XCTAssertLessThanOrEqual(forward.from, forward.to)
+    }
+
+    func testCommitRangeSingleDayPick() throws {
+        // Degenerate-but-valid: both clicks on the same day → a one-day range.
+        let cal = try gregorian(firstWeekday: 2)
+        let day = try date(2026, 8, 5, calendar: cal)
+        let range = CalendarRangePicker.commitRange(anchor: day, day: day, calendar: cal)
+        XCTAssertEqual(range.from, range.to)
+    }
+
+    func testMonthSnapStaysWhenAnEndpointIsVisible() throws {
+        let cal = try gregorian(firstWeekday: 2)
+        let displayed = try date(2026, 8, 1, calendar: cal)
+        // to-endpoint in the displayed month → no jump.
+        XCTAssertNil(CalendarRangePicker.monthSnap(
+            displayed: displayed,
+            from: try date(2026, 7, 10, calendar: cal),
+            to: try date(2026, 8, 9, calendar: cal),
+            calendar: cal))
+    }
+
+    func testMonthSnapJumpsToRangeEndWhenBothEndpointsOffScreen() throws {
+        let cal = try gregorian(firstWeekday: 2)
+        let displayed = try date(2026, 4, 1, calendar: cal)
+        let snapped = CalendarRangePicker.monthSnap(
+            displayed: displayed,
+            from: try date(2026, 7, 10, calendar: cal),
+            to: try date(2026, 8, 9, calendar: cal),
+            calendar: cal)
+        XCTAssertEqual(snapped, try date(2026, 8, 1, calendar: cal))
     }
 
     func testMonthStart() throws {

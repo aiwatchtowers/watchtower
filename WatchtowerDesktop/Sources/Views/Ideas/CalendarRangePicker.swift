@@ -10,18 +10,30 @@ import SwiftUI
 struct CalendarRangePicker: View {
     @Binding var fromDate: Date
     @Binding var toDate: Date
+    /// Mirrors "a first click is waiting for its second" out to the host, so
+    /// it can hold its submit action while the visible selection is not yet
+    /// applied to the bindings. `.constant(false)` when the host doesn't care.
+    @Binding var hasPendingAnchor: Bool
     let isDisabled: Bool
 
     /// First day of the month currently shown.
     @State private var displayedMonth: Date
     /// First click of an in-progress range; committed by the second click.
-    @State private var anchor: Date?
+    @State private var anchor: Date? {
+        didSet { hasPendingAnchor = anchor != nil }
+    }
 
     private let calendar = Calendar.current
 
-    init(fromDate: Binding<Date>, toDate: Binding<Date>, isDisabled: Bool = false) {
+    init(
+        fromDate: Binding<Date>,
+        toDate: Binding<Date>,
+        hasPendingAnchor: Binding<Bool> = .constant(false),
+        isDisabled: Bool = false
+    ) {
         _fromDate = fromDate
         _toDate = toDate
+        _hasPendingAnchor = hasPendingAnchor
         self.isDisabled = isDisabled
         _displayedMonth = State(initialValue: Self.monthStart(of: toDate.wrappedValue, calendar: .current))
     }
@@ -35,9 +47,19 @@ struct CalendarRangePicker: View {
         .frame(width: 7 * Self.cellWidth)
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.5 : 1)
-        // A preset (or any outside write) supersedes a half-picked range.
-        .onChange(of: fromDate) { anchor = nil }
-        .onChange(of: toDate) { anchor = nil }
+        // A preset (or any outside write) supersedes a half-picked range and
+        // re-centers the grid when the new range is entirely off-screen (an
+        // internal commit never is — the clicked day is in the shown month).
+        .onChange(of: fromDate) { snapToExternalRange() }
+        .onChange(of: toDate) { snapToExternalRange() }
+    }
+
+    private func snapToExternalRange() {
+        anchor = nil
+        if let snapped = Self.monthSnap(
+            displayed: displayedMonth, from: fromDate, to: toDate, calendar: calendar) {
+            displayedMonth = snapped
+        }
     }
 
     // MARK: - Pieces
@@ -133,8 +155,9 @@ struct CalendarRangePicker: View {
             // Clear BEFORE writing the bindings — their onChange fires
             // synchronously and must not cancel this very commit.
             anchor = nil
-            fromDate = Self.normalized(min(first, day), calendar: calendar)
-            toDate = Self.normalized(max(first, day), calendar: calendar)
+            let range = Self.commitRange(anchor: first, day: day, calendar: calendar)
+            fromDate = range.from
+            toDate = range.to
         } else {
             anchor = day
         }
@@ -151,13 +174,30 @@ struct CalendarRangePicker: View {
 
     // MARK: - Pure helpers (unit-tested directly)
 
-    /// Noon-anchored (a local-noon instant maps to the same calendar day in
-    /// UTC for any |offset| < 12h — the VM's `--from`/`--to` formatter is
-    /// UTC-pinned), clamped to now so picking today never produces a
-    /// future-of-now bound.
+    /// The committed range for a two-click pick, either click order.
+    /// Pure — unit-tested directly.
+    static func commitRange(anchor: Date, day: Date, calendar: Calendar) -> (from: Date, to: Date) {
+        (from: normalized(min(anchor, day), calendar: calendar),
+         to: normalized(max(anchor, day), calendar: calendar))
+    }
+
+    /// Noon-anchored: a local-noon instant maps to the same calendar day in
+    /// UTC for any |offset| < 12h (the VM's `--from`/`--to` formatter is
+    /// UTC-pinned and day-granular, so an instant a few hours ahead of now is
+    /// harmless — clamping to `Date()` would reintroduce the day-roll for
+    /// "today picked before local noon" in positive-offset zones).
     static func normalized(_ day: Date, calendar: Calendar) -> Date {
-        let noon = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: day) ?? day
-        return min(noon, Date())
+        calendar.date(bySettingHour: 12, minute: 0, second: 0, of: day) ?? day
+    }
+
+    /// Where the grid should jump after an external range write: the range's
+    /// end month when the current month shows neither endpoint, nil to stay
+    /// put. Pure — unit-tested directly.
+    static func monthSnap(displayed: Date, from: Date, to: Date, calendar: Calendar) -> Date? {
+        let showsFrom = calendar.isDate(from, equalTo: displayed, toGranularity: .month)
+        let showsTo = calendar.isDate(to, equalTo: displayed, toGranularity: .month)
+        guard !showsFrom, !showsTo else { return nil }
+        return monthStart(of: to, calendar: calendar)
     }
 
     static func monthStart(of date: Date, calendar: Calendar) -> Date {
