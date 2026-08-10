@@ -33,7 +33,7 @@ struct IdeaBackfillSheet: View {
             Divider()
             sheetFooter
         }
-        .frame(width: 440, height: 340)
+        .frame(width: 440, height: 520)
     }
 
     private var sheetHeader: some View {
@@ -63,10 +63,12 @@ struct IdeaBackfillSheet: View {
             .buttonStyle(.bordered)
             .disabled(vm.isBackfilling)
 
-            DatePicker("From", selection: $fromDate, in: ...toDate, displayedComponents: .date)
-                .disabled(vm.isBackfilling)
-            DatePicker("To", selection: $toDate, in: ...Date(), displayedComponents: .date)
-                .disabled(vm.isBackfilling)
+            Text("\(Self.rangeFormatter.string(from: fromDate)) — \(Self.rangeFormatter.string(from: toDate))")
+                .font(.callout)
+                .fontWeight(.medium)
+
+            CalendarRangePicker(fromDate: $fromDate, toDate: $toDate, isDisabled: vm.isBackfilling)
+                .frame(maxWidth: .infinity)
 
             runningIndicator
             resultText
@@ -133,8 +135,11 @@ struct IdeaBackfillSheet: View {
     /// The VM owns Task creation now (SB4) — it retains the Task so
     /// cancelBackfill() has something to cancel, and the run keeps going
     /// even if this sheet is dismissed (state lives on the VM either way).
+    /// The sheet closes right away: the run shows as the header badge in
+    /// `IdeasView` (click = back here), so mining never blocks the app.
     private func start() {
         vm.startBackfillTask(from: fromDate, to: toDate)
+        dismiss()
     }
 
     private func apply(_ preset: Preset) {
@@ -157,7 +162,14 @@ struct IdeaBackfillSheet: View {
         return calendar.date(byAdding: .weekOfYear, value: -weeksAgo, to: afterMonths) ?? afterMonths
     }
 
-    private static func elapsedString(from start: Date, to end: Date) -> String {
+    private static let rangeFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .medium
+        return fmt
+    }()
+
+    /// Also drives the `IdeasView` header badge — internal, not private.
+    static func elapsedString(from start: Date, to end: Date) -> String {
         let seconds = max(0, Int(end.timeIntervalSince(start)))
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }

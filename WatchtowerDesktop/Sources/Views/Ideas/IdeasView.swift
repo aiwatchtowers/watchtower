@@ -100,6 +100,9 @@ struct IdeasView: View {
                     .font(.title2)
                     .fontWeight(.bold)
                 Spacer()
+                if vm.isBackfilling {
+                    miningBadge
+                }
                 Button {
                     showBackfillSheet = true
                 } label: {
@@ -158,6 +161,36 @@ struct IdeasView: View {
         // firing it per keystroke reloads the whole screen on every letter.
         .onChange(of: vm.searchText) { debounceSearch() }
         .onDisappear { searchDebounceTask?.cancel() }
+    }
+
+    /// In-flight backfill pill: the sheet dismisses on Start so mining never
+    /// blocks the app — this is the run's always-visible surface. Click =
+    /// back into the sheet (progress, result, Cancel).
+    private var miningBadge: some View {
+        Button {
+            showBackfillSheet = true
+        } label: {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                Text("Mining…")
+                    .font(.caption)
+                if let startedAt = vm.backfillStartedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(IdeaBackfillSheet.elapsedString(from: startedAt, to: context.date))
+                            .font(.caption)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.accentColor.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Idea mining is running — click for details")
     }
 
     private func debounceSearch() {
@@ -247,6 +280,13 @@ struct IdeasView: View {
                 .buttonStyle(.bordered)
             }
             .padding(.top, 4)
+            // The empty state replaces filterBar wholesale, and a fresh
+            // install's very first backfill runs exactly here — without this
+            // the dismissed sheet leaves no trace of the run.
+            if vm.isBackfilling {
+                miningBadge
+                    .padding(.top, 8)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
