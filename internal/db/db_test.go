@@ -1315,3 +1315,54 @@ func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 }
+
+// TestTranscriptsFTSBackfillIndexesPreExistingTranscripts proves the one-shot
+// backfill statement at the tail of 00052 — the line every installation that
+// predates this migration actually depends on, since transcripts have shipped
+// since v74 and every historical meeting is only searchable through that
+// single INSERT ... SELECT. TestTranscriptsFTSIndexesAndTracksRows above only
+// exercises the AFTER INSERT/UPDATE/DELETE triggers on rows written after
+// transcripts_fts already exists; it never runs against a database that had
+// transcripts BEFORE the migration, so it cannot catch a wrong column order
+// or a wrong predicate in the backfill SELECT.
+func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcripts-fts-backfill.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+
+	// Roll back to just before 00052: meeting_transcripts exists (since
+	// 00020) but transcripts_fts and its triggers do not yet, matching a
+	// pre-migration installation.
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 51))
+
+	res, err := d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Roadmap sync", "we decided to postpone the payments migration")
+	require.NoError(t, err)
+	withText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	res, err = d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Empty one", "")
+	require.NoError(t, err)
+	withoutText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	// Apply 00052: creates transcripts_fts + triggers, then runs the backfill
+	// against the two rows seeded above.
+	require.NoError(t, goose.UpTo(d.DB, "migrations", 52))
+
+	var got int64
+	err = d.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err, "the pre-migration transcript must be findable through transcripts_fts after the backfill")
+	assert.Equal(t, withText, got)
+
+	var n int
+	err = d.QueryRow(`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, withoutText).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "the empty-text transcript must not be backfilled into transcripts_fts")
+}
