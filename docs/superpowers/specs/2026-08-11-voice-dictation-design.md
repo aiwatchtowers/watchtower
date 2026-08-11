@@ -53,7 +53,11 @@ CLI prompt.
 
 ### Transcription path
 
-Reuses the existing provider stack and the Settings engine/model choice:
+Reuses the existing provider stack and the Settings engine/model choice, with a
+dictation-tuned config: `TranscriptionConfig.fromDefaults` overridden with
+`windowSec = 10` (the meeting default of 30 s is too laggy for a live dictation
+preview) and `diarization = false`; the `transcription.liveTranscription` meeting
+toggle is not consulted — dictation live-ness is decided by the provider alone.
 
 - Live-capable provider (WhisperKit via `StreamingTranscriber`, Qwen3 via its own
   windower loop): raw text streams into the field window by window while speaking.
@@ -132,7 +136,8 @@ next to a text field. Behavior:
    Accessibility permission — no TCC prompt; an `NSEvent` global monitor would
    trigger one, which is a P0 for this project). A small floating panel shows the
    live transcript; on stop the cleaned result is inserted directly into the ideas
-   registry via `IdeaQueries` (the manual-create Swift path, `status='proposed'`),
+   registry via `IdeaQueries.createManual` (the existing manual-create Swift path:
+   `status='active'`, `source='owner'`, one `idea_mentions` provenance row),
    with a confirmation toast linking to the Ideas tab.
 
 ## Edge cases
