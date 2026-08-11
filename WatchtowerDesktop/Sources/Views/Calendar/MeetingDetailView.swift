@@ -45,9 +45,25 @@ struct MeetingDetailView: View {
 
     // MARK: - Pure helpers (testable without mounting a view)
 
-    /// Record affordance must not render for a meeting that has already ended.
-    static func showsRecordButton(for event: CalendarEvent, now: Date) -> Bool {
-        event.endDate > now
+    /// How early before an event's start its Record affordance appears.
+    /// Recording starts capturing NOW and links the audio to THIS event, so a
+    /// button on a far-future event silently mislabels whatever meeting is
+    /// actually happening (a QA-sync recording once landed on the next
+    /// meeting's event this way). 10 minutes comfortably covers the
+    /// legitimate "press Record a minute early" flow.
+    static let recordButtonEarlyGrace: TimeInterval = 10 * 60
+
+    /// Record affordance renders only while recording could plausibly capture
+    /// this event: from `recordButtonEarlyGrace` before start until the end.
+    /// `recordingEventID` (the Center's current capture target, nil when not
+    /// capturing) keeps the affordance — which doubles as the Stop control —
+    /// visible for the event being recorded even if a reschedule moves it out
+    /// of the window mid-capture: Stop must never disappear.
+    static func showsRecordButton(
+        for event: CalendarEvent, now: Date, recordingEventID: String? = nil
+    ) -> Bool {
+        if let recordingEventID, recordingEventID == event.id { return true }
+        return now >= event.startDate - recordButtonEarlyGrace && event.endDate > now
     }
 
     /// Whether the collapsed 3-line description preview hides content, i.e.
@@ -161,8 +177,25 @@ struct MeetingDetailView: View {
                     joinButton(event)
                 }
 
-                if Self.showsRecordButton(for: event, now: Date()) {
-                    MeetingRecordButton(eventID: event.id, title: event.title)
+                // The TimelineView keeps the gate live for a mounted pane: a
+                // pane opened before the pre-start grace arms the button when
+                // the window opens, and a pane left open past the end drops
+                // it — without it, the clock is sampled once per render and
+                // the affordance goes stale in whichever direction until an
+                // unrelated re-render. `.everyMinute` (the now-line
+                // precedent, minute-granular — immaterial against a 10-min
+                // grace) is deliberate: an `.explicit` schedule is inert when
+                // all its entries are in the future, and its `context.date`
+                // is the supplied entry rather than "now" — so the schedule
+                // is a re-render TRIGGER only and the gate reads `Date()`.
+                TimelineView(.everyMinute) { _ in
+                    let center = appState.meetingRecorderCenter
+                    if Self.showsRecordButton(
+                        for: event, now: Date(),
+                        recordingEventID: center.isCapturing ? center.currentEventID : nil
+                    ) {
+                        MeetingRecordButton(eventID: event.id, title: event.title)
+                    }
                 }
 
                 if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
