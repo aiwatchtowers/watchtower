@@ -63,6 +63,18 @@ final class MeetingRecorderCenter {
         case recording(startedAt: Date)
     }
 
+    /// A loaded engine together with the provider+model identity (`engineKey()`)
+    /// it was loaded FOR, read at the load site and carried from there to the
+    /// warm slot. The two travel as one value precisely because they must not
+    /// be re-derived later: Settings can switch provider/model while a job is
+    /// transcribing, and stamping the finished engine with the key of the
+    /// moment it happened to finish would park it under an identity it does
+    /// not have — the next recording would then be served the wrong model.
+    struct LoadedEngine {
+        let transcriber: Transcriber
+        let key: String
+    }
+
     /// One finished recording's post-processing run: queued behind whatever the
     /// queue is already working, then transcribed → diarized → saved.
     struct ProcessingJob: Identifiable {
@@ -89,9 +101,10 @@ final class MeetingRecorderCenter {
         /// The recorder's reported duration, meaningful only alongside
         /// `liveOutput` — the batch path derives it from the decoded samples.
         var liveDurationSec: Int = 0
-        /// Transcriber the recording's live pass loaded, handed over on Stop so
-        /// a batch fallback never loads the engine a second time.
-        var transcriber: Transcriber?
+        /// Engine the recording's live pass loaded, handed over on Stop so a
+        /// batch fallback never loads one a second time — carrying the key it
+        /// was loaded for, which is what the job's park stamps it with.
+        var engine: LoadedEngine?
         /// Why this job's diarization post-pass failed (nil = roles rendered or
         /// disabled). Only informs the completion notification — never blocks —
         /// and survives a retry so a label-less persisted transcript keeps its
@@ -265,9 +278,10 @@ final class MeetingRecorderCenter {
 
     // MARK: - Internals
 
-    /// Transcriber loaded at record-start for the live pass, handed to the
-    /// recording's job on Stop so a single recording never loads it twice.
-    private var loadedTranscriber: Transcriber?
+    /// Engine loaded at record-start for the live pass (with the key it was
+    /// loaded for), handed to the recording's job on Stop so a single
+    /// recording never loads it twice.
+    private var loadedEngine: LoadedEngine?
     /// The running live transcription; its value is the final output, or nil when
     /// the live pass never ran or produced no usable text (→ batch fallback).
     /// Non-nil also means "the live pass holds the engine slot", which is what
@@ -428,8 +442,7 @@ final class MeetingRecorderCenter {
     /// `@AppStorage` keys); the parameter exists so tests can vary the
     /// transcriber per config.
     static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> Transcriber {
-        let providerID = UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit"
-        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        let (providerID, model) = resolveProviderAndModel()
         let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
         return try await provider.makeTranscriber(model: model) { _ in }
     }
@@ -441,9 +454,17 @@ final class MeetingRecorderCenter {
     /// only reads `UserDefaults.standard` — deliberately, like the factory,
     /// NOT the injected `defaults` (provider/model are `@AppStorage` keys).
     nonisolated static func defaultEngineKey() -> String {
-        let providerID = UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit"
-        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        let (providerID, model) = resolveProviderAndModel()
         return "\(providerID)|\(model)"
+    }
+
+    /// The Settings selection both of the above read. Shared so the identity
+    /// and the load can never drift apart — a default changed in one place
+    /// only would silently make every key mismatch (or, worse, match an
+    /// engine the factory never loaded).
+    nonisolated private static func resolveProviderAndModel() -> (providerID: String, model: String) {
+        (UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit",
+         UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930")
     }
 
     // MARK: - Warm engine policy
@@ -455,11 +476,18 @@ final class MeetingRecorderCenter {
     }
 
     /// Whether anything but the warm slot holds (or is about to hold) the
-    /// engine: a capture, a live pass still draining, or a job the queue is
-    /// working. The policy never prewarms — and never unloads — while this
-    /// is true.
+    /// engine: a capture, a live pass still draining, a job the queue is
+    /// working, or a job that has been handed an engine but has not claimed
+    /// the slot yet. The policy never prewarms — and never unloads — while
+    /// this is true.
+    ///
+    /// That last term is not redundant: `stopAndProcess` hands the engine to
+    /// the job and releases the live slot in one main-actor step, while the
+    /// job's own task claims `activeJobID` in a later one. Without it a tick
+    /// landing in between would see a free engine and prewarm a second model
+    /// alongside the one the job is holding.
     private var isEngineBusy: Bool {
-        isCapturing || liveTask != nil || activeJobID != nil
+        isCapturing || liveTask != nil || activeJobID != nil || jobs.contains { $0.engine != nil }
     }
 
     /// The single engine-acquisition point for both load sites
@@ -469,8 +497,16 @@ final class MeetingRecorderCenter {
     /// (2) a parked engine whose key still matches Settings is taken (the
     /// slot is emptied — the engine now belongs to the caller); a key
     /// mismatch drops the stale engine instead of serving it;
-    /// (3) otherwise the factory loads fresh.
-    private func takeWarmOrLoad(_ config: TranscriptionConfig) async throws -> Transcriber {
+    /// (3) otherwise the factory loads fresh, under the key read BEFORE the
+    /// load — the caller carries that key onward, so the engine is parked as
+    /// what it is rather than as whatever Settings say when it finishes.
+    ///
+    /// Step (1) awaits the prewarm even when Settings changed while it was
+    /// loading, and that is deliberate: an engine load is not cancellable, so
+    /// skipping the await would leave the arriving prewarm in memory next to
+    /// the one loaded here. The single-engine invariant outranks the stall a
+    /// switch-then-instantly-record costs.
+    private func takeWarmOrLoad(_ config: TranscriptionConfig) async throws -> LoadedEngine {
         if let prewarmTask {
             await prewarmTask.value
         }
@@ -478,25 +514,28 @@ final class MeetingRecorderCenter {
             let parkedKey = warmKey
             warmTranscriber = nil
             warmKey = nil
-            if parkedKey == engineKey() {
-                return warm
+            if let parkedKey, parkedKey == engineKey() {
+                return LoadedEngine(transcriber: warm, key: parkedKey)
             }
             // Stale: Settings switched provider/model since it was parked.
             // Fall through to load what the user actually selected now.
         }
-        return try await engineFactory(config)
+        let key = engineKey()
+        return LoadedEngine(transcriber: try await engineFactory(config), key: key)
     }
 
     /// Parks a finished job's engine back into the warm slot so the next
-    /// recording skips the load. With preloading off the engine is dropped
-    /// right here instead — the slot must not keep a model in memory the
-    /// user asked not to keep (and the poll, the other unload point, may not
-    /// even be running). Never called on a failure path: an engine that just
-    /// failed is dropped by `failJob`, not parked.
-    private func parkTranscriber(_ transcriber: Transcriber) {
+    /// recording skips the load — under the key it was LOADED for, never a
+    /// freshly read one. With preloading off the engine is dropped right here
+    /// instead — the slot must not keep a model in memory the user asked not
+    /// to keep (and the poll, the other unload point, may not even be
+    /// running), which also covers a toggle flipped off during a long load.
+    /// Never called on a failure path: an engine that just failed is dropped
+    /// by `failJob`, not parked.
+    private func parkTranscriber(_ engine: LoadedEngine) {
         guard preloadEnabled else { return }
-        warmTranscriber = transcriber
-        warmKey = engineKey()
+        warmTranscriber = engine.transcriber
+        warmKey = engine.key
     }
 
     /// Starts the 30-second warm-policy poll (the `MeetingReminderCenter.start`
@@ -556,15 +595,16 @@ final class MeetingRecorderCenter {
     /// the record-time load path reports errors as today, and the next tick
     /// may simply retry. The key is captured at start so the parked engine is
     /// labeled with what the factory was asked to load, even if Settings
-    /// change mid-load.
+    /// change mid-load; parking goes through `parkTranscriber` so a toggle
+    /// switched off during the (long) load drops the arriving engine instead
+    /// of stocking the slot the user just asked to keep empty.
     private func startPrewarm(config: TranscriptionConfig) {
         let key = engineKey()
         prewarmTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 let transcriber = try await self.engineFactory(config)
-                self.warmTranscriber = transcriber
-                self.warmKey = key
+                self.parkTranscriber(LoadedEngine(transcriber: transcriber, key: key))
             } catch {
                 print("[MeetingRecorder] prewarm failed (will retry on a later tick): "
                       + error.localizedDescription)
@@ -874,7 +914,7 @@ final class MeetingRecorderCenter {
     private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
         liveChunks = []
         liveEngineState = .loading
-        loadedTranscriber = nil
+        loadedEngine = nil
         liveGeneration += 1
         let generation = liveGeneration
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
@@ -885,20 +925,20 @@ final class MeetingRecorderCenter {
                 guard self.liveGeneration == generation else { return }
                 self.liveEngineState = state
             }
-            let transcriber: Transcriber
+            let loaded: LoadedEngine
             do {
                 // Warm-slot fast path: a parked (or currently prewarming)
                 // engine is taken instead of loading a second one.
-                transcriber = try await self.takeWarmOrLoad(config)
+                loaded = try await self.takeWarmOrLoad(config)
             } catch {
                 await MainActor.run { setState(.unavailable) }
                 return nil
             }
             await MainActor.run {
                 guard self.liveGeneration == generation else { return }
-                self.loadedTranscriber = transcriber
+                self.loadedEngine = loaded
             }
-            guard let liveSession = transcriber.makeLiveSession(config: config) else {
+            guard let liveSession = loaded.transcriber.makeLiveSession(config: config) else {
                 await MainActor.run { setState(.unavailable) }
                 return nil // provider has no live session → batch fallback from file
             }
@@ -967,7 +1007,7 @@ final class MeetingRecorderCenter {
                     _ = await orphan?.value
                     guard let self else { return }
                     self.liveTask = nil
-                    self.loadedTranscriber = nil
+                    self.loadedEngine = nil
                     self.startPendingLivePass()
                     self.wakeEngineSlotWaiters()
                 }
@@ -1008,9 +1048,10 @@ final class MeetingRecorderCenter {
                     $0.liveDurationSec = result.durationSec
                 }
             }
-            // The engine the live pass loaded moves to the job, so a batch
-            // fallback reuses it instead of loading a second one.
-            updateJob(job.id) { $0.transcriber = loadedTranscriber }
+            // The engine the live pass loaded moves to the job (with the key
+            // it was loaded for), so a batch fallback reuses it instead of
+            // loading a second one.
+            updateJob(job.id) { $0.engine = loadedEngine }
             releaseLiveEngineSlot()
         } else {
             // Capture ended, but the previous recording's tail still holds the
@@ -1040,7 +1081,7 @@ final class MeetingRecorderCenter {
     /// immediately, while the engine stays claimed until the tail has drained.
     private func releaseLiveEngineSlot() {
         liveTask = nil
-        loadedTranscriber = nil
+        loadedEngine = nil
         liveGeneration += 1
         startPendingLivePass()
         wakeEngineSlotWaiters()
@@ -1231,11 +1272,11 @@ final class MeetingRecorderCenter {
         guard let job = self.job(jobID) else { return }
         updateJob(jobID) { $0.phase = .transcribing(done: 0, total: 0) }
 
-        // Consume the reusable transcriber (if the live pass handed one over) up
+        // Consume the reusable engine (if the live pass handed one over) up
         // front, before any early-return path below — so an abandoned engine from
         // a failed attempt is never left around for a later retry to pick up.
-        let reusableTranscriber = job.transcriber
-        updateJob(jobID) { $0.transcriber = nil }
+        let reusableEngine = job.engine
+        updateJob(jobID) { $0.engine = nil }
 
         let samples: [Float]
         do {
@@ -1245,12 +1286,12 @@ final class MeetingRecorderCenter {
             return
         }
 
-        let transcriber: Transcriber
-        if let reusableTranscriber {
-            transcriber = reusableTranscriber
+        let engine: LoadedEngine
+        if let reusableEngine {
+            engine = reusableEngine
         } else {
             do {
-                transcriber = try await takeWarmOrLoad(config)
+                engine = try await takeWarmOrLoad(config)
             } catch {
                 failJob(jobID, error.localizedDescription)
                 return
@@ -1259,7 +1300,7 @@ final class MeetingRecorderCenter {
 
         let output: TranscriptionOutput
         do {
-            output = try await runTranscription(jobID: jobID, transcriber, samples: samples, config: config)
+            output = try await runTranscription(jobID: jobID, engine.transcriber, samples: samples, config: config)
         } catch {
             // A throwing engine is never parked — its retry loads fresh.
             failJob(jobID, error.localizedDescription)
@@ -1269,7 +1310,7 @@ final class MeetingRecorderCenter {
         // Transcription succeeded and the engine has served this job — park it
         // warm for the next recording. The poll is the single unload point
         // (parkTranscriber itself drops it when preloading is off).
-        parkTranscriber(transcriber)
+        parkTranscriber(engine)
 
         await renderAndSave(jobID: jobID, output: output, samples: samples,
                             durationSec: samples.count / TranscriptionConfig.sampleRate, config: config)
@@ -1284,20 +1325,23 @@ final class MeetingRecorderCenter {
                                durationSec: Int,
                                config: TranscriptionConfig) async {
         guard let job = self.job(jobID) else { return }
-        guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            failJob(jobID, "No speech recognized")
-            return
-        }
         // The transcription is done, so the handed-over live engine has served
         // its purpose — park it into the warm slot (or drop it, when preloading
         // is off) before the (slow) role rendering rather than pinning it on
         // the job for the rest of its life. The batch path already consumed it
         // in `transcribeAndSave`; this is the live path's release, and the job
-        // must not keep a second reference to what the slot now owns.
-        if let handedOver = job.transcriber {
+        // must not keep a second reference to what the slot now owns. It sits
+        // ABOVE the empty-text judgment for the same reason the batch path's
+        // park does: a recording of silence says nothing about the engine's
+        // health, so both paths keep it either way.
+        if let handedOver = job.engine {
             parkTranscriber(handedOver)
         }
-        updateJob(jobID) { $0.transcriber = nil }
+        updateJob(jobID) { $0.engine = nil }
+        guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            failJob(jobID, "No speech recognized")
+            return
+        }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
                                          samples: samples, config: config, eventID: job.eventID)
         // Persist the (role-tagged) transcript next to the audio so a failed
@@ -1422,7 +1466,7 @@ final class MeetingRecorderCenter {
     private func failJob(_ id: ProcessingJob.ID, _ message: String) {
         updateJob(id) {
             $0.phase = .failed(message)
-            $0.transcriber = nil
+            $0.engine = nil
         }
         notifier.sendTranscriptFailedNotification(reason: message)
     }

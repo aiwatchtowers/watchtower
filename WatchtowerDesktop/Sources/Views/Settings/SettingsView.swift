@@ -67,7 +67,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @AppStorage("transcription.contextPrompt") private var transcriptionContextPrompt = false
     @AppStorage("transcription.liveTranscription") private var transcriptionLive = true
-    @AppStorage("transcription.preloadBeforeMeetings") private var transcriptionPreload = true
+    @AppStorage(MeetingRecorderCenter.preloadBeforeMeetingsKey) private var transcriptionPreload = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true

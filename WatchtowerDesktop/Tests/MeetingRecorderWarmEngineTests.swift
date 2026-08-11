@@ -152,10 +152,122 @@ final class MeetingRecorderWarmEngineTests: MeetingRecorderTestCase {
 
         let job = try XCTUnwrap(center.jobs.first)
         XCTAssertTrue(job.phase.isFailed, "the save failed, so the job stays for retry")
-        XCTAssertNil(job.transcriber, "the job must not keep a reference to the parked engine")
+        XCTAssertNil(job.engine, "the job must not keep a reference to the parked engine")
         XCTAssertTrue(center.isEngineWarm,
                       "the transcription succeeded, so the engine parks even though the save failed")
         XCTAssertEqual(engineLoads, 1)
+    }
+
+    /// Settings switched provider/model WHILE the job was transcribing. The
+    /// engine is parked under the key it was LOADED for, never the one
+    /// selected by the time it finished — a park-time key read would label the
+    /// old engine with the new selection and hand it to the next recording.
+    func testKeyFlippedMidJobParksUnderTheLoadTimeKey() async throws {
+        var currentKey = "whisperkit|large"
+        let keyReader: () -> String = { currentKey } // stored: see `fixedEngineKey`'s note
+        var engineLoads = 0
+        let gate = GateEngine(texts: ["talk", "stale talk"])
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        var recorderCalls = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorderCalls += 1; return recorderCalls == 1 ? recorder1 : recorder2 },
+            engineFactory: { _ in
+                engineLoads += 1
+                // Batch-only, so the key flip races the JOB's transcription
+                // (the gated window below) rather than the live pass.
+                return TestTranscriber(engineLoads == 1 ? gate : ScriptedEngine(texts: ["fresh talk"]),
+                                       supportsLive: false)
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir,
+            engineKey: keyReader
+        )
+        let config = singleWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "First", config: config)
+        recorder1.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder1.lastStartURL), durationSec: 1)
+        let stopFirst = Task { await center.stopAndProcess(config: config) }
+
+        // The job is now inside the gated window; the user switches engine.
+        var entered = gate.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        currentKey = "qwen3|omni"
+        gate.release()
+        await stopFirst.value
+        XCTAssertEqual(engineLoads, 1)
+        XCTAssertTrue(center.isEngineWarm, "the finished job parks its engine either way")
+
+        // Pre-arms the regression path: were the stale engine served to the
+        // second recording, its window returns here instead of blocking the
+        // suite, so the assertion below reports the bug rather than timing out.
+        gate.release()
+
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        recorder2.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder2.lastStartURL), durationSec: 1)
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(engineLoads, 2,
+                       "the parked engine belongs to the OLD selection — the second recording loads the new one")
+        XCTAssertEqual(runner.savedTranscripts, ["talk", "fresh talk"],
+                       "the second recording must transcribe through the newly selected engine")
+    }
+
+    /// The handover gap: `stopAndProcess` moves the engine onto the job and
+    /// releases the live slot in one main-actor step, while the job's own task
+    /// claims `activeJobID` in a later one. A tick landing in between sees no
+    /// capture, no live task and no active job — yet the job is holding the
+    /// engine, so prewarming there would put a SECOND model in memory.
+    func testTickInTheHandoverGapDoesNotPrewarmASecondEngine() async throws {
+        var engineLoads = 0
+        let recorder = FakeRecorder()
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["live one"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir,
+            engineKey: fixedEngineKey,
+            now: { self.referenceNow },
+            meetingsProvider: { _ in WarmMeetingWindow(hasOngoingMeeting: true, nextStart: nil) }
+        )
+        let config = threeWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "Meeting", config: config)
+        await waitUntil("the live pass to load its engine") { engineLoads == 1 }
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        recorder.emitLive([Float](repeating: 0, count: 1600)) // one window → a live result
+        let stopTask = Task { await center.stopAndProcess(config: config) }
+
+        // Ticks from the main actor until the gap is actually observed, so the
+        // test cannot pass by ticking somewhere harmless.
+        var sawGap = false
+        for _ in 0..<400 {
+            if center.jobs.first?.engine != nil, !center.isCapturing, center.activeJobID == nil {
+                sawGap = true
+                center.warmPolicyTick(config: config)
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertTrue(sawGap, "the handover gap was never reached — the tick never exercised it")
+        XCTAssertFalse(center.isPrewarming, "a job holding the handed-over engine counts as busy")
+        XCTAssertEqual(engineLoads, 1, "the tick must not load a second model beside the job's")
+
+        await stopTask.value
+        XCTAssertEqual(engineLoads, 1)
+        XCTAssertEqual(runner.savedTranscripts, ["live one"])
     }
 
     /// A transcription failure drops the engine — a just-failed engine is
@@ -188,6 +300,41 @@ final class MeetingRecorderWarmEngineTests: MeetingRecorderTestCase {
 
         XCTAssertTrue(center.jobs.first?.phase.isFailed ?? false)
         XCTAssertFalse(center.isEngineWarm, "an engine that just failed must never be parked")
+    }
+
+    /// The other side of that line: a recording of pure silence fails the job
+    /// ("no speech") but says nothing about the engine's health, so the engine
+    /// is parked before the emptiness is judged — the same order the live and
+    /// batch paths both use.
+    func testEmptyTranscriptFailsTheJobButKeepsTheEngineWarm() async throws {
+        let recorder = FakeRecorder()
+        var engineLoads = 0
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: [])) // every window is silence
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir,
+            engineKey: fixedEngineKey
+        )
+        let config = singleWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "Silent", config: config)
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        await center.stopAndProcess(config: config)
+
+        let job = try XCTUnwrap(center.jobs.first)
+        XCTAssertEqual(job.phase, .failed("No speech recognized"))
+        XCTAssertNil(job.engine, "the failed job must not pin the engine the slot now owns")
+        XCTAssertTrue(center.isEngineWarm, "silence is not an engine failure — the engine stays parked")
+        XCTAssertEqual(engineLoads, 1)
+        XCTAssertEqual(runner.savedTranscripts, [], "an empty transcript is never saved")
     }
 
     // MARK: - Poll: unload / hold
@@ -303,6 +450,38 @@ final class MeetingRecorderWarmEngineTests: MeetingRecorderTestCase {
         await center.stopAndProcess(config: config)
 
         XCTAssertEqual(engineLoads, 2, "a stale parked engine is dropped and the selected one loaded")
+    }
+
+    /// The toggle is read fresh on every tick, never snapshotted: switching
+    /// preloading off mid-session drains the parked engine on the next tick
+    /// even though a meeting is ongoing.
+    func testToggleFlippedOffMidSessionDrainsTheParkedEngine() async throws {
+        let recorder = FakeRecorder()
+        let defaults = try warmDefaults()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["talk"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir,
+            engineKey: fixedEngineKey,
+            now: { self.referenceNow },
+            meetingsProvider: { _ in WarmMeetingWindow(hasOngoingMeeting: true, nextStart: nil) }
+        )
+        let config = singleWindowConfig()
+
+        await center.startRecording(eventID: nil, title: "Meeting", config: config)
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        await center.stopAndProcess(config: config)
+        XCTAssertTrue(center.isEngineWarm)
+
+        defaults.set(false, forKey: MeetingRecorderCenter.preloadBeforeMeetingsKey)
+        center.warmPolicyTick(config: config)
+
+        XCTAssertFalse(center.isEngineWarm,
+                       "the tick reads the toggle fresh, so switching it off releases the parked engine")
     }
 
     // MARK: - Poll: prewarm
@@ -440,6 +619,93 @@ final class MeetingRecorderWarmEngineTests: MeetingRecorderTestCase {
 
         XCTAssertEqual(engineLoads, 3)
         XCTAssertEqual(runner.savedTranscripts, ["recovered talk"])
+    }
+
+    /// A model load takes a while, and the toggle may be switched off inside
+    /// that window: the arriving engine is dropped rather than stocking a slot
+    /// the user just asked to keep empty.
+    func testToggleFlippedOffDuringPrewarmLoadParksNothing() async throws {
+        var engineLoads = 0
+        var releaseLoad: CheckedContinuation<Void, Never>?
+        let defaults = try warmDefaults()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { FakeRecorder() },
+            engineFactory: { _ in
+                engineLoads += 1
+                await withCheckedContinuation { releaseLoad = $0 }
+                return TestTranscriber(ScriptedEngine(texts: ["prewarmed talk"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir,
+            engineKey: fixedEngineKey,
+            now: { self.referenceNow },
+            meetingsProvider: { _ in WarmMeetingWindow(hasOngoingMeeting: true, nextStart: nil) }
+        )
+        let config = singleWindowConfig()
+
+        center.warmPolicyTick(config: config)
+        await waitUntil("the prewarm to enter the engine factory") { releaseLoad != nil }
+
+        defaults.set(false, forKey: MeetingRecorderCenter.preloadBeforeMeetingsKey)
+        releaseLoad?.resume()
+        await waitUntil("the prewarm to finish") { !center.isPrewarming }
+
+        XCTAssertFalse(center.isEngineWarm,
+                       "an engine arriving after the toggle went off must be dropped, not parked")
+        XCTAssertEqual(engineLoads, 1)
+    }
+
+    /// Recording started while a prewarm is in flight that is about to FAIL:
+    /// the live pass awaits the doomed load (an engine load is not cancellable,
+    /// so it must never be raced), then loads its own — exactly one load beyond
+    /// the failed prewarm, and the recording saves as usual.
+    func testRecordingDuringAFailingPrewarmLoadsExactlyOneEngineMore() async throws {
+        struct LoadError: Error {}
+        var engineLoads = 0
+        var releaseLoad: CheckedContinuation<Void, Never>?
+        let recorder = FakeRecorder()
+        let notifier = FakeNotifier()
+        let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                if engineLoads == 1 {
+                    await withCheckedContinuation { releaseLoad = $0 }
+                    throw LoadError()
+                }
+                return TestTranscriber(ScriptedEngine(texts: ["recovered talk"]))
+            },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { runner },
+            notifier: notifier,
+            defaults: try warmDefaults(),
+            recordingsDirectory: recordingsDir,
+            engineKey: fixedEngineKey,
+            now: { self.referenceNow },
+            meetingsProvider: { _ in WarmMeetingWindow(hasOngoingMeeting: true, nextStart: nil) }
+        )
+        let config = singleWindowConfig()
+
+        center.warmPolicyTick(config: config)
+        await waitUntil("the prewarm to enter the engine factory") { releaseLoad != nil }
+
+        await center.startRecording(eventID: nil, title: "Meeting", config: config)
+        XCTAssertEqual(engineLoads, 1, "the live pass awaits the in-flight prewarm rather than loading beside it")
+
+        releaseLoad?.resume() // the prewarm now throws
+        await waitUntil("the live pass to load its own engine after the failed prewarm") { engineLoads == 2 }
+        XCTAssertFalse(center.isEngineWarm, "the failed prewarm parks nothing")
+
+        recorder.stopResult = RecordingResult(audioURL: try XCTUnwrap(recorder.lastStartURL), durationSec: 1)
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(engineLoads, 2, "exactly one load beyond the failed prewarm")
+        XCTAssertEqual(runner.savedTranscripts, ["recovered talk"])
+        XCTAssertTrue(notifier.failedReasons.isEmpty, "the failed prewarm stays invisible to the user")
     }
 
     /// The degenerate steady state: idle engine, empty calendar, toggle on —
