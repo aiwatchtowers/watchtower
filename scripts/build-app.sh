@@ -4,12 +4,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Source .env if present (for OAuth credentials etc.)
-if [ -f "$PROJECT_ROOT/.env" ]; then
+# Source the build profile if present (OAuth credentials, BUILD_FLAVOR etc.).
+# ENV_FILE selects an alternative profile (e.g. ENV_FILE=.env.b2 make app);
+# relative paths resolve against the project root. An explicitly requested
+# profile that is missing is a hard error — silently building with default
+# credentials would produce an artifact indistinguishable from the right one.
+ENV_FILE="${ENV_FILE:-.env}"
+case "$ENV_FILE" in
+    /*) : ;;
+    *) ENV_FILE="$PROJECT_ROOT/$ENV_FILE" ;;
+esac
+if [ -f "$ENV_FILE" ]; then
     set -a
-    . "$PROJECT_ROOT/.env"
+    . "$ENV_FILE"
     set +a
+elif [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ]; then
+    echo "ERROR: build profile '$ENV_FILE' not found" >&2
+    exit 1
 fi
+# Build flavor (usually set inside the profile file). Baked into the binary
+# and appended to artifact names; empty = default build, names unchanged.
+FLAVOR="${BUILD_FLAVOR:-}"
+FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
@@ -30,10 +46,11 @@ VERSION="${VERSION:-0.2.0}"
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+FLAVOR_NOTE="${FLAVOR:+ [flavor: $FLAVOR]}"
 if $DEV_MODE; then
-    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no DMG/ZIP/notarization]"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE [DEV MODE — no DMG/ZIP/notarization]"
 else
-    echo "==> Building Watchtower v$VERSION (arm64)"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE"
 fi
 echo ""
 
@@ -80,7 +97,7 @@ JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
 GOARCH=arm64 CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
     -o "$BUILD_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
 
@@ -310,7 +327,7 @@ fi
 
 # Create DMG
 echo "==> Creating DMG..."
-DMG_NAME="Watchtower-arm64.dmg"
+DMG_NAME="Watchtower${FLAVOR_SUFFIX}-arm64.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
 DMG_STAGING="$BUILD_DIR/dmg-staging"
 
@@ -355,7 +372,7 @@ DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
 
 # Create ZIP (used by auto-update + install script)
 echo "==> Creating ZIP..."
-ZIP_NAME="Watchtower-${VERSION}-arm64.zip"
+ZIP_NAME="Watchtower-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
 cd "$BUILD_DIR"
 ditto -c -k --keepParent "$APP_NAME.app" "$ZIP_NAME"
 ZIP_SIZE=$(du -h "$ZIP_NAME" | cut -f1)
