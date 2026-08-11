@@ -57,9 +57,15 @@ struct IdeaCreateSheet: View {
                     .textFieldStyle(.roundedBorder)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Essence")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text("Essence")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        DictationButton(text: $essence, mode: .idea, targetID: "idea-create.essence") {
+                            if title.isEmpty { title = $0 }
+                        }
+                    }
                     TextEditor(text: $essence)
                         .font(.body)
                         .scrollContentBackground(.hidden)

@@ -189,7 +189,8 @@ struct SituationDiscussInputBar: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send() },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "Tell me what to reply, or ask about this situation…"
+                placeholder: "Tell me what to reply, or ask about this situation…",
+                dictationTargetID: "chat.situation.\(chatVM.situationID)"
             )
         }
     }

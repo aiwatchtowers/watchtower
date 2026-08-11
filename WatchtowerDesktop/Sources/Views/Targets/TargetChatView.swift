@@ -20,7 +20,8 @@ struct TargetChatSection: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send() },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "Ask the assistant to work on this task…"
+                placeholder: "Ask the assistant to work on this task…",
+                dictationTargetID: "chat.target.\(chatVM.targetID)"
             )
 
             if let err = chatVM.errorMessage {

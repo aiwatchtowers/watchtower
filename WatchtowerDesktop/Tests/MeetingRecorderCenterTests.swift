@@ -49,6 +49,32 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.currentTitle, "Weekly")
     }
 
+    /// `DictationCenter` shares one physical engine slot with the meeting
+    /// recorder, so it needs to hear about an upcoming capture BEFORE any
+    /// engine work starts — a hook fired after the fact could race a
+    /// dictation into loading the very engine the meeting is about to need.
+    func testStartRecordingInvokesCaptureWillStartBeforeCaptureBegins() async throws {
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var firedBeforeCapture = false
+        center.captureWillStart = {
+            firedBeforeCapture = !center.isCapturing && recorder.startCalls == 0
+        }
+
+        await center.startRecording(eventID: "evt-1", title: "Weekly")
+
+        XCTAssertTrue(firedBeforeCapture, "captureWillStart must fire before any capture/engine work")
+    }
+
     // MARK: Happy path
 
     func testHappyPathPhaseSequence() async throws {
@@ -1926,6 +1952,125 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(runner.savedTranscripts, ["[Я] привет"])
         XCTAssertEqual(runner.savedSegments.count, 1)
         XCTAssertNil(runner.savedSegments[0], "a pre-segments sidecar retries as a segment-less save")
+    }
+
+    // MARK: Dictation engine handoff (M2, final review)
+
+    /// A canned `dictate clean --mode chat` envelope for the dictation side
+    /// of the handoff tests (the DictationCenterTests fixture).
+    private static let dictationChatEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
+
+    /// Builds the meeting↔dictation pair wired exactly as `AppState.initialize()`
+    /// wires them, with a GateEngine (caller-released) behind the dictation
+    /// engine so tests control when the dictation's decode tail — and with it
+    /// the resident engine — lets go of the shared slot.
+    private func makeHandoffPair(
+        defaults: UserDefaults,
+        meetingRecorder: FakeRecorder,
+        dictationEngine: WhisperWindowEngine
+    ) -> (center: MeetingRecorderCenter, dictation: DictationCenter, mic: FakeMicRecorder) {
+        let mic = FakeMicRecorder()
+        let dictation = DictationCenter(
+            recorderFactory: { mic },
+            engineFactory: { _ in TestTranscriber(dictationEngine, supportsLive: true) },
+            runnerResolver: { FakeCLIRunner(stdout: Self.dictationChatEnvelope) },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        let center = MeetingRecorderCenter(
+            recorderFactory: { meetingRecorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["meeting words"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
+        )
+        // The AppState.initialize() wiring, verbatim.
+        dictation.meetingBusy = { [weak center] in center?.isBusy ?? false }
+        center.captureWillStart = { [weak dictation] in dictation?.meetingCaptureWillStart() }
+        center.dictationEngineResident = { [weak dictation] in dictation?.hasResidentEngine ?? false }
+        dictation.engineReleased = { [weak center] in center?.dictationEngineDidRelease() }
+        return (center, dictation, mic)
+    }
+
+    /// Meeting start during an active dictation: the handshake stops the
+    /// dictation, but its engine stays resident until the decode tail drains —
+    /// the live pass must PARK (never a second engine) and catch up once the
+    /// dictation drops the engine.
+    func testMeetingStartDuringActiveDictationParksLivePassAndCatchesUp() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let meetingRecorder = FakeRecorder()
+        meetingRecorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        // The gate holds the dictation's final decode in flight, so its engine
+        // is deterministically still resident when the meeting checks.
+        let gateEngine = GateEngine(texts: ["dictated words"])
+        let (center, dictation, mic) = makeHandoffPair(
+            defaults: defaults, meetingRecorder: meetingRecorder, dictationEngine: gateEngine)
+
+        var dictationResult: DictationCleanResult?
+        dictation.start(targetID: "t1", mode: .chat,
+                        onLiveText: { _ in }, onResult: { dictationResult = $0 })
+        await waitUntil("dictation recording") { dictation.phase == .recording }
+        mic.emit([Float](repeating: 0.1, count: 1_600))
+
+        await center.startRecording(eventID: nil, title: "Standup")
+
+        XCTAssertEqual(mic.stopCalls, 1, "the handshake must stop the dictation mic")
+        XCTAssertEqual(center.liveEngineState, .waiting,
+                       "the live pass must park while the dictation engine is still resident")
+
+        gateEngine.release() // the dictation decode tail finishes now
+        await waitUntil("dictation result") { dictationResult != nil }
+        await waitUntil("live pass caught up") { center.liveEngineState == .running }
+
+        XCTAssertEqual(dictationResult, DictationCleanResult(title: nil, text: "cleaned"),
+                       "the interrupted dictation must still deliver what was said")
+
+        await center.stopAndProcess(config: singleWindowConfig())
+    }
+
+    /// Meeting start with an idle-but-warm dictation engine: the handshake
+    /// drops it synchronously, so the live pass proceeds immediately — no
+    /// parking, no waiting on a release that already happened.
+    func testMeetingStartWithIdleWarmDictationEngineStartsLivePassImmediately() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let meetingRecorder = FakeRecorder()
+        meetingRecorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        let (center, dictation, mic) = makeHandoffPair(
+            defaults: defaults, meetingRecorder: meetingRecorder,
+            dictationEngine: ScriptedEngine(texts: ["dictated words"]))
+
+        // A full dictation leaves the engine warm and the center idle.
+        var dictationResult: DictationCleanResult?
+        dictation.start(targetID: "t1", mode: .chat,
+                        onLiveText: { _ in }, onResult: { dictationResult = $0 })
+        await waitUntil("dictation recording") { dictation.phase == .recording }
+        mic.emit([Float](repeating: 0.1, count: 1_600))
+        dictation.stop()
+        await waitUntil("dictation result") { dictationResult != nil }
+        XCTAssertTrue(dictation.hasResidentEngine, "the finished dictation must leave a warm engine")
+
+        await center.startRecording(eventID: nil, title: "Standup")
+
+        XCTAssertFalse(dictation.hasResidentEngine, "the handshake must drop the idle warm engine synchronously")
+        XCTAssertNotEqual(center.liveEngineState, .waiting,
+                          "an already-released engine must not park the live pass")
+        await waitUntil("live pass running") { center.liveEngineState == .running }
+
+        await center.stopAndProcess(config: singleWindowConfig())
     }
 
 }

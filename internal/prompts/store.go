@@ -57,6 +57,7 @@ const (
 	IdeasDigestEmail           = "ideas.digest_email"
 	IdeasDigestJira            = "ideas.digest_jira"
 	IdeasConsolidate           = "ideas.consolidate"
+	DictationClean             = "dictation.clean"
 )
 
 // Store loads, caches, and persists prompt templates.

@@ -74,6 +74,17 @@ A registry for ideas, decisions, and notes that surface in Slack threads, meetin
 
 **Settings:** the Ideas card lets you turn the whole registry on or off and adjust how often it mines in the background (1–48 hours, default 6).
 
+### Voice Dictation
+Dictate instead of typing, wherever you'd otherwise write free-form text: the idea create sheet, a recording's Notes tab, and every Discuss chat input. A mic button (🎙) sits next to each of those fields.
+
+**Speaking and stopping:** click the mic (or focus the field and it's right there) to start — the button pulses red while listening. With engines that support live transcription (the WhisperKit and Qwen3 choices in Settings), your words appear in the field live as you speak, window by window; with a batch-only engine (Parakeet, Apple) the field stays put until you stop, then the text arrives all at once. Click again (or press Esc) to stop: the button shows a brief spinner while a light AI pass cleans up the raw transcript — dropping filler words and false starts, and shaping it for where it's going (a title + body for an idea, a coherent note, a light touch-up that keeps your exact wording for a chat message) — then replaces what you said with the cleaned version. A "Cleaned" chip with a **Raw** button appears for a few seconds afterward if you'd rather keep your original wording; clicking it swaps the cleaned text back for the raw transcript. Dictating into an empty field starts fresh; dictating into a field that already has text appends after it.
+
+If nothing was actually said (silence), the field is simply left as it was — no error. If the cleanup step fails, a small error note appears; with a live engine your raw transcript stays in the field, while with a batch-only engine the field is left as it was before you started — either way, nothing you dictated is silently lost.
+
+**When dictation is unavailable:** while a meeting recording is capturing or a recording is still being processed (transcribing/diarizing/summarizing), the mic buttons are disabled with a tooltip explaining why — meeting capture always takes priority, and if you were mid-dictation when a meeting recording starts, whatever you'd said so far is cleaned and delivered to its field automatically before the meeting takes over. Only one field can dictate at a time; starting a meeting recording or another field's dictation disables the rest until it's free again.
+
+**Quick Capture — dictate without opening the app:** press **⌃⌥D** (Control+Option+D) anywhere in macOS, or choose **New Voice Idea** from the Watchtower menu-bar icon, to open a small floating window that starts listening immediately — no need to bring the main window forward first. Speak, click Stop, review the cleaned result, and click **Save** to drop it straight into the Ideas registry (as an active, ready-to-use idea — no review step). Closing the window before saving cancels the capture. If cleanup fails, whatever was transcribed before the failure can still be saved as-is. A confirmation closes the window automatically after a couple of seconds, or click "Open Ideas" to jump straight to it in the main window.
+
 ### Calendar
 Google Calendar integration showing upcoming events and AI-powered meeting preparation.
 
