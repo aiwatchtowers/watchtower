@@ -49,6 +49,32 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.currentTitle, "Weekly")
     }
 
+    /// `DictationCenter` shares one physical engine slot with the meeting
+    /// recorder, so it needs to hear about an upcoming capture BEFORE any
+    /// engine work starts — a hook fired after the fact could race a
+    /// dictation into loading the very engine the meeting is about to need.
+    func testStartRecordingInvokesCaptureWillStartBeforeCaptureBegins() async throws {
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var firedBeforeCapture = false
+        center.captureWillStart = {
+            firedBeforeCapture = !center.isCapturing && recorder.startCalls == 0
+        }
+
+        await center.startRecording(eventID: "evt-1", title: "Weekly")
+
+        XCTAssertTrue(firedBeforeCapture, "captureWillStart must fire before any capture/engine work")
+    }
+
     // MARK: Happy path
 
     func testHappyPathPhaseSequence() async throws {

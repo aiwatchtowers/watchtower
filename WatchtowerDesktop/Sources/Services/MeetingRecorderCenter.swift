@@ -110,6 +110,12 @@ final class MeetingRecorderCenter {
     /// there is no file, so no job can carry the message.
     private(set) var captureError: String?
 
+    /// Fired synchronously at the top of `startRecording`, before any engine
+    /// work — the meeting recorder and `DictationCenter` share one physical
+    /// engine slot, so this is how a meeting capture claims it ahead of time
+    /// (wired to `DictationCenter.meetingCaptureWillStart()` in `AppState`).
+    var captureWillStart: (() -> Void)?
+
     /// Calendar event the active/last recording belongs to; `nil` for ad-hoc.
     private(set) var currentEventID: String?
     /// Title snapshot for the active/last recording.
@@ -606,6 +612,7 @@ final class MeetingRecorderCenter {
     /// The `rec_X.meta` sidecar is written before capture starts, so a crash
     /// still leaves a recoverable, event-linked pointer.
     func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
+        captureWillStart?()
         guard !isCapturing else { return }
         // Close the check-then-act window across `recorder.start`: a second
         // start arriving while this one is suspended must see capture busy.

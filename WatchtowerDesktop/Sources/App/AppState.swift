@@ -59,6 +59,11 @@ final class AppState {
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
 
+    /// App-wide, single-slot registry for voice dictation. Shares one physical
+    /// engine slot with `meetingRecorderCenter` — wired to it below via
+    /// `meetingBusy`/`captureWillStart` (`initialize()`).
+    let dictationCenter = DictationCenter()
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.
@@ -338,6 +343,10 @@ final class AppState {
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()
+        // Neither direction of this handshake needs the DB, so it is wired
+        // unconditionally rather than inside the DB-dependent Task below.
+        dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
+        meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,

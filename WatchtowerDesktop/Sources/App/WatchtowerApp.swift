@@ -293,6 +293,7 @@ struct WatchtowerApp: App {
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
             .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
                 // (same singleton, `initialize()` latched by `isInitializing`).
@@ -341,6 +342,7 @@ struct WatchtowerApp: App {
             ProgressDetailView()
                 .environment(appState)
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
         }
         .defaultSize(width: 600, height: 500)
 
@@ -349,11 +351,13 @@ struct WatchtowerApp: App {
                 .environment(appState)
                 .background(SettingsWindowAccessor())
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
         }
 
         MenuBarExtra(isInserted: .constant(!isDuplicate)) {
             TrayMenuView()
                 .environment(appState)
+                .environment(\.dictationCenter, appState.dictationCenter)
         } label: {
             Image(nsImage: Self.trayIcon)
                 .accessibilityLabel("Watchtower")
