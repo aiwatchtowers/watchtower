@@ -179,8 +179,19 @@ final class DictationCenter {
 
         phase = .recording
 
-        let rawText = await capture(recorder: recorder, transcriber: transcriber, config: config,
-                                     onLiveText: onLiveText)
+        let rawText: String
+        do {
+            rawText = try await capture(recorder: recorder, transcriber: transcriber, config: config,
+                                         onLiveText: onLiveText)
+        } catch {
+            guard !Task.isCancelled else { return }
+            // A thrown batch decode must not present as "nothing was said" —
+            // that would silently drop whatever the user actually dictated.
+            // A genuine empty decode (no throw) still takes the ordinary
+            // empty-result path below.
+            finish(failed: "transcription failed")
+            return
+        }
         guard !Task.isCancelled else { return }
 
         lastRaw = rawText
@@ -219,13 +230,15 @@ final class DictationCenter {
     /// The buffer is always populated, live session or not, so a mid-stream
     /// live failure (or a batch-only provider) still has something to fall
     /// back to — the meeting single-pass fallback's rule applied to a
-    /// microphone-only stream.
+    /// microphone-only stream. Throws only when the batch decode itself
+    /// throws — the caller turns that into a visible failure rather than
+    /// letting it masquerade as silence.
     private func capture(
         recorder: MicRecording,
         transcriber: Transcriber,
         config: TranscriptionConfig,
         onLiveText: @escaping @MainActor (String) -> Void
-    ) async -> String {
+    ) async throws -> String {
         var buffer: [Float] = []
         let liveSession = transcriber.makeLiveSession(config: config)
 
@@ -264,11 +277,12 @@ final class DictationCenter {
             return liveOutput.text
         }
         guard !buffer.isEmpty else { return "" }
-        // Swallowed on purpose: a failed batch decode degrades to "nothing
-        // was said" rather than losing the dictation to an uncaught throw —
-        // the empty result then takes the ordinary degenerate-stop path.
-        let output = try? await transcriber.transcribe(buffer, config: config, progress: { _, _ in })
-        return output?.text ?? ""
+        // A genuine empty decode (no speech found) still returns "" and
+        // takes the ordinary degenerate-stop path in the caller; only a
+        // THROWN error propagates, since that means the buffer's contents
+        // were never actually transcribed.
+        let output = try await transcriber.transcribe(buffer, config: config, progress: { _, _ in })
+        return output.text
     }
 
     private func finish(failed message: String) {
@@ -281,6 +295,14 @@ final class DictationCenter {
     private func resolveTranscriber(config: TranscriptionConfig) async throws -> Transcriber {
         if let warmTranscriber { return warmTranscriber }
         let transcriber = try await engineFactory(config)
+        // A dictation cancelled while this load was in flight has already
+        // made its engine-slot decision (dropped it via
+        // `meetingCaptureWillStart()`, or armed a release timer via
+        // `cancel()`) — caching here regardless would resurrect a resident
+        // engine with nothing left counting down to release it. The caller
+        // discards this instance immediately (`runDictation`'s own
+        // cancellation check), so it is not lost, only left uncached.
+        guard !Task.isCancelled else { return transcriber }
         warmTranscriber = transcriber
         return transcriber
     }
