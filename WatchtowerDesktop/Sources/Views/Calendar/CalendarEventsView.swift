@@ -248,7 +248,11 @@ struct CalendarEventsView: View {
     private func autoScrollToTodayOnce(_ proxy: ScrollViewProxy) {
         guard !didAutoScrollToToday, !sections.isEmpty else { return }
         didAutoScrollToToday = true
-        scrollToToday(proxy)
+        // The empty→populated `.onChange(of: sections)` fires in the same
+        // transaction that first materializes the day rows and the now-line —
+        // their `.id`s aren't laid out yet, and `scrollTo` against an
+        // unregistered id is a silent no-op. Land after the layout commits.
+        DispatchQueue.main.async { scrollToToday(proxy) }
     }
 
     /// With past days in the list, land on the now-line when today has a
