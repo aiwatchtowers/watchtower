@@ -25,6 +25,15 @@ final class UpdateService {
 
     private static let repo = "aiwatchtowers/watchtower"
     private static let lastCheckKey = "lastUpdateCheckDate"
+
+    /// Build flavor stamped into Info.plist by build-app.sh (WTBuildFlavor;
+    /// absent on default builds). A flavored build carries a different baked-in
+    /// credential set and is distributed out-of-band, so it must never update
+    /// from the public release feed — every public release would silently
+    /// replace it with the default-credential build (same signer, so the
+    /// Team-ID pin would pass). Instance property so tests can inject a flavor.
+    var buildFlavor: String =
+        (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
     private static let cacheDir: URL = {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             return FileManager.default.temporaryDirectory.appendingPathComponent("com.watchtower.desktop/updates", isDirectory: true)
@@ -35,6 +44,10 @@ final class UpdateService {
     // MARK: - Check for Updates
 
     func checkForUpdates() async {
+        guard buildFlavor.isEmpty else {
+            state = .idle
+            return
+        }
         state = .checking
 
         do {

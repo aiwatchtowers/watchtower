@@ -48,6 +48,16 @@ struct UpdateServicePureTests {
         #expect(e != f)
     }
 
+    @Test("flavored build never consults the public release feed")
+    func flavoredBuildSkipsUpdateCheck() async {
+        // A flavored build carries a different baked-in credential set; picking
+        // up a public-feed release would silently swap it for the default one.
+        let svc = await UpdateService()
+        await MainActor.run { svc.buildFlavor = "b2" }
+        await svc.checkForUpdates()
+        await MainActor.run { #expect(svc.state == .idle) }
+    }
+
     @Test("isUpdateAvailable reflects state")
     func updateAvailable() async {
         await MainActor.run {
