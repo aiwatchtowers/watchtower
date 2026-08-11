@@ -35,6 +35,12 @@ final class MicRecorder: MicRecording {
 
     private let requestAccess: () async -> Bool
     private let engine = AVAudioEngine()
+    /// Owns `converter` and every buffer conversion — the tap callback runs on
+    /// AVAudioEngine's internal audio thread, so without a single serial queue
+    /// its read of `converter` in `appendDownsampled` could race `stop()`'s
+    /// write. Mirrors `SystemAudioRecorder.writeQueue`
+    /// (`SystemAudioRecorder.swift:80-82, 140-141`).
+    private let convertQueue = DispatchQueue(label: "com.watchtower.dictation.mic-recorder")
     private var converter: AVAudioConverter?
 
     private var continuation: AsyncStream<[Float]>.Continuation!
@@ -57,10 +63,10 @@ final class MicRecorder: MicRecording {
         ), let downConverter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
             throw MicRecorderError.engineStartFailed("creating 16 kHz converter")
         }
-        converter = downConverter
+        convertQueue.sync { converter = downConverter }
 
         inputNode.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
-            self?.appendDownsampled(buffer)
+            self?.convertQueue.async { self?.appendDownsampled(buffer) }
         }
 
         do {
@@ -68,7 +74,7 @@ final class MicRecorder: MicRecording {
             try engine.start()
         } catch {
             inputNode.removeTap(onBus: 0)
-            converter = nil
+            convertQueue.sync { converter = nil }
             throw MicRecorderError.engineStartFailed(error.localizedDescription)
         }
     }
@@ -76,7 +82,10 @@ final class MicRecorder: MicRecording {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        converter = nil
+        // Barrier on convertQueue so an in-flight appendDownsampled (already
+        // dispatched by the tap before removeTap took effect) finishes before
+        // converter is torn down — the SystemAudioRecorder.stop() precedent.
+        convertQueue.sync { converter = nil }
         continuation.finish()
     }
 
@@ -85,8 +94,10 @@ final class MicRecorder: MicRecording {
     }
 
     /// Converts one tap buffer to 16 kHz mono and yields it into the stream.
-    /// Mirrors `SystemAudioRecorder.appendDownsampled`: the `consumed`
-    /// one-shot input block hands the converter exactly one buffer, and a
+    /// Runs on `convertQueue` (dispatched there by the tap callback), the
+    /// same queue `stop()` barriers on to tear down `converter`. Mirrors
+    /// `SystemAudioRecorder.appendDownsampled`: the `consumed` one-shot input
+    /// block hands the converter exactly one buffer, and a
     /// `frameLength > 0` guard drops empty conversion results.
     private func appendDownsampled(_ buffer: AVAudioPCMBuffer) {
         guard let converter else { return }
