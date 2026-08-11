@@ -158,9 +158,12 @@ final class DictationCenter {
 
     /// The meeting recorder is about to claim the (shared) engine slot.
     /// Recording → deliver what was said, same as `stop()`, then drop the
-    /// resident engine once cleanup finishes. Idle with a warm engine → drop
-    /// it immediately. Mid-flight (loading/cleaning) → flag the drop for
-    /// whenever that in-flight work reaches idle.
+    /// resident engine as soon as transcription completes. Idle with a warm
+    /// engine → drop it immediately. Loading → cancel the dictation outright
+    /// (the stop-during-load rule: almost nothing has been decoded yet), so
+    /// the slot frees without any user stop. Cleaning → the engine plays no
+    /// part in the CLI cleanup — drop it right away while the cleanup runs
+    /// to completion and still delivers its result.
     func meetingCaptureWillStart() {
         switch phase {
         case .recording:
@@ -168,8 +171,13 @@ final class DictationCenter {
             stop()
         case .idle, .failed:
             dropEngineImmediately()
-        case .loadingEngine, .cleaning:
-            dropEngineAfterCleanup = true
+        case .loadingEngine:
+            // The cancelled load's late resolution never re-caches
+            // (`resolveTranscriber`'s Task.isCancelled guard), so the slot is
+            // genuinely free the moment this returns.
+            cancel()
+        case .cleaning:
+            dropEngineImmediately()
         }
     }
 

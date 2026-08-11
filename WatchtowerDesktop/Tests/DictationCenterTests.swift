@@ -58,6 +58,24 @@ private final class AsyncGate: @unchecked Sendable {
     }
 }
 
+/// A `CLIRunnerProtocol` that suspends `run` on an `AsyncGate` before
+/// returning its canned stdout — lets a test hold a dictation in `.cleaning`
+/// while it interleaves other actions (the P2 handoff tests).
+private final class GatedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let gate: AsyncGate
+    private let stdoutData: Data
+
+    init(gate: AsyncGate, stdout: Data) {
+        self.gate = gate
+        self.stdoutData = stdout
+    }
+
+    func run(args: [String]) async throws -> Data {
+        await gate.wait()
+        return stdoutData
+    }
+}
+
 @MainActor
 final class DictationCenterTests: MeetingRecorderTestCase {
 
@@ -529,6 +547,95 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitUntil("second result delivered") { secondResult != nil }
 
         XCTAssertEqual(engineLoads, 2, "an idle warm engine must be dropped immediately, not left to the TTL")
+    }
+
+    /// Final-review P2 (a): the meeting claiming the slot during the engine
+    /// load must cancel the dictation outright — almost nothing has been
+    /// decoded yet (the stop-during-load rule) — freeing the slot without any
+    /// user stop, and the cancelled load's late resolution must not re-cache.
+    func testMeetingCaptureWillStartDuringEngineLoadCancelsTheDictation() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["never delivered"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var callbackFired = false
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in callbackFired = true },
+                     onResult: { _ in callbackFired = true })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        XCTAssertEqual(center.phase, .loadingEngine)
+        XCTAssertTrue(center.hasResidentEngine, "an in-flight load counts as holding the slot")
+
+        center.meetingCaptureWillStart()
+
+        XCTAssertEqual(center.phase, .idle, "the meeting-wins rule: a loading dictation is cancelled outright")
+        XCTAssertNil(center.activeTargetID)
+        XCTAssertEqual(recorder.stopCalls, 1, "the mic must be turned off")
+        XCTAssertFalse(center.hasResidentEngine, "the slot must be free without any user stop")
+
+        gate.release() // the stale, already-cancelled load resolves now
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertFalse(center.hasResidentEngine, "the cancelled load must never re-cache a resident engine")
+        XCTAssertFalse(callbackFired)
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// Final-review P2 (b): the meeting claiming the slot during cleanup must
+    /// drop the (no longer needed) engine immediately — before the cleanup
+    /// CLI call completes — while the cleanup itself still runs to completion
+    /// and delivers the cleaned result.
+    func testMeetingCaptureWillStartDuringCleaningDropsEngineButDeliversResult() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let gate = AsyncGate()
+        let runner = GatedCLIRunner(gate: gate, stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording") { center.phase == .recording }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("cleaning") { center.phase == .cleaning }
+        XCTAssertTrue(center.hasResidentEngine, "the warm engine survives into the cleanup step")
+
+        center.meetingCaptureWillStart()
+
+        XCTAssertFalse(center.hasResidentEngine,
+                       "the engine plays no part in cleanup — it must be dropped before cleanup completes")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass is woken by engineReleased")
+
+        gate.release() // the cleanup CLI call finishes now
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "the interrupted-at-cleaning dictation must still deliver its cleaned text")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertFalse(center.hasResidentEngine, "completion must not resurrect the dropped engine")
     }
 
     func testStartIsANoOpWhileMeetingIsBusy() async throws {
