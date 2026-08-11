@@ -91,10 +91,10 @@ equivalence pins.
   <path>`**. The transcript travels by file (never argv; stdin threshold rules apply
   as elsewhere). Pure transform: no DB reads or writes. Output is a JSON envelope on
   stdout:
-  - `idea` → `{"ok":true,"title":"…","body":"…"}`
-  - `note` → `{"ok":true,"markdown":"…"}`
-  - `chat` → `{"ok":true,"text":"…"}`
-  - failure → non-zero exit + `{"ok":false,"error":"…"}`
+  - `idea` → `{"mode":"idea","title":"…","body":"…"}`
+  - `note` → `{"mode":"note","markdown":"…"}`
+  - `chat` → `{"mode":"chat","text":"…"}`
+  - failure → non-zero exit with the error on stderr (no JSON envelope)
 - Cleanup output language = dictation language (Russian in → Russian out).
 - Mode semantics:
   - **idea**: distill to an idea title + body. The sheet fills the body always and the
