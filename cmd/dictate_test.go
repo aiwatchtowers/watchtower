@@ -215,6 +215,53 @@ func TestDictateCleanMissingRequiredKey(t *testing.T) {
 	assert.Contains(t, err.Error(), `{"title":"x"}`)
 }
 
+func TestDictateCleanMissingMarkdownKeyNoteMode(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetDictateFlags(t)
+	gen := &dictateMockGen{response: `{"text":"not markdown"}`}
+	stubDictateGenerator(t, gen)
+
+	f := writeTempTranscript(t, "some dictation text")
+
+	dictateCleanFlagMode = "note"
+	dictateCleanFlagFile = f
+	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "markdown")
+}
+
+func TestDictateCleanMissingTextKeyChatMode(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetDictateFlags(t)
+	gen := &dictateMockGen{response: `{"markdown":"not chat text"}`}
+	stubDictateGenerator(t, gen)
+
+	f := writeTempTranscript(t, "some dictation text")
+
+	dictateCleanFlagMode = "chat"
+	dictateCleanFlagFile = f
+	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "text")
+}
+
+func TestDictateCleanNonexistentTranscriptFile(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetDictateFlags(t)
+	gen := &dictateMockGen{response: `{"text":"unused"}`}
+	stubDictateGenerator(t, gen)
+
+	dictateCleanFlagMode = "chat"
+	dictateCleanFlagFile = filepath.Join(t.TempDir(), "does-not-exist.txt")
+	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading transcript file")
+	assert.Equal(t, 0, gen.calls)
+}
+
 func TestDictateCleanFencedJSON(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
