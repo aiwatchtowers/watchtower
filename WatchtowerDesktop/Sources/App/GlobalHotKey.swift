@@ -48,6 +48,9 @@ final class GlobalHotKey {
                     eventRef, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                     nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID
                 )
+                // `Self` cannot be used here: a C function pointer cannot be
+                // formed from a closure that captures dynamic Self type.
+                // swiftlint:disable:next prefer_self_in_static_references
                 guard status == noErr, hotKeyID.signature == GlobalHotKey.signature else {
                     return OSStatus(eventNotHandledErr)
                 }

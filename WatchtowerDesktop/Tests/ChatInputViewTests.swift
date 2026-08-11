@@ -28,7 +28,7 @@ final class ChatInputViewTests: XCTestCase {
     }
 
     private func hasMicButton(_ view: ChatInput) throws -> Bool {
-        (try? view.inspect().find(ViewType.Image.self, where: { try $0.actualImage().name() == "mic.fill" })) != nil
+        (try? view.inspect().find(ViewType.Image.self) { try $0.actualImage().name() == "mic.fill" }) != nil
     }
 
     // MARK: - Tests

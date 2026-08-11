@@ -17,7 +17,7 @@ final class MicRecorderTests: XCTestCase {
     }
 
     func testStartThrowsWhenPermissionDenied() async {
-        let recorder = MicRecorder(requestAccess: { false })
+        let recorder = MicRecorder { false }
 
         do {
             try await recorder.start()

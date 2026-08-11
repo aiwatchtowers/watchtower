@@ -8,7 +8,7 @@ struct ChatInput: View {
     var onStop: (() -> Void)?
     var placeholder: String = "Ask about your workspace..."
     /// nil → no mic button (the defaulted-member precedent, so no call site breaks).
-    var dictationTargetID: String? = nil
+    var dictationTargetID: String?
     @State private var inputHeight: CGFloat = 22
     @Environment(\.dictationCenter) private var dictationCenter
 

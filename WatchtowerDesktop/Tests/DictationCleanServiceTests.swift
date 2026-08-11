@@ -50,7 +50,7 @@ final class DictationCleanServiceTests: XCTestCase {
             return
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: invocation[idx + 1]),
-                        "temp transcript file should be removed after the call")
+                       "temp transcript file should be removed after the call")
     }
 
     func testRunnerThrowPropagates() async {

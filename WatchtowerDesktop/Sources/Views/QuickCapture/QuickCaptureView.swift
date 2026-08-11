@@ -28,7 +28,7 @@ enum QuickCaptureState: Equatable {
         lastRaw: String?,
         result: DictationCleanResult?,
         savedIdeaID: Int64?
-    ) -> QuickCaptureState {
+    ) -> Self {
         // A result or a saved id is this VM's own outcome — it stays true
         // regardless of what the shared center moved on to afterward (e.g.
         // `activeTargetID` already cleared once the dictation finished).
@@ -211,7 +211,7 @@ struct QuickCaptureView: View {
             recordingState
         case .cleaning:
             loadingState(text: "Cleaning up…")
-        case .failed(let message, let raw):
+        case let .failed(message, raw):
             failedState(message: message, raw: raw)
         case .resultReady(let result):
             resultPreview(result)

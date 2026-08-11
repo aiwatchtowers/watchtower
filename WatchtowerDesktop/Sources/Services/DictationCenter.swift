@@ -71,9 +71,12 @@ final class DictationCenter {
     /// No-op while another dictation is active or the meeting recorder owns
     /// the engine slot — the button is disabled in both cases anyway, this is
     /// the belt-and-braces path.
-    func start(targetID: String, mode: DictationMode,
-               onLiveText: @escaping @MainActor (String) -> Void,
-               onResult: @escaping @MainActor (DictationCleanResult) -> Void) {
+    func start(
+        targetID: String,
+        mode: DictationMode,
+        onLiveText: @escaping @MainActor (String) -> Void,
+        onResult: @escaping @MainActor (DictationCleanResult) -> Void
+    ) {
         guard phase == .idle, !meetingBusy() else { return }
 
         activeTargetID = targetID
@@ -94,7 +97,7 @@ final class DictationCenter {
 
         dictationTask = Task { @MainActor [weak self] in
             await self?.runDictation(mode: mode, recorder: recorder, config: config,
-                                      onLiveText: onLiveText, onResult: onResult)
+                                     onLiveText: onLiveText, onResult: onResult)
         }
     }
 
@@ -182,7 +185,7 @@ final class DictationCenter {
         let rawText: String
         do {
             rawText = try await capture(recorder: recorder, transcriber: transcriber, config: config,
-                                         onLiveText: onLiveText)
+                                        onLiveText: onLiveText)
         } catch {
             guard !Task.isCancelled else { return }
             // A thrown batch decode must not present as "nothing was said" —
@@ -281,7 +284,7 @@ final class DictationCenter {
         // takes the ordinary degenerate-stop path in the caller; only a
         // THROWN error propagates, since that means the buffer's contents
         // were never actually transcribed.
-        let output = try await transcriber.transcribe(buffer, config: config, progress: { _, _ in })
+        let output = try await transcriber.transcribe(buffer, config: config) { _, _ in }
         return output.text
     }
 

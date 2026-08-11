@@ -62,8 +62,9 @@ struct IdeaCreateSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        DictationButton(text: $essence, mode: .idea, targetID: "idea-create.essence",
-                                        onTitle: { if title.isEmpty { title = $0 } })
+                        DictationButton(text: $essence, mode: .idea, targetID: "idea-create.essence") {
+                            if title.isEmpty { title = $0 }
+                        }
                     }
                     TextEditor(text: $essence)
                         .font(.body)
