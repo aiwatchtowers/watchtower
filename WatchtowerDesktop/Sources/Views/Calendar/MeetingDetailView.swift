@@ -52,8 +52,15 @@ struct MeetingDetailView: View {
 
     /// Record affordance renders only while recording could plausibly capture
     /// this event: from `recordButtonEarlyGrace` before start until the end.
-    static func showsRecordButton(for event: CalendarEvent, now: Date) -> Bool {
-        now >= event.startDate - recordButtonEarlyGrace && event.endDate > now
+    /// `recordingEventID` (the Center's current capture target, nil when not
+    /// capturing) keeps the affordance — which doubles as the Stop control —
+    /// visible for the event being recorded even if a reschedule moves it out
+    /// of the window mid-capture: Stop must never disappear.
+    static func showsRecordButton(
+        for event: CalendarEvent, now: Date, recordingEventID: String? = nil
+    ) -> Bool {
+        if let recordingEventID, recordingEventID == event.id { return true }
+        return now >= event.startDate - recordButtonEarlyGrace && event.endDate > now
     }
 
     /// Whether the collapsed 3-line description preview hides content, i.e.
@@ -155,8 +162,23 @@ struct MeetingDetailView: View {
                     joinButton(event)
                 }
 
-                if Self.showsRecordButton(for: event, now: Date()) {
-                    MeetingRecordButton(eventID: event.id, title: event.title)
+                // The explicit TimelineView schedule re-evaluates the gate at
+                // both window edges (the CalendarEventRow countdown precedent):
+                // a pane opened before the pre-start grace arms the button at
+                // exactly start − grace, and a pane left open past the end
+                // drops it — without either, `Date()` is sampled once per
+                // render and the affordance goes stale in whichever direction
+                // until an unrelated re-render.
+                TimelineView(.explicit([
+                    event.startDate - Self.recordButtonEarlyGrace, event.endDate
+                ])) { context in
+                    let center = appState.meetingRecorderCenter
+                    if Self.showsRecordButton(
+                        for: event, now: context.date,
+                        recordingEventID: center.isCapturing ? center.currentEventID : nil
+                    ) {
+                        MeetingRecordButton(eventID: event.id, title: event.title)
+                    }
                 }
 
                 if let eventURL = URL(string: event.htmlLink), !event.htmlLink.isEmpty {
