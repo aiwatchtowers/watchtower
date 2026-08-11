@@ -261,8 +261,15 @@ struct CalendarEventsView: View {
     private func scrollToTargetIfNeeded(_ proxy: ScrollViewProxy) {
         guard let target = scrollTargetEventID else { return }
         scrollTargetEventID = nil
-        withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(target, anchor: .center)
+        // Same hazard as the Today landing below: for an out-of-window event
+        // `openLinkedEvent` pins the day via a synchronous reload, so this
+        // fires in the transaction that first materializes the target row —
+        // its `.id` isn't laid out yet and `scrollTo` would silently no-op.
+        // The guard/consume stays synchronous; only the scroll defers.
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
         }
     }
 
