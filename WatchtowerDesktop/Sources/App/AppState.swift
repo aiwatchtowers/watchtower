@@ -64,6 +64,13 @@ final class AppState {
     /// `meetingBusy`/`captureWillStart` (`initialize()`).
     let dictationCenter = DictationCenter()
 
+    /// Opens the Quick Capture window. Set once, from `rootContent.onAppear`,
+    /// where `@Environment(\.openWindow)` is actually available — the tray
+    /// button and the global hotkey handler both call through this instead of
+    /// needing their own `openWindow` (the hotkey's C callback has no
+    /// SwiftUI environment to read one from at all).
+    var openQuickCapture: (() -> Void)?
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.

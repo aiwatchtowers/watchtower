@@ -53,6 +53,10 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
 
     private var closeObserver: NSObjectProtocol?
     private var loginLaunchObserver: NSObjectProtocol?
+    /// ⌃⌥D — registered only for the survivor instance, same as everything
+    /// else in `applicationDidFinishLaunching`. Retained here for the life of
+    /// the app; `GlobalHotKey.deinit` tears it down if it's ever released.
+    private var globalHotKey: GlobalHotKey?
 
     /// True for the main `WindowGroup` window. Keyed on the window identifier
     /// SwiftUI derives from the scene id, because that is set when the window
@@ -95,6 +99,13 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         registerLoginItemOnce()
+
+        // Activation policy is handled by the window appearing (openWindow →
+        // the willCloseNotification observer below), so the handler itself
+        // has nothing to do beyond opening it.
+        let hotKey = GlobalHotKey { AppState.shared.openQuickCapture?() }
+        hotKey.register()
+        globalHotKey = hotKey
 
         // Close-to-tray: when the last user-facing window goes away, leave the
         // Dock but keep the tray (the app itself) alive. Deferred one runloop
