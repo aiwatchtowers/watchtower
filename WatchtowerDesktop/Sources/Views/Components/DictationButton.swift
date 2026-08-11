@@ -59,7 +59,11 @@ struct DictationButton: View {
             button(center)
             revertToast
         }
-        .onExitCommand { center.stop() }
+        .onExitCommand {
+            // center.stop() is global — a button for a target that isn't the
+            // one actually recording must not stop someone else's dictation.
+            if center.activeTargetID == targetID { center.stop() }
+        }
     }
 
     @ViewBuilder
