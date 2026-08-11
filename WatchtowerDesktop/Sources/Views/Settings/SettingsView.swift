@@ -67,6 +67,7 @@ struct GeneralSettings: View {
     @AppStorage("transcription.diarization") private var transcriptionDiarization = true
     @AppStorage("transcription.contextPrompt") private var transcriptionContextPrompt = false
     @AppStorage("transcription.liveTranscription") private var transcriptionLive = true
+    @AppStorage("transcription.preloadBeforeMeetings") private var transcriptionPreload = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
@@ -994,6 +995,11 @@ struct GeneralSettings: View {
             Toggle("Live transcription", isOn: $transcriptionLive)
                 .help("Transcribe while recording so text appears during the meeting. "
                     + "Off = record only and transcribe after Stop, keeping the machine idle during the call.")
+
+            Toggle("Preload model before meetings", isOn: $transcriptionPreload)
+                .help("Load the transcription model ~5 minutes before a meeting starts and keep it "
+                    + "warm between back-to-back recordings, so Record starts instantly. "
+                    + "Off = load on demand and free the memory once each recording is processed.")
 
             Toggle("Cross-window context (experimental)", isOn: $transcriptionContextPrompt)
                 .help("Feed each window's decode the previous window's text (Whisper long-form conditioning). "

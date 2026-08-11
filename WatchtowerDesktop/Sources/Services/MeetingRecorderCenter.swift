@@ -27,6 +27,17 @@ extension NotificationService: MeetingTranscriptNotifying {}
 /// the backlog when it finally loads (the same mechanism that already covers the
 /// mid-recording engine load).
 ///
+/// The **warm slot** is the fourth state of that single-engine invariant: an
+/// engine can be held by the capture's live pass, a draining live tail, a job —
+/// or parked idle in `warmTranscriber`, ready for the next recording so Record
+/// skips the "Loading model…" wait. A finished job always parks its engine back
+/// into the slot (unless preloading is off or the run failed); the 30-second
+/// warm-policy poll (`WarmEnginePolicy`) is the single decision point for
+/// unloading it, and also pre-loads the engine when a meeting is ongoing or
+/// starts within `WarmEnginePolicy.prewarmLead`. Both load sites go through
+/// `takeWarmOrLoad`, which awaits an in-flight prewarm first — so a recording
+/// started mid-prewarm still produces exactly one load, never two engines.
+///
 /// All state lives here (never view-local) so an in-flight recording — and the
 /// transcription/summarization that follows it — survives navigating away from
 /// the calendar event that started it. This is the "начал → ушёл → вернулся"
@@ -302,6 +313,37 @@ final class MeetingRecorderCenter {
     /// live pass) let go of it.
     private var engineSlotWaiters: [CheckedContinuation<Void, Never>] = []
 
+    // MARK: - Warm engine slot
+
+    /// `@AppStorage("transcription.preloadBeforeMeetings")` in Settings;
+    /// absent = true. Gates the warm slot as a whole: parking after a job and
+    /// prewarming ahead of meetings. Read fresh each poll tick (and each park),
+    /// never snapshotted — flipping it off drains the slot on the next tick.
+    static let preloadBeforeMeetingsKey = "transcription.preloadBeforeMeetings"
+
+    /// The idle engine parked between recordings (the single-engine
+    /// invariant's fourth holder — see the class doc). Filled by a finished
+    /// job or a prewarm; emptied by `takeWarmOrLoad` (taken by a recording)
+    /// or the warm-policy poll (unloaded).
+    private var warmTranscriber: Transcriber?
+    /// The provider+model identity (`engineKey()`) the warm engine was loaded
+    /// for. A mismatch at take/poll time means Settings changed since it was
+    /// parked — the stale engine is dropped, never handed to a recording.
+    private var warmKey: String?
+    /// The in-flight pre-load, when the poll decided to warm up ahead of a
+    /// meeting. `takeWarmOrLoad` awaits it before looking at the slot, which
+    /// is what makes a recording started mid-prewarm reuse that load instead
+    /// of starting a second one.
+    private var prewarmTask: Task<Void, Never>?
+    /// The 30-second warm-policy poll loop (`startWarmPolicy`).
+    private var warmPolicyTask: Task<Void, Never>?
+
+    /// Warm-slot observability for tests and diagnostics; the slot itself
+    /// stays private so nothing outside `takeWarmOrLoad`/the poll can move
+    /// the engine.
+    var isEngineWarm: Bool { warmTranscriber != nil }
+    var isPrewarming: Bool { prewarmTask != nil }
+
     /// Latched synchronously at the top of `startRecording`, before its first
     /// suspension point (`recorder.start`), and cleared when the start attempt
     /// resolves either way. Without it, two rapid start triggers (the Record
@@ -323,6 +365,19 @@ final class MeetingRecorderCenter {
     /// Directory the recorder writes `rec_*` files into and `restorePendingOnLaunch`
     /// scans. Injectable so tests neither write to nor scan the user's real one.
     private let recordingsDirectory: URL
+    /// Identity of the engine `engineFactory` would load right now (provider +
+    /// model, the same Settings keys `defaultEngineFactory` reads). Consulted
+    /// when parking and when taking from the warm slot, so a Settings change
+    /// between the two invalidates the parked engine instead of serving it.
+    private let engineKey: () -> String
+    /// Injectable clock for the warm-policy poll (the MeetingReminderCenter
+    /// convention).
+    private let clock: () -> Date
+    /// Reads the meeting window the warm policy decides against. The default
+    /// stub sees no meetings (the Center is constructed before the DB pool
+    /// exists); AppState hands in the real GRDB-backed provider via
+    /// `configureWarmPolicy` once the pool opens.
+    private var meetingsProvider: (Date) -> WarmMeetingWindow
 
     /// Recorder for the active recording; released once `stop()` is called.
     private var recorder: AudioRecording?
@@ -346,7 +401,10 @@ final class MeetingRecorderCenter {
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
         defaults: UserDefaults = .standard,
-        recordingsDirectory: URL = MeetingRecorderCenter.defaultRecordingsDirectory()
+        recordingsDirectory: URL = MeetingRecorderCenter.defaultRecordingsDirectory(),
+        engineKey: @escaping () -> String = MeetingRecorderCenter.defaultEngineKey,
+        now: @escaping () -> Date = Date.init,
+        meetingsProvider: @escaping (Date) -> WarmMeetingWindow = { _ in .noMeetings }
     ) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
@@ -356,6 +414,9 @@ final class MeetingRecorderCenter {
         self.notifier = notifier
         self.defaults = defaults
         self.recordingsDirectory = recordingsDirectory
+        self.engineKey = engineKey
+        self.clock = now
+        self.meetingsProvider = meetingsProvider
     }
 
     /// Production factory: resolves the provider+model chosen in Settings
@@ -371,6 +432,145 @@ final class MeetingRecorderCenter {
         let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
         let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
         return try await provider.makeTranscriber(model: model) { _ in }
+    }
+
+    /// Production engine identity: the same two Settings keys (and defaults)
+    /// `defaultEngineFactory` resolves, so "key matches" means "the factory
+    /// would load exactly what is parked". `nonisolated` so it can serve as
+    /// the init's default argument (evaluated outside the main actor); it
+    /// only reads `UserDefaults.standard` — deliberately, like the factory,
+    /// NOT the injected `defaults` (provider/model are `@AppStorage` keys).
+    nonisolated static func defaultEngineKey() -> String {
+        let providerID = UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit"
+        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        return "\(providerID)|\(model)"
+    }
+
+    // MARK: - Warm engine policy
+
+    /// Preload toggle, absent = true (the `remindersEnabledKey` convention).
+    private var preloadEnabled: Bool {
+        defaults.object(forKey: Self.preloadBeforeMeetingsKey) == nil
+            || defaults.bool(forKey: Self.preloadBeforeMeetingsKey)
+    }
+
+    /// Whether anything but the warm slot holds (or is about to hold) the
+    /// engine: a capture, a live pass still draining, or a job the queue is
+    /// working. The policy never prewarms — and never unloads — while this
+    /// is true.
+    private var isEngineBusy: Bool {
+        isCapturing || liveTask != nil || activeJobID != nil
+    }
+
+    /// The single engine-acquisition point for both load sites
+    /// (`startLivePass` and the batch fallback in `transcribeAndSave`):
+    /// (1) an in-flight prewarm is awaited first, so a recording started
+    /// mid-prewarm reuses that load rather than starting a second one;
+    /// (2) a parked engine whose key still matches Settings is taken (the
+    /// slot is emptied — the engine now belongs to the caller); a key
+    /// mismatch drops the stale engine instead of serving it;
+    /// (3) otherwise the factory loads fresh.
+    private func takeWarmOrLoad(_ config: TranscriptionConfig) async throws -> Transcriber {
+        if let prewarmTask {
+            await prewarmTask.value
+        }
+        if let warm = warmTranscriber {
+            let parkedKey = warmKey
+            warmTranscriber = nil
+            warmKey = nil
+            if parkedKey == engineKey() {
+                return warm
+            }
+            // Stale: Settings switched provider/model since it was parked.
+            // Fall through to load what the user actually selected now.
+        }
+        return try await engineFactory(config)
+    }
+
+    /// Parks a finished job's engine back into the warm slot so the next
+    /// recording skips the load. With preloading off the engine is dropped
+    /// right here instead — the slot must not keep a model in memory the
+    /// user asked not to keep (and the poll, the other unload point, may not
+    /// even be running). Never called on a failure path: an engine that just
+    /// failed is dropped by `failJob`, not parked.
+    private func parkTranscriber(_ transcriber: Transcriber) {
+        guard preloadEnabled else { return }
+        warmTranscriber = transcriber
+        warmKey = engineKey()
+    }
+
+    /// Starts the 30-second warm-policy poll (the `MeetingReminderCenter.start`
+    /// shape). Called by AppState once the meetings provider is wired.
+    func startWarmPolicy() {
+        warmPolicyTask?.cancel()
+        warmPolicyTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                self.warmPolicyTick()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+
+    func stopWarmPolicy() {
+        warmPolicyTask?.cancel()
+        warmPolicyTask = nil
+    }
+
+    /// Late wiring for the warm policy's calendar read: the Center is created
+    /// before the DB pool exists (the `voicePrintsLoader` precedent), so
+    /// AppState hands the GRDB-backed provider in here once the pool opens.
+    func configureWarmPolicy(meetingsProvider: @escaping (Date) -> WarmMeetingWindow) {
+        self.meetingsProvider = meetingsProvider
+    }
+
+    /// One warm-policy decision tick — called every 30 s by the poll loop and
+    /// directly from tests (the `MeetingReminderCenter.poll` convention). All
+    /// judgment lives in `WarmEnginePolicy.decide`; this only gathers inputs
+    /// (toggle and key read fresh each tick, never snapshotted) and applies
+    /// the verdict.
+    func warmPolicyTick(config: TranscriptionConfig = .fromDefaults()) {
+        let now = clock()
+        let decision = WarmEnginePolicy.decide(
+            toggleEnabled: preloadEnabled,
+            engineBusy: isEngineBusy,
+            warmPresent: warmTranscriber != nil,
+            prewarmInFlight: prewarmTask != nil,
+            keyMatches: warmKey == engineKey(),
+            window: meetingsProvider(now),
+            now: now
+        )
+        switch decision {
+        case .prewarm:
+            startPrewarm(config: config)
+        case .unload:
+            warmTranscriber = nil
+            warmKey = nil
+        case .none:
+            break
+        }
+    }
+
+    /// Loads the engine ahead of a meeting and parks it. Failure is silent by
+    /// contract (logged only): a failed prewarm must never surface an error —
+    /// the record-time load path reports errors as today, and the next tick
+    /// may simply retry. The key is captured at start so the parked engine is
+    /// labeled with what the factory was asked to load, even if Settings
+    /// change mid-load.
+    private func startPrewarm(config: TranscriptionConfig) {
+        let key = engineKey()
+        prewarmTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let transcriber = try await self.engineFactory(config)
+                self.warmTranscriber = transcriber
+                self.warmKey = key
+            } catch {
+                print("[MeetingRecorder] prewarm failed (will retry on a later tick): "
+                      + error.localizedDescription)
+            }
+            self.prewarmTask = nil
+        }
     }
 
     // MARK: - Diarization post-pass
@@ -687,7 +887,9 @@ final class MeetingRecorderCenter {
             }
             let transcriber: Transcriber
             do {
-                transcriber = try await self.engineFactory(config)
+                // Warm-slot fast path: a parked (or currently prewarming)
+                // engine is taken instead of loading a second one.
+                transcriber = try await self.takeWarmOrLoad(config)
             } catch {
                 await MainActor.run { setState(.unavailable) }
                 return nil
@@ -1048,7 +1250,7 @@ final class MeetingRecorderCenter {
             transcriber = reusableTranscriber
         } else {
             do {
-                transcriber = try await engineFactory(config)
+                transcriber = try await takeWarmOrLoad(config)
             } catch {
                 failJob(jobID, error.localizedDescription)
                 return
@@ -1059,9 +1261,15 @@ final class MeetingRecorderCenter {
         do {
             output = try await runTranscription(jobID: jobID, transcriber, samples: samples, config: config)
         } catch {
+            // A throwing engine is never parked — its retry loads fresh.
             failJob(jobID, error.localizedDescription)
             return
         }
+
+        // Transcription succeeded and the engine has served this job — park it
+        // warm for the next recording. The poll is the single unload point
+        // (parkTranscriber itself drops it when preloading is off).
+        parkTranscriber(transcriber)
 
         await renderAndSave(jobID: jobID, output: output, samples: samples,
                             durationSec: samples.count / TranscriptionConfig.sampleRate, config: config)
@@ -1081,10 +1289,14 @@ final class MeetingRecorderCenter {
             return
         }
         // The transcription is done, so the handed-over live engine has served
-        // its purpose — drop it before the (slow) role rendering rather than
-        // pinning a whole model in memory for the rest of the job's life. The
-        // batch path already consumed it in `transcribeAndSave`; this is the
-        // live path's release.
+        // its purpose — park it into the warm slot (or drop it, when preloading
+        // is off) before the (slow) role rendering rather than pinning it on
+        // the job for the rest of its life. The batch path already consumed it
+        // in `transcribeAndSave`; this is the live path's release, and the job
+        // must not keep a second reference to what the slot now owns.
+        if let handedOver = job.transcriber {
+            parkTranscriber(handedOver)
+        }
         updateJob(jobID) { $0.transcriber = nil }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
                                          samples: samples, config: config, eventID: job.eventID)
