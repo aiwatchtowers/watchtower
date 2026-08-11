@@ -33,6 +33,10 @@ final class DictationCenter {
     /// Wired by AppState to MeetingRecorderCenter.isBusy. The button reads it
     /// to disable itself; start() reads it as the belt-and-braces guard.
     var meetingBusy: () -> Bool = { false }
+    /// Wired by AppState to `MeetingRecorderCenter.dictationEngineDidRelease()`:
+    /// fired whenever the resident engine is dropped, so a meeting live pass
+    /// parked on `hasResidentEngine` can load its engine and catch up.
+    var engineReleased: (() -> Void)?
 
     private let recorderFactory: () -> MicRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
@@ -45,6 +49,10 @@ final class DictationCenter {
     /// The resident engine, retained across dictations until `engineReleaseTask`
     /// fires or `meetingCaptureWillStart()` claims the slot.
     private var warmTranscriber: Transcriber?
+    /// The Settings provider/model pair `warmTranscriber` was loaded under —
+    /// a dictation started after the owner switched either must not reuse a
+    /// stale engine.
+    private var warmEngineKey: String?
     private var engineReleaseTask: Task<Void, Never>?
     /// Set by `meetingCaptureWillStart()` while a dictation (or its engine
     /// load / cleanup) is still in flight: the completion path drops the
@@ -67,17 +75,32 @@ final class DictationCenter {
     // MARK: - Controls
 
     /// Starts dictating into one target. onLiveText delivers the full raw text
-    /// accumulated so far; onResult delivers the cleaned result exactly once.
-    /// No-op while another dictation is active or the meeting recorder owns
-    /// the engine slot — the button is disabled in both cases anyway, this is
-    /// the belt-and-braces path.
+    /// accumulated so far; onResult delivers the cleaned result exactly once;
+    /// onCleanupFailure (optional) delivers the raw transcript when the
+    /// cleanup CLI failed, so the surface can keep the spoken words in the
+    /// field instead of losing them. No-op while another dictation is active
+    /// or the meeting recorder owns the engine slot — the button is disabled
+    /// in both cases anyway, this is the belt-and-braces path.
     func start(
         targetID: String,
         mode: DictationMode,
         onLiveText: @escaping @MainActor (String) -> Void,
-        onResult: @escaping @MainActor (DictationCleanResult) -> Void
+        onResult: @escaping @MainActor (DictationCleanResult) -> Void,
+        onCleanupFailure: (@MainActor (String) -> Void)? = nil
     ) {
-        guard phase == .idle, !meetingBusy() else { return }
+        guard !meetingBusy() else { return }
+        switch phase {
+        case .idle:
+            break
+        case .failed:
+            // An orphaned failure — the host view that owned it is gone, so
+            // no retry button is left rendering it — must not wedge dictation
+            // app-wide: a fresh start from ANY target clears it. The owning
+            // view's own affordance still goes through retry(), never here.
+            phase = .idle
+        default:
+            return // another dictation is actively in flight
+        }
 
         activeTargetID = targetID
         liveText = ""
@@ -97,16 +120,23 @@ final class DictationCenter {
 
         dictationTask = Task { @MainActor [weak self] in
             await self?.runDictation(mode: mode, recorder: recorder, config: config,
-                                     onLiveText: onLiveText, onResult: onResult)
+                                     onLiveText: onLiveText, onResult: onResult,
+                                     onCleanupFailure: onCleanupFailure)
         }
     }
 
     /// Stops the mic; the already-running dictation task takes it from there
-    /// (finish transcription → clean → onResult). No-op unless a dictation is
-    /// actively recording — calling it twice is safe, since the underlying
+    /// (finish transcription → clean → onResult). During the engine-load
+    /// spinner nothing recorded is worth keeping yet, so a stop there is the
+    /// user walking away — it cancels. Otherwise a no-op unless a dictation
+    /// is actively recording — calling it twice is safe, since the underlying
     /// task only ever resolves once regardless of how many times the mic is
     /// told to stop.
     func stop() {
+        if phase == .loadingEngine {
+            cancel()
+            return
+        }
         guard phase == .recording, let recorder else { return }
         recorder.stop()
     }
@@ -158,7 +188,8 @@ final class DictationCenter {
         recorder: MicRecording,
         config: TranscriptionConfig,
         onLiveText: @escaping @MainActor (String) -> Void,
-        onResult: @escaping @MainActor (DictationCleanResult) -> Void
+        onResult: @escaping @MainActor (DictationCleanResult) -> Void,
+        onCleanupFailure: (@MainActor (String) -> Void)?
     ) async {
         do {
             try await recorder.start()
@@ -199,6 +230,14 @@ final class DictationCenter {
 
         lastRaw = rawText
         guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // An empty transcript with a latched capture error is NOT
+            // "nothing was said" — the mic silently produced no usable
+            // samples, and presenting that as a clean empty result would
+            // hide a broken capture path.
+            if recorder.lastError != nil {
+                finish(failed: "microphone capture failed")
+                return
+            }
             phase = .idle
             activeTargetID = nil
             engineBecameIdle()
@@ -206,8 +245,33 @@ final class DictationCenter {
             return
         }
 
+        // The engine plays no part in the CLI cleanup — when the meeting
+        // recorder has claimed the slot, release it now rather than after
+        // cleanup, so the meeting's parked live pass overlaps only the decode
+        // tail, never the (potentially slow) cleanup call.
+        if dropEngineAfterCleanup {
+            dropEngineAfterCleanup = false
+            dropEngineImmediately()
+        }
+
         phase = .cleaning
+        await runCleanup(rawText: rawText, mode: mode,
+                         onResult: onResult, onCleanupFailure: onCleanupFailure)
+    }
+
+    /// The cleanup step, split from `runDictation` (complexity): resolves the
+    /// CLI runner and delivers either the cleaned result or — on any failure —
+    /// the raw transcript through `onCleanupFailure`. "Raw text kept" must be
+    /// true even on a batch-only provider, where no live chunk ever reached
+    /// the field: the surface gets the transcript itself, not just the error.
+    private func runCleanup(
+        rawText: String,
+        mode: DictationMode,
+        onResult: @escaping @MainActor (DictationCleanResult) -> Void,
+        onCleanupFailure: (@MainActor (String) -> Void)?
+    ) async {
         guard let runner = runnerResolver() else {
+            onCleanupFailure?(rawText)
             finish(failed: "cleanup failed — raw text kept")
             return
         }
@@ -220,6 +284,7 @@ final class DictationCenter {
             onResult(result)
         } catch {
             guard !Task.isCancelled else { return }
+            onCleanupFailure?(rawText)
             finish(failed: "cleanup failed — raw text kept")
         }
     }
@@ -295,8 +360,31 @@ final class DictationCenter {
 
     // MARK: - Engine stickiness
 
+    /// Whether this center still holds — or is mid-load about to hold — the
+    /// shared physical engine slot. Read by the meeting recorder at record
+    /// start to decide whether its live pass must park until `engineReleased`.
+    var hasResidentEngine: Bool {
+        warmTranscriber != nil || phase == .loadingEngine
+    }
+
+    /// The Settings pair the engine choice hangs on. Same keys and fallbacks
+    /// as `MeetingRecorderCenter.defaultEngineFactory`, read from the injected
+    /// defaults so tests can flip them.
+    private func currentEngineKey() -> String {
+        let provider = defaults.string(forKey: "transcription.provider") ?? "whisperkit"
+        let model = defaults.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        return provider + "|" + model
+    }
+
     private func resolveTranscriber(config: TranscriptionConfig) async throws -> Transcriber {
-        if let warmTranscriber { return warmTranscriber }
+        let key = currentEngineKey()
+        if let warmTranscriber, warmEngineKey == key { return warmTranscriber }
+        // Either no engine is resident, or Settings changed since it was
+        // loaded — a stale engine must not outlive the owner's provider/model
+        // choice. Dropped here (not via dropEngineImmediately) so the meeting
+        // handshake callback doesn't fire for a slot we're about to refill.
+        warmTranscriber = nil
+        warmEngineKey = nil
         let transcriber = try await engineFactory(config)
         // A dictation cancelled while this load was in flight has already
         // made its engine-slot decision (dropped it via
@@ -307,6 +395,7 @@ final class DictationCenter {
         // cancellation check), so it is not lost, only left uncached.
         guard !Task.isCancelled else { return transcriber }
         warmTranscriber = transcriber
+        warmEngineKey = key
         return transcriber
     }
 
@@ -336,6 +425,11 @@ final class DictationCenter {
         engineReleaseTask?.cancel()
         engineReleaseTask = nil
         warmTranscriber = nil
+        warmEngineKey = nil
+        // A meeting live pass parked on `hasResidentEngine` re-checks now. A
+        // spurious fire (nothing was actually parked) is a guarded no-op on
+        // the meeting side.
+        engineReleased?()
     }
 }
 

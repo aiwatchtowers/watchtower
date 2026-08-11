@@ -9,6 +9,10 @@ protocol MicRecording: AnyObject {
     func stop()
     /// Live 16 kHz mono Float32 samples; finishes when `stop()` is called.
     var samples: AsyncStream<[Float]> { get }
+    /// First capture error latched mid-stream (e.g. every buffer conversion
+    /// failing). Read after the stream ends: an empty capture with a non-nil
+    /// error is a broken mic path, not silence.
+    var lastError: Error? { get }
 }
 
 enum MicRecorderError: LocalizedError {
@@ -42,6 +46,10 @@ final class MicRecorder: MicRecording {
     /// (`SystemAudioRecorder.swift:80-82, 140-141`).
     private let convertQueue = DispatchQueue(label: "com.watchtower.dictation.mic-recorder")
     private var converter: AVAudioConverter?
+    /// First conversion error, latched on `convertQueue` (the
+    /// `SystemAudioRecorder.firstWriteError` pattern). `stop()`'s barrier
+    /// orders the write before any post-stop read of `lastError`.
+    private var firstConversionError: Error?
 
     private var continuation: AsyncStream<[Float]>.Continuation!
     let samples: AsyncStream<[Float]>
@@ -53,7 +61,15 @@ final class MicRecorder: MicRecording {
         continuation = c
     }
 
+    var lastError: Error? { convertQueue.sync { firstConversionError } }
+
     func start() async throws {
+        // The tap is already installed — a second start would stack a second
+        // tap on the input node (the SystemAudioRecorder `impl != nil`
+        // precedent).
+        guard convertQueue.sync(execute: { converter == nil }) else {
+            throw MicRecorderError.engineStartFailed("already started")
+        }
         guard await requestAccess() else { throw MicRecorderError.microphonePermissionDenied }
 
         let inputNode = engine.inputNode
@@ -118,7 +134,14 @@ final class MicRecorder: MicRecording {
             outStatus.pointee = .haveData
             return buffer
         }
-        guard conversionError == nil, outBuffer.frameLength > 0, let data = outBuffer.floatChannelData?[0] else {
+        if let conversionError {
+            if firstConversionError == nil {
+                firstConversionError = conversionError
+                NSLog("MicRecorder: audio conversion failed: %@", conversionError.localizedDescription)
+            }
+            return
+        }
+        guard outBuffer.frameLength > 0, let data = outBuffer.floatChannelData?[0] else {
             return
         }
         let n = Int(outBuffer.frameLength)

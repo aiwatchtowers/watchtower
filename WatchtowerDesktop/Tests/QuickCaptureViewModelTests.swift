@@ -2,10 +2,10 @@ import XCTest
 import GRDB
 @testable import WatchtowerDesktop
 
-/// Canned `watchtower dictate clean --mode idea` stdout envelope, mirroring
-/// `DictationCenterTests`'s `chatCleanedEnvelope` for the idea mode quick
+/// Canned `watchtower dictate clean --mode idea` stdout envelope — the REAL
+/// idea shape (`title`+`body`, `cmd/dictate.go`), for the idea mode quick
 /// capture actually dictates in.
-private let ideaCleanedEnvelope = Data(#"{"mode":"idea","text":"cleaned"}"#.utf8)
+private let ideaCleanedEnvelope = Data(#"{"mode":"idea","title":"Idea title","body":"cleaned"}"#.utf8)
 
 // MARK: - QuickCaptureViewModel Tests
 //
@@ -152,7 +152,7 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         )
 
         var otherResult: DictationCleanResult?
-        center.start(targetID: "other-field", mode: .chat, onLiveText: { _ in }, onResult: { otherResult = $0 })
+        center.start(targetID: "other-field", mode: .idea, onLiveText: { _ in }, onResult: { otherResult = $0 })
         await waitUntil("other dictation recording") { center.phase == .recording }
 
         let vm = QuickCaptureViewModel()
@@ -172,7 +172,8 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         center.stop()
         await waitUntil("other result delivered") { otherResult != nil }
 
-        XCTAssertEqual(otherResult, DictationCleanResult(title: nil, text: "cleaned"), "the other dictation must still complete normally")
+        XCTAssertEqual(otherResult, DictationCleanResult(title: "Idea title", text: "cleaned"),
+                       "the other dictation must still complete normally")
     }
 
     /// The owning case, as a control: quick capture's own cancel() DOES stop
@@ -198,6 +199,38 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.activeTargetID)
+    }
+
+    // MARK: - m5 (final review): scene reuse must not show a stale outcome
+
+    /// A reopened Quick Capture window reuses the scene (and can reuse the
+    /// VM): `start()` must clear the previous run's outcome, or a stale
+    /// "Saved ✓" renders over a hot mic.
+    func testStartResetsStaleOutcomeFromAPreviousRun() async throws {
+        let defaults = try isolatedDefaults()
+        let center = DictationCenter(
+            recorderFactory: { FakeMicRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { FakeCLIRunner() },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        let vm = QuickCaptureViewModel()
+        vm.result = DictationCleanResult(title: nil, text: "stale")
+        vm.savedIdeaID = 7
+        vm.error = "stale error"
+        vm.liveText = "stale live"
+
+        vm.start(center: center)
+
+        XCTAssertNil(vm.result)
+        XCTAssertNil(vm.savedIdeaID)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(vm.liveText, "")
+        XCTAssertEqual(vm.state, .loading, "a fresh start must render the capture, not the previous outcome")
+
+        vm.cancel()
     }
 
     // MARK: - QuickCaptureState.derive() (M2 fix round: pure state derivation)

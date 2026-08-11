@@ -88,6 +88,12 @@ final class QuickCaptureViewModel {
     /// how the caller tells the two cases apart.
     func start(center: DictationCenter) {
         self.center = center
+        // A reused window scene must not show a previous run's outcome
+        // ("Saved ✓", an old result or error) over a hot mic.
+        result = nil
+        savedIdeaID = nil
+        error = nil
+        liveText = ""
         center.start(
             targetID: Self.targetID,
             mode: .idea,
@@ -159,6 +165,10 @@ final class QuickCaptureViewModel {
 /// dictation starts the instant the window appears, so speaking is the only
 /// action quick capture asks for.
 struct QuickCaptureView: View {
+    /// The window scene id, shared by the `Window` declaration and every
+    /// `openWindow` call site in `WatchtowerApp`.
+    static let sceneID = "quick-capture"
+
     @Environment(\.dictationCenter) private var center
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss

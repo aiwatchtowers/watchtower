@@ -9,8 +9,34 @@ struct ChatInput: View {
     var placeholder: String = "Ask about your workspace..."
     /// nil → no mic button (the defaulted-member precedent, so no call site breaks).
     var dictationTargetID: String?
-    @State private var inputHeight: CGFloat = 22
     @Environment(\.dictationCenter) private var dictationCenter
+
+    var body: some View {
+        ChatInputContent(
+            text: $text,
+            isStreaming: isStreaming,
+            onSend: onSend,
+            onStop: onStop,
+            placeholder: placeholder,
+            dictationTargetID: dictationTargetID,
+            dictationCenter: dictationCenter
+        )
+    }
+}
+
+/// The input row's actual rendering, split from `ChatInput` so it reads no
+/// custom `@Environment` — ViewInspector cannot resolve those without a real
+/// render pass (the `TrayMenuView`/`TrayMenuContent` precedent); tests drive
+/// this view with an explicit center.
+struct ChatInputContent: View {
+    @Binding var text: String
+    let isStreaming: Bool
+    let onSend: () -> Void
+    var onStop: (() -> Void)?
+    var placeholder: String
+    var dictationTargetID: String?
+    var dictationCenter: DictationCenter?
+    @State private var inputHeight: CGFloat = 22
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -43,8 +69,8 @@ struct ChatInput: View {
                     .strokeBorder(Color(.separatorColor).opacity(0.3), lineWidth: 0.5)
             )
 
-            if let id = dictationTargetID, dictationCenter != nil {
-                DictationButton(text: $text, mode: .chat, targetID: id)
+            if let id = dictationTargetID, let center = dictationCenter {
+                DictationButton(text: $text, mode: .chat, targetID: id, center: center)
             }
 
             Button {

@@ -305,7 +305,7 @@ struct WatchtowerApp: App {
                 // never left uninitialized because a delegate callback moved.
                 NotificationDelegate.sharedAppState = appState
                 appState.initialize()
-                appState.openQuickCapture = { openWindow(id: "quick-capture") }
+                appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -354,7 +354,7 @@ struct WatchtowerApp: App {
         // Self-injects both environments — the per-scene trap: a scene's
         // content tree gets none of `rootContent`'s environment for free, so
         // every auxiliary scene in this file repeats the same two lines.
-        Window("Quick Capture", id: "quick-capture") {
+        Window("Quick Capture", id: QuickCaptureView.sceneID) {
             QuickCaptureView()
                 .environment(appState)
                 .environment(\.dictationCenter, appState.dictationCenter)
@@ -377,6 +377,13 @@ struct WatchtowerApp: App {
         } label: {
             Image(nsImage: Self.trayIcon)
                 .accessibilityLabel("Watchtower")
+                // The tray label is always mounted — window-independent — so
+                // a login launch that never mounts `rootContent` still wires
+                // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
+                // with rootContent's own assignment.
+                .onAppear {
+                    appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                }
         }
     }
 }

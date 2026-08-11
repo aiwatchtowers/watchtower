@@ -107,4 +107,33 @@ final class ChatInputViewTests: XCTestCase {
         let view = makeView(dictationTargetID: "chat.workspace")
         XCTAssertFalse(try hasMicButton(view))
     }
+
+    /// The positive control for the two guards above: targetID set AND a
+    /// DictationCenter present → the mic button IS in the hierarchy. Driven
+    /// through `ChatInputContent` (the plain view `ChatInput` renders) with
+    /// an explicit center — ViewInspector cannot inject custom `@Environment`
+    /// values (the `TrayMenuContent` precedent).
+    func testMicButtonShownWhenTargetIDSetAndCenterPresent() throws {
+        let center = DictationCenter(
+            recorderFactory: { FakeMicRecorder() },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { nil },
+            defaults: try XCTUnwrap(UserDefaults(suiteName: "ChatInputViewTests-\(UUID().uuidString)")),
+            engineIdleTTL: .seconds(900)
+        )
+        var stored = ""
+        let view = ChatInputContent(
+            text: Binding(get: { stored }, set: { stored = $0 }),
+            isStreaming: false,
+            onSend: {},
+            onStop: nil,
+            placeholder: "Type here…",
+            dictationTargetID: "chat.workspace",
+            dictationCenter: center
+        )
+        let found = (try? view.inspect().find(ViewType.Image.self) {
+            try $0.actualImage().name() == "mic.fill"
+        }) != nil
+        XCTAssertTrue(found, "with a target id and a center, the mic button must render")
+    }
 }

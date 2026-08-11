@@ -354,6 +354,8 @@ final class AppState {
         // unconditionally rather than inside the DB-dependent Task below.
         dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
         meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
+        meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
+        dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,

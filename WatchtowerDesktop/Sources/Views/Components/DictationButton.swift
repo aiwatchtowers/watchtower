@@ -38,8 +38,13 @@ struct DictationButton: View {
     let targetID: String                 // unique per field, e.g. "idea-create.essence"
     var onTitle: ((String) -> Void)?     // idea mode: cleaned title, fired only when non-nil
     var isDisabled: Bool = false         // parent-supplied extra gate (e.g. notes isGenerating)
+    /// Explicit center for hosts that already resolved the environment value
+    /// themselves (`ChatInputContent`, tests) — ViewInspector cannot inject
+    /// custom `@Environment` values, hence the parameter. nil → the
+    /// environment center, as before.
+    var center: DictationCenter?
 
-    @Environment(\.dictationCenter) private var center
+    @Environment(\.dictationCenter) private var environmentCenter
 
     /// Armed only after a successful cleanup — mirrors the utterance-delete
     /// undo toast (`RecordingDetailTabs.swift`): a transient "Raw" affordance
@@ -48,7 +53,7 @@ struct DictationButton: View {
     @State private var revertDismissTask: Task<Void, Never>?
 
     var body: some View {
-        if let center {
+        if let center = center ?? environmentCenter {
             content(center)
         }
     }
@@ -64,14 +69,32 @@ struct DictationButton: View {
             // one actually recording must not stop someone else's dictation.
             if center.activeTargetID == targetID { center.stop() }
         }
+        .onDisappear {
+            // The host view is going away: nothing renders this dictation's
+            // state any more and onLiveText/onResult write into a discarded
+            // binding, so an owned capture is cancelled outright — mic off,
+            // state reset (the QuickCaptureView onDisappear precedent).
+            if center.activeTargetID == targetID { center.cancel() }
+        }
     }
 
     @ViewBuilder
     private func button(_ center: DictationCenter) -> some View {
         if center.activeTargetID == targetID, case .recording = center.phase {
             stopButton(center)
-        } else if center.activeTargetID == targetID,
-                  center.phase == .loadingEngine || center.phase == .cleaning {
+        } else if center.activeTargetID == targetID, center.phase == .loadingEngine {
+            // The spinner doubles as a cancel affordance: before the engine
+            // has loaded there is nothing worth keeping, and center.stop()
+            // during the load cancels the dictation outright.
+            Button {
+                center.stop()
+            } label: {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel dictation")
+        } else if center.activeTargetID == targetID, center.phase == .cleaning {
             ProgressView()
                 .controlSize(.small)
         } else if center.activeTargetID == targetID, case .failed(let message) = center.phase {
@@ -164,6 +187,13 @@ struct DictationButton: View {
                 if let raw = center.lastRaw, !raw.isEmpty {
                     armRevert(base: base, raw: raw)
                 }
+            },
+            onCleanupFailure: { raw in
+                // Cleanup failed: the spoken words themselves must land in the
+                // field. On a live provider this recomposes the same value the
+                // live chunks already wrote; on a batch-only provider it is
+                // the only delivery the field ever gets.
+                text = DictationSpan.compose(base: base, dictated: raw)
             })
     }
 

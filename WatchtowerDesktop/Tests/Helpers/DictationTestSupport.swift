@@ -9,6 +9,9 @@ import XCTest
 /// precedent, minus the file: `Tests/Helpers/MeetingRecorderTestSupport.swift:11-49`).
 final class FakeMicRecorder: MicRecording, @unchecked Sendable {
     var startError: Error?
+    /// Settable: a test simulates "capture silently broke mid-stream" by
+    /// setting this before finishing the (empty) stream.
+    var lastError: Error?
 
     private(set) var startCalls = 0
     private(set) var stopCalls = 0

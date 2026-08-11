@@ -247,7 +247,11 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         )
 
         var resultCalls = 0
-        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
+        var cleanupFailureRaw: String?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in },
+                     onResult: { _ in resultCalls += 1 },
+                     onCleanupFailure: { cleanupFailureRaw = $0 })
 
         await waitUntil("recording") { center.phase == .recording }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
@@ -262,6 +266,44 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(resultCalls, 0)
         XCTAssertEqual(center.lastRaw, "said something")
         XCTAssertEqual(center.liveText, "said something")
+        XCTAssertEqual(cleanupFailureRaw, "said something",
+                       "the raw transcript must be handed to the surface on cleanup failure")
+    }
+
+    /// M1 (final review): on a batch-only provider no live chunk ever reached
+    /// the field, so `onCleanupFailure` is the ONLY delivery — composing it
+    /// the way `DictationButton` does must leave the spoken words in the
+    /// field, not an empty string.
+    func testBatchOnlyCleanupFailureDeliversRawTextToTheField() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: Data(), error: StubCleanupError())
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["batch words"]), supportsLive: false) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var field = ""
+        let base = DictationSpan.base(existing: field, mode: .chat)
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { field = DictationSpan.compose(base: base, dictated: $0) },
+                     onResult: { field = DictationSpan.compose(base: base, dictated: $0.text) },
+                     onCleanupFailure: { field = DictationSpan.compose(base: base, dictated: $0) })
+
+        await waitUntil("recording") { center.phase == .recording }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+
+        XCTAssertEqual(field, "batch words", "cleanup failure must leave the raw transcript in the field")
     }
 
     // MARK: 6. Sticky engine
@@ -575,5 +617,242 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         XCTAssertEqual(resultCalls, 1)
         XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    // MARK: 10. Host-view teardown (B1/B2, final review)
+
+    /// The `DictationButton.onDisappear` path: an owned capture is cancelled
+    /// when its host view unmounts — mic off, state reset — and the slot is
+    /// immediately usable by another target.
+    func testCancelOnHostViewDisappearFreesTheSlotForAnotherTarget() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("recording") { center.phase == .recording }
+        let firstRecorder = try XCTUnwrap(lastRecorder)
+
+        // The onDisappear closure's exact logic: cancel only when owning.
+        if center.activeTargetID == "t1" { center.cancel() }
+
+        XCTAssertEqual(firstRecorder.stopCalls, 1, "cancel must turn the mic off")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertNil(center.activeTargetID)
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("second target recording") { center.phase == .recording }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("second target result") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+    }
+
+    /// B2: a failure whose owning view is gone (nobody left to press retry)
+    /// must not wedge dictation app-wide — a fresh start from ANY other
+    /// target clears the orphaned `.failed` and proceeds.
+    func testStartFromAnotherTargetUnwedgesAnOrphanedFailure() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { _ in
+                engineLoads += 1
+                if engineLoads == 1 { throw StubTranscribeError() }
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+        XCTAssertEqual(center.activeTargetID, "t1", "a failure keeps ownership so the owning button renders retry")
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("second target recording") { center.phase == .recording }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("second target result") { result != nil }
+
+        XCTAssertEqual(engineLoads, 2, "the un-wedged start must load a fresh engine")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 11. Mic capture errors (M3, final review)
+
+    /// A latched mic conversion error with an empty capture must surface as a
+    /// visible failure — never as a clean empty result that hides a broken
+    /// capture path.
+    func testEmptyCaptureWithLatchedMicErrorSurfacesAsFailed() async throws {
+        let defaults = try isolatedDefaults()
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        recorder.lastError = StubCleanupError() // any latched capture error
+        var resultCalls = 0
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
+
+        await waitUntil("recording") { center.phase == .recording }
+        center.stop() // no samples ever arrived — but an error was latched
+
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+
+        XCTAssertEqual(center.phase, .failed("microphone capture failed"))
+        XCTAssertEqual(resultCalls, 0, "a broken capture must never present as a successful empty result")
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// The mic failing to start at all (m8): `FakeMicRecorder.startError`
+    /// must land in `.failed`, with no callbacks and no cleanup call.
+    func testMicStartFailureSurfacesAsFailed() async throws {
+        let defaults = try isolatedDefaults()
+        let recorder = FakeMicRecorder()
+        recorder.startError = MicRecorderError.engineStartFailed("boom")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var callbackFired = false
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in callbackFired = true },
+                     onResult: { _ in callbackFired = true })
+
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+
+        guard case .failed(let message) = center.phase else { return XCTFail("expected .failed") }
+        XCTAssertTrue(message.hasPrefix("microphone failed to start"), "got: \(message)")
+        XCTAssertFalse(callbackFired)
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    // MARK: 12. Stop during engine load (m2, final review)
+
+    /// A stop while the engine is still loading is the user walking away —
+    /// it must cancel (mic off, no callbacks, idle), not be swallowed.
+    func testStopDuringEngineLoadCancelsTheDictation() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["never delivered"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var callbackFired = false
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in callbackFired = true },
+                     onResult: { _ in callbackFired = true })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        XCTAssertEqual(center.phase, .loadingEngine)
+
+        center.stop() // during the load — must behave as cancel()
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertNil(center.activeTargetID)
+        XCTAssertEqual(recorder.stopCalls, 1, "the mic must be turned off")
+
+        gate.release() // the stale load resolves after the fact
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertFalse(callbackFired, "a cancelled dictation must never fire its callbacks")
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    // MARK: 13. Warm engine vs Settings changes (m3, final review)
+
+    func testWarmEngineIsDroppedWhenModelSettingChangesBetweenDictations() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("model-a", forKey: "transcription.model")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        func runOneDictation() async {
+            var result: DictationCleanResult?
+            center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+            await waitUntil("recording") { center.phase == .recording }
+            lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+            center.stop()
+            await waitUntil("result delivered") { result != nil }
+        }
+
+        await runOneDictation()
+        XCTAssertEqual(engineLoads, 1)
+
+        defaults.set("model-b", forKey: "transcription.model")
+        await runOneDictation()
+        XCTAssertEqual(engineLoads, 2, "a Settings change must drop the warm engine and reload")
     }
 }
