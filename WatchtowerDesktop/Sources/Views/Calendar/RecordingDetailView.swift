@@ -27,6 +27,9 @@ struct RecordingDetailView: View {
     /// event's day into the rendered window first. nil = no navigation
     /// affordance available from this host.
     var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
+    /// Deselects the entry in the host list, dismissing this pane. nil when
+    /// embedded under an event header that already carries the close button.
+    var onClose: (() -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
@@ -220,6 +223,18 @@ struct RecordingDetailView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Delete recording with all its content")
+
+                if let onClose {
+                    // Close affordance (the GuideDetailView pattern) — without
+                    // it the pane can only be swapped, never dismissed.
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close")
+                }
             }
             HStack(spacing: 8) {
                 Text(TranscriptFormatting.formattedDate(transcript.createdAt))

@@ -13,6 +13,8 @@ struct MeetingDetailView: View {
     @Binding var userNotes: String
     let onDeleted: () -> Void
     let onChanged: () -> Void
+    /// Deselects the entry in the host list, dismissing this pane.
+    let onClose: () -> Void
     let onOpenEvent: (CalendarQueries.EventLink) -> Void
 
     @Environment(AppState.self) private var appState
@@ -36,7 +38,8 @@ struct MeetingDetailView: View {
             }
         case .recording(let item):
             RecordingDetailView(
-                transcriptID: item.id, onDeleted: onDeleted, onChanged: onChanged, onOpenEvent: onOpenEvent)
+                transcriptID: item.id, onDeleted: onDeleted, onChanged: onChanged,
+                onOpenEvent: onOpenEvent, onClose: onClose)
         }
     }
 
@@ -116,10 +119,22 @@ struct MeetingDetailView: View {
 
     private func header(_ event: CalendarEvent) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(event.title)
-                .font(.title3)
-                .fontWeight(.semibold)
-                .lineLimit(2)
+            HStack(alignment: .top, spacing: 8) {
+                Text(event.title)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .lineLimit(2)
+                Spacer()
+                // Close affordance (the GuideDetailView pattern) — without it
+                // the pane can only be swapped, never dismissed.
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close")
+            }
 
             HStack(spacing: 8) {
                 Text(event.formattedTimeRange)

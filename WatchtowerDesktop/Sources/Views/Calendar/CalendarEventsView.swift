@@ -82,6 +82,16 @@ struct CalendarEventsView: View {
         return nil
     }
 
+    /// Selection resulting from a row tap: tapping the already-selected row
+    /// deselects it (closing the detail pane), any other row selects it.
+    static func toggledSelection(current: MeetingSelection?, tapped: MeetingSelection) -> MeetingSelection? {
+        current == tapped ? nil : tapped
+    }
+
+    private func selectRow(_ tapped: MeetingSelection) {
+        selectedMeeting = Self.toggledSelection(current: selectedMeeting, tapped: tapped)
+    }
+
     /// Recording→event deep link ("Linked to:" header tap). The linked event
     /// may be outside the default today..+7d window in EITHER direction —
     /// sync retains ~24h back and calendar.sync_days_ahead is configurable —
@@ -118,8 +128,10 @@ struct CalendarEventsView: View {
                     prepVM: meetingPrepVM,
                     userNotes: $userNotes,
                     onDeleted: handleRecordingDeleted,
-                    onChanged: loadRecordings
-                ) { link in openLinkedEvent(link, in: vm) }
+                    onChanged: loadRecordings,
+                    onClose: { selectedMeeting = nil },
+                    onOpenEvent: { link in openLinkedEvent(link, in: vm) }
+                )
                 // Recreates the pane per entry — the detail view's @State
                 // (`selectedRecordingID`, `descriptionExpanded`) relies on
                 // this wrapper for its reset-on-switch semantics.
@@ -177,6 +189,19 @@ struct CalendarEventsView: View {
     // MARK: - Meetings List
 
     private var meetingsList: some View {
+        // Header pinned OUTSIDE the scroll content: the Today landing scrolls
+        // the list past its top, so an in-scroll header would hide the only
+        // ad-hoc Record affordance until the user scrolls all the way back up.
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            scrollableSections
+        }
+    }
+
+    private var scrollableSections: some View {
         ScrollViewReader { proxy in
             // GeometryReader supplies the viewport height for the marker
             // visibility check — the app targets macOS 14, so the macOS 15+
@@ -184,8 +209,6 @@ struct CalendarEventsView: View {
             GeometryReader { viewport in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        header
-
                         ForEach(sections) { section in
                             daySection(section)
                                 .id(section.id)
@@ -238,8 +261,15 @@ struct CalendarEventsView: View {
     private func scrollToTargetIfNeeded(_ proxy: ScrollViewProxy) {
         guard let target = scrollTargetEventID else { return }
         scrollTargetEventID = nil
-        withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(target, anchor: .center)
+        // Same hazard as the Today landing below: for an out-of-window event
+        // `openLinkedEvent` pins the day via a synchronous reload, so this
+        // fires in the transaction that first materializes the target row —
+        // its `.id` isn't laid out yet and `scrollTo` would silently no-op.
+        // The guard/consume stays synchronous; only the scroll defers.
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(target, anchor: .center)
+            }
         }
     }
 
@@ -248,7 +278,11 @@ struct CalendarEventsView: View {
     private func autoScrollToTodayOnce(_ proxy: ScrollViewProxy) {
         guard !didAutoScrollToToday, !sections.isEmpty else { return }
         didAutoScrollToToday = true
-        scrollToToday(proxy)
+        // The empty→populated `.onChange(of: sections)` fires in the same
+        // transaction that first materializes the day rows and the now-line —
+        // their `.id`s aren't laid out yet, and `scrollTo` against an
+        // unregistered id is a silent no-op. Land after the layout commits.
+        DispatchQueue.main.async { scrollToToday(proxy) }
     }
 
     /// With past days in the list, land on the now-line when today has a
@@ -497,7 +531,7 @@ struct CalendarEventsView: View {
                         .padding(.leading, 12)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            selectedMeeting = .event(event.id)
+                            selectRow(.event(event.id))
                         }
                         .id(event.id)
                     }
@@ -516,7 +550,7 @@ struct CalendarEventsView: View {
             HStack {
                 CalendarEventRow(event: event, recordingCount: folded.count)
                     .contentShape(Rectangle())
-                    .onTapGesture { selectedMeeting = entry.id }
+                    .onTapGesture { selectRow(entry.id) }
 
                 if event.conferenceLink != nil, event.endDate > Date() {
                     joinButton(event)
@@ -526,7 +560,7 @@ struct CalendarEventsView: View {
         case let .recording(item):
             MeetingRecordingRow(item: item, isSelected: selectedMeeting == entry.id)
                 .contentShape(Rectangle())
-                .onTapGesture { selectedMeeting = entry.id }
+                .onTapGesture { selectRow(entry.id) }
                 .id(item.id)
         }
     }
