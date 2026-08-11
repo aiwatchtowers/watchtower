@@ -162,19 +162,18 @@ struct MeetingDetailView: View {
                     joinButton(event)
                 }
 
-                // The explicit TimelineView schedule re-renders the gate at
-                // both window edges: a pane opened before the pre-start grace
-                // arms the button at start − grace, and a pane left open past
-                // the end drops it — without it, the clock is sampled once
-                // per render and the affordance goes stale in whichever
-                // direction until an unrelated re-render. The schedule is a
-                // re-render TRIGGER only: `context.date` must NOT be used as
-                // "now" — for an `.explicit` schedule it is the supplied
-                // entry (future-first, never advanced past old entries), so
-                // gating on it renders the button in every state.
-                TimelineView(.explicit([
-                    event.startDate - Self.recordButtonEarlyGrace, event.endDate
-                ])) { _ in
+                // The TimelineView keeps the gate live for a mounted pane: a
+                // pane opened before the pre-start grace arms the button when
+                // the window opens, and a pane left open past the end drops
+                // it — without it, the clock is sampled once per render and
+                // the affordance goes stale in whichever direction until an
+                // unrelated re-render. `.everyMinute` (the now-line
+                // precedent, minute-granular — immaterial against a 10-min
+                // grace) is deliberate: an `.explicit` schedule is inert when
+                // all its entries are in the future, and its `context.date`
+                // is the supplied entry rather than "now" — so the schedule
+                // is a re-render TRIGGER only and the gate reads `Date()`.
+                TimelineView(.everyMinute) { _ in
                     let center = appState.meetingRecorderCenter
                     if Self.showsRecordButton(
                         for: event, now: Date(),
