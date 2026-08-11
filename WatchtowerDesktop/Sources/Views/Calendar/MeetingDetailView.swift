@@ -42,9 +42,18 @@ struct MeetingDetailView: View {
 
     // MARK: - Pure helpers (testable without mounting a view)
 
-    /// Record affordance must not render for a meeting that has already ended.
+    /// How early before an event's start its Record affordance appears.
+    /// Recording starts capturing NOW and links the audio to THIS event, so a
+    /// button on a far-future event silently mislabels whatever meeting is
+    /// actually happening (a QA-sync recording once landed on the next
+    /// meeting's event this way). 10 minutes comfortably covers the
+    /// legitimate "press Record a minute early" flow.
+    static let recordButtonEarlyGrace: TimeInterval = 10 * 60
+
+    /// Record affordance renders only while recording could plausibly capture
+    /// this event: from `recordButtonEarlyGrace` before start until the end.
     static func showsRecordButton(for event: CalendarEvent, now: Date) -> Bool {
-        event.endDate > now
+        now >= event.startDate - recordButtonEarlyGrace && event.endDate > now
     }
 
     /// Whether the collapsed 3-line description preview hides content, i.e.

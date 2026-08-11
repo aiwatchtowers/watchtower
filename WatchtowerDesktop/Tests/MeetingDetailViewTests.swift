@@ -42,11 +42,34 @@ final class MeetingDetailViewTests: XCTestCase {
         XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
     }
 
-    /// Future event → Record affordance shown.
+    /// Event at the edge of the pre-start grace (10 min out) → still shown.
     func test_showsRecordButton_visibleForFutureEvent() {
         let now = Date()
         let event = makeEvent(start: now.addingTimeInterval(600), end: now.addingTimeInterval(4200))
         XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// Pressing Record a minute early is the intended flow — never gated.
+    func test_showsRecordButton_visibleJustBeforeStart() {
+        let now = Date()
+        let event = makeEvent(start: now.addingTimeInterval(60), end: now.addingTimeInterval(3660))
+        XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// An event well before its start (47 min out — the real mislink incident:
+    /// Record pressed during the previous meeting silently linked that
+    /// meeting's audio to the future event) → no Record affordance.
+    func test_showsRecordButton_hiddenForFarFutureEvent() {
+        let now = Date()
+        let event = makeEvent(start: now.addingTimeInterval(47 * 60), end: now.addingTimeInterval(92 * 60))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// Boundary: one second past the 10-minute grace → hidden.
+    func test_showsRecordButton_hiddenJustPastGrace() {
+        let now = Date()
+        let event = makeEvent(start: now.addingTimeInterval(601), end: now.addingTimeInterval(4201))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
     }
 
     /// Meeting currently in progress (endDate still ahead) → still shown.
