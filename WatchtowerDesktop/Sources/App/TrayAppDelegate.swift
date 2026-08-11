@@ -100,10 +100,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
 
         registerLoginItemOnce()
 
-        // Activation policy is handled by the window appearing (openWindow →
-        // the willCloseNotification observer below), so the handler itself
-        // has nothing to do beyond opening it.
-        let hotKey = GlobalHotKey { AppState.shared.openQuickCapture?() }
+        // M3 fix-round: the willCloseNotification observer only recomputes
+        // policy on window CLOSE, not open — from `.accessory` (no Dock
+        // icon), opening the window without also activating left it behind
+        // the frontmost app. Mirrors the tray's own "Open Watchtower" path.
+        let hotKey = GlobalHotKey {
+            ActivationPolicyDecision.becomeRegularAndActivate()
+            AppState.shared.openQuickCapture?()
+        }
         hotKey.register()
         globalHotKey = hotKey
 
