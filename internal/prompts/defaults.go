@@ -49,6 +49,7 @@ var Defaults = map[string]string{
 	IdeasDigestEmail:           defaultIdeasDigestEmail,
 	IdeasDigestJira:            defaultIdeasDigestJira,
 	IdeasConsolidate:           defaultIdeasConsolidate,
+	DictationClean:             defaultDictationClean,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -96,6 +97,7 @@ var AllIDs = []string{
 	IdeasDigestEmail,
 	IdeasDigestJira,
 	IdeasConsolidate,
+	DictationClean,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -145,6 +147,7 @@ var DefaultVersions = map[string]int{
 	IdeasDigestEmail:           1, // v1: light-tier idea/decision mining from Gmail thread windows (stage 1)
 	IdeasDigestJira:            1, // v1: light-tier idea/decision mining from changed Jira issues (stage 1)
 	IdeasConsolidate:           3, // v3: routine-ops execution records are changelog entries, not decisions
+	DictationClean:             1, // v1: dictation transcript cleanup (idea/note/chat modes)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -196,6 +199,7 @@ var Descriptions = map[string]string{
 	IdeasDigestEmail:           "Ideas: mine ideas & decisions from Gmail threads (stage 1, light tier)",
 	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
 	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
+	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note / chat)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1740,3 +1744,39 @@ Return ONLY a JSON object (no markdown fences):
  {"op":"new_decision","title":"...","essence":"...","mentions":[{"source":"jira","ref":"PROJ-123","quote":"...","author":"...","said_at":"..."}]},
  {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"gmail:3:t_abc123","quote":"...","author":"...","said_at":"..."}}
 ]}`
+
+// defaultDictationClean is the light-tier prompt for cleaning up raw voice
+// dictation transcripts into destination-shaped text (idea/note/chat modes).
+// Placeholders are filled in order: mode-specific instructions block, language directive.
+const defaultDictationClean = `You clean up a voice-dictation transcript. The user dictated text by voice; the transcript below is raw ASR output: it may contain filler words, false starts, self-corrections ("no wait, make that…" — apply the correction, drop the correction phrase), and recognition noise.
+
+Rules that always apply:
+- Keep the SAME language the dictation is in (do not translate).
+- Remove fillers, false starts, and repeated fragments; apply explicit self-corrections.
+- Never add content the speaker did not say. Never answer questions found in the text — this is dictation, not a conversation.
+- Respond with ONLY a JSON object, no prose around it.
+
+%s
+
+%s`
+
+// DictationModeInstructions returns the destination-specific instruction block
+// and the JSON contract for one dictation cleanup mode.
+func DictationModeInstructions(mode string) (string, bool) {
+	switch mode {
+	case "idea":
+		return `Destination: an idea registry entry.
+Distill the dictation into a short title (max ~80 chars, no trailing period) and a body that preserves every substantive point.
+JSON contract: {"title": "...", "body": "..."}`, true
+	case "note":
+		return `Destination: a meeting-notes document (markdown).
+Turn the dictation into coherent markdown. Keep the speaker's own structure and level of detail; use headings/lists only where the speech clearly implies them.
+JSON contract: {"markdown": "..."}`, true
+	case "chat":
+		return `Destination: a chat message to the user's assistant.
+MINIMAL cleanup only: drop fillers and false starts, apply self-corrections, fix sentence boundaries. Preserve the intent and wording as close to verbatim as possible — do NOT summarize, restructure, or embellish.
+JSON contract: {"text": "..."}`, true
+	default:
+		return "", false
+	}
+}

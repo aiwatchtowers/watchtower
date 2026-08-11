@@ -219,6 +219,10 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
+    /// Read here — not inside `TrayMenuView`, which has its own copy for the
+    /// tray button — so the global hotkey's plain C callback (no SwiftUI
+    /// environment of its own) has something to call through `AppState`.
+    @Environment(\.openWindow) private var openWindow
     private let notificationDelegate: NotificationDelegate
     private let isDuplicate: Bool
 
@@ -293,6 +297,7 @@ struct WatchtowerApp: App {
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
             .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
                 // (same singleton, `initialize()` latched by `isInitializing`).
@@ -300,6 +305,7 @@ struct WatchtowerApp: App {
                 // never left uninitialized because a delegate callback moved.
                 NotificationDelegate.sharedAppState = appState
                 appState.initialize()
+                appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -341,22 +347,43 @@ struct WatchtowerApp: App {
             ProgressDetailView()
                 .environment(appState)
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
         }
         .defaultSize(width: 600, height: 500)
+
+        // Self-injects both environments — the per-scene trap: a scene's
+        // content tree gets none of `rootContent`'s environment for free, so
+        // every auxiliary scene in this file repeats the same two lines.
+        Window("Quick Capture", id: QuickCaptureView.sceneID) {
+            QuickCaptureView()
+                .environment(appState)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.topTrailing)
 
         Settings {
             SettingsView()
                 .environment(appState)
                 .background(SettingsWindowAccessor())
                 .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
         }
 
         MenuBarExtra(isInserted: .constant(!isDuplicate)) {
             TrayMenuView()
                 .environment(appState)
+                .environment(\.dictationCenter, appState.dictationCenter)
         } label: {
             Image(nsImage: Self.trayIcon)
                 .accessibilityLabel("Watchtower")
+                // The tray label is always mounted — window-independent — so
+                // a login launch that never mounts `rootContent` still wires
+                // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
+                // with rootContent's own assignment.
+                .onAppear {
+                    appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                }
         }
     }
 }

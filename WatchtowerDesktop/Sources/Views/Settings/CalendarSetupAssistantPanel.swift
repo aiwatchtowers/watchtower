@@ -35,7 +35,8 @@ struct CalendarSetupAssistantPanel: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send(snapshot: makeSnapshot()) },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "e.g. \"my calendar is on iCloud\""
+                placeholder: "e.g. \"my calendar is on iCloud\"",
+                dictationTargetID: "chat.setup.calendar"
             )
         }
     }

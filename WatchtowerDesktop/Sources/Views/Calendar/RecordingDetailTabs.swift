@@ -393,6 +393,11 @@ struct RecordingNotesTab: View {
                 .controlSize(.small)
                 .disabled(isGenerating)
 
+                // Appending into `draft` rides the existing debounced autosave for
+                // free; isDisabled honors the same lock as the editor below so
+                // dictation can't route around the generation adoption guard.
+                DictationButton(text: $draft, mode: .note, targetID: "notes.\(transcript.id ?? 0)", isDisabled: isGenerating)
+
                 if isGenerating {
                     ProgressView().controlSize(.small)
                     Text("Generating notes…")
@@ -887,7 +892,8 @@ struct RecordingChatTab: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send() },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "Ask about this meeting…"
+                placeholder: "Ask about this meeting…",
+                dictationTargetID: "chat.meeting.\(chatVM.transcriptID)"
             )
         }
     }

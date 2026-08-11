@@ -15,6 +15,11 @@ final class MeetingChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
+    /// Stable identity for a dictation targetID — the transcript is always
+    /// persisted by the time this VM exists (`loadOrCreateConversation` below
+    /// requires it too).
+    var transcriptID: Int64 { transcript.id ?? 0 }
+
     private var conversationID: Int64?
     private var sessionID: String?
     private let aiService: any AIServiceProtocol

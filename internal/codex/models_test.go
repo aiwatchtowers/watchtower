@@ -23,6 +23,7 @@ func TestModelForSource(t *testing.T) {
 		{"memory.extract_email_episodes", ModelLightweight},
 		{prompts.MemoryRenderChannelDigest, ModelLightweight},
 		{prompts.MeetingFollowup, ModelLightweight},
+		{prompts.DictationClean, ModelLightweight},
 		{"digest.channel", ModelDefault},
 		{"digest.daily", ModelDefault},
 		{"tracks.create", ModelDefault},

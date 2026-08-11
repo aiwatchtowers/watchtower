@@ -19,6 +19,9 @@ final class SituationChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
+    /// Stable identity for a dictation targetID.
+    var situationID: Int { situation.id }
+
     private var conversationID: Int64?
     private var sessionID: String?
     private let aiService: any AIServiceProtocol

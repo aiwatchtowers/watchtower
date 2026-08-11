@@ -14,6 +14,13 @@ struct TrayMenuView: View {
             isRunning: appState.daemonManager.isRunning,
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
+            quickCaptureAction: {
+                // Same "become regular" move as Open Watchtower: the Quick
+                // Capture window is a real window and needs a Dock icon /
+                // activation to actually come to the front.
+                ActivationPolicyDecision.becomeRegularAndActivate()
+                appState.openQuickCapture?()
+            },
             openAction: {
                 // Opening from the tray is a deliberate "become regular" move —
                 // it must win over a still-armed login-launch close observer
@@ -50,6 +57,7 @@ struct TrayMenuContent: View {
     let isRunning: Bool
     let daemonError: String?
     let cliStoreError: String?
+    let quickCaptureAction: () -> Void
     let openAction: () -> Void
     let settingsAction: () -> Void
 
@@ -66,6 +74,8 @@ struct TrayMenuContent: View {
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
             }
+            Divider()
+            Button("New Voice Idea", action: quickCaptureAction)
             Divider()
             Button("Open Watchtower", action: openAction)
             Button("Settings…", action: settingsAction)
