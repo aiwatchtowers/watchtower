@@ -162,19 +162,22 @@ struct MeetingDetailView: View {
                     joinButton(event)
                 }
 
-                // The explicit TimelineView schedule re-evaluates the gate at
-                // both window edges (the CalendarEventRow countdown precedent):
-                // a pane opened before the pre-start grace arms the button at
-                // exactly start − grace, and a pane left open past the end
-                // drops it — without either, `Date()` is sampled once per
-                // render and the affordance goes stale in whichever direction
-                // until an unrelated re-render.
+                // The explicit TimelineView schedule re-renders the gate at
+                // both window edges: a pane opened before the pre-start grace
+                // arms the button at start − grace, and a pane left open past
+                // the end drops it — without it, the clock is sampled once
+                // per render and the affordance goes stale in whichever
+                // direction until an unrelated re-render. The schedule is a
+                // re-render TRIGGER only: `context.date` must NOT be used as
+                // "now" — for an `.explicit` schedule it is the supplied
+                // entry (future-first, never advanced past old entries), so
+                // gating on it renders the button in every state.
                 TimelineView(.explicit([
                     event.startDate - Self.recordButtonEarlyGrace, event.endDate
-                ])) { context in
+                ])) { _ in
                     let center = appState.meetingRecorderCenter
                     if Self.showsRecordButton(
-                        for: event, now: context.date,
+                        for: event, now: Date(),
                         recordingEventID: center.isCapturing ? center.currentEventID : nil
                     ) {
                         MeetingRecordButton(eventID: event.id, title: event.title)
