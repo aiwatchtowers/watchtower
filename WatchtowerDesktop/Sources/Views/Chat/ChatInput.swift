@@ -7,7 +7,10 @@ struct ChatInput: View {
     let onSend: () -> Void
     var onStop: (() -> Void)?
     var placeholder: String = "Ask about your workspace..."
+    /// nil → no mic button (the defaulted-member precedent, so no call site breaks).
+    var dictationTargetID: String? = nil
     @State private var inputHeight: CGFloat = 22
+    @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -39,6 +42,10 @@ struct ChatInput: View {
                 RoundedRectangle(cornerRadius: 18)
                     .strokeBorder(Color(.separatorColor).opacity(0.3), lineWidth: 0.5)
             )
+
+            if let id = dictationTargetID, dictationCenter != nil {
+                DictationButton(text: $text, mode: .chat, targetID: id)
+            }
 
             Button {
                 if isStreaming {

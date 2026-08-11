@@ -13,7 +13,8 @@ final class ChatInputViewTests: XCTestCase {
         isStreaming: Bool = false,
         onSend: @escaping () -> Void = {},
         onStop: (() -> Void)? = nil,
-        placeholder: String = "Ask about your workspace..."
+        placeholder: String = "Ask about your workspace...",
+        dictationTargetID: String? = nil
     ) -> ChatInput {
         var stored = text
         return ChatInput(
@@ -21,8 +22,13 @@ final class ChatInputViewTests: XCTestCase {
             isStreaming: isStreaming,
             onSend: onSend,
             onStop: onStop,
-            placeholder: placeholder
+            placeholder: placeholder,
+            dictationTargetID: dictationTargetID
         )
+    }
+
+    private func hasMicButton(_ view: ChatInput) throws -> Bool {
+        (try? view.inspect().find(ViewType.Image.self, where: { try $0.actualImage().name() == "mic.fill" })) != nil
     }
 
     // MARK: - Tests
@@ -83,5 +89,22 @@ final class ChatInputViewTests: XCTestCase {
 
         XCTAssertEqual(stopped, 1)
         XCTAssertEqual(sent, 0)
+    }
+
+    // MARK: - Dictation mic button
+
+    /// dictationTargetID nil (the default) → no mic button, regardless of environment.
+    func testNoMicButtonWhenDictationTargetIDNil() throws {
+        let view = makeView(dictationTargetID: nil)
+        XCTAssertFalse(try hasMicButton(view))
+    }
+
+    /// dictationTargetID set but no DictationCenter in the environment (the
+    /// test-harness default) → still no mic button — DictationButton itself
+    /// renders nothing without a center, but ChatInput's own guard should
+    /// already keep it out of the hierarchy.
+    func testNoMicButtonWhenDictationCenterAbsentFromEnvironment() throws {
+        let view = makeView(dictationTargetID: "chat.workspace")
+        XCTAssertFalse(try hasMicButton(view))
     }
 }
