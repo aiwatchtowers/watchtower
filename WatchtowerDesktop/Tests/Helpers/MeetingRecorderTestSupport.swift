@@ -256,7 +256,15 @@ class MeetingRecorderTestCase: XCTestCase {
         #"{"transcript_id":7,"recap_ok":false,"recap_error":"transcript too short (12 chars): recap skipped","recap_skipped":true}"#.utf8)
 
     func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)"))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)"))
+        // The warm engine slot (absent = ON) parks a finished job's engine for
+        // the next recording to reuse, which would change what these suites
+        // pin: every engine-lifecycle assertion here (engine loads per
+        // recording, slot handoff, orphan drain) describes the preloading-OFF
+        // path. `MeetingRecorderWarmEngineTests` owns the warm-slot behavior
+        // and re-enables the toggle via its `warmDefaults()`.
+        defaults.set(false, forKey: MeetingRecorderCenter.preloadBeforeMeetingsKey)
+        return defaults
     }
 
     /// A dummy on-disk file standing in for a finished recording. Its bytes are

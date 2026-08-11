@@ -89,4 +89,24 @@ final class CalendarEventsViewTests: XCTestCase {
     func test_initialScrollTarget_nilForEmptySections() {
         XCTAssertNil(CalendarEventsView.initialScrollTarget(in: [], today: calendar.startOfDay(for: now)))
     }
+
+    // MARK: - toggledSelection (row tap → select / deselect)
+
+    func test_toggledSelection_selectsWhenNothingSelected() {
+        XCTAssertEqual(
+            CalendarEventsView.toggledSelection(current: nil, tapped: .event("e1")),
+            .event("e1"))
+    }
+
+    func test_toggledSelection_switchesToAnotherRow() {
+        XCTAssertEqual(
+            CalendarEventsView.toggledSelection(current: .event("e1"), tapped: .recording(7)),
+            .recording(7))
+    }
+
+    /// Tapping the already-selected row closes the detail pane.
+    func test_toggledSelection_tapOnSelectedRowDeselects() {
+        XCTAssertNil(CalendarEventsView.toggledSelection(current: .event("e1"), tapped: .event("e1")))
+        XCTAssertNil(CalendarEventsView.toggledSelection(current: .recording(7), tapped: .recording(7)))
+    }
 }

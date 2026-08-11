@@ -604,7 +604,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
 
         let job = try XCTUnwrap(center.jobs.first)
         XCTAssertTrue(job.phase.isFailed, "the save failed, so the job stays for retry")
-        XCTAssertNil(job.transcriber,
+        XCTAssertNil(job.engine,
                      "the engine the live pass handed over must not be pinned by a parked failure")
     }
 
@@ -641,7 +641,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
 
         let job = try XCTUnwrap(center.jobs.first)
         XCTAssertEqual(job.phase, .failed("No speech recognized"))
-        XCTAssertNil(job.transcriber,
+        XCTAssertNil(job.engine,
                      "an empty transcript must release the engine, not pin it on the parked failure")
         XCTAssertEqual(engineLoads, 1, "the batch pass reused the engine the live pass loaded")
         XCTAssertEqual(runner.savedTranscripts, [], "an empty transcript is never saved")
