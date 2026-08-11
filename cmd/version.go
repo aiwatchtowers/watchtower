@@ -11,7 +11,8 @@ var (
 	Commit    = "unknown"
 	BuildDate = "unknown"
 	// BuildFlavor names the build profile the artifact was produced with
-	// (empty for the default build). Set via -ldflags by scripts/build-app.sh.
+	// (empty for the default build). Set via -ldflags by scripts/build-app.sh
+	// and the Makefile build/install targets.
 	BuildFlavor = ""
 )
 

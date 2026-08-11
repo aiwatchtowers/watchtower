@@ -4,11 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# BEGIN profile-selection (extracted verbatim by scripts/tests/test-build-app-profile.sh)
 # Source the build profile if present (OAuth credentials, BUILD_FLAVOR etc.).
 # ENV_FILE selects an alternative profile (e.g. ENV_FILE=.env.b2 make app);
 # relative paths resolve against the project root. An explicitly requested
 # profile that is missing is a hard error — silently building with default
 # credentials would produce an artifact indistinguishable from the right one.
+# The default/explicit split keys off the RESOLVED path, so an explicit
+# ENV_FILE=.env behaves exactly like not setting ENV_FILE at all (intended).
+# A non-default profile must set BUILD_FLAVOR: a flavorless profile build
+# would wear the default artifact name while carrying non-default credentials
+# — the same mislabeled-artifact failure, from the other direction.
+# Flavors deliberately share the bundle id, install path, and Application
+# Support directory — same product, different baked credentials. Co-installing
+# two flavors on one machine is out of scope.
 ENV_FILE="${ENV_FILE:-.env}"
 case "$ENV_FILE" in
     /*) : ;;
@@ -22,10 +31,17 @@ elif [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ]; then
     echo "ERROR: build profile '$ENV_FILE' not found" >&2
     exit 1
 fi
-# Build flavor (usually set inside the profile file). Baked into the binary
-# and appended to artifact names; empty = default build, names unchanged.
 FLAVOR="${BUILD_FLAVOR:-}"
+if [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ] && [ -z "$FLAVOR" ]; then
+    echo "ERROR: build profile '$ENV_FILE' must set BUILD_FLAVOR — without it the artifact would be indistinguishable from the default build" >&2
+    exit 1
+fi
+if [ -n "$FLAVOR" ] && ! printf '%s' "$FLAVOR" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    echo "ERROR: BUILD_FLAVOR '$FLAVOR' must match [A-Za-z0-9._-]+ — it lands in ldflags and artifact file names" >&2
+    exit 1
+fi
 FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
+# END profile-selection
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
@@ -230,6 +246,14 @@ PLIST
 if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     cp "$DESKTOP_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/"
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
+# Stamp the flavor into the bundle so the app itself knows which build it is.
+# UpdateService reads this key to keep flavored builds off the public release
+# feed (their updates are distributed out-of-band). Absent on default builds —
+# the default Info.plist stays byte-identical to the pre-flavor layout.
+if [ -n "$FLAVOR" ]; then
+    /usr/libexec/PlistBuddy -c "Add :WTBuildFlavor string $FLAVOR" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 # Code sign — one path for dev and release.
@@ -447,7 +471,9 @@ fi
 
 # Generate checksums
 echo "==> Generating checksums..."
-CHECKSUMS="$BUILD_DIR/checksums.txt"
+# Flavored builds get a flavored manifest so artifacts moved out of build/
+# stay self-describing; the default name is a contract with install.sh.
+CHECKSUMS="$BUILD_DIR/checksums${FLAVOR_SUFFIX}.txt"
 shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
 
 echo ""

@@ -1,8 +1,19 @@
 # ENV_FILE selects the build profile (default .env). Alternative profiles
-# (e.g. ENV_FILE=.env.b2 make app) carry their own credentials and may set
+# (e.g. ENV_FILE=.env.b2 make app) carry their own credentials and must set
 # BUILD_FLAVOR, which is baked into the binary and artifact names.
+# Mirror of the build-app.sh profile-selection guards: `-include` is silent on
+# a missing file, which would bake empty credentials with exit 0 on the
+# `make build`/`make install` paths that never reach the script.
 ENV_FILE ?= .env
 -include $(ENV_FILE)
+ifneq ($(ENV_FILE),.env)
+ifeq ($(wildcard $(ENV_FILE)),)
+$(error build profile '$(ENV_FILE)' not found)
+endif
+ifeq ($(strip $(BUILD_FLAVOR)),)
+$(error build profile '$(ENV_FILE)' must set BUILD_FLAVOR)
+endif
+endif
 export ENV_FILE
 export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET BUILD_FLAVOR
 
