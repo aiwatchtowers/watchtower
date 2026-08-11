@@ -113,9 +113,22 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("cleaning dictation: %w", err)
 	}
 
+	envelope, err := dictateCleanEnvelope(dictateCleanFlagMode, reply)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
+}
+
+// dictateCleanEnvelope parses the AI reply and builds the per-mode stdout
+// envelope, rejecting a reply whose mode-required field is missing or empty.
+func dictateCleanEnvelope(mode, reply string) (map[string]any, error) {
 	obj, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return fmt.Errorf("extracting cleanup JSON: %w (raw: %.300s)", err, reply)
+		return nil, fmt.Errorf("extracting cleanup JSON: %w (raw: %.300s)", err, reply)
 	}
 	var parsed struct {
 		Title    string `json:"title"`
@@ -124,29 +137,26 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 		Text     string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(obj), &parsed); err != nil {
-		return fmt.Errorf("parsing cleanup JSON: %w (raw: %.300s)", err, reply)
+		return nil, fmt.Errorf("parsing cleanup JSON: %w (raw: %.300s)", err, reply)
 	}
 
-	envelope := map[string]any{"mode": dictateCleanFlagMode}
-	switch dictateCleanFlagMode {
+	envelope := map[string]any{"mode": mode}
+	switch mode {
 	case "idea":
 		if strings.TrimSpace(parsed.Title) == "" || strings.TrimSpace(parsed.Body) == "" {
-			return fmt.Errorf("cleanup reply missing title/body (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing title/body (raw: %.300s)", reply)
 		}
 		envelope["title"], envelope["body"] = parsed.Title, parsed.Body
 	case "note":
 		if strings.TrimSpace(parsed.Markdown) == "" {
-			return fmt.Errorf("cleanup reply missing markdown (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing markdown (raw: %.300s)", reply)
 		}
 		envelope["markdown"] = parsed.Markdown
 	case "chat":
 		if strings.TrimSpace(parsed.Text) == "" {
-			return fmt.Errorf("cleanup reply missing text (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing text (raw: %.300s)", reply)
 		}
 		envelope["text"] = parsed.Text
 	}
-
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(envelope)
+	return envelope, nil
 }
