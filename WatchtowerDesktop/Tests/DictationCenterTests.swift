@@ -595,6 +595,60 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
+    /// Judge-verify residual: the loading-branch cancel must DROP a warm
+    /// engine from the reuse window, not leave it to the 15-min TTL — cancel
+    /// routes through engineBecameIdle, which without the drop flag arms the
+    /// timer, keeps hasResidentEngine true and parks the meeting live pass
+    /// with nothing left to ever fire engineReleased.
+    func testMeetingCaptureWillStartDuringLoadWithWarmEngineDropsItImmediately() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        // First dictation completes and leaves the engine warm.
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording") { center.phase == .recording }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertTrue(center.hasResidentEngine)
+
+        // Second dictation is synchronously in .loadingEngine right after
+        // start() — the reuse window, warm engine still resident.
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        XCTAssertEqual(center.phase, .loadingEngine)
+
+        center.meetingCaptureWillStart()
+
+        XCTAssertFalse(center.hasResidentEngine,
+                       "the warm engine must be dropped by the cancel, not left to the 15-min TTL")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken immediately")
+        XCTAssertEqual(center.phase, .idle)
+
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(engineLoads, 1, "the cancelled second dictation must never have loaded a new engine")
+        XCTAssertFalse(center.hasResidentEngine)
+    }
+
     /// Final-review P2 (b): the meeting claiming the slot during cleanup must
     /// drop the (no longer needed) engine immediately — before the cleanup
     /// CLI call completes — while the cleanup itself still runs to completion

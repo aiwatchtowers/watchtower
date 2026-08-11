@@ -173,8 +173,12 @@ final class DictationCenter {
             dropEngineImmediately()
         case .loadingEngine:
             // The cancelled load's late resolution never re-caches
-            // (`resolveTranscriber`'s Task.isCancelled guard), so the slot is
-            // genuinely free the moment this returns.
+            // (`resolveTranscriber`'s Task.isCancelled guard). The flag makes
+            // cancel()'s engineBecameIdle DROP a warm engine from the reuse
+            // window instead of arming the TTL timer — either way the slot is
+            // genuinely free (and engineReleased fired) the moment this
+            // returns.
+            dropEngineAfterCleanup = true
             cancel()
         case .cleaning:
             dropEngineImmediately()
@@ -424,8 +428,12 @@ final class DictationCenter {
         let ttl = engineIdleTTL
         engineReleaseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: ttl)
-            guard !Task.isCancelled else { return }
-            self?.warmTranscriber = nil
+            guard !Task.isCancelled, let self else { return }
+            self.warmTranscriber = nil
+            self.warmEngineKey = nil
+            // Every engine-drop path wakes a parked meeting live pass — a
+            // spurious fire is a guarded no-op on the meeting side.
+            self.engineReleased?()
         }
     }
 
