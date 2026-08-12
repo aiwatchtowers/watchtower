@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// BEHAVIOR INBOX-02 — closing a target must resolve its pending `target_due`

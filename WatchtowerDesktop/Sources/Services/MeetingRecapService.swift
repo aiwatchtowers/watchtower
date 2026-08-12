@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Bridges the Desktop app to `watchtower meeting-prep recap --json`.
 /// CLI is the sole writer to `meeting_recaps`; on success the row is upserted

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import WatchtowerCore
 
 /// Handles checking for updates via GitHub Releases API, downloading, and installing.
 @MainActor

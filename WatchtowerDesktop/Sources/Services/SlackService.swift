@@ -1,5 +1,6 @@
 import Foundation
 import Yams
+import WatchtowerCore
 
 enum SlackService {
     enum SlackError: LocalizedError {

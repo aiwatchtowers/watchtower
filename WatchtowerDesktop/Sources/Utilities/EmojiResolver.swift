@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Resolves emoji shortcodes using both standard Unicode mapping and custom workspace emojis.
 /// Standard emojis are replaced with Unicode characters inline.

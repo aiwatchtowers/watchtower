@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Yams
+import WatchtowerCore
 
 final class DatabaseManager: Sendable {
     let dbPool: DatabasePool

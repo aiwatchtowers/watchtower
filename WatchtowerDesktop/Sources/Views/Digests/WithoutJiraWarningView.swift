@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Warning cards for channels that have digests but no linked Jira issues.
 struct WithoutJiraWarningView: View {

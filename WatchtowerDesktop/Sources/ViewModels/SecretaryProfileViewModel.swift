@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the Inbox → Profile tab: the secretary brief editor plus the
 /// communication style profile (editable text + on-demand regeneration via

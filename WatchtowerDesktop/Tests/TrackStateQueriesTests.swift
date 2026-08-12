@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 /// Guard tests for TRACKS-06 — track state history.
