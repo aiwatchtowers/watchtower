@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Detail view for a single decision, showing context from the parent digest.
 struct DecisionDetailView: View {

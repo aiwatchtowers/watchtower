@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct SyncStatusBanner: View {
     let syncedAt: String?

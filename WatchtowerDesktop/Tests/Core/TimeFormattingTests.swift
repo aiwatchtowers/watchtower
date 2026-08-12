@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerDesktop
+@testable import WatchtowerCore
 
 final class TimeFormattingTests: XCTestCase {
 
