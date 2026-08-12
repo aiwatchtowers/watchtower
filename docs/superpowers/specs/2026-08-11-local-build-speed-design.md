@@ -144,6 +144,17 @@ it exists (Phase 1, item 5).
 | `swift test` (full suite) | 1:12 | exit=0; 1946 tests, 1 skipped, 0 failures, 18 test bundles — no pre-existing failures to record |
 | `swift test --filter WindowPlannerTests` | 0:07 | exit=0; 10 tests, 0 failures |
 
+### Edit→test cycle (2026-08-12, Phase 2 denominator)
+
+The number Phase 2 exists to shrink: after touching ONE non-ML source file
+(`Sources/Services/ConfigService.swift`, warm `.build`), `swift build` takes **0:18**
+(module-slice recompile + executable re-link) and the full edit→filtered-test cycle
+`swift test --filter ConfigServiceTests` takes **0:35** — of which the test run itself is
+~1 s; the rest is recompiling the single 500-file module and re-linking the test bundle
+against the full WhisperKit/FluidAudio/MLX stack. Phase 2's module split targets exactly
+this link+recompile share: a Core-only edit should compile a small module and link a
+test bundle with no ML dependencies. Same loaded-machine caveat as the baseline above.
+
 ### swift test --parallel experiment (2026-08-12)
 
 | Run | Wall clock | Result |
