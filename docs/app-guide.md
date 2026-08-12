@@ -56,21 +56,21 @@ When a discussion resolves itself (someone else answered and the question was ac
 **Daemon** — The pipeline runs after each sync (Phase 0.5, before channel digests): detect → triage → learn → auto-resolve → compose → situation cards → archive/unsnooze. The daemon also unsnoozes situations whose snooze time has passed, returning them to the open feed.
 
 ### Ideas
-A registry for ideas, decisions, and notes that surface in Slack threads, meetings, Jira comments, and email and would otherwise get lost. The pipeline mines candidates from all four sources a few times a day; you only triage what it finds.
+A registry for ideas and proposals — things not yet decided — that surface in Slack threads, meetings, Jira comments, and email and would otherwise get lost. The pipeline mines candidates from all four sources a few times a day; you only triage what it finds. Decisions are mined by the same pipeline, but they never land here — a mined decision is born settled and goes straight to the Digests → Decisions ledger (see the Digests section below) instead of asking for review.
 
-**How it works:** Every stream first gets a lightweight pre-digest — Slack and meeting recaps already extract `ideas`/`decisions`, and Gmail/Jira get their own new digest passes over recent threads and issues (comments included). A few times a day, a stronger consolidation pass reads only the new material plus your recent verdicts, and proposes new ideas/decisions or attaches a repeat mention to something already in the registry.
+**How it works:** Every stream first gets a lightweight pre-digest — Slack and meeting recaps already extract `ideas`/`decisions`, and Gmail/Jira get their own new digest passes over recent threads and issues (comments included). A few times a day, a stronger consolidation pass reads only the new material plus your recent verdicts, and proposes new ideas or attaches a repeat mention to something already in the registry.
 
-**List (left):** a "For review" section on top — freshly proposed items plus anything resurfaced (a repeat mention of something you'd already said "not now" to or rejected) — then the full registry below, filterable by kind (Idea / Decision / Note) and status, with a text search over titles, essence, and mention quotes.
+**List (left):** a "For review" section on top — freshly proposed ideas/notes plus anything resurfaced (a repeat mention of something you'd already said "not now" to or rejected) — then the full registry below, filterable by kind (Idea / Note) and status, with a text search over titles, essence, and mention quotes.
 
-**Detail (right):** the essence, a 👍/👎 rating with an optional teaching comment, and an action bar that depends on the item's kind and status — **Approve**/**Reject** for a freshly proposed item, **Not now** (with an optional wake date) / **Activate** to toggle it back, **Convert to Target** to graduate an idea into a trackable target, **Merge** (pre-filled when the miner flagged a similar existing item) to fold duplicates together, **Drop**, and **Supersede**/**Reverse** for decisions. Below that: the mentions chronology (quote, author, and a deep link back to the source — Slack, the meeting transcript, the Gmail thread, or the Jira issue), then a collapsed Discuss chat scoped to that item.
+**Detail (right):** the essence, a 👍/👎 rating with an optional teaching comment, and an action bar that depends on the item's status — **Approve**/**Reject** for a freshly proposed item, **Not now** (with an optional wake date) / **Activate** to toggle it back, **Convert to Target** to graduate an idea into a trackable target, **Merge** (pre-filled when the miner flagged a similar existing item) to fold duplicates together, and **Drop**. Below that: the mentions chronology (quote, author, and a deep link back to the source — Slack, the meeting transcript, the Gmail thread, or the Jira issue), then a collapsed Discuss chat scoped to that item.
 
 **Converting or merging never deletes anything** — the original row stays, linked to the target it became or the item it merged into, so its history stays reachable.
 
-**Create (+):** add an idea, note, or decision by hand — title and free text, no triage needed since it starts out active.
+**Create (+):** add an idea or note by hand — title and free text, no triage needed since it starts out active. (A manual decision is created from the Digests → Decisions ledger instead.)
 
-**Find Ideas:** the sparkle-search button next to Create opens a single-calendar range picker — presets for the last two weeks, month, or quarter, or pick your own from/to by clicking two days in the month grid (either order; arrows page through months) — and mines that historical window on demand. The daemon's regular pass only looks at recent activity, so this is how you backfill ideas and decisions from before you turned the feature on, or catch up after time away. Start closes the sheet and the run continues in the background: a "Mining…" pill with a running timer sits in the Ideas header (you can switch tabs and come back, the run keeps going), turning into the result — the proposed-count summary, or "Mining failed" — when it finishes; clicking the pill reopens the sheet for details or Cancel. Re-running the same range, or an overlapping one, is always safe — it never creates duplicate items or mentions.
+**Find Ideas:** the sparkle-search button next to Create opens a single-calendar range picker — presets for the last two weeks, month, or quarter, or pick your own from/to by clicking two days in the month grid (either order; arrows page through months) — and mines that historical window on demand. The daemon's regular pass only looks at recent activity, so this is how you backfill ideas and decisions from before you turned the feature on, or catch up after time away — mined decisions from a backfill land straight in the Digests → Decisions ledger, same as a regular cycle. Start closes the sheet and the run continues in the background: a "Mining…" pill with a running timer sits in the Ideas header (you can switch tabs and come back, the run keeps going), turning into the result — the proposed-count summary, or "Mining failed" — when it finishes; clicking the pill reopens the sheet for details or Cancel. Re-running the same range, or an overlapping one, is always safe — it never creates duplicate items or mentions.
 
-**Sidebar badge** — count of items awaiting review (freshly proposed + resurfaced).
+**Sidebar badge** — count of ideas/notes awaiting review (freshly proposed + resurfaced); decisions never contribute to this count.
 
 **Settings:** the Ideas card lets you turn the whole registry on or off and adjust how often it mines in the background (1–48 hours, default 6).
 
@@ -246,11 +246,11 @@ Each track shows:
 **Actions:** Change priority, rate quality with thumbs up/down, chat with AI about a specific track.
 
 ### Digests
-AI-generated summaries of channel activity. Two sub-views:
+A cross-source overview of what happened, plus the settled decisions ledger. Two sub-views:
 
-**Digests** — Per-channel summaries, daily rollups, and weekly trends. Each digest shows: summary, extracted topics, ongoing topics with status, decisions. Rate quality with thumbs up/down.
+**Digests** — One chronological feed, grouped by day, spanning every source: Slack channel/daily/weekly digests (summary, extracted topics, ongoing topics with status; rate quality with 👍/👎), Gmail and Jira stream digests (scope/period, topic titles, and the ideas/decisions each one mined, with deep links back to the Gmail thread or the Jira issue), and meeting recaps (any recording that has a recap; opens straight into the recording). Each row is labeled by its source; Slack and Gmail/Jira rows carry their own unread marker, recaps don't (there's no unread concept for them).
 
-**Decisions** — Flat list of all decisions across digests. Shows importance level (editable to train AI), channel, author, date. Expandable for full context.
+**Decisions** — The deduplicated, cross-source decisions ledger: every decision mined from Slack, Gmail, Jira, or meetings by the Ideas pipeline, born settled (no review step) and deduplicated the same way ideas are. Rows show title, a glyph per source it's been mentioned in, relative time, and an unread dot; opening a row marks it seen. Detail shows the essence, status (**active** / **superseded** / **reversed**), **Supersede**/**Reverse** actions, a 👍/👎 rating with an optional comment, the full mentions chronology with deep links back to each source, and a collapsed Discuss chat. "Mark all read" clears the segment's unread count in one click.
 
 ### People
 Team member profiles generated by AI from Slack activity analysis.
