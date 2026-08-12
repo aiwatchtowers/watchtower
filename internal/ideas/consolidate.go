@@ -703,6 +703,11 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 	}
 
 	idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence}
+	if kind == "decision" {
+		// Decisions are a journal, not a triage queue: the decision already
+		// happened, so there is nothing to approve.
+		idea.Status = "active"
+	}
 	if op.SimilarTo > 0 {
 		if _, ok := registryByID[op.SimilarTo]; ok {
 			idea.SimilarToID = sql.NullInt64{Int64: op.SimilarTo, Valid: true}
