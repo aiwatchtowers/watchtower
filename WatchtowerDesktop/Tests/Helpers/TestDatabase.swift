@@ -1235,6 +1235,19 @@ enum TestDatabase {
         created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+
+    CREATE TABLE IF NOT EXISTS stream_digests (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+        account_id   INTEGER NOT NULL,
+        scope        TEXT NOT NULL DEFAULT '',
+        period_from  TEXT NOT NULL,
+        period_to    TEXT NOT NULL,
+        topics_json  TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        read_at      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
     """
 
     // MARK: - Briefing Fixtures
@@ -1802,6 +1815,31 @@ enum TestDatabase {
             INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
             """, arguments: [ideaID, source, ref, quote, author, saidAt, createdAt])
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Stream Digest Fixtures
+
+    @discardableResult
+    static func insertStreamDigest(
+        _ db: Database,
+        source: String = "gmail",
+        accountID: Int = 1,
+        scope: String = "",
+        periodFrom: String = "2024-01-01T00:00:00Z",
+        periodTo: String = "2024-01-02T00:00:00Z",
+        topicsJSON: String = "[]",
+        createdAt: String? = nil,
+        readAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO stream_digests (source, account_id, scope, period_from, period_to,
+                topics_json, created_at, read_at)
+            VALUES (?, ?, ?, ?, ?, ?,
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                ?)
+            """, arguments: [source, accountID, scope, periodFrom, periodTo,
+                             topicsJSON, createdAt, readAt])
         return db.lastInsertedRowID
     }
 
