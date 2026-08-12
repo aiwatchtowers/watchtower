@@ -773,10 +773,10 @@ func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]Transcr
 }
 
 // CountIdeasForReview returns the number of ideas awaiting owner attention:
-// freshly proposed, or explicitly flagged needs_review.
+// freshly proposed, or explicitly flagged needs_review, excluding decisions.
 func (db *DB) CountIdeasForReview() (int, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE status = 'proposed' OR needs_review = 1`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting ideas for review: %w", err)
 	}
