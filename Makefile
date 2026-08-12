@@ -13,7 +13,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift test-scripts sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg test-swift test-scripts sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -25,6 +25,9 @@ app-dev:
 	./scripts/build-app.sh --dev $(VERSION)
 
 test:
+	go test ./...
+
+test-verbose:
 	go test ./... -v
 
 # Coverage gate — fails when any package in coverage.thresholds
@@ -33,8 +36,10 @@ test:
 test-cover:
 	./scripts/coverage-gate.sh
 
+# Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
+# class; without FILTER the full suite runs as before.
 test-swift:
-	cd WatchtowerDesktop && swift test
+	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter $(FILTER),)
 
 # Shell-level tests for build-app.sh. Each extracts a marked block from the
 # script and runs it against stubbed binaries — no real build, no codesign.
@@ -46,6 +51,11 @@ test-scripts:
 
 lint:
 	golangci-lint run ./...
+
+# Inner-loop lint: only issues introduced relative to origin/main.
+# The full `lint` target remains the pre-PR gate.
+lint-diff:
+	golangci-lint run --new-from-rev origin/main ./...
 
 lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
