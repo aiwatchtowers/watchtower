@@ -1,7 +1,7 @@
 import XCTest
 import GRDB
-@testable import WatchtowerDesktop
-import WatchtowerCore
+import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 // MARK: - InboxLearnedRulesQueries Tests
 
@@ -10,8 +10,8 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
     private let nowISO = "2026-04-23T10:00:00Z"
 
     private func makePool() throws -> DatabasePool {
-        let (manager, _) = try TestDatabase.createDatabaseManager()
-        return manager.dbPool
+        let (pool, _) = try TestDatabase.createPool()
+        return pool
     }
 
     // MARK: - listAll
@@ -156,8 +156,7 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
 final class InboxFeedbackQueriesTests: XCTestCase {
 
     private func makePool() throws -> (DatabasePool, InboxItem) {
-        let (manager, _) = try TestDatabase.createDatabaseManager()
-        let pool = manager.dbPool
+        let (pool, _) = try TestDatabase.createPool()
         // Insert a prerequisite inbox item
         try pool.write { db in
             try TestDatabase.insertInboxItem(

@@ -4,6 +4,7 @@ import GRDB
 import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class WhoToPingViewTests: XCTestCase {

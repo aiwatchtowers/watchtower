@@ -2,6 +2,7 @@ import GRDB
 import XCTest
 
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 final class FeedItemQueriesTests: XCTestCase {
     var dbQueue: DatabaseQueue!

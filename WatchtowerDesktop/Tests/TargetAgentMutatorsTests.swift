@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 final class TargetAgentMutatorsTests: XCTestCase {
     func testUpdateProgressClampsAndPersists() throws {

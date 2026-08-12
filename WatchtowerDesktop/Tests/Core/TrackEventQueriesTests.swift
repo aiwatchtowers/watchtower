@@ -1,7 +1,6 @@
 import XCTest
 import GRDB
-import WatchtowerCore
-@testable import WatchtowerDesktop
+@testable import WatchtowerCore
 
 final class TrackEventQueriesTests: XCTestCase {
 

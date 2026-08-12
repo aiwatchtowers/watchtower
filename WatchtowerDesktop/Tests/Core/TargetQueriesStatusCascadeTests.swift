@@ -1,7 +1,7 @@
 import XCTest
 import GRDB
-import WatchtowerCore
-@testable import WatchtowerDesktop
+import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 /// BEHAVIOR INBOX-02 — closing a target must resolve its pending `target_due`
 /// inbox items so the user never has to close the same thing twice. The Go side

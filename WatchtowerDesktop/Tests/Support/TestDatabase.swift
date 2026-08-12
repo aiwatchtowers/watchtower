@@ -1,10 +1,9 @@
 import Foundation
 import GRDB
-@testable import WatchtowerDesktop
 
 /// In-memory GRDB database with the full watchtower schema for testing.
-enum TestDatabase {
-    static func create() throws -> DatabaseQueue {
+package enum TestDatabase {
+    package static func create() throws -> DatabaseQueue {
         let dbQueue = try DatabaseQueue(path: ":memory:")
         try dbQueue.write { db in
             try db.execute(sql: schema)
@@ -13,19 +12,22 @@ enum TestDatabase {
         return dbQueue
     }
 
-    /// Create a file-based DatabaseManager for ViewModel tests (DatabasePool requires a file).
-    static func createDatabaseManager() throws -> (DatabaseManager, String) {
+    /// Create a file-based DatabasePool for ViewModel/query tests (DatabasePool requires a file).
+    /// `DatabaseManager` itself stays app-side (Sources/Database), so this returns the
+    /// pool directly; app-side callers that need the `DatabaseManager` wrapper use
+    /// `TestDatabase.createDatabaseManager()` (Tests/Helpers/TestDatabase+DatabaseManager.swift).
+    package static func createPool() throws -> (DatabasePool, String) {
         let path = NSTemporaryDirectory() + "watchtower_test_\(UUID().uuidString).db"
         let pool = try DatabasePool(path: path)
         try pool.write { db in
             try db.execute(sql: schema)
             try db.execute(sql: "PRAGMA user_version = 5")
         }
-        return (DatabaseManager(pool: pool), path)
+        return (pool, path)
     }
 
     /// Clean up temp DB files
-    static func cleanup(path: String) {
+    package static func cleanup(path: String) {
         let fm = FileManager.default
         for suffix in ["", "-wal", "-shm"] {
             try? fm.removeItem(atPath: path + suffix)
@@ -34,7 +36,7 @@ enum TestDatabase {
 
     // MARK: - Fixture Insertion
 
-    static func insertWorkspace(
+    package static func insertWorkspace(
         _ db: Database,
         id: String = "T001",
         name: String = "Test Workspace",
@@ -54,7 +56,7 @@ enum TestDatabase {
     // join with the SAME bare id, so it stays internally consistent (the
     // migration never runs against the fresh test schema). Only add a `"1:"`
     // prefix here if a new test asserts a specific namespaced id string.
-    static func insertChannel(
+    package static func insertChannel(
         _ db: Database,
         id: String = "C001",
         name: String = "general",
@@ -72,7 +74,7 @@ enum TestDatabase {
             """, arguments: [id, name, type, topic, purpose, isArchived ? 1 : 0, isMember ? 1 : 0, dmUserID, numMembers])
     }
 
-    static func insertUser(
+    package static func insertUser(
         _ db: Database,
         id: String = "U001",
         name: String = "testuser",
@@ -88,7 +90,7 @@ enum TestDatabase {
             """, arguments: [id, name, displayName, realName, email, isBot ? 1 : 0, isDeleted ? 1 : 0])
     }
 
-    static func insertMessage(
+    package static func insertMessage(
         _ db: Database,
         channelID: String = "C001",
         ts: String = "1700000000.000100",
@@ -107,7 +109,7 @@ enum TestDatabase {
             """, arguments: [channelID, ts, userID, text, threadTS, replyCount, isEdited ? 1 : 0, isDeleted ? 1 : 0, subtype, permalink])
     }
 
-    static func insertDigest(
+    package static func insertDigest(
         _ db: Database,
         channelID: String = "C001",
         periodFrom: Double = 1700000000,
@@ -126,7 +128,7 @@ enum TestDatabase {
             """, arguments: [channelID, periodFrom, periodTo, type, summary, topics, decisions, tracksJSON, messageCount, model])
     }
 
-    static func insertWatchItem(
+    package static func insertWatchItem(
         _ db: Database,
         entityType: String = "channel",
         entityID: String = "C001",
@@ -139,7 +141,7 @@ enum TestDatabase {
             """, arguments: [entityType, entityID, entityName, priority])
     }
 
-    static func insertSyncState(
+    package static func insertSyncState(
         _ db: Database,
         channelID: String = "C001",
         lastSyncedTS: String = "1700000000.000100",
@@ -153,7 +155,7 @@ enum TestDatabase {
             """, arguments: [channelID, lastSyncedTS, oldestSyncedTS, isInitialSyncComplete ? 1 : 0, messagesSynced])
     }
 
-    static func insertUserAnalysis(
+    package static func insertUserAnalysis(
         _ db: Database,
         userID: String = "U001",
         periodFrom: Double = 1700000000,
@@ -188,7 +190,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertTrack(
+    package static func insertTrack(
         _ db: Database,
         text: String = "Fix the bug",
         context: String = "Discussed in standup",
@@ -228,7 +230,7 @@ enum TestDatabase {
 
     // MARK: - Schema
 
-    static let schema = """
+    package static let schema = """
     CREATE TABLE IF NOT EXISTS workspace (
         id                TEXT PRIMARY KEY,
         name              TEXT NOT NULL,
@@ -1238,7 +1240,7 @@ enum TestDatabase {
 
     // MARK: - Briefing Fixtures
 
-    static func insertBriefing(
+    package static func insertBriefing(
         _ db: Database,
         userID: String = "U001",
         date: String = "2024-01-15",
@@ -1261,7 +1263,7 @@ enum TestDatabase {
 
     // MARK: - Profile Fixtures
 
-    static func insertProfile(
+    package static func insertProfile(
         _ db: Database,
         slackUserID: String = "U001",
         role: String = "",
@@ -1292,7 +1294,7 @@ enum TestDatabase {
 
     // MARK: - People Card Fixtures
 
-    static func insertPeopleCard(
+    package static func insertPeopleCard(
         _ db: Database,
         userID: String = "U001",
         periodFrom: Double = 1700000000,
@@ -1331,7 +1333,7 @@ enum TestDatabase {
 
     // MARK: - People Card Summary Fixtures
 
-    static func insertPeopleCardSummary(
+    package static func insertPeopleCardSummary(
         _ db: Database,
         periodFrom: Double = 1700000000,
         periodTo: Double = 1700604800,
@@ -1354,7 +1356,7 @@ enum TestDatabase {
 
     // MARK: - Task Fixtures
 
-    static func insertTask(
+    package static func insertTask(
         _ db: Database,
         text: String = "Review PR",
         intent: String = "",
@@ -1381,7 +1383,7 @@ enum TestDatabase {
     // MARK: - Target Fixtures
 
     @discardableResult
-    static func insertTarget(
+    package static func insertTarget(
         _ db: Database,
         text: String = "Ship the feature",
         intent: String = "",
@@ -1417,7 +1419,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertTargetLink(
+    package static func insertTargetLink(
         _ db: Database,
         sourceTargetId: Int,
         targetTargetId: Int? = nil,
@@ -1434,7 +1436,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertDigestTopic(
+    package static func insertDigestTopic(
         _ db: Database,
         digestID: Int = 1,
         idx: Int = 0,
@@ -1455,7 +1457,7 @@ enum TestDatabase {
     // MARK: - Inbox Fixtures
 
     @discardableResult
-    static func insertInboxItem(
+    package static func insertInboxItem(
         _ db: Database,
         channelID: String = "C001",
         messageTS: String = "1700000000.000100",
@@ -1493,7 +1495,7 @@ enum TestDatabase {
 
     // MARK: - Inbox Learned Rules Fixtures
 
-    static func insertLearnedRule(
+    package static func insertLearnedRule(
         _ db: Database,
         scopeKey: String = "sender:U1",
         weight: Double = -0.5,
@@ -1513,7 +1515,7 @@ enum TestDatabase {
 
     // MARK: - Inbox Feedback Fixtures
 
-    static func insertFeedbackRecord(
+    package static func insertFeedbackRecord(
         _ db: Database,
         inboxItemId: Int = 1,
         rating: Int = 1,
@@ -1531,7 +1533,7 @@ enum TestDatabase {
 
     // MARK: - Calendar Fixtures
 
-    static func ensureCalendar(
+    package static func ensureCalendar(
         _ db: Database,
         id: String = "primary",
         name: String = "Primary",
@@ -1545,7 +1547,7 @@ enum TestDatabase {
             """, arguments: [id, name, isPrimary ? 1 : 0, isSelected ? 1 : 0, accountID])
     }
 
-    static func insertCalendarEvent(
+    package static func insertCalendarEvent(
         _ db: Database,
         id: String = "evt_001",
         calendarID: String = "primary",
@@ -1578,7 +1580,7 @@ enum TestDatabase {
     // MARK: - Day Plan Fixtures
 
     @discardableResult
-    static func insertDayPlan(
+    package static func insertDayPlan(
         _ db: Database,
         userID: String = "U001",
         planDate: String = "2026-04-23",
@@ -1605,7 +1607,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertDayPlanItem(
+    package static func insertDayPlanItem(
         _ db: Database,
         dayPlanID: Int64 = 1,
         kind: String = "timeblock",
@@ -1636,7 +1638,7 @@ enum TestDatabase {
     // MARK: - Situation Fixtures
 
     @discardableResult
-    static func insertSituation(
+    package static func insertSituation(
         _ db: Database,
         title: String = "Renewal deal stalling",
         kind: String = "external",
@@ -1677,7 +1679,7 @@ enum TestDatabase {
     // MARK: - Feed Item Fixtures
 
     @discardableResult
-    static func insertFeedItem(
+    package static func insertFeedItem(
         _ db: Database,
         itemType: String,
         sourceID: String,
@@ -1695,7 +1697,7 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
-    static func insertMeetingRecap(
+    package static func insertMeetingRecap(
         _ db: Database,
         eventID: String,
         recapJSON: String = #"{"summary":"Recap","key_decisions":[],"action_items":["ship it"],"open_questions":[]}"#,
@@ -1706,7 +1708,7 @@ enum TestDatabase {
             arguments: [eventID, recapJSON, createdAt, createdAt])
     }
 
-    static func insertMeetingTranscript(
+    package static func insertMeetingTranscript(
         _ db: Database,
         id: Int64? = nil,
         eventID: String? = nil,
@@ -1729,13 +1731,13 @@ enum TestDatabase {
                         transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON])
     }
 
-    static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
+    package static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
         try db.execute(
             sql: "INSERT INTO meeting_prep_cache (event_id, result_json) VALUES (?, ?)",
             arguments: [eventID, resultJSON])
     }
 
-    static func linkSituationSignal(
+    package static func linkSituationSignal(
         _ db: Database,
         situationID: Int64,
         inboxItemID: Int64
@@ -1749,7 +1751,7 @@ enum TestDatabase {
     // MARK: - Idea Fixtures
 
     @discardableResult
-    static func insertIdea(
+    package static func insertIdea(
         _ db: Database,
         kind: String = "idea",
         title: String = "Ship a weekly digest email",
@@ -1785,7 +1787,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertIdeaMention(
+    package static func insertIdeaMention(
         _ db: Database,
         ideaID: Int64,
         source: String = "slack",
@@ -1804,7 +1806,7 @@ enum TestDatabase {
 
     // MARK: - Memory Fixtures
 
-    static func insertMemoryNode(
+    package static func insertMemoryNode(
         _ db: Database,
         id: String,
         type: String = "entity",
@@ -1826,7 +1828,7 @@ enum TestDatabase {
             """, arguments: [id, type, tier, status, redirectTo, title, path, indexedAt, subject, confidence, importanceScore])
     }
 
-    static func insertMemoryProvenance(
+    package static func insertMemoryProvenance(
         _ db: Database,
         nodeID: String,
         channelID: String,
@@ -1841,7 +1843,7 @@ enum TestDatabase {
             """, arguments: [nodeID, scheme, channelID, tsRaw, tsUnix, senderID])
     }
 
-    static func insertMemoryAlias(
+    package static func insertMemoryAlias(
         _ db: Database,
         alias: String,
         nodeID: String
@@ -1851,7 +1853,7 @@ enum TestDatabase {
             """, arguments: [alias, nodeID])
     }
 
-    static func insertMemoryFTS(
+    package static func insertMemoryFTS(
         _ db: Database,
         id: String,
         title: String = "",
@@ -1862,7 +1864,7 @@ enum TestDatabase {
             """, arguments: [id, title, body])
     }
 
-    static func insertMemoryDispute(
+    package static func insertMemoryDispute(
         _ db: Database,
         nodeID: String,
         reason: String = "contested"
@@ -1876,7 +1878,7 @@ enum TestDatabase {
     // MARK: - Email Account Fixtures
 
     @discardableResult
-    static func insertEmailAccount(
+    package static func insertEmailAccount(
         _ db: Database,
         provider: String = "imap",
         emailAddress: String = "me@example.com",
@@ -1903,7 +1905,7 @@ enum TestDatabase {
     // MARK: - Calendar Account Fixtures
 
     @discardableResult
-    static func insertCalendarAccount(
+    package static func insertCalendarAccount(
         _ db: Database,
         provider: String = "caldav",
         username: String = "me@example.com",
@@ -1927,7 +1929,7 @@ enum TestDatabase {
     // MARK: - Google Account Fixtures
 
     @discardableResult
-    static func insertSlackAccount(
+    package static func insertSlackAccount(
         _ db: Database,
         teamID: String = "",
         teamName: String = "",
@@ -1952,7 +1954,7 @@ enum TestDatabase {
     }
 
     @discardableResult
-    static func insertJiraAccount(
+    package static func insertJiraAccount(
         _ db: Database,
         cloudID: String = "",
         siteURL: String = "",
@@ -1974,7 +1976,7 @@ enum TestDatabase {
         return db.lastInsertedRowID
     }
 
-    static func insertGoogleAccount(
+    package static func insertGoogleAccount(
         _ db: Database,
         email: String = "",
         label: String = "",

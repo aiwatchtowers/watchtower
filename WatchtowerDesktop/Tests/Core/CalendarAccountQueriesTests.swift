@@ -1,13 +1,13 @@
 import XCTest
 import GRDB
-import WatchtowerCore
-@testable import WatchtowerDesktop
+import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 final class CalendarAccountQueriesTests: XCTestCase {
 
     private func makePool() throws -> DatabasePool {
-        let (manager, _) = try TestDatabase.createDatabaseManager()
-        return manager.dbPool
+        let (pool, _) = try TestDatabase.createPool()
+        return pool
     }
 
     func testFetchAllRoundTripsSeededRowsOrderedByCreatedAt() throws {

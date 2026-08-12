@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 // MARK: - DayPlanViewModelTests
 

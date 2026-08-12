@@ -1,7 +1,7 @@
 import XCTest
 import GRDB
-import WatchtowerCore
-@testable import WatchtowerDesktop
+import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 final class CatchUpQueriesTests: XCTestCase {
 

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// End-to-end VM tests over a real temp vault directory next to a file-based
 /// DB pool — the same layout the app sees (<workspace>/watchtower.db +

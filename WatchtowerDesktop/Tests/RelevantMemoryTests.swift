@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 final class RelevantMemoryTests: XCTestCase {
     private var dbManager: DatabaseManager!

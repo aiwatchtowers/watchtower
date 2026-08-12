@@ -1,13 +1,13 @@
 import XCTest
 import GRDB
-import WatchtowerCore
-@testable import WatchtowerDesktop
+import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 final class JiraAccountQueriesTests: XCTestCase {
 
     private func makePool() throws -> DatabasePool {
-        let (manager, _) = try TestDatabase.createDatabaseManager()
-        return manager.dbPool
+        let (pool, _) = try TestDatabase.createPool()
+        return pool
     }
 
     func testFetchAllRoundTripsSeededRowsOrderedByID() throws {
