@@ -9,7 +9,9 @@
 // StreamDigest). Stage 2 (Task 8's consolidator) folds stage-1 material
 // (Slack digest topics, stream_digests rows, meeting recaps) into the
 // registry, preferring to attach to an existing idea/decision over minting a
-// duplicate.
+// duplicate. The two stages run on separate entry points and schedules:
+// RunStreamDigests (stage 1, never gated on ideas.enabled) and Run (stage 2,
+// gated on ideas.enabled).
 package ideas
 
 import (
@@ -122,35 +124,28 @@ func (p *Pipeline) language() string {
 	return p.cfg.Digest.Language
 }
 
-// Run executes the ideas pipeline: the Gmail pre-digest pass, then the Jira
-// pre-digest pass, then the stage-2 consolidator (runConsolidate) — always,
-// regardless of whether either stage-1 pass failed. A persistent single-
-// account failure (a revoked Jira token, say) must never starve
-// consolidation of every OTHER source's already-queued material (healthy
-// accounts' stream_digests rows, Slack digest topics, meeting transcripts)
-// forever — the "one account's failure never blocks the others" principle,
-// and IDEA-01 already makes partial-material consolidation safe (unconsumed
-// material just waits; floors stay honest). Each stage-1 pass logs and
-// continues past a single account's failure (see runEmailDigests/
-// runJiraDigests) and all three stages always get their turn; Run surfaces
-// the first error any of them produced — a stage-1 failure if one occurred,
-// otherwise the consolidator's — without swallowing it. Run returns the
-// consolidator's proposed count.
+// RunStreamDigests runs the stage-1 Gmail/Jira pre-digest passes. It is
+// deliberately not gated on ideas.enabled: the stream digests feed the
+// Desktop Digests tab on their own (the consolidator is gated separately).
+func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
+	if err := p.runEmailDigests(ctx, time.Time{}); err != nil {
+		return err
+	}
+	return p.runJiraDigests(ctx, time.Time{})
+}
+
+// Run executes the ideas pipeline's stage-2 consolidator (runConsolidate)
+// over whatever stage-1 material (stream_digests rows, Slack digest topics,
+// meeting transcripts) has already accumulated — stage 1 is RunStreamDigests'
+// job now, run on its own schedule and never gated on ideas.enabled, so Run
+// no longer touches the Gmail/Jira passes at all. IDEA-01 makes this
+// decoupling safe: unconsumed material just waits for the next Run, and
+// floors stay honest regardless of how many RunStreamDigests cycles ran in
+// between. Run returns the consolidator's proposed count and error.
 func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
 	if p.cfg != nil && !p.cfg.Ideas.Enabled {
 		return 0, nil
 	}
-	var firstErr error
-	if err := p.runEmailDigests(ctx, time.Time{}); err != nil {
-		firstErr = err
-	}
-	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
-		firstErr = err
-	}
-
-	proposed, _, cerr := p.runConsolidate(ctx, time.Time{}, time.Time{})
-	if cerr != nil && firstErr == nil {
-		firstErr = cerr
-	}
-	return proposed, firstErr
+	proposed, _, err = p.runConsolidate(ctx, time.Time{}, time.Time{})
+	return proposed, err
 }
