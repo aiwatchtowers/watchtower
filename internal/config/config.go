@@ -68,6 +68,13 @@ type IdeasConfig struct {
 	MaxPromptChars          int  `mapstructure:"max_prompt_chars"`            // truncate stage-1/consolidator input assembly beyond this (default: 60000)
 }
 
+// StreamsConfig controls the stage-1 Gmail/Jira stream pre-digests
+// (generation only; the Ideas consolidator is gated by ideas.enabled).
+type StreamsConfig struct {
+	Enabled       bool `mapstructure:"enabled"`        // enable the streams pipeline (default: true)
+	IntervalHours int  `mapstructure:"interval_hours"` // throttle between stream digest runs (default: 6)
+}
+
 // FeedConfig holds settings for the dashboard feed publisher (internal/feed).
 type FeedConfig struct {
 	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
@@ -318,6 +325,7 @@ type Config struct {
 	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
 	Ideas           IdeasConfig                 `mapstructure:"ideas"`
+	Streams         StreamsConfig               `mapstructure:"streams"`
 	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
@@ -378,6 +386,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
 	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)
 	v.SetDefault("ideas.max_prompt_chars", DefaultIdeasMaxPromptChars)
+	v.SetDefault("streams.enabled", DefaultStreamsEnabled)
+	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
 	v.SetDefault("feed.enabled", true)
 	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)

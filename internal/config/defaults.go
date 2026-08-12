@@ -33,6 +33,10 @@ const (
 	DefaultIdeasMaxCommentIssuesPerSync = 50
 	DefaultIdeasMaxPromptChars          = 60000
 
+	// Streams config defaults (stage-1 Gmail/Jira stream pre-digests)
+	DefaultStreamsEnabled     = true
+	DefaultStreamsIntervalHours = 6
+
 	DefaultTracksMinMsgs      = 3
 	DefaultBatchMaxChannels   = 20
 	DefaultBatchMaxMessages   = 1500
