@@ -66,8 +66,11 @@ enum MarkdownToHTML {
     }
 
     private static func list(
-        lines: [String], index i: inout Int, tag: String,
-        isItem: (String) -> Bool, content: (String) -> String
+        lines: [String],
+        index i: inout Int,
+        tag: String,
+        isItem: (String) -> Bool,
+        content: (String) -> String
     ) -> String {
         var items: [String] = []
         while i < lines.count {
