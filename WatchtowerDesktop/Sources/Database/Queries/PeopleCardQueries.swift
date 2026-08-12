@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 enum PeopleCardQueries {
     static func fetchForWindow(_ db: Database, from: Double, to: Double) throws -> [PeopleCard] {

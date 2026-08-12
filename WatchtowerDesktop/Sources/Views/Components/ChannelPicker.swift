@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Reusable multi-select picker for Slack channels.
 /// Shows a searchable list of all synced channels and lets the caller manage a set of selected channel IDs.

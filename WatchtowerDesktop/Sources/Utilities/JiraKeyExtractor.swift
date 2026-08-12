@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import SwiftUI
 import Yams
+import WatchtowerCore
 
 // MARK: - Jira Key Extraction
 

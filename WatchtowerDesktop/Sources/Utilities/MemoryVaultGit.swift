@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Vault git-history access for the Memory browser: shells out to `git log`
 /// against the vault repo (go-git on the Go side, but a normal repository on

@@ -1,5 +1,6 @@
 import GRDB
 import Foundation
+import WatchtowerCore
 
 enum ChannelStatsQueries {
 

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Extracts ```watchtower-action``` fenced JSON blocks from AI output.
 /// The AI emits one ProposedAction JSON object per block; everything else

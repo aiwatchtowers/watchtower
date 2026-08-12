@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the combined Google connect: the user picks services via pre-checked
 /// checkboxes (Google's own consent screen cannot pre-select scopes), then ONE

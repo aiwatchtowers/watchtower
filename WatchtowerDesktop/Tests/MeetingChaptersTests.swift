@@ -1,6 +1,7 @@
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 final class MeetingChaptersTests: XCTestCase {
 

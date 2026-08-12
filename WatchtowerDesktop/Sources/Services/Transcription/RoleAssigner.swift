@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Pure mapping of a diarized speaker timeline onto timestamped transcript
 /// segments, plus rendering of the final role-tagged text. No I/O.

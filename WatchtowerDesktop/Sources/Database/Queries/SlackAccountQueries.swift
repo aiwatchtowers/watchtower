@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum SlackAccountQueries {
     static func fetchAll(_ db: Database) throws -> [SlackAccount] {

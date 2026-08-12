@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct TeamSummaryDetailView: View {
     let summary: PeopleCardSummary

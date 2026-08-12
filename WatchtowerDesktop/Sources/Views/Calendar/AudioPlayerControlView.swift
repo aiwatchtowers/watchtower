@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Play/pause + scrubber control for a transcript's recorded audio. Takes the
 /// shared `AudioPlaybackCenter` explicitly (not via `@Environment`) so it is a

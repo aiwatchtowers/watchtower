@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 enum VoicePrintQueries {
     /// Every known voice print (the whole database is small — one row per

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct TargetDetailView: View {
     let target: Target

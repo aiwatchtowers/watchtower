@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Paste-and-extract sheet for Discussion Topics. The user pastes a raw blob
 /// (recap, rambling status, markdown), Watchtower's AI splits it into atomic

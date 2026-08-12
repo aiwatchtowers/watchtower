@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum MessageQueries {
     static func fetchByChannel(_ db: Database, channelID: String, limit: Int = 50, offset: Int = 0) throws -> [Message] {

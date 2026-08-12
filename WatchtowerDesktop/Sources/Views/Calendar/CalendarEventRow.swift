@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct CalendarEventRow: View {
     let event: CalendarEvent

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Read/update access to a custom track's scan-produced timeline
 /// (`track_events`). Ported from the removed `ObserverQueries` event methods,

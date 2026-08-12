@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WatchtowerCore
 
 /// Shared Join-meeting action behind every "Join" button (event row, sidebar
 /// next-event block): opens the event's conference link and — when

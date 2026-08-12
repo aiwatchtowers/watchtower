@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// DB access for the secretary memory vault index. Mirrors the Go read paths
 /// (internal/db/memory.go): the SQLite side is a rebuildable mirror of the

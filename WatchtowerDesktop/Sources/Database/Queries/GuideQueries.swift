@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum GuideQueries {
     /// Fetch all guides for a specific time window, ordered by message count descending.

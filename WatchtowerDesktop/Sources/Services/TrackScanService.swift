@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Bridges the Desktop app to `watchtower tracks scan <id>`, which force-runs a
 /// custom track's scan and prints the new events as JSON. Used for manual

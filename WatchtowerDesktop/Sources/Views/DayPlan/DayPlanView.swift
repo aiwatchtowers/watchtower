@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct DayPlanView: View {
     @Bindable var vm: DayPlanViewModel

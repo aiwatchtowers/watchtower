@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct CreateTargetSheet: View {
     @Environment(AppState.self) private var appState

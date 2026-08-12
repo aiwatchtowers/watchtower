@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// The warm-engine decision matrix (`WarmEnginePolicy.decide`) plus the
 /// event-folding helper (`window(events:now:)`). Pure logic, so every branch

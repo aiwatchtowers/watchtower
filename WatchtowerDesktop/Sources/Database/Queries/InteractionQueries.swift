@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum InteractionQueries {
     /// Fetch all interactions for a user in a specific time window, ordered by score.

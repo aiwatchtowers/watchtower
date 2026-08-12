@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct UserOverridesWrapper: Codable {
     let staleThresholds: [String: Int]?

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct OnboardingView: View {
     let onRetry: () -> Void

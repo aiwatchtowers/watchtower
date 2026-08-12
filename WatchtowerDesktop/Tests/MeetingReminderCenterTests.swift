@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Minimal scriptable `AudioRecording` that only needs to get the recorder
 /// Center into `.recording`; never touches real audio (JoinFakeRecorder shape).

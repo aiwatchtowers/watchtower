@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum ProfileQueries {
     static func fetchProfile(_ db: Database, slackUserID: String) throws -> UserProfile? {

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the Ideas & Decisions registry: a review queue (freshly proposed or
 /// explicitly flagged ideas) plus a filterable browsable registry of everything

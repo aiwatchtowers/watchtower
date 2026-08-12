@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 final class MeetingTranscriptTests: XCTestCase {
     private func makeTranscript(summaryJSON: String?, segmentsJSON: String? = nil, chaptersJSON: String? = nil) -> MeetingTranscript {

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class CalendarAccountsViewModelTests: XCTestCase {

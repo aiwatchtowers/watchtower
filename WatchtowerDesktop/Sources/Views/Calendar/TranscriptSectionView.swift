@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Recordings attached to a calendar event, shown under the recap in
 /// `MeetingNotesView`. Each transcript is a `DisclosureGroup` exposing duration,

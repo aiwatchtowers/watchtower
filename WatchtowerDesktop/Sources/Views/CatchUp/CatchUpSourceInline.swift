@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // MARK: - Inline source detail
 //

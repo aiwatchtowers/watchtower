@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the Activity timeline on a CUSTOM track's detail view. Observes
 /// `track_events` for the track and, when the track is linked to a target,

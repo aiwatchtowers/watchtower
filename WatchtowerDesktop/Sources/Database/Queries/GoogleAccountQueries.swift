@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum GoogleAccountQueries {
     static func fetchAll(_ db: Database) throws -> [GoogleAccount] {

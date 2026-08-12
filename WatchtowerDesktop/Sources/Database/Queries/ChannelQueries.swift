@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerCore
 
 enum ChannelQueries {
     // H8: removed dead SortOrder enum (was never applied to query)

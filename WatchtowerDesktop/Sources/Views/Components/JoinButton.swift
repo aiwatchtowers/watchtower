@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shared chrome for the "Join" meeting button (event row, sidebar next-event
 /// block). The load-bearing logic — open link, auto-record gating — stays in

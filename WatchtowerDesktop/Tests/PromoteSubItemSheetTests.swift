@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Smoke-coverage for `PromoteSubItemSheet` — verifies the view can be
 /// constructed with realistic inputs and that its `body` does not crash

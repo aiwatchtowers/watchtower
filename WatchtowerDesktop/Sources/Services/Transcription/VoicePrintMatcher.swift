@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Pure cosine matching of diarized cluster embeddings against the
 /// voice-print database, plus the incremental centroid math the rename flow

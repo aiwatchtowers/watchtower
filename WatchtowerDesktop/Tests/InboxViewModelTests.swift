@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 // MARK: - InboxViewModel Action/Awareness Tier Split Tests
 

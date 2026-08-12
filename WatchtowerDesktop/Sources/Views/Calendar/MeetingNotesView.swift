@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct MeetingNotesView: View {
     let eventID: String

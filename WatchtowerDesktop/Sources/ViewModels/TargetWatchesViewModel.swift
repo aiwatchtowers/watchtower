@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the target's "Watch" tab: the watches linked to the target, the
 /// origin track it was promoted from (if any), and the merged activity feed

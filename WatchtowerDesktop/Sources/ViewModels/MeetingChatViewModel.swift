@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Secretary chat about ONE meeting recording. Persisted conversation per
 /// transcript (`chat_conversations.context_type = "meeting"`), streaming via

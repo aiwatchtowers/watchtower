@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 enum MeetingRecapQueries {
     static func fetch(_ db: Database, eventID: String) throws -> MeetingRecap? {

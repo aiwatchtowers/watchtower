@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// DB access for Catch-Up v2 review sessions and themes. Mirrors the Go store
 /// (internal/db/catchup_store.go) for reads, and the Go `Pipeline.Acknowledge`

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 enum PipelineRunQueries {
     static func fetchRecent(_ db: Database, limit: Int = 50) throws -> [PipelineRun] {

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Lets the user attach an ad-hoc recording to one of the calendar events on the
 /// day it was recorded. Confirming runs the dual-path `linkToEvent` write, which

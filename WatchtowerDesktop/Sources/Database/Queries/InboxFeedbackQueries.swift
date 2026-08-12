@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 struct InboxFeedbackQueries {
     let dbPool: DatabasePool

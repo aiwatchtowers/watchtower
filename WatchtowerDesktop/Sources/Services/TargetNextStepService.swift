@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Bridges the Desktop app to the `watchtower targets next-step <id>` subprocess,
 /// which (re)generates the AI next-step suggestion and prints it as JSON.

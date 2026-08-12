@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Global top-aligned overlay: a countdown banner for the next meeting
 /// starting within the reminder window, driven by

@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Combine
+import WatchtowerCore
 
 /// Centralized GRDB ValueObservation manager for live UI updates
 final class DatabaseObserver: Sendable {

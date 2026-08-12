@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Closure-driven `CLIRunnerProtocol` double: lets a test inspect the world
 /// (e.g. read the temp transcript file) at the moment `run` executes.

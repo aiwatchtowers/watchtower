@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the multi-account CalDAV/ICS calendar connections shown in
 /// Settings → Calendar Accounts and the AddCalendarAccountView sheet. Unlike

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Manages background pipeline tasks (digests, people) after onboarding sync.
 @MainActor
