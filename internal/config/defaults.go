@@ -34,7 +34,7 @@ const (
 	DefaultIdeasMaxPromptChars          = 60000
 
 	// Streams config defaults (stage-1 Gmail/Jira stream pre-digests)
-	DefaultStreamsEnabled     = true
+	DefaultStreamsEnabled       = true
 	DefaultStreamsIntervalHours = 6
 
 	DefaultTracksMinMsgs      = 3
