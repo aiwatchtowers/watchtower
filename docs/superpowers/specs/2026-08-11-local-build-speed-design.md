@@ -113,3 +113,25 @@ it.
   no real builds.
 - Makefile targets are validated by the baseline/after measurements above.
 - CLAUDE.md guidance changes are review-only.
+
+## Appendix: measurements
+
+All numbers from the dev machine (8 cores, 16 GB RAM), sequential runs.
+
+### Baseline (2026-08-11)
+
+Machine state: `vm.swapusage: total = 7168.00M  used = 5888.00M  free = 1280.00M
+(encrypted)`, load `6.94` (1-min). **Baseline is polluted:** swap used (5.75 GB) is well
+over the ~2 GB clean threshold, and load average (6.94/10.09/9.39 on 8 cores) shows the
+machine was already busy during measurement. Numbers below are directionally useful but
+likely pessimistic versus a quiescent machine — re-measure with `dev-health.sh` clean once
+it exists (Phase 1, item 5).
+
+| Measurement | Wall clock | Notes |
+|---|---|---|
+| `go test ./...` (cached) | 2:34 | exit=0, all packages ok |
+| `go test ./...` (cold cache) | 2:22 | `go clean -testcache` first, exit=0, all packages ok |
+| `swift build` (cold, fresh worktree) | 4:24 | exit=0; worktree had no `WatchtowerDesktop/.build`; internal `Build complete! (261.90s)` vs. 4:24.18 wall clock (~2s process start/teardown overhead) |
+| `swift build` (no-op incremental) | 0:07 | exit=0; internal `Build complete! (6.20s)` |
+| `swift test` (full suite) | 1:12 | exit=0; 1946 tests, 1 skipped, 0 failures, 18 test bundles — no pre-existing failures to record |
+| `swift test --filter WindowPlannerTests` | 0:07 | exit=0; 10 tests, 0 failures |
