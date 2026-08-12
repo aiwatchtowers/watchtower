@@ -30,7 +30,7 @@ package enum TimeFormatting {
     }
 
     /// Relative time from Date
-    package static func relativeTime(from date: Date) -> String {
+    static func relativeTime(from date: Date) -> String {
         let now = Date()
         let interval = now.timeIntervalSince(date)
 
@@ -58,7 +58,7 @@ package enum TimeFormatting {
     }()
 
     /// Format unix timestamp to display string
-    package static func formatUnixTimestamp(_ ts: Double) -> String {
+    static func formatUnixTimestamp(_ ts: Double) -> String {
         let date = Date(timeIntervalSince1970: ts)
         return mediumDateTimeFormatter.string(from: date)
     }
@@ -70,12 +70,12 @@ package enum TimeFormatting {
     }()
 
     /// Short time only (e.g. "14:32") for grouped message hover
-    package static func shortTime(_ ts: Double) -> String {
+    static func shortTime(_ ts: Double) -> String {
         shortTimeFormatter.string(from: Date(timeIntervalSince1970: ts))
     }
 
     /// Short date from unix timestamp (e.g. "Mar 8")
-    package static func shortDate(fromUnix ts: Double) -> String {
+    static func shortDate(fromUnix ts: Double) -> String {
         shortDateFormatter.string(from: Date(timeIntervalSince1970: ts))
     }
 
