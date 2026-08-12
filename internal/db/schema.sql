@@ -1553,7 +1553,8 @@ CREATE TABLE IF NOT EXISTS ideas (
     rating_comment  TEXT NOT NULL DEFAULT '',
     last_mention_at TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    seen_at         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
@@ -1584,7 +1585,8 @@ CREATE TABLE IF NOT EXISTS stream_digests (
     period_from  TEXT NOT NULL,
     period_to    TEXT NOT NULL,
     topics_json  TEXT NOT NULL DEFAULT '[]',
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    read_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
 
