@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 // MARK: - Tests
 

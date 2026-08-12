@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// App-wide owner of in-flight meeting-chapters generation, living on
 /// AppState so the "generating…" state survives navigation (the

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Error-classification helpers for `TargetExtractCenter`, split into their own
 /// file so the center's phase/lifecycle logic isn't crowded by string matching.

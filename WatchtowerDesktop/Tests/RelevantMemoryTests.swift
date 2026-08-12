@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 import WatchtowerTestSupport
 
 final class RelevantMemoryTests: XCTestCase {

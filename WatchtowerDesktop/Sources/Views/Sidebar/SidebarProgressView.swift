@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shows background task progress panels in the sidebar.
 struct SidebarProgressView: View {

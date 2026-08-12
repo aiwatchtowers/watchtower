@@ -1,0 +1,113 @@
+import Foundation
+import WatchtowerCore
+
+/// Manages Jira board sync processes. Lives beyond view lifecycle so progress survives navigation.
+@MainActor
+@Observable
+package final class JiraBoardSyncManager {
+    package static let shared = JiraBoardSyncManager()
+
+    package private(set) var syncingBoardID: Int?
+    package private(set) var progress: InsightProgressData?
+    package private(set) var startedAt: Date?
+    package private(set) var error: String?
+
+    /// Called on MainActor when sync finishes (success or failure).
+    package var onComplete: (() -> Void)?
+
+    package var isSyncing: Bool { syncingBoardID != nil }
+
+    package var elapsedFormatted: String? {
+        guard let startedAt else { return nil }
+        return Self.formatDuration(Date().timeIntervalSince(startedAt))
+    }
+
+    package func startSync(accountID: Int64, boardID: Int) {
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
+            return
+        }
+        guard syncingBoardID == nil else { return }
+
+        syncingBoardID = boardID
+        progress = nil
+        startedAt = Date()
+        error = nil
+
+        Task {
+            let result = await Self.runSyncProcess(
+                cliPath: cliPath, accountID: accountID, boardID: boardID
+            ) { json in
+                await MainActor.run { [weak self] in
+                    self?.progress = json
+                }
+            }
+
+            syncingBoardID = nil
+            progress = nil
+            startedAt = nil
+            if let errMsg = result {
+                error = errMsg
+            }
+            onComplete?()
+        }
+    }
+
+    /// Runs the sync CLI process off the main actor. Calls `onProgress` for each JSON line.
+    private nonisolated static func runSyncProcess(
+        cliPath: String,
+        accountID: Int64,
+        boardID: Int,
+        onProgress: @Sendable (InsightProgressData) async -> Void
+    ) async -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: cliPath)
+        proc.arguments = [
+            "jira", "--account", String(accountID),
+            "sync", "--board", String(boardID), "--progress-json"
+        ]
+        proc.environment = Constants.resolvedEnvironment()
+        proc.currentDirectoryURL = Constants.processWorkingDirectory()
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        proc.standardOutput = stdoutPipe
+        proc.standardError = stderrPipe
+
+        do {
+            try proc.run()
+        } catch {
+            return "Failed to launch sync"
+        }
+
+        let decoder = JSONDecoder()
+        do {
+            for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
+                if let data = line.data(using: .utf8),
+                   let json = try? decoder.decode(InsightProgressData.self, from: data) {
+                    await onProgress(json)
+                }
+            }
+        } catch {
+            // EOF or pipe closed.
+        }
+
+        proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderr = String(data: stderrData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return stderr.isEmpty ? "Sync failed" : String(stderr.prefix(200))
+        }
+        return nil
+    }
+
+    private static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(s)s" }
+        return "\(s / 60)m \(s % 60)s"
+    }
+
+    private init() {}
+}
