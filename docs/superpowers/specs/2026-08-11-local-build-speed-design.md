@@ -135,3 +135,35 @@ it exists (Phase 1, item 5).
 | `swift build` (no-op incremental) | 0:07 | exit=0; internal `Build complete! (6.20s)` |
 | `swift test` (full suite) | 1:12 | exit=0; 1946 tests, 1 skipped, 0 failures, 18 test bundles — no pre-existing failures to record |
 | `swift test --filter WindowPlannerTests` | 0:07 | exit=0; 10 tests, 0 failures |
+
+### swift test --parallel experiment (2026-08-12)
+
+| Run | Wall clock | Result |
+|---|---|---|
+| 1 | 2:22 | fail |
+| 2 | 2:58 | fail |
+| 3 | 2:11 | fail |
+
+All three runs exited 1 with real failures absent from the Task 1 serial baseline (0
+failures). `AddRuleSheetViewTests.testSaveDispatchesDefaults` and four
+`MemoryViewModelTests` methods (`testSaveImportanceOverrideClearsValue`,
+`testSaveImportanceOverrideFailsWhileMemoryRunHoldsLock`,
+`testSaveImportanceOverrideSetsValue`, `testSelectLoadsBodyRendersLinksAndBacklinks` in
+run 1; `testSaveEditWritesFile`, `testSaveFocusRawWritesFileUnderLock`,
+`testVaultMissingReportsNotInitialized` plus a repeat of
+`testSaveImportanceOverrideFailsWhileMemoryRunHoldsLock` in run 2;
+`testBeginFocusEditingOpensWithTemplateWhenFileMissing`,
+`testSaveImportanceOverrideSetsValue`, `testSelectLoadsBodyRendersLinksAndBacklinks`,
+`testVaultMissingReportsNotInitialized` in run 3) failed in every run — the
+`MemoryViewModelTests` failures include `NSCocoaErrorDomain Code=260` file-not-found
+errors against a shared `/var/folders/.../T/memory/` temp path, consistent with parallel
+workers racing on the same on-disk fixture rather than genuine product bugs. Run 3 also
+tripped `DaemonManagerStopTests.testFastExitReturnsWellBeforeTheTimeout` and two
+`IdeasViewModelTests` backfill-guard tests, not seen in runs 1-2 — additional timing
+sensitivity under heavier CPU contention, not a fixed set of failures.
+
+Verdict: rejected — flaking classes `AddRuleSheetViewTests` and `MemoryViewModelTests`
+(consistent across all 3 runs; likely a shared temp-directory fixture not made
+parallel-safe), plus `DaemonManagerStopTests`/`IdeasViewModelTests` as secondary,
+contention-dependent flakes in run 3 — serialization/fixture-isolation follow-up
+candidate.
