@@ -1218,7 +1218,8 @@ enum TestDatabase {
         rating_comment  TEXT NOT NULL DEFAULT '',
         last_mention_at TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        seen_at         TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
@@ -1767,20 +1768,22 @@ enum TestDatabase {
         ratingComment: String = "",
         lastMentionAt: String = "",
         createdAt: String? = nil,
-        updatedAt: String? = nil
+        updatedAt: String? = nil,
+        seenAt: String? = nil
     ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO ideas (kind, title, essence, status, source, snooze_until,
                 needs_review, review_reason, similar_to_id, merged_into_id,
                 superseded_by_id, converted_target_id, owner_rating, rating_comment,
-                last_mention_at, created_at, updated_at)
+                last_mention_at, created_at, updated_at, seen_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                ?)
             """, arguments: [kind, title, essence, status, source, snoozeUntil,
                              needsReview, reviewReason, similarToID, mergedIntoID,
                              supersededByID, convertedTargetID, ownerRating, ratingComment,
-                             lastMentionAt, createdAt, updatedAt])
+                             lastMentionAt, createdAt, updatedAt, seenAt])
         return db.lastInsertedRowID
     }
 
