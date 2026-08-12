@@ -127,11 +127,20 @@ func (p *Pipeline) language() string {
 // RunStreamDigests runs the stage-1 Gmail/Jira pre-digest passes. It is
 // deliberately not gated on ideas.enabled: the stream digests feed the
 // Desktop Digests tab on their own (the consolidator is gated separately).
+// Both passes always run, regardless of whether the first one failed — a
+// persistent single-source failure (a revoked Jira token, say) must never
+// block the OTHER source's pass, the "one source's failure never blocks the
+// other" principle carried over from the pre-split Run. Returns the first
+// error either pass produced, if any, without swallowing it.
 func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
+	var firstErr error
 	if err := p.runEmailDigests(ctx, time.Time{}); err != nil {
-		return err
+		firstErr = err
 	}
-	return p.runJiraDigests(ctx, time.Time{})
+	if err := p.runJiraDigests(ctx, time.Time{}); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // Run executes the ideas pipeline's stage-2 consolidator (runConsolidate)

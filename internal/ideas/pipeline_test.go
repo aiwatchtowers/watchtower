@@ -132,6 +132,51 @@ func TestRunStreamDigests_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T)
 	assert.Equal(t, "gmail", digests[0].Source)
 }
 
+// TestRunStreamDigests_EmailErrorDoesNotBlockJira pins the "one source's
+// failure never blocks the other" principle carried over from the pre-split
+// Run: when the email pass fails, the jira pass still runs and its
+// (successful) row still lands — RunStreamDigests must not short-circuit
+// after the first failing stage-1 pass — and RunStreamDigests' return value
+// is still the email pass's error.
+func TestRunStreamDigests_EmailErrorDoesNotBlockJira(t *testing.T) {
+	d := newTestDB(t)
+
+	// Email side: set up to fail.
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+	iso1 := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "an idea about X", iso1)
+
+	// Jira side: fully set up to succeed for real.
+	jiraAcctID := seedJiraAccount(t, d)
+	jbase := time.Now().Add(-time.Hour)
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
+	jiraTag := "jira:WT-1"
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== PROJECT") {
+			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[{"text":"dec","author":"Ann","ref":%q}]}]}`, jiraTag), nil
+		}
+		return "", fmt.Errorf("email boom")
+	}}
+	cfg := testCfg()
+	cfg.Ideas.Enabled = true
+	p := New(d, cfg, gen, testLogger())
+
+	err := p.RunStreamDigests(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "email boom")
+	assert.Equal(t, 2, gen.calls, "the email pass's failure must not skip the jira pass")
+
+	// The jira pass's success is not skipped by the email pass's failure.
+	digests, derr := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, derr)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "jira", digests[0].Source)
+}
+
 // TestRun_DoesNotInvokeStage1 covers the other half of the pipeline split:
 // Run no longer touches the Gmail/Jira stage-1 passes at all — only the
 // stage-2 consolidator. A generator that would fail loudly if a stage-1 pass
