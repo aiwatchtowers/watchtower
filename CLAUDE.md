@@ -116,9 +116,9 @@
 - Swift: always filter — `make test-swift FILTER=<TestClass>` (or `cd WatchtowerDesktop && swift test --filter <TestClass>`). An unfiltered `swift test` re-links the whole ML stack and belongs to the gate only.
 - Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
 
-**Gate (before a PR — local-review runs these):** full `make test`, `make test-swift`, `make lint`.
+**Gate (before a PR):** full `make test`, `make test-swift`, `make lint-all`.
 
-**Cache hygiene:** never delete `WatchtowerDesktop/.build`; a cold rebuild of the ML dependencies costs tens of minutes. Don't alternate `-c debug`/`-c release` builds in one worktree without need. Before a heavy build on a loaded machine, `bash scripts/dev-health.sh` shows the known killers (swap, leaked containers, stale sessions).
+**Cache hygiene:** never delete `WatchtowerDesktop/.build`; a cold rebuild of the ML dependencies costs minutes (measured 4:24 cold on a loaded machine) plus ~5 GB of disk per worktree. Don't alternate `-c debug`/`-c release` builds in one worktree without need. Before a heavy build on a loaded machine, `bash scripts/dev-health.sh` shows the known killers (swap, leaked containers, stale sessions).
 
 ## Database & Migrations
 

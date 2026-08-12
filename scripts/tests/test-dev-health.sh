@@ -60,5 +60,21 @@ else
     echo "ok: read-only"
 fi
 
+# Degenerate scenario: pgrep finds zero claude processes (prints nothing, exits 1 —
+# the real `pgrep -f` behavior when nothing matches).
+cat > "$WORK_DIR/bin/pgrep" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x "$WORK_DIR/bin/pgrep"
+
+OUT_ZERO="$WORK_DIR/out-zero.txt"
+if PATH="$WORK_DIR/bin:$PATH" bash "$DEV_HEALTH" > "$OUT_ZERO" 2>&1; then
+    echo "ok: exit 0 with zero claude processes"
+else
+    note_fail "dev-health.sh exited non-zero with zero claude processes"
+fi
+grep -q "live claude processes: 0" "$OUT_ZERO" && echo "ok: zero-process count" || note_fail "missing zero-process count"
+
 [ "$FAILURES" -eq 0 ] || { echo "$FAILURES failure(s)"; exit 1; }
 echo "all dev-health tests passed"

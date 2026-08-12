@@ -13,8 +13,9 @@ shared with a Docker VM and multiple Claude sessions):
   *every* `swift test` — even for a one-line change in a GRDB query — recompiles the
   changed files and **re-links the full ML stack**. Full test runs are the default habit
   for both the owner and subagents.
-- **Worktrees:** each agent worktree builds its own `.build` from scratch (~5 GB, tens of
-  minutes of cold dependency compilation for the ML stack). The agent-heavy workflow
+- **Worktrees:** each agent worktree builds its own `.build` from scratch (~5 GB,
+  minutes of cold dependency compilation, measured 4:24 in the appendix, on a loaded
+  machine). The agent-heavy workflow
   creates worktrees often, so cold builds are a recurring tax, and each worktree also
   duplicates ~5 GB on disk (measured: main checkout 4.9 GB, one worktree 5.0 GB).
 - **Go:** 37 packages, 361 test files. `make test` runs `go test ./... -v`, producing
@@ -98,6 +99,13 @@ the executable's test target. Acceptance criterion: a Queries-level test builds 
 filtered-test time. Phase 2 starts only after Phase 1 lands; Phase 1 wins may reprioritize
 it.
 
+Both Phase 1 experiments above were rejected (see appendix): `swift test --parallel` was
+flaky and slower, and worktree `.build` seeding broke the build outright on `.pcm`
+absolute-path invalidation. Neither leaves a working workaround for the per-test ML
+re-link, which confirms Phase 2 as the only remaining cure. The stable build-path symlink
+trick is tracked as a Phase-2-adjacent follow-up, alongside parallel-flake fixture
+isolation.
+
 ## Out of scope
 
 - Go package restructuring (the Go test cache already solves the inner loop there).
@@ -129,7 +137,7 @@ it exists (Phase 1, item 5).
 
 | Measurement | Wall clock | Notes |
 |---|---|---|
-| `go test ./...` (cached) | 2:34 | exit=0, all packages ok |
+| `go test ./...` (cached) | 2:34 | exit=0, all packages ok; slower than cold-cache run — contention noise, see machine state above |
 | `go test ./...` (cold cache) | 2:22 | `go clean -testcache` first, exit=0, all packages ok |
 | `swift build` (cold, fresh worktree) | 4:24 | exit=0; worktree had no `WatchtowerDesktop/.build`; internal `Build complete! (261.90s)` vs. 4:24.18 wall clock (~2s process start/teardown overhead) |
 | `swift build` (no-op incremental) | 0:07 | exit=0; internal `Build complete! (6.20s)` |
@@ -166,7 +174,8 @@ Verdict: rejected — flaking classes `AddRuleSheetViewTests` and `MemoryViewMod
 (consistent across all 3 runs; likely a shared temp-directory fixture not made
 parallel-safe), plus `DaemonManagerStopTests`/`IdeasViewModelTests` as secondary,
 contention-dependent flakes in run 3 — serialization/fixture-isolation follow-up
-candidate.
+candidate. All three parallel runs (2:22, 2:58, 2:11) were also slower than the 1:12
+serial baseline, so there was no speed win even setting the failures aside.
 
 ### Worktree .build seeding experiment (2026-08-12)
 
