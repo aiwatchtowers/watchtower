@@ -167,3 +167,28 @@ Verdict: rejected — flaking classes `AddRuleSheetViewTests` and `MemoryViewMod
 parallel-safe), plus `DaemonManagerStopTests`/`IdeasViewModelTests` as secondary,
 contention-dependent flakes in run 3 — serialization/fixture-isolation follow-up
 candidate.
+
+### Worktree .build seeding experiment (2026-08-12)
+
+Seed source: main checkout `.build` (debug, 4.9 GB). Seeding took 0:18 via APFS
+clonefile (`cp -Rc`), confirmed byte-for-byte present at the destination.
+
+| Measurement | Wall clock |
+|---|---|
+| cold `swift build` (baseline, Task 1) | 4:24 |
+| seeded `swift build` | 0:50 (exit=1, build FAILED) |
+
+The seeded build did not just run slow — it errored out at 50 seconds with
+`error: precompiled file '.../ModuleCache/.../SwiftShims-....pcm' was compiled with
+module cache path '/Users/user/PhpstormProjects/watchtower/WatchtowerDesktop/.build/...'
+but the path is currently '/private/tmp/wt-seed-experiment/WatchtowerDesktop/.build/...'`
+followed by `missing required module 'SwiftShims'`, repeated across several modules
+(ArgumentParserToolInfo, `_DarwinFoundation2`, `Darwin`). This is exactly the risk
+flagged up front in Phase 1 item 3: SwiftPM/llbuild's precompiled Clang module cache
+(`.pcm` files) embeds the absolute build-directory path at compile time, and a worktree
+under a different absolute path invalidates that cache outright rather than degrading
+gracefully to a slower rebuild.
+
+Verdict: rejected — absolute-path invalidation ate the win (worse than the win: it broke
+the build outright, exit=1, not merely slow); stable build-path symlink trick remains the
+follow-up, script not merged.
