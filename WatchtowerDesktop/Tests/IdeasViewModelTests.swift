@@ -121,11 +121,32 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
 
-        let newID = vm.createManual(kind: "decision", title: "Ship it", essence: "Because it's ready")
+        let newID = vm.createManual(kind: "idea", title: "Ship it", essence: "Because it's ready")
 
         XCTAssertNotNil(newID)
         XCTAssertEqual(vm.registryItems.map(\.title), ["Ship it"])
         XCTAssertEqual(vm.registryItems.first?.status, .active)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    // MARK: - decisions excluded (Ideas tab narrows to ideas & notes)
+
+    /// The Ideas tab is ideas/notes only now — decisions live in the
+    /// separate Decisions ledger (Task 10). With the default `kindFilter ==
+    /// nil`, a decision must show up in neither the review queue nor the
+    /// browsable registry, regardless of its status.
+    func testDecisionsExcludedFromReviewAndRegistry() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Proposed decision", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Active decision", status: "active")
+            try TestDatabase.insertIdea(db, kind: "idea", title: "An idea", status: "proposed")
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+
+        vm.load()
+
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["An idea"])
+        XCTAssertTrue(vm.registryItems.isEmpty)
         XCTAssertNil(vm.errorMessage)
     }
 

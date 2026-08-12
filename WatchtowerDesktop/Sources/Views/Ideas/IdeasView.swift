@@ -116,14 +116,13 @@ struct IdeasView: View {
                         .font(.body)
                 }
                 .buttonStyle(.plain)
-                .help("Create an idea, note, or decision")
+                .help("Create an idea or note")
             }
 
             HStack(spacing: 8) {
                 Picker("Kind", selection: $vm.kindFilter) {
                     Text("All kinds").tag(String?.none)
                     Text("Ideas").tag(String?.some("idea"))
-                    Text("Decisions").tag(String?.some("decision"))
                     Text("Notes").tag(String?.some("note"))
                 }
                 .labelsHidden()
@@ -137,8 +136,6 @@ struct IdeasView: View {
                     Text("Dropped").tag(String?.some("dropped"))
                     Text("Rejected").tag(String?.some("rejected"))
                     Text("Merged").tag(String?.some("merged"))
-                    Text("Superseded").tag(String?.some("superseded"))
-                    Text("Reversed").tag(String?.some("reversed"))
                 }
                 .labelsHidden()
             }
@@ -280,7 +277,7 @@ struct IdeasView: View {
             Text("No ideas yet")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            Text("Ideas and decisions mined from Slack, meetings, email, and Jira will collect here for review.")
+            Text("Ideas and proposals mined from Slack, meetings, email, and Jira will collect here for review.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

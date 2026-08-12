@@ -464,13 +464,6 @@ struct IdeaDetailPane: View {
                     .buttonStyle(.borderedProminent)
             }
 
-            if idea.kind == .decision, idea.status == .active {
-                Button("Supersede", action: onSupersede)
-                    .buttonStyle(.bordered)
-                Button("Reverse", role: .destructive, action: onReverse)
-                    .buttonStyle(.bordered)
-            }
-
             if canMerge {
                 Button {
                     mergePreselectID = idea.similarToID
