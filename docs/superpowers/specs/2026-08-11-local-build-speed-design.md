@@ -212,3 +212,71 @@ gracefully to a slower rebuild.
 Verdict: rejected — absolute-path invalidation ate the win (worse than the win: it broke
 the build outright, exit=1, not merely slow); stable build-path symlink trick remains the
 follow-up, script not merged.
+
+### Phase 2 results (2026-08-13)
+
+Final tree (`feature/swift-package-split`, all six tasks landed): `WatchtowerCore` = 139
+Swift files (Models/Database/Services/Utilities), `Tests/Core` = 47 test files, app target
+(`Sources/`, excluding `WatchtowerCore/`) = 266 files, root `Tests/` (excluding
+`Core/`/`Support/`) = 142 files.
+
+Machine state: `vm.swapusage: total = 10240.00M  used = 9265.12M  free = 974.88M
+(encrypted)`, 22 live `claude` processes, Docker down (`dev-health.sh`). **Same
+loaded-machine caveat as the Phase 1 baseline** — swap sits at 90% of a swap file that has
+grown since the 2026-08-11 baseline (7168M → 10240M total), and this measurement ran
+inside a busy multi-agent session sharing the machine with sibling work. Numbers below are
+directionally useful, not a quiet-machine reference point.
+
+| Measurement | Wall clock | Notes |
+|---|---|---|
+| Core edit→test — `touch Sources/WatchtowerCore/Database/Queries/InboxQueries.swift` + `swift test --filter InboxQueriesTests` | **0:12** (11.68s) | exit=0, 17/17 passed; build step alone 7.69s (`Compiling WatchtowerCore InboxQueries.swift` → `Emitting module WatchtowerCore`) |
+| App-side edit→test (contrast) — `touch Sources/Services/ConfigService.swift` + `swift test --filter ConfigServiceTests` | 0:13 (13.18s) | exit=0, 19/19 passed; build step alone 11.59s |
+| No-touch floor — `swift test --filter InboxQueriesTests`, nothing changed | 0:07 (7.17s) | exit=0, 17/17 passed; build step 5.56s — the fixed SwiftPM plan+link floor with zero recompilation |
+| Full suite — `swift test` | 0:31 (30.51s) | exit=0; 1946 tests, 1 skipped, 0 failures — identical count to the Phase 1 baseline; test execution itself 23.13s inside one aggregated `WatchtowerDesktopPackageTests.xctest` bundle |
+| `swift build` (final gate) | 0:07 (6.50s) | exit=0 |
+
+**Core edit→test vs the 0:35 pre-split denominator: 11.68s vs 35s ≈ 67% faster.** But the
+app-side contrast (13.18s) lands nearly as fast as Core (11.68s) — both far below 0:35, and
+the gap between them (1.5s) is much smaller than the pre-split story implied. Root cause,
+confirmed in the build logs: **`swift test --filter` still produces one aggregated test
+product** (`Test Suite 'WatchtowerDesktopPackageTests.xctest'` appears in both runs, no
+per-target `.xctest` bundles exist) that links against the full app target — and therefore
+the whole WhisperKit/FluidAudio/Qwen3ASR/MLX stack — regardless of which target's source
+changed. So the ML-absence proof below is a **module-compilation** guarantee (`WatchtowerCore`
+itself never compiles or links ML code) rather than a **test-run-link** guarantee — a
+Core-only edit still triggers a relink of the same ML-linked executable an app-side edit
+does. The real, measured win is that the app target shrank from the pre-split ~500-file
+single module to 266 files, and `WatchtowerCore`'s own incremental recompile is a small,
+non-ML slice (139 files, GRDB+Yams only) — so both edit paths now recompile less than the
+old single-module baseline, with Core's build step still measurably cheaper than
+app-side's (7.69s vs 11.59s). This doesn't undercut the ML-absence finding, but it does mean
+the wall-clock win is smaller than "Core tests never touch ML" would suggest — worth
+flagging for the owner: a true zero-ML-relink win would require per-target `.xctest`
+bundles, which this SwiftPM/toolchain version does not produce. Given the loaded-machine
+caveat, treat the 67% figure as directional; the qualitative finding (both edit paths
+faster, aggregate-bundle link now dominates over compile) is the more load-bearing result.
+
+**ML-absence proof (final tree).** Method: Task 1 Step 5's fallback path, re-run — this
+toolchain aggregates all test targets into one `.xctest` bundle, so there is no per-target
+binary to `otool -L`:
+
+```
+$ swift build --build-tests                                              → exit=0
+$ grep -iE "whisperkit|fluidaudio|qwen3|mlx" buildtests.log \
+    | grep -i "WatchtowerCoreTests"                                      → zero matches
+$ grep -rliE "whisperkit|fluidaudio|qwen3|mlx" \
+    .build/arm64-apple-macosx/debug/WatchtowerCoreTests.build/           → zero matches
+```
+
+Plus the structural guarantee: `WatchtowerCore`'s target in `Package.swift` declares
+`dependencies: [GRDB, Yams]` only — it cannot link WhisperKit/FluidAudio/Qwen3ASR/MLX by
+construction. The second grep (the per-target `.build` object directory, which exists
+separately from the aggregated `.xctest` bundle) is a stronger corroboration than Task 1
+had: it confirms zero ML strings anywhere in `WatchtowerCoreTests`' own compiled/emitted
+artifacts, not just in build-log text.
+
+**Deferred/deviations.** `WatchtowerTranscription` module split was deferred (owner-flagged
+in the plan, not attempted this phase). Six Database files stayed app-side and
+`EmojiResolverTests`/`RelevantMemoryTests` stayed app-side (both per owner ruling /
+`DatabaseManager` coupling) — full file lists are in
+`.superpowers/sdd/2026-08-12-swift-package-split/task-{2,3,4,5}-report.md`.

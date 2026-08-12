@@ -113,7 +113,7 @@
 
 **Inner loop (while iterating — this is the default, full runs are NOT):**
 - Go: test only the touched package — `go test ./internal/<pkg>` (add `-run TestName` to narrow further). The Go build/test cache makes this seconds; never add `-count=1` reflexively, it defeats the cache.
-- Swift: always filter — `make test-swift FILTER=<TestClass>` (or `cd WatchtowerDesktop && swift test --filter <TestClass>`). An unfiltered `swift test` re-links the whole ML stack and belongs to the gate only.
+- Swift: always filter — `make test-swift FILTER=<TestClass>` (or `cd WatchtowerDesktop && swift test --filter <TestClass>`). An unfiltered `swift test` re-links the whole ML stack and belongs to the gate only. Core-level code lives in `WatchtowerCore` and its tests in `Tests/Core`, which build without the ML stack — prefer testing there when touching Models/Database/pure Services (measured ~0:12 edit→test vs the ~0:35 pre-split baseline; see `docs/superpowers/specs/2026-08-11-local-build-speed-design.md`'s Phase 2 appendix — the shared test bundle still links ML at run time, so the win is in compile time, not in avoiding the link).
 - Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
 
 **Gate (before a PR):** full `make test`, `make test-swift`, `make lint-all`.
