@@ -139,6 +139,22 @@ enum IdeaQueries {
             """) ?? 0
     }
 
+    /// Ledger decisions newer than a notification watermark, oldest first —
+    /// the `DigestQueries.fetchNewSince` precedent, now over `ideas` instead
+    /// of `digests`: `DigestWatcher`'s decision-notification source, since
+    /// decisions are mined cross-source (Slack, Gmail, Jira, meetings) and
+    /// no longer tied to a single digest.
+    static func fetchNewDecisionsSince(_ db: Database, afterID: Int) throws -> [Idea] {
+        try Idea.fetchAll(db, sql: """
+            SELECT * FROM ideas WHERE kind = 'decision' AND id > ?
+            ORDER BY id ASC
+            """, arguments: [afterID])
+    }
+
+    static func maxDecisionID(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT MAX(id) FROM ideas WHERE kind = 'decision'") ?? 0
+    }
+
     /// Distinct mention sources per idea, for the decisions ledger row's
     /// compact source glyphs (spec B3: "title, source glyphs from mentions,
     /// relative time, unread dot"). One row per idea via `GROUP_CONCAT
