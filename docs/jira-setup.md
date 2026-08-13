@@ -26,7 +26,7 @@ make app-dev        # Desktop app (dev, no signing)
 make app            # Desktop app (signed + notarized)
 ```
 
-Both `Makefile` and `scripts/build-app.sh` read `.env` and inject credentials via ldflags.
+Both `Makefile` and `scripts/build-app.sh` read `.env` (or an alternative profile selected with `ENV_FILE=<file>`) and inject credentials via ldflags. A non-default profile must set `BUILD_FLAVOR` — see the build-profiles section in `README.md`.
 
 ## First-Time Connect
 

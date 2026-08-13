@@ -19,6 +19,9 @@ final class IdeaChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
+    /// Stable identity for a dictation targetID.
+    var ideaID: Int { idea.id }
+
     private var conversationID: Int64?
     private var sessionID: String?
     private let aiService: any AIServiceProtocol

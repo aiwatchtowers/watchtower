@@ -144,6 +144,18 @@ make app-dev      # Fast dev build (CLI + desktop)
 make app          # Release build with notarization
 ```
 
+### Build profiles
+
+OAuth credentials come from `.env` (gitignored) and are baked in via ldflags.
+An alternative credential profile can be selected per build with
+`ENV_FILE=<file> make app`. A non-default profile must set `BUILD_FLAVOR`
+(`[A-Za-z0-9._-]+`): the flavor is stamped into the binary
+(`watchtower version`), the app bundle (`WTBuildFlavor` in Info.plist), and the
+artifact names (`Watchtower-<flavor>-arm64.dmg`), keeping builds with different
+credential sets distinguishable. Flavored builds are distributed out-of-band —
+they never ship via the public release feed, `scripts/install.sh`, or the
+in-app updater (which they deliberately skip).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

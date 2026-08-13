@@ -37,7 +37,8 @@ struct EmailSetupAssistantPanel: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send(snapshot: makeSnapshot()) },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "e.g. \"my mail is on Yahoo\""
+                placeholder: "e.g. \"my mail is on Yahoo\"",
+                dictationTargetID: "chat.setup.email"
             )
         }
     }

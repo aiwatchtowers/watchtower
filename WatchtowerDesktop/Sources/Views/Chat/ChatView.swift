@@ -195,7 +195,8 @@ private struct ChatSplitView: View {
                     }
                     chatVM.send()
                 },
-                onStop: { chatVM.cancelStream() }
+                onStop: { chatVM.cancelStream() },
+                dictationTargetID: "chat.workspace"
             )
         }
     }

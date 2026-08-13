@@ -4,12 +4,44 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Source .env if present (for OAuth credentials etc.)
-if [ -f "$PROJECT_ROOT/.env" ]; then
+# BEGIN profile-selection (extracted verbatim by scripts/tests/test-build-app-profile.sh)
+# Source the build profile if present (OAuth credentials, BUILD_FLAVOR etc.).
+# ENV_FILE selects an alternative profile (e.g. ENV_FILE=.env.b2 make app);
+# relative paths resolve against the project root. An explicitly requested
+# profile that is missing is a hard error — silently building with default
+# credentials would produce an artifact indistinguishable from the right one.
+# The default/explicit split keys off the RESOLVED path, so an explicit
+# ENV_FILE=.env behaves exactly like not setting ENV_FILE at all (intended).
+# A non-default profile must set BUILD_FLAVOR: a flavorless profile build
+# would wear the default artifact name while carrying non-default credentials
+# — the same mislabeled-artifact failure, from the other direction.
+# Flavors deliberately share the bundle id, install path, and Application
+# Support directory — same product, different baked credentials. Co-installing
+# two flavors on one machine is out of scope.
+ENV_FILE="${ENV_FILE:-.env}"
+case "$ENV_FILE" in
+    /*) : ;;
+    *) ENV_FILE="$PROJECT_ROOT/$ENV_FILE" ;;
+esac
+if [ -f "$ENV_FILE" ]; then
     set -a
-    . "$PROJECT_ROOT/.env"
+    . "$ENV_FILE"
     set +a
+elif [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ]; then
+    echo "ERROR: build profile '$ENV_FILE' not found" >&2
+    exit 1
 fi
+FLAVOR="${BUILD_FLAVOR:-}"
+if [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ] && [ -z "$FLAVOR" ]; then
+    echo "ERROR: build profile '$ENV_FILE' must set BUILD_FLAVOR — without it the artifact would be indistinguishable from the default build" >&2
+    exit 1
+fi
+if [ -n "$FLAVOR" ] && ! printf '%s' "$FLAVOR" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    echo "ERROR: BUILD_FLAVOR '$FLAVOR' must match [A-Za-z0-9._-]+ — it lands in ldflags and artifact file names" >&2
+    exit 1
+fi
+FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
+# END profile-selection
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
@@ -30,10 +62,11 @@ VERSION="${VERSION:-0.2.0}"
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+FLAVOR_NOTE="${FLAVOR:+ [flavor: $FLAVOR]}"
 if $DEV_MODE; then
-    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no DMG/ZIP/notarization]"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE [DEV MODE — no DMG/ZIP/notarization]"
 else
-    echo "==> Building Watchtower v$VERSION (arm64)"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE"
 fi
 echo ""
 
@@ -80,7 +113,7 @@ JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
 GOARCH=arm64 CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
     -o "$BUILD_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
 
@@ -168,7 +201,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Watchtower records your side of meetings to transcribe them locally.</string>
+    <string>Watchtower uses the microphone to record your side of meetings and to take voice dictation, transcribed locally.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
@@ -213,6 +246,14 @@ PLIST
 if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     cp "$DESKTOP_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/"
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
+# Stamp the flavor into the bundle so the app itself knows which build it is.
+# UpdateService reads this key to keep flavored builds off the public release
+# feed (their updates are distributed out-of-band). Absent on default builds —
+# the default Info.plist stays byte-identical to the pre-flavor layout.
+if [ -n "$FLAVOR" ]; then
+    /usr/libexec/PlistBuddy -c "Add :WTBuildFlavor string $FLAVOR" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
 # Code sign — one path for dev and release.
@@ -310,7 +351,7 @@ fi
 
 # Create DMG
 echo "==> Creating DMG..."
-DMG_NAME="Watchtower-arm64.dmg"
+DMG_NAME="Watchtower${FLAVOR_SUFFIX}-arm64.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
 DMG_STAGING="$BUILD_DIR/dmg-staging"
 
@@ -355,7 +396,7 @@ DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
 
 # Create ZIP (used by auto-update + install script)
 echo "==> Creating ZIP..."
-ZIP_NAME="Watchtower-${VERSION}-arm64.zip"
+ZIP_NAME="Watchtower-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
 cd "$BUILD_DIR"
 ditto -c -k --keepParent "$APP_NAME.app" "$ZIP_NAME"
 ZIP_SIZE=$(du -h "$ZIP_NAME" | cut -f1)
@@ -430,7 +471,9 @@ fi
 
 # Generate checksums
 echo "==> Generating checksums..."
-CHECKSUMS="$BUILD_DIR/checksums.txt"
+# Flavored builds get a flavored manifest so artifacts moved out of build/
+# stay self-describing; the default name is a contract with install.sh.
+CHECKSUMS="$BUILD_DIR/checksums${FLAVOR_SUFFIX}.txt"
 shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
 
 echo ""

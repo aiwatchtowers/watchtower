@@ -60,6 +60,18 @@ final class AppState {
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
 
+    /// App-wide, single-slot registry for voice dictation. Shares one physical
+    /// engine slot with `meetingRecorderCenter` — wired to it below via
+    /// `meetingBusy`/`captureWillStart` (`initialize()`).
+    let dictationCenter = DictationCenter()
+
+    /// Opens the Quick Capture window. Set once, from `rootContent.onAppear`,
+    /// where `@Environment(\.openWindow)` is actually available — the tray
+    /// button and the global hotkey handler both call through this instead of
+    /// needing their own `openWindow` (the hotkey's C callback has no
+    /// SwiftUI environment to read one from at all).
+    var openQuickCapture: (() -> Void)?
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.
@@ -339,6 +351,12 @@ final class AppState {
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()
+        // Neither direction of this handshake needs the DB, so it is wired
+        // unconditionally rather than inside the DB-dependent Task below.
+        dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
+        meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
+        meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
+        dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,

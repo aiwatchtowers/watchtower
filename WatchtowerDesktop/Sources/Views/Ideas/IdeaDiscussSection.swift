@@ -187,7 +187,8 @@ struct IdeaDiscussInputBar: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send() },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "Ask about this idea…"
+                placeholder: "Ask about this idea…",
+                dictationTargetID: "chat.idea.\(chatVM.ideaID)"
             )
         }
     }

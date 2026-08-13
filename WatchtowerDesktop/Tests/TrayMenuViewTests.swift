@@ -14,13 +14,26 @@ final class TrayMenuViewTests: XCTestCase {
     func testMenuOffersOpenSettingsAndQuit() throws {
         let view = TrayMenuContent(
             isRunning: true, daemonError: nil, cliStoreError: nil,
-            openAction: {}, settingsAction: {})
+            quickCaptureAction: {}, openAction: {}, settingsAction: {})
         let openButton = try view.inspect().find(button: "Open Watchtower")
         let settingsButton = try view.inspect().find(button: "Settings…")
         let quitButton = try view.inspect().find(button: "Quit Watchtower")
         XCTAssertNotNil(openButton)
         XCTAssertNotNil(settingsButton)
         XCTAssertNotNil(quitButton)
+    }
+
+    /// New Voice Idea is the tray's entry point into quick capture — it must
+    /// stay reachable and must fire the closure the environment-wired
+    /// `TrayMenuView` wires to `AppState.openQuickCapture`.
+    func testNewVoiceIdeaFiresQuickCaptureAction() throws {
+        var fired = false
+        let view = TrayMenuContent(
+            isRunning: true, daemonError: nil, cliStoreError: nil,
+            quickCaptureAction: { fired = true }, openAction: {}, settingsAction: {})
+        let button = try view.inspect().find(button: "New Voice Idea")
+        try button.tap()
+        XCTAssertTrue(fired)
     }
 
     func testStatusLineReflectsDaemonState() throws {
@@ -31,7 +44,7 @@ final class TrayMenuViewTests: XCTestCase {
     func testNoErrorLinesWhenNothingFailed() throws {
         let view = TrayMenuContent(
             isRunning: true, daemonError: nil, cliStoreError: nil,
-            openAction: {}, settingsAction: {})
+            quickCaptureAction: {}, openAction: {}, settingsAction: {})
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("CLI store:") })
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Daemon:") })
     }
@@ -41,7 +54,7 @@ final class TrayMenuViewTests: XCTestCase {
     func testCLIStoreErrorIsRendered() throws {
         let view = TrayMenuContent(
             isRunning: false, daemonError: nil, cliStoreError: "rename to /x failed: No such file",
-            openAction: {}, settingsAction: {})
+            quickCaptureAction: {}, openAction: {}, settingsAction: {})
         XCTAssertNoThrow(try view.inspect().find(text: "CLI store: rename to /x failed: No such file"))
     }
 
@@ -50,7 +63,7 @@ final class TrayMenuViewTests: XCTestCase {
     func testDaemonErrorIsRendered() throws {
         let view = TrayMenuContent(
             isRunning: false, daemonError: "Failed to start daemon (exit code 1)", cliStoreError: nil,
-            openAction: {}, settingsAction: {})
+            quickCaptureAction: {}, openAction: {}, settingsAction: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Daemon: Failed to start daemon (exit code 1)"))
     }
 }

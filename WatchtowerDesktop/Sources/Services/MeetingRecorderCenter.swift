@@ -135,6 +135,21 @@ final class MeetingRecorderCenter {
     /// there is no file, so no job can carry the message.
     private(set) var captureError: String?
 
+    /// Fired synchronously at the top of `startRecording` (past the duplicate
+    /// -start guard), before any engine work — the meeting recorder and
+    /// `DictationCenter` share one physical engine slot, so this is how a
+    /// meeting capture claims it ahead of time (wired to
+    /// `DictationCenter.meetingCaptureWillStart()` in `AppState`).
+    var captureWillStart: (() -> Void)?
+
+    /// Wired by AppState to `DictationCenter.hasResidentEngine`: when the
+    /// dictation engine is still resident after the `captureWillStart`
+    /// handshake (a dictation mid-flight, draining its decode tail), the live
+    /// pass parks like the busy-queue path and catches up on the recorder's
+    /// buffered stream once `dictationEngineDidRelease()` fires — never two
+    /// engines resident at once.
+    var dictationEngineResident: (() -> Bool)?
+
     /// Calendar event the active/last recording belongs to; `nil` for ad-hoc.
     private(set) var currentEventID: String?
     /// Title snapshot for the active/last recording.
@@ -848,6 +863,9 @@ final class MeetingRecorderCenter {
     /// still leaves a recoverable, event-linked pointer.
     func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
         guard !isCapturing else { return }
+        // Past the duplicate-start guard — a rejected start must not fire the
+        // dictation handshake — but before any capture/engine work begins.
+        captureWillStart?()
         // Close the check-then-act window across `recorder.start`: a second
         // start arriving while this one is suspended must see capture busy.
         isStarting = true
@@ -882,13 +900,14 @@ final class MeetingRecorderCenter {
                 liveGeneration += 1
                 liveChunks = []
                 liveEngineState = .off
-            } else if activeJobID == nil, liveTask == nil {
+            } else if activeJobID == nil, liveTask == nil, dictationEngineResident?() != true {
                 startLivePass(recorder: recorder, config: config)
             } else {
-                // A job — or the previous recording's still-draining live tail —
-                // owns the engine slot. The recorder's live stream buffers
-                // unboundedly from second zero, so the live pass loads its engine
-                // when the slot frees and catches up on the backlog.
+                // A job, the previous recording's still-draining live tail, or
+                // a dictation engine not yet dropped by the captureWillStart
+                // handshake owns the engine slot. The recorder's live stream
+                // buffers unboundedly from second zero, so the live pass loads
+                // its engine when the slot frees and catches up on the backlog.
                 liveChunks = []
                 liveEngineState = .waiting
                 pendingLiveStart = PendingLiveStart(recorder: recorder, config: config)
@@ -1228,6 +1247,15 @@ final class MeetingRecorderCenter {
         let waiters = engineSlotWaiters
         engineSlotWaiters = []
         for waiter in waiters { waiter.resume() }
+    }
+
+    /// The dictation center dropped its resident engine (the other direction
+    /// of the shared-slot handshake): start the live pass parked on it, unless
+    /// a job or a draining live tail holds the slot — their own release paths
+    /// already call `startPendingLivePass`.
+    func dictationEngineDidRelease() {
+        guard activeJobID == nil, liveTask == nil else { return }
+        startPendingLivePass()
     }
 
     /// A recording that started while this job held the engine slot loads its
