@@ -584,4 +584,40 @@ final class IdeaQueriesTests: XCTestCase {
         let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaAmongDecisions)) }
         XCTAssertNil(idea?.seenAt, "a non-decision idea must be left untouched")
     }
+
+    // MARK: - mentionSourcesByIdea
+
+    func testMentionSourcesByIdeaReturnsDistinctSourcesPerIdea() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db -> (a: Int64, b: Int64) in
+            let a = try TestDatabase.insertIdea(db, kind: "decision", title: "A")
+            let b = try TestDatabase.insertIdea(db, kind: "decision", title: "B")
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "slack")
+            // A second Slack mention must not duplicate "slack" in the result.
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "slack")
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "jira")
+            try TestDatabase.insertIdeaMention(db, ideaID: b, source: "gmail")
+            return (a, b)
+        }
+
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: [Int(ids.a), Int(ids.b)]) }
+
+        XCTAssertEqual(Set(sources[Int(ids.a)] ?? []), ["slack", "jira"])
+        XCTAssertEqual(sources[Int(ids.b)], ["gmail"])
+    }
+
+    func testMentionSourcesByIdeaOmitsIdeasWithNoMentions() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: [Int(ideaID)]) }
+
+        XCTAssertNil(sources[Int(ideaID)])
+    }
+
+    func testMentionSourcesByIdeaEmptyIDsReturnsEmptyMap() throws {
+        let db = try TestDatabase.create()
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: []) }
+        XCTAssertTrue(sources.isEmpty)
+    }
 }

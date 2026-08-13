@@ -139,6 +139,29 @@ enum IdeaQueries {
             """) ?? 0
     }
 
+    /// Distinct mention sources per idea, for the decisions ledger row's
+    /// compact source glyphs (spec B3: "title, source glyphs from mentions,
+    /// relative time, unread dot"). One row per idea via `GROUP_CONCAT
+    /// (DISTINCT source)` — cheap for the ledger's ≤200-row cap, avoids
+    /// fetching every mention just to read its `source` column.
+    static func mentionSourcesByIdea(_ db: Database, ids: [Int]) throws -> [Int: [String]] {
+        guard !ids.isEmpty else { return [:] }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT idea_id, GROUP_CONCAT(DISTINCT source) AS sources
+            FROM idea_mentions
+            WHERE idea_id IN (\(placeholders))
+            GROUP BY idea_id
+            """, arguments: StatementArguments(ids))
+        var result: [Int: [String]] = [:]
+        for row in rows {
+            let ideaID: Int = row["idea_id"]
+            let sourcesRaw: String = row["sources"] ?? ""
+            result[ideaID] = sourcesRaw.isEmpty ? [] : sourcesRaw.split(separator: ",").map(String.init)
+        }
+        return result
+    }
+
     // MARK: - Status Updates
 
     /// Sets the idea's status directly (e.g. active/rejected/dropped), clearing

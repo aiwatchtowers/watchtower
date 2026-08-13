@@ -228,6 +228,15 @@ struct DigestListView: View {
         case .decisions:
             HStack {
                 Spacer()
+                if vm.unreadDecisionCount > 0 {
+                    Button {
+                        vm.markAllDecisionsSeen()
+                    } label: {
+                        Label("Mark all read", systemImage: "checkmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                }
                 Button {
                     showCreateDecisionSheet = true
                 } label: {

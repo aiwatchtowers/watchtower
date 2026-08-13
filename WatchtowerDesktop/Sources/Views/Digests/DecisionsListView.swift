@@ -108,10 +108,21 @@ struct DecisionsListView: View {
                     .buttonStyle(.borderless)
                 }
 
-                Text(idea.title)
-                    .font(.subheadline)
-                    .fontWeight(isUnread(idea) ? .medium : .regular)
-                    .lineLimit(expanded ? nil : 3)
+                HStack(spacing: 6) {
+                    if isUnread(idea) {
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(idea.title)
+                        .font(.subheadline)
+                        .fontWeight(isUnread(idea) ? .medium : .regular)
+                        .lineLimit(expanded ? nil : 3)
+                }
+
+                if let sources = viewModel.decisionMentionSources[idea.id], !sources.isEmpty {
+                    sourceGlyphs(sources)
+                }
 
                 if expanded {
                     decisionExpandedContent(idea)
@@ -144,6 +155,30 @@ struct DecisionsListView: View {
         }
         .padding(.top, 2)
         .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// Compact per-source glyphs (spec B3 row spec: "title, source glyphs
+    /// from mentions, relative time, unread dot") — which sources have
+    /// mentioned this decision, not the mentions themselves.
+    private func sourceGlyphs(_ sources: [String]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(sources.sorted(), id: \.self) { source in
+                Image(systemName: sourceGlyph(source))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help(source.capitalized)
+            }
+        }
+    }
+
+    private func sourceGlyph(_ source: String) -> String {
+        switch IdeaMention.Source(rawValue: source) ?? .owner {
+        case .slack: "number"
+        case .meeting: "video"
+        case .gmail: "envelope"
+        case .jira: "ticket"
+        case .owner: "person.fill"
+        }
     }
 
     private func statusLabel(_ idea: Idea) -> String {

@@ -11,6 +11,9 @@ final class DigestViewModel {
     /// decision is a durable, cross-source, deduped row in the ideas registry
     /// now, not something rebuilt from raw digest JSON on every load.
     var ledgerDecisions: [Idea] = []
+    /// Distinct mention sources per decision (idea id -> `["slack", "jira", ...]`),
+    /// for the ledger row's compact source glyphs (spec B3).
+    var decisionMentionSources: [Int: [String]] = [:]
     var selectedType: String?
     var isLoading = false
     var errorMessage: String?
@@ -126,6 +129,7 @@ final class DigestViewModel {
         let unreadDigests: Int
         let ledgerDecisions: [Idea]
         let unreadDecisions: Int
+        let decisionMentionSources: [Int: [String]]
         let starredChannels: Set<String>
         let currentUserID: String?
     }
@@ -167,6 +171,7 @@ final class DigestViewModel {
                 let unreadDigests = try DigestQueries.unreadDigestCount(db)
                 let ledgerDecisions = try IdeaQueries.fetchDecisionLedger(db)
                 let unreadDecisions = try IdeaQueries.unreadDecisionCount(db)
+                let mentionSources = try IdeaQueries.mentionSourcesByIdea(db, ids: ledgerDecisions.map(\.id))
 
                 let profile = try ProfileQueries.fetchCurrentProfile(db)
                 let starred = Set(profile?.decodedStarredChannels ?? [])
@@ -180,6 +185,7 @@ final class DigestViewModel {
                     unreadDigests: unreadDigests,
                     ledgerDecisions: ledgerDecisions,
                     unreadDecisions: unreadDecisions,
+                    decisionMentionSources: mentionSources,
                     starredChannels: starred,
                     currentUserID: uid
                 )
@@ -193,12 +199,14 @@ final class DigestViewModel {
             starredChannelIDs = result.starredChannels
             currentUserID = result.currentUserID
             ledgerDecisions = applyLedgerSort(result.ledgerDecisions)
+            decisionMentionSources = result.decisionMentionSources
             unreadDigestCount = result.unreadDigests
             unreadDecisionCount = result.unreadDecisions
             errorMessage = nil
         } catch {
             digests = []
             ledgerDecisions = []
+            decisionMentionSources = [:]
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -327,13 +335,16 @@ final class DigestViewModel {
     /// change it detects.
     private func reloadLedger() {
         do {
-            let result = try dbManager.dbPool.read { db -> (decisions: [Idea], unread: Int) in
+            let result = try dbManager.dbPool.read { db -> (decisions: [Idea], unread: Int, sources: [Int: [String]]) in
                 let decisions = try IdeaQueries.fetchDecisionLedger(db)
                 let unread = try IdeaQueries.unreadDecisionCount(db)
-                return (decisions, unread)
+                let sources = try IdeaQueries.mentionSourcesByIdea(db, ids: decisions.map(\.id))
+                return (decisions, unread, sources)
             }
             ledgerDecisions = applyLedgerSort(result.decisions)
             unreadDecisionCount = result.unread
+            decisionMentionSources = result.sources
+            errorMessage = nil
         } catch {
             errorMessage = "Failed to reload decisions: \(error.localizedDescription)"
         }

@@ -1,8 +1,14 @@
 import SwiftUI
 
 /// Detail view for a single decision, over the consolidated ledger: essence,
-/// status badge, Supersede/Reverse actions, 👍/👎 + comment, and the mentions
-/// chronology (deep links reused from `IdeaDetailPane.mentionURL`).
+/// status badge, Supersede/Reverse actions, 👍/👎 + comment, the mentions
+/// chronology (deep links reused from `IdeaDetailPane.mentionURL`), and the
+/// per-idea Discuss chat (spec B3: "Discuss chat stays available, same
+/// context_type='idea'") — decisions are no longer reachable via the Ideas
+/// tab (Task 8 narrowed it to ideas/notes), so this pane is the only place
+/// left to discuss one. Mounts the existing `IdeaDiscussSection`/
+/// `IdeaChatViewModel` the same way `IdeaDetailPane` does, rather than
+/// forking a decision-specific chat VM.
 struct DecisionDetailView: View {
     let idea: Idea
     let viewModel: DigestViewModel
@@ -14,6 +20,12 @@ struct DecisionDetailView: View {
     @State private var mentionsLoaded = false
     @State private var mentionsError: String?
     @State private var jiraSiteURL: String?
+
+    // Discuss chat state — the IdeaDetailPane precedent: not hoisted further
+    // since this view is already `.id(idea.id)`'d at its call site
+    // (DigestListView), so this @State resets per decision selection change.
+    @State private var discussExpanded = false
+    @State private var discussVM: IdeaChatViewModel?
 
     init(idea: Idea, viewModel: DigestViewModel, onClose: (() -> Void)? = nil) {
         self.idea = idea
@@ -30,9 +42,16 @@ struct DecisionDetailView: View {
                     headerSection
                     essenceSection
                     mentionsSection
+                    discussSection
                 }
                 .padding()
             }
+
+            if discussExpanded, let discussVM {
+                Divider()
+                IdeaDiscussInputBar(chatVM: discussVM)
+            }
+
             Divider()
             actionBar
         }
@@ -95,11 +114,17 @@ struct DecisionDetailView: View {
 
     // MARK: - Essence
 
+    // A hand-created decision (IdeaCreateSheet) or an odd malformed mined row
+    // can carry an empty essence — an empty Text view still reserves a line
+    // of vertical space, so skip it rather than render a blank gap.
+    @ViewBuilder
     private var essenceSection: some View {
-        Text(idea.essence)
-            .font(.body)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        if !idea.essence.isEmpty {
+            Text(idea.essence)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     // MARK: - Mentions chronology
@@ -194,6 +219,21 @@ struct DecisionDetailView: View {
             mentionsError = error.localizedDescription
         }
         mentionsLoaded = true
+    }
+
+    // MARK: - Discuss
+
+    @ViewBuilder
+    private var discussSection: some View {
+        if let dbManager = appState.databaseManager {
+            IdeaDiscussSection(
+                idea: idea,
+                mentions: mentions,
+                dbManager: dbManager,
+                isExpanded: $discussExpanded,
+                chatVM: $discussVM
+            )
+        }
     }
 
     // MARK: - Action bar

@@ -131,6 +131,45 @@ final class DecisionLedgerTests: XCTestCase {
         vm.markAllDecisionsSeen()
 
         XCTAssertEqual(vm.unreadDecisionCount, 0)
+        // Every previously-unseen row is now stamped, matching what the
+        // Decisions toolbar's "Mark all read" button (DigestListView) drives.
+        XCTAssertTrue(vm.ledgerDecisions.allSatisfy { $0.seenAt != nil })
+    }
+
+    // MARK: - Mention sources (row glyphs)
+
+    @MainActor
+    func testLoadExposesDecisionMentionSources() throws {
+        let ideaID = try dbManager.dbPool.write { db -> Int64 in
+            let id = try TestDatabase.insertIdea(db, kind: "decision", title: "A call")
+            try TestDatabase.insertIdeaMention(db, ideaID: id, source: "slack")
+            try TestDatabase.insertIdeaMention(db, ideaID: id, source: "jira")
+            return id
+        }
+
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(Set(vm.decisionMentionSources[Int(ideaID)] ?? []), ["slack", "jira"])
+    }
+
+    @MainActor
+    func testDecisionMentionSourcesSurvivesReloadAfterAWrite() throws {
+        let ideaID = try dbManager.dbPool.write { db -> Int64 in
+            let id = try TestDatabase.insertIdea(db, kind: "decision", title: "A call", seenAt: nil)
+            try TestDatabase.insertIdeaMention(db, ideaID: id, source: "meeting")
+            return id
+        }
+
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.load()
+        XCTAssertEqual(vm.decisionMentionSources[Int(ideaID)], ["meeting"])
+
+        // reloadLedger() (invoked internally by every write action) must keep
+        // refreshing the source map, not just the decisions/unread count.
+        vm.markDecisionSeen(id: Int(ideaID))
+
+        XCTAssertEqual(vm.decisionMentionSources[Int(ideaID)], ["meeting"])
     }
 
     // MARK: - Supersede / reverse
