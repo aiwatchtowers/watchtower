@@ -287,7 +287,7 @@ Full-text search across all synced Slack messages. Shows matching messages with 
 **Usage tab** — Historical token consumption and costs by date, model, and feature. Navigate between days.
 
 ### Training
-Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats, prompt editor with version history, importance corrections, and tuning controls.
+Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats, prompt editor with version history, and tuning controls.
 
 ## Settings
 
@@ -414,7 +414,7 @@ watchtower config set memory.sources.operational true # give your Targets and Tr
 - **People-pipeline situations** — Extracted interaction patterns (conflicts, collaborations, bottlenecks) used to build people cards. Not to be confused with dashboard situations below — same word, two different features.
 - **Dashboard situations** — Clusters of signals (Slack/Jira/Calendar) plus target/track updates, composed into a single narrative unit with its own context packet (summary, why it matters, chronology). This is what the Inbox tab's feed shows situation cards for, ranked by priority and recency.
 - **Feed items** — index rows (`feed_items`) pointing at source records; hiding an item sets `hidden_at`, never deletes.
-- **Feedback loop** — Your thumbs up/down ratings and importance corrections improve AI quality over time through prompt tuning
+- **Feedback loop** — Your thumbs up/down ratings improve AI quality over time through prompt tuning
 - **Starred items** — Star channels and people to prioritize them in analysis and filtering
 - **Muted channels** — Channels excluded from AI processing (digests, tracks, briefings). Use the Statistics tab to mute noisy or bot-heavy channels and reduce token costs
 - **Multi-provider AI** — Watchtower supports multiple AI providers: Claude (Anthropic) and Codex (OpenAI). Switch providers in chat toolbar or Settings. All pipelines (digests, tracks, people, briefings, dashboard) respect the configured provider. CLI flag `--provider claude|codex` overrides per-command. Config field `ai.provider` sets the default
