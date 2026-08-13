@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The warm engine slot on `MeetingRecorderCenter`: parking after a job,
 /// reuse by the next recording, the warm-policy poll (unload / hold /

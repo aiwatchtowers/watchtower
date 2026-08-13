@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Logic-level tests for `MeetingRecordingRow`'s pure subtitle-resolution
 /// helper (house pattern, see `MeetingDetailViewTests`). Migrates the

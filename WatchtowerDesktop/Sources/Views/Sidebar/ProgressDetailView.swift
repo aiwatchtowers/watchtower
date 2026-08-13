@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Reusable content for pipeline progress display.
 /// Used both in the standalone window (ProgressDetailView) and embedded in UsageView.

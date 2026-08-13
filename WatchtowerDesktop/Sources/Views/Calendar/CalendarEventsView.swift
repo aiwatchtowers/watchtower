@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Frame of the now-line marker row in the meetings scroll view's named
 /// coordinate space; nil when no marker is rendered.

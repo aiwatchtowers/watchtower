@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct SidebarView: View {
     @Binding var selection: SidebarDestination

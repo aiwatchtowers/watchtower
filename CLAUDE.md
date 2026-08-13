@@ -122,6 +122,17 @@
 
 ---
 
+## Build & Test
+
+**Inner loop (while iterating — this is the default, full runs are NOT):**
+- Go: test only the touched package — `go test ./internal/<pkg>` (add `-run TestName` to narrow further). The Go build/test cache makes this seconds; never add `-count=1` reflexively, it defeats the cache.
+- Swift: always filter — `make test-swift FILTER=<TestClass>` (or `cd WatchtowerDesktop && swift test --filter <TestClass>`). An unfiltered `swift test` re-links the whole ML stack and belongs to the gate only. Core-level code lives in `WatchtowerCore` and its tests in `Tests/Core`, which build without the ML stack — prefer testing there when touching Models/Database/pure Services (measured ~0:12 edit→test vs the ~0:35 pre-split baseline; see `docs/superpowers/specs/2026-08-11-local-build-speed-design.md`'s Phase 2 appendix — the shared test bundle still links ML at run time, so the win is in compile time, not in avoiding the link).
+- Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
+
+**Gate (before a PR):** full `make test`, `make test-swift`, `make lint-all`.
+
+**Cache hygiene:** never delete `WatchtowerDesktop/.build`; a cold rebuild of the ML dependencies costs minutes (measured 4:24 cold on a loaded machine) plus ~5 GB of disk per worktree. Don't alternate `-c debug`/`-c release` builds in one worktree without need. Before a heavy build on a loaded machine, `bash scripts/dev-health.sh` shows the known killers (swap, leaked containers, stale sessions).
+
 ## Database & Migrations
 
 Schema changes use **goose** migrations — numbered SQL files in `internal/db/migrations/` (`0000N_<name>.sql`, each with `-- +goose Up` / `-- +goose Down`), auto-discovered via `//go:embed` and applied on `db.Open`. There is **no** hand-edited "schema version" int and PRAGMA `user_version` is legacy (Swift uses it only as a floor check). `CurrentSchemaFormat` in `internal/db/migrations.go` is the migration-engine version, not your schema version — do not bump it for ordinary changes.

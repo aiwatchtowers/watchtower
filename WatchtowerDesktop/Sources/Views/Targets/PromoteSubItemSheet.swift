@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet that lets the user pick optional overrides for a sub-item being
 /// promoted to a standalone child target. Defaults match the parent target

@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 final class DatabaseValidationTests: XCTestCase {

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 enum RecordingDetailTab: String, CaseIterable {
     case recap, notes, transcript, chat

@@ -1,5 +1,6 @@
 import AuthenticationServices
 import SwiftUI
+import WatchtowerCore
 
 /// Constants for the OAuth redirect.
 /// The HTTPS redirect URI must be registered in the Slack app settings.

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import Testing
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @Suite("SearchViewModel Helpers")
 @MainActor

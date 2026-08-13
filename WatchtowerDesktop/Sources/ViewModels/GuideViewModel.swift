@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // NOTE: This ViewModel is no longer actively used — the Guide tab has been merged into People.
 // Kept for backwards compatibility with GuideListView.

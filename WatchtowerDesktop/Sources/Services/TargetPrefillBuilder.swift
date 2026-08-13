@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Builds `TargetPrefill` values from in-app source records. Async methods
 /// open a single short read transaction; the sub-item method is sync because

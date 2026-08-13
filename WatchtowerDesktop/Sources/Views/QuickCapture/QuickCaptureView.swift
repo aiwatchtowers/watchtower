@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 /// The window's rendering state, derived from `DictationCenter`'s (shared,
 /// app-wide) phase plus this VM's own local outcome — a pure function so the

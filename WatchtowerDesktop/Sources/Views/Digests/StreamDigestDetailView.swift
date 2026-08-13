@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Detail pane for the `.stream` case of `DigestFeedEntry` — a Gmail/Jira
 /// stream digest (Task 9). Renders each topic's summary plus its idea/decision

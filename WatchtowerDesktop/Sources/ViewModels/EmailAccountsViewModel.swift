@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the multi-account IMAP/Outlook email connections shown in
 /// Settings → Email Accounts and the AddEmailAccountView sheet. Unlike Gmail

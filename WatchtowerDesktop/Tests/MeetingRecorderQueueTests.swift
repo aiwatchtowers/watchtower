@@ -1,6 +1,8 @@
 import Foundation
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The capture/post-processing decoupling: the FIFO job queue, the
 /// engine-slot handoff to a waiting live pass, and the crash-recovery

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Native-notification seam for transcript completion/failure, so
 /// `MeetingRecorderCenter` is unit-testable without `UNUserNotificationCenter`

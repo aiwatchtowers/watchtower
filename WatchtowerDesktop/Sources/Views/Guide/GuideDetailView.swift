@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct GuideDetailView: View {
     let guide: CommunicationGuide

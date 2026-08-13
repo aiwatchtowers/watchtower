@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Team form shown after the onboarding chat.
 /// Lets the user pick their reports, manager, and key peers from synced Slack users.

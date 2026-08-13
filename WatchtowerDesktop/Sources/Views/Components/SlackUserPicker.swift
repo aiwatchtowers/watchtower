@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Reusable multi-select picker for Slack users.
 /// Shows a searchable list of all synced users and lets the caller manage a set of selected user IDs.

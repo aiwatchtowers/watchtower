@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Detail view for a single decision, over the consolidated ledger: essence,
 /// status badge, Supersede/Reverse actions, 👍/👎 + comment, the mentions

@@ -92,7 +92,7 @@
 **Test guards:**
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_add_manual_rule`
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_remove_rule`
-- `WatchtowerDesktop/Tests/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
+- `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
 
 **Locked since:** 2026-04-27
 
@@ -106,7 +106,7 @@
 
 **Test guards:**
 - `internal/inbox/learner_test.go::TestInbox06_UserRuleProtectedFromImplicitOverwrite`
-- `WatchtowerDesktop/Tests/InboxLearnedRulesQueriesTests.swift::test_INBOX_06_manual_rule_overrides_implicit`
+- `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_06_manual_rule_overrides_implicit`
 
 **Locked since:** 2026-04-27
 

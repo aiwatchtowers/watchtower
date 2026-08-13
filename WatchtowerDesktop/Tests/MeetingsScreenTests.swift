@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Pins `CalendarEventsView.entry(for:in:)` — the selection-resolution hinge
 /// that replaced the deleted `RecordingsView.selectedID` external-binding

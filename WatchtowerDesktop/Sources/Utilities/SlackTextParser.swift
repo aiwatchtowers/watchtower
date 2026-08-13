@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 #if canImport(AppKit)
 import AppKit
 #endif

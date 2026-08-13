@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Identifies one row in the unified Meetings list — either a calendar event
 /// or a standalone recording (ad-hoc, or one whose linked event was pruned).

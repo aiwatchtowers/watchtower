@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// The Decisions segment's list: the consolidated decisions ledger
 /// (`ideas WHERE kind = 'decision'`), most-recently-mentioned first. Replaces

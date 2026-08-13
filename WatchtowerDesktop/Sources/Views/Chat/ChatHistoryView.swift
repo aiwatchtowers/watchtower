@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct ChatHistoryView: View {
     @Bindable var historyVM: ChatHistoryViewModel

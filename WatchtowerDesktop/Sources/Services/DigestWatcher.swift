@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// The two notification calls `DigestWatcher.poll()` depends on, pulled out
 /// as a protocol so tests can inject a spy instead of exercising the real

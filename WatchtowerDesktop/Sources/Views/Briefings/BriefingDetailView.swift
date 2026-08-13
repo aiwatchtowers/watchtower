@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct BriefingDetailView: View {
     let briefing: Briefing

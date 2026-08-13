@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// One row of the Digests segment's cross-source feed: a Slack channel/daily/
 /// weekly digest, a Gmail/Jira stream digest (Task 9), or a meeting recording

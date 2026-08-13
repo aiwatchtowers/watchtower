@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// VM-level coverage for the Decisions segment's ledger flows
 /// (`DigestViewModel.ledgerDecisions`/`unreadDecisionCount`/mark-seen/

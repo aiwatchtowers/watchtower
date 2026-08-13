@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import WatchtowerCore
 
 /// FNV-1a hash for stable, collision-resistant notification identifiers.
 private func fnv1aHash(_ string: String) -> UInt64 {

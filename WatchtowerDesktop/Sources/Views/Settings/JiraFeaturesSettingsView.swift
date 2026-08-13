@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // MARK: - Row in Boards list (NavigationLink to detail)
 

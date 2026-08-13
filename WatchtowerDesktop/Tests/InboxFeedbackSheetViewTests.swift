@@ -3,6 +3,7 @@ import SwiftUI
 import GRDB
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 // MARK: - InboxFeedbackSheet — пример UI-теста через ViewInspector
 //

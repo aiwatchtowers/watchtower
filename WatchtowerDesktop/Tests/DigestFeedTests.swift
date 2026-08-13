@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// VM-level coverage for the Digests segment's cross-source feed
 /// (`DigestViewModel.feedEntries`) — the merge of Slack digests, Gmail/Jira

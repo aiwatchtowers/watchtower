@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Yams
+import WatchtowerCore
 
 @MainActor
 @Observable

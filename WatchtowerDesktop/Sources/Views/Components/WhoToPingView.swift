@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 /// Reusable component showing up to 3 "who to ping" targets with avatar,
 /// name, reason badge, and an "Open in Slack" button.

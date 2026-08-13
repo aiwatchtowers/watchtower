@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Right-hand detail pane for one resolved `MeetingListEntry` in the unified
 /// Meetings screen: an `.event` entry renders its header (prep/join/record/

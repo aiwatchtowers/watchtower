@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct DigestDetailView: View {
     let digest: Digest

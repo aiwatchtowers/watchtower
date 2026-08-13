@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Covers `GoogleConnectFlow.connectArgs` — the pure dispatch (I2/I3) that
 /// decides `google add` (no accounts yet) vs `google login --account <id>`

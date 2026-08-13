@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the multi-site Jira connections shown in Settings → Jira and the
 /// add-site sheet. Each row is a DB-backed `jira_accounts` record — any number

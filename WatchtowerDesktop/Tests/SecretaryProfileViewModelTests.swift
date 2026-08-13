@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
+import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class SecretaryProfileViewModelTests: XCTestCase {

@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import ViewInspector
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 @MainActor

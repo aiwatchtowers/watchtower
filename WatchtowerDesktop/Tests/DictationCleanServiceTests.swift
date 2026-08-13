@@ -1,4 +1,6 @@
 import XCTest
+import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 final class DictationCleanServiceTests: XCTestCase {

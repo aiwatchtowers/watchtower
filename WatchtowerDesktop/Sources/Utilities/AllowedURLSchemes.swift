@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import WatchtowerCore
 
 /// The single allowlist of URL schemes the app is willing to open.
 ///

@@ -3,6 +3,8 @@ import SwiftUI
 import GRDB
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class FeedbackButtonsViewTests: XCTestCase {

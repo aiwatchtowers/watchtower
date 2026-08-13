@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// App-wide owner of in-flight "Suggest speaker names" runs and their
 /// results, living on AppState so the "guessing…" state and the returned

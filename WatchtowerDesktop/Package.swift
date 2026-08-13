@@ -30,9 +30,18 @@ let package = Package(
         .package(url: "https://github.com/soniqo/speech-swift.git", exact: "0.0.7"),
     ],
     targets: [
+        .target(
+            name: "WatchtowerCore",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Yams", package: "Yams"),
+            ],
+            path: "Sources/WatchtowerCore"
+        ),
         .executableTarget(
             name: "WatchtowerDesktop",
             dependencies: [
+                "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
@@ -40,18 +49,39 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
             ],
             path: "Sources",
+            exclude: ["WatchtowerCore"],
             resources: [
                 .process("Resources"),
             ]
+        ),
+        .target(
+            name: "WatchtowerTestSupport",
+            dependencies: [
+                "WatchtowerCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Tests/Support"
+        ),
+        .testTarget(
+            name: "WatchtowerCoreTests",
+            dependencies: [
+                "WatchtowerCore",
+                "WatchtowerTestSupport",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Tests/Core"
         ),
         .testTarget(
             name: "WatchtowerDesktopTests",
             dependencies: [
                 "WatchtowerDesktop",
+                "WatchtowerCore",
+                "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ViewInspector", package: "ViewInspector"),
             ],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["Core", "Support"]
         ),
     ]
 )

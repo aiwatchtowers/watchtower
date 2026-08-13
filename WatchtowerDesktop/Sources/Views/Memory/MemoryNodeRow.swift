@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// One node in the browser list: title, type chip, status/dispute markers.
 struct MemoryNodeRow: View {

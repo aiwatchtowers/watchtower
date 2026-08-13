@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct PersonDetailView: View {
     let card: PeopleCard

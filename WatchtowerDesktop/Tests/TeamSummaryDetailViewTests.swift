@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class TeamSummaryDetailViewTests: XCTestCase {

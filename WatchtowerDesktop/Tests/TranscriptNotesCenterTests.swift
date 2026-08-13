@@ -1,5 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 final class TranscriptNotesCenterTests: XCTestCase {

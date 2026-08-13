@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// List row for a standalone `.recording` entry in the unified Meetings list
 /// (ad-hoc recording, or one whose linked event was pruned by sync

@@ -1,5 +1,7 @@
 import Foundation
 import XCTest
+import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// `stop()` failing to reach the CLI (behavior 5) uses this rather than a

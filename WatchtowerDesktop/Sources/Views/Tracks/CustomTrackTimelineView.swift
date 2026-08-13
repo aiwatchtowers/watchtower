@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// The scan-produced activity timeline shown on a CUSTOM track's detail page.
 /// Ported from the removed `ObserverTimelineView`. A custom track carries a
