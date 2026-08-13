@@ -96,7 +96,7 @@ final class DigestFeedTests: XCTestCase {
         XCTAssertEqual(ids, [
             "slack-\(digestID)",
             "stream-\(streamID)",
-            "meeting-\(meetingID)",
+            "meeting-\(meetingID)"
         ])
     }
 
