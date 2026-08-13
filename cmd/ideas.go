@@ -175,7 +175,7 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 
 	if fromStr == "" {
-		return runIdeasMineIncremental(ctx, pipe, out)
+		return runIdeasMineIncremental(ctx, cfg, pipe, out, logger)
 	}
 	return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
 }
@@ -211,8 +211,24 @@ func reportIdeasDisabled(cmd *cobra.Command, fromStr string, out io.Writer) erro
 }
 
 // runIdeasMineIncremental is flagless `ideas mine`'s body: one ordinary
-// (unbounded) pipeline pass.
-func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.Writer) error {
+// (unbounded) pipeline pass. When cfg.Streams.Enabled, it first runs the
+// stage-1 Gmail/Jira pre-digests (pipe.RunStreamDigests) so a single `ideas
+// mine` invocation covers both stages, the way the daemon's phaseStreamDigests
+// + phaseIdeas pair does on their own schedules. RunStreamDigests is never
+// gated internally on cfg.Streams.Enabled — the caller must skip the call
+// outright when the flag is off, matching phaseStreamDigests' own gate.
+// A stream-digests error follows the daemon's log-and-continue precedent
+// (phaseStreamDigests in internal/daemon/daemon.go): per-account failures are
+// already logged by the pipeline itself, so this only logs the aggregate
+// error and falls through to the stage-2 consolidator pass rather than
+// aborting the whole command.
+func runIdeasMineIncremental(ctx context.Context, cfg *config.Config, pipe *ideas.Pipeline, out io.Writer, logger *log.Logger) error {
+	if cfg.Streams.Enabled {
+		if err := pipe.RunStreamDigests(ctx); err != nil {
+			logger.Printf("stream-digests error: %v", err)
+		}
+	}
+
 	proposed, err := pipe.Run(ctx)
 	if err != nil {
 		return fmt.Errorf("mining ideas: %w", err)

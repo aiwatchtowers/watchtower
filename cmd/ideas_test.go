@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,15 +23,25 @@ import (
 	"watchtower/internal/ideas"
 )
 
+// testCmdLogger is a discard logger for exercising runIdeasMineIncremental's
+// log-and-continue error path without polluting test output (the
+// cmd/*.go `log.New(io.Discard, "", 0)` precedent).
+func testCmdLogger() *log.Logger {
+	return log.New(io.Discard, "", 0)
+}
+
 // fakeCmdGen is a stub digest.Generator for exercising runIdeasBackfill
 // directly, bypassing cliGenerator's real claude/codex subprocess (the
 // internal/ideas fakeGen precedent, duplicated here since it's package-private
-// there).
+// there). calls counts invocations, the internal/ideas fakeGen precedent, so
+// a test can assert whether a stage actually ran without further plumbing.
 type fakeCmdGen struct {
 	reply func(user string) (string, error)
+	calls int
 }
 
 func (g *fakeCmdGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
 	out, err := g.reply(user)
 	if err != nil {
 		return "", nil, "", err
@@ -442,10 +454,91 @@ func TestIdeasMine_Incremental_ReportsDropCounters(t *testing.T) {
 	pipe := ideas.New(database, cfg, gen, nil)
 
 	var buf bytes.Buffer
-	require.NoError(t, runIdeasMineIncremental(context.Background(), pipe, &buf))
+	require.NoError(t, runIdeasMineIncremental(context.Background(), cfg, pipe, &buf, testCmdLogger()))
 	database.Close()
 
 	assert.Contains(t, buf.String(), "proposed=0 slack_refs_dropped=1 refs_rejected=1")
+}
+
+// TestIdeasMine_Incremental_StreamsEnabled_RunsStage1First verifies the
+// flagless `ideas mine` path runs the stage-1 stream pre-digests
+// (pipe.RunStreamDigests) before the stage-2 consolidator when
+// cfg.Streams.Enabled is true — a single connected Jira account with one
+// in-window issue produces exactly one extra Generate call (the jira pass;
+// there is no Gmail account seeded, so the email pass is a no-op), on top of
+// the consolidator's own zero calls (ideas.Enabled is left false so Run
+// short-circuits per TestRun_IdeasDisabled_ShortCircuits' contract, isolating
+// the count to stage 1 alone).
+func TestIdeasMine_Incremental_StreamsEnabled_RunsStage1First(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+
+	jiraAcctID, err := database.CreateJiraAccount(db.JiraAccount{
+		CloudID: "cloud-streams-on", SiteURL: "https://example.atlassian.net", Label: "Test",
+	})
+	require.NoError(t, err)
+	jbase := time.Now().Add(-time.Hour)
+	_, err = database.Exec(`UPDATE jira_accounts SET ideas_jira_floor = ? WHERE id = ?`, jbase.Format(time.RFC3339), jiraAcctID)
+	require.NoError(t, err)
+	updatedAt := jbase.Add(10 * time.Second).Format(time.RFC3339)
+	_, err = database.Exec(`INSERT INTO jira_issues
+		(account_id, key, id, project_key, board_id, summary, description_text, status, status_category, sprint_id, created_at, updated_at, synced_at)
+		VALUES (?, 'WT-1', 'WT-1', 'WT', 0, 'Issue', 'we should try X', 'Open', 'new', 0, ?, ?, ?)`,
+		jiraAcctID, updatedAt, updatedAt, updatedAt)
+	require.NoError(t, err)
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	cfg.Streams.Enabled = true
+	// Ideas.Enabled off isolates the call count to stage 1 alone: Run's
+	// cfg.Ideas.Enabled gate returns 0, nil immediately (no floor writes, no
+	// workspace row needed), the TestRun_IdeasDisabled_ShortCircuits contract.
+	cfg.Ideas.Enabled = false
+	gen := &fakeCmdGen{reply: func(string) (string, error) {
+		return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, nil
+	}}
+	pipe := ideas.New(database, cfg, gen, testCmdLogger())
+
+	var buf bytes.Buffer
+	require.NoError(t, runIdeasMineIncremental(context.Background(), cfg, pipe, &buf, testCmdLogger()))
+	database.Close()
+
+	assert.Equal(t, 1, gen.calls, "stage 1's jira pass must run when streams.enabled is true")
+}
+
+// TestIdeasMine_Incremental_StreamsDisabled_SkipsStage1 is the control: the
+// same seeded jira account produces zero Generate calls when
+// cfg.Streams.Enabled is false, confirming RunStreamDigests is skipped
+// outright rather than called and finding nothing to do.
+func TestIdeasMine_Incremental_StreamsDisabled_SkipsStage1(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+
+	jiraAcctID, err := database.CreateJiraAccount(db.JiraAccount{
+		CloudID: "cloud-streams-off", SiteURL: "https://example.atlassian.net", Label: "Test",
+	})
+	require.NoError(t, err)
+	jbase := time.Now().Add(-time.Hour)
+	_, err = database.Exec(`UPDATE jira_accounts SET ideas_jira_floor = ? WHERE id = ?`, jbase.Format(time.RFC3339), jiraAcctID)
+	require.NoError(t, err)
+	updatedAt := jbase.Add(10 * time.Second).Format(time.RFC3339)
+	_, err = database.Exec(`INSERT INTO jira_issues
+		(account_id, key, id, project_key, board_id, summary, description_text, status, status_category, sprint_id, created_at, updated_at, synced_at)
+		VALUES (?, 'WT-1', 'WT-1', 'WT', 0, 'Issue', 'we should try X', 'Open', 'new', 0, ?, ?, ?)`,
+		jiraAcctID, updatedAt, updatedAt, updatedAt)
+	require.NoError(t, err)
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	cfg.Streams.Enabled = false
+	gen := &fakeCmdGen{reply: func(string) (string, error) {
+		return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[]}]}`, nil
+	}}
+	pipe := ideas.New(database, cfg, gen, testCmdLogger())
+
+	var buf bytes.Buffer
+	require.NoError(t, runIdeasMineIncremental(context.Background(), cfg, pipe, &buf, testCmdLogger()))
+	database.Close()
+
+	assert.Zero(t, gen.calls, "stage 1 must not run at all when streams.enabled is false")
 }
 
 // TestIdeasMine_Backfill_Capped_PrintsEnvelope covers GB2 at the CLI layer:
