@@ -98,9 +98,9 @@ Neither Go nor Swift ever cascade-deletes mentions or chat on a status transitio
 
 **Test guards:**
 - `internal/ideas/consolidate_test.go::TestIdeas03_AttachMentionMergedIdeaLandsOnTarget`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MergeReparentsMentionsAndFollowsLink`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MarkConvertedSetsStatusAndTargetLink`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas03_MarkConvertedKeepsMentionsAndChat`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MergeReparentsMentionsAndFollowsLink`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MarkConvertedSetsStatusAndTargetLink`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas03_MarkConvertedKeepsMentionsAndChat`
 
 **Locked since:** 2026-08-07
 
@@ -117,8 +117,8 @@ The flag must always be *clearable*: every Swift owner action — `setStatus`, `
 **Test guards:**
 - `internal/ideas/consolidate_test.go::TestIdeas04_AttachMentionRejectedIdeaNeedsReview`
 - `internal/db/ideas_test.go::TestIdeas04_SetIdeaNeedsReviewTx`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas04_SetStatusClearsNeedsReview`
-- `WatchtowerDesktop/Tests/IdeaQueriesTests.swift::testIdeas04_EveryOwnerActionClearsNeedsReview`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_SetStatusClearsNeedsReview`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_EveryOwnerActionClearsNeedsReview`
 - `WatchtowerDesktop/Tests/IdeasViewModelTests.swift::testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate`
 
 **Locked since:** 2026-08-07
