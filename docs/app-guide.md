@@ -72,7 +72,7 @@ A registry for ideas and proposals — things not yet decided — that surface i
 
 **Sidebar badge** — count of ideas/notes awaiting review (freshly proposed + resurfaced); decisions never contribute to this count.
 
-**Settings:** the Ideas card lets you turn the whole registry on or off and adjust how often it mines in the background (1–48 hours, default 6).
+**Settings:** the Ideas card lets you turn the consolidator/registry on or off and adjust how often it mines in the background (1–48 hours, default 6). The Gmail/Jira stream-digest mining that feeds it (stage 1) is a separate, always-on pipeline with no Settings toggle — it's controlled only via `streams.enabled` in `config.yaml`.
 
 ### Voice Dictation
 Dictate instead of typing, wherever you'd otherwise write free-form text: the idea create sheet, a recording's Notes tab, and every Discuss chat input. A mic button (🎙) sits next to each of those fields.
@@ -248,7 +248,7 @@ Each track shows:
 ### Digests
 A cross-source overview of what happened, plus the settled decisions ledger. Two sub-views:
 
-**Digests** — One chronological feed, grouped by day, spanning every source: Slack channel/daily/weekly digests (summary, extracted topics, ongoing topics with status; rate quality with 👍/👎), Gmail and Jira stream digests (scope/period, topic titles, and the ideas/decisions each one mined, with deep links back to the Gmail thread or the Jira issue), and meeting recaps (any recording that has a recap; opens straight into the recording). Each row is labeled by its source; Slack and Gmail/Jira rows carry their own unread marker, recaps don't (there's no unread concept for them).
+**Digests** — One chronological feed, grouped by day, spanning every source: Slack channel/daily/weekly digests (summary, extracted topics, ongoing topics with status; rate quality with 👍/👎), Gmail and Jira stream digests (scope/period, topic titles, and the ideas/decisions each one mined, with deep links back to the Gmail thread or the Jira issue), and meeting recaps (any recording that has a recap; opens straight into the recording). Each row is labeled by its source; Slack and Gmail/Jira rows carry their own unread marker, recaps don't (there's no unread concept for them) — and since the feed defaults to "Unread", recaps never carry a badge to earn their place there, so they only show up once you switch the segmented control to "All".
 
 **Decisions** — The deduplicated, cross-source decisions ledger: every decision mined from Slack, Gmail, Jira, or meetings by the Ideas pipeline, born settled (no review step) and deduplicated the same way ideas are. Rows show title, a glyph per source it's been mentioned in, relative time, and an unread dot; opening a row marks it seen. Detail shows the essence, status (**active** / **superseded** / **reversed**), **Supersede**/**Reverse** actions, a 👍/👎 rating with an optional comment, the full mentions chronology with deep links back to each source, and a collapsed Discuss chat. "Mark all read" clears the segment's unread count in one click.
 
