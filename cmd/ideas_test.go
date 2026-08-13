@@ -222,6 +222,65 @@ func TestIdeasMine_Disabled_NoOp(t *testing.T) {
 	require.Contains(t, buf.String(), "disabled")
 }
 
+// TestIdeasMine_StreamsOnlyIdeasDisabled_RunsStage1 pins the outer-gate fix:
+// with ideas.enabled=false and streams.enabled=true, flagless `ideas mine`
+// must reach runIdeasMineIncremental and actually run stage 1
+// (RunStreamDigests) rather than short-circuiting to reportIdeasDisabled —
+// before this fix a streams-only config made `ideas mine` a total no-op even
+// though ideasPipelineNeeded (and the daemon's own phase wiring) already
+// treat streams-only as "something to do".
+//
+// This drives the REAL command (ideasMineCmd.RunE), unlike the sibling
+// direct-call tests above, because the bug lives specifically in
+// runIdeasMine's outer gate, which a direct call to runIdeasMineIncremental
+// bypasses entirely. Going through RunE means the real cliGenerator wires a
+// live claude/codex subprocess (no test seam exists to swap it, see
+// misc_coverage_test.go's TestCliGenerator), so this test must never let a
+// stage actually reach Generate. It seeds a Jira account with an
+// uninitialized floor: runJiraDigestAccount's first-run path
+// (internal/ideas/jira_digest.go) initializes the floor and returns without
+// calling Generate at all ("no backfill" — mirrors the empty-window no-op).
+// The floor flipping from empty to set is therefore proof stage 1 actually
+// executed, entirely without an AI call.
+func TestIdeasMine_StreamsOnlyIdeasDisabled_RunsStage1(t *testing.T) {
+	database := setupIdeasTestEnv(t)
+	resetIdeasMineFlags(t)
+
+	jiraAcctID, err := database.CreateJiraAccount(db.JiraAccount{
+		CloudID: "cloud-streams-only", SiteURL: "https://example.atlassian.net", Label: "Test",
+	})
+	require.NoError(t, err)
+
+	before, err := database.IdeasJiraFloor(jiraAcctID)
+	require.NoError(t, err)
+	require.Empty(t, before, "precondition: floor starts uninitialized")
+
+	database.Close()
+
+	configPath := flagConfig
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath,
+		append(data, []byte("ideas:\n  enabled: false\nstreams:\n  enabled: true\n")...), 0o600))
+
+	var buf bytes.Buffer
+	ideasMineCmd.SetOut(&buf)
+	require.NoError(t, ideasMineCmd.RunE(ideasMineCmd, nil))
+
+	require.NotContains(t, buf.String(), "Ideas registry is disabled",
+		"streams-only must not short-circuit to reportIdeasDisabled's no-op line")
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	reopened, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	after, err := reopened.IdeasJiraFloor(jiraAcctID)
+	require.NoError(t, err)
+	require.NotEmpty(t, after, "stage 1 (RunStreamDigests) must have run and initialized the jira account's floor")
+}
+
 // TestIdeasMine_Backfill_Disabled_PrintsEnvelope covers GB9: on the --from
 // backfill path, ideas.enabled=false must emit a machine-readable
 // {"disabled":true} envelope on stdout (the Desktop "Find ideas" sheet's
