@@ -1091,14 +1091,23 @@ private struct MeetingFeedDetailView: View {
             return
         }
         let id = recording.id
-        recapContent = try? await db.dbPool.read { conn -> MeetingRecap.Content? in
-            let row = try MeetingTranscriptQueries.fetch(conn, id: id)
-            if let eventID = row?.eventID,
-               let recap = try MeetingRecapQueries.fetch(conn, eventID: eventID),
-               let parsed = recap.parsed {
-                return parsed
+        do {
+            recapContent = try await db.dbPool.read { conn -> MeetingRecap.Content? in
+                let row = try MeetingTranscriptQueries.fetch(conn, id: id)
+                if let eventID = row?.eventID,
+                   let recap = try MeetingRecapQueries.fetch(conn, eventID: eventID),
+                   let parsed = recap.parsed {
+                    return parsed
+                }
+                return row?.parsedSummary
             }
-            return row?.parsedSummary
+        } catch {
+            // A read failure is not "no recap", but the pane has nothing
+            // better to render either — keep the graceful nil fallback and
+            // leave a trace (the `DigestWatcher` print convention) so the
+            // failure isn't silent.
+            print("[MeetingFeedDetailView] recap load error: \(error.localizedDescription)")
+            recapContent = nil
         }
         loaded = true
     }
