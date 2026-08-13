@@ -116,6 +116,78 @@ struct DigestWatcherTests {
         #expect(spy.decisionCalls.count == 1)
     }
 
+    /// A busy mining cycle must not carpet-bomb Notification Center: at most
+    /// 5 banners per poll. The watermark deliberately still advances past the
+    /// capped-out decisions (they are "seen" as far as notification is
+    /// concerned), so the next poll doesn't re-announce them — pinning the
+    /// current behavior, not proposing a different one.
+    @Test("poll sends at most 5 decision notifications per cycle but consumes them all")
+    func pollCapsNotificationsAtFive() throws {
+        resetDefaults()
+        let pool = try makePool()
+        var lastID: Int64 = 0
+        try pool.write { db in
+            for i in 1...7 {
+                lastID = try TestDatabase.insertIdea(db, kind: "decision", title: "Decision \(i)")
+            }
+        }
+
+        let spy = SpyNotifier()
+        let watcher = DigestWatcher(dbPool: pool, notificationService: spy)
+        watcher.poll()
+
+        #expect(spy.decisionCalls.count == 5, "expected the 5-per-cycle cap, got \(spy.decisionCalls.count)")
+        // The first five in id order — the cap truncates the tail, not the head.
+        #expect(spy.decisionCalls.map(\.title) == (1...5).map { "Decision \($0)" })
+        // Watermark past ALL seven, so the two silenced ones never come back.
+        #expect(UserDefaults.standard.integer(forKey: "lastCheckedDecisionID") == Int(lastID))
+
+        watcher.poll()
+        #expect(spy.decisionCalls.count == 5, "a second poll must not re-announce the capped tail")
+    }
+
+    /// `notifyDecisions = false` silences the banners, but the poll still
+    /// consumes the rows — turning notifications back on must not replay
+    /// everything that happened while they were off.
+    @Test("notifyDecisions=false suppresses banners while still advancing the watermark")
+    func pollSuppressesWhenNotifyDecisionsDisabled() throws {
+        resetDefaults()
+        UserDefaults.standard.set(false, forKey: "notifyDecisions")
+        defer { UserDefaults.standard.removeObject(forKey: "notifyDecisions") }
+
+        let pool = try makePool()
+        let ideaID = try pool.write { db in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Adopt the new vendor")
+        }
+
+        let spy = SpyNotifier()
+        let watcher = DigestWatcher(dbPool: pool, notificationService: spy)
+        watcher.poll()
+
+        #expect(spy.decisionCalls.isEmpty)
+        #expect(UserDefaults.standard.integer(forKey: "lastCheckedDecisionID") == Int(ideaID))
+    }
+
+    /// The `notifyDecisions` default is ON, and an unset key means "never
+    /// touched Settings" — `UserDefaults.bool(forKey:)` alone would read that
+    /// as off (the explicit `object(forKey:) == nil` workaround in `poll()`).
+    @Test("an unset notifyDecisions key still notifies")
+    func pollNotifiesWhenNotifyDecisionsKeyUnset() throws {
+        resetDefaults()
+        #expect(UserDefaults.standard.object(forKey: "notifyDecisions") == nil)
+
+        let pool = try makePool()
+        try pool.write { db in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Adopt the new vendor")
+        }
+
+        let spy = SpyNotifier()
+        let watcher = DigestWatcher(dbPool: pool, notificationService: spy)
+        watcher.poll()
+
+        #expect(spy.decisionCalls.count == 1)
+    }
+
     @Test("poll ignores a digest's decisions JSON when it has no ledger row")
     func pollIgnoresDigestDecisionsWithoutLedgerRow() throws {
         resetDefaults()
