@@ -11,6 +11,11 @@ final class DigestFeedTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
 
+    /// A minimal valid `MeetingRecap.Content` JSON — `insertMeetingTranscript`
+    /// fixtures need this in `summaryJSON` to count as `hasRecap` (spec B2:
+    /// only recapped recordings belong in the feed).
+    private let recapJSON = #"{"summary":"s","key_decisions":[],"action_items":[],"open_questions":[]}"#
+
     override func setUp() {
         super.setUp()
         do {
@@ -32,7 +37,7 @@ final class DigestFeedTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, createdAt: "2026-01-01T00:00:00Z")
             try TestDatabase.insertStreamDigest(db, createdAt: "2026-01-03T00:00:00Z")
-            try TestDatabase.insertMeetingTranscript(db, createdAt: "2026-01-02T00:00:00Z")
+            try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON, createdAt: "2026-01-02T00:00:00Z")
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -56,7 +61,7 @@ final class DigestFeedTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, createdAt: "2026-01-01T00:00:00Z")
             try TestDatabase.insertStreamDigest(db, createdAt: "2026-01-03T00:00:00Z")
-            try TestDatabase.insertMeetingTranscript(db, createdAt: "2026-01-02T00:00:00Z")
+            try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON, createdAt: "2026-01-02T00:00:00Z")
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -85,7 +90,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertDigest(db)
             digestID = db.lastInsertedRowID
             streamID = try TestDatabase.insertStreamDigest(db)
-            try TestDatabase.insertMeetingTranscript(db)
+            try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON)
             meetingID = db.lastInsertedRowID
         }
 
@@ -105,7 +110,7 @@ final class DigestFeedTests: XCTestCase {
     @MainActor
     func testMeetingEntriesAreAlwaysRead() throws {
         try dbManager.dbPool.write { db in
-            try TestDatabase.insertMeetingTranscript(db)
+            try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON)
         }
 
         let vm = DigestViewModel(dbManager: dbManager)
@@ -113,6 +118,48 @@ final class DigestFeedTests: XCTestCase {
 
         XCTAssertEqual(vm.feedEntries.count, 1)
         XCTAssertTrue(vm.feedEntries[0].isRead)
+    }
+
+    // MARK: - Recap-only feed noise guard (spec B2)
+
+    /// An in-progress/failed/unrecapped recording (no `summary_json` and no
+    /// event with a `meeting_recaps` row) has nothing worth surfacing in the
+    /// feed — `DigestViewModel.load()` filters `fetchRecordingList` to
+    /// `hasRecap` before building `feedEntries`.
+    @MainActor
+    func testMeetingEntriesWithoutRecapAreExcludedFromFeed() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertDigest(db)
+            try TestDatabase.insertMeetingTranscript(db, title: "No recap yet")
+        }
+
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertTrue(vm.recordings.isEmpty)
+        for entry in vm.feedEntries {
+            if case .meeting = entry {
+                XCTFail("unrecapped meeting entry leaked into the feed: \(entry)")
+            }
+        }
+    }
+
+    /// A recording with no own `summary_json` but whose linked event carries
+    /// a `meeting_recaps` row still counts as recapped (`hasRecap`'s own
+    /// `OR EXISTS` clause) and belongs in the feed.
+    @MainActor
+    func testMeetingEntryRecappedViaLinkedEventIsIncluded() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try TestDatabase.insertMeetingRecap(db, eventID: "evt-1")
+            try TestDatabase.insertMeetingTranscript(db, eventID: "evt-1")
+        }
+
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertEqual(vm.recordings.count, 1)
+        XCTAssertEqual(vm.feedEntries.count, 1)
     }
 
     // MARK: - Stream markRead flows through

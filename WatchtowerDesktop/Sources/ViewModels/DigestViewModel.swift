@@ -46,7 +46,8 @@ final class DigestViewModel {
     var digests: [Digest] = []
     /// Gmail/Jira stream digests (Task 9) feeding the cross-source feed.
     var streamDigests: [StreamDigest] = []
-    /// Meeting recordings feeding the cross-source feed (always-read entries).
+    /// Meeting recordings feeding the cross-source feed — filtered to
+    /// `hasRecap` at load (see `load()`), always-read entries.
     var recordings: [RecordingListItem] = []
     var unreadStreamCount: Int = 0
     /// Slack digests + stream digests + meeting recordings, merged and sorted
@@ -237,7 +238,12 @@ final class DigestViewModel {
                 let uid = profile?.slackUserID
 
                 let streamDigests = try StreamDigestQueries.fetchAll(db)
+                // Feed noise guard (spec B2): an in-progress/failed/unrecapped
+                // recording has nothing worth surfacing in the digest feed —
+                // only recordings with a recap (own summary_json or the
+                // linked event's meeting_recaps row) show up here.
                 let recordings = try MeetingTranscriptQueries.fetchRecordingList(db)
+                    .filter(\.hasRecap)
                 let unreadStream = try StreamDigestQueries.unreadCount(db)
 
                 return LoadResult(
