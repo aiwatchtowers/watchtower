@@ -863,9 +863,13 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	defer release()
 
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
-		// The pipeline instance outlives this cycle, so its drop counters are
-		// lifetime totals — log this run's delta, not the running sum.
+		// The pipeline instance outlives this cycle — and is shared with
+		// phaseStreamDigests — so both its drop counters and its usage
+		// counters are lifetime totals across BOTH phases: log/report this
+		// run's delta, never the running sum, or phaseStreamDigests' stage-1
+		// tokens double-count into this phase's reported usage too.
 		dropped0, rejected0 := d.ideasPipe.AccumulatedDrops()
+		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
 		proposed, err := d.ideasPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("ideas error: %v", err)
@@ -884,7 +888,7 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		d.lastIdeas = now
 		d.saveLastIdeas()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
-		return pipelineRunStats{items: proposed, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})
 }
 
@@ -930,6 +934,12 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 	defer release()
 
 	d.trackedPipelineRun("stream-digests", func() pipelineRunStats {
+		// The pipeline instance is shared with phaseIdeas, so AccumulatedUsage
+		// is a lifetime total across BOTH phases — snapshot before the run and
+		// report only this phase's own delta (the phaseIdeas precedent),
+		// otherwise phaseIdeas' stage-2 tokens (from an earlier or later cycle
+		// sharing the same instance) would double-count into this phase too.
+		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
 		err := d.ideasPipe.RunStreamDigests(ctx)
 		if err != nil {
 			d.logger.Printf("stream-digests error: %v", err)
@@ -940,7 +950,7 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 		d.lastStreams = now
 		d.saveLastStreams()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
-		return pipelineRunStats{inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})
 }
 
