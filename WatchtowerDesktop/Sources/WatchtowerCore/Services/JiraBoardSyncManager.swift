@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 /// Manages Jira board sync processes. Lives beyond view lifecycle so progress survives navigation.
 @MainActor

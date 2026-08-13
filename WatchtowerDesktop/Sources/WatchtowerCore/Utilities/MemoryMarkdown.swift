@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 /// Pure parsing helpers for vault markdown files: frontmatter split and
 /// wiki-link handling. Mirrors the Go side (internal/memory/node.go) — same

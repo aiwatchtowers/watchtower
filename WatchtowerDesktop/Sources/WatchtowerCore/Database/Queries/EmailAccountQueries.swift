@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum EmailAccountQueries {
     package static func fetchAll(_ db: Database) throws -> [EmailAccount] {

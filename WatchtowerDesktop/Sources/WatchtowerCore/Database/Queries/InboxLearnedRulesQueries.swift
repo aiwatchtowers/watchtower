@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import WatchtowerCore
 
 package struct InboxLearnedRulesQueries {
     package let dbPool: DatabasePool

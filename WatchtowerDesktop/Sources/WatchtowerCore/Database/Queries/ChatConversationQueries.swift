@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import WatchtowerCore
 
 package enum ChatConversationQueries {
     package static func ensureTable(_ db: Database) throws {

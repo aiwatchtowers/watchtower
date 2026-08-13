@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 /// What the warm-engine policy needs to know about the calendar: whether a
 /// non-all-day meeting is ongoing right now, and when the next one starts

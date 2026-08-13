@@ -1,6 +1,5 @@
 import GRDB
 import Foundation
-import WatchtowerCore
 
 package enum UserStatsQueries {
 

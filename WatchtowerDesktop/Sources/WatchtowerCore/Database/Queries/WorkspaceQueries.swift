@@ -1,6 +1,5 @@
 import GRDB
 import Foundation
-import WatchtowerCore
 
 package enum WorkspaceQueries {
     package static func fetchWorkspace(_ db: Database) throws -> Workspace? {

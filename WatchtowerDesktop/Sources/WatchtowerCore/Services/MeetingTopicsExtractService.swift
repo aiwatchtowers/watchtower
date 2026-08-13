@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 package struct MeetingExtractedTopic: Equatable {
     package var text: String

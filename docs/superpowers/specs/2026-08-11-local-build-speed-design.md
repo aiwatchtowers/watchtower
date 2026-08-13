@@ -96,8 +96,10 @@ Coarse module boundaries, to be refined in the Phase 2 plan:
 Each library module gets its own test target; ViewInspector-based view tests stay with
 the executable's test target. Acceptance criterion: a Queries-level test builds and links
 **without** the WhisperKit stack — verified by build log inspection and by the measured
-filtered-test time. Phase 2 starts only after Phase 1 lands; Phase 1 wins may reprioritize
-it.
+filtered-test time. Outcome (see the Phase 2 results appendix): the build/module-compile
+half is proven; the link half is not achievable on this toolchain — the aggregated test
+bundle still links ML, so the measured win is compile-time. Phase 2 starts only after
+Phase 1 lands; Phase 1 wins may reprioritize it.
 
 Both Phase 1 experiments above were rejected (see appendix): `swift test --parallel` was
 flaky and slower, and worktree `.build` seeding broke the build outright on `.pcm`

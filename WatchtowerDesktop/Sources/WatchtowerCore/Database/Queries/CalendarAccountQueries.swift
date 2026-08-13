@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum CalendarAccountQueries {
     package static func fetchAll(_ db: Database) throws -> [CalendarAccount] {

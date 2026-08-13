@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 /// AI service that delegates to the bundled `watchtower ai query` CLI.
 /// Replaces direct Claude/Codex subprocess invocations — the desktop app

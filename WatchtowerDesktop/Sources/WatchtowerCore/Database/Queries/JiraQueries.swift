@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import WatchtowerCore
 
 // MARK: - Query Result Models
 

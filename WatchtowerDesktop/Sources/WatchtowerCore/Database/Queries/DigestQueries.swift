@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import WatchtowerCore
 
 package enum DigestQueries {
     package static func fetchAll(

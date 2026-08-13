@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum UserQueries {
     package static func fetchAll(_ db: Database, activeOnly: Bool = true) throws -> [User] {

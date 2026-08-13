@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum FeedbackQueries {
 

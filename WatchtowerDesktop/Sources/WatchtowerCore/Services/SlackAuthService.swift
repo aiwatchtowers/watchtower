@@ -1,6 +1,5 @@
 import Foundation
 import Yams
-import WatchtowerCore
 
 @MainActor
 @Observable

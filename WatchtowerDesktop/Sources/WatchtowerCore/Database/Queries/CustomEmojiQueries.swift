@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum CustomEmojiQueries {
     /// Fetch all custom emojis as a map of name → image URL, resolving aliases.

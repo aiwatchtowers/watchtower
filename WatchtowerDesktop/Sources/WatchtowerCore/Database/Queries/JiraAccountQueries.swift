@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum JiraAccountQueries {
     /// Every account still connected, oldest first. `jira remove` is

@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerCore
 
 /// AI-drafted custom-track title + watch instruction returned by
 /// `watchtower tracks create`. The CLI both composes and persists the track

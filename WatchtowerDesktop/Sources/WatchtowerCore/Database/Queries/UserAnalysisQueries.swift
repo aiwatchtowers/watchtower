@@ -1,5 +1,4 @@
 import GRDB
-import WatchtowerCore
 
 package enum UserAnalysisQueries {
     /// Fetch all analyses for a specific time window, ordered by message count descending.
