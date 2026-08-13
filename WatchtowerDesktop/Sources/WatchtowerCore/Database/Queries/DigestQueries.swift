@@ -59,22 +59,6 @@ package enum DigestQueries {
         )
     }
 
-    package static func fetchNewSince(_ db: Database, afterID: Int) throws -> [Digest] {
-        try Digest.fetchAll(
-            db,
-            sql: """
-                SELECT * FROM digests
-                WHERE id > ? AND decisions != '[]' AND decisions IS NOT NULL
-                ORDER BY id ASC
-                """,
-            arguments: [afterID]
-        )
-    }
-
-    package static func maxID(_ db: Database) throws -> Int {
-        try Int.fetchOne(db, sql: "SELECT MAX(id) FROM digests") ?? 0
-    }
-
     // MARK: - Read tracking
 
     package static func markDigestRead(_ db: Database, id: Int) throws {
@@ -133,32 +117,8 @@ package enum DigestQueries {
         }
     }
 
-    package static func readDecisionIndices(_ db: Database, digestIDs: [Int]) throws -> [Int: Set<Int>] {
-        guard !digestIDs.isEmpty else { return [:] }
-        guard try db.tableExists("decision_reads") else { return [:] }
-        let placeholders = digestIDs.map { _ in "?" }.joined(separator: ",")
-        let rows = try Row.fetchAll(
-            db,
-            sql: "SELECT digest_id, decision_idx FROM decision_reads WHERE digest_id IN (\(placeholders))",
-            arguments: StatementArguments(digestIDs)
-        )
-        var result: [Int: Set<Int>] = [:]
-        for row in rows {
-            let digestID: Int = row["digest_id"]
-            let idx: Int = row["decision_idx"]
-            result[digestID, default: []].insert(idx)
-        }
-        return result
-    }
-
     package static func unreadDigestCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NULL") ?? 0
-    }
-
-    package static func unreadDecisionCount(_ db: Database, totalDecisionCount: Int) throws -> Int {
-        guard try db.tableExists("decision_reads") else { return 0 }
-        let readCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM decision_reads") ?? 0
-        return max(0, totalDecisionCount - readCount)
     }
 
     // MARK: - Digest Topics
