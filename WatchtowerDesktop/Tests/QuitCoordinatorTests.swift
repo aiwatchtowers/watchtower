@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class QuitCoordinatorTests: XCTestCase {

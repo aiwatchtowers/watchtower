@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Minimal scriptable `AudioRecording` for driving `MeetingRecorderCenter`
 /// into a recording state; never touches real audio.

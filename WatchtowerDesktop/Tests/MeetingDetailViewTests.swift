@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// Logic-level tests for `MeetingDetailView`'s pure static helpers — the
 /// record-affordance gate and the transcript-id resolution formula — rather

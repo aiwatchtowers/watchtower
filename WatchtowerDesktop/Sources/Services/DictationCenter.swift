@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// State machine driving one voice dictation: mic capture → live (or batch)
 /// transcription → `DictationCleanService` cleanup → the caller's callbacks.

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Quick reply option with associated action.
 struct QuickReply: Identifiable {

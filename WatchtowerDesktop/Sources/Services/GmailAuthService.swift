@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Read-only status mirror for Gmail connection state — only `isConnected`
 /// (via `checkStatus()`/`checkStatusAsync()`) is used anywhere in the app

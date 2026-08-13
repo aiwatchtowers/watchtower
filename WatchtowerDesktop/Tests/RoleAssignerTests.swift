@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 final class RoleAssignerTests: XCTestCase {
 

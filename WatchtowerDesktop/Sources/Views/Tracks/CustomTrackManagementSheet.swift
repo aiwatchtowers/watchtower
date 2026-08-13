@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Creates a CUSTOM track from a free-text "what to watch" request. The CLI
 /// (`watchtower tracks create`) composes the watch instruction AND persists the

@@ -1,5 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 final class FakeTargetExtractNotifier: TargetExtractNotifying {
     private(set) var readyCalls: [Int] = []

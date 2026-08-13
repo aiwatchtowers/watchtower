@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 final class MeetingListBuilderTests: XCTestCase {
     // Fixed reference point (never Date()) so every fixture date is derived

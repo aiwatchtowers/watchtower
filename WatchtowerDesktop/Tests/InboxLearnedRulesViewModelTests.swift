@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 final class InboxLearnedRulesViewModelTests: XCTestCase {
     private var pool: DatabasePool!

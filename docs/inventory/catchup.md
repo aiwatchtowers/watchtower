@@ -30,9 +30,9 @@
 - `internal/catchup/pipeline_test.go::TestCatchup24_AcknowledgeReviewedCountIsIdempotent`
 - `internal/db/digests_test.go::TestMarkDigestRead_CascadeDecisions`
 - `internal/db/digests_test.go::TestMarkDigestRead_NoDecisionsIsNoop`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeCascadesMarkReadAndFlipsReviewState`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeMarksDigestDecisionsRead`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeReviewedCountIsIdempotent`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeCascadesMarkReadAndFlipsReviewState`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeMarksDigestDecisionsRead`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeReviewedCountIsIdempotent`
 
 **Locked since:** 2026-06-22
 

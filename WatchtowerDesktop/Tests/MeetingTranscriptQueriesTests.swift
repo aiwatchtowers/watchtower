@@ -2,6 +2,8 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 final class MeetingTranscriptQueriesTests: XCTestCase {
     private let summaryJSON =

@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import WatchtowerCore
 
 struct UserStatisticsView: View {
     @Environment(AppState.self) private var appState

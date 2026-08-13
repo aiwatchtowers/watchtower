@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct DayPlanItemRow: View {
     let item: DayPlanItem

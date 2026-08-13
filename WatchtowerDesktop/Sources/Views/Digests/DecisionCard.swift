@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct DecisionCard: View {
     let decision: Decision

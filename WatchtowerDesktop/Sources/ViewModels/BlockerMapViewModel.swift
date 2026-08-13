@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import SwiftUI
+import WatchtowerCore
 
 @MainActor
 @Observable

@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct TrainingView: View {
     @Environment(AppState.self) private var appState

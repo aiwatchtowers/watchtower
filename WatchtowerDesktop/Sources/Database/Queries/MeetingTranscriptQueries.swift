@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Failures inside `MeetingTranscriptQueries` writes that must roll the
 /// caller's transaction back instead of degrading silently.

@@ -2,6 +2,8 @@ import Foundation
 import GRDB
 import Testing
 @testable import WatchtowerDesktop
+@testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @Suite("EmojiResolver")
 @MainActor

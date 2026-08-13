@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class CalendarSetupChatViewModelTests: XCTestCase {

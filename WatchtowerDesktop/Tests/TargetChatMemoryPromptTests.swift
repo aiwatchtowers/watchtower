@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 final class TargetChatMemoryPromptTests: XCTestCase {
     private var dbManager: DatabaseManager!

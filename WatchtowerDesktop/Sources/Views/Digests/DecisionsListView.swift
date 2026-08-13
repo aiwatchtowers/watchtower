@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Flat list of all decisions across digests, deduplicated and sorted by date.
 struct DecisionsListView: View {

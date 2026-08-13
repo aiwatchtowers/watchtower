@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct SearchResultRow: View {
     let result: SearchResult

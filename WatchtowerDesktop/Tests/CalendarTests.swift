@@ -2,6 +2,8 @@ import Foundation
 import GRDB
 import Testing
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 // MARK: - CalendarCalendarItem Model Tests
 

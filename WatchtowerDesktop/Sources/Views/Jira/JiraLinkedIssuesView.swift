@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shows linked Jira issues (blocks, blocked by, relates to) for a given issue key.
 struct JiraLinkedIssuesView: View {

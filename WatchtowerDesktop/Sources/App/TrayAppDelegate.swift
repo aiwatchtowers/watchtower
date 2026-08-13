@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import WatchtowerCore
 
 /// App is in the Dock while it has a visible window; menu-bar-only otherwise.
 enum ActivationPolicyDecision {

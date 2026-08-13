@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Native-push seam for meeting reminders, so `MeetingReminderCenter` is
 /// unit-testable without `UNUserNotificationCenter` (which has no app-bundle

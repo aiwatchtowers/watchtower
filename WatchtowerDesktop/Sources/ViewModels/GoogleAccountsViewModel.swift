@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the multi-account Google connections (Calendar and/or Gmail) shown
 /// in Settings → Google Accounts and the add-account sheet. Each row is a

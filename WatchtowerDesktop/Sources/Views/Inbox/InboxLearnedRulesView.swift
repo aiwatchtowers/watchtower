@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct InboxLearnedRulesView: View {
     @State private var vm: InboxLearnedRulesViewModel

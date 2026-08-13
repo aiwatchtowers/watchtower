@@ -3,6 +3,7 @@ import SwiftUI
 import GRDB
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class WorkloadPersonDetailViewTests: XCTestCase {

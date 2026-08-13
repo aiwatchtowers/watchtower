@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // MARK: - Catch-Up v2 review-mode ViewModel
 //

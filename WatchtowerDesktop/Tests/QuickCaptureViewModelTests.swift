@@ -1,5 +1,7 @@
 import XCTest
 import GRDB
+import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// Canned `watchtower dictate clean --mode idea` stdout envelope — the REAL

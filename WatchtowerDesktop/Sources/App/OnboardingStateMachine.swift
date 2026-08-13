@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Unified onboarding step — replaces separate OnboardingStep + OnboardingChatPhase enums.
 /// Persisted in UserDefaults so the user resumes from the last incomplete step on restart.

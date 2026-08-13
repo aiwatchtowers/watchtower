@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct InboxFeedbackSheet: View {
     let item: InboxItem

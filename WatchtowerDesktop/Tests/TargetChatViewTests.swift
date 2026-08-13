@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class TargetChatViewTests: XCTestCase {

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Presentation-only "Linked to:" line in the recording-detail header, split
 /// from `RecordingDetailView` for testability. Rendered only when the

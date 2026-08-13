@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Reusable thumbs up/down feedback buttons for rating AI-generated content.
 struct FeedbackButtons: View {
