@@ -4,6 +4,8 @@ struct DigestListView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: DigestViewModel?
     @State private var selectedDigestID: Int?
+    @State private var selectedStreamID: Int?
+    @State private var selectedRecordingID: Int64?
     @State private var selectedDecisionID: Int?
     @State private var searchText = ""
     @State private var showAllDigests = false
@@ -34,6 +36,8 @@ struct DigestListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: selectedDigestID)
+        .animation(.easeInOut(duration: 0.25), value: selectedStreamID)
+        .animation(.easeInOut(duration: 0.25), value: selectedRecordingID)
         .animation(.easeInOut(duration: 0.25), value: selectedDecisionID)
         .navigationTitle("Digests")
         .sheet(isPresented: $showCreateDecisionSheet) {
@@ -49,7 +53,7 @@ struct DigestListView: View {
             if let id = appState.pendingDigestID {
                 activeTab = .digests
                 showAllDigests = true
-                selectedDigestID = id
+                selectFeedDigest(id)
                 appState.pendingDigestID = nil
             }
         }
@@ -62,7 +66,7 @@ struct DigestListView: View {
             if let id = newID {
                 activeTab = .digests
                 showAllDigests = true
-                selectedDigestID = id
+                selectFeedDigest(id)
                 appState.pendingDigestID = nil
             }
         }
@@ -75,21 +79,32 @@ struct DigestListView: View {
         }
     }
 
+    /// Selects a Slack digest in the merged feed (row tap, `pendingDigestID`
+    /// cross-tab nav) — clears the other two feed selections so only one
+    /// detail pane shows at a time.
+    private func selectFeedDigest(_ id: Int) {
+        selectedDigestID = id
+        selectedStreamID = nil
+        selectedRecordingID = nil
+    }
+
+    private func selectFeedStream(_ id: Int) {
+        selectedStreamID = id
+        selectedDigestID = nil
+        selectedRecordingID = nil
+    }
+
+    private func selectFeedRecording(_ id: Int64) {
+        selectedRecordingID = id
+        selectedDigestID = nil
+        selectedStreamID = nil
+    }
+
     @ViewBuilder
     private func detailPanel(_ vm: DigestViewModel) -> some View {
         switch activeTab {
         case .digests:
-            if let id = selectedDigestID, let digest = vm.digestByID(id) {
-                Divider()
-                DigestDetailView(
-                    digest: digest,
-                    channelName: vm.channelName(for: digest),
-                    viewModel: vm
-                ) { selectedDigestID = nil }
-                .id(id)
-                .frame(minWidth: 400, idealWidth: 500)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+            feedDetailPanel(vm)
         case .decisions:
             if let id = selectedDecisionID, let idea = vm.ledgerDecisions.first(where: { $0.id == id }) {
                 Divider()
@@ -103,25 +118,121 @@ struct DigestListView: View {
         }
     }
 
-    private var filteredDigests: [Digest] {
+    /// Digests-tab detail routing across the three feed sources. `.slack`
+    /// resolves through `vm.digestByID` (a DB fetch, not a lookup into the
+    /// possibly-paginated `vm.digests` cache) so a cross-tab `pendingDigestID`
+    /// nav to an older, not-yet-paged-in digest still resolves — the
+    /// pre-existing `digestByID` behavior this view relied on before the feed
+    /// merge. `.stream`/`.meeting` look up their loaded (unpaginated) arrays.
+    @ViewBuilder
+    private func feedDetailPanel(_ vm: DigestViewModel) -> some View {
+        if let id = selectedDigestID, let digest = vm.digestByID(id) {
+            Divider()
+            DigestDetailView(
+                digest: digest,
+                channelName: vm.channelName(for: digest),
+                viewModel: vm
+            ) { selectedDigestID = nil }
+            .id(id)
+            .frame(minWidth: 400, idealWidth: 500)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else if let id = selectedStreamID, let stream = vm.streamDigests.first(where: { $0.id == id }) {
+            Divider()
+            StreamDigestDetailView(digest: stream, viewModel: vm) { selectedStreamID = nil }
+                .id(id)
+                .frame(minWidth: 400, idealWidth: 500)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else if let id = selectedRecordingID, let recording = vm.recordings.first(where: { $0.id == id }) {
+            Divider()
+            MeetingFeedDetailView(recording: recording) { selectedRecordingID = nil }
+                .id(id)
+                .frame(minWidth: 400, idealWidth: 500)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+        }
+    }
+
+    /// The merged feed, filtered by the read toggle and search text. Backs
+    /// both the row list and (via `filteredDigests` below) the digests-only
+    /// batch-select toolbar. Order follows `vm.feedEntries` (already sorted
+    /// per `vm.sortOrder`).
+    private var filteredFeedEntries: [DigestFeedEntry] {
         guard let vm = viewModel else { return [] }
-        var items = vm.digests
+        var items = vm.feedEntries
         if !showAllDigests {
             items = items.filter { !$0.isRead }
         }
         if !searchText.isEmpty {
             let query = searchText.lowercased()
-            items = items.filter { digest in
-                if digest.summary.lowercased().contains(query) { return true }
-                if let name = vm.channelName(for: digest),
-                   name.lowercased().contains(query) { return true }
-                if digest.parsedTopics.contains(
-                    where: { $0.lowercased().contains(query) }
-                ) { return true }
-                return false
-            }
+            items = items.filter { matchesSearch($0, query: query, vm: vm) }
         }
         return items
+    }
+
+    private func matchesSearch(_ entry: DigestFeedEntry, query: String, vm: DigestViewModel) -> Bool {
+        switch entry {
+        case .slack(let digest):
+            if digest.summary.lowercased().contains(query) { return true }
+            if let name = vm.channelName(for: digest),
+               name.lowercased().contains(query) { return true }
+            if digest.parsedTopics.contains(
+                where: { $0.lowercased().contains(query) }
+            ) { return true }
+            return false
+        case .stream(let digest):
+            if digest.scope.lowercased().contains(query) { return true }
+            for topic in digest.parsedTopics {
+                if topic.title.lowercased().contains(query) { return true }
+                if let summary = topic.summary, summary.lowercased().contains(query) { return true }
+            }
+            return false
+        case .meeting(let recording):
+            if recording.title.lowercased().contains(query) { return true }
+            if recording.snippet.lowercased().contains(query) { return true }
+            if let eventTitle = recording.eventTitle, eventTitle.lowercased().contains(query) { return true }
+            return false
+        }
+    }
+
+    /// The Slack digests currently visible in the merged, filtered feed —
+    /// the pool the digests-only batch-select toolbar (Select All / mark
+    /// read / rate) operates over, so it never diverges from what search/
+    /// unread filtering is actually showing.
+    private var filteredDigests: [Digest] {
+        filteredFeedEntries.compactMap { entry in
+            if case .slack(let digest) = entry { return digest }
+            return nil
+        }
+    }
+
+    /// Groups the filtered feed into day sections in the order entries
+    /// already appear (i.e. respecting `vm.sortOrder`) — the
+    /// `MeetingListBuilder`/`MeetingDaySection` day-grouping precedent.
+    private var groupedFeedEntries: [(day: Date, entries: [DigestFeedEntry])] {
+        let calendar = Calendar.current
+        var order: [Date] = []
+        var buckets: [Date: [DigestFeedEntry]] = [:]
+        for entry in filteredFeedEntries {
+            let day = calendar.startOfDay(for: entry.date)
+            if buckets[day] == nil {
+                buckets[day] = []
+                order.append(day)
+            }
+            buckets[day]?.append(entry)
+        }
+        return order.map { (day: $0, entries: buckets[$0] ?? []) }
+    }
+
+    private static let dayHeaderFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "EEEE, d MMM"
+        return fmt
+    }()
+
+    private static func dayLabel(for date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        return dayHeaderFormatter.string(from: date)
     }
 
     private func listPanel(_ vm: DigestViewModel) -> some View {
@@ -138,6 +249,8 @@ struct DigestListView: View {
             .padding(.bottom, 6)
             .onChange(of: activeTab) {
                 selectedDigestID = nil
+                selectedStreamID = nil
+                selectedRecordingID = nil
                 selectedDecisionID = nil
                 searchText = ""
                 isSelectMode = false
@@ -177,7 +290,7 @@ struct DigestListView: View {
             // List content
             switch activeTab {
             case .digests:
-                digestsList(vm)
+                feedList(vm)
             case .decisions:
                 DecisionsListView(
                     viewModel: vm,
@@ -342,18 +455,34 @@ struct DigestListView: View {
         isSelectMode = false
     }
 
-    // MARK: - Digests List
+    // MARK: - Cross-source feed list
 
-    private func digestsList(_ vm: DigestViewModel) -> some View {
+    /// The merged Digests-segment list: Slack digests, Gmail/Jira stream
+    /// digests, and meeting recordings, day-grouped in the order
+    /// `groupedFeedEntries` already sorted them. Only `.slack` rows carry the
+    /// batch-select checkbox and the rich collapsible preview — batch
+    /// select/mark-read/rate stays a digests-only affordance (see the
+    /// `selectionToolbar` doc comment); stream/meeting rows are compact and
+    /// route straight to their detail pane on tap.
+    private func feedList(_ vm: DigestViewModel) -> some View {
         ScrollView {
-            LazyVStack(spacing: 1) {
-                ForEach(filteredDigests) { digest in
-                    digestListItem(digest, vm: vm)
-                        .onAppear {
-                            if digest.id == filteredDigests.last?.id {
-                                vm.loadMoreDigests()
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(groupedFeedEntries, id: \.day) { group in
+                    Text(Self.dayLabel(for: group.day))
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 10)
+                        .padding(.bottom, 2)
+                    ForEach(group.entries) { entry in
+                        feedRow(entry, vm: vm)
+                            .onAppear {
+                                if entry.id == filteredFeedEntries.last?.id {
+                                    vm.loadMoreDigests()
+                                }
                             }
-                        }
+                    }
                 }
                 if vm.isLoadingMoreDigests {
                     ProgressView()
@@ -362,6 +491,18 @@ struct DigestListView: View {
                 }
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func feedRow(_ entry: DigestFeedEntry, vm: DigestViewModel) -> some View {
+        switch entry {
+        case .slack(let digest):
+            digestListItem(digest, vm: vm)
+        case .stream(let digest):
+            streamFeedRow(digest)
+        case .meeting(let recording):
+            meetingFeedRow(recording)
         }
     }
 
@@ -402,7 +543,7 @@ struct DigestListView: View {
                     if isSelectMode {
                         toggleDigestChecked(digest.id)
                     } else {
-                        selectedDigestID = digest.id
+                        selectFeedDigest(digest.id)
                     }
                 }
         }
@@ -410,6 +551,117 @@ struct DigestListView: View {
         .padding(.vertical, 6)
         .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
         .padding(.horizontal, 4)
+    }
+
+    /// Compact row for a Gmail/Jira stream digest — source badge, scope, and
+    /// the first topic's title as a preview (the full topic list lives in
+    /// `StreamDigestDetailView`). No batch-select checkbox: see the
+    /// `feedList` doc comment.
+    private func streamFeedRow(_ digest: StreamDigest) -> some View {
+        let isSelected = selectedStreamID == digest.id
+        let topics = digest.parsedTopics
+        let bgColor: Color = isSelected
+            ? Color.accentColor.opacity(0.15)
+            : !digest.isRead
+                ? Color.blue.opacity(0.06)
+                : Color.clear
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                if !digest.isRead {
+                    Circle().fill(Color.blue).frame(width: 6, height: 6)
+                }
+                streamSourceBadge(digest.source)
+                if !digest.scope.isEmpty {
+                    Text(digest.scope)
+                        .font(.subheadline)
+                        .fontWeight(digest.isRead ? .regular : .medium)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if let date = TimeFormatting.parseISO(digest.createdAt) {
+                    Text(TimeFormatting.shortDateTime(from: date))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if let firstTopic = topics.first {
+                Text(firstTopic.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if topics.count > 1 {
+                Text("+\(topics.count - 1) more topic\(topics.count - 1 == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { selectFeedStream(digest.id) }
+    }
+
+    private func streamSourceBadge(_ source: String) -> some View {
+        let isJira = source == "jira"
+        let color: Color = isJira ? .indigo : .red
+        return Label(isJira ? "Jira" : "Gmail", systemImage: isJira ? "ticket" : "envelope")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    /// Compact row for a meeting recording — title, has-recap badge, and a
+    /// snippet preview. Always renders as read (no unread concept for
+    /// recordings, see `DigestFeedEntry.isRead`).
+    private func meetingFeedRow(_ recording: RecordingListItem) -> some View {
+        let isSelected = selectedRecordingID == recording.id
+        let bgColor: Color = isSelected ? Color.accentColor.opacity(0.15) : Color.clear
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Label("Meeting", systemImage: "video")
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+                Text(recording.eventTitle ?? recording.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                if recording.hasRecap {
+                    Image(systemName: "doc.text")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("Has a recap")
+                }
+                Spacer()
+                if let date = recording.createdDate {
+                    Text(TimeFormatting.shortDateTime(from: date))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if !recording.snippet.isEmpty {
+                Text(recording.snippet)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .onTapGesture { selectFeedRecording(recording.id) }
     }
 
     private func toggleDigestChecked(_ id: Int) {
@@ -611,7 +863,7 @@ struct DigestListView: View {
             }
 
             Button {
-                selectedDigestID = digest.id
+                selectFeedDigest(digest.id)
             } label: {
                 Label("Open details", systemImage: "arrow.right.circle")
                     .font(.caption)
@@ -677,11 +929,143 @@ struct DigestListView: View {
     private func tabLabel(_ tab: DigestTab, vm: DigestViewModel) -> String {
         switch tab {
         case .digests:
-            let n = vm.unreadDigestCount
+            // Slack digests + Gmail/Jira stream digests; meeting recordings
+            // have no unread concept (DigestFeedEntry.isRead) so they never
+            // contribute here. Sidebar digests badge stays Slack-only —
+            // deliberately not touched (see the Task 11 brief).
+            let n = vm.unreadDigestCount + vm.unreadStreamCount
             return n > 0 ? "\(tab.rawValue) (\(n))" : tab.rawValue
         case .decisions:
             let n = vm.unreadDecisionCount
             return n > 0 ? "\(tab.rawValue) (\(n))" : tab.rawValue
         }
+    }
+}
+
+// MARK: - MeetingFeedDetailView
+
+/// Inline recap for the `.meeting` case of the merged feed. There is no
+/// existing cross-tab navigation target for a specific recording (unlike
+/// digests/targets/tracks/briefings — see AppState's `pendingXID` family:
+/// none of them address the Calendar tab's Events|Recordings split view down
+/// to one recording), so this renders the recap content directly rather than
+/// inventing one; the owner can open the Calendar tab separately to manage
+/// the recording itself (delete, notes, transcript, chat).
+private struct MeetingFeedDetailView: View {
+    let recording: RecordingListItem
+    var onClose: (() -> Void)?
+
+    @Environment(AppState.self) private var appState
+    @State private var recapContent: MeetingRecap.Content?
+    @State private var loaded = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header
+                if !loaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else if let recapContent {
+                    recapBody(recapContent)
+                } else {
+                    Text("No recap available for this recording yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding()
+        }
+        .navigationTitle(recording.eventTitle ?? recording.title)
+        .task(id: recording.id) { await load() }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Meeting")
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.green)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.green.opacity(0.12), in: Capsule())
+
+            Text(recording.eventTitle ?? recording.title)
+                .font(.title3)
+                .fontWeight(.semibold)
+                .lineLimit(2)
+
+            Spacer()
+
+            if let onClose {
+                Button { onClose() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recapBody(_ content: MeetingRecap.Content) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if !content.summary.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Summary")
+                        .font(.headline)
+                    Text(content.summary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            bulletSection("Key Decisions", items: content.keyDecisions, color: .orange)
+            bulletSection("Action Items", items: content.actionItems, color: .green)
+            bulletSection("Open Questions", items: content.openQuestions, color: .blue)
+        }
+    }
+
+    @ViewBuilder
+    private func bulletSection(_ title: String, items: [String], color: Color) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                ForEach(items, id: \.self) { item in
+                    HStack(alignment: .top, spacing: 6) {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 5, height: 5)
+                            .padding(.top, 6)
+                        Text(item)
+                            .font(.subheadline)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Event recap wins, falling back to the recording's own summary — the
+    /// `RecordingDetailView.load()` precedent (`recap?.parsed ??
+    /// row?.parsedSummary`), minus the "from another source" provenance note
+    /// (that nuance belongs to the Recordings tab's editing surface, not this
+    /// read-only feed preview).
+    private func load() async {
+        guard let db = appState.databaseManager else {
+            loaded = true
+            return
+        }
+        let id = recording.id
+        recapContent = try? await db.dbPool.read { conn -> MeetingRecap.Content? in
+            let row = try MeetingTranscriptQueries.fetch(conn, id: id)
+            if let eventID = row?.eventID,
+               let recap = try MeetingRecapQueries.fetch(conn, eventID: eventID),
+               let parsed = recap.parsed {
+                return parsed
+            }
+            return row?.parsedSummary
+        }
+        loaded = true
     }
 }
