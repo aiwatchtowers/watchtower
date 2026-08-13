@@ -242,8 +242,6 @@ struct IdeasView: View {
                         appState.navigateToTarget(targetID)
                     }
                 },
-                onSupersede: { vm.supersede(idea, by: nil) },
-                onReverse: { vm.reverse(idea) },
                 onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) }
             )
             // Identity at the CALL SITE, so the pane's OWN @State (rating

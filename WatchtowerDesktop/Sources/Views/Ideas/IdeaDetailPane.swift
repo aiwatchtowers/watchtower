@@ -26,8 +26,6 @@ struct IdeaDetailPane: View {
     let onDrop: () -> Void
     let onMerge: (Int) -> Void
     let onConvert: () -> Void
-    let onSupersede: () -> Void
-    let onReverse: () -> Void
     let onRating: (Int, String) -> Bool
 
     @State private var comment: String
@@ -55,8 +53,6 @@ struct IdeaDetailPane: View {
         onDrop: @escaping () -> Void,
         onMerge: @escaping (Int) -> Void,
         onConvert: @escaping () -> Void,
-        onSupersede: @escaping () -> Void,
-        onReverse: @escaping () -> Void,
         onRating: @escaping (Int, String) -> Bool
     ) {
         self.idea = idea
@@ -68,8 +64,6 @@ struct IdeaDetailPane: View {
         self.onDrop = onDrop
         self.onMerge = onMerge
         self.onConvert = onConvert
-        self.onSupersede = onSupersede
-        self.onReverse = onReverse
         self.onRating = onRating
         _comment = State(initialValue: idea.ratingComment)
         _rating = State(initialValue: idea.ownerRating == 0 ? nil : idea.ownerRating)
