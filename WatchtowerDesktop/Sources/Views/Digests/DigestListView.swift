@@ -4,16 +4,16 @@ struct DigestListView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: DigestViewModel?
     @State private var selectedDigestID: Int?
-    @State private var selectedDecisionEntryID: String?
+    @State private var selectedDecisionID: Int?
     @State private var searchText = ""
     @State private var showAllDigests = false
     @State private var showAllDecisions = false
     @State private var activeTab: DigestTab = .digests
     @State private var expandedDigestIDs: Set<Int> = []
-    @State private var expandedDecisionIDs: Set<String> = []
+    @State private var expandedDecisionIDs: Set<Int> = []
     @State private var isSelectMode = false
     @State private var checkedDigestIDs: Set<Int> = []
-    @State private var checkedDecisionIDs: Set<String> = []
+    @State private var showCreateDecisionSheet = false
 
     enum DigestTab: String, CaseIterable {
         case digests = "Digests"
@@ -34,8 +34,13 @@ struct DigestListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: selectedDigestID)
-        .animation(.easeInOut(duration: 0.25), value: selectedDecisionEntryID)
+        .animation(.easeInOut(duration: 0.25), value: selectedDecisionID)
         .navigationTitle("Digests")
+        .sheet(isPresented: $showCreateDecisionSheet) {
+            if let ideasVM = appState.ideasViewModel {
+                IdeaCreateSheet(vm: ideasVM, allowedKinds: [.decision])
+            }
+        }
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = DigestViewModel(dbManager: db)
@@ -61,13 +66,11 @@ struct DigestListView: View {
                 appState.pendingDigestID = nil
             }
         }
-        .onChange(of: selectedDecisionEntryID) { _, newID in
+        .onChange(of: selectedDecisionID) { _, newID in
             if let id = newID,
-               let entry = viewModel?.decisionEntries.first(where: { $0.id == id }),
-               !entry.isRead {
-                viewModel?.markDecisionRead(
-                    digestID: entry.digestID, decisionIdx: entry.decisionIdx
-                )
+               let idea = viewModel?.ledgerDecisions.first(where: { $0.id == id }),
+               idea.seenAt == nil || idea.needsReview {
+                viewModel?.markDecisionSeen(id: id)
             }
         }
     }
@@ -88,13 +91,12 @@ struct DigestListView: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         case .decisions:
-            if let entryID = selectedDecisionEntryID,
-               let entry = vm.decisionEntries.first(where: { $0.id == entryID }) {
+            if let id = selectedDecisionID, let idea = vm.ledgerDecisions.first(where: { $0.id == id }) {
                 Divider()
                 DecisionDetailView(
-                    entry: entry, viewModel: vm
-                ) { selectedDecisionEntryID = nil }
-                    .id(entryID)
+                    idea: idea, viewModel: vm
+                ) { selectedDecisionID = nil }
+                    .id(id)
                     .frame(minWidth: 400, idealWidth: 500)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
@@ -136,11 +138,10 @@ struct DigestListView: View {
             .padding(.bottom, 6)
             .onChange(of: activeTab) {
                 selectedDigestID = nil
-                selectedDecisionEntryID = nil
+                selectedDecisionID = nil
                 searchText = ""
                 isSelectMode = false
                 checkedDigestIDs.removeAll()
-                checkedDecisionIDs.removeAll()
             }
 
             // Search field + read filter
@@ -180,12 +181,10 @@ struct DigestListView: View {
             case .decisions:
                 DecisionsListView(
                     viewModel: vm,
-                    selectedEntryID: $selectedDecisionEntryID,
-                    expandedEntryIDs: $expandedDecisionIDs,
+                    selectedID: $selectedDecisionID,
+                    expandedIDs: $expandedDecisionIDs,
                     searchText: $searchText,
-                    showAll: $showAllDecisions,
-                    isSelectMode: $isSelectMode,
-                    checkedIDs: $checkedDecisionIDs
+                    showAll: $showAllDecisions
                 )
             }
         }
@@ -200,18 +199,39 @@ struct DigestListView: View {
     }
 
     // MARK: - Selection Toolbar
+    //
+    // Batch select/mark-read/rate is a digests-only affordance: the ledger's
+    // per-decision actions (seen/supersede/reverse/rating) live on the row
+    // and detail pane instead. The Decisions segment reuses this same slot
+    // for its "+" create button.
 
     @ViewBuilder
     private func selectionToolbar(_ vm: DigestViewModel) -> some View {
-        if isSelectMode {
-            activeSelectionBar(vm)
-        } else {
+        switch activeTab {
+        case .digests:
+            if isSelectMode {
+                activeSelectionBar(vm)
+            } else {
+                HStack {
+                    Spacer()
+                    Button {
+                        isSelectMode = true
+                    } label: {
+                        Label("Select", systemImage: "checkmark.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+        case .decisions:
             HStack {
                 Spacer()
                 Button {
-                    isSelectMode = true
+                    showCreateDecisionSheet = true
                 } label: {
-                    Label("Select", systemImage: "checkmark.circle")
+                    Label("New Decision", systemImage: "plus.circle")
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
@@ -222,21 +242,11 @@ struct DigestListView: View {
     }
 
     private func activeSelectionBar(_ vm: DigestViewModel) -> some View {
-        let count: Int = switch activeTab {
-        case .digests: checkedDigestIDs.count
-        case .decisions: checkedDecisionIDs.count
-        }
-        return HStack(spacing: 8) {
+        HStack(spacing: 8) {
             Button {
                 toggleSelectAll()
             } label: {
-                let allSelected: Bool = switch activeTab {
-                case .digests:
-                    checkedDigestIDs.count == filteredDigests.count
-                        && !filteredDigests.isEmpty
-                case .decisions:
-                    checkedDecisionIDs.count == (viewModel?.decisionEntries.count ?? 0)
-                }
+                let allSelected = checkedDigestIDs.count == filteredDigests.count && !filteredDigests.isEmpty
                 Label(
                     allSelected ? "Deselect All" : "Select All",
                     systemImage: allSelected ? "checkmark.circle.fill" : "circle"
@@ -245,8 +255,8 @@ struct DigestListView: View {
             }
             .buttonStyle(.borderless)
 
-            if count > 0 {
-                selectionActions(vm, count: count)
+            if !checkedDigestIDs.isEmpty {
+                selectionActions(vm, count: checkedDigestIDs.count)
             } else {
                 Spacer()
             }
@@ -254,7 +264,6 @@ struct DigestListView: View {
             Button {
                 isSelectMode = false
                 checkedDigestIDs.removeAll()
-                checkedDecisionIDs.removeAll()
             } label: {
                 Text("Cancel")
                     .font(.caption)
@@ -303,55 +312,24 @@ struct DigestListView: View {
     }
 
     private func toggleSelectAll() {
-        switch activeTab {
-        case .digests:
-            if checkedDigestIDs.count == filteredDigests.count {
-                checkedDigestIDs.removeAll()
-            } else {
-                checkedDigestIDs = Set(filteredDigests.map(\.id))
-            }
-        case .decisions:
-            guard let vm = viewModel else { return }
-            if checkedDecisionIDs.count == vm.decisionEntries.count {
-                checkedDecisionIDs.removeAll()
-            } else {
-                checkedDecisionIDs = Set(vm.decisionEntries.map(\.id))
-            }
+        if checkedDigestIDs.count == filteredDigests.count {
+            checkedDigestIDs.removeAll()
+        } else {
+            checkedDigestIDs = Set(filteredDigests.map(\.id))
         }
     }
 
     private func markSelectedRead(_ vm: DigestViewModel) {
-        switch activeTab {
-        case .digests:
-            vm.markDigestsRead(checkedDigestIDs)
-            checkedDigestIDs.removeAll()
-        case .decisions:
-            let entries = vm.decisionEntries.filter {
-                checkedDecisionIDs.contains($0.id)
-            }
-            vm.markDecisionsRead(entries)
-            checkedDecisionIDs.removeAll()
-        }
+        vm.markDigestsRead(checkedDigestIDs)
+        checkedDigestIDs.removeAll()
     }
 
     private func submitSelectedFeedback(_ vm: DigestViewModel, rating: Int) {
-        switch activeTab {
-        case .digests:
-            let ids = checkedDigestIDs.map { String($0) }
-            vm.submitBatchFeedback(
-                entityType: "digest", entityIDs: ids, rating: rating
-            )
-            checkedDigestIDs.removeAll()
-        case .decisions:
-            let entries = vm.decisionEntries.filter {
-                checkedDecisionIDs.contains($0.id)
-            }
-            let ids = entries.map { "\($0.digestID):\($0.decisionIdx)" }
-            vm.submitBatchFeedback(
-                entityType: "decision", entityIDs: ids, rating: rating
-            )
-            checkedDecisionIDs.removeAll()
-        }
+        let ids = checkedDigestIDs.map { String($0) }
+        vm.submitBatchFeedback(
+            entityType: "digest", entityIDs: ids, rating: rating
+        )
+        checkedDigestIDs.removeAll()
         isSelectMode = false
     }
 

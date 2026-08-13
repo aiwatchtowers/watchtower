@@ -168,8 +168,12 @@ final class CatchUpQueriesTests: XCTestCase {
         }
     }
 
-    func testAcknowledgeMarksDigestDecisionsRead() throws {
-        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    func testAcknowledgeDoesNotCascadeToDecisionReads() throws {
+        // Decisions moved to the consolidated ideas ledger (decisions-split,
+        // 2026-08-12) — the Swift-only Decisions feed this digest->decision_reads
+        // cascade used to protect no longer exists. See docs/inventory/catchup.md
+        // CATCHUP-01 changelog: the Go path (Pipeline.Acknowledge) still cascades;
+        // only the Swift path was retired.
         let dbQueue = try TestDatabase.create()
         let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
             try TestDatabase.insertWorkspace(db)
@@ -194,12 +198,18 @@ final class CatchUpQueriesTests: XCTestCase {
         }
 
         try dbQueue.read { db in
-            // Both decisions of the referenced digest are marked read, so they
-            // leave the Decisions feed's unread count.
+            // The digest itself is still marked read...
+            let digestRead: String? = try String.fetchOne(
+                db, sql: "SELECT read_at FROM digests WHERE id = 1"
+            )
+            XCTAssertNotNil(digestRead)
+            XCTAssertFalse((digestRead ?? "").isEmpty)
+
+            // ...but no decision_reads rows are inserted for it anymore.
             let read = try Int.fetchOne(
                 db, sql: "SELECT COUNT(*) FROM decision_reads WHERE digest_id = 1"
             )
-            XCTAssertEqual(read, 2)
+            XCTAssertEqual(read, 0)
         }
     }
 

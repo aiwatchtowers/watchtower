@@ -73,16 +73,18 @@ enum CatchUpQueries {
     /// 'reviewed', and bumps the session's reviewed_count. Mirrors the Go
     /// `Pipeline.Acknowledge`: only the captured refs are cleared (snapshot by ID),
     /// unknown areas are skipped, and the mark-read calls are idempotent.
+    ///
+    /// Unlike the Go path, this does NOT cascade a referenced digest to its
+    /// embedded decisions' `decision_reads` rows: decisions now live in the
+    /// consolidated ideas ledger (`kind = 'decision'`), tracked via `seen_at`,
+    /// not via a digest's raw JSON — the Swift-only Decisions feed this
+    /// cascade used to protect no longer exists (decisions-split, 2026-08-12;
+    /// see docs/inventory/catchup.md CATCHUP-01 changelog).
     static func acknowledge(_ db: Database, theme: CatchUpTheme) throws {
         for ref in theme.decodedRefs {
             switch ref.area {
             case "digests":
                 try DigestQueries.markDigestRead(db, id: ref.id)
-                // A read digest implies its decisions are read; without this the
-                // Decisions feed (counted via decision_reads) strands decisions
-                // already seen via catch-up. Mirrors the other markDigestRead
-                // call sites and the Go MarkDigestRead cascade.
-                try DigestQueries.markAllDecisionsRead(db, digestID: ref.id)
             case "tracks":
                 try TrackQueries.markRead(db, id: ref.id)
             case "inbox":

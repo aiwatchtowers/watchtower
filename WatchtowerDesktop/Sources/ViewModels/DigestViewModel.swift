@@ -5,7 +5,12 @@ import GRDB
 @Observable
 final class DigestViewModel {
     var digests: [Digest] = []
-    var decisionEntries: [DecisionEntry] = []
+    /// The decisions ledger — `ideas WHERE kind = 'decision'`, ordered by
+    /// `last_mention_at` (falling back to `updated_at`), newest first. Replaces
+    /// the old digest-scanned `decisionEntries`/`DecisionEntry` machinery: a
+    /// decision is a durable, cross-source, deduped row in the ideas registry
+    /// now, not something rebuilt from raw digest JSON on every load.
+    var ledgerDecisions: [Idea] = []
     var selectedType: String?
     var isLoading = false
     var errorMessage: String?
@@ -26,7 +31,10 @@ final class DigestViewModel {
         guard order != sortOrder else { return }
         sortOrder = order
         digests = applySort(digests)
-        decisionEntries = applySortDecisions(decisionEntries)
+        // fetchDecisionLedger always returns newest-mentioned-first; with only
+        // two possible directions, reversing the current array always yields
+        // the other one — no need to re-fetch or keep a separate raw copy.
+        ledgerDecisions = Array(ledgerDecisions.reversed())
     }
 
     private func applySort(_ items: [Digest]) -> [Digest] {
@@ -36,11 +44,10 @@ final class DigestViewModel {
         }
     }
 
-    private func applySortDecisions(_ items: [DecisionEntry]) -> [DecisionEntry] {
-        switch sortOrder {
-        case .newestFirst: return items.sorted { $0.date > $1.date }
-        case .oldestFirst: return items.sorted { $0.date < $1.date }
-        }
+    /// `IdeaQueries.fetchDecisionLedger` always returns newest-mentioned-first;
+    /// applied to a freshly fetched (always newest-first) batch.
+    private func applyLedgerSort(_ items: [Idea]) -> [Idea] {
+        sortOrder == .oldestFirst ? Array(items.reversed()) : items
     }
 
     // Pagination — digests
@@ -48,13 +55,6 @@ final class DigestViewModel {
     private var digestsOffset = 0
     var isLoadingMoreDigests = false
     private let digestsPageSize = 50
-
-    // Pagination — decisions
-    private(set) var hasMoreDecisions = true
-    private var decisionsOffset = 0
-    var isLoadingMoreDecisions = false
-    private let decisionsPageSize = 50
-    private var allDecisionDigests: [Digest] = []
 
     // M9: pre-fetched caches (avoids DB read per row in view body)
     private var channelNameCache: [String: String] = [:]
@@ -64,6 +64,13 @@ final class DigestViewModel {
     private(set) var currentUserID: String?
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
+    private var decisionsObservationTask: Task<Void, Never>?
+    private var decisionsPollTask: Task<Void, Never>?
+    /// GRDB ValueObservation cannot see writes from the Go daemon (separate
+    /// process, separate SQLite update hooks) — the ideas.consolidate pipeline
+    /// mines decisions there, so the ledger needs the same periodic-reload
+    /// safety net IdeasViewModel uses.
+    private let decisionsPollInterval: Duration = .seconds(30)
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -85,17 +92,40 @@ final class DigestViewModel {
                 }
             } catch {}
         }
+        decisionsObservationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind = 'decision'") ?? 0
+            }
+            do {
+                for try await _ in observation.values(in: dbPool).dropFirst() {
+                    guard !Task.isCancelled else { break }
+                    self?.reloadLedger()
+                }
+            } catch {}
+        }
+        startDecisionsPolling()
+    }
+
+    private func startDecisionsPolling() {
+        guard decisionsPollTask == nil else { return }
+        let interval = decisionsPollInterval
+        decisionsPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+                self?.reloadLedger()
+            }
+        }
     }
 
     private struct LoadResult {
         let digests: [Digest]
-        let withDecisions: [Digest]
         let channelNames: [String: String]
         let domain: String?
         let teamID: String?
-        let readIndices: [Int: Set<Int>]
         let unreadDigests: Int
-        let importanceCorrections: [String: String]
+        let ledgerDecisions: [Idea]
+        let unreadDecisions: Int
         let starredChannels: Set<String>
         let currentUserID: String?
     }
@@ -105,7 +135,6 @@ final class DigestViewModel {
         do {
             let result = try dbManager.dbPool.read { db -> LoadResult in
                 let digests = try DigestQueries.fetchAll(db, type: selectedType)
-                let withDecisions = try DigestQueries.fetchWithDecisions(db, limit: 200)
                 let ws = try WorkspaceQueries.fetchWorkspace(db)
 
                 // Pre-fetch user names for DM resolution
@@ -117,18 +146,7 @@ final class DigestViewModel {
                 }
 
                 // Pre-fetch channel names, resolving DMs to user names.
-                // Include channel_ids embedded in decisions (set by AI for cross-channel rollups)
-                // so the flat decisions list and View-in-Slack links can resolve them.
-                var decisionChannelIDs: Set<String> = []
-                for d in withDecisions {
-                    for decision in d.parsedDecisions {
-                        if let cid = decision.channelID, !cid.isEmpty {
-                            decisionChannelIDs.insert(cid)
-                        }
-                    }
-                }
-                let allChannelIDs = Set((digests + withDecisions).map(\.channelID).filter { !$0.isEmpty })
-                    .union(decisionChannelIDs)
+                let allChannelIDs = Set(digests.map(\.channelID).filter { !$0.isEmpty })
                 var nameMap: [String: String] = [:]
                 for cid in allChannelIDs {
                     if let ch = try ChannelQueries.fetchByID(db, id: cid) {
@@ -146,12 +164,9 @@ final class DigestViewModel {
                     }
                 }
 
-                // Pre-fetch decision read states
-                let digestIDs = withDecisions.map(\.id)
-                let readIndices = try DigestQueries.readDecisionIndices(db, digestIDs: digestIDs)
-
                 let unreadDigests = try DigestQueries.unreadDigestCount(db)
-                let importanceCorrections = try ImportanceCorrectionQueries.allCorrections(db)
+                let ledgerDecisions = try IdeaQueries.fetchDecisionLedger(db)
+                let unreadDecisions = try IdeaQueries.unreadDecisionCount(db)
 
                 let profile = try ProfileQueries.fetchCurrentProfile(db)
                 let starred = Set(profile?.decodedStarredChannels ?? [])
@@ -159,13 +174,12 @@ final class DigestViewModel {
 
                 return LoadResult(
                     digests: digests,
-                    withDecisions: withDecisions,
                     channelNames: nameMap,
                     domain: ws?.domain,
                     teamID: ws?.id,
-                    readIndices: readIndices,
                     unreadDigests: unreadDigests,
-                    importanceCorrections: importanceCorrections,
+                    ledgerDecisions: ledgerDecisions,
+                    unreadDecisions: unreadDecisions,
                     starredChannels: starred,
                     currentUserID: uid
                 )
@@ -178,157 +192,40 @@ final class DigestViewModel {
             workspaceTeamID = result.teamID
             starredChannelIDs = result.starredChannels
             currentUserID = result.currentUserID
-            allDecisionDigests = result.withDecisions
-            decisionsOffset = result.withDecisions.count
-            hasMoreDecisions = result.withDecisions.count >= decisionsPageSize
-            decisionEntries = buildDecisionEntries(
-                from: result.withDecisions,
-                readIndices: result.readIndices,
-                importanceCorrections: result.importanceCorrections
-            )
+            ledgerDecisions = applyLedgerSort(result.ledgerDecisions)
             unreadDigestCount = result.unreadDigests
-            unreadDecisionCount = decisionEntries.filter { !$0.isRead }.count
+            unreadDecisionCount = result.unreadDecisions
             errorMessage = nil
         } catch {
             digests = []
-            decisionEntries = []
+            ledgerDecisions = []
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
 
-    private func buildDecisionEntries(
-        from digests: [Digest],
-        readIndices: [Int: Set<Int>],
-        importanceCorrections: [String: String] = [:]
-    ) -> [DecisionEntry] {
-        // Separate digests by type: prefer higher-level (daily/weekly) over channel
-        let dailyWeekly = digests.filter { $0.type == "daily" || $0.type == "weekly" }
-        let channelOnly = digests.filter { $0.type == "channel" }
-
-        var entries: [DecisionEntry] = []
-        var seenStems: [Set<String>] = []
-
-        // Extract word stems (first 4 chars of words >= 4 chars) for fuzzy dedup
-        func wordStems(_ text: String) -> Set<String> {
-            let cleaned = text.lowercased()
-                .replacingOccurrences(of: "[^\\p{L}\\p{N}]+", with: " ", options: .regularExpression)
-            let words = cleaned.split(separator: " ").map(String.init).filter { $0.count >= 4 }
-            return Set(words.map { String($0.prefix(4)) })
-        }
-
-        // Containment similarity: fraction of shorter set's stems found in longer set
-        func isDuplicate(_ text: String) -> Bool {
-            let stems = wordStems(text)
-            guard stems.count >= 2 else { return false }
-            for seen in seenStems {
-                let intersection = stems.intersection(seen).count
-                let minSize = min(stems.count, seen.count)
-                if minSize > 0 && Double(intersection) / Double(minSize) > 0.6 {
-                    return true
-                }
-            }
-            return false
-        }
-
-        func addDecision(_ decision: Decision, idx: Int, from digest: Digest) {
-            guard !isDuplicate(decision.text) else { return }
-            seenStems.append(wordStems(decision.text))
-            // Use the decision's source message timestamp when available,
-            // falling back to the digest's periodTo.
-            let date: Date
-            if let ts = decision.messageTS,
-               let dot = ts.firstIndex(of: "."),
-               let unix = Double(ts[ts.startIndex..<dot]) {
-                date = Date(timeIntervalSince1970: unix)
-            } else if let ts = decision.messageTS, let unix = Double(ts) {
-                date = Date(timeIntervalSince1970: unix)
-            } else {
-                date = Date(timeIntervalSince1970: digest.periodTo)
-            }
-            // Prefer the decision's own channel_id (set by AI on cross-channel rollups)
-            // over the digest's channelID, which is empty for daily/weekly.
-            let resolvedChannelID: String = {
-                if let cid = decision.channelID, !cid.isEmpty { return cid }
-                return digest.channelID
-            }()
-            let chName = resolvedChannelID.isEmpty ? nil : channelNameCache[resolvedChannelID]
-            let isRead = readIndices[digest.id]?.contains(idx) ?? false
-            let correctionKey = "\(digest.id):\(idx)"
-            let corrected = importanceCorrections[correctionKey]
-            entries.append(DecisionEntry(
-                decision: decision,
-                digestID: digest.id,
-                decisionIdx: idx,
-                channelID: resolvedChannelID,
-                channelName: chName,
-                digestSummary: digest.summary,
-                digestType: digest.type,
-                date: date,
-                messageTS: decision.messageTS,
-                isRead: isRead,
-                correctedImportance: corrected
-            ))
-        }
-
-        // First pass: add decisions from daily/weekly rollups (preferred)
-        for digest in dailyWeekly {
-            for (idx, decision) in digest.parsedDecisions.enumerated() {
-                addDecision(decision, idx: idx, from: digest)
-            }
-        }
-
-        // Second pass: add channel-level decisions only if not already covered
-        for digest in channelOnly {
-            for (idx, decision) in digest.parsedDecisions.enumerated() {
-                addDecision(decision, idx: idx, from: digest)
-            }
-        }
-
-        return applySortDecisions(entries)
-    }
-
-    // MARK: - Read tracking
+    // MARK: - Read tracking (digests)
 
     func markDigestRead(_ digestID: Int) {
         do {
             try dbManager.dbPool.write { db in
                 try DigestQueries.markDigestRead(db, id: digestID)
-                // Cascade: mark all decisions in this digest as read
+                // Cascade: mark all decisions embedded in this digest's raw JSON
+                // read. Vestigial for the ledger (which tracks seen_at on the
+                // ideas table instead) but harmless — decision_reads has no
+                // remaining reader; kept for the digest-detail legacy section's
+                // dual path and any other cascade caller (TrackQueries).
                 try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
             }
-            // Update local state — digest
             if let idx = digests.firstIndex(where: { $0.id == digestID && !$0.isRead }) {
                 unreadDigestCount = max(0, unreadDigestCount - 1)
                 if let updated = digestByID(digestID) {
                     digests[idx] = updated
                 }
             }
-            // Update local state — decisions
-            for idx in decisionEntries.indices where decisionEntries[idx].digestID == digestID && !decisionEntries[idx].isRead {
-                decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
-                unreadDecisionCount = max(0, unreadDecisionCount - 1)
-            }
         } catch {
             // Non-critical — just log
             print("Failed to mark digest read: \(error)")
-        }
-    }
-
-    func markDecisionRead(digestID: Int, decisionIdx: Int) {
-        do {
-            try dbManager.dbPool.write { db in
-                try DigestQueries.markDecisionRead(db, digestID: digestID, decisionIdx: decisionIdx)
-            }
-            // Update local state
-            if let idx = decisionEntries.firstIndex(where: {
-                $0.digestID == digestID && $0.decisionIdx == decisionIdx && !$0.isRead
-            }) {
-                decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
-                unreadDecisionCount = max(0, unreadDecisionCount - 1)
-            }
-        } catch {
-            print("Failed to mark decision read: \(error)")
         }
     }
 
@@ -350,34 +247,9 @@ final class DigestViewModel {
                     }
                     unreadDigestCount = max(0, unreadDigestCount - 1)
                 }
-                // Update local decision state
-                for idx in decisionEntries.indices where decisionEntries[idx].digestID == id && !decisionEntries[idx].isRead {
-                    decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
-                    unreadDecisionCount = max(0, unreadDecisionCount - 1)
-                }
             }
         } catch {
             print("Failed to mark digests read: \(error)")
-        }
-    }
-
-    func markDecisionsRead(_ entries: [DecisionEntry]) {
-        do {
-            try dbManager.dbPool.write { db in
-                for entry in entries {
-                    try DigestQueries.markDecisionRead(db, digestID: entry.digestID, decisionIdx: entry.decisionIdx)
-                }
-            }
-            for entry in entries {
-                if let idx = decisionEntries.firstIndex(where: {
-                    $0.digestID == entry.digestID && $0.decisionIdx == entry.decisionIdx && !$0.isRead
-                }) {
-                    decisionEntries[idx] = decisionEntries[idx].with(isRead: true)
-                    unreadDecisionCount = max(0, unreadDecisionCount - 1)
-                }
-            }
-        } catch {
-            print("Failed to mark decisions read: \(error)")
         }
     }
 
@@ -393,44 +265,77 @@ final class DigestViewModel {
         }
     }
 
-    // MARK: - Importance corrections
+    // MARK: - Decisions ledger
 
-    func setDecisionImportance(_ entry: DecisionEntry, newImportance: String) {
-        let originalImportance = entry.decision.resolvedImportance
-        guard newImportance != originalImportance else {
-            // User reverted to original — delete correction
-            do {
-                try dbManager.dbPool.write { db in
-                    try ImportanceCorrectionQueries.delete(db, digestID: entry.digestID, decisionIdx: entry.decisionIdx)
-                }
-                updateEntryImportance(entry, corrected: nil)
-            } catch {
-                print("Failed to delete importance correction: \(error)")
-            }
-            return
-        }
+    /// Marks a single decision seen and reloads the ledger, so the row state
+    /// and unread badge update immediately.
+    func markDecisionSeen(id: Int) {
         do {
-            try dbManager.dbPool.write { db in
-                try ImportanceCorrectionQueries.upsert(
-                    db,
-                    digestID: entry.digestID,
-                    decisionIdx: entry.decisionIdx,
-                    decisionText: entry.decision.text,
-                    originalImportance: originalImportance,
-                    newImportance: newImportance
-                )
-            }
-            updateEntryImportance(entry, corrected: newImportance)
+            try dbManager.dbPool.write { db in try IdeaQueries.markDecisionSeen(db, id: id) }
+            reloadLedger()
         } catch {
-            print("Failed to save importance correction: \(error)")
+            errorMessage = "Failed to mark decision seen: \(error.localizedDescription)"
         }
     }
 
-    private func updateEntryImportance(_ entry: DecisionEntry, corrected: String?) {
-        if let idx = decisionEntries.firstIndex(where: {
-            $0.digestID == entry.digestID && $0.decisionIdx == entry.decisionIdx
-        }) {
-            decisionEntries[idx] = decisionEntries[idx].with(correctedImportance: corrected)
+    /// Stamps every not-yet-seen decision as seen.
+    func markAllDecisionsSeen() {
+        do {
+            try dbManager.dbPool.write { db in try IdeaQueries.markAllDecisionsSeen(db) }
+            reloadLedger()
+        } catch {
+            errorMessage = "Failed to mark decisions seen: \(error.localizedDescription)"
+        }
+    }
+
+    func supersede(id: Int, by newID: Int? = nil) {
+        do {
+            try dbManager.dbPool.write { db in try IdeaQueries.supersede(db, id: id, by: newID) }
+            reloadLedger()
+        } catch {
+            errorMessage = "Failed to supersede decision: \(error.localizedDescription)"
+        }
+    }
+
+    func reverse(id: Int) {
+        do {
+            try dbManager.dbPool.write { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
+            reloadLedger()
+        } catch {
+            errorMessage = "Failed to reverse decision: \(error.localizedDescription)"
+        }
+    }
+
+    /// Returns whether the rating landed, so the caller can keep an
+    /// owner-typed comment on screen when it did not (clear-only-on-success,
+    /// the IdeaDetailPane precedent).
+    @discardableResult
+    func setRating(id: Int, rating: Int, comment: String = "") -> Bool {
+        do {
+            try dbManager.dbPool.write { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
+            reloadLedger()
+            return true
+        } catch {
+            errorMessage = "Failed to set rating: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Re-reads just the decisions ledger — cheaper than a full `load()`
+    /// (digests/channels/workspace untouched) after a ledger-only write, and
+    /// what the ValueObservation/poll safety net above calls on a daemon-mined
+    /// change it detects.
+    private func reloadLedger() {
+        do {
+            let result = try dbManager.dbPool.read { db -> (decisions: [Idea], unread: Int) in
+                let decisions = try IdeaQueries.fetchDecisionLedger(db)
+                let unread = try IdeaQueries.unreadDecisionCount(db)
+                return (decisions, unread)
+            }
+            ledgerDecisions = applyLedgerSort(result.decisions)
+            unreadDecisionCount = result.unread
+        } catch {
+            errorMessage = "Failed to reload decisions: \(error.localizedDescription)"
         }
     }
 
@@ -464,46 +369,6 @@ final class DigestViewModel {
             print("Failed to load more digests: \(error)")
         }
         isLoadingMoreDigests = false
-    }
-
-    func loadMoreDecisions() {
-        guard hasMoreDecisions, !isLoadingMoreDecisions else { return }
-        isLoadingMoreDecisions = true
-        do {
-            let result = try dbManager.dbPool.read { db -> (digests: [Digest], readIndices: [Int: Set<Int>], corrections: [String: String]) in
-                let batch = try DigestQueries.fetchWithDecisions(db, limit: decisionsPageSize, offset: decisionsOffset)
-                let readIndices = try DigestQueries.readDecisionIndices(db, digestIDs: batch.map(\.id))
-                let corrections = try ImportanceCorrectionQueries.allCorrections(db)
-                return (batch, readIndices, corrections)
-            }
-            // Update channel name cache
-            let newChannelIDs = Set(result.digests.map(\.channelID).filter { !$0.isEmpty }).subtracting(channelNameCache.keys)
-            if !newChannelIDs.isEmpty {
-                let names = try dbManager.dbPool.read { db -> [String: String] in
-                    var map: [String: String] = [:]
-                    for cid in newChannelIDs {
-                        if let ch = try ChannelQueries.fetchByID(db, id: cid) {
-                            map[cid] = ch.name
-                        }
-                    }
-                    return map
-                }
-                channelNameCache.merge(names) { _, new in new }
-            }
-            allDecisionDigests.append(contentsOf: result.digests)
-            decisionsOffset += result.digests.count
-            hasMoreDecisions = result.digests.count >= decisionsPageSize
-            // Rebuild all entries to maintain dedup
-            decisionEntries = buildDecisionEntries(
-                from: allDecisionDigests,
-                readIndices: result.readIndices,
-                importanceCorrections: result.corrections
-            )
-            unreadDecisionCount = decisionEntries.filter { !$0.isRead }.count
-        } catch {
-            print("Failed to load more decisions: \(error)")
-        }
-        isLoadingMoreDecisions = false
     }
 
     func digestByID(_ id: Int) -> Digest? {

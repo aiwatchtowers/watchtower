@@ -127,26 +127,6 @@ final class DigestViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDecisionEntries() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                decisions: #"[{"text":"Use Go","by":"Alice","importance":"high"},{"text":"Deploy Friday"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.decisionEntries.count, 2)
-        XCTAssertEqual(vm.decisionEntries[0].decision.text, "Use Go")
-        XCTAssertEqual(vm.decisionEntries[0].channelName, "general")
-        XCTAssertEqual(vm.decisionEntries[0].digestType, "channel")
-    }
-
-    @MainActor
     func testChannelName() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "general")
@@ -299,7 +279,7 @@ final class DigestViewModelTests: XCTestCase {
         vm.load()
 
         XCTAssertTrue(vm.digests.isEmpty)
-        XCTAssertTrue(vm.decisionEntries.isEmpty)
+        XCTAssertTrue(vm.ledgerDecisions.isEmpty)
         XCTAssertNil(vm.errorMessage)
     }
 }
@@ -1207,88 +1187,6 @@ final class DigestViewModelAdditionalTests: XCTestCase {
 
         XCTAssertEqual(vm.unreadDigestCount, 0)
         XCTAssertTrue(vm.digests[0].isRead)
-    }
-
-    @MainActor
-    func testMarkDecisionRead() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001", decisions: #"[{"text":"Decision A"},{"text":"Decision B"}]"#)
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.decisionEntries.count, 2)
-        XCTAssertEqual(vm.unreadDecisionCount, 2)
-
-        let entry = vm.decisionEntries[0]
-        vm.markDecisionRead(digestID: entry.digestID, decisionIdx: entry.decisionIdx)
-
-        XCTAssertEqual(vm.unreadDecisionCount, 1)
-        let updated = vm.decisionEntries.first { $0.digestID == entry.digestID && $0.decisionIdx == entry.decisionIdx }
-        XCTAssertTrue(updated?.isRead ?? false)
-    }
-
-    @MainActor
-    func testDecisionDedup() throws {
-        // Two digests with similar decisions — channel and daily rollup
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "channel",
-                decisions: #"[{"text":"We decided to migrate the database to PostgreSQL immediately"}]"#
-            )
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "daily",
-                decisions: #"[{"text":"Team decided to migrate the database to PostgreSQL soon"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        // Daily/weekly decisions are preferred; the channel duplicate should be deduped
-        XCTAssertEqual(vm.decisionEntries.count, 1)
-        XCTAssertEqual(vm.decisionEntries[0].digestType, "daily")
-    }
-
-    @MainActor
-    func testDecisionsDailyPreferred() throws {
-        // Unique decisions from both channel and daily
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "channel",
-                decisions: #"[{"text":"Use Redis for caching"}]"#
-            )
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "daily",
-                decisions: #"[{"text":"Adopt TypeScript for frontend"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        // Both are unique, both should appear
-        XCTAssertEqual(vm.decisionEntries.count, 2)
     }
 
     @MainActor

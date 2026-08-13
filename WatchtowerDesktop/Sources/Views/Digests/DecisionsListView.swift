@@ -1,42 +1,43 @@
 import SwiftUI
 
-/// Flat list of all decisions across digests, deduplicated and sorted by date.
+/// The Decisions segment's list: the consolidated decisions ledger
+/// (`ideas WHERE kind = 'decision'`), most-recently-mentioned first. Replaces
+/// the old digest-scanned, fuzzy-deduped flat decisions list.
 struct DecisionsListView: View {
     let viewModel: DigestViewModel
-    @Binding var selectedEntryID: String?
-    @Binding var expandedEntryIDs: Set<String>
+    @Binding var selectedID: Int?
+    @Binding var expandedIDs: Set<Int>
     @Binding var searchText: String
     @Binding var showAll: Bool
-    @Binding var isSelectMode: Bool
-    @Binding var checkedIDs: Set<String>
 
-    private var filteredEntries: [DecisionEntry] {
-        var items = viewModel.decisionEntries
+    /// Mirrors `IdeaQueries.unreadDecisionCount`'s predicate: never seen, or
+    /// seen but re-flagged since.
+    private func isUnread(_ idea: Idea) -> Bool {
+        idea.seenAt == nil || idea.needsReview
+    }
+
+    private var filteredDecisions: [Idea] {
+        var items = viewModel.ledgerDecisions
         if !showAll {
-            items = items.filter { !$0.isRead }
+            items = items.filter(isUnread)
         }
         if !searchText.isEmpty {
             let query = searchText.lowercased()
-            items = items.filter { entry in
-                if entry.decision.text.lowercased().contains(query) { return true }
-                if let name = entry.channelName, name.lowercased().contains(query) { return true }
-                if let by = entry.decision.by, by.lowercased().contains(query) { return true }
-                return false
+            items = items.filter { idea in
+                idea.title.lowercased().contains(query) || idea.essence.lowercased().contains(query)
             }
         }
         return items
     }
 
-    private func toggleExpanded(_ id: String) {
+    private func toggleExpanded(_ idea: Idea) {
         withAnimation(.easeInOut(duration: 0.2)) {
-            if expandedEntryIDs.contains(id) {
-                expandedEntryIDs.remove(id)
+            if expandedIDs.contains(idea.id) {
+                expandedIDs.remove(idea.id)
             } else {
-                expandedEntryIDs.insert(id)
-                // Mark decision as read when expanded
-                if let entry = viewModel.decisionEntries.first(where: { $0.id == id }),
-                   !entry.isRead {
-                    viewModel.markDecisionRead(digestID: entry.digestID, decisionIdx: entry.decisionIdx)
+                expandedIDs.insert(idea.id)
+                if isUnread(idea) {
+                    viewModel.markDecisionSeen(id: idea.id)
                 }
             }
         }
@@ -45,110 +46,59 @@ struct DecisionsListView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
-                ForEach(filteredEntries) { entry in
-                    decisionListItem(entry)
-                        .onAppear {
-                            if entry.id == filteredEntries.last?.id {
-                                viewModel.loadMoreDecisions()
-                            }
-                        }
-                }
-                if viewModel.isLoadingMoreDecisions {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(8)
+                ForEach(filteredDecisions) { idea in
+                    decisionListItem(idea)
                 }
             }
             .padding(.vertical, 4)
         }
     }
 
-    private func decisionListItem(_ entry: DecisionEntry) -> some View {
-        let isChecked = checkedIDs.contains(entry.id)
-        let isSelected = selectedEntryID == entry.id && !isSelectMode
+    private func decisionListItem(_ idea: Idea) -> some View {
+        let isSelected = selectedID == idea.id
         let bgColor: Color = isSelected
             ? Color.accentColor.opacity(0.15)
-            : isChecked
-                ? Color.accentColor.opacity(0.08)
-                : !entry.isRead
-                    ? Color.blue.opacity(0.06)
-                    : Color.clear
+            : isUnread(idea)
+                ? Color.blue.opacity(0.06)
+                : Color.clear
 
-        return HStack(spacing: 0) {
-            if isSelectMode {
-                Button {
-                    toggleChecked(entry.id)
-                } label: {
-                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
-                        .font(.body)
-                }
-                .buttonStyle(.borderless)
-                .padding(.leading, 8)
-            }
-
-            decisionRow(entry)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if isSelectMode {
-                        toggleChecked(entry.id)
-                    } else {
-                        selectedEntryID = entry.id
-                    }
-                }
-        }
-        .padding(.horizontal, isSelectMode ? 4 : 10)
-        .padding(.vertical, 4)
-        .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 4)
+        return decisionRow(idea)
+            .contentShape(Rectangle())
+            .onTapGesture { selectedID = idea.id }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(bgColor, in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 4)
     }
 
-    private func toggleChecked(_ id: String) {
-        if checkedIDs.contains(id) {
-            checkedIDs.remove(id)
-        } else {
-            checkedIDs.insert(id)
-        }
-    }
-
-    private func decisionRow(_ entry: DecisionEntry) -> some View {
-        let expanded = expandedEntryIDs.contains(entry.id)
+    private func decisionRow(_ idea: Idea) -> some View {
+        let expanded = expandedIDs.contains(idea.id)
         return HStack(alignment: .top, spacing: 0) {
-            // Left importance bar
             RoundedRectangle(cornerRadius: 2)
-                .fill(importanceColor(entry.effectiveImportance))
+                .fill(statusColor(idea))
                 .frame(width: 3)
                 .padding(.vertical, 2)
 
             VStack(alignment: .leading, spacing: 4) {
-                // Channel + importance badge + expand chevron
                 HStack {
-                    if let chName = entry.channelName,
-                       let url = viewModel.slackChannelURL(channelID: entry.channelID) {
-                        Link(destination: url) {
-                            Text("#\(chName)")
-                                .font(.caption)
-                                .fontWeight(entry.isRead ? .regular : .medium)
-                        }
-                        .buttonStyle(.borderless)
-                    } else {
-                        Text(entry.channelName.map { "#\($0)" } ?? "Cross-channel")
-                            .font(.caption)
-                            .fontWeight(entry.isRead ? .regular : .medium)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(statusLabel(idea))
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(statusColor(idea))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(statusColor(idea).opacity(0.12), in: Capsule())
 
                     Spacer()
 
-                    EditableImportanceBadge(
-                        importance: entry.effectiveImportance,
-                        isCorrected: entry.correctedImportance != nil
-                    ) { newImportance in
-                        viewModel.setDecisionImportance(entry, newImportance: newImportance)
+                    if let date = TimeFormatting.parseISO(idea.lastMentionAt) {
+                        Text(date, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
 
                     Button {
-                        toggleExpanded(entry.id)
+                        toggleExpanded(idea)
                     } label: {
                         Image(systemName: expanded ? "chevron.up" : "chevron.down")
                             .font(.caption2)
@@ -158,29 +108,13 @@ struct DecisionsListView: View {
                     .buttonStyle(.borderless)
                 }
 
-                // Decision text
-                Text(entry.decision.text)
+                Text(idea.title)
                     .font(.subheadline)
+                    .fontWeight(isUnread(idea) ? .medium : .regular)
                     .lineLimit(expanded ? nil : 3)
 
-                // Author + date
-                HStack {
-                    if let by = entry.decision.by, !by.isEmpty {
-                        Label(by, systemImage: "person")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Spacer()
-
-                    Text(TimeFormatting.shortDateTime(from: entry.date))
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                // Expanded content
                 if expanded {
-                    decisionExpandedContent(entry)
+                    decisionExpandedContent(idea)
                 }
             }
             .padding(.leading, 8)
@@ -189,69 +123,40 @@ struct DecisionsListView: View {
     }
 
     @ViewBuilder
-    private func decisionExpandedContent(_ entry: DecisionEntry) -> some View {
+    private func decisionExpandedContent(_ idea: Idea) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
 
-            // Parent digest context
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("From digest")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(entry.digestType.capitalized)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(digestTypeColor(entry.digestType))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(digestTypeColor(entry.digestType).opacity(0.12), in: Capsule())
-                }
-                Text(entry.digestSummary)
+            if !idea.essence.isEmpty {
+                Text(idea.essence)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(4)
             }
 
-            // Action buttons
-            HStack(spacing: 12) {
-                if let ts = entry.messageTS,
-                   let url = viewModel.slackMessageURL(channelID: entry.channelID, messageTS: ts) {
-                    Link(destination: url) {
-                        Label("Slack", systemImage: "arrow.up.right.square")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                Button {
-                    selectedEntryID = entry.id
-                } label: {
-                    Label("Open details", systemImage: "arrow.right.circle")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
+            Button {
+                selectedID = idea.id
+            } label: {
+                Label("Open details", systemImage: "arrow.right.circle")
+                    .font(.caption)
             }
+            .buttonStyle(.borderless)
         }
         .padding(.top, 2)
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
-    private func digestTypeColor(_ type: String) -> Color {
-        switch type {
-        case "channel": .blue
-        case "daily": .purple
-        case "weekly": .indigo
-        default: .secondary
-        }
+    private func statusLabel(_ idea: Idea) -> String {
+        idea.statusRaw.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    private func importanceColor(_ importance: String) -> Color {
-        switch importance {
-        case "high": .red
-        case "low": .gray
+    private func statusColor(_ idea: Idea) -> Color {
+        switch idea.status {
+        case .active: .green
+        case .superseded: .purple
+        case .reversed: .red
+        case .rejected: .red
         default: .orange
         }
     }
-
 }
