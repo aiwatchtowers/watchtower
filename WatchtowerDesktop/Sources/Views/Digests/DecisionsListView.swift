@@ -11,6 +11,13 @@ struct DecisionsListView: View {
     @Binding var searchText: String
     @Binding var showAll: Bool
 
+    /// Read once when the view is created (the `SettingsView` precedent) —
+    /// only to tell the "nothing mined yet" empty state apart from the
+    /// "mining is switched off in config.yaml" one. `ideas.enabled` has no
+    /// Settings toggle of its own by owner decision, so a live observation
+    /// would buy nothing here.
+    @State private var config = ConfigService()
+
     /// Mirrors `IdeaQueries.unreadDecisionCount`'s predicate: never seen, or
     /// seen but re-flagged since.
     private func isUnread(_ idea: Idea) -> Bool {
@@ -45,14 +52,64 @@ struct DecisionsListView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 1) {
-                ForEach(filteredDecisions) { idea in
-                    decisionListItem(idea)
+        if filteredDecisions.isEmpty {
+            emptyState
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(filteredDecisions) { idea in
+                        decisionListItem(idea)
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
         }
+    }
+
+    // MARK: - Empty State
+
+    /// Three cases, in priority order: the ledger has rows but the current
+    /// search/unread filter hides them all (the `ProjectMapView`
+    /// `emptyState(isFiltered:)` precedent); the ledger is empty and the
+    /// registry that fills it is switched off; the ledger is simply empty
+    /// and waiting for the miner.
+    @ViewBuilder
+    private var emptyState: some View {
+        let isFiltered = !viewModel.ledgerDecisions.isEmpty
+
+        VStack(spacing: 12) {
+            Image(systemName: isFiltered ? "line.3.horizontal.decrease.circle" : "checkmark.seal")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+
+            Text(emptyTitle(isFiltered: isFiltered))
+                .font(.headline)
+                .foregroundStyle(.secondary)
+
+            Text(emptyMessage(isFiltered: isFiltered))
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+    }
+
+    private func emptyTitle(isFiltered: Bool) -> String {
+        if isFiltered { return "No matching decisions" }
+        return config.ideasEnabled ? "No decisions yet" : "Ideas mining is disabled"
+    }
+
+    private func emptyMessage(isFiltered: Bool) -> String {
+        if isFiltered {
+            return showAll
+                ? "No decision matches your search."
+                : "No unread decisions — switch to All to see the whole ledger."
+        }
+        if !config.ideasEnabled {
+            return "Set ideas.enabled in config.yaml to mine decisions from Slack, meetings, email, and Jira."
+        }
+        return "Decisions mined from Slack, meetings, email, and Jira will collect here."
     }
 
     private func decisionListItem(_ idea: Idea) -> some View {
