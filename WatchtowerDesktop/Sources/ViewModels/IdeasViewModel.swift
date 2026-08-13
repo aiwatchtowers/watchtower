@@ -187,14 +187,6 @@ final class IdeasViewModel {
         write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
     }
 
-    func supersede(_ idea: Idea, by newID: Int?) {
-        write("supersede idea") { db in try IdeaQueries.supersede(db, id: idea.id, by: newID) }
-    }
-
-    func reverse(_ idea: Idea) {
-        write("reverse idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
-    }
-
     /// Returns whether the rating landed, so the view can keep the owner's
     /// typed comment on screen when it did not (clear-only-on-success).
     @discardableResult

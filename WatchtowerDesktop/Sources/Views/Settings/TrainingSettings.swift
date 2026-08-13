@@ -12,7 +12,6 @@ struct TrainingSettings: View {
     @State private var tuneOutput: String = ""
     @State private var tuneError: String?
     @State private var showTuneOutput = false
-    @State private var importanceCorrections: [String: String] = [:]  // "digestID:idx" -> newImportance
 
     var body: some View {
         HSplitView {
@@ -52,11 +51,6 @@ struct TrainingSettings: View {
             // Feedback stats
             feedbackStatsSection
                 .padding()
-
-            // Importance corrections
-            importanceCorrectionsSection
-                .padding(.horizontal)
-                .padding(.bottom)
 
             // Tune button
             tuneSection
@@ -156,43 +150,6 @@ struct TrainingSettings: View {
                             .foregroundStyle(totalPositive * 100 / total >= 70 ? .green : .orange)
                     }
                 }
-            }
-        }
-    }
-
-    // MARK: - Importance Corrections
-
-    private var importanceCorrectionsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Importance Corrections")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                if !importanceCorrections.isEmpty {
-                    Text("\(importanceCorrections.count)")
-                        .font(.caption2)
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(.orange, in: Capsule())
-                }
-            }
-
-            if importanceCorrections.isEmpty {
-                Text("No corrections yet. Change importance on decisions to train the AI.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                let grouped = Dictionary(grouping: importanceCorrections.values) { $0 }
-                let parts = grouped.sorted { $0.key < $1.key }.map { "\($0.value.count) \($0.key)" }
-                Text(parts.joined(separator: ", "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text("Run Tuning to apply these corrections to the prompt.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -308,13 +265,9 @@ struct TrainingSettings: View {
             let loadedStats = (try? await db.dbPool.read { db in
                 try FeedbackQueries.getStats(db)
             }) ?? []
-            let loadedCorrections = (try? await db.dbPool.read { db in
-                try ImportanceCorrectionQueries.allCorrections(db)
-            }) ?? [:]
             await MainActor.run {
                 prompts = loadedPrompts
                 feedbackStats = loadedStats
-                importanceCorrections = loadedCorrections
                 if selectedPromptID == nil, let first = loadedPrompts.first {
                     selectedPromptID = first.id
                 }

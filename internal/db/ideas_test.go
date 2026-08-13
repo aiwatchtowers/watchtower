@@ -619,6 +619,21 @@ func TestIdeas_CountIdeasForReview(t *testing.T) {
 	}
 }
 
+func TestIdeas_CountIdeasForReview_ExcludesDecisions(t *testing.T) {
+	d := openTestDB(t)
+
+	mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Proposed idea", Essence: "e", Status: "proposed"})
+	mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Decision with review", Essence: "d", Status: "active", NeedsReview: true})
+
+	count, err := d.CountIdeasForReview()
+	if err != nil {
+		t.Fatalf("CountIdeasForReview: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("CountIdeasForReview = %d, want 1 (only ideas, not decisions)", count)
+	}
+}
+
 // --- test helpers ---
 
 func mustCreateIdea(t *testing.T, d *DB, idea Idea) int64 {

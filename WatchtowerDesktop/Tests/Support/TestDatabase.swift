@@ -120,12 +120,13 @@ package enum TestDatabase {
         decisions: String = "[]",
         tracksJSON: String = "[]",
         messageCount: Int = 10,
-        model: String = "haiku"
+        model: String = "haiku",
+        createdAt: String? = nil
     ) throws {
         try db.execute(sql: """
-            INSERT INTO digests (channel_id, period_from, period_to, type, summary, topics, decisions, action_items, message_count, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [channelID, periodFrom, periodTo, type, summary, topics, decisions, tracksJSON, messageCount, model])
+            INSERT INTO digests (channel_id, period_from, period_to, type, summary, topics, decisions, action_items, message_count, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [channelID, periodFrom, periodTo, type, summary, topics, decisions, tracksJSON, messageCount, model, createdAt])
     }
 
     package static func insertWatchItem(
@@ -1220,7 +1221,8 @@ package enum TestDatabase {
         rating_comment  TEXT NOT NULL DEFAULT '',
         last_mention_at TEXT NOT NULL DEFAULT '',
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        seen_at         TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
@@ -1236,6 +1238,19 @@ package enum TestDatabase {
         created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
     CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+
+    CREATE TABLE IF NOT EXISTS stream_digests (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
+        account_id   INTEGER NOT NULL,
+        scope        TEXT NOT NULL DEFAULT '',
+        period_from  TEXT NOT NULL,
+        period_to    TEXT NOT NULL,
+        topics_json  TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        read_at      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
     """
 
     // MARK: - Briefing Fixtures
@@ -1720,15 +1735,16 @@ package enum TestDatabase {
         notesMD: String? = nil,
         segmentsJSON: String? = nil,
         speakersJSON: String? = nil,
-        chaptersJSON: String? = nil
+        chaptersJSON: String? = nil,
+        createdAt: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
-                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
             """,
             arguments: [id, eventID, title, audioPath, durationSec,
-                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON])
+                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON, createdAt])
     }
 
     package static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
@@ -1769,20 +1785,22 @@ package enum TestDatabase {
         ratingComment: String = "",
         lastMentionAt: String = "",
         createdAt: String? = nil,
-        updatedAt: String? = nil
+        updatedAt: String? = nil,
+        seenAt: String? = nil
     ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO ideas (kind, title, essence, status, source, snooze_until,
                 needs_review, review_reason, similar_to_id, merged_into_id,
                 superseded_by_id, converted_target_id, owner_rating, rating_comment,
-                last_mention_at, created_at, updated_at)
+                last_mention_at, created_at, updated_at, seen_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                ?)
             """, arguments: [kind, title, essence, status, source, snoozeUntil,
                              needsReview, reviewReason, similarToID, mergedIntoID,
                              supersededByID, convertedTargetID, ownerRating, ratingComment,
-                             lastMentionAt, createdAt, updatedAt])
+                             lastMentionAt, createdAt, updatedAt, seenAt])
         return db.lastInsertedRowID
     }
 
@@ -1801,6 +1819,31 @@ package enum TestDatabase {
             INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
             """, arguments: [ideaID, source, ref, quote, author, saidAt, createdAt])
+        return db.lastInsertedRowID
+    }
+
+    // MARK: - Stream Digest Fixtures
+
+    @discardableResult
+    package static func insertStreamDigest(
+        _ db: Database,
+        source: String = "gmail",
+        accountID: Int = 1,
+        scope: String = "",
+        periodFrom: String = "2024-01-01T00:00:00Z",
+        periodTo: String = "2024-01-02T00:00:00Z",
+        topicsJSON: String = "[]",
+        createdAt: String? = nil,
+        readAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO stream_digests (source, account_id, scope, period_from, period_to,
+                topics_json, created_at, read_at)
+            VALUES (?, ?, ?, ?, ?, ?,
+                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                ?)
+            """, arguments: [source, accountID, scope, periodFrom, periodTo,
+                             topicsJSON, createdAt, readAt])
         return db.lastInsertedRowID
     }
 

@@ -63,34 +63,36 @@ var minPollInterval = 1 * time.Second
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
-	orchestrators     []*sync.Orchestrator
-	config            *config.Config
-	logger            *log.Logger
-	wakeCh            <-chan struct{}
-	pidPath           string
-	db                *db.DB
-	digestPipe        *digest.Pipeline
-	tracksPipe        *tracks.Pipeline
-	peoplePipe        *guide.Pipeline
-	briefingPipe      *briefing.Pipeline
-	inboxPipe         *inbox.Pipeline
-	ideasPipe         *ideas.Pipeline
-	memoryPipe        *memory.Pipeline
-	feedPipe          *feed.Pipeline
-	nextStepPipe      *targets.Pipeline
-	customTracksPipe  *customtracks.Pipeline
-	calendarSyncers   []*calendar.Syncer
-	calDAVSyncers     []*caldav.Syncer
-	gmailSyncers      []*gmail.Syncer
-	imapSyncers       []*imap.Syncer
-	jiraSyncers       []jiraAccountSyncer
-	dayPlanPipeline   DayPlanRunner
-	lastJira          time.Time
-	lastPeople        time.Time // when people cards last ran (once per day)
-	lastBriefing      time.Time // when briefing last ran (once per day)
-	lastIdeas         time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
-	lastIdeasLockSkip time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
-	lastDayPlanDate   string    // YYYY-MM-DD of last generation, for dedup
+	orchestrators       []*sync.Orchestrator
+	config              *config.Config
+	logger              *log.Logger
+	wakeCh              <-chan struct{}
+	pidPath             string
+	db                  *db.DB
+	digestPipe          *digest.Pipeline
+	tracksPipe          *tracks.Pipeline
+	peoplePipe          *guide.Pipeline
+	briefingPipe        *briefing.Pipeline
+	inboxPipe           *inbox.Pipeline
+	ideasPipe           *ideas.Pipeline
+	memoryPipe          *memory.Pipeline
+	feedPipe            *feed.Pipeline
+	nextStepPipe        *targets.Pipeline
+	customTracksPipe    *customtracks.Pipeline
+	calendarSyncers     []*calendar.Syncer
+	calDAVSyncers       []*caldav.Syncer
+	gmailSyncers        []*gmail.Syncer
+	imapSyncers         []*imap.Syncer
+	jiraSyncers         []jiraAccountSyncer
+	dayPlanPipeline     DayPlanRunner
+	lastJira            time.Time
+	lastPeople          time.Time // when people cards last ran (once per day)
+	lastBriefing        time.Time // when briefing last ran (once per day)
+	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
+	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
+	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
+	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -140,9 +142,18 @@ func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 	d.inboxPipe = p
 }
 
-// SetIdeasPipeline sets the ideas & decisions registry pipeline.
+// SetIdeasPipeline sets the ideas & decisions registry pipeline (also used
+// by the independently-gated stage-1 stream digests phase, phaseStreamDigests).
 func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
 	d.ideasPipe = p
+}
+
+// HasIdeasPipeline reports whether an ideas.Pipeline is wired — cmd/sync.go's
+// wireIdeasPipeline attaches one when either the registry consolidator
+// (ideas.enabled) or the stream digests phase (streams.enabled) needs it, so
+// callers can't infer "wired" from ideas.enabled alone.
+func (d *Daemon) HasIdeasPipeline() bool {
+	return d.ideasPipe != nil
 }
 
 // SetMemoryPipeline sets the memory consolidation pipeline (internal/memory).
@@ -253,6 +264,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastPeople()
 	d.loadLastBriefing()
 	d.loadLastIdeas()
+	d.loadLastStreams()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -334,6 +346,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.autoMarkRead()
 
 	d.phaseInbox(ctx)
+	d.phaseStreamDigests(ctx)
 	d.phaseIdeas(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
@@ -850,9 +863,13 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	defer release()
 
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
-		// The pipeline instance outlives this cycle, so its drop counters are
-		// lifetime totals — log this run's delta, not the running sum.
+		// The pipeline instance outlives this cycle — and is shared with
+		// phaseStreamDigests — so both its drop counters and its usage
+		// counters are lifetime totals across BOTH phases: log/report this
+		// run's delta, never the running sum, or phaseStreamDigests' stage-1
+		// tokens double-count into this phase's reported usage too.
 		dropped0, rejected0 := d.ideasPipe.AccumulatedDrops()
+		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
 		proposed, err := d.ideasPipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("ideas error: %v", err)
@@ -871,7 +888,69 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		d.lastIdeas = now
 		d.saveLastIdeas()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
-		return pipelineRunStats{items: proposed, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
+		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+	})
+}
+
+// streamsLockSkipLogThrottle is the ideasLockSkipLogThrottle precedent
+// applied to phaseStreamDigests' own lock-skip log line.
+const streamsLockSkipLogThrottle = 10 * time.Minute
+
+// phaseStreamDigests runs the ideas registry's stage-1 Gmail/Jira stream
+// pre-digests (ideas.Pipeline.RunStreamDigests) on its own schedule and gate
+// (streams.enabled), independent of the stage-2 consolidator's phaseIdeas —
+// the stream digests feed the Desktop Digests tab on their own. Runs right
+// before phaseIdeas so both stages see the freshest inbox/digest state, and
+// shares the same ideas.Pipeline instance (and its AI-usage accumulation)
+// since both stages belong to the same package. Throttled to once per
+// streams.interval_hours (default DefaultStreamsIntervalHours when
+// unset/non-positive), and takes the same cross-process backfill lock
+// phaseIdeas does — the two never interleave consumption of the same
+// account floors — with the same log-throttle-not-skip-throttle shape (GB7).
+func (d *Daemon) phaseStreamDigests(ctx context.Context) {
+	if d.ideasPipe == nil {
+		return
+	}
+	if !d.config.Streams.Enabled {
+		return
+	}
+	interval := time.Duration(d.config.Streams.IntervalHours) * time.Hour
+	if d.config.Streams.IntervalHours <= 0 {
+		interval = time.Duration(config.DefaultStreamsIntervalHours) * time.Hour
+	}
+	now := time.Now()
+	if !d.lastStreams.IsZero() && now.Sub(d.lastStreams) < interval {
+		return
+	}
+
+	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon")
+	if err != nil {
+		if d.lastStreamsLockSkip.IsZero() || now.Sub(d.lastStreamsLockSkip) >= streamsLockSkipLogThrottle {
+			d.logger.Printf("stream-digests: skipping cycle — %v", err)
+			d.lastStreamsLockSkip = now
+		}
+		return
+	}
+	defer release()
+
+	d.trackedPipelineRun("stream-digests", func() pipelineRunStats {
+		// The pipeline instance is shared with phaseIdeas, so AccumulatedUsage
+		// is a lifetime total across BOTH phases — snapshot before the run and
+		// report only this phase's own delta (the phaseIdeas precedent),
+		// otherwise phaseIdeas' stage-2 tokens (from an earlier or later cycle
+		// sharing the same instance) would double-count into this phase too.
+		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
+		err := d.ideasPipe.RunStreamDigests(ctx)
+		if err != nil {
+			d.logger.Printf("stream-digests error: %v", err)
+		}
+		// The throttle advances whenever the phase RAN, error or not — the
+		// lastIdeas precedent: unconsumed material simply waits for the next
+		// cycle rather than retrying immediately at repeated AI cost.
+		d.lastStreams = now
+		d.saveLastStreams()
+		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
+		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})
 }
 
@@ -1079,6 +1158,30 @@ func (d *Daemon) saveLastIdeas() {
 	data := strconv.FormatInt(d.lastIdeas.Unix(), 10)
 	if err := os.WriteFile(d.lastIdeasPath(), []byte(data), 0o600); err != nil {
 		d.logger.Printf("failed to save last ideas time: %v", err)
+	}
+}
+
+func (d *Daemon) lastStreamsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_streams.txt")
+}
+
+func (d *Daemon) loadLastStreams() {
+	data, err := os.ReadFile(d.lastStreamsPath())
+	if err != nil {
+		return
+	}
+	unix, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return
+	}
+	d.lastStreams = time.Unix(unix, 0)
+	d.logger.Printf("restored last streams time: %s", d.lastStreams.Format(time.RFC3339))
+}
+
+func (d *Daemon) saveLastStreams() {
+	data := strconv.FormatInt(d.lastStreams.Unix(), 10)
+	if err := os.WriteFile(d.lastStreamsPath(), []byte(data), 0o600); err != nil {
+		d.logger.Printf("failed to save last streams time: %v", err)
 	}
 }
 

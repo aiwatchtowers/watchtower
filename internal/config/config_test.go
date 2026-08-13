@@ -98,6 +98,15 @@ workspaces:
 	assert.Equal(t, "xoxp-from-env", cfg.Workspaces["test-ws"].SlackToken)
 }
 
+func TestLoad_StreamsDefaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, DefaultStreamsEnabled, cfg.Streams.Enabled)
+	assert.Equal(t, DefaultStreamsIntervalHours, cfg.Streams.IntervalHours)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",

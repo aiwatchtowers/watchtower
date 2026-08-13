@@ -92,8 +92,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
-    /// The keys the FORWARDED branches read (`type`, `digestId`) must stay in sync with
-    /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
+    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`) must stay in
+    /// sync with `NotificationForwarding.routedKeys`, the allowlist of what crosses the
+    /// boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
     /// those keys are absent by design from the forwarded payload and must stay so.
     /// `openURL` is an injectable seam threaded through to the meeting handler (the
@@ -108,8 +109,10 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     ) async {
         switch userInfo["type"] as? String {
         case "decision":
-            if let digestID = userInfo["digestId"] as? Int {
-                appState?.navigateToDigest(digestID)
+            // Decisions are ledger-sourced (see DigestWatcher) — the push
+            // carries an ideaId, not a digestId.
+            if let ideaID = userInfo["ideaId"] as? Int {
+                appState?.navigateToDecision(ideaID)
             } else {
                 appState?.selectedDestination = .digests
             }

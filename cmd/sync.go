@@ -502,6 +502,14 @@ func recordSlackWireError(database *db.DB, logger *log.Logger, accountID int64, 
 	}
 }
 
+// jiraCommentSyncEnabled reports whether wireJiraSyncers should turn on
+// bounded Jira comment sync — gated on streams.enabled now that the stream
+// digests (internal/ideas stage 1), not the ideas registry consolidator
+// (stage 2), own the comment feed.
+func jiraCommentSyncEnabled(cfg *config.Config) bool {
+	return cfg.Streams.Enabled
+}
+
 // wireJiraSyncers wires one Jira syncer per connected, enabled jira_accounts
 // row whose token file exists. A broken account records its own auth-state
 // error rather than aborting the wiring step for the others — the
@@ -545,9 +553,12 @@ func wireJiraSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logg
 		}
 		syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
 		syncer.SetLogger(logger)
-		// Bounded comment sync feeds the Ideas registry's Jira pre-digest; it
-		// stays off (0 = disabled) unless the registry itself is on.
-		if cfg.Ideas.Enabled {
+		// Bounded comment sync feeds the stream digests' Jira pre-digest
+		// (internal/ideas stage 1); it stays off (0 = disabled) unless the
+		// stream digests phase itself is on — decoupled from ideas.enabled
+		// since the registry consolidator (stage 2) no longer owns the
+		// comment feed.
+		if jiraCommentSyncEnabled(cfg) {
 			syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
 		}
 		// Wire board analyzer for auto-refresh of changed configs.

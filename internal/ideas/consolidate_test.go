@@ -186,6 +186,37 @@ func TestConsolidate_NewIdea_ValidRef(t *testing.T) {
 	assert.Zero(t, tFloor)
 }
 
+// TestConsolidate_NewDecision_BornActive covers the decisions-split
+// behavior: a new_decision op is a journal entry for something that already
+// happened, so it lands directly at status 'active' — unlike a new_idea op
+// in the same pass, which still lands in the 'proposed' triage queue.
+func TestConsolidate_NewDecision_BornActive(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "we should try X", By: "Ann", MessageTS: "123.45"}},
+		[]digest.Decision{{Text: "we picked X", By: "Bob", MessageTS: "678.9", Importance: "high"}})
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[
+			{"op":"new_idea","title":"Idea title","essence":"a new vendor idea",
+				"mentions":[{"source":"slack","ref":"C1|123.45","quote":"we should try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]},
+			{"op":"new_decision","title":"Decision title","essence":"picked X",
+				"mentions":[{"source":"slack","ref":"C1|678.9","quote":"we picked X","author":"Bob","said_at":"2026-08-01T00:00:00Z"}]}
+		]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background(), time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, proposed)
+
+	var st string
+	require.NoError(t, d.QueryRow(`SELECT status FROM ideas WHERE kind='decision' AND title=?`, "Decision title").Scan(&st))
+	assert.Equal(t, "active", st)
+	require.NoError(t, d.QueryRow(`SELECT status FROM ideas WHERE kind='idea' AND title=?`, "Idea title").Scan(&st))
+	assert.Equal(t, "proposed", st)
+}
+
 // TestIdeas02_InventedRefPartiallyDropped covers case 2 (partial): a
 // new_idea op with two mentions, one real and one invented, keeps only the
 // real one — the idea is still created.

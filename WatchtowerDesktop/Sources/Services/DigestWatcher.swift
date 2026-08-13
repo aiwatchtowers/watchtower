@@ -2,31 +2,42 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
+/// The two notification calls `DigestWatcher.poll()` depends on, pulled out
+/// as a protocol so tests can inject a spy instead of exercising the real
+/// `UNUserNotificationCenter` — which requires a proper app bundle and
+/// crashes when it's missing one, e.g. under `swift test`.
+protocol DigestWatcherNotifying {
+    func sendDecisionNotification(ideaID: Int, title: String)
+    func sendBriefingNotification(attentionCount: Int)
+}
+
+extension NotificationService: DigestWatcherNotifying {}
+
 @MainActor
 @Observable
 final class DigestWatcher {
     private var watchTask: Task<Void, Never>?
     private let dbPool: DatabasePool
-    private let notificationService: NotificationService
-    private var lastCheckedDigestID: Int
+    private let notificationService: DigestWatcherNotifying
+    private var lastCheckedDecisionID: Int
     private var lastCheckedBriefingID: Int
 
-    init(dbPool: DatabasePool, notificationService: NotificationService = .shared) {
+    init(dbPool: DatabasePool, notificationService: DigestWatcherNotifying = NotificationService.shared) {
         self.dbPool = dbPool
         self.notificationService = notificationService
-        self.lastCheckedDigestID = UserDefaults.standard.integer(forKey: "lastCheckedDigestID")
+        self.lastCheckedDecisionID = UserDefaults.standard.integer(forKey: "lastCheckedDecisionID")
         self.lastCheckedBriefingID = UserDefaults.standard.integer(forKey: "lastCheckedBriefingID")
     }
 
     func start() {
-        // Initialize lastCheckedDigestID if first run
-        if lastCheckedDigestID == 0 {
+        // Initialize lastCheckedDecisionID if first run
+        if lastCheckedDecisionID == 0 {
             do {
                 let maxID = try dbPool.read { db in
-                    try DigestQueries.maxID(db)
+                    try IdeaQueries.maxDecisionID(db)
                 }
-                lastCheckedDigestID = maxID
-                UserDefaults.standard.set(maxID, forKey: "lastCheckedDigestID")
+                lastCheckedDecisionID = maxID
+                UserDefaults.standard.set(maxID, forKey: "lastCheckedDecisionID")
             } catch {
                 // Will start from 0
             }
@@ -57,7 +68,7 @@ final class DigestWatcher {
         watchTask = nil
     }
 
-    private func poll() {
+    func poll() {
         let notifyDecisions = UserDefaults.standard.bool(forKey: "notifyDecisions")
         // notifyDecisions defaults to true — AppStorage default is true, but UserDefaults returns false
         // if the key was never set. Check if key exists; if not, treat as enabled.
@@ -67,32 +78,24 @@ final class DigestWatcher {
         guard !quietHours else { return }
 
         do {
-            let newDigests = try dbPool.read { db in
-                try DigestQueries.fetchNewSince(db, afterID: lastCheckedDigestID)
+            let newDecisions = try dbPool.read { db in
+                try IdeaQueries.fetchNewDecisionsSince(db, afterID: lastCheckedDecisionID)
             }
 
             var notificationCount = 0
-            for digest in newDigests {
-                if decisionsEnabled {
-                    let channelName = resolveChannelName(for: digest)
-                    for decision in digest.parsedDecisions {
-                        guard notificationCount < 5 else { break }
-                        notificationService.sendDecisionNotification(
-                            decision: decision,
-                            channelName: channelName,
-                            digestID: digest.id
-                        )
-                        notificationCount += 1
-                    }
+            for idea in newDecisions {
+                if decisionsEnabled && notificationCount < 5 {
+                    notificationService.sendDecisionNotification(ideaID: idea.id, title: idea.title)
+                    notificationCount += 1
                 }
-                lastCheckedDigestID = digest.id
+                lastCheckedDecisionID = idea.id
             }
 
-            if lastCheckedDigestID > 0 {
-                UserDefaults.standard.set(lastCheckedDigestID, forKey: "lastCheckedDigestID")
+            if lastCheckedDecisionID > 0 {
+                UserDefaults.standard.set(lastCheckedDecisionID, forKey: "lastCheckedDecisionID")
             }
         } catch {
-            print("[DigestWatcher] poll error: \(error.localizedDescription)")
+            print("[DigestWatcher] decision poll error: \(error.localizedDescription)")
         }
 
         // Poll for new briefings
@@ -111,28 +114,6 @@ final class DigestWatcher {
             }
         } catch {
             print("[DigestWatcher] briefing poll error: \(error.localizedDescription)")
-        }
-    }
-
-    nonisolated private func resolveChannelName(for digest: Digest) -> String {
-        guard !digest.channelID.isEmpty else { return "cross-channel" }
-        do {
-            return try dbPool.read { db in
-                guard let ch = try ChannelQueries.fetchByID(db, id: digest.channelID) else {
-                    return digest.channelID
-                }
-                if ch.type == "dm" || ch.type == "im" {
-                    let uid = ch.dmUserID ?? (ch.name.hasPrefix("U") ? ch.name : nil)
-                    if let uid,
-                       let user = try UserQueries.fetchByID(db, id: uid) {
-                        let displayName = user.displayName.isEmpty ? user.name : user.displayName
-                        return "DM: \(displayName)"
-                    }
-                }
-                return ch.name
-            }
-        } catch {
-            return digest.channelID
         }
     }
 }

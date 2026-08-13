@@ -71,15 +71,23 @@ func validateEnumFlag(flag, value string, allowed []string) error {
 }
 
 // wireIdeasPipeline attaches the ideas registry phase to the daemon when
-// enabled (the wireMemoryPipeline precedent — it also keeps runSync under the
+// needed (the wireMemoryPipeline precedent — it also keeps runSync under the
 // cyclomatic-complexity gate).
 func wireIdeasPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) {
-	if !cfg.Ideas.Enabled {
+	if !ideasPipelineNeeded(cfg) {
 		return
 	}
 	ideasPipe := ideas.New(database, cfg, gen, logger)
 	ideasPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetIdeasPipeline(ideasPipe)
+}
+
+// ideasPipelineNeeded reports whether an ideas.Pipeline must be wired onto
+// the daemon at all: either the registry's stage-2 consolidator
+// (ideas.enabled) or the stage-1 stream digests (streams.enabled, now its
+// own independently-throttled daemon phase — phaseStreamDigests) needs one.
+func ideasPipelineNeeded(cfg *config.Config) bool {
+	return cfg.Ideas.Enabled || cfg.Streams.Enabled
 }
 
 // ideasConfigAndDB loads the config (with the usual workspace/provider flag
@@ -141,7 +149,20 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 
 	fromStr, _ := cmd.Flags().GetString("from")
 
-	if !cfg.Ideas.Enabled {
+	// The two `ideas mine` paths gate differently: --from backfill is
+	// stage-2-only (runIdeasBackfill has no stage-1 concept at all), so it
+	// stays gated on cfg.Ideas.Enabled alone. The flagless path covers both
+	// stages (runIdeasMineIncremental runs stage-1 stream digests before the
+	// stage-2 consolidator), so it only has nothing to do when BOTH stages
+	// are off — a streams-only config (ideas.enabled=false,
+	// streams.enabled=true, which is also the default) must still reach
+	// runIdeasMineIncremental so stage 1 runs; see ideasPipelineNeeded's own
+	// OR for the same split.
+	if fromStr != "" {
+		if !cfg.Ideas.Enabled {
+			return reportIdeasDisabled(cmd, fromStr, out)
+		}
+	} else if !cfg.Ideas.Enabled && !cfg.Streams.Enabled {
 		return reportIdeasDisabled(cmd, fromStr, out)
 	}
 
@@ -167,7 +188,7 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 
 	if fromStr == "" {
-		return runIdeasMineIncremental(ctx, pipe, out)
+		return runIdeasMineIncremental(ctx, cfg, pipe, out, logger)
 	}
 	return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
 }
@@ -180,13 +201,18 @@ type ideasDisabledEnvelope struct {
 	Disabled bool `json:"disabled"`
 }
 
-// reportIdeasDisabled handles cfg.Ideas.Enabled=false for both `ideas mine`
-// paths (GB9), exiting 0 either way: the backfill path (--from set) is
-// machine-driven, so it emits {"disabled":true} on stdout — the ONLY line
-// on stdout, matching runIdeasBackfill's own envelope-is-the-only-stdout-line
-// contract — plus a human-readable line on stderr for a terminal watcher.
-// The flagless incremental path has no machine reader and keeps its
-// existing prose line on stdout.
+// reportIdeasDisabled reports "nothing to do" for `ideas mine` (GB9),
+// exiting 0 either way. Callers gate differently per path (see runIdeasMine):
+// the backfill path (--from set) is stage-2-only and calls this whenever
+// cfg.Ideas.Enabled is false, regardless of streams; the flagless path calls
+// this only when BOTH cfg.Ideas.Enabled and cfg.Streams.Enabled are false,
+// since a streams-only config still has stage-1 work to do via
+// runIdeasMineIncremental. The backfill path is machine-driven, so it emits
+// {"disabled":true} on stdout — the ONLY line on stdout, matching
+// runIdeasBackfill's own envelope-is-the-only-stdout-line contract — plus a
+// human-readable line on stderr for a terminal watcher. The flagless
+// incremental path has no machine reader and keeps its existing prose line
+// on stdout.
 func reportIdeasDisabled(cmd *cobra.Command, fromStr string, out io.Writer) error {
 	const humanLine = "Ideas registry is disabled (ideas.enabled = false in config); nothing to do."
 	if fromStr == "" {
@@ -203,8 +229,30 @@ func reportIdeasDisabled(cmd *cobra.Command, fromStr string, out io.Writer) erro
 }
 
 // runIdeasMineIncremental is flagless `ideas mine`'s body: one ordinary
-// (unbounded) pipeline pass.
-func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.Writer) error {
+// (unbounded) pipeline pass. When cfg.Streams.Enabled, it first runs the
+// stage-1 Gmail/Jira pre-digests (pipe.RunStreamDigests) so a single `ideas
+// mine` invocation covers both stages, the way the daemon's phaseStreamDigests
+// + phaseIdeas pair does on their own schedules. RunStreamDigests is never
+// gated internally on cfg.Streams.Enabled — the caller must skip the call
+// outright when the flag is off, matching phaseStreamDigests' own gate.
+// A stream-digests error follows the daemon's log-and-continue precedent
+// (phaseStreamDigests in internal/daemon/daemon.go): per-account failures are
+// already logged by the pipeline itself, so this only logs the aggregate
+// error and falls through to the stage-2 consolidator pass rather than
+// aborting the whole command. This function is safe to call unconditionally
+// on cfg.Ideas.Enabled: pipe.Run internally short-circuits to (0, nil) when
+// the registry is off (see internal/ideas.Pipeline.Run), so a streams-only
+// caller (runIdeasMine's flagless path with ideas.enabled=false,
+// streams.enabled=true) still gets stage 1 with a safe no-op stage 2 — the
+// note appended below just makes that visible in the printed summary instead
+// of reading as an unexplained "proposed=0".
+func runIdeasMineIncremental(ctx context.Context, cfg *config.Config, pipe *ideas.Pipeline, out io.Writer, logger *log.Logger) error {
+	if cfg.Streams.Enabled {
+		if err := pipe.RunStreamDigests(ctx); err != nil {
+			logger.Printf("stream-digests error: %v", err)
+		}
+	}
+
 	proposed, err := pipe.Run(ctx)
 	if err != nil {
 		return fmt.Errorf("mining ideas: %w", err)
@@ -213,6 +261,9 @@ func runIdeasMineIncremental(ctx context.Context, pipe *ideas.Pipeline, out io.W
 	slackDropped, refsRejected := pipe.AccumulatedDrops()
 	fmt.Fprintf(out, "proposed=%d slack_refs_dropped=%d refs_rejected=%d (input tokens: %d, output tokens: %d, API calls: %d)\n",
 		proposed, slackDropped, refsRejected, inTok, outTok, totalAPI)
+	if !cfg.Ideas.Enabled {
+		fmt.Fprintln(out, "ideas registry disabled (ideas.enabled = false); consolidation skipped, ran stream digests only")
+	}
 	return nil
 }
 

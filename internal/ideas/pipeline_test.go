@@ -48,14 +48,52 @@ func TestRun_IdeasDisabled_ShortCircuits(t *testing.T) {
 	assert.Empty(t, digests)
 }
 
-// TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded covers Run's error
-// aggregation: all three stages must each get their turn — including the
-// consolidator, which now always runs regardless of a stage-1 failure (fix
-// round 1 Finding — Run must not starve consolidation of every source just
-// because one Jira account is broken) — and a jira-pass failure must surface
-// through Run's return value even though the email pass completed
-// successfully and its row landed (round-1 review Finding 2).
-func TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
+// TestRunStreamDigests_RunsEvenWhenIdeasDisabled covers the pipeline split:
+// RunStreamDigests is stage 1 only (Gmail + Jira pre-digests) and is
+// deliberately NOT gated on cfg.Ideas.Enabled — the stream digests feed the
+// Desktop Digests tab on their own, independent of whether the consolidator
+// is turned on.
+func TestRunStreamDigests_RunsEvenWhenIdeasDisabled(t *testing.T) {
+	d := newTestDB(t)
+
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+	iso1 := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "an idea about X", iso1)
+	emailTag := fmt.Sprintf("gmail:%d:thr-1", acctID)
+
+	jiraAcctID := seedJiraAccount(t, d)
+	jbase := time.Now().Add(-time.Hour)
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
+	jiraTag := "jira:WT-1"
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== PROJECT") {
+			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[{"text":"dec","author":"Ann","ref":%q}]}]}`, jiraTag), nil
+		}
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"idea","author":"Ann","ref":%q}],"decisions":[]}]}`, emailTag), nil
+	}}
+	cfg := testCfg()
+	cfg.Ideas.Enabled = false
+	p := New(d, cfg, gen, testLogger())
+
+	err := p.RunStreamDigests(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, gen.calls, "email and jira stage-1 passes must both run despite the registry being disabled")
+
+	digests, derr := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, derr)
+	require.Len(t, digests, 2)
+}
+
+// TestRunStreamDigests_JiraErrorSurfaces_EvenWhenEmailSucceeded covers
+// RunStreamDigests' own error handling (moved off Run by the pipeline
+// split): the jira pass's failure surfaces through RunStreamDigests' return
+// value even though the email pass ran first and completed successfully,
+// with its row landed.
+func TestRunStreamDigests_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
 	d := newTestDB(t)
 
 	// Email side: fully set up to succeed for real.
@@ -73,24 +111,19 @@ func TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
 	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
-		switch {
-		case strings.Contains(user, "=== PROJECT"):
+		if strings.Contains(user, "=== PROJECT") {
 			return "", fmt.Errorf("jira boom")
-		case strings.Contains(user, "=== NEW MATERIAL ==="):
-			return `{"ops":[]}`, nil // the consolidate call — nothing to propose in this test
-		default:
-			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"idea","author":"Ann","ref":%q}],"decisions":[]}]}`, emailTag), nil
 		}
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"idea","author":"Ann","ref":%q}],"decisions":[]}]}`, emailTag), nil
 	}}
 	cfg := testCfg()
 	cfg.Ideas.Enabled = true
 	p := New(d, cfg, gen, testLogger())
 
-	proposed, err := p.Run(context.Background())
+	err := p.RunStreamDigests(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jira boom")
-	assert.Zero(t, proposed)
-	assert.Equal(t, 3, gen.calls, "email, jira, and consolidate must all have made their Generate call")
+	assert.Equal(t, 2, gen.calls, "email must run before jira's failure surfaces")
 
 	// The email pass's success is not rolled back by the jira pass's failure.
 	digests, derr := d.ListStreamDigestsAfter(0, "")
@@ -99,13 +132,91 @@ func TestRun_JiraErrorSurfaces_EvenWhenEmailSucceeded(t *testing.T) {
 	assert.Equal(t, "gmail", digests[0].Source)
 }
 
-// TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial
-// covers the fix round 1 finding directly: a persistent Jira failure must
-// never starve consolidation of a DIFFERENT, healthy source's material — the
-// consolidator still runs this cycle and still consumes the gmail stream
-// digest that the (successful) email pass just produced, advancing only the
-// stream-digest floor (IDEA-01: each source's floor is honest on its own).
-func TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial(t *testing.T) {
+// TestRunStreamDigests_EmailErrorDoesNotBlockJira pins the "one source's
+// failure never blocks the other" principle carried over from the pre-split
+// Run: when the email pass fails, the jira pass still runs and its
+// (successful) row still lands — RunStreamDigests must not short-circuit
+// after the first failing stage-1 pass — and RunStreamDigests' return value
+// is still the email pass's error.
+func TestRunStreamDigests_EmailErrorDoesNotBlockJira(t *testing.T) {
+	d := newTestDB(t)
+
+	// Email side: set up to fail.
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+	iso1 := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "an idea about X", iso1)
+
+	// Jira side: fully set up to succeed for real.
+	jiraAcctID := seedJiraAccount(t, d)
+	jbase := time.Now().Add(-time.Hour)
+	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
+	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
+	jiraTag := "jira:WT-1"
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "=== PROJECT") {
+			return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[{"text":"dec","author":"Ann","ref":%q}]}]}`, jiraTag), nil
+		}
+		return "", fmt.Errorf("email boom")
+	}}
+	cfg := testCfg()
+	cfg.Ideas.Enabled = true
+	p := New(d, cfg, gen, testLogger())
+
+	err := p.RunStreamDigests(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "email boom")
+	assert.Equal(t, 2, gen.calls, "the email pass's failure must not skip the jira pass")
+
+	// The jira pass's success is not skipped by the email pass's failure.
+	digests, derr := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, derr)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "jira", digests[0].Source)
+}
+
+// TestRun_DoesNotInvokeStage1 covers the other half of the pipeline split:
+// Run no longer touches the Gmail/Jira stage-1 passes at all — only the
+// stage-2 consolidator. A generator that would fail loudly if a stage-1 pass
+// called it proves the point: with stage-1 material queued but no
+// consolidate-stage material (nothing in stream_digests/digest_topics/
+// transcripts yet, since stage 1 never ran), Run must succeed with the
+// generator never invoked.
+func TestRun_DoesNotInvokeStage1(t *testing.T) {
+	d := newTestDB(t)
+
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+	iso1 := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "an idea about X", iso1)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("Run must not invoke the stage-1 email/jira generator")
+		return "", nil
+	}}
+	cfg := testCfg()
+	cfg.Ideas.Enabled = true
+	p := New(d, cfg, gen, testLogger())
+
+	proposed, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+	assert.Zero(t, gen.calls)
+
+	digests, derr := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, derr)
+	assert.Empty(t, digests, "Run must not have produced any stage-1 rows")
+}
+
+// TestRunStreamDigestsThenRun_ConsolidatesStage1Material is the end-to-end
+// composition check for the split: a RunStreamDigests call (stage 1, its own
+// schedule) followed by a separate Run call (stage 2, gated on
+// cfg.Ideas.Enabled) still consolidates the material stage 1 produced — the
+// two entry points are decoupled but still feed the same registry.
+func TestRunStreamDigestsThenRun_ConsolidatesStage1Material(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
 
@@ -116,15 +227,8 @@ func TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial(t *
 	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "an idea about X", iso1)
 	emailTag := fmt.Sprintf("gmail:%d:thr-1", acctID)
 
-	jiraAcctID := seedJiraAccount(t, d)
-	jbase := time.Now().Add(-time.Hour)
-	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
-	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
-
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		switch {
-		case strings.Contains(user, "=== PROJECT"):
-			return "", fmt.Errorf("jira boom")
 		case strings.Contains(user, "=== NEW MATERIAL ==="):
 			return fmt.Sprintf(`{"ops":[{"op":"new_idea","title":"Idea from email","essence":"e",
 				"mentions":[{"source":"gmail","ref":%q,"quote":"idea","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, emailTag), nil
@@ -136,19 +240,16 @@ func TestRun_ConsolidateRunsDespiteStage1Error_ConsumesHealthySourceMaterial(t *
 	cfg.Ideas.Enabled = true
 	p := New(d, cfg, gen, testLogger())
 
-	proposed, err := p.Run(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "jira boom")
-	assert.Equal(t, 1, proposed, "consolidate must still run and consume the healthy email material")
-	assert.Equal(t, 3, gen.calls)
-
-	dFloor, sFloor, tFloor, ferr := d.GetIdeasFloors()
-	require.NoError(t, ferr)
-	assert.Zero(t, dFloor)
-	assert.Zero(t, tFloor)
-
+	require.NoError(t, p.RunStreamDigests(context.Background()))
 	digests, derr := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, derr)
 	require.Len(t, digests, 1)
-	assert.Equal(t, digests[0].ID, sFloor, "the stream-digest floor must advance past the healthy gmail material")
+
+	proposed, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed, "Run's consolidator must consume the material RunStreamDigests just produced")
+
+	_, sFloor, _, ferr := d.GetIdeasFloors()
+	require.NoError(t, ferr)
+	assert.Equal(t, digests[0].ID, sFloor, "the stream-digest floor must advance past the consolidated material")
 }

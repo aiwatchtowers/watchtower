@@ -25,6 +25,7 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let lastMentionAt: String // column: last_mention_at
     package let createdAt: String     // column: created_at
     package let updatedAt: String     // column: updated_at
+    package let seenAt: String?       // column: seen_at
 
     package enum Kind: String {
         case idea
@@ -79,5 +80,6 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
         lastMentionAt = row["last_mention_at"] ?? ""
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        seenAt = row["seen_at"] as String?
     }
 }

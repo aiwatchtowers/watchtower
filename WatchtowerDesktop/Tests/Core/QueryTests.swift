@@ -244,45 +244,6 @@ final class DigestQueryTests: XCTestCase {
         XCTAssertEqual(withDecisions[0].channelID, "C002")
     }
 
-    func testFetchNewSince() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                decisions: #"[{"text":"Old"}]"#
-            )
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C002",
-                periodFrom: 1700086400,
-                periodTo: 1700172800,
-                decisions: #"[{"text":"New"}]"#
-            )
-        }
-        let newer = try db.read { try DigestQueries.fetchNewSince($0, afterID: 1) }
-        XCTAssertEqual(newer.count, 1)
-        XCTAssertEqual(newer[0].channelID, "C002")
-    }
-
-    func testMaxID() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 1700000000, periodTo: 1700086400)
-            try TestDatabase.insertDigest(db, channelID: "C002", periodFrom: 1700000000, periodTo: 1700086400)
-            try TestDatabase.insertDigest(db, channelID: "C003", periodFrom: 1700000000, periodTo: 1700086400)
-        }
-        let maxID = try db.read { try DigestQueries.maxID($0) }
-        XCTAssertEqual(maxID, 3)
-    }
-
-    func testMaxIDEmpty() throws {
-        let db = try TestDatabase.create()
-        let maxID = try db.read { try DigestQueries.maxID($0) }
-        XCTAssertEqual(maxID, 0)
-    }
 }
 
 final class UserQueryTests: XCTestCase {

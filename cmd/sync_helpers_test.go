@@ -11,6 +11,33 @@ import (
 	"watchtower/internal/config"
 )
 
+// TestJiraCommentSyncEnabled pins wireJiraSyncers' comment-sync gate (Task
+// 6): bounded Jira comment sync now rides streams.enabled — the stream
+// digests own the comment feed, not the ideas registry consolidator —
+// so ideas.enabled alone must no longer turn it on or off.
+func TestJiraCommentSyncEnabled(t *testing.T) {
+	tests := []struct {
+		name           string
+		ideasEnabled   bool
+		streamsEnabled bool
+		want           bool
+	}{
+		{"streams enabled, ideas disabled", false, true, true},
+		{"both enabled", true, true, true},
+		{"both disabled", false, false, false},
+		{"only ideas enabled is no longer sufficient", true, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Ideas:   config.IdeasConfig{Enabled: tt.ideasEnabled},
+				Streams: config.StreamsConfig{Enabled: tt.streamsEnabled},
+			}
+			assert.Equal(t, tt.want, jiraCommentSyncEnabled(cfg))
+		})
+	}
+}
+
 func TestPidFilePath(t *testing.T) {
 	cfg := &config.Config{ActiveWorkspace: "test"}
 	t.Setenv("HOME", "/tmp/test-home")

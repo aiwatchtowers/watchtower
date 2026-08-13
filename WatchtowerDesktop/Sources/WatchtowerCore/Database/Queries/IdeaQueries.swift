@@ -12,6 +12,10 @@ package enum IdeaQueries {
     /// mirroring `Idea.isForReview` in SQL. Filtering those out in Swift after
     /// the fact silently shrinks the page: with the limit spent on review items
     /// the registry list comes back short, and worse as the queue grows.
+    ///
+    /// The Ideas tab never shows decisions — with no explicit `kind`, decisions
+    /// are excluded; the Decisions ledger passes `kind: "decision"` explicitly
+    /// to see them.
     package static func fetchList(
         _ db: Database,
         kind: String?,
@@ -30,6 +34,8 @@ package enum IdeaQueries {
         if let kind {
             conditions.append("kind = ?")
             args.append(kind)
+        } else {
+            conditions.append("kind != 'decision'")
         }
 
         if let status {
@@ -60,10 +66,12 @@ package enum IdeaQueries {
     }
 
     /// Ideas awaiting owner review: freshly proposed, or explicitly flagged.
+    /// Decisions are born 'active' and never enter this queue — mirrors the Go
+    /// side's `CountIdeasForReview`, which this is the dual path of.
     package static func fetchForReview(_ db: Database) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
             SELECT * FROM ideas
-            WHERE status = 'proposed' OR needs_review = 1
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
             ORDER BY updated_at DESC
             """)
     }
@@ -86,8 +94,99 @@ package enum IdeaQueries {
 
     package static func countForReview(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM ideas WHERE status = 'proposed' OR needs_review = 1
+            SELECT COUNT(*) FROM ideas
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
             """) ?? 0
+    }
+
+    // MARK: - Decisions Ledger
+
+    /// The full decisions ledger, most-recently-mentioned first (falling back
+    /// to `updated_at` for a decision with no mention yet, e.g. hand-written
+    /// via `createManual`).
+    package static func fetchDecisionLedger(_ db: Database, limit: Int = 200) throws -> [Idea] {
+        try Idea.fetchAll(db, sql: """
+            SELECT * FROM ideas WHERE kind = 'decision'
+            ORDER BY COALESCE(NULLIF(last_mention_at, ''), updated_at) DESC
+            LIMIT ?
+            """, arguments: [limit])
+    }
+
+    /// Stamps a single decision as seen by the owner. Seeing IS the owner
+    /// looking at it, so this also clears any pending review flag (IDEA-04) —
+    /// the same contract `setStatus`/`snooze`/`merge`/`supersede`/
+    /// `markConverted` uphold via `clearReviewFlag`.
+    package static func markDecisionSeen(_ db: Database, id: Int) throws {
+        try db.execute(
+            sql: """
+                UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \(clearReviewFlag)
+                WHERE id = ?
+                """,
+            arguments: [id]
+        )
+    }
+
+    /// Stamps every decision the owner hasn't caught up on as seen, leaving an
+    /// already-seen-and-not-re-flagged row's `seen_at` untouched. Matches
+    /// `unreadDecisionCount`'s predicate exactly: never seen, or seen but
+    /// re-flagged since — a "mark all seen" that skipped re-flagged rows would
+    /// leave them stuck showing unread with no way to clear them in bulk.
+    /// Also clears any pending review flag on the rows it touches (IDEA-04) —
+    /// see `markDecisionSeen`.
+    package static func markAllDecisionsSeen(_ db: Database) throws {
+        try db.execute(sql: """
+            UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \(clearReviewFlag)
+            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1)
+            """)
+    }
+
+    /// Decisions still needing the owner's attention: never seen, or seen but
+    /// re-flagged since (a later mention resurfaced it) — seeing a decision
+    /// once doesn't excuse a fresh flag.
+    package static func unreadDecisionCount(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM ideas
+            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1)
+            """) ?? 0
+    }
+
+    /// Ledger decisions newer than a notification watermark, oldest first —
+    /// the `DigestQueries.fetchNewSince` precedent, now over `ideas` instead
+    /// of `digests`: `DigestWatcher`'s decision-notification source, since
+    /// decisions are mined cross-source (Slack, Gmail, Jira, meetings) and
+    /// no longer tied to a single digest.
+    package static func fetchNewDecisionsSince(_ db: Database, afterID: Int) throws -> [Idea] {
+        try Idea.fetchAll(db, sql: """
+            SELECT * FROM ideas WHERE kind = 'decision' AND id > ?
+            ORDER BY id ASC
+            """, arguments: [afterID])
+    }
+
+    package static func maxDecisionID(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT MAX(id) FROM ideas WHERE kind = 'decision'") ?? 0
+    }
+
+    /// Distinct mention sources per idea, for the decisions ledger row's
+    /// compact source glyphs (spec B3: "title, source glyphs from mentions,
+    /// relative time, unread dot"). One row per idea via `GROUP_CONCAT
+    /// (DISTINCT source)` — cheap for the ledger's ≤200-row cap, avoids
+    /// fetching every mention just to read its `source` column.
+    package static func mentionSourcesByIdea(_ db: Database, ids: [Int]) throws -> [Int: [String]] {
+        guard !ids.isEmpty else { return [:] }
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT idea_id, GROUP_CONCAT(DISTINCT source) AS sources
+            FROM idea_mentions
+            WHERE idea_id IN (\(placeholders))
+            GROUP BY idea_id
+            """, arguments: StatementArguments(ids))
+        var result: [Int: [String]] = [:]
+        for row in rows {
+            let ideaID: Int = row["idea_id"]
+            let sourcesRaw: String = row["sources"] ?? ""
+            result[ideaID] = sourcesRaw.isEmpty ? [] : sourcesRaw.split(separator: ",").map(String.init)
+        }
+        return result
     }
 
     // MARK: - Status Updates

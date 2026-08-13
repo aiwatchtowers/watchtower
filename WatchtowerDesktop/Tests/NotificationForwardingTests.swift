@@ -89,6 +89,24 @@ final class NotificationForwardingTests: XCTestCase {
         XCTAssertNil(decoded?.userInfo["digestId"])
     }
 
+    /// `ideaId` round-trips the same way `digestId` does — the decision push's routed
+    /// key, since decisions are ledger-sourced (see DigestWatcher).
+    func testIdeaIDRoundTripsAsInt() {
+        let decoded = roundTrip(actionID: "a", userInfo: ["type": "decision", "ideaId": 4242])
+
+        XCTAssertEqual(decoded?.payload["ideaId"], "4242")
+        XCTAssertEqual(decoded?.userInfo["ideaId"] as? Int, 4242)
+    }
+
+    /// An unparseable `ideaId` is dropped rather than handed on as text under an Int
+    /// key — the `digestId` precedent.
+    func testUnparseableIdeaIDIsDroppedFromRoutingUserInfo() {
+        let decoded = roundTrip(actionID: "a", userInfo: ["type": "decision", "ideaId": "not-a-number"])
+
+        XCTAssertEqual(decoded?.payload["ideaId"], "not-a-number")
+        XCTAssertNil(decoded?.userInfo["ideaId"])
+    }
+
     /// Anything that is not our JSON on the wire decodes to nil — never a crash,
     /// never a half-built response.
     func testDecodeRejectsGarbage() {

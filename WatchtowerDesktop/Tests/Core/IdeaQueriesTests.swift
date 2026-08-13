@@ -22,6 +22,33 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(ideas.map(\.title), ["A decision"])
     }
 
+    /// The Ideas tab never shows decisions — with no explicit `kind`, the
+    /// ledger's rows are excluded; only an explicit `kind: "decision"` sees them.
+    func testFetchListWithNoKindExcludesDecisions() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "An idea")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "A decision")
+            try TestDatabase.insertIdea(db, kind: "note", title: "A note")
+        }
+
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+
+        XCTAssertEqual(Set(ideas.map(\.title)), ["An idea", "A note"])
+    }
+
+    func testFetchListWithExplicitDecisionKindReturnsDecisions() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "An idea")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "A decision")
+        }
+
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: "decision", status: nil, query: nil, limit: 10) }
+
+        XCTAssertEqual(ideas.map(\.title), ["A decision"])
+    }
+
     func testFetchListFiltersByStatus() throws {
         let db = try TestDatabase.create()
         try db.write { db in
@@ -113,6 +140,33 @@ final class IdeaQueriesTests: XCTestCase {
         let count = try db.read { try IdeaQueries.countForReview($0) }
 
         XCTAssertEqual(count, 2)
+    }
+
+    /// Decisions are born 'active' and never enter the review queue — mirrors
+    /// the Go side's `CountIdeasForReview`, which this is the dual path of.
+    func testFetchForReviewExcludesDecisionsEvenWhenFlagged() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "Proposed idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Flagged decision",
+                                        status: "active", needsReview: true)
+        }
+
+        let ideas = try db.read { try IdeaQueries.fetchForReview($0) }
+
+        XCTAssertEqual(ideas.map(\.title), ["Proposed idea"])
+    }
+
+    func testCountForReviewExcludesDecisionsEvenWhenFlagged() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "decision", status: "active", needsReview: true)
+        }
+
+        let count = try db.read { try IdeaQueries.countForReview($0) }
+
+        XCTAssertEqual(count, 1)
     }
 
     // MARK: - fetchOne / fetchMentions
@@ -347,14 +401,23 @@ final class IdeaQueriesTests: XCTestCase {
     // MARK: - IDEA-04 clearability
 
     /// Every owner action has to clear `needs_review`, not just `setStatus`.
-    /// A resurfaced idea the owner acts on via snooze/merge/supersede/convert
-    /// would otherwise stay in the "For review" list forever.
+    /// A resurfaced idea the owner acts on via snooze/merge/supersede/convert/
+    /// markDecisionSeen/markAllDecisionsSeen would otherwise stay in the
+    /// "For review" list (or, for decisions, the unread ledger) forever.
     func testIdeas04_EveryOwnerActionClearsNeedsReview() throws {
         let db = try TestDatabase.create()
 
         func flaggedIdea() throws -> Int {
             let id = try db.write { db in
                 try TestDatabase.insertIdea(db, status: "rejected", needsReview: true, reviewReason: "brought up again")
+            }
+            return Int(id)
+        }
+
+        func flaggedDecision() throws -> Int {
+            let id = try db.write { db in
+                try TestDatabase.insertIdea(
+                    db, kind: "decision", status: "active", needsReview: true, reviewReason: "brought up again")
             }
             return Int(id)
         }
@@ -372,8 +435,15 @@ final class IdeaQueriesTests: XCTestCase {
         let converted = try flaggedIdea()
         try db.write { try IdeaQueries.markConverted($0, id: converted, targetID: 7) }
 
+        let decisionSeen = try flaggedDecision()
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: decisionSeen) }
+
+        let allDecisionsSeen = try flaggedDecision()
+        try db.write { try IdeaQueries.markAllDecisionsSeen($0) }
+
         for (label, id) in [("snooze", snoozed), ("merge", merged),
-                            ("supersede", superseded), ("markConverted", converted)] {
+                            ("supersede", superseded), ("markConverted", converted),
+                            ("markDecisionSeen", decisionSeen), ("markAllDecisionsSeen", allDecisionsSeen)] {
             let idea = try db.read { try IdeaQueries.fetchOne($0, id: id) }
             XCTAssertEqual(idea?.needsReview, false, "\(label) must clear needs_review")
             XCTAssertEqual(idea?.reviewReason, "", "\(label) must clear review_reason")
@@ -396,6 +466,184 @@ final class IdeaQueriesTests: XCTestCase {
         let mentions = try db.read { try IdeaQueries.fetchMentions($0, ideaID: Int(ideaID)) }
         XCTAssertEqual(mentions.first?.saidAt, idea?.lastMentionAt,
                        "the owner mention's said_at is what last_mention_at reflects")
+    }
+
+    // MARK: - fetchDecisionLedger
+
+    func testFetchDecisionLedgerOnlyReturnsDecisions() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "An idea")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "A decision")
+            try TestDatabase.insertIdea(db, kind: "note", title: "A note")
+        }
+
+        let ledger = try db.read { try IdeaQueries.fetchDecisionLedger($0) }
+
+        XCTAssertEqual(ledger.map(\.title), ["A decision"])
+    }
+
+    /// Ordered by `last_mention_at`, falling back to `updated_at` when a
+    /// decision has no mention timestamp (e.g. hand-written via `createManual`
+    /// before any mention lands).
+    func testFetchDecisionLedgerOrdersByLastMentionAtFallingBackToUpdatedAt() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(
+                db, kind: "decision", title: "Old mention",
+                lastMentionAt: "2026-04-27T00:00:00Z", updatedAt: "2026-04-29T00:00:00Z")
+            try TestDatabase.insertIdea(
+                db, kind: "decision", title: "Recent mention",
+                lastMentionAt: "2026-04-28T00:00:00Z", updatedAt: "2026-04-27T00:00:00Z")
+            try TestDatabase.insertIdea(
+                db, kind: "decision", title: "No mention, recently updated",
+                lastMentionAt: "", updatedAt: "2026-04-30T00:00:00Z")
+        }
+
+        let ledger = try db.read { try IdeaQueries.fetchDecisionLedger($0) }
+
+        XCTAssertEqual(ledger.map(\.title),
+                       ["No mention, recently updated", "Recent mention", "Old mention"])
+    }
+
+    func testFetchDecisionLedgerRespectsLimit() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "A")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "B")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "C")
+        }
+
+        let ledger = try db.read { try IdeaQueries.fetchDecisionLedger($0, limit: 2) }
+
+        XCTAssertEqual(ledger.count, 2)
+    }
+
+    // MARK: - markDecisionSeen / markAllDecisionsSeen / unreadDecisionCount
+
+    func testMarkDecisionSeenStampsSeenAt() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: Int(ideaID)) }
+
+        let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        XCTAssertNotNil(idea?.seenAt)
+        XCTAssertFalse(idea?.seenAt?.isEmpty ?? true)
+    }
+
+    /// A decision otherwise seen but re-flagged (`needs_review = 1`, e.g. a
+    /// later mention resurfaced it) still counts as unread — seeing it once
+    /// doesn't excuse the owner from a fresh flag.
+    func testUnreadDecisionCountCountsUnseenAndReflagged() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Never seen")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Seen, settled",
+                                        seenAt: "2026-04-27T00:00:00Z")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Seen, but reflagged",
+                                        needsReview: true, seenAt: "2026-04-27T00:00:00Z")
+            try TestDatabase.insertIdea(db, kind: "idea", title: "Not a decision at all")
+        }
+
+        let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
+
+        XCTAssertEqual(count, 2)
+    }
+
+    func testMarkDecisionSeenClearsUnreadCountForThatDecision() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: Int(ideaID)) }
+
+        let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
+        XCTAssertEqual(count, 0)
+    }
+
+    func testMarkAllDecisionsSeenOnlyTouchesUnseenDecisions() throws {
+        let db = try TestDatabase.create()
+        let (untouched, ideaAmongDecisions) = try db.write { db -> (Int64, Int64) in
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Unseen one")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Unseen two")
+            let untouched = try TestDatabase.insertIdea(
+                db, kind: "decision", title: "Already seen", seenAt: "2026-04-27T00:00:00Z")
+            let ideaAmongDecisions = try TestDatabase.insertIdea(db, kind: "idea", title: "An idea, not a decision")
+            return (untouched, ideaAmongDecisions)
+        }
+
+        try db.write { try IdeaQueries.markAllDecisionsSeen($0) }
+
+        let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
+        XCTAssertEqual(count, 0)
+
+        let previouslySeen = try db.read { try IdeaQueries.fetchOne($0, id: Int(untouched)) }
+        XCTAssertEqual(previouslySeen?.seenAt, "2026-04-27T00:00:00Z",
+                       "an already-seen decision's seen_at must not be overwritten")
+
+        let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaAmongDecisions)) }
+        XCTAssertNil(idea?.seenAt, "a non-decision idea must be left untouched")
+    }
+
+    /// A decision seen once, then re-flagged by a later mention, is exactly
+    /// what `unreadDecisionCount`'s `seen_at IS NULL OR needs_review = 1`
+    /// predicate calls unread — `markAllDecisionsSeen` must catch it too, not
+    /// just rows that were never seen at all, or a re-flagged decision has no
+    /// bulk way to clear (IDEA-04).
+    func testMarkAllDecisionsSeenClearsReflaggedDecision() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: Int(ideaID)) }
+        try db.write {
+            try $0.execute(
+                sql: "UPDATE ideas SET needs_review = 1, review_reason = 'resurfaced' WHERE id = ?",
+                arguments: [ideaID])
+        }
+
+        try db.write { try IdeaQueries.markAllDecisionsSeen($0) }
+
+        let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        XCTAssertEqual(idea?.needsReview, false, "the re-flag must be cleared")
+
+        let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
+        XCTAssertEqual(count, 0)
+    }
+
+    // MARK: - mentionSourcesByIdea
+
+    func testMentionSourcesByIdeaReturnsDistinctSourcesPerIdea() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db -> (a: Int64, b: Int64) in
+            let a = try TestDatabase.insertIdea(db, kind: "decision", title: "A")
+            let b = try TestDatabase.insertIdea(db, kind: "decision", title: "B")
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "slack")
+            // A second Slack mention must not duplicate "slack" in the result.
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "slack")
+            try TestDatabase.insertIdeaMention(db, ideaID: a, source: "jira")
+            try TestDatabase.insertIdeaMention(db, ideaID: b, source: "gmail")
+            return (a, b)
+        }
+
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: [Int(ids.a), Int(ids.b)]) }
+
+        XCTAssertEqual(Set(sources[Int(ids.a)] ?? []), ["slack", "jira"])
+        XCTAssertEqual(sources[Int(ids.b)], ["gmail"])
+    }
+
+    func testMentionSourcesByIdeaOmitsIdeasWithNoMentions() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: [Int(ideaID)]) }
+
+        XCTAssertNil(sources[Int(ideaID)])
+    }
+
+    func testMentionSourcesByIdeaEmptyIDsReturnsEmptyMap() throws {
+        let db = try TestDatabase.create()
+        let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: []) }
+        XCTAssertTrue(sources.isEmpty)
     }
 }
 
