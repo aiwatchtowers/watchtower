@@ -1,10 +1,66 @@
 import Foundation
 import GRDB
 
+/// One row of the Digests segment's cross-source feed: a Slack channel/daily/
+/// weekly digest, a Gmail/Jira stream digest (Task 9), or a meeting recording
+/// — merged into a single date-sorted list. Day grouping is a view-layer
+/// concern (`Calendar`-based, `DigestListView`); this type only carries what
+/// the view needs to sort, identify, and route to a detail pane.
+enum DigestFeedEntry: Identifiable, Equatable {
+    case slack(Digest)
+    case stream(StreamDigest)
+    case meeting(RecordingListItem)
+
+    var id: String {
+        switch self {
+        case .slack(let d): "slack-\(d.id)"
+        case .stream(let d): "stream-\(d.id)"
+        case .meeting(let r): "meeting-\(r.id)"
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .slack(let d): TimeFormatting.parseISO(d.createdAt) ?? .distantPast
+        case .stream(let d): TimeFormatting.parseISO(d.createdAt) ?? .distantPast
+        case .meeting(let r): r.createdDate ?? .distantPast
+        }
+    }
+
+    /// A meeting recording has no unread concept (nothing in
+    /// `meeting_transcripts` tracks read state) — always read, so the
+    /// "Unread" filter never hides a Slack/stream item behind it and never
+    /// shows a meeting row there either.
+    var isRead: Bool {
+        switch self {
+        case .slack(let d): d.isRead
+        case .stream(let d): d.isRead
+        case .meeting: true
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class DigestViewModel {
     var digests: [Digest] = []
+    /// Gmail/Jira stream digests (Task 9) feeding the cross-source feed.
+    var streamDigests: [StreamDigest] = []
+    /// Meeting recordings feeding the cross-source feed (always-read entries).
+    var recordings: [RecordingListItem] = []
+    var unreadStreamCount: Int = 0
+    /// Slack digests + stream digests + meeting recordings, merged and sorted
+    /// per `sortOrder`. Computed (not stored) so it always reflects the
+    /// latest loaded state of the three source arrays.
+    var feedEntries: [DigestFeedEntry] {
+        let combined: [DigestFeedEntry] = digests.map(DigestFeedEntry.slack)
+            + streamDigests.map(DigestFeedEntry.stream)
+            + recordings.map(DigestFeedEntry.meeting)
+        switch sortOrder {
+        case .newestFirst: return combined.sorted { $0.date > $1.date }
+        case .oldestFirst: return combined.sorted { $0.date < $1.date }
+        }
+    }
     /// The decisions ledger — `ideas WHERE kind = 'decision'`, ordered by
     /// `last_mention_at` (falling back to `updated_at`), newest first. Replaces
     /// the old digest-scanned `decisionEntries`/`DecisionEntry` machinery: a
@@ -132,6 +188,9 @@ final class DigestViewModel {
         let decisionMentionSources: [Int: [String]]
         let starredChannels: Set<String>
         let currentUserID: String?
+        let streamDigests: [StreamDigest]
+        let recordings: [RecordingListItem]
+        let unreadStream: Int
     }
 
     func load() {
@@ -177,6 +236,10 @@ final class DigestViewModel {
                 let starred = Set(profile?.decodedStarredChannels ?? [])
                 let uid = profile?.slackUserID
 
+                let streamDigests = try StreamDigestQueries.fetchAll(db)
+                let recordings = try MeetingTranscriptQueries.fetchRecordingList(db)
+                let unreadStream = try StreamDigestQueries.unreadCount(db)
+
                 return LoadResult(
                     digests: digests,
                     channelNames: nameMap,
@@ -187,7 +250,10 @@ final class DigestViewModel {
                     unreadDecisions: unreadDecisions,
                     decisionMentionSources: mentionSources,
                     starredChannels: starred,
-                    currentUserID: uid
+                    currentUserID: uid,
+                    streamDigests: streamDigests,
+                    recordings: recordings,
+                    unreadStream: unreadStream
                 )
             }
             digests = applySort(result.digests)
@@ -202,11 +268,17 @@ final class DigestViewModel {
             decisionMentionSources = result.decisionMentionSources
             unreadDigestCount = result.unreadDigests
             unreadDecisionCount = result.unreadDecisions
+            streamDigests = result.streamDigests
+            recordings = result.recordings
+            unreadStreamCount = result.unreadStream
             errorMessage = nil
         } catch {
             digests = []
             ledgerDecisions = []
             decisionMentionSources = [:]
+            streamDigests = []
+            recordings = []
+            unreadStreamCount = 0
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -234,6 +306,35 @@ final class DigestViewModel {
         } catch {
             // Non-critical — just log
             print("Failed to mark digest read: \(error)")
+        }
+    }
+
+    // MARK: - Read tracking (stream digests)
+
+    /// Marks one Gmail/Jira stream digest read (`StreamDigestDetailView`'s
+    /// `.onAppear`, the `DigestDetailView`/`markDigestRead`-on-selection
+    /// precedent) and reloads just the stream slice so the feed entry's
+    /// `isRead` and the segment's unread count update immediately.
+    func markStreamRead(id: Int) {
+        do {
+            try dbManager.dbPool.write { db in try StreamDigestQueries.markRead(db, id: id) }
+            reloadStreams()
+        } catch {
+            errorMessage = "Failed to mark stream digest read: \(error.localizedDescription)"
+        }
+    }
+
+    /// Re-reads just the stream digests — cheaper than a full `load()` after
+    /// a read-marking write (the `reloadLedger` precedent).
+    private func reloadStreams() {
+        do {
+            let result = try dbManager.dbPool.read { db -> ([StreamDigest], Int) in
+                (try StreamDigestQueries.fetchAll(db), try StreamDigestQueries.unreadCount(db))
+            }
+            streamDigests = result.0
+            unreadStreamCount = result.1
+        } catch {
+            errorMessage = "Failed to reload stream digests: \(error.localizedDescription)"
         }
     }
 

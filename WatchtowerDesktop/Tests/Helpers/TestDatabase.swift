@@ -118,12 +118,13 @@ enum TestDatabase {
         decisions: String = "[]",
         tracksJSON: String = "[]",
         messageCount: Int = 10,
-        model: String = "haiku"
+        model: String = "haiku",
+        createdAt: String? = nil
     ) throws {
         try db.execute(sql: """
-            INSERT INTO digests (channel_id, period_from, period_to, type, summary, topics, decisions, action_items, message_count, model)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [channelID, periodFrom, periodTo, type, summary, topics, decisions, tracksJSON, messageCount, model])
+            INSERT INTO digests (channel_id, period_from, period_to, type, summary, topics, decisions, action_items, message_count, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
+            """, arguments: [channelID, periodFrom, periodTo, type, summary, topics, decisions, tracksJSON, messageCount, model, createdAt])
     }
 
     static func insertWatchItem(
@@ -1732,15 +1733,16 @@ enum TestDatabase {
         notesMD: String? = nil,
         segmentsJSON: String? = nil,
         speakersJSON: String? = nil,
-        chaptersJSON: String? = nil
+        chaptersJSON: String? = nil,
+        createdAt: String? = nil
     ) throws {
         try db.execute(sql: """
             INSERT INTO meeting_transcripts (id, event_id, title, audio_path,
-                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                duration_sec, transcript_text, summary_json, notes_md, segments_json, speakers_json, chapters_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))
             """,
             arguments: [id, eventID, title, audioPath, durationSec,
-                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON])
+                        transcriptText, summaryJSON, notesMD, segmentsJSON, speakersJSON, chaptersJSON, createdAt])
     }
 
     static func insertMeetingPrep(_ db: Database, eventID: String, resultJSON: String) throws {
