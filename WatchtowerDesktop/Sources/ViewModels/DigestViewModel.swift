@@ -167,6 +167,21 @@ final class DigestViewModel {
         startDecisionsPolling()
     }
 
+    /// Drops the two observations and the ledger poll — called when the
+    /// Digests screen goes away, so a backgrounded tab stops waking up every
+    /// 30 s to re-read the ledger. Safe to pair with `startObserving()` in
+    /// any order: both are idempotent and `startObserving` reloads on the way
+    /// back in, so a view that disappears and reappears on the same `@State`
+    /// VM resumes with fresh data rather than staying dead.
+    func stopObserving() {
+        observationTask?.cancel()
+        observationTask = nil
+        decisionsObservationTask?.cancel()
+        decisionsObservationTask = nil
+        decisionsPollTask?.cancel()
+        decisionsPollTask = nil
+    }
+
     private func startDecisionsPolling() {
         guard decisionsPollTask == nil else { return }
         let interval = decisionsPollInterval

@@ -49,8 +49,11 @@ struct DigestListView: View {
         .onAppear {
             if let db = appState.databaseManager, viewModel == nil {
                 viewModel = DigestViewModel(dbManager: db)
-                viewModel?.startObserving()
             }
+            // Unconditional (not only on first creation): `.onDisappear`
+            // stops the observations, so a re-appearing view holding the same
+            // `@State` VM has to restart them. Both calls are idempotent.
+            viewModel?.startObserving()
             if let id = appState.pendingDigestID {
                 activeTab = .digests
                 showAllDigests = true
@@ -63,6 +66,9 @@ struct DigestListView: View {
                 selectDecision(id)
                 appState.pendingDecisionID = nil
             }
+        }
+        .onDisappear {
+            viewModel?.stopObserving()
         }
         .onChange(of: selectedDigestID) { _, newID in
             if let id = newID {

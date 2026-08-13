@@ -197,4 +197,28 @@ final class DigestFeedTests: XCTestCase {
 
         XCTAssertEqual(vm.unreadStreamCount, 1)
     }
+
+    // MARK: - Observation lifecycle
+
+    /// The view stops observing on `.onDisappear`, so re-appearing on the
+    /// same `@State` VM must revive it — `startObserving()` reloads, and both
+    /// calls are idempotent in any order.
+    @MainActor
+    func testStopObservingThenStartObservingReloads() throws {
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.startObserving()
+        XCTAssertTrue(vm.feedEntries.isEmpty)
+
+        vm.stopObserving()
+        vm.stopObserving() // idempotent
+
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertStreamDigest(db)
+        }
+
+        vm.startObserving()
+        vm.startObserving() // idempotent
+
+        XCTAssertEqual(vm.feedEntries.count, 1, "startObserving should reload after a stop")
+    }
 }
