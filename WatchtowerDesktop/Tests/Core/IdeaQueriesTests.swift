@@ -401,14 +401,23 @@ final class IdeaQueriesTests: XCTestCase {
     // MARK: - IDEA-04 clearability
 
     /// Every owner action has to clear `needs_review`, not just `setStatus`.
-    /// A resurfaced idea the owner acts on via snooze/merge/supersede/convert
-    /// would otherwise stay in the "For review" list forever.
+    /// A resurfaced idea the owner acts on via snooze/merge/supersede/convert/
+    /// markDecisionSeen/markAllDecisionsSeen would otherwise stay in the
+    /// "For review" list (or, for decisions, the unread ledger) forever.
     func testIdeas04_EveryOwnerActionClearsNeedsReview() throws {
         let db = try TestDatabase.create()
 
         func flaggedIdea() throws -> Int {
             let id = try db.write { db in
                 try TestDatabase.insertIdea(db, status: "rejected", needsReview: true, reviewReason: "brought up again")
+            }
+            return Int(id)
+        }
+
+        func flaggedDecision() throws -> Int {
+            let id = try db.write { db in
+                try TestDatabase.insertIdea(
+                    db, kind: "decision", status: "active", needsReview: true, reviewReason: "brought up again")
             }
             return Int(id)
         }
@@ -426,8 +435,15 @@ final class IdeaQueriesTests: XCTestCase {
         let converted = try flaggedIdea()
         try db.write { try IdeaQueries.markConverted($0, id: converted, targetID: 7) }
 
+        let decisionSeen = try flaggedDecision()
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: decisionSeen) }
+
+        let allDecisionsSeen = try flaggedDecision()
+        try db.write { try IdeaQueries.markAllDecisionsSeen($0) }
+
         for (label, id) in [("snooze", snoozed), ("merge", merged),
-                            ("supersede", superseded), ("markConverted", converted)] {
+                            ("supersede", superseded), ("markConverted", converted),
+                            ("markDecisionSeen", decisionSeen), ("markAllDecisionsSeen", allDecisionsSeen)] {
             let idea = try db.read { try IdeaQueries.fetchOne($0, id: id) }
             XCTAssertEqual(idea?.needsReview, false, "\(label) must clear needs_review")
             XCTAssertEqual(idea?.reviewReason, "", "\(label) must clear review_reason")
@@ -567,6 +583,31 @@ final class IdeaQueriesTests: XCTestCase {
 
         let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaAmongDecisions)) }
         XCTAssertNil(idea?.seenAt, "a non-decision idea must be left untouched")
+    }
+
+    /// A decision seen once, then re-flagged by a later mention, is exactly
+    /// what `unreadDecisionCount`'s `seen_at IS NULL OR needs_review = 1`
+    /// predicate calls unread — `markAllDecisionsSeen` must catch it too, not
+    /// just rows that were never seen at all, or a re-flagged decision has no
+    /// bulk way to clear (IDEA-04).
+    func testMarkAllDecisionsSeenClearsReflaggedDecision() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db in try TestDatabase.insertIdea(db, kind: "decision") }
+
+        try db.write { try IdeaQueries.markDecisionSeen($0, id: Int(ideaID)) }
+        try db.write {
+            try $0.execute(
+                sql: "UPDATE ideas SET needs_review = 1, review_reason = 'resurfaced' WHERE id = ?",
+                arguments: [ideaID])
+        }
+
+        try db.write { try IdeaQueries.markAllDecisionsSeen($0) }
+
+        let idea = try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        XCTAssertEqual(idea?.needsReview, false, "the re-flag must be cleared")
+
+        let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
+        XCTAssertEqual(count, 0)
     }
 
     // MARK: - mentionSourcesByIdea

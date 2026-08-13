@@ -112,20 +112,31 @@ package enum IdeaQueries {
             """, arguments: [limit])
     }
 
-    /// Stamps a single decision as seen by the owner.
+    /// Stamps a single decision as seen by the owner. Seeing IS the owner
+    /// looking at it, so this also clears any pending review flag (IDEA-04) —
+    /// the same contract `setStatus`/`snooze`/`merge`/`supersede`/
+    /// `markConverted` uphold via `clearReviewFlag`.
     package static func markDecisionSeen(_ db: Database, id: Int) throws {
         try db.execute(
-            sql: "UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+            sql: """
+                UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \(clearReviewFlag)
+                WHERE id = ?
+                """,
             arguments: [id]
         )
     }
 
-    /// Stamps every not-yet-seen decision as seen, leaving an already-seen
-    /// row's `seen_at` untouched.
+    /// Stamps every decision the owner hasn't caught up on as seen, leaving an
+    /// already-seen-and-not-re-flagged row's `seen_at` untouched. Matches
+    /// `unreadDecisionCount`'s predicate exactly: never seen, or seen but
+    /// re-flagged since — a "mark all seen" that skipped re-flagged rows would
+    /// leave them stuck showing unread with no way to clear them in bulk.
+    /// Also clears any pending review flag on the rows it touches (IDEA-04) —
+    /// see `markDecisionSeen`.
     package static func markAllDecisionsSeen(_ db: Database) throws {
         try db.execute(sql: """
-            UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE kind = 'decision' AND seen_at IS NULL
+            UPDATE ideas SET seen_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), \(clearReviewFlag)
+            WHERE kind = 'decision' AND (seen_at IS NULL OR needs_review = 1)
             """)
     }
 
