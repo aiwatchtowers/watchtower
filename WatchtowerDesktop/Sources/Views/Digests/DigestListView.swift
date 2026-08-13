@@ -56,6 +56,12 @@ struct DigestListView: View {
                 selectFeedDigest(id)
                 appState.pendingDigestID = nil
             }
+            if let id = appState.pendingDecisionID {
+                activeTab = .decisions
+                showAllDecisions = true
+                selectDecision(id)
+                appState.pendingDecisionID = nil
+            }
         }
         .onChange(of: selectedDigestID) { _, newID in
             if let id = newID {
@@ -68,6 +74,14 @@ struct DigestListView: View {
                 showAllDigests = true
                 selectFeedDigest(id)
                 appState.pendingDigestID = nil
+            }
+        }
+        .onChange(of: appState.pendingDecisionID) { _, newID in
+            if let id = newID {
+                activeTab = .decisions
+                showAllDecisions = true
+                selectDecision(id)
+                appState.pendingDecisionID = nil
             }
         }
         .onChange(of: selectedDecisionID) { _, newID in
@@ -86,6 +100,15 @@ struct DigestListView: View {
         selectedDigestID = id
         selectedStreamID = nil
         selectedRecordingID = nil
+    }
+
+    /// Selects a ledger decision (`pendingDecisionID` cross-tab nav). Unlike
+    /// `selectFeedDigest`, no sibling selection to clear here — switching
+    /// `activeTab` to `.decisions` already clears the digest-family
+    /// selections (see the direction-aware reset in `listPanel`'s
+    /// `.onChange(of: activeTab)`).
+    private func selectDecision(_ id: Int) {
+        selectedDecisionID = id
     }
 
     private func selectFeedStream(_ id: Int) {
@@ -247,11 +270,21 @@ struct DigestListView: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
             .padding(.bottom, 6)
-            .onChange(of: activeTab) {
-                selectedDigestID = nil
-                selectedStreamID = nil
-                selectedRecordingID = nil
-                selectedDecisionID = nil
+            .onChange(of: activeTab) { _, newTab in
+                // Direction-aware: clear only the OTHER tab's selection, not
+                // the new tab's own — a cross-tab pendingDigestID/
+                // pendingDecisionID nav sets `activeTab` and that tab's
+                // selection in the same update; clearing both groups
+                // unconditionally would clobber the just-set selection once
+                // this handler's own mutations trigger their own pass.
+                switch newTab {
+                case .digests:
+                    selectedDecisionID = nil
+                case .decisions:
+                    selectedDigestID = nil
+                    selectedStreamID = nil
+                    selectedRecordingID = nil
+                }
                 searchText = ""
                 isSelectMode = false
                 checkedDigestIDs.removeAll()

@@ -183,18 +183,20 @@ final class NotificationRouteTests: XCTestCase {
 
     // MARK: - Dispatch table
 
-    /// A decision push carrying a digest id opens that digest; without one it can only
-    /// land on the tab.
-    func testDecisionRoutesToDigest() async {
+    /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
+    /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
+    /// without one it can only land on the Digests tab.
+    func testDecisionRoutesToLedgerEntry() async {
         let withID = AppState()
         await NotificationDelegate.route(
             actionID: UNNotificationDefaultActionIdentifier,
-            userInfo: ["type": "decision", "digestId": 4242],
+            userInfo: ["type": "decision", "ideaId": 4242],
             appState: withID,
             forwarded: true
         )
         XCTAssertEqual(withID.selectedDestination, .digests)
-        XCTAssertEqual(withID.pendingDigestID, 4242)
+        XCTAssertEqual(withID.pendingDecisionID, 4242)
+        XCTAssertNil(withID.pendingDigestID)
 
         let withoutID = AppState()
         await NotificationDelegate.route(
@@ -204,7 +206,7 @@ final class NotificationRouteTests: XCTestCase {
             forwarded: true
         )
         XCTAssertEqual(withoutID.selectedDestination, .digests)
-        XCTAssertNil(withoutID.pendingDigestID)
+        XCTAssertNil(withoutID.pendingDecisionID)
     }
 
     /// The navigation-only types, forwarded and self-received alike: same table, same
@@ -264,7 +266,7 @@ final class NotificationRouteTests: XCTestCase {
     /// no-op instead of trapping on the optional.
     func testNilAppStateNeverCrashes() async {
         let payloads: [[AnyHashable: Any]] = [
-            ["type": "decision", "digestId": 1],
+            ["type": "decision", "ideaId": 1],
             ["type": "decision"],
             ["type": "track_update"],
             ["type": "daily_summary"],
@@ -293,7 +295,11 @@ final class NotificationRouteTests: XCTestCase {
     /// failure this pins — the payload must never regrow keys only an armed action
     /// would use.
     func testForwardedAllowlistMatchesWhatForwardedRoutingReads() {
-        XCTAssertEqual(NotificationForwarding.routedKeys, ["type", NotificationForwarding.digestIDKey])
+        XCTAssertEqual(
+            NotificationForwarding.routedKeys,
+            ["type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey]
+        )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
+        XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
     }
 }

@@ -177,6 +177,12 @@ final class AppState {
     /// Set to navigate to a specific digest from anywhere in the app.
     var pendingDigestID: Int?
 
+    /// Set to navigate to a specific decisions-ledger entry from anywhere in
+    /// the app. Lands on the same `.digests` destination as `pendingDigestID`
+    /// — the Decisions segment lives inside `DigestListView`, not its own
+    /// sidebar tab.
+    var pendingDecisionID: Int?
+
     /// Set to navigate to a specific target from anywhere in the app.
     var pendingTargetID: Int?
 
@@ -253,6 +259,11 @@ final class AppState {
 
     func navigateToDigest(_ digestID: Int) {
         pendingDigestID = digestID
+        selectedDestination = .digests
+    }
+
+    func navigateToDecision(_ ideaID: Int) {
+        pendingDecisionID = ideaID
         selectedDestination = .digests
     }
 

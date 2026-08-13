@@ -9,12 +9,13 @@ struct ForwardedNotificationResponse: Codable {
     /// The routed subset of the push's `userInfo`, every value flattened to a string.
     let payload: [String: String]
 
-    /// The routing view of the payload, with `digestId` restored to the Int the
-    /// navigation call expects. A missing or unparseable one drops the key rather
+    /// The routing view of the payload, with `digestId`/`ideaId` restored to the Int
+    /// the navigation calls expect. A missing or unparseable one drops the key rather
     /// than smuggling a string in under it.
     var userInfo: [AnyHashable: Any] {
         var info: [AnyHashable: Any] = payload
         info[NotificationForwarding.digestIDKey] = payload[NotificationForwarding.digestIDKey].flatMap(Int.init)
+        info[NotificationForwarding.ideaIDKey] = payload[NotificationForwarding.ideaIDKey].flatMap(Int.init)
         return info
     }
 }
@@ -40,13 +41,14 @@ struct ForwardedNotificationResponse: Codable {
 enum NotificationForwarding {
     static let notificationName = Notification.Name("com.watchtower.desktop.forwarded-notification-response")
 
-    /// The one routed key that is not a string in the push's `userInfo`.
+    /// The routed keys that are not strings in the push's `userInfo`.
     static let digestIDKey = "digestId"
+    static let ideaIDKey = "ideaId"
 
     /// The `userInfo` keys forwarded routing in `NotificationDelegate.route` actually
     /// reads — anything else in the push is dropped rather than shipped across the
     /// process boundary.
-    static let routedKeys = ["type", digestIDKey]
+    static let routedKeys = ["type", digestIDKey, ideaIDKey]
 
     static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {
         var payload: [String: String] = [:]
