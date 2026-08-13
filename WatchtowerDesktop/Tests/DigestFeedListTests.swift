@@ -22,7 +22,7 @@ final class DigestFeedListTests: XCTestCase {
 
     private var utc: Calendar = {
         var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "UTC")!
+        cal.timeZone = TimeZone(identifier: "UTC") ?? cal.timeZone
         return cal
     }()
 
@@ -34,7 +34,7 @@ final class DigestFeedListTests: XCTestCase {
     private func iso(_ date: Date) -> String {
         let fmt = ISO8601DateFormatter()
         fmt.formatOptions = [.withInternetDateTime]
-        fmt.timeZone = TimeZone(identifier: "UTC")!
+        fmt.timeZone = TimeZone(identifier: "UTC") ?? fmt.timeZone
         return fmt.string(from: date)
     }
 
@@ -59,8 +59,8 @@ final class DigestFeedListTests: XCTestCase {
         return vm.feedEntries
     }
 
-    private func entry(_ entries: [DigestFeedEntry], matching kind: String) -> DigestFeedEntry {
-        entries.first { $0.id.hasPrefix(kind) }!
+    private func entry(_ entries: [DigestFeedEntry], matching kind: String) throws -> DigestFeedEntry {
+        try XCTUnwrap(entries.first { $0.id.hasPrefix(kind) })
     }
 
     // MARK: - matches: cross-source search
@@ -83,9 +83,9 @@ final class DigestFeedListTests: XCTestCase {
         }
 
         let entries = loadedEntries()
-        let slack = entry(entries, matching: "slack")
-        let stream = entry(entries, matching: "stream")
-        let meeting = entry(entries, matching: "meeting")
+        let slack = try entry(entries, matching: "slack")
+        let stream = try entry(entries, matching: "stream")
+        let meeting = try entry(entries, matching: "meeting")
         let noChannel: (Digest) -> String? = { _ in nil }
 
         // .slack — summary and topics.
@@ -127,7 +127,7 @@ final class DigestFeedListTests: XCTestCase {
                 transcriptText: "text", summaryJSON: recapJSON)
         }
 
-        let meeting = entry(loadedEntries(), matching: "meeting")
+        let meeting = try entry(loadedEntries(), matching: "meeting")
         XCTAssertTrue(DigestFeedList.matches(meeting, query: "budget") { _ in nil })
     }
 
@@ -194,7 +194,7 @@ final class DigestFeedListTests: XCTestCase {
         XCTAssertEqual(DigestFeedList.group(entries, calendar: utc).count, 2)
 
         var berlin = Calendar(identifier: .gregorian)
-        berlin.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        berlin.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
         // 00:00Z and 23:00Z are 01:00 and 00:00 Berlin — the same local day.
         XCTAssertEqual(DigestFeedList.group(entries, calendar: berlin).count, 1)
     }
@@ -202,18 +202,17 @@ final class DigestFeedListTests: XCTestCase {
     // MARK: - dayLabel
 
     /// Clock-relative by nature (`isDateInToday`), so seeded from `Date()`.
-    func testDayLabelNamesTodayAndYesterday() {
+    func testDayLabelNamesTodayAndYesterday() throws {
         let now = Date()
         XCTAssertEqual(DigestFeedList.dayLabel(for: now, calendar: .current, locale: posix), "Today")
+        let yesterday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: now))
         XCTAssertEqual(
-            DigestFeedList.dayLabel(
-                for: Calendar.current.date(byAdding: .day, value: -1, to: now)!,
-                calendar: .current, locale: posix),
+            DigestFeedList.dayLabel(for: yesterday, calendar: .current, locale: posix),
             "Yesterday")
     }
 
-    func testDayLabelFallsBackToWeekdayAndDate() {
-        let older = Calendar.current.date(byAdding: .day, value: -10, to: Date())!
+    func testDayLabelFallsBackToWeekdayAndDate() throws {
+        let older = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -10, to: Date()))
 
         let expected = DateFormatter()
         expected.locale = posix
@@ -228,8 +227,8 @@ final class DigestFeedListTests: XCTestCase {
     /// Tomorrow is not special-cased (unlike `MeetingListBuilder`, whose list
     /// is forward-looking) — the feed only ever shows material already
     /// produced, so a future day falls through to the dated label.
-    func testDayLabelDoesNotSpecialCaseTomorrow() {
-        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
+    func testDayLabelDoesNotSpecialCaseTomorrow() throws {
+        let tomorrow = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 1, to: Date()))
         let label = DigestFeedList.dayLabel(for: tomorrow, calendar: .current, locale: posix)
         XCTAssertNotEqual(label, "Tomorrow")
         XCTAssertTrue(label.contains(","), "expected the dated fallback, got \(label)")
