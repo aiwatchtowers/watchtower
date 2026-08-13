@@ -187,34 +187,11 @@ struct DigestListView: View {
         }
         if !searchText.isEmpty {
             let query = searchText.lowercased()
-            items = items.filter { matchesSearch($0, query: query, vm: vm) }
+            items = items.filter {
+                DigestFeedList.matches($0, query: query) { vm.channelName(for: $0) }
+            }
         }
         return items
-    }
-
-    private func matchesSearch(_ entry: DigestFeedEntry, query: String, vm: DigestViewModel) -> Bool {
-        switch entry {
-        case .slack(let digest):
-            if digest.summary.lowercased().contains(query) { return true }
-            if let name = vm.channelName(for: digest),
-               name.lowercased().contains(query) { return true }
-            if digest.parsedTopics.contains(
-                where: { $0.lowercased().contains(query) }
-            ) { return true }
-            return false
-        case .stream(let digest):
-            if digest.scope.lowercased().contains(query) { return true }
-            for topic in digest.parsedTopics {
-                if topic.title.lowercased().contains(query) { return true }
-                if let summary = topic.summary, summary.lowercased().contains(query) { return true }
-            }
-            return false
-        case .meeting(let recording):
-            if recording.title.lowercased().contains(query) { return true }
-            if recording.snippet.lowercased().contains(query) { return true }
-            if let eventTitle = recording.eventTitle, eventTitle.lowercased().contains(query) { return true }
-            return false
-        }
     }
 
     /// The Slack digests currently visible in the merged, filtered feed —
@@ -229,34 +206,10 @@ struct DigestListView: View {
     }
 
     /// Groups the filtered feed into day sections in the order entries
-    /// already appear (i.e. respecting `vm.sortOrder`) — the
-    /// `MeetingListBuilder`/`MeetingDaySection` day-grouping precedent.
-    private var groupedFeedEntries: [(day: Date, entries: [DigestFeedEntry])] {
-        let calendar = Calendar.current
-        var order: [Date] = []
-        var buckets: [Date: [DigestFeedEntry]] = [:]
-        for entry in filteredFeedEntries {
-            let day = calendar.startOfDay(for: entry.date)
-            if buckets[day] == nil {
-                buckets[day] = []
-                order.append(day)
-            }
-            buckets[day]?.append(entry)
-        }
-        return order.map { (day: $0, entries: buckets[$0] ?? []) }
-    }
-
-    private static let dayHeaderFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEEE, d MMM"
-        return fmt
-    }()
-
-    private static func dayLabel(for date: Date) -> String {
-        let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
-        return dayHeaderFormatter.string(from: date)
+    /// already appear (i.e. respecting `vm.sortOrder`) — see
+    /// `DigestFeedList.group`, where the bucketing itself lives.
+    private var groupedFeedEntries: [DigestFeedDaySection] {
+        DigestFeedList.group(filteredFeedEntries)
     }
 
     private func listPanel(_ vm: DigestViewModel) -> some View {
@@ -502,7 +455,7 @@ struct DigestListView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
                 ForEach(groupedFeedEntries, id: \.day) { group in
-                    Text(Self.dayLabel(for: group.day))
+                    Text(DigestFeedList.dayLabel(for: group.day))
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
