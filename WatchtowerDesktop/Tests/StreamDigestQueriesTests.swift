@@ -19,7 +19,7 @@ final class StreamDigestQueriesTests: XCTestCase {
         XCTAssertEqual(digests.map(\.createdAt), [
             "2024-01-03T00:00:00Z",
             "2024-01-02T00:00:00Z",
-            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00Z"
         ])
     }
 

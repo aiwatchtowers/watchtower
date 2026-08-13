@@ -503,7 +503,7 @@ final class IdeaQueriesTests: XCTestCase {
         let ledger = try db.read { try IdeaQueries.fetchDecisionLedger($0) }
 
         XCTAssertEqual(ledger.map(\.title),
-                        ["No mention, recently updated", "Recent mention", "Old mention"])
+                       ["No mention, recently updated", "Recent mention", "Old mention"])
     }
 
     func testFetchDecisionLedgerRespectsLimit() throws {
