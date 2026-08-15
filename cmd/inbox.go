@@ -23,13 +23,15 @@ import (
 const syncStalenessThreshold = 10 * time.Minute
 
 var (
-	inboxFlagPriority        string
-	inboxFlagType            string
-	inboxFlagAll             bool
-	inboxFlagJSON            bool
-	inboxGenFlagProgressJSON bool
-	inboxFeedbackRating      string
-	inboxFeedbackComment     string
+	inboxFlagPriority               string
+	inboxFlagType                   string
+	inboxFlagAll                    bool
+	inboxFlagJSON                   bool
+	inboxGenFlagProgressJSON        bool
+	inboxFeedbackRating             string
+	inboxFeedbackComment            string
+	inboxBackfillMentionsFlagSince  string
+	inboxBackfillMentionsFlagDryRun bool
 )
 
 var inboxCmd = &cobra.Command{
@@ -94,9 +96,16 @@ var inboxStyleSampleCmd = &cobra.Command{
 	RunE:  runInboxStyleSample,
 }
 
+var inboxBackfillMentionsCmd = &cobra.Command{
+	Use:   "backfill-mentions",
+	Short: "Recover @mentions a broken or newly-connected detector missed, without moving the inbox watermark",
+	Args:  cobra.NoArgs,
+	RunE:  runInboxBackfillMentions,
+}
+
 func init() {
 	rootCmd.AddCommand(inboxCmd)
-	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd, inboxStyleSampleCmd)
+	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd, inboxStyleSampleCmd, inboxBackfillMentionsCmd)
 
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
@@ -105,6 +114,9 @@ func init() {
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
 	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
 	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackComment, "comment", "", "free-text comment; derives learned rules via the AI interpreter")
+	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions on or after this date (YYYY-MM-DD); required")
+	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagDryRun, "dry-run", false, "report what would be recovered without creating any inbox items")
+	_ = inboxBackfillMentionsCmd.MarkFlagRequired("since")
 }
 
 func runInbox(cmd *cobra.Command, _ []string) error {
@@ -628,6 +640,104 @@ func runInboxStyleSample(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Style profile regenerated.")
+	return nil
+}
+
+// backfillMentionsAccountEnvelope is one connected account's contribution to
+// a `inbox backfill-mentions` run's JSON envelope.
+type backfillMentionsAccountEnvelope struct {
+	AccountID       int64 `json:"account_id"`
+	CandidatesFound int   `json:"candidates_found"`
+	ItemsCreated    int   `json:"items_created"`
+}
+
+// backfillMentionsEnvelope is `inbox backfill-mentions`'s one-line JSON
+// summary on stdout — the `ideas mine --from` backfillEnvelope precedent
+// (cmd/ideas.go): built and printed only on success, with errors returned
+// directly as a Go error rather than carried as a field on the envelope, so
+// a non-zero exit always means no envelope was printed at all. Per-account
+// counts, the accounts skipped for having no resolved identity, and the
+// totals are all included so a --dry-run's output is fully readable without
+// re-checking the database.
+type backfillMentionsEnvelope struct {
+	Since             string                            `json:"since"`
+	DryRun            bool                              `json:"dry_run"`
+	Accounts          []backfillMentionsAccountEnvelope `json:"accounts"`
+	SkippedAccountIDs []int64                           `json:"skipped_account_ids"`
+	TotalCandidates   int                               `json:"total_candidates"`
+	TotalCreated      int                               `json:"total_created"`
+}
+
+// runInboxBackfillMentions implements `watchtower inbox backfill-mentions
+// --since <YYYY-MM-DD> [--dry-run]`: a thin CLI wrapper over
+// inbox.Pipeline.BackfillMentions (internal/inbox/backfill.go), which scans
+// only @mentions from the explicit --since timestamp, per connected Slack
+// account, and never touches inbox_last_processed_ts (INBOX-09 — see
+// docs/inventory/inbox-pulse.md). --since has no default and is validated
+// here rather than left to cobra's MarkFlagRequired alone, so a direct RunE
+// call (as in this package's tests) surfaces the same clear error a real
+// invocation would — the targets `ai-update --instruction` precedent
+// (cmd/targets_ai.go). The command makes no AI call, so no generator is
+// wired into the pipeline.
+func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
+	if inboxBackfillMentionsFlagSince == "" {
+		return fmt.Errorf("--since is required (format YYYY-MM-DD)")
+	}
+	since, err := time.Parse("2006-01-02", inboxBackfillMentionsFlagSince)
+	if err != nil {
+		return fmt.Errorf("invalid --since date %q: %w", inboxBackfillMentionsFlagSince, err)
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
+	pipe := inbox.New(database, cfg, nil, logger)
+
+	result, err := pipe.BackfillMentions(cmd.Context(), since, inboxBackfillMentionsFlagDryRun)
+	if err != nil {
+		return fmt.Errorf("backfilling mentions: %w", err)
+	}
+
+	envelope := backfillMentionsEnvelope{
+		Since:             inboxBackfillMentionsFlagSince,
+		DryRun:            inboxBackfillMentionsFlagDryRun,
+		Accounts:          make([]backfillMentionsAccountEnvelope, 0, len(result.Accounts)),
+		SkippedAccountIDs: result.SkippedAccountIDs,
+		TotalCandidates:   result.TotalCandidates,
+		TotalCreated:      result.TotalCreated,
+	}
+	for _, acct := range result.Accounts {
+		envelope.Accounts = append(envelope.Accounts, backfillMentionsAccountEnvelope{
+			AccountID:       acct.AccountID,
+			CandidatesFound: acct.CandidatesFound,
+			ItemsCreated:    acct.ItemsCreated,
+		})
+	}
+	if envelope.SkippedAccountIDs == nil {
+		envelope.SkippedAccountIDs = []int64{}
+	}
+
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("marshaling envelope: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	return nil
 }
 
