@@ -838,6 +838,42 @@ func TestScoreChannel(t *testing.T) {
 			signals.existingTrackChannels, signals.starredChannels, signals.relatedUsers)
 		assert.Equal(t, 0, score, "a bare blob id can never match the namespaced channel probe")
 	})
+
+	// relatedUsers is matched against digest_topics.situations/key_messages —
+	// AI-authored text that carries raw Slack ids regardless of how the
+	// profile blob itself is namespaced. The three cases below pin
+	// buildRelevanceSignals' dual-form insertion: a namespaced profile id
+	// must match both a raw and a namespaced occurrence in the topic text,
+	// and an unrelated id must still score 0.
+	t.Run("relatedUsers via buildRelevanceSignals: raw topic text matches namespaced profile id", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"U456"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 1, score, "raw-id topic text must still match a namespaced profile id")
+	})
+
+	t.Run("relatedUsers via buildRelevanceSignals: namespaced topic text also matches", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 1, score)
+	})
+
+	t.Run("relatedUsers via buildRelevanceSignals: unrelated id does not match", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"U999"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 0, score)
+	})
 }
 
 func TestFormatActiveTracksForPromptLimit(t *testing.T) {

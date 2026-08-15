@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // DefaultWindowHours is the default lookback period for track extraction.
@@ -461,6 +462,13 @@ func buildRelevanceSignals(profile *db.UserProfile, allActive []db.Track) releva
 			if json.Unmarshal([]byte(field), &ids) == nil {
 				for _, id := range ids {
 					s.relatedUsers[id] = true
+					// t.Situations/t.KeyMessages (below) is AI-authored text that
+					// carries raw Slack ids regardless of the profile blob's own
+					// namespacing, so the raw form must also be a match candidate —
+					// SplitAccountID is a no-op-ish re-insert for an id that was
+					// never namespaced to begin with.
+					_, rawID, _ := watchtowerslack.SplitAccountID(id)
+					s.relatedUsers[rawID] = true
 				}
 			}
 		}
