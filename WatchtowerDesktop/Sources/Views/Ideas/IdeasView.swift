@@ -21,7 +21,11 @@ struct IdeasView: View {
                 errorBanner(errorMessage)
             }
             Group {
-                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
+                // Keyed off the whole registry, not the active segment: the
+                // segmented control lives in the filter bar this state
+                // replaces, so an empty Notes segment would strand the owner
+                // with no way back to their ideas.
+                if vm.totalCount == 0 && !vm.isLoading {
                     emptyState
                 } else {
                     HSplitView {
@@ -91,6 +95,13 @@ struct IdeasView: View {
                 }
             }
             .listStyle(.sidebar)
+            .overlay {
+                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty {
+                    Text(vm.kindMode == "note" ? "No notes yet" : "No ideas yet")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -120,26 +131,24 @@ struct IdeasView: View {
                 .help("Create an idea or note")
             }
 
-            HStack(spacing: 8) {
-                Picker("Kind", selection: $vm.kindFilter) {
-                    Text("All kinds").tag(String?.none)
-                    Text("Ideas").tag(String?.some("idea"))
-                    Text("Notes").tag(String?.some("note"))
-                }
-                .labelsHidden()
-
-                Picker("Status", selection: $vm.statusFilter) {
-                    Text("All statuses").tag(String?.none)
-                    Text("Proposed").tag(String?.some("proposed"))
-                    Text("Active").tag(String?.some("active"))
-                    Text("Not now").tag(String?.some("not_now"))
-                    Text("Converted").tag(String?.some("converted"))
-                    Text("Dropped").tag(String?.some("dropped"))
-                    Text("Rejected").tag(String?.some("rejected"))
-                    Text("Merged").tag(String?.some("merged"))
-                }
-                .labelsHidden()
+            Picker("Kind", selection: $vm.kindMode) {
+                Text("Ideas").tag("idea")
+                Text("Notes").tag("note")
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Picker("Status", selection: $vm.statusFilter) {
+                Text("All statuses").tag(String?.none)
+                Text("Proposed").tag(String?.some("proposed"))
+                Text("Active").tag(String?.some("active"))
+                Text("Not now").tag(String?.some("not_now"))
+                Text("Converted").tag(String?.some("converted"))
+                Text("Dropped").tag(String?.some("dropped"))
+                Text("Rejected").tag(String?.some("rejected"))
+                Text("Merged").tag(String?.some("merged"))
+            }
+            .labelsHidden()
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
@@ -151,7 +160,7 @@ struct IdeasView: View {
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
         }
         .padding(12)
-        .onChange(of: vm.kindFilter) { vm.load() }
+        .onChange(of: vm.kindMode) { vm.load() }
         .onChange(of: vm.statusFilter) { vm.load() }
         // Search runs a triple-LIKE query across ideas AND their mentions;
         // firing it per keystroke reloads the whole screen on every letter.
@@ -242,7 +251,8 @@ struct IdeasView: View {
                         appState.navigateToTarget(targetID)
                     }
                 },
-                onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) }
+                onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) },
+                onDelete: { vm.deleteIdea(idea) }
             )
             // Identity at the CALL SITE, so the pane's OWN @State (rating
             // draft, merge-sheet selection) resets when the selection

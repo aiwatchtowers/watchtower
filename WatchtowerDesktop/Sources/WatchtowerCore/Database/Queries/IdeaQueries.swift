@@ -65,15 +65,20 @@ package enum IdeaQueries {
         return try Idea.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
-    /// Ideas awaiting owner review: freshly proposed, or explicitly flagged.
-    /// Decisions are born 'active' and never enter this queue — mirrors the Go
-    /// side's `CountIdeasForReview`, which this is the dual path of.
-    package static func fetchForReview(_ db: Database) throws -> [Idea] {
+    /// Ideas awaiting owner review, scoped to one kind — the Ideas tab's
+    /// Ideas/Notes segments each review their own queue, so a flagged note
+    /// surfaces under Notes instead of mixing into Ideas.
+    ///
+    /// The `kind != 'decision'` clause stays alongside the caller's kind:
+    /// decisions are born 'active' and never enter this queue whatever is
+    /// asked for — mirrors the Go side's `CountIdeasForReview`, which this is
+    /// the dual path of.
+    package static func fetchForReview(_ db: Database, kind: String) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
             SELECT * FROM ideas
-            WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind = ? AND kind != 'decision'
             ORDER BY updated_at DESC
-            """)
+            """, arguments: [kind])
     }
 
     package static func fetchOne(_ db: Database, id: Int) throws -> Idea? {
@@ -92,11 +97,22 @@ package enum IdeaQueries {
             """, arguments: [ideaID])
     }
 
+    /// Global across both kinds, unlike `fetchForReview` — the sidebar badge
+    /// counts everything the owner still has to look at, whichever segment the
+    /// Ideas tab happens to be on.
     package static func countForReview(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM ideas
             WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
             """) ?? 0
+    }
+
+    /// Everything the Ideas tab can show, across both segments — what the
+    /// full-screen "No ideas yet" state keys off. Keying it off the active
+    /// segment instead would hide the segmented control (which lives in the
+    /// filter bar the empty state replaces) with no way back to the other one.
+    package static func countIdeasAndNotes(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind IN ('idea', 'note')") ?? 0
     }
 
     // MARK: - Decisions Ledger
@@ -286,6 +302,29 @@ package enum IdeaQueries {
             arguments: [ideaID, essence, now]
         )
         return ideaID
+    }
+
+    /// Owner-initiated hard delete: the row, its mentions, and its Discuss
+    /// chat, in the caller's single write transaction (the
+    /// `MeetingTranscriptQueries.delete` precedent). Deliberately outside
+    /// IDEA-03, which governs the convert/merge *transitions* — those stay
+    /// links; this is the owner explicitly throwing an entry away.
+    package static func delete(_ db: Database, id: Int) throws {
+        if let conversation = try ChatConversationQueries.fetchByContext(db, type: "idea", id: String(id)) {
+            // Mirrors ChatMessageQueries.deleteByConversation, which lives in
+            // the app target and isn't reachable from Core.
+            try db.execute(sql: "DELETE FROM chat_messages WHERE conversation_id = ?", arguments: [conversation.id])
+            try ChatConversationQueries.delete(db, id: conversation.id)
+        }
+        // These three carry no foreign key, so a surviving row pointing at the
+        // deleted id would keep a dangling link the consolidator follows.
+        try db.execute(sql: "UPDATE ideas SET similar_to_id = NULL WHERE similar_to_id = ?", arguments: [id])
+        try db.execute(sql: "UPDATE ideas SET merged_into_id = NULL WHERE merged_into_id = ?", arguments: [id])
+        try db.execute(sql: "UPDATE ideas SET superseded_by_id = NULL WHERE superseded_by_id = ?", arguments: [id])
+        // Explicit, though the FK is ON DELETE CASCADE — independent of the
+        // connection's foreign_keys pragma.
+        try db.execute(sql: "DELETE FROM idea_mentions WHERE idea_id = ?", arguments: [id])
+        try db.execute(sql: "DELETE FROM ideas WHERE id = ?", arguments: [id])
     }
 
     /// Marks an idea converted into a Target, recording the link. Keeps the row,

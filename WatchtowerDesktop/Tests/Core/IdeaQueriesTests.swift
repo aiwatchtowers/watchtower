@@ -124,9 +124,29 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, title: "Dropped", status: "dropped")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchForReview($0) }
+        let ideas = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea") }
 
         XCTAssertEqual(Set(ideas.map(\.title)), ["Proposed", "Active but flagged"])
+    }
+
+    /// The review queue is scoped to the Ideas tab's active segment, so a
+    /// flagged note is reviewed under Notes rather than mixed into Ideas.
+    /// The sidebar badge (`countForReview`) stays global.
+    func testFetchForReview_FiltersByKind() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "Proposed idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "note", title: "Proposed note", status: "proposed")
+        }
+
+        let ideas = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea") }
+        XCTAssertEqual(ideas.map(\.title), ["Proposed idea"])
+
+        let notes = try db.read { try IdeaQueries.fetchForReview($0, kind: "note") }
+        XCTAssertEqual(notes.map(\.title), ["Proposed note"])
+
+        let count = try db.read { try IdeaQueries.countForReview($0) }
+        XCTAssertEqual(count, 2, "the sidebar badge counts both kinds regardless of the active segment")
     }
 
     func testCountForReviewMatchesFetchForReview() throws {
@@ -144,6 +164,7 @@ final class IdeaQueriesTests: XCTestCase {
 
     /// Decisions are born 'active' and never enter the review queue — mirrors
     /// the Go side's `CountIdeasForReview`, which this is the dual path of.
+    /// Asked for explicitly, a flagged decision still doesn't come back.
     func testFetchForReviewExcludesDecisionsEvenWhenFlagged() throws {
         let db = try TestDatabase.create()
         try db.write { db in
@@ -152,9 +173,9 @@ final class IdeaQueriesTests: XCTestCase {
                                         status: "active", needsReview: true)
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchForReview($0) }
+        let decisions = try db.read { try IdeaQueries.fetchForReview($0, kind: "decision") }
 
-        XCTAssertEqual(ideas.map(\.title), ["Proposed idea"])
+        XCTAssertTrue(decisions.isEmpty)
     }
 
     func testCountForReviewExcludesDecisionsEvenWhenFlagged() throws {
@@ -608,6 +629,136 @@ final class IdeaQueriesTests: XCTestCase {
 
         let count = try db.read { try IdeaQueries.unreadDecisionCount($0) }
         XCTAssertEqual(count, 0)
+    }
+
+    // MARK: - delete
+
+    func testDelete_RemovesRowMentionsAndChat() throws {
+        let db = try TestDatabase.create()
+        let (doomedID, keptID) = try db.write { db -> (Int64, Int64) in
+            try Self.createChatTables(db)
+            let doomedID = try TestDatabase.insertIdea(db, title: "Throw this away")
+            try TestDatabase.insertIdeaMention(db, ideaID: doomedID, quote: "first sighting")
+            try TestDatabase.insertIdeaMention(db, ideaID: doomedID, quote: "second sighting")
+            try Self.insertChat(db, ideaID: doomedID, messages: 2)
+            let keptID = try TestDatabase.insertIdea(db, title: "Keep this")
+            try TestDatabase.insertIdeaMention(db, ideaID: keptID, quote: "unrelated sighting")
+            try Self.insertChat(db, ideaID: keptID, messages: 1)
+            return (doomedID, keptID)
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(doomedID)) }
+
+        XCTAssertNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(doomedID)) })
+        XCTAssertTrue(try db.read { try IdeaQueries.fetchMentions($0, ideaID: Int(doomedID)) }.isEmpty)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: doomedID).conversations, 0)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: doomedID).messages, 0)
+
+        XCTAssertNotNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(keptID)) })
+        XCTAssertEqual(try db.read { try IdeaQueries.fetchMentions($0, ideaID: Int(keptID)) }.count, 1)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: keptID).conversations, 1)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: keptID).messages, 1)
+    }
+
+    /// `similar_to_id`/`merged_into_id`/`superseded_by_id` carry no foreign
+    /// key, so without an explicit null-out the survivors would keep pointing
+    /// at an id that no longer exists.
+    func testDelete_NullsBackReferencesOnSurvivors() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db -> (doomed: Int64, merged: Int64, similar: Int64, superseded: Int64) in
+            try Self.createChatTables(db)
+            let doomed = try TestDatabase.insertIdea(db, title: "Canonical")
+            let merged = try TestDatabase.insertIdea(db, title: "Merged into it", mergedIntoID: Int(doomed))
+            let similar = try TestDatabase.insertIdea(db, title: "Similar to it", similarToID: Int(doomed))
+            let superseded = try TestDatabase.insertIdea(db, title: "Superseded by it", supersededByID: Int(doomed))
+            return (doomed, merged, similar, superseded)
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(ids.doomed)) }
+
+        let merged = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.merged)) }
+        XCTAssertNotNil(merged)
+        XCTAssertNil(merged?.mergedIntoID)
+
+        let similar = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.similar)) }
+        XCTAssertNotNil(similar)
+        XCTAssertNil(similar?.similarToID)
+
+        let superseded = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.superseded)) }
+        XCTAssertNotNil(superseded)
+        XCTAssertNil(superseded?.supersededByID)
+    }
+
+    /// An idea nobody ever opened a Discuss chat for deletes just the same.
+    func testDelete_NoChatIsCleanSuccess() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db -> Int64 in
+            try Self.createChatTables(db)
+            return try TestDatabase.insertIdea(db, title: "Never discussed")
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(ideaID)) }
+
+        XCTAssertNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) })
+    }
+
+    // MARK: - countIdeasAndNotes
+
+    func testCountIdeasAndNotesCountsBothKindsAndSkipsDecisions() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea")
+            try TestDatabase.insertIdea(db, kind: "note")
+            try TestDatabase.insertIdea(db, kind: "decision")
+        }
+
+        XCTAssertEqual(try db.read { try IdeaQueries.countIdeasAndNotes($0) }, 2)
+    }
+
+    // MARK: - Chat fixtures
+
+    /// The chat tables are created lazily at runtime by `DatabaseManager`, not
+    /// by the test schema. `ChatMessageQueries` stays app-side, so its
+    /// `ensureTable` DDL is inlined to let this file live in WatchtowerCoreTests.
+    private static func createChatTables(_ db: Database) throws {
+        try ChatConversationQueries.ensureTable(db)
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at REAL NOT NULL
+            )
+        """)
+    }
+
+    private static func insertChat(_ db: Database, ideaID: Int64, messages: Int) throws {
+        try db.execute(sql: """
+            INSERT INTO chat_conversations (context_type, context_id, title, created_at, updated_at)
+            VALUES ('idea', ?, 'Discuss', 0, 0)
+            """, arguments: [ideaID])
+        let conversationID = db.lastInsertedRowID
+        for index in 0..<messages {
+            try db.execute(sql: """
+                INSERT INTO chat_messages (conversation_id, role, text, created_at)
+                VALUES (?, 'user', ?, 0)
+                """, arguments: [conversationID, "message \(index)"])
+        }
+    }
+
+    private static func chatCounts(_ db: DatabaseQueue, ideaID: Int64) throws -> (conversations: Int, messages: Int) {
+        try db.read { db in
+            let conversations = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM chat_conversations WHERE context_type = 'idea' AND context_id = ?
+                """, arguments: [ideaID]) ?? 0
+            let messages = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM chat_messages WHERE conversation_id IN (
+                    SELECT id FROM chat_conversations WHERE context_type = 'idea' AND context_id = ?
+                )
+                """, arguments: [ideaID]) ?? 0
+            return (conversations, messages)
+        }
     }
 
     // MARK: - mentionSourcesByIdea

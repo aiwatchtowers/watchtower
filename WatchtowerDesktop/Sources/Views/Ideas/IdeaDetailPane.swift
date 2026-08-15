@@ -27,6 +27,7 @@ struct IdeaDetailPane: View {
     let onMerge: (Int) -> Void
     let onConvert: () -> Void
     let onRating: (Int, String) -> Bool
+    let onDelete: () -> Void
 
     @State private var comment: String
     @State private var rating: Int?
@@ -36,6 +37,7 @@ struct IdeaDetailPane: View {
     @State private var jiraSiteURL: String?
     @State private var showMergeSheet = false
     @State private var mergePreselectID: Int?
+    @State private var showDeleteConfirmation = false
 
     // Discuss chat state lives here (not hoisted like the situation pane's)
     // because IdeasView already applies `.id(idea.id)` at this pane's call
@@ -53,7 +55,8 @@ struct IdeaDetailPane: View {
         onDrop: @escaping () -> Void,
         onMerge: @escaping (Int) -> Void,
         onConvert: @escaping () -> Void,
-        onRating: @escaping (Int, String) -> Bool
+        onRating: @escaping (Int, String) -> Bool,
+        onDelete: @escaping () -> Void
     ) {
         self.idea = idea
         self.allIdeas = allIdeas
@@ -65,6 +68,7 @@ struct IdeaDetailPane: View {
         self.onMerge = onMerge
         self.onConvert = onConvert
         self.onRating = onRating
+        self.onDelete = onDelete
         _comment = State(initialValue: idea.ratingComment)
         _rating = State(initialValue: idea.ownerRating == 0 ? nil : idea.ownerRating)
     }
@@ -103,6 +107,12 @@ struct IdeaDetailPane: View {
                 preselectedID: mergePreselectID,
                 onMerge: onMerge
             )
+        }
+        .confirmationDialog("Delete this \(kindLabel.lowercased())?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive, action: onDelete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Its mentions and chat will be removed permanently.")
         }
     }
 
@@ -470,6 +480,16 @@ struct IdeaDetailPane: View {
             }
 
             Spacer()
+
+            // Offered for every kind and every status: the owner can throw
+            // anything away, including entries no status action applies to.
+            Button(role: .destructive) {
+                showDeleteConfirmation = true
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.bordered)
+            .help("Delete permanently")
         }
     }
 
