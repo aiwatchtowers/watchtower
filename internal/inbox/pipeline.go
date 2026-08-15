@@ -636,8 +636,35 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 	candidates = append(candidates, threadReplies...)
 	candidates = append(candidates, reactions...)
 
-	// Group by (channel, thread): keep latest message + collect all unique senders.
-	// Non-threaded messages (ThreadTS="") are grouped by channel using key (channelID, "").
+	created := p.createItemsFromCandidates(candidates, currentUserID, false)
+
+	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
+		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
+	return created, nil
+}
+
+// createItemsFromCandidates groups candidates by (channel, thread) — keeping
+// the latest message per group and collecting all unique senders — then
+// creates one inbox item per group, folding into an existing pending thread
+// item instead when one already covers the same thread. Non-threaded
+// messages (ThreadTS="") are grouped by channel using key (channelID, "").
+//
+// This is the shared creation path behind detectSlackTriggers (all four
+// per-cycle trigger types) and BackfillMentions (mentions only, against an
+// explicit --since timestamp instead of the watermark, see backfill.go) —
+// kept as one path deliberately so grouping, closing-signal filtering, and
+// item creation cannot drift between the two callers. Known pre-existing
+// limitation both callers inherit unchanged: the closing-signal check below
+// runs only against a group's latest message, so an acknowledgment reply
+// suppresses the whole group, including a substantive message it followed
+// (see TestPipeline_ClosingSignalSkipped).
+//
+// currentUserID is used only for the closing-signal reply check
+// (CheckUserRepliedBefore). When dryRun is true every read still runs, so
+// the returned count matches exactly what a real run would create, but both
+// writes that mutate inbox_items (the existing-thread fold, and
+// CreateInboxItem for a new item) are skipped.
+func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
 	type threadKey struct{ channelID, threadTS string }
 	type threadGroup struct {
 		latest  db.InboxCandidate
@@ -687,12 +714,20 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 
 		existingID, _ := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
 		if existingID > 0 {
+			if dryRun {
+				continue
+			}
 			if err := p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink); err != nil {
 				p.logger.Printf("inbox: error updating thread item %d: %v", existingID, err)
 			}
 			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
 				p.logger.Printf("inbox: error merging waiting users for item %d: %v", existingID, err)
 			}
+			continue
+		}
+
+		if dryRun {
+			created++
 			continue
 		}
 
@@ -717,10 +752,7 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 		}
 		created++
 	}
-
-	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
-		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
-	return created, nil
+	return created
 }
 
 // loadContext loads thread or channel context for an inbox item.
