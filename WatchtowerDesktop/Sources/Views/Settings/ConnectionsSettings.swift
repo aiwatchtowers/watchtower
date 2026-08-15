@@ -52,6 +52,10 @@ struct ConnectionsSettings: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
     @State private var selected: ConnectionService = .slack
+    // Owned here, not by SlackConnectionDetail, so an in-flight Slack
+    // connect/reconnect/disconnect survives switching to another service —
+    // see SlackAuthFlowState's doc comment.
+    @State private var slackFlow = SlackAuthFlowState()
 
     var body: some View {
         HStack(spacing: 0) {
@@ -94,7 +98,7 @@ struct ConnectionsSettings: View {
     @ViewBuilder
     private var detail: some View {
         switch selected {
-        case .slack: SlackConnectionDetail(config: config)
+        case .slack: SlackConnectionDetail(config: config, flow: slackFlow)
         case .google: GoogleConnectionDetail(config: config)
         case .email: EmailConnectionDetail()
         case .calendar: CalendarConnectionDetail()

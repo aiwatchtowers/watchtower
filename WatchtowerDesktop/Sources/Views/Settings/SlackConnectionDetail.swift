@@ -1,19 +1,34 @@
 import SwiftUI
 import WatchtowerCore
 
+/// In-flight Slack auth/reconnect/disconnect state, hoisted out of
+/// `SlackConnectionDetail` and owned by `ConnectionsSettings` instead. The
+/// Connections tab's detail pane is a `@ViewBuilder switch`, so each service
+/// gets its own view identity — switching to another service while a
+/// `SlackConnectionDetail`-local `@State` reconnect/disconnect was running
+/// would tear that state (and the running CLI process reference) down,
+/// orphaning the process and losing the result. Living on `ConnectionsSettings`
+/// instead means this state survives switching services, matching the old
+/// `GeneralSettings` monolith where it lived for the tab's whole lifetime.
+@MainActor
+@Observable
+final class SlackAuthFlowState {
+    var reconnecting = false
+    var reconnectResult: String?
+    var reconnectSuccess = false
+    var authProcess: Process?
+    var disconnecting = false
+    let daemonManager = DaemonManager()
+}
+
 /// Slack detail pane in the Connections tab — the legacy single-workspace
 /// connect/reconnect/disconnect block plus the multi-account Slack Workspaces
 /// list (`slack_accounts` table, migration 00048).
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
-    @State private var daemonManager = DaemonManager()
-    @State private var slackReconnecting = false
-    @State private var slackReconnectResult: String?
-    @State private var slackReconnectSuccess = false
-    @State private var slackAuthProcess: Process?
+    var flow: SlackAuthFlowState
     @State private var slackAuth = SlackAuthService()
-    @State private var slackDisconnecting = false
     @State private var showSlackDisconnectConfirm = false
     @State private var showAddSlackAccountSheet = false
     @State private var slackAccountPendingRemoval: SlackAccount?
@@ -43,18 +58,18 @@ struct SlackConnectionDetail: View {
                     reconnectSlack()
                 } label: {
                     HStack(spacing: 4) {
-                        if slackReconnecting {
+                        if flow.reconnecting {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(slackReconnecting
+                        Text(flow.reconnecting
                             ? "Connecting..."
                             : (slackAuth.isConnected ? "Reconnect Slack" : "Connect Slack"))
                     }
                 }
-                .disabled(slackReconnecting || slackDisconnecting)
+                .disabled(flow.reconnecting || flow.disconnecting)
 
-                if slackReconnecting {
+                if flow.reconnecting {
                     Button("Cancel") {
                         cancelSlackReconnect()
                     }
@@ -65,24 +80,24 @@ struct SlackConnectionDetail: View {
                         showSlackDisconnectConfirm = true
                     } label: {
                         HStack(spacing: 4) {
-                            if slackDisconnecting {
+                            if flow.disconnecting {
                                 ProgressView()
                                     .controlSize(.small)
                             }
-                            Text(slackDisconnecting ? "Disconnecting..." : "Disconnect")
+                            Text(flow.disconnecting ? "Disconnecting..." : "Disconnect")
                         }
                     }
-                    .disabled(slackReconnecting || slackDisconnecting)
+                    .disabled(flow.reconnecting || flow.disconnecting)
                 }
             }
 
-            if let result = slackReconnectResult {
+            if let result = flow.reconnectResult {
                 HStack {
-                    Image(systemName: slackReconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(slackReconnectSuccess ? .green : .red)
+                    Image(systemName: flow.reconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(slackReconnectSuccess ? .green : .red)
+                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
@@ -113,20 +128,20 @@ struct SlackConnectionDetail: View {
     }
 
     private func disconnectSlack() {
-        slackDisconnecting = true
+        flow.disconnecting = true
         Task {
             // Stop the daemon first so it isn't mid-sync when the token is
             // removed, then restart it — without a token it skips the Slack
             // phase. Synced data is kept (non-destructive, matches `slack
             // remove` / `auth logout` semantics).
-            await daemonManager.stopDaemon()
+            await flow.daemonManager.stopDaemon()
             await slackAuth.disconnect()
             if slackAuth.error == nil {
                 config.reload()
-                slackReconnectResult = nil
+                flow.reconnectResult = nil
             }
-            await daemonManager.startDaemon()
-            slackDisconnecting = false
+            await flow.daemonManager.startDaemon()
+            flow.disconnecting = false
         }
     }
 
@@ -240,22 +255,22 @@ struct SlackConnectionDetail: View {
 
     private func reconnectSlack() {
         guard let cliPath = Constants.findCLIPath() else {
-            slackReconnectResult = "watchtower CLI not found"
-            slackReconnectSuccess = false
+            flow.reconnectResult = "watchtower CLI not found"
+            flow.reconnectSuccess = false
             return
         }
 
-        slackReconnecting = true
-        slackReconnectResult = nil
-        slackReconnectSuccess = false
+        flow.reconnecting = true
+        flow.reconnectResult = nil
+        flow.reconnectSuccess = false
 
         Task.detached {
             // Ensure TLS cert is trusted first
             let trustResult = await Self.runCLIProcess(path: cliPath, arguments: ["auth", "trust-cert"])
             if trustResult.exitCode != 0 {
                 await MainActor.run {
-                    slackReconnecting = false
-                    slackReconnectResult = trustResult.stderr.isEmpty
+                    flow.reconnecting = false
+                    flow.reconnectResult = trustResult.stderr.isEmpty
                         ? "Failed to set up secure connection"
                         : String(trustResult.stderr.prefix(200))
                 }
@@ -263,7 +278,7 @@ struct SlackConnectionDetail: View {
             }
 
             await MainActor.run {
-                slackReconnectResult = "Complete authorization in your browser..."
+                flow.reconnectResult = "Complete authorization in your browser..."
             }
 
             // Run auth login (opens browser) — keep reference to process for cancellation
@@ -281,14 +296,14 @@ struct SlackConnectionDetail: View {
                 try process.run()
             } catch {
                 await MainActor.run {
-                    slackReconnecting = false
-                    slackReconnectResult = "Failed to launch: \(error.localizedDescription)"
+                    flow.reconnecting = false
+                    flow.reconnectResult = "Failed to launch: \(error.localizedDescription)"
                 }
                 return
             }
 
             await MainActor.run {
-                slackAuthProcess = process
+                flow.authProcess = process
             }
 
             process.waitUntilExit()
@@ -299,20 +314,20 @@ struct SlackConnectionDetail: View {
             _ = String(data: stdoutData, encoding: .utf8) // consume stdout
 
             await MainActor.run {
-                slackAuthProcess = nil
-                slackReconnecting = false
+                flow.authProcess = nil
+                flow.reconnecting = false
 
                 let exitCode = process.terminationStatus
                 if exitCode == 0 {
-                    slackReconnectSuccess = true
-                    slackReconnectResult = "Connected"
+                    flow.reconnectSuccess = true
+                    flow.reconnectResult = "Connected"
                     config.reload()
                     slackAuth.checkStatus()
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
-                    slackReconnectResult = nil
+                    flow.reconnectResult = nil
                 } else {
-                    slackReconnectResult = stderr.isEmpty
+                    flow.reconnectResult = stderr.isEmpty
                         ? "Authentication failed (exit \(exitCode))"
                         : String(stderr.prefix(200))
                 }
@@ -321,12 +336,12 @@ struct SlackConnectionDetail: View {
     }
 
     private func cancelSlackReconnect() {
-        if let process = slackAuthProcess, process.isRunning {
+        if let process = flow.authProcess, process.isRunning {
             process.terminate()
         }
-        slackAuthProcess = nil
-        slackReconnecting = false
-        slackReconnectResult = nil
+        flow.authProcess = nil
+        flow.reconnecting = false
+        flow.reconnectResult = nil
     }
 
     private static func runCLIProcess(path: String, arguments: [String]) async -> (exitCode: Int32, stdout: String, stderr: String) {
