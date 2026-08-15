@@ -317,16 +317,21 @@ class MeetingRecorderTestCase: XCTestCase {
                           "the Center must write a rec_*.meta sidecar at record start"))
     }
 
-    /// Yields the main actor until `condition` holds. Bounded, so a regression
-    /// that parks the queue forever fails an assertion instead of hanging the
-    /// suite — callers must not `await` a Task that only completes on success
-    /// unless this returned true.
+    /// Yields the main actor until `condition` holds, polling against a
+    /// wall-clock deadline rather than a fixed iteration count, so a loaded
+    /// CI runner gets as much real time to make progress as an idle dev
+    /// machine. Bounded, so a regression that parks the queue forever fails
+    /// an assertion instead of hanging the suite — callers must not `await`
+    /// a Task that only completes on success unless this returned true.
     @discardableResult
     func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async -> Bool {
-        for _ in 0..<400 {
+        let deadline: Duration = .seconds(5)
+        let start = ContinuousClock.now
+        repeat {
             if condition() { return true }
             await Task.yield()
-        }
+            try? await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now - start < deadline
         XCTFail("timed out waiting for \(what)")
         return false
     }
