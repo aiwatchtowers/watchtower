@@ -416,12 +416,22 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCancelledEngineLoadNeverResurrectsAnUnmanagedWarmEngine() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
-        let recorder = FakeMicRecorder()
+        // A fresh recorder per start(), mirroring the production factory
+        // (`{ MicRecorder() }`): t1's cancel() stops and permanently closes
+        // its recorder's sample stream, so t2 must not inherit it — reusing
+        // one instance across both starts would give t2 an already-finished
+        // stream, and `capture()` would fall through empty before this test
+        // ever gets to observe `.recording` as a held state.
+        var currentRecorder: FakeMicRecorder!
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         let gate = AsyncGate()
         let center = DictationCenter(
-            recorderFactory: { recorder },
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                currentRecorder = recorder
+                return recorder
+            },
             engineFactory: { _ in
                 engineLoads += 1
                 await gate.wait()
@@ -455,7 +465,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
         await waitUntil("recording") { center.phase == .recording }
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        currentRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
 
