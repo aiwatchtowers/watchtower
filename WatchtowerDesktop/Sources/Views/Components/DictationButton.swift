@@ -102,15 +102,18 @@ struct DictationButton: View {
     /// so finalizing on Esc would surprise anyone using it to back out.
     /// `center.cancel()` is global — a button for a target that isn't the one
     /// actually dictating must not cancel someone else's dictation, hence the
-    /// ownership guard. Internal (not private) as the tests' hook.
-    func escPressed(center: DictationCenter) {
+    /// ownership guard. Tests drive Esc via ViewInspector's
+    /// `callOnExitCommand`, so this needs no external consumer.
+    private func escPressed(center: DictationCenter) {
         guard center.activeTargetID == targetID else { return }
         center.cancel()
     }
 
-    /// mm:ss with hours folded into minutes (3661 s → "61:01").
+    /// mm:ss with hours folded into minutes (3661 s → "61:01"). A negative
+    /// duration (should never happen with the monotonic clock, but cheap to
+    /// defend) clamps to "0:00".
     static func timerLabel(_ d: Duration) -> String {
-        let totalSeconds = Int(d.components.seconds)
+        let totalSeconds = max(0, Int(d.components.seconds))
         return "\(totalSeconds / 60):" + String(format: "%02d", totalSeconds % 60)
     }
 
@@ -198,12 +201,13 @@ struct DictationButton: View {
         .help(help)
     }
 
-    /// The elapsed-time readout; paused time never ticks (`elapsed(at:)`
-    /// freezes while no recording span is open, so a 1 s tick cadence just
-    /// re-renders the same label).
+    /// The elapsed-time readout; paused time never ticks (`elapsed()` freezes
+    /// while no recording span is open, so a 1 s tick cadence just re-renders
+    /// the same label). The TimelineView only drives the refresh — the value
+    /// itself comes from the center's monotonic clock.
     private func timerText(_ center: DictationCenter) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(Self.timerLabel(center.elapsed(at: context.date)))
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text(Self.timerLabel(center.elapsed()))
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -218,6 +222,7 @@ struct DictationButton: View {
                 .foregroundStyle(.orange)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("dictation.retry")
         .help(message)
     }
 

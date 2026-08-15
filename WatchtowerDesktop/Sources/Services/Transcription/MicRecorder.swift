@@ -51,6 +51,14 @@ final class MicRecorder: MicRecording {
     private var converter: AVAudioConverter?
     /// Guarded by `convertQueue`, like `converter`.
     private var paused = false
+    /// Guarded by `convertQueue`. Latched by `stop()` so a stop that races a
+    /// still-suspended `start()` (e.g. inside the permission prompt) is not
+    /// lost: `start()` re-checks it after every suspension/setup step and
+    /// backs out instead of installing the tap / starting the engine — a
+    /// hot-mic with nothing left to ever stop it. A stopped start returns
+    /// NORMALLY (no throw): the caller's stream is already finished, so its
+    /// dictation task resolves through the ordinary empty path.
+    private var stopped = false
     /// First conversion error, latched on `convertQueue` (the
     /// `SystemAudioRecorder.firstWriteError` pattern). `stop()`'s barrier
     /// orders the write before any post-stop read of `lastError`.
@@ -76,6 +84,9 @@ final class MicRecorder: MicRecording {
             throw MicRecorderError.engineStartFailed("already started")
         }
         guard await requestAccess() else { throw MicRecorderError.microphonePermissionDenied }
+        // A stop may have landed while we were suspended in the permission
+        // request — back out before touching the tap or the engine.
+        guard convertQueue.sync(execute: { !stopped }) else { return }
 
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -88,6 +99,17 @@ final class MicRecorder: MicRecording {
 
         inputNode.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
             self?.convertQueue.async { self?.appendDownsampled(buffer) }
+        }
+
+        // Last re-check before the engine actually starts: a stop that landed
+        // after the permission check must not be answered with a freshly
+        // started engine. (A stop landing AFTER this point is covered by the
+        // caller's belt-and-braces re-stop — `stop()` is idempotent and a
+        // second call on a started engine still tears it down.)
+        guard convertQueue.sync(execute: { !stopped }) else {
+            inputNode.removeTap(onBus: 0)
+            convertQueue.sync { converter = nil }
+            return
         }
 
         do {
@@ -104,7 +126,12 @@ final class MicRecorder: MicRecording {
         convertQueue.sync { self.paused = paused }
     }
 
+    /// Idempotent — a second call (the caller's belt-and-braces re-stop after
+    /// a `start()` that raced the first stop) still removes the tap and stops
+    /// the engine, so an engine that came hot between the latch checks and
+    /// the first stop is torn down for real.
     func stop() {
+        convertQueue.sync { stopped = true }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         // Barrier on convertQueue so an in-flight appendDownsampled (already
@@ -130,6 +157,12 @@ final class MicRecorder: MicRecording {
         let ratio = Self.outputSampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up) + 16)
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {
+            // Latch like the conversion-error branch below: an empty capture
+            // caused by allocation failures is a broken mic path, not silence.
+            if firstConversionError == nil {
+                firstConversionError = MicRecorderError.engineStartFailed("allocating conversion buffer")
+                NSLog("MicRecorder: allocating conversion buffer failed")
+            }
             return
         }
 

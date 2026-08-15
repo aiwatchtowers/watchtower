@@ -315,6 +315,13 @@ final class MeetingRecorderCenter {
     /// levels reset to zero — on every path that ends capture.
     private var levelsTask: Task<Void, Never>?
 
+    /// The `liveGeneration` pattern for the level feed: bumped on every
+    /// capture start and teardown, captured by `startLevelsTask`'s loop, so a
+    /// stale buffered level pair from a cancelled task (a value already
+    /// delivered before the cancellation landed) can never clobber a new
+    /// capture's meters — or the zero reset.
+    private var levelsGeneration = 0
+
     /// Bumped every time a new live pass starts (`startLivePass`) and again when
     /// a stop-time error orphans the in-flight one. `onChunk` closes over the
     /// value captured at its own start and only mutates `liveChunks` while that
@@ -942,18 +949,24 @@ final class MeetingRecorderCenter {
     /// teardown path that cancelled it already reset on its behalf, and a new
     /// capture's levels may have landed in between.
     private func startLevelsTask(recorder: AudioRecording) {
+        levelsGeneration += 1
+        let generation = levelsGeneration
         levelsTask = Task { @MainActor [weak self] in
             for await levels in recorder.liveLevels {
-                self?.captureLevels = levels
+                guard let self, self.levelsGeneration == generation else { return }
+                self.captureLevels = levels
             }
-            guard !Task.isCancelled else { return }
-            self?.captureLevels = .init(mic: 0, system: 0)
+            guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
+            self.captureLevels = .init(mic: 0, system: 0)
         }
     }
 
     /// Ends the level feed for a capture that is over: every path that clears
-    /// `captureState` runs this so the meters never show a stale level.
+    /// `captureState` runs this so the meters never show a stale level. The
+    /// generation bump fences out a value the cancelled task had already
+    /// received but not yet written.
     private func stopLevelsTask() {
+        levelsGeneration += 1
         levelsTask?.cancel()
         levelsTask = nil
         captureLevels = .init(mic: 0, system: 0)

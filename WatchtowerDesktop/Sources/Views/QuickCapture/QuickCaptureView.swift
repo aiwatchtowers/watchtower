@@ -337,12 +337,13 @@ struct QuickCaptureView: View {
         .frame(maxHeight: 160)
     }
 
-    /// The elapsed-time readout; paused time never ticks (`elapsed(at:)`
-    /// freezes while no recording span is open, so the 1 s tick cadence just
-    /// re-renders the same label).
+    /// The elapsed-time readout; paused time never ticks (`elapsed()` freezes
+    /// while no recording span is open, so the 1 s tick cadence just
+    /// re-renders the same label). The TimelineView only drives the refresh —
+    /// the value itself comes from the center's monotonic clock.
     private func timerText(_ center: DictationCenter) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(DictationButton.timerLabel(center.elapsed(at: context.date)))
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text(DictationButton.timerLabel(center.elapsed()))
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)

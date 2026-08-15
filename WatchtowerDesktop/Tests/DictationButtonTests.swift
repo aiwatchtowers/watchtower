@@ -1,7 +1,12 @@
 import XCTest
 import SwiftUI
 import ViewInspector
+import WatchtowerCore
 @testable import WatchtowerDesktop
+
+/// An engine load failing in the button rendering tests — local so a failure
+/// message can't be confused with the center tests' stubs.
+private struct ButtonStubError: Error {}
 
 /// `DictationSpan` is the pure span-management core of `DictationButton`,
 /// extracted so these tests don't need ViewInspector.
@@ -50,14 +55,31 @@ final class DictationSpanTests: XCTestCase {
 @MainActor
 final class DictationButtonViewTests: XCTestCase {
 
-    private func makeCenter() throws -> DictationCenter {
+    private func makeCenter(
+        engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber
+            = { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) }
+    ) throws -> DictationCenter {
         DictationCenter(
             recorderFactory: { FakeMicRecorder() },
-            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            engineFactory: engineFactory,
             runnerResolver: { nil },
             defaults: try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)")),
             engineIdleTTL: .seconds(900)
         )
+    }
+
+    /// The `MeetingRecorderTestCase.waitUntil` shape, local — this class
+    /// extends plain `XCTestCase`.
+    private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
+        for _ in 0..<400 {
+            if condition() { return }
+            await Task.yield()
+        }
+        for _ in 0..<200 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("timed out waiting for \(what)")
     }
 
     private func makeButton(targetID: String = "t", center: DictationCenter) -> DictationButton {
@@ -76,6 +98,8 @@ final class DictationButtonViewTests: XCTestCase {
         XCTAssertEqual(DictationButton.timerLabel(.seconds(62)), "1:02")
         // Hours fold into minutes — no h:mm:ss form.
         XCTAssertEqual(DictationButton.timerLabel(.seconds(3661)), "61:01")
+        // Defensive clamp: a negative duration renders as zero, never "-1:-05".
+        XCTAssertEqual(DictationButton.timerLabel(.seconds(-5)), "0:00")
     }
 
     // MARK: - Capsule controls by phase
@@ -132,5 +156,88 @@ final class DictationButtonViewTests: XCTestCase {
 
         XCTAssertEqual(center.phase, .recording,
                        "Esc on a button that doesn't own the dictation must not cancel it")
+    }
+
+    // MARK: - Rendering by phase (stopping / cleaning / failed / loading badge)
+
+    func testStoppingShowsTranscribingLabel() async throws {
+        let gate = AsyncGate()
+        let center = try makeCenter { _ in
+            await gate.wait()
+            return TestTranscriber(ScriptedEngine(texts: []), supportsLive: true)
+        }
+        defer {
+            gate.release()
+            center.cancel()
+        }
+        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.stop() // during the (gated) engine load — `.stopping` holds
+        XCTAssertEqual(center.phase, .stopping)
+
+        let sut = makeButton(center: center)
+        XCTAssertNoThrow(try sut.inspect().find(text: "Transcribing…"),
+                         "the stopping capsule must show the transcribing label")
+    }
+
+    func testCleaningShowsCleaningLabel() async throws {
+        let recorder = FakeMicRecorder()
+        let gate = AsyncGate()
+        let runner = GatedCLIRunner(gate: gate, stdout: Data(#"{"mode":"chat","text":"cleaned"}"#.utf8))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)"))
+        defaults.set("en", forKey: "transcription.forceLang")
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var result: DictationCleanResult?
+        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("cleaning") { center.phase == .cleaning }
+
+        let sut = makeButton(center: center)
+        XCTAssertNoThrow(try sut.inspect().find(text: "Cleaning…"),
+                         "the cleaning capsule must show the cleaning label")
+
+        gate.release()
+        await waitUntil("result delivered") { result != nil }
+    }
+
+    func testFailedShowsRetryAffordance() async throws {
+        let center = try makeCenter { _ in throw ButtonStubError() }
+        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+
+        let sut = makeButton(center: center)
+        XCTAssertTrue(hasControl(sut, "dictation.retry"), "the failed state must offer retry")
+        center.retry()
+    }
+
+    func testLoadingBadgeVisibleWhileEngineLoadsAndGoneAfter() async throws {
+        let gate = AsyncGate()
+        let center = try makeCenter { _ in
+            await gate.wait()
+            return TestTranscriber(ScriptedEngine(texts: []), supportsLive: true)
+        }
+        defer { center.cancel() }
+        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        XCTAssertTrue(center.isEngineLoading)
+
+        let sut = makeButton(center: center)
+        XCTAssertNoThrow(try sut.inspect().find(text: "Loading model…"),
+                         "the badge must ride the recording capsule while the engine loads")
+
+        gate.release()
+        await waitUntil("engine loaded") { !center.isEngineLoading }
+
+        XCTAssertThrowsError(try sut.inspect().find(text: "Loading model…"),
+                             "the badge must disappear once the engine is loaded")
     }
 }

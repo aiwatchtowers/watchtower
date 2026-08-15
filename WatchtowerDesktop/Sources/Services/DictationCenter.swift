@@ -34,14 +34,14 @@ final class DictationCenter {
     /// the capsule's level bars. Reads 0 while paused, idle, or failed.
     private(set) var micLevel: Float = 0
     /// Recording time accumulated across closed spans; paused time never
-    /// ticks. The open span (if any) starts at `spanStartedAt` — `elapsed(at:)`
-    /// adds it on top.
+    /// ticks. The open span (if any) starts at `spanStartedAt` —
+    /// `elapsed(now:)` adds it on top.
     private(set) var elapsedAccumulated: Duration = .zero
-    /// Start of the currently-open recording span: set when recording
-    /// actually starts and on every `resume()`; folded into
-    /// `elapsedAccumulated` and nil'd on `pause()`, `stop()`, `cancel()`, and
-    /// failure.
-    private(set) var spanStartedAt: Date?
+    /// Start of the currently-open recording span (monotonic — a wall-clock
+    /// jump must never distort the timer): set when recording actually starts
+    /// and on every `resume()`; folded into `elapsedAccumulated` and nil'd on
+    /// `pause()`, `stop()`, `cancel()`, and failure.
+    private(set) var spanStartedAt: ContinuousClock.Instant?
     /// Accumulated raw text delivered so far, chunk by chunk, while live.
     private(set) var liveText: String = ""
     /// The raw transcript of the most recently finished (or failed) dictation,
@@ -153,11 +153,14 @@ final class DictationCenter {
         micLevel = 0
         silentSeconds = 0
         elapsedAccumulated = .zero
-        spanStartedAt = Date()
+        spanStartedAt = .now
         // The engine is about to be used again — the idle countdown from the
-        // previous dictation (if any) no longer applies.
+        // previous dictation (if any) no longer applies. Likewise a stale
+        // pause-timeout from a previous session (e.g. one that failed while
+        // paused) must never fire into this one.
         engineReleaseTask?.cancel()
         engineReleaseTask = nil
+        cancelPauseTimeout()
 
         var config = TranscriptionConfig.fromDefaults(defaults)
         config.windowSec = 10
@@ -193,7 +196,7 @@ final class DictationCenter {
         cancelPauseTimeout()
         silentSeconds = 0
         recorder?.setPaused(false)
-        spanStartedAt = Date()
+        spanStartedAt = .now
         phase = .recording
     }
 
@@ -204,7 +207,9 @@ final class DictationCenter {
     /// from `.paused` exactly like from `.recording` — pause never becomes a
     /// trap the user can only cancel out of. Speech spoken during an engine
     /// load was buffered from t0 and is batch-decoded once the engine
-    /// resolves — never discarded; `cancel()` is the only discard path. A
+    /// resolves — never discarded; `cancel()` is the only deliberate discard
+    /// path (an engine-load FAILURE also loses the buffered speech — nothing
+    /// was left that could decode it). A
     /// no-op in any other phase — calling it twice is safe, since the
     /// underlying task only ever resolves once regardless of how many times
     /// the mic is told to stop.
@@ -257,18 +262,18 @@ final class DictationCenter {
         }
     }
 
-    /// Recording time elapsed as of `date`: the closed spans plus the
-    /// currently-open one (if any). Paused time never ticks — `pause()` folds
-    /// the open span and nils `spanStartedAt`, freezing this value.
-    func elapsed(at date: Date) -> Duration {
-        elapsedAccumulated + (spanStartedAt.map { .seconds(date.timeIntervalSince($0)) } ?? .zero)
+    /// Recording time elapsed as of `now` (monotonic): the closed spans plus
+    /// the currently-open one (if any). Paused time never ticks — `pause()`
+    /// folds the open span and nils `spanStartedAt`, freezing this value.
+    func elapsed(now: ContinuousClock.Instant = .now) -> Duration {
+        elapsedAccumulated + (spanStartedAt.map { $0.duration(to: now) } ?? .zero)
     }
 
     /// Closes the open recording span into `elapsedAccumulated`. A no-op when
     /// no span is open (e.g. `stop()` from `.paused`).
     private func foldOpenSpan() {
         guard let start = spanStartedAt else { return }
-        elapsedAccumulated += .seconds(Date().timeIntervalSince(start))
+        elapsedAccumulated += start.duration(to: .now)
         spanStartedAt = nil
     }
 
@@ -294,9 +299,21 @@ final class DictationCenter {
         do {
             try await recorder.start()
         } catch {
+            NSLog("[Dictation] mic failed to start: %@", String(describing: error))
             guard !Task.isCancelled else { return }
             finish(failed: "microphone failed to start: \(error.localizedDescription)")
             return
+        }
+        // A stop/cancel that landed while `recorder.start()` was still
+        // suspended may have caught the recorder before its engine actually
+        // ran — `MicRecorder` latches the stop and backs out, but the engine
+        // may also have come hot in the races the latch can't cover. Now that
+        // start() has completed, a second stop() is a REAL stop (idempotent
+        // on the recorder side), so nothing can leave the mic hot. The flow
+        // then continues to its natural resolution — the finished sample
+        // stream resolves through the ordinary empty/degenerate path.
+        if phase != .recording && phase != .paused {
+            recorder.stop()
         }
         guard !Task.isCancelled else { return }
 
@@ -309,6 +326,7 @@ final class DictationCenter {
         do {
             transcriber = try await resolveTranscriber(config: config)
         } catch {
+            NSLog("[Dictation] engine failed to load: %@", String(describing: error))
             recorder.stop()
             await buffers.feedTask?.value
             guard !Task.isCancelled else { return }
@@ -323,6 +341,7 @@ final class DictationCenter {
             rawText = try await capture(transcriber: transcriber, buffers: buffers, config: config,
                                         onLiveText: onLiveText)
         } catch {
+            NSLog("[Dictation] batch transcription failed: %@", String(describing: error))
             guard !Task.isCancelled else { return }
             // A thrown batch decode must not present as "nothing was said" —
             // that would silently drop whatever the user actually dictated.
@@ -339,7 +358,8 @@ final class DictationCenter {
             // "nothing was said" — the mic silently produced no usable
             // samples, and presenting that as a clean empty result would
             // hide a broken capture path.
-            if recorder.lastError != nil {
+            if let captureError = recorder.lastError {
+                NSLog("[Dictation] microphone capture failed: %@", String(describing: captureError))
                 finish(failed: "microphone capture failed")
                 return
             }
@@ -378,6 +398,7 @@ final class DictationCenter {
         onCleanupFailure: (@MainActor (String) -> Void)?
     ) async {
         guard let runner = runnerResolver() else {
+            NSLog("[Dictation] cleanup runner unavailable (CLI not found), raw text kept")
             onCleanupFailure?(rawText)
             finish(failed: "cleanup failed — raw text kept")
             return
@@ -392,6 +413,7 @@ final class DictationCenter {
             engineBecameIdle()
             onResult(result)
         } catch {
+            NSLog("[Dictation] cleanup failed, raw text kept: %@", String(describing: error))
             guard !Task.isCancelled else { return }
             onCleanupFailure?(rawText)
             finish(failed: "cleanup failed — raw text kept")
@@ -427,7 +449,10 @@ final class DictationCenter {
                 let rms = chunk.isEmpty
                     ? Float(0)
                     : (chunk.reduce(into: Float(0)) { $0 += $1 * $1 } / Float(chunk.count)).squareRoot()
-                self?.micLevel = rms
+                // Only a `.recording` chunk drives the meter — a late chunk
+                // draining after pause()/stop() must not overwrite the reset.
+                // (trackSilence carries its own phase guard.)
+                if let self, self.phase == .recording { self.micLevel = rms }
                 self?.trackSilence(rms: rms, sampleCount: chunk.count)
             }
             buffers.teedContinuation.finish()
@@ -490,28 +515,40 @@ final class DictationCenter {
         config: TranscriptionConfig,
         onLiveText: @escaping @MainActor (String) -> Void
     ) async throws -> String {
-        let liveSession = phase == .recording ? transcriber.makeLiveSession(config: config) : nil
+        // Skip the live session only when the mic already stopped
+        // (`.stopping` — a stop landed during the engine load); a PAUSE
+        // during the load must not kill live transcription for the rest of
+        // the session — the mic is still open and resume() re-opens the flow.
+        let micStillOpen = phase == .recording || phase == .paused
+        let liveSession = micStillOpen ? transcriber.makeLiveSession(config: config) : nil
 
         var liveOutput: TranscriptionOutput?
         if let liveSession {
-            liveOutput = try? await liveSession.run(samples: buffers.teedStream) { [weak self] chunk in
-                Task { @MainActor in
-                    // A phase that has already moved past `.recording` means
-                    // stop/cancel already resolved the recording span — a
-                    // late chunk from the draining tail must not reopen it.
-                    // (On a stop the final text still arrives through the
-                    // session's return value, so nothing is lost.)
-                    guard let self, self.phase == .recording else { return }
-                    self.liveText += self.liveText.isEmpty ? chunk.text : " " + chunk.text
-                    onLiveText(self.liveText)
+            do {
+                liveOutput = try await liveSession.run(samples: buffers.teedStream) { [weak self] chunk in
+                    Task { @MainActor in
+                        // A phase that has already moved past `.recording` means
+                        // stop/cancel already resolved the recording span — a
+                        // late chunk from the draining tail must not reopen it.
+                        // (On a stop the final text still arrives through the
+                        // session's return value, so nothing is lost.)
+                        guard let self, self.phase == .recording else { return }
+                        self.liveText += self.liveText.isEmpty ? chunk.text : " " + chunk.text
+                        onLiveText(self.liveText)
+                    }
                 }
+            } catch {
+                NSLog("[Dictation] live session failed, falling back to batch decode: %@",
+                      String(describing: error))
+                liveOutput = nil
             }
-        } else {
-            // Nothing will ever consume the teed stream — finish it so it
-            // stops accumulating chunks (yields onto a finished continuation
-            // are dropped; the buffer keeps the audio).
-            buffers.teedContinuation.finish()
         }
+        // Finish the teed continuation unconditionally: with no live session
+        // nothing will ever consume it, and a live session that returned (or
+        // threw) early is done with it — either way it must stop accumulating
+        // chunks (yields onto a finished continuation are dropped; the buffer
+        // keeps the audio).
+        buffers.teedContinuation.finish()
         await buffers.feedTask?.value
 
         if let liveOutput, !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -527,6 +564,10 @@ final class DictationCenter {
     }
 
     private func finish(failed message: String) {
+        // A failure can land while `.paused` (e.g. the engine load throwing) —
+        // the armed pause-timeout must not fire a stale stop() into whatever
+        // dictation comes next.
+        cancelPauseTimeout()
         phase = .failed(message)
         isEngineLoading = false
         foldOpenSpan()
