@@ -352,11 +352,24 @@ func TestFindPendingMentions_NamespacedUserID(t *testing.T) {
 	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1002.001', '1:U_ME', '<@U_ME> self-mention')`)
 	require.NoError(t, err)
 
+	// Pipe-form mention, written by someone else — should also match. Pins
+	// that the fix reduces both LIKE patterns to the raw id, not just the
+	// strict one: a half-fix leaving the pipe pattern namespaced would miss
+	// this silently.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1003.001', '1:U_OTHER', 'cc <@U_ME|Name> ping')`)
+	require.NoError(t, err)
+
 	candidates, err := db.FindPendingMentions("1:U_ME", 0)
 	require.NoError(t, err)
-	require.Len(t, candidates, 1)
-	assert.Equal(t, "1000.001", candidates[0].MessageTS)
-	assert.Equal(t, "1:U_OTHER", candidates[0].SenderUserID)
+	require.Len(t, candidates, 2)
+
+	gotTS := map[string]bool{}
+	for _, c := range candidates {
+		gotTS[c.MessageTS] = true
+		assert.Equal(t, "1:U_OTHER", c.SenderUserID)
+	}
+	assert.True(t, gotTS["1000.001"], "strict <@U_ME> form should match")
+	assert.True(t, gotTS["1003.001"], "pipe <@U_ME|Name> form should match")
 }
 
 func TestFindPendingDMs(t *testing.T) {
