@@ -462,11 +462,18 @@ func buildRelevanceSignals(profile *db.UserProfile, allActive []db.Track) releva
 			if json.Unmarshal([]byte(field), &ids) == nil {
 				for _, id := range ids {
 					s.relatedUsers[id] = true
-					// t.Situations/t.KeyMessages (below) is AI-authored text that
-					// carries raw Slack ids regardless of the profile blob's own
-					// namespacing, so the raw form must also be a match candidate —
-					// SplitAccountID is a no-op-ish re-insert for an id that was
-					// never namespaced to begin with.
+					// relatedUsers is matched (in scoreChannel) against
+					// db.DigestTopic.Situations/.KeyMessages, which is AI-authored
+					// text that carries raw Slack ids regardless of the profile
+					// blob's own namespacing, so the raw form must also be a match
+					// candidate — SplitAccountID is a no-op-ish re-insert for an id
+					// that was never namespaced to begin with.
+					//
+					// Accepted trade-off: matching the raw form means a raw id from
+					// a different connected Slack account could in principle
+					// collide here too. That is bounded (a +1 heuristic inside
+					// scoreChannel's 9-point additive score) and is the same
+					// bare-id ambiguity that existed everywhere before namespacing.
 					_, rawID, _ := watchtowerslack.SplitAccountID(id)
 					s.relatedUsers[rawID] = true
 				}

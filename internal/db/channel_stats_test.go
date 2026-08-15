@@ -366,7 +366,6 @@ func TestGetChannelValueSignals_TrackBareIDNeverJoins(t *testing.T) {
 	signals, err := db.GetChannelValueSignals()
 	require.NoError(t, err)
 	assert.NotContains(t, signals, "1:C200")
-	assert.Equal(t, 0, signals["1:C200"].ActiveTrackCount)
 }
 
 func TestGetChannelValueSignals_TaskViaDigest(t *testing.T) {
