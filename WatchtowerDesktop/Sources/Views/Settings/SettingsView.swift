@@ -35,7 +35,6 @@ struct GeneralSettings: View {
     @Environment(AppState.self) private var appState
     @State private var config = ConfigService()
     @State private var saveError: String?
-    @State private var showSaved = false
     @State private var connectionTestRunning = false
     @State private var connectionTestResult: String?
     @State private var connectionTestSuccess = false
@@ -93,12 +92,6 @@ struct GeneralSettings: View {
             transcriptionSection
             jiraSettingsSection
 
-            if let error = config.parseError {
-                Section("Parse Error") {
-                    Text(error).foregroundStyle(.red)
-                }
-            }
-
             if let error = saveError {
                 Section("Save Error") {
                     Text(error).foregroundStyle(.red)
@@ -112,7 +105,7 @@ struct GeneralSettings: View {
         .padding(.horizontal)
         .padding(.top, 4)
         .safeAreaInset(edge: .bottom) {
-            bottomBar
+            ConfigSaveBar(config: config)
         }
         .onAppear {
             // Re-stat tokens/config: a connect or disconnect may have happened
@@ -1205,52 +1198,6 @@ struct GeneralSettings: View {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
         return .orange
-    }
-
-    private var bottomBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack {
-                Button("Open in Editor") {
-                    config.openInEditor()
-                }
-
-                Button("Reveal in Finder") {
-                    config.revealInFinder()
-                }
-
-                Spacer()
-
-                if showSaved {
-                    Text("Saved")
-                        .foregroundStyle(.green)
-                        .transition(.opacity)
-                }
-
-                Button("Reload") {
-                    config.reload()
-                    saveError = nil
-                }
-
-                Button("Save") {
-                    do {
-                        try config.save()
-                        saveError = nil
-                        withAnimation { showSaved = true }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            withAnimation { showSaved = false }
-                        }
-                    } catch {
-                        saveError = error.localizedDescription
-                    }
-                }
-                .keyboardShortcut("s", modifiers: .command)
-                .buttonStyle(.borderedProminent)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     // MARK: - Helpers
