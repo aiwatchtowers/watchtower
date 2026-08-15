@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 const (
@@ -991,11 +992,14 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString(sanitize(p.profile.CustomPromptContext))
 	sb.WriteString("\n\nCOACHING PERSONALIZATION:\n")
 	sb.WriteString("- Tailor communication advice to the viewer's role and responsibilities\n")
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced.
 	if p.profile.Reports != "" && p.profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("\nVIEWER'S REPORTS: %s — coaching for managing these people\n", sanitize(p.profile.Reports)))
+		sb.WriteString(fmt.Sprintf("\nVIEWER'S REPORTS: %s — coaching for managing these people\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Reports))))
 	}
 	if p.profile.Peers != "" && p.profile.Peers != "[]" {
-		sb.WriteString(fmt.Sprintf("\nVIEWER'S PEERS: %s — coaching for peer collaboration\n", sanitize(p.profile.Peers)))
+		sb.WriteString(fmt.Sprintf("\nVIEWER'S PEERS: %s — coaching for peer collaboration\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Peers))))
 	}
 	if p.profile.Manager != "" {
 		sb.WriteString(fmt.Sprintf("\nVIEWER'S MANAGER: %s — coaching for managing up\n", sanitize(p.profile.Manager)))

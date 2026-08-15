@@ -772,8 +772,8 @@ func TestScoreChannel(t *testing.T) {
 	})
 
 	t.Run("user mention = 2", func(t *testing.T) {
-		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: `["<@1:U1> please review"]`}}
-		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, nil)
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: `["<@U1> please review"]`}}
+		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
 		assert.Equal(t, 2, score)
 	})
 
@@ -794,11 +794,11 @@ func TestScoreChannel(t *testing.T) {
 			Title:       "Test",
 			ActionItems: `[{"text":"do it"}]`,
 			Situations:  `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`,
-			KeyMessages: `["<@1:U1> review this"]`,
+			KeyMessages: `["<@U1> review this"]`,
 		}}
 		// All signals matching: existing(3) + starred(2) + mention(2) + related(1) + action(1) = 9
 		all := map[string]bool{"1:C100": true}
-		score := scoreChannel("1:C100", topics, "1:U1", all, all, relatedUsers)
+		score := scoreChannel("1:C100", topics, "U1", all, all, relatedUsers)
 		assert.Equal(t, 9, score)
 	})
 
@@ -874,6 +874,22 @@ func TestScoreChannel(t *testing.T) {
 		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
 		assert.Equal(t, 0, score)
 	})
+}
+
+// TestFormatProfileContext_RendersRawReportIDs is the representative pin for
+// every prompt-rendering site that formats a profile id blob into AI prompt
+// text: the model matches these ids against message text, which carries raw
+// Slack ids, so the rendered block must contain the raw id form and not the
+// namespaced one.
+func TestFormatProfileContext_RendersRawReportIDs(t *testing.T) {
+	p := &Pipeline{profile: &db.UserProfile{
+		CustomPromptContext: "some context",
+		Reports:             `["1:U456"]`,
+	}}
+
+	got := p.formatProfileContext()
+	assert.Contains(t, got, "U456")
+	assert.NotContains(t, got, "1:U456")
 }
 
 func TestFormatActiveTracksForPromptLimit(t *testing.T) {

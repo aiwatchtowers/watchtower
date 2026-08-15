@@ -29,12 +29,15 @@ func TestGatherSharedContext_NamespacedParticipantIncluded(t *testing.T) {
 	assert.Contains(t, got, "Ship the migration")
 }
 
-// TestGatherSharedContext_BareParticipantExcluded is the negative twin: a
-// participants blob that was never namespaced (still bare "U456") can never
-// match the namespaced attendee id, so the track silently drops out of the
-// meeting prep context instead of erroring. This must fail if the match ever
-// becomes namespace-tolerant by accident.
-func TestGatherSharedContext_BareParticipantExcluded(t *testing.T) {
+// TestGatherSharedContext_BareParticipantStillMatches: tracks.participants is
+// stored verbatim from AI-authored JSON — the extraction prompt schema
+// instructs raw ids — so every track written after migration 00054 goes right
+// back to a bare participant id, regardless of the profile blob's own
+// namespacing. gatherSharedContext matches the raw form of the attendee id
+// (SplitAccountID), so a bare-stored participant still matches a namespaced
+// attendee. This must fail if the match ever regresses to comparing the
+// namespaced form directly.
+func TestGatherSharedContext_BareParticipantStillMatches(t *testing.T) {
 	d := openTestDB(t)
 	_, err := d.UpsertTrack(db.Track{
 		Text:         "Ship the migration",
@@ -45,5 +48,5 @@ func TestGatherSharedContext_BareParticipantExcluded(t *testing.T) {
 	p := New(d, &config.Config{}, &mockGenerator{}, nil)
 	got := p.gatherSharedContext([]attendeeEntry{{SlackUserID: "1:U456"}})
 
-	assert.NotContains(t, got, "Ship the migration")
+	assert.Contains(t, got, "Ship the migration")
 }

@@ -150,8 +150,18 @@ WHERE json_valid(participants) AND json_type(participants) = 'array'
 -- +goose Down
 -- Strip the account-1 prefix back off, mirroring the Up block. Elements that
 -- were already namespaced before the Up ran are indistinguishable from ones
--- it created, so Down returns every '1:'-prefixed element to its bare form —
--- the pre-00048 shape.
+-- it created, so Down strips every '1:'-prefixed element unconditionally.
+--
+-- This is the literal inverse of the Up statements above, not a recovery
+-- path: running it restores exactly the bug this migration fixes (every
+-- bared-out element mismatches the namespaced scalar columns it's compared
+-- against again). "Returns to the pre-00048 shape" is also only true for a
+-- single-account install. On a multi-account one, an element already
+-- namespaced to a later account (e.g. '2:C2') is untouched by both Up and
+-- Down — so ["1:C1","2:C2"] becomes ["C1","2:C2"]: the '1:' element goes
+-- back to bare, the '2:' one does not, landing the row in a third shape that
+-- is neither the original pre-00048 all-bare state nor the fully-namespaced
+-- one.
 
 UPDATE tracks
 SET channel_ids = (

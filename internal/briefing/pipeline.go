@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // BriefingResult is the structured output from the AI.
@@ -614,7 +615,10 @@ func formatUserProfile(profile *db.UserProfile) string {
 		sb.WriteString(fmt.Sprintf("Responsibilities: %s\n", profile.Responsibilities))
 	}
 	if profile.Reports != "" && profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("Reports: %s\n", profile.Reports))
+		// Raw-id form (SplitAccountID via RawIDsJSON): the model matches this
+		// against message text, which carries raw Slack ids regardless of how
+		// the id blob itself is namespaced.
+		sb.WriteString(fmt.Sprintf("Reports: %s\n", watchtowerslack.RawIDsJSON(profile.Reports)))
 	}
 	if profile.PainPoints != "" && profile.PainPoints != "[]" {
 		sb.WriteString(fmt.Sprintf("Pain points: %s\n", profile.PainPoints))
