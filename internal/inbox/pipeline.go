@@ -822,10 +822,12 @@ func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
 		}
 		accountID, _, ok := watchtowerslack.SplitAccountID(item.ChannelID)
 		if !ok {
+			p.logger.Printf("inbox: autoResolveSlack: item %d channel_id %q has no account prefix, skipping", item.ID, item.ChannelID)
 			continue
 		}
 		ownerID, ok := ownerIDByAccount[accountID]
 		if !ok {
+			p.logger.Printf("inbox: autoResolveSlack: item %d: no resolved identity for account %d, skipping", item.ID, accountID)
 			continue
 		}
 		replied, err := p.db.CheckUserReplied(ownerID, item.ChannelID, item.MessageTS, item.ThreadTS)
