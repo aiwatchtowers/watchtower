@@ -187,3 +187,62 @@ func TestBackfillMentions_SinceControlsWindowNotWatermark(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, newTS, items[0].MessageTS, "the message older than `since` must not be recovered")
 }
+
+// TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem guards the
+// other write path a dry run must skip: createItemsFromCandidates folds a
+// candidate into an existing pending thread item (UpdateInboxItemSnippet +
+// MergeWaitingUserIDs) instead of creating a new one whenever
+// FindPendingInboxByThread already finds one — the common case for a dead
+// window with several mentions in the same thread, not a contrived one. The
+// earlier dry-run test only ever seeds fresh threads, so it never exercises
+// this branch; this test seeds a pending item first and asserts it is
+// untouched, read back from the DB rather than from the returned struct.
+func TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem(t *testing.T) {
+	d := testDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+
+	since := time.Now().Add(-20 * 24 * time.Hour)
+	threadTS := recentTS(16 * 24 * 60) // thread root, 16 days ago
+
+	// A pending item already covers this thread — e.g. left behind by an
+	// earlier backfill call over an earlier part of the same dead window.
+	const originalSnippet = "original snippet, must survive a dry run"
+	const originalWaiting = `["1:U_ORIGINAL"]`
+	itemID := mustCreateInboxItem(t, d, db.InboxItem{
+		ChannelID:      "1:C1",
+		MessageTS:      threadTS,
+		ThreadTS:       threadTS,
+		SenderUserID:   "1:U_OTHER",
+		TriggerType:    "mention",
+		Snippet:        originalSnippet,
+		WaitingUserIDs: originalWaiting,
+	})
+
+	// A second, not-yet-recovered mention in the SAME thread: the candidate
+	// that would fold into the item above.
+	secondTS := recentTS(15 * 24 * 60) // 15 days ago, after threadTS
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES ('1:C1', ?, ?, '1:U_SECOND', 'Also <@U_ME1> please check')`, secondTS, threadTS)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	result, err := p.BackfillMentions(context.Background(), since, true)
+	require.NoError(t, err)
+
+	// The mention query does find the candidate, but folding into an
+	// existing thread item was never counted as a "create" — real run or
+	// dry run alike — so the dry run reports exactly what a real run would
+	// have: found, not created. This is the "stays informative" half of the
+	// contract.
+	assert.Equal(t, 1, result.TotalCandidates)
+	assert.Equal(t, 0, result.TotalCreated)
+
+	// The load-bearing half: read the existing item back from the DB and
+	// confirm the dry run touched neither of its two fold-writable fields.
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 1, "dry run must not create a second item for the same thread")
+	assert.Equal(t, int(itemID), items[0].ID)
+	assert.Equal(t, originalSnippet, items[0].Snippet, "dry run must not overwrite the existing item's snippet")
+	assert.Equal(t, originalWaiting, items[0].WaitingUserIDs, "dry run must not merge waiting user ids into the existing item")
+}
