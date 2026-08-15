@@ -26,7 +26,7 @@ struct DaemonSettingsContent: View {
     let errorMessage: String?
 
     var body: some View {
-        Form {
+        Group {
             Section("Daemon Status") {
                 HStack {
                     Circle()
@@ -51,7 +51,5 @@ struct DaemonSettingsContent: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding()
     }
 }
