@@ -88,9 +88,9 @@ func TestPipeline_Run_DetectMentions(t *testing.T) {
 	seedWorkspaceAndUser(t, database, "U_ME")
 
 	ts := recentTS(30) // 30 minutes ago
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> review please', 'https://slack.com/p1')`, ts)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> review please', 'https://slack.com/p1')`, ts)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
@@ -112,9 +112,9 @@ func TestPipeline_Run_DetectDMs(t *testing.T) {
 	seedWorkspaceAndUser(t, database, "U_ME")
 
 	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-other', 'dm', 'U_OTHER')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('1:D1', 'dm-other', 'dm', 'U_OTHER')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_OTHER', 'Hey, got a minute?')`, ts)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', ?, 'U_OTHER', 'Hey, got a minute?')`, ts)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
@@ -128,6 +128,46 @@ func TestPipeline_Run_DetectDMs(t *testing.T) {
 	assert.Equal(t, "dm", items[0].TriggerType)
 }
 
+// TestPipeline_Run_DetectMentionsAcrossAccounts guards the multi-account
+// Slack detection loop: with two enabled Slack accounts, a mention of each
+// account's own user in that account's own channel must both surface in one
+// Run. Before the per-account loop, detectSlackTriggers was hardcoded to
+// account 1, so account 2's mention was silently invisible.
+func TestPipeline_Run_DetectMentionsAcrossAccounts(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedWorkspaceAndUser(t, database, "1:U_ME1")
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "2:U_ME2"})
+	require.NoError(t, err)
+
+	ts := recentTS(30)
+	_, err = database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_OTHER', 'Hey <@U_ME1> review please')`, ts)
+	require.NoError(t, err)
+
+	_, err = database.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', ?, '2:U_OTHER', 'Hey <@U_ME2> review please')`, ts)
+	require.NoError(t, err)
+
+	p := New(database, cfg, nil, log.Default())
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, created, "both accounts' mentions must be detected in one Run")
+
+	items, err := database.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	gotChannels := map[string]bool{}
+	for _, item := range items {
+		gotChannels[item.ChannelID] = true
+	}
+	assert.True(t, gotChannels["1:C1"], "account 1's mention must be detected")
+	assert.True(t, gotChannels["2:C1"], "account 2's mention must be detected")
+}
+
 func TestInbox02_AutoResolveSlackOnUserReply(t *testing.T) {
 	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
 	// User replies in Slack → mention/dm/thread_reply auto-resolves.
@@ -139,11 +179,11 @@ func TestInbox02_AutoResolveSlackOnUserReply(t *testing.T) {
 
 	ts1 := recentTS(30)
 	ts2 := recentTS(20) // reply 10 minutes later
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> check this')`, ts1)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> check this')`, ts1)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U_ME', 'Done!')`, ts2)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_ME', 'Done!')`, ts2)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
@@ -165,9 +205,9 @@ func TestPipeline_Run_NoDuplicates(t *testing.T) {
 	seedWorkspaceAndUser(t, database, "U_ME")
 
 	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> check this')`, ts)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> check this')`, ts)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
@@ -189,9 +229,9 @@ func TestPipeline_Run_WithAI(t *testing.T) {
 	seedWorkspaceAndUser(t, database, "U_ME")
 
 	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> urgent blocker')`, ts)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> urgent blocker')`, ts)
 	require.NoError(t, err)
 
 	gen := &mockGenerator{
@@ -334,12 +374,12 @@ func TestPipeline_ClosingSignalNoUserReply(t *testing.T) {
 
 	seedWorkspaceAndUser(t, database, "U_ME")
 
-	_, err := database.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-other', 'dm', 'U_OTHER')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('1:D1', 'dm-other', 'dm', 'U_OTHER')`)
 	require.NoError(t, err)
 
 	// Other person says "thanks" but user NEVER replied — should still create item (safety).
 	ts1 := recentTS(30)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_OTHER', 'thanks')`, ts1)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', ?, 'U_OTHER', 'thanks')`, ts1)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
@@ -415,9 +455,9 @@ func TestPipeline_AIResolvedField(t *testing.T) {
 	seedWorkspaceAndUser(t, database, "U_ME")
 
 	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> thanks for fixing that')`, ts)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> thanks for fixing that')`, ts)
 	require.NoError(t, err)
 
 	gen := &mockGenerator{
@@ -535,9 +575,9 @@ func TestPipeline_RunFastDetection(t *testing.T) {
 
 	// A Slack DM addressed to alice — should be picked up by fast detection.
 	dmTS := recentTS(20)
-	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('1:D1', 'dm-bob', 'dm', 'U_BOB')`)
 	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'привет, есть минутка?')`, dmTS)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', ?, 'U_BOB', 'привет, есть минутка?')`, dmTS)
 	require.NoError(t, err)
 
 	// A digest with a high-importance decision — should NOT be picked up by fast
@@ -685,6 +725,47 @@ func TestInbox09_WatermarkFrozenOnDetectorError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, frozen, ts,
 		"detector failure must leave the inbox watermark untouched to avoid losing the skipped window")
+}
+
+// TestInbox09_SlackAccountErrorFreezesWatermarkDespiteSiblingSuccess guards
+// INBOX-09 for the per-account Slack loop: one account's detector error must
+// freeze the single shared watermark exactly like a single-account error,
+// even though a sibling account's detection succeeded and created its item.
+// The per-account loop must keep going after one account's failure — not
+// abort the whole Slack pass — and its error must still surface to gate the
+// watermark, never getting swallowed into a reported partial success.
+func TestInbox09_SlackAccountErrorFreezesWatermarkDespiteSiblingSuccess(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	ts := recentTS(30)
+	insertChannel(t, d, "1:C1", "public")
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_OTHER', 'Hey <@U_ME1> review please')`, ts)
+	require.NoError(t, err)
+
+	// Account 2 is enabled but its current_user_id was never resolved — the
+	// window between CreateSlackAccount and UpdateSlackAccountConnection
+	// finishing OAuth. detectSlackAccounts treats this as a detector error
+	// for that account, not a silent skip.
+	_, err = d.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err, "a detector failure must not fail the whole run")
+
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 1, "account 1's mention must still be created despite account 2's error")
+	assert.Equal(t, "1:C1", items[0].ChannelID)
+
+	tsAfter, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, tsAfter,
+		"a per-account detector error must freeze the watermark even though a sibling account succeeded")
 }
 
 // TestInbox09_WatermarkFrozenOnTriageError guards INBOX-09 for the triage

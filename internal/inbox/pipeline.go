@@ -512,7 +512,7 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 // the watermark advance so a failed pass does not skip its message window.
 func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
-	if n, e := p.detectSlackTriggers(ctx, currentUserID, lastTS); e != nil {
+	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
 		p.logger.Printf("inbox: slack detect error: %v", e)
 		errs = append(errs, fmt.Errorf("slack: %w", e))
 	} else {
@@ -564,17 +564,47 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
-// detectSlackTriggers detects @mentions, DMs, thread replies and reactions from Slack messages.
-// Returns the count of newly created inbox items.
+// detectSlackAccounts runs detectSlackTriggers once per enabled, connected
+// Slack account (see docs/inventory/inbox-pulse.md INBOX-09's multi-account
+// extension), summing created counts and joining every account's error so
+// one account's failure never stops a sibling account's detection within the
+// same cycle — mirroring detectAll's per-source isolation below, applied one
+// level down. A per-account error is never swallowed into a reported partial
+// success: it is always joined into the returned error so the caller's
+// watermark gate sees it.
 //
-// TODO(multi-account): currentUserID is still resolved from account #1 only
-// (see resolveCurrentUserID), so the detectors below are hardcoded to account
-// 1 here too. Looping over every connected Slack account is tracked
-// separately; this call site only needs to keep compiling against the
-// detectors' new accountID parameter until that loop lands.
-func (p *Pipeline) detectSlackTriggers(ctx context.Context, currentUserID string, lastTS float64) (int, error) {
-	const accountID = 1
+// An enabled account whose current_user_id is still unresolved (the window
+// between CreateSlackAccount and UpdateSlackAccountConnection finishing
+// OAuth) is treated as a detector error rather than a silent skip — the
+// DetectGmailAccounts precedent, since silently skipping it could
+// permanently lose a window of messages that synced before resolution
+// completed.
+func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int, error) {
+	accounts, err := p.db.ListEnabledSlackAccounts()
+	if err != nil {
+		return 0, fmt.Errorf("listing enabled slack accounts: %w", err)
+	}
 
+	var created int
+	var errs []error
+	for _, acct := range accounts {
+		if acct.CurrentUserID == "" {
+			errs = append(errs, fmt.Errorf("account %d: current_user_id not yet resolved", acct.ID))
+			continue
+		}
+		n, e := p.detectSlackTriggers(ctx, acct.ID, acct.CurrentUserID, lastTS)
+		created += n
+		if e != nil {
+			errs = append(errs, fmt.Errorf("account %d: %w", acct.ID, e))
+		}
+	}
+	return created, errors.Join(errs...)
+}
+
+// detectSlackTriggers detects @mentions, DMs, thread replies and reactions
+// from Slack messages for one connected account. Returns the count of newly
+// created inbox items.
+func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, currentUserID string, lastTS float64) (int, error) {
 	mentions, err := p.db.FindPendingMentions(accountID, currentUserID, lastTS)
 	if err != nil {
 		return 0, fmt.Errorf("finding mentions: %w", err)
@@ -681,8 +711,8 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, currentUserID string
 		created++
 	}
 
-	p.logger.Printf("inbox: slack detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
-		len(mentions), len(dms), len(threadReplies), len(reactions), created)
+	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
+		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
 	return created, nil
 }
 
