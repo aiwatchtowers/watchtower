@@ -168,10 +168,12 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 //  3. otherwise, one CreateInboxItem call. A UNIQUE(channel_id, message_ts)
 //     collision here — only reachable via a race against a concurrently
 //     running detector inserting the identical message between this
-//     account's FindPendingMentions read and this write — is treated as a
-//     benign no-op (the message ended up recovered either way), matching
-//     createItemsFromCandidates' own handling of the same case; any other
-//     create error is logged and counted CreateErrors.
+//     account's FindPendingMentions read and this write — counts as
+//     Created rather than CreateErrors: an inbox item for this candidate
+//     exists either way, which is what Created promises to every reader of
+//     the envelope (CandidatesFound always equals the other three buckets'
+//     sum, see BackfillAccountResult); any other create error is logged and
+//     counted CreateErrors.
 //
 // dryRun runs classification steps 1 and 2 for real (both are reads) but
 // skips the CreateInboxItem call in step 3, counting Created exactly as a
@@ -219,6 +221,10 @@ func (p *Pipeline) backfillAccountMentions(ctx context.Context, accountID int64,
 		})
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
+				// Someone else (a concurrently running detector) already
+				// recovered this exact message — the row exists either way,
+				// so this counts as Created, not an error.
+				result.Created++
 				continue
 			}
 			p.logger.Printf("inbox: backfill mentions: account %d: error creating item for %s/%s: %v", accountID, c.ChannelID, c.MessageTS, err)
