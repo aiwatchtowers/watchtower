@@ -75,114 +75,128 @@ struct SystemSettings: View {
 
     private var aiSection: some View {
         Section(header: Text("AI")) {
-            Picker(
-                "AI Provider",
-                selection: Binding(
-                    get: { config.aiProvider ?? "claude" },
-                    set: { newProvider in
-                        let oldProvider = config.aiProvider ?? "claude"
-                        config.aiProvider = newProvider
-                        // Reset model when switching providers so it doesn't carry over
-                        if newProvider != oldProvider {
-                            config.aiModel = nil
-                            connectionTestResult = nil
-                        }
-                    }
-                )
-            ) {
-                Text("Claude").tag("claude")
-                Text("Codex").tag("codex")
-            }
-
-            TextField(
-                "Model",
-                text: Binding(
-                    get: { config.aiModel ?? "" },
-                    set: { config.aiModel = $0.isEmpty ? nil : $0 }
-                ),
-                prompt: Text(config.aiProvider == "codex" ? "gpt-5.4" : "claude-sonnet-4-6")
-            )
-
-            TextField(
-                "Workers",
-                value: Binding(
-                    get: { config.aiWorkers },
-                    set: { config.aiWorkers = $0 }
-                ),
-                format: .number,
-                prompt: Text("5")
-            )
-            .help("Max parallel LLM calls across all pipelines")
-
-            HStack {
-                TextField(
-                    "Claude CLI Path",
-                    text: Binding(
-                        get: { config.claudePath ?? "" },
-                        set: { config.claudePath = $0.isEmpty ? nil : $0 }
-                    ),
-                    prompt: Text("auto-detect")
-                )
-
-                if let path = Constants.findInPath("claude") {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .help("Found: \(path)")
-                } else {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.red)
-                        .help("Claude CLI not found")
-                }
-            }
-            .help("Override auto-detection. Run 'which claude' in terminal to find the path.")
-
+            aiProviderPicker
+            aiModelField
+            aiWorkersField
+            claudeCLIPathRow
             if config.aiProvider == "codex" {
-                HStack {
-                    TextField(
-                        "Codex CLI Path",
-                        text: Binding(
-                            get: { config.codexPath ?? "" },
-                            set: { config.codexPath = $0.isEmpty ? nil : $0 }
-                        ),
-                        prompt: Text("auto-detect")
-                    )
-
-                    if let path = Constants.findInPath("codex") {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .help("Found: \(path)")
-                    } else {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .help("Codex CLI not found")
-                    }
-                }
-                .help("Override auto-detection. Run 'which codex' in terminal to find the path.")
+                codexCLIPathRow
             }
+            testConnectionRow
+        }
+    }
 
-            HStack {
-                Button {
-                    testConnection()
-                } label: {
-                    HStack(spacing: 4) {
-                        if connectionTestRunning {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text(connectionTestRunning ? "Testing..." : "Test Connection")
+    private var aiProviderPicker: some View {
+        Picker(
+            "AI Provider",
+            selection: Binding(
+                get: { config.aiProvider ?? "claude" },
+                set: { newProvider in
+                    let oldProvider = config.aiProvider ?? "claude"
+                    config.aiProvider = newProvider
+                    // Reset model when switching providers so it doesn't carry over
+                    if newProvider != oldProvider {
+                        config.aiModel = nil
+                        connectionTestResult = nil
                     }
                 }
-                .disabled(connectionTestRunning)
+            )
+        ) {
+            Text("Claude").tag("claude")
+            Text("Codex").tag("codex")
+        }
+    }
 
-                if let result = connectionTestResult {
-                    Image(systemName: connectionTestSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(connectionTestSuccess ? .green : .red)
-                    Text(result)
-                        .font(.caption)
-                        .foregroundStyle(connectionTestSuccess ? .green : .red)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
+    private var aiModelField: some View {
+        TextField(
+            "Model",
+            text: Binding(
+                get: { config.aiModel ?? "" },
+                set: { config.aiModel = $0.isEmpty ? nil : $0 }
+            ),
+            prompt: Text(config.aiProvider == "codex" ? "gpt-5.4" : "claude-sonnet-4-6")
+        )
+    }
+
+    private var aiWorkersField: some View {
+        TextField(
+            "Workers",
+            value: Binding(
+                get: { config.aiWorkers },
+                set: { config.aiWorkers = $0 }
+            ),
+            format: .number,
+            prompt: Text("5")
+        )
+        .help("Max parallel LLM calls across all pipelines")
+    }
+
+    private var claudeCLIPathRow: some View {
+        HStack {
+            TextField(
+                "Claude CLI Path",
+                text: Binding(
+                    get: { config.claudePath ?? "" },
+                    set: { config.claudePath = $0.isEmpty ? nil : $0 }
+                ),
+                prompt: Text("auto-detect")
+            )
+            cliStatusIcon(foundPath: Constants.findInPath("claude"), notFoundHelp: "Claude CLI not found")
+        }
+        .help("Override auto-detection. Run 'which claude' in terminal to find the path.")
+    }
+
+    private var codexCLIPathRow: some View {
+        HStack {
+            TextField(
+                "Codex CLI Path",
+                text: Binding(
+                    get: { config.codexPath ?? "" },
+                    set: { config.codexPath = $0.isEmpty ? nil : $0 }
+                ),
+                prompt: Text("auto-detect")
+            )
+            cliStatusIcon(foundPath: Constants.findInPath("codex"), notFoundHelp: "Codex CLI not found")
+        }
+        .help("Override auto-detection. Run 'which codex' in terminal to find the path.")
+    }
+
+    @ViewBuilder
+    private func cliStatusIcon(foundPath: String?, notFoundHelp: String) -> some View {
+        if let foundPath {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .help("Found: \(foundPath)")
+        } else {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .help(notFoundHelp)
+        }
+    }
+
+    private var testConnectionRow: some View {
+        HStack {
+            Button {
+                testConnection()
+            } label: {
+                HStack(spacing: 4) {
+                    if connectionTestRunning {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(connectionTestRunning ? "Testing..." : "Test Connection")
                 }
+            }
+            .disabled(connectionTestRunning)
+
+            if let result = connectionTestResult {
+                Image(systemName: connectionTestSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundStyle(connectionTestSuccess ? .green : .red)
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(connectionTestSuccess ? .green : .red)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
             }
         }
     }
