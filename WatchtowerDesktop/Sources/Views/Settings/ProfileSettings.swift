@@ -87,10 +87,7 @@ struct ProfileSettings: View {
                 Text("Manager")
                     .font(.headline)
                 Spacer()
-                Picker("", selection: Binding(
-                    get: { allUsers.first { SlackAccountID.matches($0.id, manager) }?.id ?? manager },
-                    set: { manager = $0 }
-                )) {
+                Picker("", selection: $manager) {
                     Text("None").tag("")
                     ForEach(allUsers.filter { !$0.isBot }) { user in
                         Text(user.bestName).tag(user.id)
