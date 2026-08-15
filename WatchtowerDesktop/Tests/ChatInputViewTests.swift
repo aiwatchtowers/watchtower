@@ -114,11 +114,15 @@ final class ChatInputViewTests: XCTestCase {
     /// an explicit center — ViewInspector cannot inject custom `@Environment`
     /// values (the `TrayMenuContent` precedent).
     func testMicButtonShownWhenTargetIDSetAndCenterPresent() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "ChatInputViewTests-\(UUID().uuidString)"))
+        // Pin the whisper lane (absent key → Apple on macOS 26) so the
+        // center stays on the injectable engineFactory path.
+        defaults.set("small", forKey: DictationEngineChoice.defaultsKey)
         let center = DictationCenter(
             recorderFactory: { FakeMicRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
             runnerResolver: { nil },
-            defaults: try XCTUnwrap(UserDefaults(suiteName: "ChatInputViewTests-\(UUID().uuidString)")),
+            defaults: defaults,
             engineIdleTTL: .seconds(900)
         )
         var stored = ""

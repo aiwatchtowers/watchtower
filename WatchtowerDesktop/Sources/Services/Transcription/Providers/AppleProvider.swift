@@ -144,7 +144,8 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
 
     /// 16 kHz mono Float32 buffer straight from the recorder's samples — the format
     /// every WhisperKit/Parakeet path already uses (`TranscriptionConfig.sampleRate`).
-    private static func makePCMBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
+    /// Internal (not private) so `AppleDictationSession` reuses it per mic chunk.
+    static func makePCMBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: Double(TranscriptionConfig.sampleRate),
                                          channels: 1, interleaved: false) else {
@@ -170,9 +171,10 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     /// the analyzer (design doc §7.4). Falls back to the original buffer if Apple reports
     /// no preferred format or conversion setup fails — the analyzer will then surface its
     /// own format error rather than us silently dropping audio.
+    /// Internal (not private) so `AppleDictationSession` reuses it per mic chunk.
     @available(macOS 26, *)
-    private static func converted(_ buffer: AVAudioPCMBuffer,
-                                  forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
+    static func converted(_ buffer: AVAudioPCMBuffer,
+                          forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
         guard let targetFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: modules, considering: buffer.format)
         else { return buffer }

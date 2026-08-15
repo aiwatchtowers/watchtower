@@ -58,15 +58,21 @@ final class DictationCenter {
 
     private let recorderFactory: () -> MicRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
-    /// Builds the run's `DictationTranscribing` session over the resolved
-    /// engine. Injectable (the `engineFactory` precedent) so tests script the
-    /// session; the default is the real whisper lane.
-    private let sessionFactory: (Transcriber, TranscriptionConfig) -> DictationTranscribing
+    /// Builds the run's `DictationTranscribing` session for the resolved
+    /// lane. Injectable (the `engineFactory` precedent) so tests script the
+    /// session; the default builds the real lanes — the apple lane gets a
+    /// nil transcriber (it never loads one).
+    private let sessionFactory: (DictationEngineChoice, Transcriber?, TranscriptionConfig) -> DictationTranscribing
     /// Whether the Apple dictation lane is available on this machine —
-    /// consulted by `DictationEngineChoice.current` once per run. Hardwired
-    /// false until the Apple lane lands (Task 3 wires
-    /// `AppleDictationSession.isSupported` here without re-touching start()).
+    /// consulted by `DictationEngineChoice.current` once per run.
+    /// Parameterized so tests pin either lane regardless of host OS.
     private let appleSupported: () -> Bool
+    /// Batch decode of the t0 buffer for the APPLE lane's fallback (session
+    /// threw, or returned empty): a fresh batch run over the buffered audio.
+    /// Injectable for tests; the default is the existing `AppleTranscriber`.
+    /// Whisper lanes batch-decode through their own resolved transcriber and
+    /// never touch this.
+    private let appleBatchFallback: ([Float], TranscriptionConfig) async throws -> String
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let defaults: UserDefaults
     private let engineIdleTTL: Duration
@@ -109,9 +115,13 @@ final class DictationCenter {
     init(recorderFactory: @escaping () -> MicRecording = { MicRecorder() },
          engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber
              = DictationCenter.dictationEngineFactory,
-         sessionFactory: @escaping (Transcriber, TranscriptionConfig) -> DictationTranscribing
-             = { WhisperDictationSession(transcriber: $0, config: $1) },
-         appleSupported: @escaping () -> Bool = { false },
+         sessionFactory: @escaping (DictationEngineChoice, Transcriber?, TranscriptionConfig) -> DictationTranscribing
+             = DictationCenter.defaultSessionFactory,
+         appleSupported: @escaping () -> Bool = { AppleDictationSession.isSupported },
+         appleBatchFallback: @escaping ([Float], TranscriptionConfig) async throws -> String
+             = { samples, config in
+                 try await AppleTranscriber().transcribe(samples, config: config) { _, _ in }.text
+             },
          runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
          defaults: UserDefaults = .standard,
          engineIdleTTL: Duration = .seconds(15 * 60),
@@ -122,6 +132,7 @@ final class DictationCenter {
         self.engineFactory = engineFactory
         self.sessionFactory = sessionFactory
         self.appleSupported = appleSupported
+        self.appleBatchFallback = appleBatchFallback
         self.runnerResolver = runnerResolver
         self.defaults = defaults
         self.engineIdleTTL = engineIdleTTL
@@ -141,6 +152,22 @@ final class DictationCenter {
     static func dictationEngineFactory(_ config: TranscriptionConfig) async throws -> Transcriber {
         let provider = TranscriptionProviderRegistry.resolve(providerID: "whisperkit")
         return try await provider.makeTranscriber(model: config.model ?? "small") { _ in }
+    }
+
+    /// Production session builder: the apple lane streams natively over
+    /// `SpeechAnalyzer` (no `Transcriber` at all), the whisper lane adapts
+    /// the resolved engine. The whisper arm always receives a non-nil
+    /// transcriber by construction (`runDictation` resolves the engine
+    /// before building the session); the impossible whisper-with-nil
+    /// combination degrades to the apple session — whose `run()` throws
+    /// below macOS 26 and batch-falls-back above — rather than trapping.
+    nonisolated static func defaultSessionFactory(choice: DictationEngineChoice,
+                                                  transcriber: Transcriber?,
+                                                  config: TranscriptionConfig) -> DictationTranscribing {
+        if case .whisper = choice, let transcriber {
+            return WhisperDictationSession(transcriber: transcriber, config: config)
+        }
+        return AppleDictationSession(locale: AppleLocaleCatalog.resolveLocale(langset: config.langset))
     }
 
     // MARK: - Controls
@@ -358,16 +385,29 @@ final class DictationCenter {
         // a cold engine load is never lost.
         let buffers = startBuffering(recorder: recorder)
 
-        let transcriber: Transcriber
-        do {
-            transcriber = try await resolveTranscriber(config: config)
-        } catch {
-            NSLog("[Dictation] engine failed to load: %@", String(describing: error))
-            recorder.stop()
-            await buffers.feedTask?.value
-            guard !Task.isCancelled else { return }
-            finish(failed: "engine failed to load: \(error.localizedDescription)")
-            return
+        // Only whisper lanes resolve a Transcriber (engine factory + warm
+        // slot); the apple lane loads nothing — its session IS the engine.
+        // For apple, `isEngineLoading` therefore clears as soon as the run
+        // reaches the session handoff below: session construction is
+        // synchronous and `run()` starts consuming immediately, so this is
+        // the simplest observable "session setup done" point. (Clearing on
+        // the first onUpdate instead would leave the badge on for an entire
+        // silent dictation; the first-run language-asset install inside
+        // `run()` is accepted as not badge-covered.)
+        let transcriber: Transcriber?
+        if case .whisper = runChoice {
+            do {
+                transcriber = try await resolveTranscriber(config: config)
+            } catch {
+                NSLog("[Dictation] engine failed to load: %@", String(describing: error))
+                recorder.stop()
+                await buffers.feedTask?.value
+                guard !Task.isCancelled else { return }
+                finish(failed: "engine failed to load: \(error.localizedDescription)")
+                return
+            }
+        } else {
+            transcriber = nil
         }
         guard !Task.isCancelled else { return }
         isEngineLoading = false
@@ -544,11 +584,13 @@ final class DictationCenter {
     /// The buffer is always populated, session or not, so a thrown session
     /// (`.liveUnsupported` included) or an empty session return still has
     /// something to fall back to — the meeting single-pass fallback's rule
-    /// applied to a microphone-only stream. Throws only when the batch decode
-    /// itself throws — the caller turns that into a visible failure rather
-    /// than letting it masquerade as silence.
+    /// applied to a microphone-only stream. The lane picks the decoder: a
+    /// whisper lane's resolved transcriber, or (`transcriber == nil`, the
+    /// apple lane) `appleBatchFallback`'s fresh batch run. Throws only when
+    /// the batch decode itself throws — the caller turns that into a visible
+    /// failure rather than letting it masquerade as silence.
     private func capture(
-        transcriber: Transcriber,
+        transcriber: Transcriber?,
         buffers: CaptureBuffers,
         config: TranscriptionConfig,
         onLiveText: @escaping @MainActor (String) -> Void
@@ -561,7 +603,7 @@ final class DictationCenter {
 
         var sessionText: String?
         if micStillOpen {
-            let session = sessionFactory(transcriber, config)
+            let session = sessionFactory(runChoice, transcriber, config)
             do {
                 sessionText = try await session.run(samples: buffers.teedStream) { [weak self] text in
                     // A phase that has already moved past `.recording` means
@@ -595,8 +637,11 @@ final class DictationCenter {
         // takes the ordinary degenerate-stop path in the caller; only a
         // THROWN error propagates, since that means the buffer's contents
         // were never actually transcribed.
-        let output = try await transcriber.transcribe(buffers.buffer, config: config) { _, _ in }
-        return output.text
+        if let transcriber {
+            let output = try await transcriber.transcribe(buffers.buffer, config: config) { _, _ in }
+            return output.text
+        }
+        return try await appleBatchFallback(buffers.buffer, config)
     }
 
     private func finish(failed message: String) {
@@ -616,8 +661,14 @@ final class DictationCenter {
     /// Whether this center still holds — or is mid-load about to hold — the
     /// shared physical engine slot. Read by the meeting recorder at record
     /// start to decide whether its live pass must park until `engineReleased`.
+    /// Only a WHISPER lane's in-flight load counts: the apple lane never
+    /// loads a `Transcriber`, so its (brief) engine-loading window holds
+    /// nothing the meeting recorder must wait on — an apple dictation with
+    /// no parked whisper engine reads false here throughout.
     var hasResidentEngine: Bool {
-        warmTranscriber != nil || (phase != .idle && isEngineLoading)
+        if warmTranscriber != nil { return true }
+        guard case .whisper = runChoice else { return false }
+        return phase != .idle && isEngineLoading
     }
 
     private func resolveTranscriber(config: TranscriptionConfig) async throws -> Transcriber {
