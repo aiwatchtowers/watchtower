@@ -5,6 +5,7 @@ import WatchtowerCore
 /// status, storage/data management, log viewer, and app updates.
 struct SystemSettings: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
     @Bindable var config: ConfigService
     @State private var connectionTestRunning = false
     @State private var connectionTestResult: String?
@@ -26,10 +27,7 @@ struct SystemSettings: View {
             DaemonSettings()
             DataSettings()
                 .environment(appState)
-            Section("Logs") {
-                LogsSettings()
-                    .frame(height: 320)
-            }
+            logsSection
             updateSection
             usageLinkSection
         }
@@ -199,6 +197,18 @@ struct SystemSettings: View {
                     .foregroundStyle(connectionTestSuccess ? .green : .red)
                     .lineLimit(3)
                     .textSelection(.enabled)
+            }
+        }
+    }
+
+    // MARK: - Logs
+
+    private var logsSection: some View {
+        Section {
+            Button {
+                openWindow(id: "logs")
+            } label: {
+                Label("Open Logs", systemImage: "doc.text")
             }
         }
     }
