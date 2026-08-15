@@ -249,6 +249,56 @@ func TestInbox02_AutoResolveSlackOnUserReply(t *testing.T) {
 	assert.Equal(t, "resolved", items[0].Status)
 }
 
+// TestInbox02_AutoResolveSlackAccount2OnOwnerReply guards INBOX-02 for a
+// second connected Slack account: an item created for account 2 must
+// resolve when ACCOUNT 2's OWN owner replies, and must NOT resolve when
+// someone else in the same account replies. Pins the fix that scopes
+// autoResolveSlack to each item's own account (derived from its
+// channel_id prefix) instead of checking every pending item against the
+// single account-#1 identity.
+func TestInbox02_AutoResolveSlackAccount2OnOwnerReply(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedWorkspaceAndUser(t, database, "1:U_ME1")
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "2:U_ME2"})
+	require.NoError(t, err)
+
+	_, err = database.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', ?, '2:U_OTHER', 'Hey <@U_ME2> check this')`, recentTS(30))
+	require.NoError(t, err)
+
+	p := New(database, cfg, nil, log.Default())
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+
+	// Someone else in account 2 replies — must NOT resolve the item.
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', ?, '2:U_THIRD', 'me too, interested')`, recentTS(25))
+	require.NoError(t, err)
+	_, resolvedByOther, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, resolvedByOther, "a reply from someone other than account 2's own owner must not resolve the item")
+
+	items, err := database.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "pending", items[0].Status)
+
+	// Account 2's OWN owner replies — must resolve the item.
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', ?, '2:U_ME2', 'Done!')`, recentTS(20))
+	require.NoError(t, err)
+	_, resolvedByOwner, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, resolvedByOwner, "account 2's own owner replying must resolve the item")
+
+	items, err = database.GetInboxItems(db.InboxFilter{IncludeResolved: true})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "resolved", items[0].Status)
+}
+
 func TestPipeline_Run_NoDuplicates(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()

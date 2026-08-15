@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 var (
@@ -409,7 +410,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Phase 4: Auto-resolve — rule-based resolution for all source types.
 	p.progress(4, totalSteps, "auto-resolving")
 	stepStart = time.Now()
-	resolved := p.autoResolveByRules(ctx, currentUserID)
+	resolved := p.autoResolveByRules(ctx)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 5: Compose — fold new triaged signals, track events, and target
@@ -496,7 +497,7 @@ func (p *Pipeline) RunFastDetection(ctx context.Context) error {
 	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
 	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap
 
-	resolved := p.autoResolveByRules(ctx, currentUserID)
+	resolved := p.autoResolveByRules(ctx)
 
 	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d G%d M%d), %d auto-resolved",
 		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, resolved)
@@ -774,22 +775,44 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,
 // Jira, and Calendar sources. Returns the total number of items resolved.
-func (p *Pipeline) autoResolveByRules(ctx context.Context, currentUserID string) int {
+func (p *Pipeline) autoResolveByRules(ctx context.Context) int {
 	resolved := 0
-	resolved += p.autoResolveSlack(ctx, currentUserID)
+	resolved += p.autoResolveSlack(ctx)
 	resolved += p.autoResolveJira(ctx)
 	resolved += p.autoResolveCalendar(ctx)
 	return resolved
 }
 
-// autoResolveSlack resolves pending Slack inbox items where the current user
-// has already replied in the thread or channel.
-func (p *Pipeline) autoResolveSlack(ctx context.Context, currentUserID string) int {
+// autoResolveSlack resolves pending Slack inbox items where the item's OWN
+// connected account's owner has already replied. Each item's account is
+// derived from its own channel_id prefix (the same namespacing detection
+// already relies on) and checked against that account's own current_user_id
+// — never a single pinned identity — so a reply by account 2's owner
+// resolves an account-2 item even though resolveCurrentUserID (used
+// elsewhere for Jira/Calendar/style, by design) stays pinned to account #1.
+// ListSlackAccounts (not just enabled accounts) is used for the lookup: a
+// later-disabled or removed account's existing pending items should still
+// resolve correctly against the identity that created them (slack disable/
+// remove are both non-destructive to already-synced data).
+func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
 	items, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
 	if err != nil {
 		p.logger.Printf("inbox: autoResolveSlack: loading items: %v", err)
 		return 0
 	}
+
+	accounts, err := p.db.ListSlackAccounts()
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveSlack: listing accounts: %v", err)
+		return 0
+	}
+	ownerIDByAccount := make(map[int64]string, len(accounts))
+	for _, acct := range accounts {
+		if acct.CurrentUserID != "" {
+			ownerIDByAccount[acct.ID] = acct.CurrentUserID
+		}
+	}
+
 	resolved := 0
 	for _, item := range items {
 		// Only Slack-sourced items: trigger types that come from Slack messages.
@@ -798,7 +821,15 @@ func (p *Pipeline) autoResolveSlack(ctx context.Context, currentUserID string) i
 		default:
 			continue
 		}
-		replied, err := p.db.CheckUserReplied(currentUserID, item.ChannelID, item.MessageTS, item.ThreadTS)
+		accountID, _, ok := watchtowerslack.SplitAccountID(item.ChannelID)
+		if !ok {
+			continue
+		}
+		ownerID, ok := ownerIDByAccount[accountID]
+		if !ok {
+			continue
+		}
+		replied, err := p.db.CheckUserReplied(ownerID, item.ChannelID, item.MessageTS, item.ThreadTS)
 		if err != nil {
 			p.logger.Printf("inbox: error checking reply for item %d: %v", item.ID, err)
 			continue
