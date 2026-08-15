@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // inboxSelectCols is the standard SELECT column list for inbox_items.
@@ -431,9 +433,12 @@ func (db *DB) SetInboxLastProcessedTS(ts float64) error {
 // FindPendingMentions finds messages that mention the current user where the user hasn't replied.
 // Slack mentions appear in two forms: `<@USER>` (raw) and `<@USER|Display Name>` (resolved).
 // The boundary character (`>` or `|`) prevents false matches on user IDs that share a prefix.
+// currentUserID may be namespaced (e.g. "1:U123", per slack_accounts.current_user_id post
+// migration 00048); the LIKE patterns are built from its raw form since messages.text carries
+// Slack's markup untouched, while the m.user_id != ? bind keeps the namespaced form as-is
+// because m.user_id is itself a namespaced column.
 func (db *DB) FindPendingMentions(currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
-	strictPattern := "%<@" + currentUserID + ">%"
-	pipePattern := "%<@" + currentUserID + "|%"
+	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
 		WHERE (m.text LIKE ? OR m.text LIKE ?)

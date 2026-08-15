@@ -53,3 +53,34 @@ func TestRawIDsJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestMentionPatterns(t *testing.T) {
+	tests := []struct {
+		name       string
+		userID     string
+		wantStrict string
+		wantPipe   string
+	}{
+		{"namespaced id reduces to raw", "1:U123", "%<@U123>%", "%<@U123|%"},
+		{"bare id passes through", "U123", "%<@U123>%", "%<@U123|%"},
+		{"multi-digit account prefix", "12:U123", "%<@U123>%", "%<@U123|%"},
+		{"empty id", "", "%<@>%", "%<@|%"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			strict, pipe := MentionPatterns(tc.userID)
+			if strict != tc.wantStrict || pipe != tc.wantPipe {
+				t.Fatalf("MentionPatterns(%q) = (%q, %q), want (%q, %q)", tc.userID, strict, pipe, tc.wantStrict, tc.wantPipe)
+			}
+		})
+	}
+}
+
+func TestMentionTag(t *testing.T) {
+	if got := MentionTag("1:U123"); got != "<@U123>" {
+		t.Fatalf("got %q", got)
+	}
+	if got := MentionTag("U123"); got != "<@U123>" {
+		t.Fatalf("got %q", got)
+	}
+}
