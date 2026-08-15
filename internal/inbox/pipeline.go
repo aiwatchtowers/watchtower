@@ -566,23 +566,31 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 
 // detectSlackTriggers detects @mentions, DMs, thread replies and reactions from Slack messages.
 // Returns the count of newly created inbox items.
+//
+// TODO(multi-account): currentUserID is still resolved from account #1 only
+// (see resolveCurrentUserID), so the detectors below are hardcoded to account
+// 1 here too. Looping over every connected Slack account is tracked
+// separately; this call site only needs to keep compiling against the
+// detectors' new accountID parameter until that loop lands.
 func (p *Pipeline) detectSlackTriggers(ctx context.Context, currentUserID string, lastTS float64) (int, error) {
-	mentions, err := p.db.FindPendingMentions(currentUserID, lastTS)
+	const accountID = 1
+
+	mentions, err := p.db.FindPendingMentions(accountID, currentUserID, lastTS)
 	if err != nil {
 		return 0, fmt.Errorf("finding mentions: %w", err)
 	}
 
-	dms, err := p.db.FindPendingDMs(currentUserID, lastTS)
+	dms, err := p.db.FindPendingDMs(accountID, currentUserID, lastTS)
 	if err != nil {
 		return 0, fmt.Errorf("finding DMs: %w", err)
 	}
 
-	threadReplies, err := p.db.FindThreadRepliesToUser(currentUserID, lastTS)
+	threadReplies, err := p.db.FindThreadRepliesToUser(accountID, currentUserID, lastTS)
 	if err != nil {
 		p.logger.Printf("inbox: error finding thread replies: %v", err)
 	}
 
-	reactions, err := p.db.FindReactionRequests(currentUserID, lastTS)
+	reactions, err := p.db.FindReactionRequests(accountID, currentUserID, lastTS)
 	if err != nil {
 		p.logger.Printf("inbox: error finding reaction requests: %v", err)
 	}

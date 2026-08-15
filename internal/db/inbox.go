@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -437,11 +438,13 @@ func (db *DB) SetInboxLastProcessedTS(ts float64) error {
 // migration 00048); the LIKE patterns are built from its raw form since messages.text carries
 // Slack's markup untouched, while the m.user_id != ? bind keeps the namespaced form as-is
 // because m.user_id is itself a namespaced column.
-func (db *DB) FindPendingMentions(currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
+	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
 		WHERE (m.text LIKE ? OR m.text LIKE ?)
+		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
 		AND m.ts_unix > ?
@@ -451,7 +454,7 @@ func (db *DB) FindPendingMentions(currentUserID string, sinceTS float64) ([]Inbo
 			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		)
 		ORDER BY m.ts_unix DESC`,
-		strictPattern, pipePattern, currentUserID, sinceTS)
+		strictPattern, pipePattern, prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding pending mentions: %w", err)
 	}
@@ -470,11 +473,13 @@ func (db *DB) FindPendingMentions(currentUserID string, sinceTS float64) ([]Inbo
 }
 
 // FindPendingDMs finds DM messages from others where the user hasn't replied after.
-func (db *DB) FindPendingDMs(currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
 		WHERE c.type = 'dm'
+		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
 		AND m.ts_unix > ?
@@ -484,7 +489,7 @@ func (db *DB) FindPendingDMs(currentUserID string, sinceTS float64) ([]InboxCand
 			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		)
 		ORDER BY m.ts_unix DESC`,
-		currentUserID, sinceTS)
+		prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding pending DMs: %w", err)
 	}
@@ -504,11 +509,13 @@ func (db *DB) FindPendingDMs(currentUserID string, sinceTS float64) ([]InboxCand
 
 // FindThreadRepliesToUser finds messages in threads where currentUserID participated
 // (posted the root message OR any reply), but the reply is from someone else.
-func (db *DB) FindThreadRepliesToUser(currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
 		WHERE m.thread_ts != ''
 		  AND m.thread_ts != m.ts
+		  AND m.channel_id LIKE ? || ':%'
 		  AND m.user_id != ?
 		  AND m.user_id != ''
 		  AND m.ts_unix > ?
@@ -525,7 +532,7 @@ func (db *DB) FindThreadRepliesToUser(currentUserID string, sinceTS float64) ([]
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		  )
 		ORDER BY m.ts_unix DESC`,
-		currentUserID, sinceTS, currentUserID)
+		prefix, currentUserID, sinceTS, currentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("finding thread replies to user: %w", err)
 	}
@@ -545,13 +552,15 @@ func (db *DB) FindThreadRepliesToUser(currentUserID string, sinceTS float64) ([]
 
 // FindReactionRequests finds messages posted by currentUserID where someone else added
 // a question/attention reaction (question, eyes, exclamation, warning, etc.).
-func (db *DB) FindReactionRequests(currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''),
 		   MIN(r.user_id) as reactor_id,
 		   m.text, m.permalink, m.ts_unix
 		FROM messages m
 		JOIN reactions r ON r.channel_id = m.channel_id AND r.message_ts = m.ts
 		WHERE m.user_id = ?
+		  AND m.channel_id LIKE ? || ':%'
 		  AND r.user_id != ?
 		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
 		  AND m.ts_unix > ?
@@ -562,7 +571,7 @@ func (db *DB) FindReactionRequests(currentUserID string, sinceTS float64) ([]Inb
 		  )
 		GROUP BY m.channel_id, m.ts
 		ORDER BY m.ts_unix DESC`,
-		currentUserID, currentUserID, sinceTS)
+		currentUserID, prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding reaction requests: %w", err)
 	}
