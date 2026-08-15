@@ -4,6 +4,11 @@
 # Mirror of the build-app.sh profile-selection guards: `-include` is silent on
 # a missing file, which would bake empty credentials with exit 0 on the
 # `make build`/`make install` paths that never reach the script.
+# app-dev defaults to the dev profile; an explicit ENV_FILE=... on the
+# command line or environment still wins (?= never overrides those).
+ifneq ($(filter app-dev,$(MAKECMDGOALS)),)
+ENV_FILE ?= .env.dev
+endif
 ENV_FILE ?= .env
 -include $(ENV_FILE)
 ifneq ($(ENV_FILE),.env)
