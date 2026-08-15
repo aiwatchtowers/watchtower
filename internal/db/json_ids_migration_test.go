@@ -17,18 +17,7 @@ import (
 // with nothing left to rewrite, not just re-serialize it to an equal
 // value).
 func TestMigration00054_TracksChannelIDs(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES
 		(1, 'bare pair', '["C0473A5GC6N","C03GB81BHUJ"]'),
@@ -71,18 +60,7 @@ func TestMigration00054_TracksChannelIDs(t *testing.T) {
 // mode json_group_array(json_set(...)) could produce if this modernc build
 // did not preserve the JSON subtype through the aggregate.
 func TestMigration00054_TracksParticipants(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	const seed = `[{"name":"@A","user_id":"U010F2S53JM","stance":"инициатор"},{"name":"@B","user_id":"1:U0975M7FJR5","stance":"x"}]`
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, participants) VALUES (1, 'participants track', ?)`, seed); err != nil {
@@ -146,18 +124,7 @@ func TestMigration00054_TracksParticipants(t *testing.T) {
 //     dequoted string throws "malformed JSON" — see
 //     TestMigration00054_EdgeCasesUntouched's doc comment for why).
 func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, participants) VALUES
 		(1, 'object user_id', '[{"name":"@A","user_id":{"a":1},"stance":"s"}]'),
@@ -213,18 +180,7 @@ func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
 // element alongside a real id string must have the string rewritten and
 // the object left alone — not crashed on, not stringified.
 func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES (1, 'non-text element', '["C1",{"a":1}]')`); err != nil {
 		t.Fatalf("seed tracks: %v", err)
@@ -251,18 +207,7 @@ func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
 // user_profile columns in one row, since they share the exact same shape
 // and rewrite logic as tracks.channel_ids.
 func TestMigration00054_UserProfileListColumns(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO user_profile (id, slack_user_id, reports, peers, starred_channels, starred_people) VALUES
 		(1, '1:U0000', '["U0001"]', '["U0002"]', '["C0001"]', '["U0003"]')`); err != nil {
@@ -306,18 +251,7 @@ func TestMigration00054_UserProfileListColumns(t *testing.T) {
 // own, standalone, for the same reason. je.type (the column json_each
 // already provides) reports the decoded type directly, with no re-parse.
 func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES
 		(1, 'control (needs rewrite)', '["C1"]'),
@@ -364,18 +298,7 @@ func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
 // ships) against the already-migrated data, and asserts nothing changes —
 // the WHERE...EXISTS guard on each statement must make re-application safe.
 func TestMigration00054_ReRunIsNoOp(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids, participants) VALUES
 		(1, 'reruncheck', '["C1","1:C2"]', '[{"name":"@A","user_id":"U1","stance":"s"}]')`); err != nil {
@@ -409,18 +332,7 @@ func TestMigration00054_ReRunIsNoOp(t *testing.T) {
 // re-applies Up and asserts they're namespaced again — the
 // TestMigration00049DownUpCycle shape.
 func TestMigration00054DownUpCycle(t *testing.T) {
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer raw.Close()
-	raw.SetMaxOpenConns(1)
-	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		t.Fatal(err)
-	}
-	if err := goose.UpTo(raw, "migrations", 53); err != nil {
-		t.Fatalf("migrate to v53: %v", err)
-	}
+	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids, participants) VALUES
 		(1, 'downup', '["C1"]', '[{"name":"@A","user_id":"U1","stance":"s"}]')`); err != nil {
@@ -460,6 +372,27 @@ func TestMigration00054DownUpCycle(t *testing.T) {
 	if channelIDs != `["1:C1"]` || userID != "1:U1" {
 		t.Errorf("after re-up: channel_ids=%q user_id=%q, want namespaced again", channelIDs, userID)
 	}
+}
+
+// openMigratedTo opens a fresh raw in-memory connection, enables foreign
+// keys, and replays goose up to the given version — the shared setup every
+// test in this file needs before it can seed a pre-00054 shape. Cleanup is
+// registered via t.Cleanup rather than left to the caller's defer.
+func openMigratedTo(t *testing.T, version int64) *sql.DB {
+	t.Helper()
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", version); err != nil {
+		t.Fatalf("migrate to v%d: %v", version, err)
+	}
+	return raw
 }
 
 // snapshotJSONIDColumns concatenates every column touched by 00054 across
