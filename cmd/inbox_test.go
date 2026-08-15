@@ -348,6 +348,7 @@ func TestRunInbox_RequiresConfig(t *testing.T) {
 func resetInboxBackfillMentionsFlags() {
 	inboxBackfillMentionsFlagSince = ""
 	inboxBackfillMentionsFlagDryRun = false
+	inboxBackfillMentionsFlagForce = false
 }
 
 // seedBackfillMentionsFixture wires a temp HOME/config/DB (the
@@ -428,10 +429,13 @@ func TestRunInboxBackfillMentions_CreatesItemsMatchingEnvelope(t *testing.T) {
 	assert.False(t, envelope.DryRun)
 	assert.Equal(t, 1, envelope.TotalCandidates)
 	assert.Equal(t, 1, envelope.TotalCreated)
+	assert.Equal(t, 0, envelope.TotalAlreadyAnswered)
+	assert.Equal(t, 0, envelope.TotalEmptySnippet)
+	assert.Equal(t, 0, envelope.TotalCreateErrors)
 	require.Len(t, envelope.Accounts, 1)
 	assert.Equal(t, int64(1), envelope.Accounts[0].AccountID)
 	assert.Equal(t, 1, envelope.Accounts[0].CandidatesFound)
-	assert.Equal(t, 1, envelope.Accounts[0].ItemsCreated)
+	assert.Equal(t, 1, envelope.Accounts[0].Created)
 	assert.Empty(t, envelope.SkippedAccountIDs)
 
 	database, err := openDBFromConfig()
@@ -472,4 +476,44 @@ func TestRunInboxBackfillMentions_DryRunInsertsNothing(t *testing.T) {
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
 	assert.Equal(t, 0, n, "dry run must not insert any row")
+}
+
+// TestRunInboxBackfillMentions_SinceOlderThan90Days_RequiresForce covers the
+// safety floor: a --since more than backfillMentionsMaxLookbackDays in the
+// past is rejected before any DB work happens, so a mistyped year cannot
+// silently sweep the entire messages table.
+func TestRunInboxBackfillMentions_SinceOlderThan90Days_RequiresForce(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetInboxBackfillMentionsFlags()
+	defer resetInboxBackfillMentionsFlags()
+
+	inboxBackfillMentionsFlagSince = time.Now().Add(-200 * 24 * time.Hour).Format("2006-01-02")
+
+	err := inboxBackfillMentionsCmd.RunE(inboxBackfillMentionsCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "more than 90 days ago")
+	assert.Contains(t, err.Error(), "--force")
+}
+
+// TestRunInboxBackfillMentions_SinceOlderThan90Days_ForceAllows covers the
+// override half of the same floor: --force lets a --since further back than
+// 90 days proceed normally.
+func TestRunInboxBackfillMentions_SinceOlderThan90Days_ForceAllows(t *testing.T) {
+	cleanup := seedBackfillMentionsFixture(t)
+	defer cleanup()
+	defer resetInboxBackfillMentionsFlags()
+
+	inboxBackfillMentionsFlagSince = time.Now().Add(-200 * 24 * time.Hour).Format("2006-01-02")
+	inboxBackfillMentionsFlagForce = true
+
+	buf := new(bytes.Buffer)
+	inboxBackfillMentionsCmd.SetOut(buf)
+
+	err := inboxBackfillMentionsCmd.RunE(inboxBackfillMentionsCmd, nil)
+	require.NoError(t, err)
+
+	var envelope backfillMentionsEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope))
+	assert.Equal(t, 1, envelope.TotalCreated, "--force must let a >90-day --since recover the fixture's 15-day-old mention")
 }

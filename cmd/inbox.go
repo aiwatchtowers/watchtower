@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,7 +33,14 @@ var (
 	inboxFeedbackComment            string
 	inboxBackfillMentionsFlagSince  string
 	inboxBackfillMentionsFlagDryRun bool
+	inboxBackfillMentionsFlagForce  bool
 )
+
+// backfillMentionsMaxLookbackDays is the safety floor on --since: a date
+// further back than this is rejected unless --force is passed, so a
+// mistyped year (or an unintentionally distant date) does not silently
+// sweep the entire messages table.
+const backfillMentionsMaxLookbackDays = 90
 
 var inboxCmd = &cobra.Command{
 	Use:   "inbox",
@@ -114,8 +122,9 @@ func init() {
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
 	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
 	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackComment, "comment", "", "free-text comment; derives learned rules via the AI interpreter")
-	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions on or after this date (YYYY-MM-DD); required")
+	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions after this date (YYYY-MM-DD, parsed as UTC midnight; that instant itself is excluded); required")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagDryRun, "dry-run", false, "report what would be recovered without creating any inbox items")
+	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagForce, "force", false, fmt.Sprintf("allow --since further back than %d days", backfillMentionsMaxLookbackDays))
 	_ = inboxBackfillMentionsCmd.MarkFlagRequired("since")
 }
 
@@ -644,11 +653,18 @@ func runInboxStyleSample(cmd *cobra.Command, _ []string) error {
 }
 
 // backfillMentionsAccountEnvelope is one connected account's contribution to
-// a `inbox backfill-mentions` run's JSON envelope.
+// a `inbox backfill-mentions` run's JSON envelope. Every candidate
+// FindPendingMentions found for this account lands in exactly one of
+// Created/AlreadyAnswered/EmptySnippet/CreateErrors on a completed run (see
+// inbox.BackfillAccountResult), so CandidatesFound always equals their sum —
+// a --dry-run envelope is fully readable without re-checking the database.
 type backfillMentionsAccountEnvelope struct {
 	AccountID       int64 `json:"account_id"`
 	CandidatesFound int   `json:"candidates_found"`
-	ItemsCreated    int   `json:"items_created"`
+	Created         int   `json:"created"`
+	AlreadyAnswered int   `json:"already_answered"`
+	EmptySnippet    int   `json:"empty_snippet"`
+	CreateErrors    int   `json:"create_errors"`
 }
 
 // backfillMentionsEnvelope is `inbox backfill-mentions`'s one-line JSON
@@ -660,16 +676,19 @@ type backfillMentionsAccountEnvelope struct {
 // totals are all included so a --dry-run's output is fully readable without
 // re-checking the database.
 type backfillMentionsEnvelope struct {
-	Since             string                            `json:"since"`
-	DryRun            bool                              `json:"dry_run"`
-	Accounts          []backfillMentionsAccountEnvelope `json:"accounts"`
-	SkippedAccountIDs []int64                           `json:"skipped_account_ids"`
-	TotalCandidates   int                               `json:"total_candidates"`
-	TotalCreated      int                               `json:"total_created"`
+	Since                string                            `json:"since"`
+	DryRun               bool                              `json:"dry_run"`
+	Accounts             []backfillMentionsAccountEnvelope `json:"accounts"`
+	SkippedAccountIDs    []int64                           `json:"skipped_account_ids"`
+	TotalCandidates      int                               `json:"total_candidates"`
+	TotalCreated         int                               `json:"total_created"`
+	TotalAlreadyAnswered int                               `json:"total_already_answered"`
+	TotalEmptySnippet    int                               `json:"total_empty_snippet"`
+	TotalCreateErrors    int                               `json:"total_create_errors"`
 }
 
 // runInboxBackfillMentions implements `watchtower inbox backfill-mentions
-// --since <YYYY-MM-DD> [--dry-run]`: a thin CLI wrapper over
+// --since <YYYY-MM-DD> [--dry-run] [--force]`: a thin CLI wrapper over
 // inbox.Pipeline.BackfillMentions (internal/inbox/backfill.go), which scans
 // only @mentions from the explicit --since timestamp, per connected Slack
 // account, and never touches inbox_last_processed_ts (INBOX-09 — see
@@ -677,8 +696,14 @@ type backfillMentionsEnvelope struct {
 // here rather than left to cobra's MarkFlagRequired alone, so a direct RunE
 // call (as in this package's tests) surfaces the same clear error a real
 // invocation would — the targets `ai-update --instruction` precedent
-// (cmd/targets_ai.go). The command makes no AI call, so no generator is
-// wired into the pipeline.
+// (cmd/targets_ai.go). time.Parse's "2006-01-02" layout carries no zone, so
+// Go parses it as UTC midnight; combined with the pipeline's strict `>`
+// comparison against that instant, a date that boundary itself is excluded
+// — a UTC+3 owner passing today's date loses today's early-morning mentions,
+// which is why the flag help spells this out. --since further back than
+// backfillMentionsMaxLookbackDays is rejected unless --force is set, so a
+// mistyped year does not silently sweep the whole messages table. The
+// command makes no AI call, so no generator is wired into the pipeline.
 func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 	if inboxBackfillMentionsFlagSince == "" {
 		return fmt.Errorf("--since is required (format YYYY-MM-DD)")
@@ -686,6 +711,9 @@ func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 	since, err := time.Parse("2006-01-02", inboxBackfillMentionsFlagSince)
 	if err != nil {
 		return fmt.Errorf("invalid --since date %q: %w", inboxBackfillMentionsFlagSince, err)
+	}
+	if floor := time.Now().AddDate(0, 0, -backfillMentionsMaxLookbackDays); since.Before(floor) && !inboxBackfillMentionsFlagForce {
+		return fmt.Errorf("--since %s is more than %d days ago; pass --force to sweep a window this large", inboxBackfillMentionsFlagSince, backfillMentionsMaxLookbackDays)
 	}
 
 	cfg, err := config.Load(flagConfig)
@@ -709,24 +737,34 @@ func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
 	pipe := inbox.New(database, cfg, nil, logger)
 
-	result, err := pipe.BackfillMentions(cmd.Context(), since, inboxBackfillMentionsFlagDryRun)
+	ctx := cmd.Context()
+	if ctx == nil { // RunE invoked directly (tests) — cobra sets ctx only via Execute
+		ctx = context.Background()
+	}
+	result, err := pipe.BackfillMentions(ctx, since, inboxBackfillMentionsFlagDryRun)
 	if err != nil {
 		return fmt.Errorf("backfilling mentions: %w", err)
 	}
 
 	envelope := backfillMentionsEnvelope{
-		Since:             inboxBackfillMentionsFlagSince,
-		DryRun:            inboxBackfillMentionsFlagDryRun,
-		Accounts:          make([]backfillMentionsAccountEnvelope, 0, len(result.Accounts)),
-		SkippedAccountIDs: result.SkippedAccountIDs,
-		TotalCandidates:   result.TotalCandidates,
-		TotalCreated:      result.TotalCreated,
+		Since:                inboxBackfillMentionsFlagSince,
+		DryRun:               inboxBackfillMentionsFlagDryRun,
+		Accounts:             make([]backfillMentionsAccountEnvelope, 0, len(result.Accounts)),
+		SkippedAccountIDs:    result.SkippedAccountIDs,
+		TotalCandidates:      result.TotalCandidates,
+		TotalCreated:         result.TotalCreated,
+		TotalAlreadyAnswered: result.TotalAlreadyAnswered,
+		TotalEmptySnippet:    result.TotalEmptySnippet,
+		TotalCreateErrors:    result.TotalCreateErrors,
 	}
 	for _, acct := range result.Accounts {
 		envelope.Accounts = append(envelope.Accounts, backfillMentionsAccountEnvelope{
 			AccountID:       acct.AccountID,
 			CandidatesFound: acct.CandidatesFound,
-			ItemsCreated:    acct.ItemsCreated,
+			Created:         acct.Created,
+			AlreadyAnswered: acct.AlreadyAnswered,
+			EmptySnippet:    acct.EmptySnippet,
+			CreateErrors:    acct.CreateErrors,
 		})
 	}
 	if envelope.SkippedAccountIDs == nil {

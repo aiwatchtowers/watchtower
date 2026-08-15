@@ -49,13 +49,16 @@ func TestBackfillMentions_CreatesItemsAndLeavesWatermarkUntouched(t *testing.T) 
 
 	assert.Equal(t, 2, result.TotalCandidates)
 	assert.Equal(t, 2, result.TotalCreated)
+	assert.Equal(t, 0, result.TotalAlreadyAnswered)
+	assert.Equal(t, 0, result.TotalEmptySnippet)
+	assert.Equal(t, 0, result.TotalCreateErrors)
 	require.Len(t, result.Accounts, 2)
 	assert.Equal(t, int64(1), result.Accounts[0].AccountID)
 	assert.Equal(t, 1, result.Accounts[0].CandidatesFound)
-	assert.Equal(t, 1, result.Accounts[0].ItemsCreated)
+	assert.Equal(t, 1, result.Accounts[0].Created)
 	assert.Equal(t, acct2ID, result.Accounts[1].AccountID)
 	assert.Equal(t, 1, result.Accounts[1].CandidatesFound)
-	assert.Equal(t, 1, result.Accounts[1].ItemsCreated)
+	assert.Equal(t, 1, result.Accounts[1].Created)
 	assert.Empty(t, result.SkippedAccountIDs)
 
 	items, err := d.GetInboxItems(db.InboxFilter{})
@@ -188,16 +191,57 @@ func TestBackfillMentions_SinceControlsWindowNotWatermark(t *testing.T) {
 	assert.Equal(t, newTS, items[0].MessageTS, "the message older than `since` must not be recovered")
 }
 
-// TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem guards the
-// other write path a dry run must skip: createItemsFromCandidates folds a
-// candidate into an existing pending thread item (UpdateInboxItemSnippet +
-// MergeWaitingUserIDs) instead of creating a new one whenever
-// FindPendingInboxByThread already finds one — the common case for a dead
-// window with several mentions in the same thread, not a contrived one. The
-// earlier dry-run test only ever seeds fresh threads, so it never exercises
-// this branch; this test seeds a pending item first and asserts it is
-// untouched, read back from the DB rather than from the returned struct.
-func TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem(t *testing.T) {
+// TestBackfillMentions_SeveralPlainMentionsOneChannel_OneItemPerMention is
+// the blocker-1 pin: createItemsFromCandidates (the live per-cycle path)
+// groups by (channel, thread_ts), and a plain (non-threaded) message's
+// thread_ts is always "" — so reusing that path over a multi-week backfill
+// window used to collapse every plain-channel mention into a single group,
+// creating one item for the whole channel instead of one per mention. With
+// the create-only path this must recover one item per distinct mention.
+func TestBackfillMentions_SeveralPlainMentionsOneChannel_OneItemPerMention(t *testing.T) {
+	d := testDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+
+	since := time.Now().Add(-20 * 24 * time.Hour)
+	ts1 := recentTS(15 * 24 * 60)
+	ts2 := recentTS(14 * 24 * 60)
+	ts3 := recentTS(13 * 24 * 60)
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_A', 'Hey <@U_ME1> please check A')`, ts1)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_B', 'Hey <@U_ME1> please check B')`, ts2)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_C', 'Hey <@U_ME1> please check C')`, ts3)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	result, err := p.BackfillMentions(context.Background(), since, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3, result.TotalCandidates)
+	assert.Equal(t, 3, result.TotalCreated, "one item per plain-channel mention, not one per channel")
+
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	assert.Len(t, items, 3, "expected one row per mention")
+
+	gotTS := map[string]bool{}
+	for _, it := range items {
+		gotTS[it.MessageTS] = true
+	}
+	assert.True(t, gotTS[ts1] && gotTS[ts2] && gotTS[ts3], "all three distinct mentions must each have their own row")
+}
+
+// TestBackfillMentions_ExistingThreadItemLeftUntouchedByRealRun is the
+// blocker-2 pin: createItemsFromCandidates folds a candidate into ANY
+// pending item already on the same thread regardless of that item's age,
+// which over a multi-week backfill window can just as easily be a
+// different, currently live conversation — folding would silently rewrite
+// its message_ts backwards and wipe its ai_reason/read_at. The create-only
+// path must never touch an existing item, real run or dry run alike: it is
+// read back from the DB byte-identical, and the new candidate gets its own
+// separate row instead.
+func TestBackfillMentions_ExistingThreadItemLeftUntouchedByRealRun(t *testing.T) {
 	d := testDB(t)
 	seedWorkspaceAndUser(t, d, "1:U_ME1")
 	insertChannel(t, d, "1:C1", "public")
@@ -205,9 +249,10 @@ func TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem(t *testing.T) 
 	since := time.Now().Add(-20 * 24 * time.Hour)
 	threadTS := recentTS(16 * 24 * 60) // thread root, 16 days ago
 
-	// A pending item already covers this thread — e.g. left behind by an
-	// earlier backfill call over an earlier part of the same dead window.
-	const originalSnippet = "original snippet, must survive a dry run"
+	// A pending item already covers this thread — e.g. a currently live
+	// conversation that happens to share the thread with the backfill
+	// candidate below.
+	const originalSnippet = "original snippet, must survive a real run"
 	const originalWaiting = `["1:U_ORIGINAL"]`
 	itemID := mustCreateInboxItem(t, d, db.InboxItem{
 		ChannelID:      "1:C1",
@@ -219,30 +264,105 @@ func TestBackfillMentions_DryRunDoesNotFoldIntoExistingThreadItem(t *testing.T) 
 		WaitingUserIDs: originalWaiting,
 	})
 
-	// A second, not-yet-recovered mention in the SAME thread: the candidate
-	// that would fold into the item above.
+	// A second, not-yet-recovered mention in the SAME thread.
 	secondTS := recentTS(15 * 24 * 60) // 15 days ago, after threadTS
 	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES ('1:C1', ?, ?, '1:U_SECOND', 'Also <@U_ME1> please check')`, secondTS, threadTS)
 	require.NoError(t, err)
 
 	p := New(d, testConfig(), nil, log.Default())
-	result, err := p.BackfillMentions(context.Background(), since, true)
+	result, err := p.BackfillMentions(context.Background(), since, false) // a REAL run — this path never folds, dry or not
 	require.NoError(t, err)
+	assert.Equal(t, 1, result.TotalCreated, "the second candidate must be recovered as its own item")
 
-	// The mention query does find the candidate, but folding into an
-	// existing thread item was never counted as a "create" — real run or
-	// dry run alike — so the dry run reports exactly what a real run would
-	// have: found, not created. This is the "stays informative" half of the
-	// contract.
-	assert.Equal(t, 1, result.TotalCandidates)
-	assert.Equal(t, 0, result.TotalCreated)
-
-	// The load-bearing half: read the existing item back from the DB and
-	// confirm the dry run touched neither of its two fold-writable fields.
+	// The load-bearing half: read both rows back from the DB. The pre-existing
+	// item must be byte-identical; the new candidate must have landed in a
+	// SEPARATE row, never merged into the first.
 	items, err := d.GetInboxItems(db.InboxFilter{})
 	require.NoError(t, err)
-	require.Len(t, items, 1, "dry run must not create a second item for the same thread")
-	assert.Equal(t, int(itemID), items[0].ID)
-	assert.Equal(t, originalSnippet, items[0].Snippet, "dry run must not overwrite the existing item's snippet")
-	assert.Equal(t, originalWaiting, items[0].WaitingUserIDs, "dry run must not merge waiting user ids into the existing item")
+	require.Len(t, items, 2, "the existing item and the newly recovered one must both exist as separate rows")
+
+	var original, created *db.InboxItem
+	for i := range items {
+		if items[i].ID == int(itemID) {
+			original = &items[i]
+		} else {
+			created = &items[i]
+		}
+	}
+	require.NotNil(t, original, "the pre-existing item must still be present")
+	require.NotNil(t, created, "the new candidate must have been created")
+
+	assert.Equal(t, threadTS, original.MessageTS, "a real run must not rewrite the existing item's message_ts backwards")
+	assert.Equal(t, originalSnippet, original.Snippet, "a real run must not overwrite the existing item's snippet")
+	assert.Equal(t, originalWaiting, original.WaitingUserIDs, "a real run must not merge waiting user ids into the existing item")
+
+	assert.Equal(t, secondTS, created.MessageTS)
+}
+
+// TestBackfillMentions_IdempotentSecondRunOverMultiMentionThread guards the
+// idempotency claim end to end for the case the fold bug used to break: two
+// distinct mentions in the SAME thread. A first run must recover both as
+// separate items; a second run over the identical window must create
+// neither again, and the DB must still hold exactly two rows — not one
+// degraded-by-folding row, and not a duplicate.
+func TestBackfillMentions_IdempotentSecondRunOverMultiMentionThread(t *testing.T) {
+	d := testDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+
+	since := time.Now().Add(-20 * 24 * time.Hour)
+	threadTS := recentTS(15 * 24 * 60)
+	replyTS := recentTS(14 * 24 * 60)
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES ('1:C1', ?, ?, '1:U_A', 'Hey <@U_ME1> please check A')`, threadTS, threadTS)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES ('1:C1', ?, ?, '1:U_B', 'Also <@U_ME1> please check B')`, replyTS, threadTS)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+
+	first, err := p.BackfillMentions(context.Background(), since, false)
+	require.NoError(t, err)
+	assert.Equal(t, 2, first.TotalCreated, "both mentions in the thread must be recovered on the first run")
+
+	second, err := p.BackfillMentions(context.Background(), since, false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, second.TotalCandidates, "both messages already produced items, so neither is a candidate anymore")
+	assert.Equal(t, 0, second.TotalCreated)
+
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	assert.Len(t, items, 2, "exactly two rows: one per mention, no duplication and no folding-driven loss")
+}
+
+// TestBackfillMentions_AlreadyAnsweredSkip guards the AlreadyAnswered
+// classification: a mention the owner already reacted to or replied to
+// after the fact (CheckUserReplied — the same "handled in Slack already"
+// check autoResolveSlack/INBOX-02 uses) is skipped and counted, not
+// recovered as a new inbox item.
+func TestBackfillMentions_AlreadyAnsweredSkip(t *testing.T) {
+	d := testDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+
+	since := time.Now().Add(-20 * 24 * time.Hour)
+	mentionTS := recentTS(15 * 24 * 60)
+	replyTS := recentTS(14 * 24 * 60) // the owner's own reply, after the mention
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_OTHER', 'Hey <@U_ME1> please check')`, mentionTS)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, '1:U_ME1', 'On it')`, replyTS)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	result, err := p.BackfillMentions(context.Background(), since, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.TotalCandidates)
+	assert.Equal(t, 0, result.TotalCreated, "already-answered mentions must not be recovered")
+	assert.Equal(t, 1, result.TotalAlreadyAnswered)
+	require.Len(t, result.Accounts, 1)
+	assert.Equal(t, 1, result.Accounts[0].AlreadyAnswered)
+
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, items, "an already-answered mention must not create an inbox item")
 }
