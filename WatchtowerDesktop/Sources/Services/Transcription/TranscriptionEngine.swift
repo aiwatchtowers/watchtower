@@ -43,7 +43,7 @@ struct TranscriptionConfig: Equatable {
     /// long-form convention. Off (the default — a 2026-08-07 full-recording
     /// validation measured quality parity at ~1.4x decode cost, so it ships
     /// dark) = every window decodes blind, as before this existed. Exposed as
-    /// a Settings → Transcription toggle. Honoured by the WhisperKit path only
+    /// a Settings → Meetings toggle. Honoured by the WhisperKit path only
     /// — Qwen3, Parakeet and Apple run their own windowing and ignore it.
     var contextPrompt: Bool = false
     /// Run the live (in-progress) transcription pass while recording. Off =

@@ -69,4 +69,28 @@ final class ChannelPickerViewTests: XCTestCase {
         )
         XCTAssertNoThrow(try view.inspect().find(text: "#C_UNKNOWN"))
     }
+
+    /// Selection stores a bare pre-migration id ("C1") while the synced channel list holds
+    /// namespaced ids ("1:C1", migration 00048) — the picker must still resolve the name
+    /// instead of falling back to showing the raw id.
+    func testSelectedChannelResolvesBareIDAgainstNamespacedList() throws {
+        var ids: [String] = ["C1"]
+        let view = ChannelPicker(
+            title: "Watch",
+            allChannels: [makeChannel(id: "1:C1", name: "general")],
+            selectedIDs: Binding(get: { ids }, set: { ids = $0 })
+        )
+        XCTAssertNoThrow(try view.inspect().find(text: "#general"))
+    }
+
+    /// Selection already stores a namespaced id matching the synced channel list exactly.
+    func testSelectedChannelResolvesNamespacedIDAgainstNamespacedList() throws {
+        var ids: [String] = ["1:C1"]
+        let view = ChannelPicker(
+            title: "Watch",
+            allChannels: [makeChannel(id: "1:C1", name: "general")],
+            selectedIDs: Binding(get: { ids }, set: { ids = $0 })
+        )
+        XCTAssertNoThrow(try view.inspect().find(text: "#general"))
+    }
 }

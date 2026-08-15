@@ -36,7 +36,7 @@ struct SlackUserPicker: View {
             } else {
                 ForEach(selectedIDs, id: \.self) { uid in
                     HStack {
-                        let user = allUsers.first { $0.id == uid }
+                        let user = allUsers.first { SlackAccountID.matches($0.id, uid) }
                         Text(user?.bestName ?? uid)
                             .font(.subheadline)
                         if let user, !user.name.isEmpty {
@@ -65,7 +65,7 @@ struct SlackUserPicker: View {
                 .padding(8)
 
             let filtered = allUsers.filter { user in
-                !selectedIDs.contains(user.id)
+                !selectedIDs.contains { SlackAccountID.matches($0, user.id) }
                     && !user.isBot
                     && (searchText.isEmpty
                         || user.bestName.localizedCaseInsensitiveContains(searchText)
