@@ -16,6 +16,22 @@ final class MicRecorderTests: XCTestCase {
         XCTAssertTrue(received.isEmpty)
     }
 
+    @MainActor
+    func testFakeRecorderDropsSamplesWhilePaused() async {
+        let recorder = FakeMicRecorder()
+        var received: [[Float]] = []
+        let consume = Task { for await chunk in recorder.samples { received.append(chunk) } }
+        recorder.emit([0.1])
+        recorder.setPaused(true)
+        recorder.emit([0.2])
+        recorder.setPaused(false)
+        recorder.emit([0.3])
+        recorder.stop()
+        _ = await consume.value
+        XCTAssertEqual(received, [[0.1], [0.3]])
+        XCTAssertEqual(recorder.pausedStates, [true, false])
+    }
+
     func testStartThrowsWhenPermissionDenied() async {
         let recorder = MicRecorder { false }
 

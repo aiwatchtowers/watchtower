@@ -7,6 +7,9 @@ protocol MicRecording: AnyObject {
     /// Requests mic permission on first use; throws on denial or engine failure.
     func start() async throws
     func stop()
+    /// While paused, no samples are yielded into `samples`; the engine/tap
+    /// keep running.
+    func setPaused(_ paused: Bool)
     /// Live 16 kHz mono Float32 samples; finishes when `stop()` is called.
     var samples: AsyncStream<[Float]> { get }
     /// First capture error latched mid-stream (e.g. every buffer conversion
@@ -46,6 +49,8 @@ final class MicRecorder: MicRecording {
     /// (`SystemAudioRecorder.swift:80-82, 140-141`).
     private let convertQueue = DispatchQueue(label: "com.watchtower.dictation.mic-recorder")
     private var converter: AVAudioConverter?
+    /// Guarded by `convertQueue`, like `converter`.
+    private var paused = false
     /// First conversion error, latched on `convertQueue` (the
     /// `SystemAudioRecorder.firstWriteError` pattern). `stop()`'s barrier
     /// orders the write before any post-stop read of `lastError`.
@@ -95,6 +100,10 @@ final class MicRecorder: MicRecording {
         }
     }
 
+    func setPaused(_ paused: Bool) {
+        convertQueue.sync { self.paused = paused }
+    }
+
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -117,6 +126,7 @@ final class MicRecorder: MicRecording {
     /// `frameLength > 0` guard drops empty conversion results.
     private func appendDownsampled(_ buffer: AVAudioPCMBuffer) {
         guard let converter else { return }
+        guard !paused else { return }
         let ratio = Self.outputSampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up) + 16)
         guard let outBuffer = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: capacity) else {

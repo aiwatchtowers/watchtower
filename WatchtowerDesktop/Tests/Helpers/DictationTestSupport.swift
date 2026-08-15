@@ -15,6 +15,8 @@ final class FakeMicRecorder: MicRecording, @unchecked Sendable {
 
     private(set) var startCalls = 0
     private(set) var stopCalls = 0
+    private(set) var pausedStates: [Bool] = []
+    private var paused = false
 
     private var continuation: AsyncStream<[Float]>.Continuation!
     let samples: AsyncStream<[Float]>
@@ -26,7 +28,16 @@ final class FakeMicRecorder: MicRecording, @unchecked Sendable {
     }
 
     /// Emit one chunk of samples (test drives the stream with this).
-    func emit(_ samples: [Float]) { continuation.yield(samples) }
+    /// Dropped while paused, mirroring `MicRecorder`'s gate.
+    func emit(_ samples: [Float]) {
+        guard !paused else { return }
+        continuation.yield(samples)
+    }
+
+    func setPaused(_ paused: Bool) {
+        pausedStates.append(paused)
+        self.paused = paused
+    }
 
     func start() async throws {
         startCalls += 1
