@@ -61,6 +61,15 @@ final class DictationCenter {
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let defaults: UserDefaults
     private let engineIdleTTL: Duration
+    /// Consecutive sub-threshold silence (sample-clock seconds) that
+    /// auto-pauses a `.recording` dictation — the mic never stays hot over an
+    /// abandoned session.
+    private let silenceAutoPauseAfter: Duration
+    /// Time `.paused` may last before the center performs a normal Stop
+    /// (finalize + clean + deliver) — pause never holds the mic indefinitely.
+    private let pauseAutoStopAfter: Duration
+    /// Per-chunk RMS below this counts as silence for the auto-pause.
+    private let silenceRMSThreshold: Float
 
     private var recorder: MicRecording?
     private var dictationTask: Task<Void, Never>?
@@ -72,6 +81,13 @@ final class DictationCenter {
     /// stale engine.
     private var warmEngineKey: String?
     private var engineReleaseTask: Task<Void, Never>?
+    /// Consecutive silence accumulated on the SAMPLE clock (chunk sample
+    /// counts / 16 kHz), never wall-clock — reset by a loud chunk, `resume()`,
+    /// and `start()`.
+    private var silentSeconds: Double = 0
+    /// Armed by `pause()`; cancelled by `resume()`/`stop()`/`cancel()`. Fires
+    /// the pause-timeout auto-stop.
+    private var pauseTimeoutTask: Task<Void, Never>?
     /// Set by `meetingCaptureWillStart()` while a dictation (or its engine
     /// load / cleanup) is still in flight: the completion path drops the
     /// resident engine outright instead of arming the idle-release timer.
@@ -82,12 +98,18 @@ final class DictationCenter {
              = MeetingRecorderCenter.defaultEngineFactory,
          runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
          defaults: UserDefaults = .standard,
-         engineIdleTTL: Duration = .seconds(15 * 60)) {
+         engineIdleTTL: Duration = .seconds(15 * 60),
+         silenceAutoPauseAfter: Duration = .seconds(120),
+         pauseAutoStopAfter: Duration = .seconds(300),
+         silenceRMSThreshold: Float = 0.003) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
         self.runnerResolver = runnerResolver
         self.defaults = defaults
         self.engineIdleTTL = engineIdleTTL
+        self.silenceAutoPauseAfter = silenceAutoPauseAfter
+        self.pauseAutoStopAfter = pauseAutoStopAfter
+        self.silenceRMSThreshold = silenceRMSThreshold
     }
 
     // MARK: - Controls
@@ -129,6 +151,7 @@ final class DictationCenter {
         phase = .recording
         isEngineLoading = true
         micLevel = 0
+        silentSeconds = 0
         elapsedAccumulated = .zero
         spanStartedAt = Date()
         // The engine is about to be used again — the idle countdown from the
@@ -160,12 +183,15 @@ final class DictationCenter {
         foldOpenSpan()
         micLevel = 0
         phase = .paused
+        armPauseTimeout()
     }
 
     /// Resumes a paused dictation into the SAME session — a new recording
     /// span opens now. A no-op unless `.paused`.
     func resume() {
         guard phase == .paused else { return }
+        cancelPauseTimeout()
+        silentSeconds = 0
         recorder?.setPaused(false)
         spanStartedAt = Date()
         phase = .recording
@@ -184,6 +210,7 @@ final class DictationCenter {
     /// the mic is told to stop.
     func stop() {
         guard phase == .recording || phase == .paused else { return }
+        cancelPauseTimeout()
         recorder?.stop()
         foldOpenSpan()
         phase = .stopping
@@ -193,6 +220,7 @@ final class DictationCenter {
     /// failure, nothing here is kept for later — the caller is walking away.
     func cancel() {
         guard phase != .idle else { return }
+        cancelPauseTimeout()
         dictationTask?.cancel()
         dictationTask = nil
         recorder?.stop()
@@ -396,13 +424,50 @@ final class DictationCenter {
             for await chunk in recorder.samples {
                 buffers.buffer.append(contentsOf: chunk)
                 buffers.teedContinuation.yield(chunk)
-                self?.micLevel = chunk.isEmpty
-                    ? 0
+                let rms = chunk.isEmpty
+                    ? Float(0)
                     : (chunk.reduce(into: Float(0)) { $0 += $1 * $1 } / Float(chunk.count)).squareRoot()
+                self?.micLevel = rms
+                self?.trackSilence(rms: rms, sampleCount: chunk.count)
             }
             buffers.teedContinuation.finish()
         }
         return buffers
+    }
+
+    /// Silence auto-pause, driven by the SAMPLE clock (never wall-clock):
+    /// each sub-threshold chunk adds its duration in samples/16 kHz, a loud
+    /// chunk resets the counter, and crossing `silenceAutoPauseAfter` pauses.
+    /// Only `.recording` chunks count — the draining tail after a stop (or a
+    /// chunk racing a manual pause) must never re-trigger it.
+    private func trackSilence(rms: Float, sampleCount: Int) {
+        guard phase == .recording else { return }
+        guard rms < silenceRMSThreshold else {
+            silentSeconds = 0
+            return
+        }
+        silentSeconds += Double(sampleCount) / 16_000
+        if silentSeconds > silenceAutoPauseAfter / .seconds(1) {
+            pause()
+        }
+    }
+
+    /// The pause-timeout auto-stop: `.paused` past `pauseAutoStopAfter`
+    /// performs a NORMAL stop — finalize + clean + deliver, nothing lost,
+    /// nothing left holding the mic or the engine.
+    private func armPauseTimeout() {
+        pauseTimeoutTask?.cancel()
+        let timeout = pauseAutoStopAfter
+        pauseTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, let self else { return }
+            self.stop()
+        }
+    }
+
+    private func cancelPauseTimeout() {
+        pauseTimeoutTask?.cancel()
+        pauseTimeoutTask = nil
     }
 
     /// Runs until the mic stream ends (`stop()`/`cancel()`) and produces the
