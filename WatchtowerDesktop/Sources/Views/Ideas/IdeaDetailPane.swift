@@ -112,7 +112,7 @@ struct IdeaDetailPane: View {
             Button("Delete", role: .destructive, action: onDelete)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its mentions and chat will be removed permanently.")
+            Text("Its mentions, chat, and any duplicates merged into it will be removed permanently.")
         }
     }
 

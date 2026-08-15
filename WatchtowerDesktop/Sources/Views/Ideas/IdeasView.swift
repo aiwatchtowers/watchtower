@@ -96,7 +96,7 @@ struct IdeasView: View {
             }
             .listStyle(.sidebar)
             .overlay {
-                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty {
+                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
                     Text(emptySegmentMessage)
                         .font(.callout)
                         .foregroundStyle(.secondary)
