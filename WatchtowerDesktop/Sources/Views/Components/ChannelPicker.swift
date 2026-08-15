@@ -36,7 +36,7 @@ struct ChannelPicker: View {
             } else {
                 ForEach(selectedIDs, id: \.self) { cid in
                     HStack {
-                        let channel = allChannels.first { $0.id == cid }
+                        let channel = allChannels.first { SlackAccountID.matches($0.id, cid) }
                         Text("#\(channel?.name ?? cid)")
                             .font(.subheadline)
                         Spacer()
@@ -60,7 +60,7 @@ struct ChannelPicker: View {
                 .padding(8)
 
             let filtered = allChannels.filter { channel in
-                !selectedIDs.contains(channel.id)
+                !selectedIDs.contains { SlackAccountID.matches($0, channel.id) }
                     && !channel.isArchived
                     && channel.type != "dm"
                     && channel.type != "group_dm"
