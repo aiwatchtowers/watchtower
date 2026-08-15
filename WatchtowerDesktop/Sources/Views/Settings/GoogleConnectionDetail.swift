@@ -16,6 +16,7 @@ struct GoogleConnectionDetail: View {
             googleAccountsSection
             calendarSettingsSection
             gmailSettingsSection
+            saveErrorSection
         }
         .formStyle(.grouped)
         .padding(.horizontal)
@@ -134,12 +135,6 @@ struct GoogleConnectionDetail: View {
                 Text("7 days").tag(7)
                 Text("14 days").tag(14)
             }
-
-            if let error = saveError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
         }
     }
 
@@ -150,8 +145,15 @@ struct GoogleConnectionDetail: View {
         Section("Gmail") {
             Toggle("Enable Gmail sync", isOn: $config.gmailEnabled)
                 .onChange(of: config.gmailEnabled) { _, _ in saveConfig() }
+        }
+    }
 
-            if let error = saveError {
+    /// One shared caption for a failed autosave from either toggle above —
+    /// rendered once, not duplicated per section.
+    @ViewBuilder
+    private var saveErrorSection: some View {
+        if let error = saveError {
+            Section {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)

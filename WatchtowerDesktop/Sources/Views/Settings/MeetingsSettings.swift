@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Meetings tab — everything about recording and transcribing meetings.
-/// Moved out of the old General tab; same @AppStorage keys, same controls.
+/// Same @AppStorage keys, same controls.
 struct MeetingsSettings: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService

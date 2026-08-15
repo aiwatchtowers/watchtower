@@ -18,6 +18,19 @@ enum ConnectionStatusLogic {
         if problemCount > 0 { return .error }
         return okCount > 0 ? .connected : .notConfigured
     }
+
+    /// Every account counts toward ok/problem (Google/Email/Calendar rows —
+    /// these services have no per-account enable/disable toggle).
+    static func status(okFlags: [Bool]) -> ConnectionStatus {
+        derive(okCount: okFlags.filter { $0 }.count, problemCount: okFlags.filter { !$0 }.count)
+    }
+
+    /// A disabled account counts toward NEITHER ok nor problem (Slack/Jira
+    /// rows — a soft-disabled account shouldn't paint the service red or
+    /// green off a status it isn't actively syncing).
+    static func enabledFilteredStatus(_ accounts: [(isOK: Bool, enabled: Bool)]) -> ConnectionStatus {
+        status(okFlags: accounts.filter(\.enabled).map(\.isOK))
+    }
 }
 
 enum ConnectionService: String, CaseIterable, Identifiable {
@@ -47,7 +60,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
 
 /// Connections tab — master list of external services on the left, the
 /// selected service's accounts and settings on the right. Each detail view
-/// owns the sections moved verbatim from the old General tab.
+/// owns its own sections.
 struct ConnectionsSettings: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
@@ -122,36 +135,19 @@ struct ConnectionsSettings: View {
         switch service {
         case .slack:
             guard let vm = appState.slackAccountsViewModel else { return .notConfigured }
-            let enabled = vm.accounts.filter(\.enabled)
-            return ConnectionStatusLogic.derive(
-                okCount: enabled.filter(\.isOK).count,
-                problemCount: enabled.filter { !$0.isOK }.count
-            )
+            return ConnectionStatusLogic.enabledFilteredStatus(vm.accounts.map { ($0.isOK, $0.enabled) })
         case .google:
             guard let vm = appState.googleAccountsViewModel else { return .notConfigured }
-            return ConnectionStatusLogic.derive(
-                okCount: vm.accounts.filter(\.isOK).count,
-                problemCount: vm.accounts.filter { !$0.isOK }.count
-            )
+            return ConnectionStatusLogic.status(okFlags: vm.accounts.map(\.isOK))
         case .email:
             guard let vm = appState.emailAccountsViewModel else { return .notConfigured }
-            return ConnectionStatusLogic.derive(
-                okCount: vm.accounts.filter(\.isOK).count,
-                problemCount: vm.accounts.filter { !$0.isOK }.count
-            )
+            return ConnectionStatusLogic.status(okFlags: vm.accounts.map(\.isOK))
         case .calendar:
             guard let vm = appState.calendarAccountsViewModel else { return .notConfigured }
-            return ConnectionStatusLogic.derive(
-                okCount: vm.accounts.filter(\.isOK).count,
-                problemCount: vm.accounts.filter { !$0.isOK }.count
-            )
+            return ConnectionStatusLogic.status(okFlags: vm.accounts.map(\.isOK))
         case .jira:
             guard let vm = appState.jiraAccountsViewModel else { return .notConfigured }
-            let enabled = vm.accounts.filter(\.enabled)
-            return ConnectionStatusLogic.derive(
-                okCount: enabled.filter(\.isOK).count,
-                problemCount: enabled.filter { !$0.isOK }.count
-            )
+            return ConnectionStatusLogic.enabledFilteredStatus(vm.accounts.map { ($0.isOK, $0.enabled) })
         }
     }
 }

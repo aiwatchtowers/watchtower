@@ -9,6 +9,8 @@ struct SystemSettings: View {
     @State private var connectionTestRunning = false
     @State private var connectionTestResult: String?
     @State private var connectionTestSuccess = false
+    // Deliberately a separate instance from appState.daemonManager — a
+    // fire-and-forget control handle used only by the updater's install step.
     @State private var daemonManager = DaemonManager()
 
     var body: some View {
