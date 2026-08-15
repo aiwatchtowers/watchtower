@@ -79,16 +79,21 @@ func enrichSnippet(text string, database *db.DB) string {
 	// Resolve <@U123|Name> and <@U123> user mentions
 	s = slackUserRe.ReplaceAllStringFunc(s, func(match string) string {
 		groups := slackUserRe.FindStringSubmatch(match)
-		// groups[1] = user ID, groups[2] = display name (may be empty)
+		// groups[1] = raw user ID as it appears in message text (never
+		// namespaced — Slack writes it exactly as sent), groups[2] = display
+		// name (may be empty)
 		if groups[2] != "" {
 			return "@" + groups[2]
 		}
 		if database != nil {
-			if name, err := database.UserNameByID(groups[1]); err == nil && name != "" {
+			if name, err := database.UserNameByRawID(groups[1]); err == nil && name != "" {
 				return "@" + name
 			}
 		}
-		return ""
+		// Unresolved (or no DB): keep the raw id rather than dropping the
+		// mention — the downstream triage/compose/situation-card prompts
+		// need to know someone was addressed even when the name is unknown.
+		return "@" + groups[1]
 	})
 	// Resolve <#C123|channel-name> channel refs
 	s = slackChannelRe.ReplaceAllString(s, "#$1")
