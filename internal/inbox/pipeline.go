@@ -577,8 +577,15 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 // An enabled account whose current_user_id is empty is skipped, not treated
 // as an error: connectSlackAccount (cmd/slack.go) writes current_user_id
 // before it saves the token, and wireSlackSyncers refuses to build a syncer
-// without a token, so an account in this state has provably never synced a
-// single message — there is no window of messages to lose by skipping it.
+// without a token, so this account has no synced messages to lose by
+// skipping it — with one narrow exception: ensureLegacySlackAccount
+// (cmd/slack_legacy.go) saves the token unconditionally before checking
+// whether identity resolution succeeded, so a legacy-migration install whose
+// auth.test call fails can leave a saved token with current_user_id still
+// empty. That state self-heals within one sync cycle (Orchestrator.run
+// retries syncCurrentUser whenever current_user_id is empty,
+// internal/sync/orchestrator.go), so the residual exposure is at most the
+// messages synced during that single cycle, not an unbounded window.
 func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int, error) {
 	accounts, err := p.db.ListEnabledSlackAccounts()
 	if err != nil {

@@ -144,6 +144,8 @@
 - `internal/inbox/pipeline_test.go::TestInbox09_CappedTriageAdvancesWatermarkPartially`
 - `internal/inbox/pipeline_test.go::TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped`
 - `internal/inbox/triage_test.go::TestTriage_MutedBeyondFailedChunkDoesNotAdvanceWatermark`
+- `internal/inbox/pipeline_test.go::TestInbox09_SlackDetectorErrorFreezesWatermark` — a genuine Slack detector failure freezes the watermark.
+- `internal/inbox/pipeline_test.go::TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark` — an account with no resolved identity is skipped cleanly and does NOT freeze the watermark, unlike a genuine failure. **Gap, not covered by any test:** one account's genuine detector error not stopping a sibling account's detection in the same cycle — no mechanism was found to make one account's Slack query fail while a sibling's succeeds against the same shared `messages`/`reactions` tables (every column the four detectors scan is `NOT NULL`, `COALESCE`-wrapped, or a `NOT NULL`-derived `GENERATED STORED` column per `schema.sql`, and no DB-layer test seam exists in this repo to fake it); see `TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation` (skipped, not a guard) for the investigation trail.
 
 **Locked since:** 2026-07-05 (partial-advance rule added 2026-07-06, see changelog; multi-account detector scoping noted 2026-07-30 for Google and 2026-07-31 for Slack, same semantics; Slack trigger-detector scoping completed 2026-08-15, see changelog)
 
