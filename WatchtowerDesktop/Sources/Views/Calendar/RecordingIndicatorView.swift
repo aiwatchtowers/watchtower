@@ -129,9 +129,26 @@ struct RecordingIndicatorView: View {
         }
     }
 
+    /// Compact mic + system level meters answering "is my mic alive" and "is
+    /// system audio actually being captured" at a glance.
+    @ViewBuilder
+    private func captureLevelIndicators(_ center: MeetingRecorderCenter) -> some View {
+        Image(systemName: "mic.fill")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        MicLevelBars(level: center.captureLevels.mic, barCount: 3)
+            .help("Microphone level")
+        Image(systemName: "speaker.wave.2.fill")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        MicLevelBars(level: center.captureLevels.system, barCount: 3)
+            .help("System audio level")
+    }
+
     private func recordingCapsule(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {
         indicatorCapsule {
             Circle().fill(.red).frame(width: 10, height: 10)
+            captureLevelIndicators(center)
             TimelineView(.periodic(from: startedAt, by: 1)) { context in
                 Text(Self.elapsed(from: startedAt, to: context.date))
                     .font(.callout.monospacedDigit())
@@ -172,6 +189,7 @@ struct RecordingIndicatorView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Circle().fill(.red).frame(width: 10, height: 10)
+                captureLevelIndicators(center)
                 TimelineView(.periodic(from: startedAt, by: 1)) { context in
                     Text(Self.elapsed(from: startedAt, to: context.date)).font(.callout.monospacedDigit())
                 }

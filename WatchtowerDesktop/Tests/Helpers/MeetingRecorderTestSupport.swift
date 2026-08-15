@@ -23,15 +23,23 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     // finish on stop() (the default: empty stream → live pass yields nothing).
     private var liveContinuation: AsyncStream<[Float]>.Continuation!
     let liveSamples: AsyncStream<[Float]>
+    private var levelsContinuation: AsyncStream<CaptureLevels>.Continuation!
+    let liveLevels: AsyncStream<CaptureLevels>
 
     init() {
         var c: AsyncStream<[Float]>.Continuation!
         liveSamples = AsyncStream { c = $0 }
         liveContinuation = c
+        var l: AsyncStream<CaptureLevels>.Continuation!
+        liveLevels = AsyncStream { l = $0 }
+        levelsContinuation = l
     }
 
     /// Emit one live piece (test drives the live path with this).
     func emitLive(_ samples: [Float]) { liveContinuation.yield(samples) }
+
+    /// Emit one level pair (test drives the level meters with this).
+    func emitLevels(_ levels: CaptureLevels) { levelsContinuation.yield(levels) }
 
     func start(to url: URL) async throws {
         startCalls += 1
@@ -42,6 +50,7 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     func stop() async throws -> RecordingResult {
         stopCalls += 1
         liveContinuation.finish()
+        levelsContinuation.finish()
         if let stopError { throw stopError }
         guard let stopResult else {
             throw AudioRecordingError.deviceSetupFailed("FakeRecorder has no stopResult")

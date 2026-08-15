@@ -184,6 +184,11 @@ final class MeetingRecorderCenter {
     private(set) var liveEngineState: LiveEngineState = .off
     private(set) var liveChunks: [LiveChunk] = []
 
+    /// Latest ~100 ms raw mic/system RMS pair from the active capture's
+    /// recorder (`AudioRecording.liveLevels`), for the indicator's level
+    /// meters. Zero whenever nothing is being captured.
+    private(set) var captureLevels: CaptureLevels = .init(mic: 0, system: 0)
+
     /// Monotonic counter bumped once per transcript that lands in the database.
     /// Views that must refetch after a save observe THIS, never `phase`: with
     /// capture decoupled from the queue, `phase` never dips to `.idle` while
@@ -303,6 +308,12 @@ final class MeetingRecorderCenter {
     /// Non-nil also means "the live pass holds the engine slot", which is what
     /// keeps a queued job from loading a second engine while the tail drains.
     private var liveTask: Task<TranscriptionOutput?, Never>?
+
+    /// Consumer of the active recorder's `liveLevels` stream, feeding
+    /// `captureLevels`. Per-capture like the recorder itself (never part of the
+    /// engine-slot machinery): spawned when capture starts, torn down — with the
+    /// levels reset to zero — on every path that ends capture.
+    private var levelsTask: Task<Void, Never>?
 
     /// Bumped every time a new live pass starts (`startLivePass`) and again when
     /// a stop-time error orphans the in-flight one. `onChunk` closes over the
@@ -891,6 +902,7 @@ final class MeetingRecorderCenter {
             captureAudioURL = url
             captureState = .recording(startedAt: Date())
             captureError = nil
+            startLevelsTask(recorder: recorder)
             captureLiveEnabled = config.liveTranscription
             if !config.liveTranscription {
                 // Live pass disabled in Settings: capture only, the batch path
@@ -922,6 +934,29 @@ final class MeetingRecorderCenter {
             captureError = error.localizedDescription
             notifier.sendTranscriptFailedNotification(reason: error.localizedDescription)
         }
+    }
+
+    /// Mirrors the active recorder's throttled level pairs into
+    /// `captureLevels`, zeroing them when the stream finishes on its own
+    /// (`recorder.stop()`). A cancelled task skips the trailing reset — the
+    /// teardown path that cancelled it already reset on its behalf, and a new
+    /// capture's levels may have landed in between.
+    private func startLevelsTask(recorder: AudioRecording) {
+        levelsTask = Task { @MainActor [weak self] in
+            for await levels in recorder.liveLevels {
+                self?.captureLevels = levels
+            }
+            guard !Task.isCancelled else { return }
+            self?.captureLevels = .init(mic: 0, system: 0)
+        }
+    }
+
+    /// Ends the level feed for a capture that is over: every path that clears
+    /// `captureState` runs this so the meters never show a stale level.
+    private func stopLevelsTask() {
+        levelsTask?.cancel()
+        levelsTask = nil
+        captureLevels = .init(mic: 0, system: 0)
     }
 
     /// Loads the transcriber and, when it supports live (`makeLiveSession`
@@ -1007,6 +1042,7 @@ final class MeetingRecorderCenter {
             // recording starts next instead of contaminating it.
             captureState = .idle
             captureAudioURL = nil
+            stopLevelsTask()
             liveEngineState = .off
             if consumeLivePassOwnership() {
                 liveTask?.cancel()
@@ -1047,6 +1083,7 @@ final class MeetingRecorderCenter {
 
         captureState = .idle
         captureAudioURL = nil
+        stopLevelsTask()
         let ownsLivePass = consumeLivePassOwnership()
         liveEngineState = .off
 

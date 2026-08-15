@@ -18,6 +18,9 @@ private final class JoinFakeRecorder: AudioRecording, @unchecked Sendable {
     /// Center into the post-Stop `.transcribing` phase.
     var stopResult: RecordingResult?
     let liveSamples: AsyncStream<[Float]>
+    /// Levels are irrelevant here; an immediately-finished stream satisfies
+    /// the protocol without feeding the Center anything.
+    var liveLevels: AsyncStream<CaptureLevels> { AsyncStream { $0.finish() } }
     private var liveContinuation: AsyncStream<[Float]>.Continuation!
 
     init() {
