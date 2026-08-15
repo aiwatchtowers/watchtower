@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -413,6 +414,7 @@ func TestRunInboxBackfillMentions_InvalidSinceDate_Errors(t *testing.T) {
 func TestRunInboxBackfillMentions_CreatesItemsMatchingEnvelope(t *testing.T) {
 	cleanup := seedBackfillMentionsFixture(t)
 	defer cleanup()
+	resetInboxBackfillMentionsFlags()
 	defer resetInboxBackfillMentionsFlags()
 
 	inboxBackfillMentionsFlagSince = time.Now().Add(-20 * 24 * time.Hour).Format("2006-01-02")
@@ -453,6 +455,7 @@ func TestRunInboxBackfillMentions_CreatesItemsMatchingEnvelope(t *testing.T) {
 func TestRunInboxBackfillMentions_DryRunInsertsNothing(t *testing.T) {
 	cleanup := seedBackfillMentionsFixture(t)
 	defer cleanup()
+	resetInboxBackfillMentionsFlags()
 	defer resetInboxBackfillMentionsFlags()
 
 	inboxBackfillMentionsFlagSince = time.Now().Add(-20 * 24 * time.Hour).Format("2006-01-02")
@@ -502,6 +505,7 @@ func TestRunInboxBackfillMentions_SinceOlderThan90Days_RequiresForce(t *testing.
 func TestRunInboxBackfillMentions_SinceOlderThan90Days_ForceAllows(t *testing.T) {
 	cleanup := seedBackfillMentionsFixture(t)
 	defer cleanup()
+	resetInboxBackfillMentionsFlags()
 	defer resetInboxBackfillMentionsFlags()
 
 	inboxBackfillMentionsFlagSince = time.Now().Add(-200 * 24 * time.Hour).Format("2006-01-02")
@@ -516,4 +520,36 @@ func TestRunInboxBackfillMentions_SinceOlderThan90Days_ForceAllows(t *testing.T)
 	var envelope backfillMentionsEnvelope
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope))
 	assert.Equal(t, 1, envelope.TotalCreated, "--force must let a >90-day --since recover the fixture's 15-day-old mention")
+}
+
+// TestRunInboxBackfillMentions_CancelledContextStillPrintsEnvelope covers
+// the Ctrl-C/SIGTERM contract: BackfillMentions checks ctx.Err() between
+// accounts and between candidates and stops promptly, but the CLI must
+// still print whatever partial envelope resulted — not die with no output
+// — while still exiting non-zero so the caller can tell the sweep did not
+// finish. A pre-cancelled context standing in for cmd.Context() is the
+// deterministic way to exercise this without sending a real OS signal.
+func TestRunInboxBackfillMentions_CancelledContextStillPrintsEnvelope(t *testing.T) {
+	cleanup := seedBackfillMentionsFixture(t)
+	defer cleanup()
+	resetInboxBackfillMentionsFlags()
+	defer resetInboxBackfillMentionsFlags()
+
+	inboxBackfillMentionsFlagSince = time.Now().Add(-20 * 24 * time.Hour).Format("2006-01-02")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled: stands in for a Ctrl-C/SIGTERM that lands before any work starts
+	inboxBackfillMentionsCmd.SetContext(ctx)
+	defer inboxBackfillMentionsCmd.SetContext(nil)
+
+	buf := new(bytes.Buffer)
+	inboxBackfillMentionsCmd.SetOut(buf)
+
+	err := inboxBackfillMentionsCmd.RunE(inboxBackfillMentionsCmd, nil)
+	require.Error(t, err, "a cancelled run must still exit non-zero")
+	assert.Contains(t, err.Error(), "context canceled")
+
+	var envelope backfillMentionsEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope), "the envelope must still be printed despite the error")
+	assert.Empty(t, envelope.Accounts, "cancelled before any account was reached")
 }

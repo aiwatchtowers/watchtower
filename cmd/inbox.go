@@ -8,8 +8,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"watchtower/internal/config"
@@ -703,7 +705,10 @@ type backfillMentionsEnvelope struct {
 // which is why the flag help spells this out. --since further back than
 // backfillMentionsMaxLookbackDays is rejected unless --force is set, so a
 // mistyped year does not silently sweep the whole messages table. The
-// command makes no AI call, so no generator is wired into the pipeline.
+// command makes no AI call, so no generator is wired into the pipeline. A
+// Ctrl-C/SIGTERM mid-sweep still prints the envelope for whatever was
+// recovered before the interrupt rather than dying with no output — see the
+// ctx wrapping below.
 func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 	if inboxBackfillMentionsFlagSince == "" {
 		return fmt.Errorf("--since is required (format YYYY-MM-DD)")
@@ -741,9 +746,22 @@ func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 	if ctx == nil { // RunE invoked directly (tests) — cobra sets ctx only via Execute
 		ctx = context.Background()
 	}
-	result, err := pipe.BackfillMentions(ctx, since, inboxBackfillMentionsFlagDryRun)
-	if err != nil {
-		return fmt.Errorf("backfilling mentions: %w", err)
+	// cmd/root.go runs plain Execute(), so without this wrapping ctx is an
+	// uncancellable Background in production and BackfillMentions' ctx.Err()
+	// checks (between accounts and between candidates) are dead code — the
+	// cmd/ideas.go backfill precedent. With it, a Ctrl-C/SIGTERM mid-sweep
+	// stops promptly instead of the process dying mid-run with no output;
+	// each CreateInboxItem already commits independently and re-running is
+	// idempotent, so an interrupted sweep loses nothing by stopping early.
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	result, runErr := pipe.BackfillMentions(ctx, since, inboxBackfillMentionsFlagDryRun)
+	if runErr != nil && ctx.Err() == nil {
+		// A genuine failure unrelated to cancellation (e.g. a per-account
+		// DB error) — no envelope, matching the pre-existing hard-failure
+		// contract for validation errors above.
+		return fmt.Errorf("backfilling mentions: %w", runErr)
 	}
 
 	envelope := backfillMentionsEnvelope{
@@ -776,6 +794,13 @@ func runInboxBackfillMentions(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("marshaling envelope: %w", err)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), string(data))
+
+	if runErr != nil {
+		// ctx was cancelled mid-run: the envelope above is the partial
+		// report of what got recovered before the interrupt; still return
+		// the error so the exit code reflects that the sweep did not finish.
+		return fmt.Errorf("backfilling mentions: %w", runErr)
+	}
 	return nil
 }
 
