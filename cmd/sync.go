@@ -114,6 +114,26 @@ func syncResultPath(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspaceDir(), "last_sync.json")
 }
 
+// maxLogSize is the size past which a log file is rotated at open:
+// the current file is renamed to "<name>.1" (replacing the previous
+// generation) and a fresh file is started. In-process growth between
+// daemon restarts stays unbounded by design — the daemon is restarted
+// on every app launch/rebuild, and one generation bounds disk use.
+const maxLogSize = 20 * 1024 * 1024
+
+// rotateLogIfOversized renames path to path+".1" when the file exceeds
+// maxLogSize, so the next open starts fresh. Any error (stat, rename) is
+// non-fatal: the caller proceeds and appends to the existing file —
+// rotation must never block a sync.
+func rotateLogIfOversized(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= maxLogSize {
+		return
+	}
+	// os.Rename replaces an existing ".1" atomically on POSIX.
+	_ = os.Rename(path, path+".1")
+}
+
 func runSyncStop(cfg *config.Config) error {
 	pidPath := pidFilePath(cfg)
 	pid, err := daemon.FindProcess(pidPath)
@@ -160,6 +180,7 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
+	rotateLogIfOversized(logPath)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
@@ -255,6 +276,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
+	rotateLogIfOversized(syncLog)
 	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)

@@ -381,7 +381,6 @@ final class AppState {
             // the store copy may still be the stale one, and DaemonManager
             // caches whatever path it first resolves.
             daemonManager.startPolling()
-            let splashStart = ContinuousClock.now
             do {
                 let manager = try await Task.detached {
                     // Run Go CLI to apply any pending DB migrations before opening
@@ -408,11 +407,6 @@ final class AppState {
                 // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
                 if !needsOnboarding {
                     await initSidebarCounts(dbPool: manager.dbPool)
-                }
-                // Hold splash for at least 2 seconds
-                let elapsed = ContinuousClock.now - splashStart
-                if elapsed < .seconds(2) {
-                    try? await Task.sleep(for: .seconds(2) - elapsed)
                 }
                 isLoading = false
                 loadCustomEmoji(from: manager)

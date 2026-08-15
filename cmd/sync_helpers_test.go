@@ -70,6 +70,79 @@ func TestSyncResultPath(t *testing.T) {
 	assert.Contains(t, path, "last_sync.json")
 }
 
+func TestRotateLogIfOversized(t *testing.T) {
+	// makeOversized creates a file whose header identifies the generation,
+	// then extends it past maxLogSize sparsely (instant, no real disk on APFS).
+	makeOversized := func(t *testing.T, path, header string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(path, []byte(header), 0o600))
+		require.NoError(t, os.Truncate(path, maxLogSize+1))
+	}
+
+	t.Run("oversized file is renamed to .1 and fresh appends go to a new file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		makeOversized(t, path, "old generation")
+
+		rotateLogIfOversized(path)
+
+		_, err := os.Stat(path)
+		assert.True(t, os.IsNotExist(err), "original path should be gone after rotation")
+		rotated, err := os.Stat(path + ".1")
+		require.NoError(t, err)
+		assert.Equal(t, int64(maxLogSize+1), rotated.Size())
+
+		// The caller's O_CREATE|O_APPEND open starts a fresh file.
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		require.NoError(t, err)
+		_, err = f.WriteString("fresh line\n")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "fresh line\n", string(content))
+	})
+
+	t.Run("existing .1 is replaced", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path+".1", []byte("older generation"), 0o600))
+		makeOversized(t, path, "newer generation")
+
+		rotateLogIfOversized(path)
+
+		content, err := os.ReadFile(path + ".1")
+		require.NoError(t, err)
+		assert.Equal(t, "newer generation", string(content[:len("newer generation")]))
+	})
+
+	t.Run("under-cap file is untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path, []byte("small"), 0o600))
+
+		rotateLogIfOversized(path)
+
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "small", string(content))
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err), "no .1 should appear for an under-cap file")
+	})
+
+	t.Run("missing file is a no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+
+		rotateLogIfOversized(path)
+
+		_, err := os.Stat(path)
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err))
+	})
+}
+
 func TestSyncAdditionalFlags(t *testing.T) {
 	assert.NotNil(t, syncCmd.Flags().Lookup("detach"))
 	assert.NotNil(t, syncCmd.Flags().Lookup("stop"))
