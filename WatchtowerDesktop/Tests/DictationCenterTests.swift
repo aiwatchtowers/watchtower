@@ -1106,4 +1106,174 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await runOneDictation()
         XCTAssertEqual(engineLoads, 2, "a Settings change must drop the warm engine and reload")
     }
+
+    // MARK: 14. Pause / resume, elapsed time, mic level
+
+    /// Pause gates samples out of the session (the mic stays hot, the
+    /// recorder simply drops chunks); resume continues the SAME session — one
+    /// stop at the end delivers everything said across the pause.
+    func testPauseGatesSamplesAndResumeContinuesSameSession() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["part one part two"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        // The feed loop consumes chunks asynchronously — wait for this one to
+        // land so pause()'s micLevel reset can't be overwritten by it.
+        await waitUntil("chunk fed") { center.micLevel > 0 }
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+        XCTAssertEqual(recorder.pausedStates, [true])
+        XCTAssertEqual(center.micLevel, 0, "pause must zero the level meter")
+
+        recorder.emit([Float](repeating: 0.9, count: 1_600)) // dropped by the fake's gate
+
+        center.resume()
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertEqual(recorder.pausedStates, [true, false])
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// Stop from `.paused` finalizes exactly like from `.recording` — pause
+    /// never becomes a trap the user can only cancel out of.
+    func testStopFromPausedFinalizes() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+        center.stop()
+
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    /// Paused time never ticks: pause folds the open span into
+    /// `elapsedAccumulated` and nils `spanStartedAt`, so `elapsed(at:)` is
+    /// frozen no matter how far the clock advances.
+    func testElapsedDoesNotTickWhilePaused() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("recording") { center.phase == .recording }
+
+        center.pause()
+
+        XCTAssertNil(center.spanStartedAt)
+        let frozen = center.elapsed(at: Date())
+        XCTAssertEqual(center.elapsed(at: Date(timeIntervalSinceNow: 10)), frozen,
+                       "elapsedAccumulated must be frozen while paused")
+
+        center.cancel()
+    }
+
+    /// `micLevel` is the RMS of the latest chunk while recording, and reads 0
+    /// once the dictation is back to idle.
+    func testMicLevelTracksChunkRMSAndResetsOnIdle() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0.2, count: 8_000))
+        await waitUntil("mic level updated") { center.micLevel > 0 }
+        XCTAssertEqual(center.micLevel, 0.2, accuracy: 0.01, "RMS of a constant 0.2 chunk is 0.2")
+
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(center.micLevel, 0, "idle must zero the level meter")
+    }
+
+    /// The meeting claiming the slot while the dictation is paused takes the
+    /// finalize path: deliver what was said, drop the engine (not parked),
+    /// wake the parked meeting live pass.
+    func testMeetingCaptureWillStartFromPausedFinalizes() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+
+        center.meetingCaptureWillStart()
+
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "speech said before the pause must be delivered, not discarded")
+        XCTAssertFalse(center.hasResidentEngine, "the engine must be dropped, not parked")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
+        XCTAssertEqual(center.phase, .idle)
+    }
 }

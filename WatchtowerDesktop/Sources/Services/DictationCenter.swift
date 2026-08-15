@@ -30,6 +30,18 @@ final class DictationCenter {
     /// driving a badge — never as a dedicated visible phase.
     private(set) var isEngineLoading = false
     private(set) var activeTargetID: String?
+    /// RMS of the latest sample chunk, updated by the buffering feed loop —
+    /// the capsule's level bars. Reads 0 while paused, idle, or failed.
+    private(set) var micLevel: Float = 0
+    /// Recording time accumulated across closed spans; paused time never
+    /// ticks. The open span (if any) starts at `spanStartedAt` — `elapsed(at:)`
+    /// adds it on top.
+    private(set) var elapsedAccumulated: Duration = .zero
+    /// Start of the currently-open recording span: set when recording
+    /// actually starts and on every `resume()`; folded into
+    /// `elapsedAccumulated` and nil'd on `pause()`, `stop()`, `cancel()`, and
+    /// failure.
+    private(set) var spanStartedAt: Date?
     /// Accumulated raw text delivered so far, chunk by chunk, while live.
     private(set) var liveText: String = ""
     /// The raw transcript of the most recently finished (or failed) dictation,
@@ -116,6 +128,9 @@ final class DictationCenter {
         // flag over `.recording`, not a phase of its own.
         phase = .recording
         isEngineLoading = true
+        micLevel = 0
+        elapsedAccumulated = .zero
+        spanStartedAt = Date()
         // The engine is about to be used again — the idle countdown from the
         // previous dictation (if any) no longer applies.
         engineReleaseTask?.cancel()
@@ -135,18 +150,42 @@ final class DictationCenter {
         }
     }
 
+    /// Pauses the dictation: the mic stays hot but the recorder gates its
+    /// samples, so to the transcriber a pause is a seamless audio splice. The
+    /// open recording span is folded into `elapsedAccumulated` — paused time
+    /// never ticks. A no-op unless `.recording`.
+    func pause() {
+        guard phase == .recording else { return }
+        recorder?.setPaused(true)
+        foldOpenSpan()
+        micLevel = 0
+        phase = .paused
+    }
+
+    /// Resumes a paused dictation into the SAME session — a new recording
+    /// span opens now. A no-op unless `.paused`.
+    func resume() {
+        guard phase == .paused else { return }
+        recorder?.setPaused(false)
+        spanStartedAt = Date()
+        phase = .recording
+    }
+
     /// Stops the mic and finalizes; the already-running dictation task takes
     /// it from there (wait for the engine if it is still loading, finish
     /// transcription → clean → onResult). `.stopping` covers the gap until
-    /// transcription completes, then the existing `.cleaning` flow. Speech
-    /// spoken during an engine load was buffered from t0 and is batch-decoded
-    /// once the engine resolves — never discarded; `cancel()` is the only
-    /// discard path. A no-op in any other phase — calling it twice is safe,
-    /// since the underlying task only ever resolves once regardless of how
-    /// many times the mic is told to stop.
+    /// transcription completes, then the existing `.cleaning` flow. Works
+    /// from `.paused` exactly like from `.recording` — pause never becomes a
+    /// trap the user can only cancel out of. Speech spoken during an engine
+    /// load was buffered from t0 and is batch-decoded once the engine
+    /// resolves — never discarded; `cancel()` is the only discard path. A
+    /// no-op in any other phase — calling it twice is safe, since the
+    /// underlying task only ever resolves once regardless of how many times
+    /// the mic is told to stop.
     func stop() {
-        guard phase == .recording else { return }
+        guard phase == .recording || phase == .paused else { return }
         recorder?.stop()
+        foldOpenSpan()
         phase = .stopping
     }
 
@@ -163,6 +202,8 @@ final class DictationCenter {
         activeTargetID = nil
         phase = .idle
         isEngineLoading = false
+        foldOpenSpan()
+        micLevel = 0
         engineBecameIdle()
     }
 
@@ -177,15 +218,30 @@ final class DictationCenter {
     func meetingCaptureWillStart() {
         switch phase {
         case .recording, .paused, .stopping:
-            // For `.stopping` (already finalizing) — and `.paused`, until
-            // Task 3 wires pause into stop() — the extra stop() is a
+            // For `.stopping` (already finalizing) the extra stop() is a
             // harmless no-op: the flag alone routes the completing run
-            // through the engine drop.
+            // through the engine drop. `.recording` and `.paused` both
+            // finalize through stop().
             dropEngineAfterCleanup = true
             stop()
         case .idle, .failed, .cleaning:
             dropEngineImmediately()
         }
+    }
+
+    /// Recording time elapsed as of `date`: the closed spans plus the
+    /// currently-open one (if any). Paused time never ticks — `pause()` folds
+    /// the open span and nils `spanStartedAt`, freezing this value.
+    func elapsed(at date: Date) -> Duration {
+        elapsedAccumulated + (spanStartedAt.map { .seconds(date.timeIntervalSince($0)) } ?? .zero)
+    }
+
+    /// Closes the open recording span into `elapsedAccumulated`. A no-op when
+    /// no span is open (e.g. `stop()` from `.paused`).
+    private func foldOpenSpan() {
+        guard let start = spanStartedAt else { return }
+        elapsedAccumulated += .seconds(Date().timeIntervalSince(start))
+        spanStartedAt = nil
     }
 
     /// Leaves `.failed` back to `.idle`. `liveText`/`lastRaw` are left intact —
@@ -261,6 +317,7 @@ final class DictationCenter {
             }
             phase = .idle
             isEngineLoading = false
+            micLevel = 0
             activeTargetID = nil
             engineBecameIdle()
             onResult(DictationCleanResult(title: nil, text: ""))
@@ -302,6 +359,7 @@ final class DictationCenter {
             guard !Task.isCancelled else { return }
             phase = .idle
             isEngineLoading = false
+            micLevel = 0
             activeTargetID = nil
             engineBecameIdle()
             onResult(result)
@@ -334,10 +392,13 @@ final class DictationCenter {
 
     private func startBuffering(recorder: MicRecording) -> CaptureBuffers {
         let buffers = CaptureBuffers()
-        buffers.feedTask = Task { @MainActor in
+        buffers.feedTask = Task { @MainActor [weak self] in
             for await chunk in recorder.samples {
                 buffers.buffer.append(contentsOf: chunk)
                 buffers.teedContinuation.yield(chunk)
+                self?.micLevel = chunk.isEmpty
+                    ? 0
+                    : (chunk.reduce(into: Float(0)) { $0 += $1 * $1 } / Float(chunk.count)).squareRoot()
             }
             buffers.teedContinuation.finish()
         }
@@ -403,6 +464,8 @@ final class DictationCenter {
     private func finish(failed message: String) {
         phase = .failed(message)
         isEngineLoading = false
+        foldOpenSpan()
+        micLevel = 0
         engineBecameIdle()
     }
 
