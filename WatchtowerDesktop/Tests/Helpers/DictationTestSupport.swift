@@ -59,6 +59,33 @@ final class GatedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
 
 // MARK: - Fakes
 
+/// Scripted `DictationTranscribing`: fires its canned full-replacement
+/// updates as soon as it runs (the center is `.recording` by then), then
+/// waits for the sample stream to end — the mic stopping — before returning
+/// `finalText`, or throwing `error` instead (after the updates, mirroring a
+/// session that dies mid-stream).
+final class FakeDictationSession: DictationTranscribing, @unchecked Sendable {
+    private let updates: [String]
+    private let finalText: String
+    private let error: Error?
+
+    init(updates: [String], finalText: String, error: Error? = nil) {
+        self.updates = updates
+        self.finalText = finalText
+        self.error = error
+    }
+
+    func run(samples: AsyncStream<[Float]>,
+             onUpdate: @escaping @MainActor (String) -> Void) async throws -> String {
+        for text in updates {
+            await MainActor.run { onUpdate(text) }
+        }
+        if let error { throw error }
+        for await _ in samples {} // drains until the mic stops
+        return finalText
+    }
+}
+
 /// Scriptable `MicRecording`. `start` never touches real hardware; a test
 /// drives the stream directly with `emit`/`stop` (the `FakeRecorder`
 /// precedent, minus the file: `Tests/Helpers/MeetingRecorderTestSupport.swift:11-49`).

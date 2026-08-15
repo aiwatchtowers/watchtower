@@ -55,6 +55,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testLiveHappyPathDeliversLiveTextThenCleanedResult() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -75,15 +76,18 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.isEngineLoading, "the mic is hot immediately; the engine load is a flag, not a phase")
         await waitUntil("engine loaded") { !center.isEngineLoading }
 
-        // A full decidable window (windowSec 10 + snap tolerance 2.5), so the
-        // live chunk arrives while still `.recording` — a chunk decoded only
-        // in the post-stop draining tail is deliberately suppressed (the
-        // final text then arrives via the session's return value alone).
+        // A full decidable window (windowSec 4 + its capped snap tolerance),
+        // so the live chunk arrives while still `.recording` — a chunk
+        // decoded only in the post-stop draining tail is deliberately
+        // suppressed (the final text then arrives via the session's return
+        // value alone).
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
 
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         XCTAssertEqual(liveTexts.last, "hello world")
         XCTAssertEqual(center.lastRaw, "hello world")
@@ -97,6 +101,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testBatchFallbackWhenEngineHasNoLiveSession() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -130,6 +135,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testBatchTranscribeErrorSurfacesAsFailedNotAnEmptyResult() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -162,6 +168,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testConfigOverridesWindowAndDiarizationButLeavesBoundarySnapAndIgnoresLiveTranscriptionFlag() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         defaults.set(7.0, forKey: "transcription.boundarySnapSec")
         // Dictation liveness must come from `makeLiveSession` alone — proven
         // below by still getting live chunks despite this being false.
@@ -193,10 +200,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         let config = try XCTUnwrap(capturedConfig)
-        XCTAssertEqual(config.windowSec, 10)
+        XCTAssertEqual(config.windowSec, 4)
         XCTAssertFalse(config.diarization)
         XCTAssertEqual(config.boundarySnapSec, 7.0, "boundarySnapSec is untouched — whatever fromDefaults produced")
         XCTAssertFalse(liveTexts.isEmpty, "a false liveTranscription default must not force a batch fallback")
@@ -234,6 +243,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCleanupFailureKeepsRawTextAndNeverFiresOnResult() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: Data(), error: StubCleanupError())
         let center = DictationCenter(
@@ -258,7 +268,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitPatiently("live text delivered") { !center.liveText.isEmpty }
         center.stop()
 
-        await waitUntil("failed") {
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before the (failing) cleanup is even reached.
+        await waitPatiently("failed") {
             if case .failed = center.phase { return true }
             return false
         }
@@ -278,6 +290,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testBatchOnlyCleanupFailureDeliversRawTextToTheField() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: Data(), error: StubCleanupError())
         let center = DictationCenter(
@@ -316,6 +329,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testEngineIsReusedAcrossDictationsWithinTTL() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -353,6 +367,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testEngineReloadsAfterIdleTTLElapses() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -397,6 +412,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCancelledEngineLoadNeverResurrectsAnUnmanagedWarmEngine() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -449,6 +465,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartDuringRecordingActsLikeStopAndDropsEngineAfterCleanup() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -492,6 +509,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartWhileIdleDropsWarmEngineImmediately() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -541,6 +559,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartDuringEngineLoadFinalizesAndFreesTheSlot() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -593,6 +612,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartDuringLoadWithWarmEngineDropsItImmediately() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -653,6 +673,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartDuringCleaningDropsEngineButDeliversResult() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let gate = AsyncGate()
         let runner = GatedCLIRunner(gate: gate, stdout: chatCleanedEnvelope)
@@ -718,6 +739,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testStartWhileAnotherDictationIsActiveIsANoOp() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -752,6 +774,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testStopCalledTwiceFiresCleanupAndOnResultOnlyOnce() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -785,6 +808,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCancelOnHostViewDisappearFreesTheSlotForAnotherTarget() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var lastRecorder: FakeMicRecorder!
         let center = DictationCenter(
@@ -826,6 +850,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testStartFromAnotherTargetUnwedgesAnOrphanedFailure() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -938,6 +963,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testStopDuringEngineLoadFinalizesAndDeliversText() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -982,6 +1008,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCancelDuringEngineLoadDiscardsEverything() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -1024,7 +1051,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testWarmEngineIsDroppedWhenModelSettingChangesBetweenDictations() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
-        defaults.set("model-a", forKey: "transcription.model")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -1055,7 +1082,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await runOneDictation()
         XCTAssertEqual(engineLoads, 1)
 
-        defaults.set("model-b", forKey: "transcription.model")
+        defaults.set("base", forKey: "dictation.model")
         await runOneDictation()
         XCTAssertEqual(engineLoads, 2, "a Settings change must drop the warm engine and reload")
     }
@@ -1068,6 +1095,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testPauseGatesSamplesAndResumeContinuesSameSession() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1110,6 +1138,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testStopFromPausedFinalizes() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1141,6 +1170,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testElapsedDoesNotTickWhilePaused() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1170,6 +1200,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMicLevelTracksChunkRMSAndResetsOnIdle() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1203,6 +1234,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testMeetingCaptureWillStartFromPausedFinalizes() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1241,6 +1273,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testSilenceAutoPausesAfterThreshold() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1277,6 +1310,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testLoudChunkResetsSilenceCounter() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1313,6 +1347,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testPauseTimeoutAutoStopsAndDelivers() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1347,6 +1382,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testResumeCancelsPauseTimeout() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1423,6 +1459,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testPauseDuringEngineLoadStillDeliversLiveTextAfterResume() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -1455,13 +1492,15 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         center.resume()
         XCTAssertEqual(center.phase, .recording)
 
-        // A full decodable window (windowSec 10 + snap tolerance 2.5) so the
-        // live chunk lands while still `.recording` (the happy-path test
-        // documents why).
+        // A full decodable window (windowSec 4 + its capped snap tolerance)
+        // so the live chunk lands while still `.recording` (the happy-path
+        // test documents why).
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         XCTAssertEqual(liveTexts.last, "hello world",
                        "a pause during the engine load must not permanently kill live transcription")
@@ -1477,6 +1516,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testEngineLoadFailureWhilePausedDisarmsPauseTimeout() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         let gate = AsyncGate()
@@ -1530,6 +1570,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testCancelDuringStoppingDoesNotResurrectState() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         var lastRecorder: FakeMicRecorder!
         let gate = AsyncGate()
         let runner = GatedCLIRunner(gate: gate, stdout: chatCleanedEnvelope)
@@ -1584,6 +1625,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testDrainingSilentTailAfterStopNeverRePauses() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1631,6 +1673,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testSecondMeetingCaptureWillStartWhileAlreadyStoppingIsANoOp() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
@@ -1682,6 +1725,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testSilenceAutoPauseThenPauseTimeoutDeliversEndToEnd() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         let center = DictationCenter(
@@ -1713,5 +1757,87 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                        "silence auto-pause chained into the pause timeout must still deliver")
         XCTAssertEqual(center.phase, .idle)
         XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    // MARK: 23. Dictation model + session seam (realtime dictation, Task 2)
+
+    /// The dictation config is decoupled from the meeting stack: ~4 s windows
+    /// and the whisper model resolved from `dictation.model` (carried to the
+    /// engine factory on `config.model`), never the meeting keys.
+    func testDictationConfigUsesFourSecondWindowsAndDictationModel() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
+        // The meeting model key must be IGNORED — proven by config.model
+        // below still being the dictation choice.
+        defaults.set("large-v3-v20240930", forKey: "transcription.model")
+
+        var capturedConfig: TranscriptionConfig?
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { config in
+                capturedConfig = config
+                return TestTranscriber(ScriptedEngine(texts: ["hi"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        let config = try XCTUnwrap(capturedConfig)
+        XCTAssertEqual(config.windowSec, 4, "dictation decodes ~4 s windows, not the meeting default")
+        XCTAssertEqual(config.model, "small",
+                       "the whisper model must come from dictation.model, never transcription.model")
+        XCTAssertFalse(config.diarization)
+
+        center.cancel()
+    }
+
+    /// A session update REPLACES the live text wholesale (volatile refinement
+    /// lands in the field), the session's returned string is the raw
+    /// transcript, and cleanup runs on that return.
+    func testLiveTextIsFullReplacementNotAppend() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: "dictation.model")
+        let recorder = FakeMicRecorder()
+        let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
+        let session = FakeDictationSession(updates: ["hello", "hello world corrected"],
+                                           finalText: "hello world corrected")
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            sessionFactory: { _, _ in session },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        await waitUntil("both updates delivered") { liveTexts.count == 2 }
+
+        XCTAssertEqual(liveTexts, ["hello", "hello world corrected"],
+                       "a refined update must REPLACE the live text wholesale, never append")
+        XCTAssertEqual(center.liveText, "hello world corrected")
+
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(center.lastRaw, "hello world corrected",
+                       "the session's returned string is the raw transcript")
+        XCTAssertEqual(runner.savedTranscripts, ["hello world corrected"],
+                       "cleanup must run on the session's final return")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
     }
 }

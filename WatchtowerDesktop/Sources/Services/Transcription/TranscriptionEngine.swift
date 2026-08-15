@@ -55,6 +55,12 @@ struct TranscriptionConfig: Equatable {
     /// more aggressively. FluidAudio's own default (0.7) under-splits compressed
     /// meeting audio, merging distinct people into one cluster.
     var diarizationThreshold: Float = 0.6
+    /// Explicit engine model for factories that honor it — stamped by the
+    /// dictation lane from its resolved `dictation.model` choice and consumed
+    /// by `DictationCenter.dictationEngineFactory`. nil (the default, and
+    /// always the meeting path) = the factory resolves the model from its own
+    /// Settings keys; `fromDefaults` never sets this.
+    var model: String?
     static let sampleRate = 16_000
 }
 
