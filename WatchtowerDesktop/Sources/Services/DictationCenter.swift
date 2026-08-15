@@ -167,7 +167,8 @@ final class DictationCenter {
         if case .whisper = choice, let transcriber {
             return WhisperDictationSession(transcriber: transcriber, config: config)
         }
-        return AppleDictationSession(locale: AppleLocaleCatalog.resolveLocale(langset: config.langset))
+        return AppleDictationSession(
+            locale: AppleLocaleCatalog.resolveDictationLocale(forced: config.forcedLanguage))
     }
 
     // MARK: - Controls
@@ -407,6 +408,16 @@ final class DictationCenter {
                 return
             }
         } else {
+            // The apple lane skips resolveTranscriber — the only other warm-slot
+            // invalidation site — so a whisper engine parked by an earlier
+            // dictation would otherwise stay resident forever after the owner
+            // switched `dictation.model` to Apple, keeping `hasResidentEngine`
+            // true with nothing left to ever release it (a meeting live pass
+            // would park on a dead reference). Drop it now; `engineReleased`
+            // firing is correct — the slot genuinely frees.
+            if warmTranscriber != nil {
+                dropEngineImmediately()
+            }
             transcriber = nil
         }
         guard !Task.isCancelled else { return }
@@ -423,7 +434,7 @@ final class DictationCenter {
             // that would silently drop whatever the user actually dictated.
             // A genuine empty decode (no throw) still takes the ordinary
             // empty-result path below.
-            finish(failed: "transcription failed")
+            finish(failed: "transcription failed: \(error.localizedDescription)")
             return
         }
         guard !Task.isCancelled else { return }
@@ -615,8 +626,13 @@ final class DictationCenter {
                     self.liveText = text // full replacement, never append
                     onLiveText(text)
                 }
+            } catch DictationSessionError.liveUnsupported {
+                // Not a failure: a batch-only provider has no live session by
+                // design — the buffer decode below IS its normal path.
+                NSLog("[Dictation] provider has no live session — batch decode")
+                sessionText = nil
             } catch {
-                NSLog("[Dictation] dictation session unavailable or failed, falling back to batch decode: %@",
+                NSLog("[Dictation] live session FAILED, falling back to batch decode: %@",
                       String(describing: error))
                 sessionText = nil
             }

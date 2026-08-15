@@ -20,6 +20,16 @@ enum DictationEngineChoice: Equatable {
     /// (batch-only) and Qwen3 (heavy MLX) are excluded by design.
     static let whisperModels = ["large-v3-v20240930", "small", "base"]
 
+    /// Picker labels keyed by model id. `pickerOptions` derives its Whisper
+    /// rows from `whisperModels` through this map, so a model resolvable but
+    /// not offered (or offered but not resolvable) is impossible by
+    /// construction — `whisperModels` is the single source of truth.
+    private static let whisperLabels: [String: String] = [
+        "large-v3-v20240930": "Whisper large-v3 turbo",
+        "small": "Whisper small (fast)",
+        "base": "Whisper base (fastest)"
+    ]
+
     /// Absent/unknown key → .apple when appleSupported, else .whisper("small").
     /// Unknown values fall back to the default rather than erroring so a
     /// stale key from a newer/older build degrades to a working engine.
@@ -58,11 +68,9 @@ enum DictationEngineChoice: Equatable {
         if appleSupported {
             options.append(PickerOption(id: "apple", label: "Apple (realtime)"))
         }
-        options.append(contentsOf: [
-            PickerOption(id: "large-v3-v20240930", label: "Whisper large-v3 turbo"),
-            PickerOption(id: "small", label: "Whisper small (fast)"),
-            PickerOption(id: "base", label: "Whisper base (fastest)")
-        ])
+        options.append(contentsOf: whisperModels.map {
+            PickerOption(id: $0, label: whisperLabels[$0] ?? $0)
+        })
         return options
     }
 

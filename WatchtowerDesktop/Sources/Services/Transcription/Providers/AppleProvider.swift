@@ -82,6 +82,25 @@ enum AppleLocaleCatalog {
         }
         return defaultLocale
     }
+
+    /// Dictation-lane locale resolution (realtime-dictation spec §2:
+    /// "forceLang when set, else Locale.current") — used ONLY by the
+    /// dictation session factory; the batch `AppleTranscriber` path keeps its
+    /// langset resolution above. A supported `forced` language (mapped
+    /// through `localeByLanguage`) wins; otherwise the user's `current`
+    /// locale when Apple supports its language; else the en-US default.
+    /// A forced language Apple does not support (e.g. "uk") deliberately
+    /// falls through to current-or-default rather than erroring — the same
+    /// degrade-to-a-working-engine shape as `DictationEngineChoice.resolve`.
+    static func resolveDictationLocale(forced: String?, current: Locale = .current) -> Locale {
+        if let forced, let id = localeByLanguage[forced] {
+            return Locale(identifier: id)
+        }
+        if let code = current.language.languageCode?.identifier, localeByLanguage[code] != nil {
+            return current
+        }
+        return defaultLocale
+    }
 }
 
 /// Runs the real macOS 26 `SpeechAnalyzer` batch flow: build one `SpeechTranscriber`

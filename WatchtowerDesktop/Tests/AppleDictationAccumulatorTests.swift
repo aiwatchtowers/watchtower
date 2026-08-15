@@ -64,6 +64,18 @@ final class AppleDictationAccumulatorTests: XCTestCase {
         XCTAssertEqual(acc.display, "hello wor")
     }
 
+    /// A sequence ending on a volatile piece the framework never finalizes:
+    /// `display` retains it — this pins the value `AppleDictationSession`
+    /// returns, so text the user watched on screen is never silently dropped.
+    func testDisplayRetainsANeverFinalizedTrailingVolatileTail() {
+        var acc = AppleDictationAccumulator()
+        acc.accept(text: "hello", isFinal: true)
+        acc.accept(text: "trailing tail", isFinal: false)
+        XCTAssertEqual(acc.display, "hello trailing tail",
+                       "a never-finalized volatile tail must stay in the display — everything shown is delivered")
+        XCTAssertEqual(acc.finalized, "hello")
+    }
+
     func testFinalAfterFinalSpaceJoins() {
         var acc = AppleDictationAccumulator()
         acc.accept(text: "hello", isFinal: true)

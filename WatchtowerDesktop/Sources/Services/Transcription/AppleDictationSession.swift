@@ -40,9 +40,11 @@ struct AppleDictationAccumulator {
 /// arrives incrementally from the mic stream while results (INCLUDING
 /// volatile ones) are consumed concurrently through the accumulator, firing
 /// `onUpdate` with the full display string on every accepted change. The
-/// returned string is the finalized text after
-/// `finalizeAndFinishThroughEndOfInput()` — single-pass, that return IS the
-/// raw transcript.
+/// returned string is the accumulator's DISPLAY string — everything shown is
+/// delivered: `finalizeAndFinishThroughEndOfInput()` normally makes display
+/// equal the finalized text, but a trailing volatile tail the framework never
+/// finalizes must not vanish from the transcript the user watched on screen.
+/// Single-pass, that return IS the raw transcript.
 ///
 /// `Sendable` is sound: the only stored state is the immutable locale; each
 /// `run` builds its whole analyzer world locally.
@@ -102,7 +104,9 @@ final class AppleDictationSession: DictationTranscribing, Sendable {
                     await onUpdate(display)
                 }
             }
-            return accumulator.finalized
+            // Display, not finalized: a tail the framework never finalized
+            // was still shown to the user and must be delivered.
+            return accumulator.display
         }
 
         // The analyzer consumes its input stream on its own task while the
@@ -125,6 +129,11 @@ final class AppleDictationSession: DictationTranscribing, Sendable {
             inputContinuation.finish()
             analyzeTask.cancel()
             collector.cancel()
+            // Await the cancelled tasks (ignoring their results) so a
+            // detached task can't keep holding analyzer resources past the
+            // throw and race a fast stop→restart.
+            _ = await analyzeTask.result
+            _ = await collector.result
             throw error
         }
 
@@ -137,6 +146,10 @@ final class AppleDictationSession: DictationTranscribing, Sendable {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
         } catch {
             collector.cancel()
+            // Await the cancelled collector (ignoring its result) so it can't
+            // keep holding analyzer resources past the throw and race a fast
+            // stop→restart. `analyzeTask` was already awaited above.
+            _ = await collector.result
             throw error
         }
         return try await collector.value

@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// Meetings tab — everything about recording and transcribing meetings.
-/// Same @AppStorage keys, same controls.
+/// Same @AppStorage keys, same controls. The Engine section also hosts the
+/// dictation-model picker (`dictation.model`), voice dictation's own engine
+/// choice, decoupled from the meeting Engine/Model keys.
 struct MeetingsSettings: View {
     @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
