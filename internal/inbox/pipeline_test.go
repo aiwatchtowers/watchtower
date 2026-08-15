@@ -843,14 +843,45 @@ func TestInbox09_WatermarkFrozenOnDetectorError(t *testing.T) {
 		"detector failure must leave the inbox watermark untouched to avoid losing the skipped window")
 }
 
-// TestInbox09_SlackAccountErrorFreezesWatermarkDespiteSiblingSuccess guards
-// INBOX-09 for the per-account Slack loop: one account's detector error must
-// freeze the single shared watermark exactly like a single-account error,
-// even though a sibling account's detection succeeded and created its item.
-// The per-account loop must keep going after one account's failure — not
-// abort the whole Slack pass — and its error must still surface to gate the
-// watermark, never getting swallowed into a reported partial success.
-func TestInbox09_SlackAccountErrorFreezesWatermarkDespiteSiblingSuccess(t *testing.T) {
+// TestInbox09_SlackDetectorErrorFreezesWatermark guards INBOX-09 for the
+// per-account Slack loop: a genuine detector failure must still freeze the
+// shared watermark exactly like any other source's detector error. Contrast
+// TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark, which
+// guards the other half — an unresolved account is a clean skip, not a
+// failure, and must NOT freeze the watermark.
+func TestInbox09_SlackDetectorErrorFreezesWatermark(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	// Break Slack detection specifically: FindPendingMentions/FindPendingDMs
+	// both query messages, so dropping it makes detectSlackTriggers return a
+	// genuine error without touching any other source's tables (mirrors
+	// TestInbox09_WatermarkFrozenOnDetectorError's DROP TABLE jira_issues).
+	_, err := d.Exec(`DROP TABLE messages`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err, "a detector failure must not fail the whole run")
+
+	tsAfter, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, tsAfter, "a genuine Slack detector error must freeze the watermark")
+}
+
+// TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark guards the
+// other half of the same contract (see TestInbox09_SlackDetectorErrorFreezesWatermark):
+// an enabled account whose current_user_id was never resolved must be
+// skipped cleanly, not treated as a detector error, because it has provably
+// never synced a single message — connectSlackAccount (cmd/slack.go) writes
+// current_user_id before it saves the token, and wireSlackSyncers refuses to
+// build a syncer without a token, so there is no window of messages to lose
+// by skipping it. A sibling account's detection must still succeed and the
+// watermark must advance normally, not freeze.
+func TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "1:U_ME1")
 
@@ -864,24 +895,24 @@ func TestInbox09_SlackAccountErrorFreezesWatermarkDespiteSiblingSuccess(t *testi
 
 	// Account 2 is enabled but its current_user_id was never resolved — the
 	// window between CreateSlackAccount and UpdateSlackAccountConnection
-	// finishing OAuth. detectSlackAccounts treats this as a detector error
-	// for that account, not a silent skip.
+	// finishing OAuth, e.g. a crash mid-login. No token can exist for this
+	// account yet either (see the doc comment above), so nothing was lost.
 	_, err = d.CreateSlackAccount(db.SlackAccount{})
 	require.NoError(t, err)
 
 	p := New(d, testConfig(), nil, log.Default())
 	_, _, err = p.Run(context.Background())
-	require.NoError(t, err, "a detector failure must not fail the whole run")
+	require.NoError(t, err)
 
 	items, err := d.GetInboxItems(db.InboxFilter{})
 	require.NoError(t, err)
-	require.Len(t, items, 1, "account 1's mention must still be created despite account 2's error")
+	require.Len(t, items, 1, "account 1's mention must still be created despite account 2 having no identity")
 	assert.Equal(t, "1:C1", items[0].ChannelID)
 
 	tsAfter, err := d.GetInboxLastProcessedTS()
 	require.NoError(t, err)
-	assert.Equal(t, frozen, tsAfter,
-		"a per-account detector error must freeze the watermark even though a sibling account succeeded")
+	assert.Greater(t, tsAfter, frozen,
+		"an unresolved-identity account must be skipped cleanly and must not freeze the watermark")
 }
 
 // TestInbox09_WatermarkFrozenOnTriageError guards INBOX-09 for the triage

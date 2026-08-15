@@ -574,12 +574,11 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 // success: it is always joined into the returned error so the caller's
 // watermark gate sees it.
 //
-// An enabled account whose current_user_id is still unresolved (the window
-// between CreateSlackAccount and UpdateSlackAccountConnection finishing
-// OAuth) is treated as a detector error rather than a silent skip — the
-// DetectGmailAccounts precedent, since silently skipping it could
-// permanently lose a window of messages that synced before resolution
-// completed.
+// An enabled account whose current_user_id is empty is skipped, not treated
+// as an error: connectSlackAccount (cmd/slack.go) writes current_user_id
+// before it saves the token, and wireSlackSyncers refuses to build a syncer
+// without a token, so an account in this state has provably never synced a
+// single message — there is no window of messages to lose by skipping it.
 func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int, error) {
 	accounts, err := p.db.ListEnabledSlackAccounts()
 	if err != nil {
@@ -590,7 +589,7 @@ func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int
 	var errs []error
 	for _, acct := range accounts {
 		if acct.CurrentUserID == "" {
-			errs = append(errs, fmt.Errorf("account %d: current_user_id not yet resolved", acct.ID))
+			p.logger.Printf("inbox: slack account %d: current_user_id not yet resolved, skipping", acct.ID)
 			continue
 		}
 		n, e := p.detectSlackTriggers(ctx, acct.ID, acct.CurrentUserID, lastTS)
