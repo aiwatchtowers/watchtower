@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // MeetingPrepResult is the AI output for a single meeting.
@@ -389,7 +390,14 @@ func (p *Pipeline) gatherSharedContext(attendees []attendeeEntry) string {
 		for _, t := range tracks {
 			involves := false
 			for uid := range attendeeIDs {
-				if strings.Contains(t.Participants, uid) {
+				// tracks.participants is stored verbatim from AI-authored JSON —
+				// the extraction prompt schema instructs raw ids — so match the
+				// raw form of the attendee id (a scalar column, always
+				// namespaced). Searching for the raw form matches both a bare
+				// and a namespaced stored id, since the raw form is a substring
+				// of its own namespaced form.
+				_, rawUID, _ := watchtowerslack.SplitAccountID(uid)
+				if strings.Contains(t.Participants, rawUID) {
 					involves = true
 					break
 				}
@@ -493,7 +501,10 @@ func formatProfile(profile *db.UserProfile) string {
 		parts = append(parts, "Team: "+profile.Team)
 	}
 	if profile.Reports != "" {
-		parts = append(parts, "Direct reports: "+profile.Reports)
+		// Raw-id form (SplitAccountID via RawIDsJSON): the model matches this
+		// against message text, which carries raw Slack ids regardless of how
+		// the id blob itself is namespaced.
+		parts = append(parts, "Direct reports: "+watchtowerslack.RawIDsJSON(profile.Reports))
 	}
 	if len(parts) == 0 {
 		return ""

@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // DefaultWindowHours is the default lookback period for track extraction.
@@ -461,6 +462,20 @@ func buildRelevanceSignals(profile *db.UserProfile, allActive []db.Track) releva
 			if json.Unmarshal([]byte(field), &ids) == nil {
 				for _, id := range ids {
 					s.relatedUsers[id] = true
+					// relatedUsers is matched (in scoreChannel) against
+					// db.DigestTopic.Situations/.KeyMessages, which is AI-authored
+					// text that carries raw Slack ids regardless of the profile
+					// blob's own namespacing, so the raw form must also be a match
+					// candidate — SplitAccountID is a no-op-ish re-insert for an id
+					// that was never namespaced to begin with.
+					//
+					// Accepted trade-off: matching the raw form means a raw id from
+					// a different connected Slack account could in principle
+					// collide here too. That is bounded (a +1 heuristic inside
+					// scoreChannel's 9-point additive score) and is the same
+					// bare-id ambiguity that existed everywhere before namespacing.
+					_, rawID, _ := watchtowerslack.SplitAccountID(id)
+					s.relatedUsers[rawID] = true
 				}
 			}
 		}
@@ -1279,21 +1294,25 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString("- If I asked a question and am waiting for reply → ball_on: other person's user_id\n")
 	sb.WriteString("- If someone asked me something → ball_on: my user_id\n")
 
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced. profile.Manager is a scalar column
+	// (not a JSON id array), so it is out of RawIDsJSON's scope and left as is.
 	if profile.Reports != "" && profile.Reports != "[]" {
-		fmt.Fprintf(&sb, "\nMY REPORTS (user_ids): %s\n", sanitize(profile.Reports))
+		fmt.Fprintf(&sb, "\nMY REPORTS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Reports)))
 		sb.WriteString("Tasks assigned to or owned by these people → ownership: \"delegated\", owner_user_id: their user_id\n")
 	}
 	if profile.Peers != "" && profile.Peers != "[]" {
-		fmt.Fprintf(&sb, "\nMY PEERS (user_ids): %s\n", sanitize(profile.Peers))
+		fmt.Fprintf(&sb, "\nMY PEERS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Peers)))
 	}
 	if profile.Manager != "" {
 		fmt.Fprintf(&sb, "\nMY MANAGER (user_id): %s\n", sanitize(profile.Manager))
 	}
 	if profile.StarredChannels != "" && profile.StarredChannels != "[]" {
-		fmt.Fprintf(&sb, "\nSTARRED CHANNELS: %s — create more tracks from these channels, lower threshold for relevance\n", sanitize(profile.StarredChannels))
+		fmt.Fprintf(&sb, "\nSTARRED CHANNELS: %s — create more tracks from these channels, lower threshold for relevance\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredChannels)))
 	}
 	if profile.StarredPeople != "" && profile.StarredPeople != "[]" {
-		fmt.Fprintf(&sb, "\nSTARRED PEOPLE: %s — messages from these people get higher priority\n", sanitize(profile.StarredPeople))
+		fmt.Fprintf(&sb, "\nSTARRED PEOPLE: %s — messages from these people get higher priority\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredPeople)))
 	}
 
 	return sb.String()
