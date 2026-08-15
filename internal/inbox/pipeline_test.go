@@ -168,6 +168,57 @@ func TestPipeline_Run_DetectMentionsAcrossAccounts(t *testing.T) {
 	assert.True(t, gotChannels["2:C1"], "account 2's mention must be detected")
 }
 
+// TestPipeline_Run_PerAccountOwnMessageExclusion guards against hoisting a
+// single current_user_id out of the per-account Slack loop: own-message
+// exclusion must use EACH account's own current_user_id (read from that
+// account's own slack_accounts row), never one identity reused across every
+// account. If current_user_id were resolved once outside the loop — e.g.
+// from resolveCurrentUserID/GetCurrentUserID, which stays pinned to account
+// #1 by design for its other callers — account 2's own outgoing DM and
+// self-mention would stop being excluded and arrive as false "needs
+// attention" items, while a genuine message from someone else in account 2
+// must still be detected. Each case lives in its own channel so the
+// (channel, thread) grouping in detectSlackTriggers can't merge a wrongly
+// -included own message into the genuine item and hide the regression
+// behind a coincidentally correct created count.
+func TestPipeline_Run_PerAccountOwnMessageExclusion(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedWorkspaceAndUser(t, database, "1:U_ME1")
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "2:U_ME2"})
+	require.NoError(t, err)
+
+	// Account 2's own outgoing DM — must be excluded by account 2's own identity.
+	_, err = database.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('2:D1', 'dm-other', 'dm', '2:U_OTHER')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:D1', ?, '2:U_ME2', 'sure, will do')`, recentTS(30))
+	require.NoError(t, err)
+
+	// Account 2's own self-mention — must also be excluded.
+	_, err = database.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C2', 'notes', 'public')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C2', ?, '2:U_ME2', 'note to self <@U_ME2>')`, recentTS(29))
+	require.NoError(t, err)
+
+	// A genuine message from someone else in account 2 must still be detected.
+	_, err = database.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', ?, '2:U_OTHER', 'Hey <@U_ME2> real question')`, recentTS(28))
+	require.NoError(t, err)
+
+	p := New(database, cfg, nil, log.Default())
+	created, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, created, "only the message from someone else should create an item")
+
+	items, err := database.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "2:C1", items[0].ChannelID, "the created item must be the genuine one, not a leaked own-message")
+	assert.Equal(t, "2:U_OTHER", items[0].SenderUserID)
+}
+
 func TestInbox02_AutoResolveSlackOnUserReply(t *testing.T) {
 	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
 	// User replies in Slack → mention/dm/thread_reply auto-resolves.
