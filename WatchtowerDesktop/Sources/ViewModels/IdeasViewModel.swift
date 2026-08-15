@@ -49,6 +49,10 @@ final class IdeasViewModel {
     /// off screen while ideas exist.
     var totalCount = 0
 
+    /// Review-queue size per kind — the segment labels' counts, so a queue
+    /// waiting in the other segment is visible without switching to it.
+    var reviewCounts: [String: Int] = [:]
+
     /// Cap on the registry browse query; the review queue is unbounded (it's
     /// meant to stay small by daily triage).
     private let registryLimit = 200
@@ -135,7 +139,7 @@ final class IdeasViewModel {
     func load() {
         isLoading = true
         do {
-            let (review, registry, total) = try dbManager.dbPool.read { db -> ([Idea], [Idea], Int) in
+            let loaded = try dbManager.dbPool.read { db in
                 let review = try IdeaQueries.fetchForReview(db, kind: kindMode)
                 let registry = try IdeaQueries.fetchList(
                     db,
@@ -145,17 +149,22 @@ final class IdeasViewModel {
                     limit: registryLimit,
                     excludingReviewQueue: true
                 )
-                return (review, registry, try IdeaQueries.countIdeasAndNotes(db))
+                return (review: review,
+                        registry: registry,
+                        total: try IdeaQueries.countIdeasAndNotes(db),
+                        counts: try IdeaQueries.reviewCountsByKind(db))
             }
-            reviewItems = review
-            registryItems = registry
-            totalCount = total
+            reviewItems = loaded.review
+            registryItems = loaded.registry
+            totalCount = loaded.total
+            reviewCounts = loaded.counts
             errorMessage = nil
             reconcileSelection()
         } catch {
             reviewItems = []
             registryItems = []
             totalCount = 0
+            reviewCounts = [:]
             selectedID = nil
             errorMessage = error.localizedDescription
         }
@@ -217,11 +226,15 @@ final class IdeasViewModel {
             let newID = try dbManager.dbPool.write { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
             }
-            // Show what was just created: switch to its segment and select it.
-            // The Decisions ledger creates through this same VM and has no
-            // segment here, so a decision leaves the Ideas tab where it was.
+            // Show what was just created: switch to its segment, clear the
+            // browse filters that could hide it (it is born active, so a
+            // "Proposed" filter or a stale search would swallow it silently),
+            // and select it. The Decisions ledger creates through this same VM
+            // and has no segment here, so a decision leaves the tab as it was.
             if kind == "idea" || kind == "note" {
                 kindMode = kind
+                statusFilter = nil
+                searchText = ""
                 selectedID = Int(newID)
             }
             load()

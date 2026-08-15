@@ -140,9 +140,9 @@ final class IdeasViewModelTests: XCTestCase {
     // MARK: - decisions excluded (Ideas tab narrows to ideas & notes)
 
     /// The Ideas tab is ideas/notes only now — decisions live in the
-    /// separate Decisions ledger (Task 10). Under either segment, a decision
-    /// must show up in neither the review queue nor the browsable registry,
-    /// regardless of its status.
+    /// separate Decisions ledger (Task 10). On the default Ideas segment, a
+    /// decision must show up in neither the review queue nor the browsable
+    /// registry, regardless of its status.
     func testDecisionsExcludedFromReviewAndRegistry() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Proposed decision", status: "proposed")
@@ -158,16 +158,36 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.errorMessage)
     }
 
+    /// A created entry has to be visible, which means clearing whatever the
+    /// owner had narrowed the list down to: it is born `active`, so a
+    /// "Proposed" status filter (or a stale search) would swallow it and the
+    /// create would look like it silently failed.
     func testCreateManual_SwitchesSegmentAndSelects() throws {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.load()
         XCTAssertEqual(vm.kindMode, "idea")
+        vm.statusFilter = "proposed"
+        vm.searchText = "something else entirely"
 
         let newID = try XCTUnwrap(vm.createManual(kind: "note", title: "A note", essence: "typed by the owner"))
 
         XCTAssertEqual(vm.kindMode, "note", "the new entry's segment must be the visible one")
+        XCTAssertNil(vm.statusFilter, "a status filter that would hide the new entry is cleared")
+        XCTAssertEqual(vm.searchText, "", "so is a search that would hide it")
         XCTAssertEqual(vm.selectedID, newID)
         XCTAssertEqual(vm.registryItems.map(\.title), ["A note"])
+    }
+
+    func testCreateManualIdeaSwitchesBackFromTheNotesSegment() throws {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.kindMode = "note"
+        vm.load()
+
+        let newID = try XCTUnwrap(vm.createManual(kind: "idea", title: "An idea", essence: "typed by the owner"))
+
+        XCTAssertEqual(vm.kindMode, "idea")
+        XCTAssertEqual(vm.selectedID, newID)
+        XCTAssertEqual(vm.registryItems.map(\.title), ["An idea"])
     }
 
     /// The Decisions ledger creates through this same VM; a decision has no
@@ -204,6 +224,8 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.registryItems.map(\.title), ["Active note"])
 
         XCTAssertEqual(vm.totalCount, 4, "the whole-registry count ignores the segment")
+        XCTAssertEqual(vm.reviewCounts, ["idea": 1, "note": 1],
+                       "each segment's label counts its own queue, whichever segment is open")
     }
 
     // MARK: - deleteIdea()
@@ -230,6 +252,27 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(gone)
         let mentions = try dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(doomedID)) }
         XCTAssertTrue(mentions.isEmpty)
+    }
+
+    /// Deleting a merge survivor takes its husks with it, so the review queue
+    /// and registry can't be left showing rows whose survivor is gone.
+    func testDeleteIdea_TakesMergedChildrenWithIt() throws {
+        let (survivorID, mergedID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let survivor = try TestDatabase.insertIdea(db, title: "Canonical", status: "active")
+            let merged = try TestDatabase.insertIdea(
+                db, title: "Merged away", status: "merged", mergedIntoID: Int(survivor))
+            return (survivor, merged)
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        let survivor = try XCTUnwrap(vm.registryItems.first { $0.id == Int(survivorID) })
+
+        vm.deleteIdea(survivor)
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertTrue(vm.registryItems.isEmpty, "both the survivor and its husk are gone from the list")
+        XCTAssertNil(try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(mergedID)) })
+        XCTAssertEqual(vm.totalCount, 0)
     }
 
     // MARK: - convertToTarget()

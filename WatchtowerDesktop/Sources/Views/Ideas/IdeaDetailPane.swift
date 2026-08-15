@@ -481,8 +481,8 @@ struct IdeaDetailPane: View {
 
             Spacer()
 
-            // Offered for every kind and every status: the owner can throw
-            // anything away, including entries no status action applies to.
+            // Offered whatever the entry's status is, idea or note alike: the
+            // owner can throw away entries no status action applies to.
             Button(role: .destructive) {
                 showDeleteConfirmation = true
             } label: {
@@ -572,10 +572,14 @@ private struct IdeaMergeSheet: View {
         }
         .frame(width: 420, height: 380)
         .onAppear {
+            // Only preselect a row the list can actually show — `eligible`,
+            // not `candidates`. The miner's `similar_to_id` hint can point at
+            // another kind (which the Ideas/Notes split now keeps out of the
+            // pool entirely) or at a terminal item; either way preselecting it
+            // would arm Merge against a target the owner cannot see.
+            guard let preselectedID, let match = eligible.first(where: { $0.id == preselectedID }) else { return }
             selectedID = preselectedID
-            if let preselectedID, let match = candidates.first(where: { $0.id == preselectedID }) {
-                searchText = match.title
-            }
+            searchText = match.title
         }
     }
 }

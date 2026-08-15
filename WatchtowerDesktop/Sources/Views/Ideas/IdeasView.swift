@@ -97,7 +97,7 @@ struct IdeasView: View {
             .listStyle(.sidebar)
             .overlay {
                 if vm.reviewItems.isEmpty && vm.registryItems.isEmpty {
-                    Text(vm.kindMode == "note" ? "No notes yet" : "No ideas yet")
+                    Text(emptySegmentMessage)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -132,8 +132,8 @@ struct IdeasView: View {
             }
 
             Picker("Kind", selection: $vm.kindMode) {
-                Text("Ideas").tag("idea")
-                Text("Notes").tag("note")
+                Text(segmentLabel("Ideas", kind: "idea")).tag("idea")
+                Text(segmentLabel("Notes", kind: "note")).tag("note")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -221,6 +221,24 @@ struct IdeasView: View {
         }
         .buttonStyle(.plain)
         .help(help)
+    }
+
+    /// "Ideas (3)" while that segment has a review queue waiting, so a flagged
+    /// note isn't invisible from the Ideas side (and vice versa).
+    private func segmentLabel(_ title: String, kind: String) -> String {
+        guard let waiting = vm.reviewCounts[kind], waiting > 0 else { return title }
+        return "\(title) (\(waiting))"
+    }
+
+    /// "Nothing here yet" and "your filters match nothing" are different
+    /// problems with different fixes — saying the first when the owner has a
+    /// status filter or a search on sends them looking for missing data.
+    private var emptySegmentMessage: String {
+        let isNote = vm.kindMode == "note"
+        if vm.statusFilter != nil || !vm.searchText.isEmpty {
+            return isNote ? "No matching notes" : "No matching ideas"
+        }
+        return isNote ? "No notes yet" : "No ideas yet"
     }
 
     private func debounceSearch() {

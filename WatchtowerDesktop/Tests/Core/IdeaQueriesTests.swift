@@ -366,32 +366,8 @@ final class IdeaQueriesTests: XCTestCase {
             let ideaID = try TestDatabase.insertIdea(db, status: "active")
             try TestDatabase.insertIdeaMention(db, ideaID: ideaID, quote: "first sighting", saidAt: "2026-04-27T00:00:01Z")
             try TestDatabase.insertIdeaMention(db, ideaID: ideaID, quote: "second sighting", saidAt: "2026-04-27T00:00:02Z")
-            // The chat tables are created lazily at runtime, not by the test
-            // schema (the ChatHistoryViewModelTests precedent). ChatMessageQueries
-            // itself stays app-side, so its `ensureTable` DDL is inlined here to
-            // let this file live in WatchtowerCoreTests.
-            try ChatConversationQueries.ensureTable(db)
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-            """)
-            try db.execute(sql: """
-                CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)
-            """)
-            try db.execute(sql: """
-                INSERT INTO chat_conversations (context_type, context_id, title, created_at, updated_at)
-                VALUES ('idea', ?, 'Discuss', 0, 0)
-                """, arguments: [ideaID])
-            let conversationID = db.lastInsertedRowID
-            try db.execute(sql: """
-                INSERT INTO chat_messages (conversation_id, role, text, created_at)
-                VALUES (?, 'user', 'what do we do with this?', 0)
-                """, arguments: [conversationID])
+            try Self.createChatTables(db)
+            try Self.insertChat(db, ideaID: ideaID, messages: 1)
             return ideaID
         }
 
@@ -660,25 +636,21 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(try Self.chatCounts(db, ideaID: keptID).messages, 1)
     }
 
-    /// `similar_to_id`/`merged_into_id`/`superseded_by_id` carry no foreign
-    /// key, so without an explicit null-out the survivors would keep pointing
-    /// at an id that no longer exists.
+    /// `similar_to_id` and `superseded_by_id` carry no foreign key, so without
+    /// an explicit null-out the survivors would keep pointing at an id that no
+    /// longer exists. (`merged_into_id` needs no such pass — a row carrying it
+    /// is deleted with the chain, see `testDelete_CascadesToMergedChildren`.)
     func testDelete_NullsBackReferencesOnSurvivors() throws {
         let db = try TestDatabase.create()
-        let ids = try db.write { db -> (doomed: Int64, merged: Int64, similar: Int64, superseded: Int64) in
+        let ids = try db.write { db -> (doomed: Int64, similar: Int64, superseded: Int64) in
             try Self.createChatTables(db)
             let doomed = try TestDatabase.insertIdea(db, title: "Canonical")
-            let merged = try TestDatabase.insertIdea(db, title: "Merged into it", mergedIntoID: Int(doomed))
             let similar = try TestDatabase.insertIdea(db, title: "Similar to it", similarToID: Int(doomed))
             let superseded = try TestDatabase.insertIdea(db, title: "Superseded by it", supersededByID: Int(doomed))
-            return (doomed, merged, similar, superseded)
+            return (doomed, similar, superseded)
         }
 
         try db.write { try IdeaQueries.delete($0, id: Int(ids.doomed)) }
-
-        let merged = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.merged)) }
-        XCTAssertNotNil(merged)
-        XCTAssertNil(merged?.mergedIntoID)
 
         let similar = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.similar)) }
         XCTAssertNotNil(similar)
@@ -687,6 +659,95 @@ final class IdeaQueriesTests: XCTestCase {
         let superseded = try db.read { try IdeaQueries.fetchOne($0, id: Int(ids.superseded)) }
         XCTAssertNotNil(superseded)
         XCTAssertNil(superseded?.supersededByID)
+    }
+
+    /// A merged child's mentions moved onto the survivor at merge time
+    /// (IDEA-03), so what's left is a husk whose only content is the
+    /// `merged_into_id` redirect the Go consolidator follows. Deleting the
+    /// survivor takes the husk — and its chat — with it, rather than leaving
+    /// the redirect pointing at a row that no longer exists.
+    func testDelete_CascadesToMergedChildren() throws {
+        let db = try TestDatabase.create()
+        let (survivorID, mergedID, unrelatedID) = try db.write { db -> (Int64, Int64, Int64) in
+            try Self.createChatTables(db)
+            let survivorID = try TestDatabase.insertIdea(db, title: "Canonical")
+            try Self.insertChat(db, ideaID: survivorID, messages: 1)
+            let mergedID = try TestDatabase.insertIdea(
+                db, title: "Merged away", status: "merged", mergedIntoID: Int(survivorID))
+            try Self.insertChat(db, ideaID: mergedID, messages: 2)
+            let unrelatedID = try TestDatabase.insertIdea(db, title: "Untouched")
+            try Self.insertChat(db, ideaID: unrelatedID, messages: 1)
+            return (survivorID, mergedID, unrelatedID)
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(survivorID)) }
+
+        XCTAssertNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(mergedID)) },
+                     "the merged husk goes with its survivor")
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: mergedID).conversations, 0)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: mergedID).messages, 0)
+
+        XCTAssertNotNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(unrelatedID)) })
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: unrelatedID).conversations, 1)
+        XCTAssertEqual(try Self.chatCounts(db, ideaID: unrelatedID).messages, 1)
+    }
+
+    /// The cascade is recursive: C merged into B merged into A dies whole.
+    func testDelete_CascadesThroughAMergeChain() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db -> (a: Int64, b: Int64, c: Int64) in
+            try Self.createChatTables(db)
+            let a = try TestDatabase.insertIdea(db, title: "A")
+            let b = try TestDatabase.insertIdea(db, title: "B", status: "merged", mergedIntoID: Int(a))
+            let c = try TestDatabase.insertIdea(db, title: "C", status: "merged", mergedIntoID: Int(b))
+            for id in [a, b, c] {
+                try TestDatabase.insertIdeaMention(db, ideaID: id, quote: "said on \(id)")
+                try Self.insertChat(db, ideaID: id, messages: 1)
+            }
+            return (a, b, c)
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(ids.a)) }
+
+        for id in [ids.a, ids.b, ids.c] {
+            XCTAssertNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(id)) })
+            XCTAssertTrue(try db.read { try IdeaQueries.fetchMentions($0, ideaID: Int(id)) }.isEmpty)
+            XCTAssertEqual(try Self.chatCounts(db, ideaID: id).conversations, 0)
+            XCTAssertEqual(try Self.chatCounts(db, ideaID: id).messages, 0)
+        }
+    }
+
+    /// A survivor's hint pointing at a doomed CHILD is nulled too — the whole
+    /// chain is gone, not just the id the owner clicked delete on.
+    func testDelete_NullsBackReferencesPointingAtACascadedChild() throws {
+        let db = try TestDatabase.create()
+        let (survivorID, pointerID) = try db.write { db -> (Int64, Int64) in
+            try Self.createChatTables(db)
+            let survivorID = try TestDatabase.insertIdea(db, title: "Canonical")
+            let mergedID = try TestDatabase.insertIdea(
+                db, title: "Merged away", status: "merged", mergedIntoID: Int(survivorID))
+            let pointerID = try TestDatabase.insertIdea(
+                db, title: "Looks similar to the husk", similarToID: Int(mergedID))
+            return (survivorID, pointerID)
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: Int(survivorID)) }
+
+        let pointer = try db.read { try IdeaQueries.fetchOne($0, id: Int(pointerID)) }
+        XCTAssertNotNil(pointer)
+        XCTAssertNil(pointer?.similarToID)
+    }
+
+    func testDelete_UnknownIDIsACleanNoOp() throws {
+        let db = try TestDatabase.create()
+        let ideaID = try db.write { db -> Int64 in
+            try Self.createChatTables(db)
+            return try TestDatabase.insertIdea(db, title: "Untouched")
+        }
+
+        try db.write { try IdeaQueries.delete($0, id: 999) }
+
+        XCTAssertNotNil(try db.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) })
     }
 
     /// An idea nobody ever opened a Discuss chat for deletes just the same.
@@ -715,11 +776,43 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try IdeaQueries.countIdeasAndNotes($0) }, 2)
     }
 
+    // MARK: - reviewCountsByKind
+
+    func testReviewCountsByKindCountsEachSegmentSeparately() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "idea", status: "active", needsReview: true)
+            try TestDatabase.insertIdea(db, kind: "idea", status: "active")
+            try TestDatabase.insertIdea(db, kind: "note", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "decision", status: "active", needsReview: true)
+        }
+
+        let counts = try db.read { try IdeaQueries.reviewCountsByKind($0) }
+
+        XCTAssertEqual(counts, ["idea": 2, "note": 1], "settled entries and decisions never count")
+    }
+
+    /// A kind with nothing waiting is absent, not zero — the segment label
+    /// renders a count only when the key is there.
+    func testReviewCountsByKindOmitsAKindWithNothingWaiting() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "note", status: "active")
+        }
+
+        let counts = try db.read { try IdeaQueries.reviewCountsByKind($0) }
+
+        XCTAssertEqual(counts, ["idea": 1])
+    }
+
     // MARK: - Chat fixtures
 
     /// The chat tables are created lazily at runtime by `DatabaseManager`, not
     /// by the test schema. `ChatMessageQueries` stays app-side, so its
-    /// `ensureTable` DDL is inlined to let this file live in WatchtowerCoreTests.
+    /// `ensureTable` DDL is mirrored here to let this file live in
+    /// WatchtowerCoreTests.
     private static func createChatTables(_ db: Database) throws {
         try ChatConversationQueries.ensureTable(db)
         try db.execute(sql: """
@@ -730,6 +823,9 @@ final class IdeaQueriesTests: XCTestCase {
                 text TEXT NOT NULL,
                 created_at REAL NOT NULL
             )
+        """)
+        try db.execute(sql: """
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)
         """)
     }
 
