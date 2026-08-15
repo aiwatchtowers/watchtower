@@ -130,6 +130,123 @@ func TestMigration00054_TracksParticipants(t *testing.T) {
 	}
 }
 
+// TestMigration00054_ParticipantsDangerousShapes covers participant shapes
+// that unvalidated model JSON can actually produce — tracks.participants
+// is json.RawMessage from the AI model, checked only for json.Valid before
+// being stored (internal/tracks/pipeline.go, jsonOrEmpty), so nothing
+// guarantees every element is an object with a string user_id:
+//
+//   - a user_id that is itself a JSON object or array must be left alone,
+//     never stringified-and-prefixed (addressing the decoded je.value
+//     instead of the outer document by path does exactly that: json_extract
+//     returns TEXT for both an object and a string, so a naive
+//     typeof(json_extract(...))='text' check cannot tell them apart);
+//   - an array element that is a bare string rather than an object must not
+//     abort the whole migration (json_extract(je.value, path) on a decoded,
+//     dequoted string throws "malformed JSON" — see
+//     TestMigration00054_EdgeCasesUntouched's doc comment for why).
+func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 53); err != nil {
+		t.Fatalf("migrate to v53: %v", err)
+	}
+
+	if _, err := raw.Exec(`INSERT INTO tracks (id, text, participants) VALUES
+		(1, 'object user_id', '[{"name":"@A","user_id":{"a":1},"stance":"s"}]'),
+		(2, 'array user_id', '[{"name":"@B","user_id":["x","y"],"stance":"s"}]'),
+		(3, 'bare string element', '["U1",{"name":"@C","user_id":"U2","stance":"s"}]'),
+		(4, 'missing user_id', '[{"name":"@F","stance":"s"}]')`); err != nil {
+		t.Fatalf("seed tracks: %v", err)
+	}
+
+	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+		t.Fatalf("apply 00054: %v", err)
+	}
+
+	var objType string
+	if err := raw.QueryRow(`SELECT json_type(participants, '$[0].user_id') FROM tracks WHERE id = 1`).Scan(&objType); err != nil {
+		t.Fatalf("read row 1 user_id type: %v", err)
+	}
+	if objType != "object" {
+		t.Errorf("row 1 (object user_id) json_type = %q, want 'object' (must not be stringified)", objType)
+	}
+
+	var arrType string
+	if err := raw.QueryRow(`SELECT json_type(participants, '$[0].user_id') FROM tracks WHERE id = 2`).Scan(&arrType); err != nil {
+		t.Fatalf("read row 2 user_id type: %v", err)
+	}
+	if arrType != "array" {
+		t.Errorf("row 2 (array user_id) json_type = %q, want 'array' (must not be stringified)", arrType)
+	}
+
+	var elem0, elem1UserID string
+	if err := raw.QueryRow(`SELECT json_extract(participants, '$[0]'), json_extract(participants, '$[1].user_id') FROM tracks WHERE id = 3`).
+		Scan(&elem0, &elem1UserID); err != nil {
+		t.Fatalf("read row 3 (bare string element): %v", err)
+	}
+	if elem0 != "U1" {
+		t.Errorf("row 3 elem[0] = %q, want U1 (untouched)", elem0)
+	}
+	if elem1UserID != "1:U2" {
+		t.Errorf("row 3 elem[1].user_id = %q, want 1:U2 (the object element must still get rewritten)", elem1UserID)
+	}
+
+	var missingKeyName string
+	if err := raw.QueryRow(`SELECT json_extract(participants, '$[0].name') FROM tracks WHERE id = 4`).Scan(&missingKeyName); err != nil {
+		t.Fatalf("read row 4 (missing user_id): %v", err)
+	}
+	if missingKeyName != "@F" {
+		t.Errorf("row 4 name = %q, want @F (untouched, no crash on a missing key)", missingKeyName)
+	}
+}
+
+// TestMigration00054_FlatArrayNonTextElement pins a subtype guarantee that
+// otherwise rests on nothing: a flat array containing a non-text (object)
+// element alongside a real id string must have the string rewritten and
+// the object left alone — not crashed on, not stringified.
+func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
+	raw, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer raw.Close()
+	raw.SetMaxOpenConns(1)
+	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.UpTo(raw, "migrations", 53); err != nil {
+		t.Fatalf("migrate to v53: %v", err)
+	}
+
+	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES (1, 'non-text element', '["C1",{"a":1}]')`); err != nil {
+		t.Fatalf("seed tracks: %v", err)
+	}
+
+	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+		t.Fatalf("apply 00054: %v", err)
+	}
+
+	var elem0, elem1Type string
+	if err := raw.QueryRow(`SELECT json_extract(channel_ids, '$[0]'), json_type(channel_ids, '$[1]') FROM tracks WHERE id = 1`).
+		Scan(&elem0, &elem1Type); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if elem0 != "1:C1" {
+		t.Errorf("elem[0] = %q, want 1:C1", elem0)
+	}
+	if elem1Type != "object" {
+		t.Errorf("elem[1] json_type = %q, want 'object' (must not be stringified)", elem1Type)
+	}
+}
+
 // TestMigration00054_UserProfileListColumns covers the four flat-array
 // user_profile columns in one row, since they share the exact same shape
 // and rewrite logic as tracks.channel_ids.
@@ -180,13 +297,14 @@ func TestMigration00054_UserProfileListColumns(t *testing.T) {
 // that genuinely needs rewriting, all in the same table scan, and asserts
 // the three edge cases come back byte-identical.
 //
-// The control row sharing the scan with the edge cases is load-bearing:
-// modernc.org/sqlite's json_each() cursor, when driven through
-// json_type(je.value), corrupts across rows as soon as ANY row's own array
-// is empty — throwing "malformed JSON" even though nothing in that row is
-// actually malformed. A version of this migration using json_type(je.value)
-// instead of je.type/typeof(json_extract(...)) would crash on exactly this
-// table shape instead of leaving the edge cases untouched.
+// The control row sharing the scan with the edge cases matters because
+// json_each.value is a DECODED SQL value, not JSON source text: for a
+// string element it is the dequoted string, which is no longer valid JSON
+// on its own. Feeding it back into json_type()/json_extract() as if it
+// were JSON text throws "malformed JSON" — not because of anything about
+// row count or empty arrays, but because e.g. json_type('C1') fails on its
+// own, standalone, for the same reason. je.type (the column json_each
+// already provides) reports the decoded type directly, with no re-parse.
 func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -385,7 +503,7 @@ func migration00054UpStatements(t *testing.T) []string {
 	}
 	stmts := make([]string, 0, len(markers))
 	for _, m := range markers {
-		stmts = append(stmts, extractStatement(t, text, m))
+		stmts = append(stmts, extractStatement(t, text, m, "migration 00054"))
 	}
 	return stmts
 }
