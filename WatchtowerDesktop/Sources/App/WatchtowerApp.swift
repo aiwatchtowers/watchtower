@@ -355,6 +355,14 @@ struct WatchtowerApp: App {
         }
         .defaultSize(width: 600, height: 500)
 
+        Window("Logs", id: "logs") {
+            LogsSettings()
+                .environment(appState)
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        }
+        .defaultSize(width: 900, height: 600)
+
         // Self-injects both environments — the per-scene trap: a scene's
         // content tree gets none of `rootContent`'s environment for free, so
         // every auxiliary scene in this file repeats the same two lines.
