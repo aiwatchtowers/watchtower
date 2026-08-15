@@ -42,6 +42,42 @@ enum DictationEngineChoice: Equatable {
         resolve(rawValue: defaults.string(forKey: defaultsKey), appleSupported: appleSupported)
     }
 
+    /// One row of the Settings "Dictation model" picker: the raw value
+    /// stored under `defaultsKey` plus its display label.
+    struct PickerOption: Equatable, Identifiable {
+        let id: String
+        let label: String
+    }
+
+    /// The Settings picker's option list, pure so tests can drive both
+    /// support states. The Apple row exists only where
+    /// `AppleDictationSession.isSupported` (macOS 26+); the Whisper trio is
+    /// always offered, fastest-last.
+    static func pickerOptions(appleSupported: Bool) -> [PickerOption] {
+        var options: [PickerOption] = []
+        if appleSupported {
+            options.append(PickerOption(id: "apple", label: "Apple (realtime)"))
+        }
+        options.append(contentsOf: [
+            PickerOption(id: "large-v3-v20240930", label: "Whisper large-v3 turbo"),
+            PickerOption(id: "small", label: "Whisper small (fast)"),
+            PickerOption(id: "base", label: "Whisper base (fastest)")
+        ])
+        return options
+    }
+
+    /// The raw value the Settings picker stores for this choice — the
+    /// read side of the picker's resolved-value proxy, so absent storage
+    /// selects the resolved default rather than an empty row.
+    var storedRawValue: String {
+        switch self {
+        case .apple:
+            return "apple"
+        case .whisper(let model):
+            return model
+        }
+    }
+
     /// Stable engine-slot key ("apple" / "whisper|<model>") — replaces the
     /// meeting-keys engineKey() in DictationCenter's warm logic, so a
     /// Settings change invalidates the warm slot only when the *dictation*

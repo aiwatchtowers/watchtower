@@ -20,7 +20,23 @@ struct MeetingsSettings: View {
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
+    @AppStorage(DictationEngineChoice.defaultsKey) private var dictationModelRaw = ""
     @State private var showAdvancedTranscription = false
+
+    /// Resolved-value proxy for the dictation picker: absent storage shows
+    /// the resolved default (Apple on 26+, else small) instead of an empty
+    /// selection; picking a row stores its raw value.
+    private var dictationModelSelection: Binding<String> {
+        Binding(
+            get: {
+                DictationEngineChoice.resolve(
+                    rawValue: dictationModelRaw,
+                    appleSupported: AppleDictationSession.isSupported
+                ).storedRawValue
+            },
+            set: { dictationModelRaw = $0 }
+        )
+    }
 
     var body: some View {
         Form {
@@ -63,6 +79,19 @@ struct MeetingsSettings: View {
             }
 
             engineCapabilityCaption
+
+            Picker("Dictation model", selection: dictationModelSelection) {
+                ForEach(DictationEngineChoice.pickerOptions(
+                    appleSupported: AppleDictationSession.isSupported)) { option in
+                    Text(option.label).tag(option.id)
+                }
+            }
+            .help("Engine used for voice dictation")
+
+            Label("Used for voice dictation only; meetings use the model above.",
+                  systemImage: "mic.badge.plus")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let supported = TranscriptionProviderRegistry.resolve(providerID: transcriptionProvider)
                 .supportedLanguages(model: transcriptionModel) {
