@@ -15,6 +15,12 @@ final class IdeasViewModelTests: XCTestCase {
         super.setUp()
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+            // Created lazily by DatabaseManager in production, not by the test
+            // schema — deleting an idea touches its Discuss chat.
+            try dbManager.dbPool.write { db in
+                try ChatConversationQueries.ensureTable(db)
+                try ChatMessageQueries.ensureTable(db)
+            }
         } catch {
             XCTFail("setUp failed: \(error)")
         }
@@ -134,9 +140,9 @@ final class IdeasViewModelTests: XCTestCase {
     // MARK: - decisions excluded (Ideas tab narrows to ideas & notes)
 
     /// The Ideas tab is ideas/notes only now — decisions live in the
-    /// separate Decisions ledger (Task 10). With the default `kindFilter ==
-    /// nil`, a decision must show up in neither the review queue nor the
-    /// browsable registry, regardless of its status.
+    /// separate Decisions ledger (Task 10). On the default Ideas segment, a
+    /// decision must show up in neither the review queue nor the browsable
+    /// registry, regardless of its status.
     func testDecisionsExcludedFromReviewAndRegistry() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Proposed decision", status: "proposed")
@@ -150,6 +156,123 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertEqual(vm.reviewItems.map(\.title), ["An idea"])
         XCTAssertTrue(vm.registryItems.isEmpty)
         XCTAssertNil(vm.errorMessage)
+    }
+
+    /// A created entry has to be visible, which means clearing whatever the
+    /// owner had narrowed the list down to: it is born `active`, so a
+    /// "Proposed" status filter (or a stale search) would swallow it and the
+    /// create would look like it silently failed.
+    func testCreateManual_SwitchesSegmentAndSelects() throws {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        XCTAssertEqual(vm.kindMode, "idea")
+        vm.statusFilter = "proposed"
+        vm.searchText = "something else entirely"
+
+        let newID = try XCTUnwrap(vm.createManual(kind: "note", title: "A note", essence: "typed by the owner"))
+
+        XCTAssertEqual(vm.kindMode, "note", "the new entry's segment must be the visible one")
+        XCTAssertNil(vm.statusFilter, "a status filter that would hide the new entry is cleared")
+        XCTAssertEqual(vm.searchText, "", "so is a search that would hide it")
+        XCTAssertEqual(vm.selectedID, newID)
+        XCTAssertEqual(vm.registryItems.map(\.title), ["A note"])
+    }
+
+    func testCreateManualIdeaSwitchesBackFromTheNotesSegment() throws {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.kindMode = "note"
+        vm.load()
+
+        let newID = try XCTUnwrap(vm.createManual(kind: "idea", title: "An idea", essence: "typed by the owner"))
+
+        XCTAssertEqual(vm.kindMode, "idea")
+        XCTAssertEqual(vm.selectedID, newID)
+        XCTAssertEqual(vm.registryItems.map(\.title), ["An idea"])
+    }
+
+    /// The Decisions ledger creates through this same VM; a decision has no
+    /// segment on the Ideas tab, so creating one must leave it where it was.
+    func testCreateManualDecisionLeavesSegmentAlone() throws {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+
+        XCTAssertNotNil(vm.createManual(kind: "decision", title: "Use SQLite", essence: "simple"))
+
+        XCTAssertEqual(vm.kindMode, "idea")
+    }
+
+    // MARK: - kindMode (Ideas | Notes segments)
+
+    /// The segment scopes BOTH lists — a flagged note is reviewed under Notes,
+    /// not mixed into the Ideas queue.
+    func testKindMode_FiltersReviewAndRegistry() throws {
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertIdea(db, kind: "idea", title: "Proposed idea", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "idea", title: "Active idea", status: "active")
+            try TestDatabase.insertIdea(db, kind: "note", title: "Proposed note", status: "proposed")
+            try TestDatabase.insertIdea(db, kind: "note", title: "Active note", status: "active")
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+
+        vm.load()
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Proposed idea"])
+        XCTAssertEqual(vm.registryItems.map(\.title), ["Active idea"])
+
+        vm.kindMode = "note"
+        vm.load()
+        XCTAssertEqual(vm.reviewItems.map(\.title), ["Proposed note"])
+        XCTAssertEqual(vm.registryItems.map(\.title), ["Active note"])
+
+        XCTAssertEqual(vm.totalCount, 4, "the whole-registry count ignores the segment")
+        XCTAssertEqual(vm.reviewCounts, ["idea": 1, "note": 1],
+                       "each segment's label counts its own queue, whichever segment is open")
+    }
+
+    // MARK: - deleteIdea()
+
+    func testDeleteIdea_ReloadsAndMovesSelection() throws {
+        let (doomedID, survivorID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let doomed = try TestDatabase.insertIdea(db, title: "Throw this away", status: "active")
+            try TestDatabase.insertIdeaMention(db, ideaID: doomed, quote: "said once")
+            let survivor = try TestDatabase.insertIdea(db, title: "Keep this", status: "active")
+            return (doomed, survivor)
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        let doomed = try XCTUnwrap(vm.registryItems.first { $0.id == Int(doomedID) })
+        vm.select(doomed.id)
+
+        vm.deleteIdea(doomed)
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.registryItems.map(\.title), ["Keep this"])
+        XCTAssertEqual(vm.selectedID, Int(survivorID), "selection moves off the deleted idea")
+
+        let gone = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(doomedID)) }
+        XCTAssertNil(gone)
+        let mentions = try dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(doomedID)) }
+        XCTAssertTrue(mentions.isEmpty)
+    }
+
+    /// Deleting a merge survivor takes its husks with it, so the review queue
+    /// and registry can't be left showing rows whose survivor is gone.
+    func testDeleteIdea_TakesMergedChildrenWithIt() throws {
+        let (survivorID, mergedID) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let survivor = try TestDatabase.insertIdea(db, title: "Canonical", status: "active")
+            let merged = try TestDatabase.insertIdea(
+                db, title: "Merged away", status: "merged", mergedIntoID: Int(survivor))
+            return (survivor, merged)
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        let survivor = try XCTUnwrap(vm.registryItems.first { $0.id == Int(survivorID) })
+
+        vm.deleteIdea(survivor)
+
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertTrue(vm.registryItems.isEmpty, "both the survivor and its husk are gone from the list")
+        XCTAssertNil(try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(mergedID)) })
+        XCTAssertEqual(vm.totalCount, 0)
     }
 
     // MARK: - convertToTarget()

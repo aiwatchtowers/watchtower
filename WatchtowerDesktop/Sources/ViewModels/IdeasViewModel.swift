@@ -34,11 +34,24 @@ final class IdeasViewModel {
     /// selection survives tab/sidebar navigation.
     var selectedID: Int?
 
+    /// The Ideas | Notes segment. Lives here (the VM is AppState-owned) so the
+    /// chosen segment survives tab/sidebar navigation. Scopes BOTH lists — the
+    /// review queue included, so a flagged note is reviewed under Notes.
+    var kindMode: String = "idea"
+
     /// Registry browse filters — ignored by the review queue, which always
-    /// shows every proposed/flagged idea regardless of these.
-    var kindFilter: String?
+    /// shows every proposed/flagged idea of the active kind regardless of these.
     var statusFilter: String?
     var searchText: String = ""
+
+    /// Ideas + notes across BOTH segments: what the full-screen empty state
+    /// keys off, so an empty Notes segment doesn't take the segmented control
+    /// off screen while ideas exist.
+    var totalCount = 0
+
+    /// Review-queue size per kind — the segment labels' counts, so a queue
+    /// waiting in the other segment is visible without switching to it.
+    var reviewCounts: [String: Int] = [:]
 
     /// Cap on the registry browse query; the review queue is unbounded (it's
     /// meant to stay small by daily triage).
@@ -126,25 +139,32 @@ final class IdeasViewModel {
     func load() {
         isLoading = true
         do {
-            let (review, registry) = try dbManager.dbPool.read { db -> ([Idea], [Idea]) in
-                let review = try IdeaQueries.fetchForReview(db)
+            let loaded = try dbManager.dbPool.read { db in
+                let review = try IdeaQueries.fetchForReview(db, kind: kindMode)
                 let registry = try IdeaQueries.fetchList(
                     db,
-                    kind: kindFilter,
+                    kind: kindMode,
                     status: statusFilter,
                     query: searchText.isEmpty ? nil : searchText,
                     limit: registryLimit,
                     excludingReviewQueue: true
                 )
-                return (review, registry)
+                return (review: review,
+                        registry: registry,
+                        total: try IdeaQueries.countIdeasAndNotes(db),
+                        counts: try IdeaQueries.reviewCountsByKind(db))
             }
-            reviewItems = review
-            registryItems = registry
+            reviewItems = loaded.review
+            registryItems = loaded.registry
+            totalCount = loaded.total
+            reviewCounts = loaded.counts
             errorMessage = nil
             reconcileSelection()
         } catch {
             reviewItems = []
             registryItems = []
+            totalCount = 0
+            reviewCounts = [:]
             selectedID = nil
             errorMessage = error.localizedDescription
         }
@@ -187,6 +207,12 @@ final class IdeasViewModel {
         write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
     }
 
+    /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
+    /// `reconcileSelection()` moves the selection off the vanished id.
+    func deleteIdea(_ idea: Idea) {
+        write("delete idea") { db in try IdeaQueries.delete(db, id: idea.id) }
+    }
+
     /// Returns whether the rating landed, so the view can keep the owner's
     /// typed comment on screen when it did not (clear-only-on-success).
     @discardableResult
@@ -199,6 +225,17 @@ final class IdeasViewModel {
         do {
             let newID = try dbManager.dbPool.write { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
+            }
+            // Show what was just created: switch to its segment, clear the
+            // browse filters that could hide it (it is born active, so a
+            // "Proposed" filter or a stale search would swallow it silently),
+            // and select it. The Decisions ledger creates through this same VM
+            // and has no segment here, so a decision leaves the tab as it was.
+            if kind == "idea" || kind == "note" {
+                kindMode = kind
+                statusFilter = nil
+                searchText = ""
+                selectedID = Int(newID)
             }
             load()
             return Int(newID)

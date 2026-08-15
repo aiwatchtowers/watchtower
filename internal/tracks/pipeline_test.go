@@ -749,25 +749,25 @@ func TestPriorityOrder(t *testing.T) {
 // --- Channel scoring & topic dedup tests ---
 
 func TestScoreChannel(t *testing.T) {
-	existingTrackChannels := map[string]bool{"C1": true}
-	starredChannels := map[string]bool{"C2": true}
-	relatedUsers := map[string]bool{"U99": true}
+	existingTrackChannels := map[string]bool{"1:C100": true}
+	starredChannels := map[string]bool{"1:C200": true}
+	relatedUsers := map[string]bool{"1:U456": true}
 
 	t.Run("no signals = 0", func(t *testing.T) {
 		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
-		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, nil)
 		assert.Equal(t, 0, score)
 	})
 
 	t.Run("existing tracks = 3", func(t *testing.T) {
 		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
-		score := scoreChannel("C1", topics, "U1", existingTrackChannels, nil, nil)
+		score := scoreChannel("1:C100", topics, "1:U1", existingTrackChannels, nil, nil)
 		assert.Equal(t, 3, score)
 	})
 
 	t.Run("starred channel = 2", func(t *testing.T) {
 		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
-		score := scoreChannel("C2", topics, "U1", nil, starredChannels, nil)
+		score := scoreChannel("1:C200", topics, "1:U1", nil, starredChannels, nil)
 		assert.Equal(t, 2, score)
 	})
 
@@ -778,14 +778,14 @@ func TestScoreChannel(t *testing.T) {
 	})
 
 	t.Run("related user in situations = 1", func(t *testing.T) {
-		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: `[{"topic":"x","participants":[{"user_id":"U99"}]}]`, KeyMessages: "[]"}}
-		score := scoreChannel("C_NEW", topics, "U1", nil, nil, relatedUsers)
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`, KeyMessages: "[]"}}
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, relatedUsers)
 		assert.Equal(t, 1, score)
 	})
 
 	t.Run("action items = 1", func(t *testing.T) {
 		topics := []db.DigestTopic{{Title: "Test", ActionItems: `[{"text":"do something"}]`, Situations: "[]", KeyMessages: "[]"}}
-		score := scoreChannel("C_NEW", topics, "U1", nil, nil, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, nil)
 		assert.Equal(t, 1, score)
 	})
 
@@ -793,14 +793,103 @@ func TestScoreChannel(t *testing.T) {
 		topics := []db.DigestTopic{{
 			Title:       "Test",
 			ActionItems: `[{"text":"do it"}]`,
-			Situations:  `[{"topic":"x","participants":[{"user_id":"U99"}]}]`,
+			Situations:  `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`,
 			KeyMessages: `["<@U1> review this"]`,
 		}}
 		// All signals matching: existing(3) + starred(2) + mention(2) + related(1) + action(1) = 9
-		all := map[string]bool{"C1": true}
-		score := scoreChannel("C1", topics, "U1", all, all, relatedUsers)
+		all := map[string]bool{"1:C100": true}
+		score := scoreChannel("1:C100", topics, "U1", all, all, relatedUsers)
 		assert.Equal(t, 9, score)
 	})
+
+	// The two cases below go through buildRelevanceSignals — the real production
+	// path that parses the JSON blobs — instead of hand-built maps, so they pin
+	// the namespacing contract itself: a channel/user id read from a JSON blob
+	// (tracks.channel_ids, user_profile.starred_channels/reports) only scores
+	// when it carries the same "1:<rawID>" prefix as the scalar-column probe ids
+	// passed into scoreChannel.
+	t.Run("via buildRelevanceSignals: namespaced blob matches namespaced probe", func(t *testing.T) {
+		profile := &db.UserProfile{
+			StarredChannels: `["1:C100"]`,
+			Reports:         `["1:U456"]`,
+		}
+		activeTracks := []db.Track{{ChannelIDs: `["1:C100"]`}}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, activeTracks)
+		score := scoreChannel("1:C100", topics, "1:U1",
+			signals.existingTrackChannels, signals.starredChannels, signals.relatedUsers)
+		assert.Equal(t, 5, score, "+3 existing-track channel + +2 starred channel")
+	})
+
+	// Negative twin: the same blobs, un-namespaced (the pre-migration-00054
+	// shape). This is the actual regression pin — it must fail if the match
+	// ever becomes namespace-tolerant by accident.
+	t.Run("via buildRelevanceSignals: bare blob silently stops matching", func(t *testing.T) {
+		profile := &db.UserProfile{
+			StarredChannels: `["C100"]`,
+			Reports:         `["U456"]`,
+		}
+		activeTracks := []db.Track{{ChannelIDs: `["C100"]`}}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, activeTracks)
+		score := scoreChannel("1:C100", topics, "1:U1",
+			signals.existingTrackChannels, signals.starredChannels, signals.relatedUsers)
+		assert.Equal(t, 0, score, "a bare blob id can never match the namespaced channel probe")
+	})
+
+	// relatedUsers is matched against digest_topics.situations/key_messages —
+	// AI-authored text that carries raw Slack ids regardless of how the
+	// profile blob itself is namespaced. The three cases below pin
+	// buildRelevanceSignals' dual-form insertion: a namespaced profile id
+	// must match both a raw and a namespaced occurrence in the topic text,
+	// and an unrelated id must still score 0.
+	t.Run("relatedUsers via buildRelevanceSignals: raw topic text matches namespaced profile id", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"U456"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 1, score, "raw-id topic text must still match a namespaced profile id")
+	})
+
+	t.Run("relatedUsers via buildRelevanceSignals: namespaced topic text also matches", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 1, score)
+	})
+
+	t.Run("relatedUsers via buildRelevanceSignals: unrelated id does not match", func(t *testing.T) {
+		profile := &db.UserProfile{Reports: `["1:U456"]`}
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]",
+			Situations: `[{"topic":"x","participants":[{"user_id":"U999"}]}]`, KeyMessages: "[]"}}
+
+		signals := buildRelevanceSignals(profile, nil)
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, signals.relatedUsers)
+		assert.Equal(t, 0, score)
+	})
+}
+
+// TestFormatProfileContext_RendersRawReportIDs is the representative pin for
+// every prompt-rendering site that formats a profile id blob into AI prompt
+// text: the model matches these ids against message text, which carries raw
+// Slack ids, so the rendered block must contain the raw id form and not the
+// namespaced one.
+func TestFormatProfileContext_RendersRawReportIDs(t *testing.T) {
+	p := &Pipeline{profile: &db.UserProfile{
+		CustomPromptContext: "some context",
+		Reports:             `["1:U456"]`,
+	}}
+
+	got := p.formatProfileContext()
+	assert.Contains(t, got, "U456")
+	assert.NotContains(t, got, "1:U456")
 }
 
 func TestFormatActiveTracksForPromptLimit(t *testing.T) {

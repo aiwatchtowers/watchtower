@@ -30,3 +30,26 @@ func TestSplitAccountID(t *testing.T) {
 		t.Fatal("non-numeric colon prefix should not parse as namespaced")
 	}
 }
+
+func TestRawIDsJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"namespaced", `["1:U456"]`, `["U456"]`},
+		{"bare", `["U456"]`, `["U456"]`},
+		{"mixed", `["1:U456","U789"]`, `["U456","U789"]`},
+		{"empty array", `[]`, `[]`},
+		{"empty string", ``, ``},
+		{"malformed", `not json`, `not json`},
+		{"non-array JSON", `{"a":1}`, `{"a":1}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RawIDsJSON(tc.in); got != tc.want {
+				t.Fatalf("RawIDsJSON(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

@@ -218,21 +218,23 @@ func migration00049SeedStatements(t *testing.T) (create, insert string) {
 	if err != nil {
 		t.Fatalf("reading migration 00049: %v", err)
 	}
-	return extractStatement(t, string(raw), "CREATE TABLE IF NOT EXISTS jira_accounts"),
-		extractStatement(t, string(raw), "INSERT INTO jira_accounts (cloud_id")
+	return extractStatement(t, string(raw), "CREATE TABLE IF NOT EXISTS jira_accounts", "migration 00049"),
+		extractStatement(t, string(raw), "INSERT INTO jira_accounts (cloud_id", "migration 00049")
 }
 
 // extractStatement returns the statement starting at marker, up to and
-// including its terminating semicolon.
-func extractStatement(t *testing.T, sqlText, marker string) string {
+// including its terminating semicolon. source names the migration sqlText
+// was read from, for the error messages — this helper is shared across
+// migration test files, so it can't hardcode which one called it.
+func extractStatement(t *testing.T, sqlText, marker, source string) string {
 	t.Helper()
 	start := strings.Index(sqlText, marker)
 	if start < 0 {
-		t.Fatalf("statement %q not found in migration 00049", marker)
+		t.Fatalf("statement %q not found in %s", marker, source)
 	}
 	end := strings.Index(sqlText[start:], ";")
 	if end < 0 {
-		t.Fatalf("statement %q is unterminated in migration 00049", marker)
+		t.Fatalf("statement %q is unterminated in %s", marker, source)
 	}
 	return sqlText[start : start+end+1]
 }

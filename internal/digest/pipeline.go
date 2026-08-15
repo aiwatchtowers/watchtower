@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // Usage holds token metrics from an AI generation call.
@@ -1875,14 +1876,17 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString("- Prioritize decisions and action items relevant to this user's role and responsibilities\n")
 	sb.WriteString("- Highlight topics that fall within the user's area of focus\n")
 
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced.
 	if p.profile.StarredChannels != "" && p.profile.StarredChannels != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(p.profile.StarredChannels)))
+		sb.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredChannels))))
 	}
 	if p.profile.StarredPeople != "" && p.profile.StarredPeople != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(p.profile.StarredPeople)))
+		sb.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredPeople))))
 	}
 	if p.profile.Reports != "" && p.profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(p.profile.Reports)))
+		sb.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.Reports))))
 	}
 
 	return sb.String()
