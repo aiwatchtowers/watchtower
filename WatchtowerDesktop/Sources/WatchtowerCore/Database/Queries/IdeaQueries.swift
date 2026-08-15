@@ -65,15 +65,20 @@ package enum IdeaQueries {
         return try Idea.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
-    /// Ideas awaiting owner review: freshly proposed, or explicitly flagged.
-    /// Decisions are born 'active' and never enter this queue — mirrors the Go
-    /// side's `CountIdeasForReview`, which this is the dual path of.
-    package static func fetchForReview(_ db: Database) throws -> [Idea] {
+    /// Ideas awaiting owner review, scoped to one kind — the Ideas tab's
+    /// Ideas/Notes segments each review their own queue, so a flagged note
+    /// surfaces under Notes instead of mixing into Ideas.
+    ///
+    /// The `kind != 'decision'` clause stays alongside the caller's kind:
+    /// decisions are born 'active' and never enter this queue whatever is
+    /// asked for — mirrors the Go side's `CountIdeasForReview`, which this is
+    /// the dual path of.
+    package static func fetchForReview(_ db: Database, kind: String) throws -> [Idea] {
         try Idea.fetchAll(db, sql: """
             SELECT * FROM ideas
-            WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind = ? AND kind != 'decision'
             ORDER BY updated_at DESC
-            """)
+            """, arguments: [kind])
     }
 
     package static func fetchOne(_ db: Database, id: Int) throws -> Idea? {
@@ -92,11 +97,35 @@ package enum IdeaQueries {
             """, arguments: [ideaID])
     }
 
+    /// Global across both kinds, unlike `fetchForReview` — the sidebar badge
+    /// counts everything the owner still has to look at, whichever segment the
+    /// Ideas tab happens to be on.
     package static func countForReview(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM ideas
             WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'
             """) ?? 0
+    }
+
+    /// Everything the Ideas tab can show, across both segments — what the
+    /// full-screen "No ideas yet" state keys off. Keying it off the active
+    /// segment instead would hide the segmented control (which lives in the
+    /// filter bar the empty state replaces) with no way back to the other one.
+    package static func countIdeasAndNotes(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind IN ('idea', 'note')") ?? 0
+    }
+
+    /// Review-queue size per kind, keyed by `kind` — what the Ideas | Notes
+    /// segment labels count, so a queue waiting in the other segment is
+    /// visible without switching to it. A kind with nothing waiting is absent
+    /// from the map.
+    package static func reviewCountsByKind(_ db: Database) throws -> [String: Int] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT kind, COUNT(*) AS count FROM ideas
+            WHERE (status = 'proposed' OR needs_review = 1) AND kind IN ('idea', 'note')
+            GROUP BY kind
+            """)
+        return rows.reduce(into: [:]) { counts, row in counts[row["kind"]] = row["count"] }
     }
 
     // MARK: - Decisions Ledger
@@ -286,6 +315,62 @@ package enum IdeaQueries {
             arguments: [ideaID, essence, now]
         )
         return ideaID
+    }
+
+    /// Owner-initiated hard delete: the row, its mentions, and its Discuss
+    /// chat, in the caller's single write transaction (the
+    /// `MeetingTranscriptQueries.delete` precedent). Deliberately outside
+    /// IDEA-03, which governs the convert/merge *transitions* — those stay
+    /// links; this is the owner explicitly throwing an entry away.
+    ///
+    /// Anything merged into the deleted entry goes with it, recursively. A
+    /// merged row's mentions were re-parented onto the survivor at merge time
+    /// (IDEA-03), so what it leaves behind is a provenance-less husk whose
+    /// only content is the `merged_into_id` redirect the Go consolidator
+    /// follows one hop (`applyAttachMentionOp`). Keeping those husks after
+    /// their survivor is gone would point that redirect at a row that no
+    /// longer exists, landing repeat mentions on a dead `status='merged'`
+    /// entry the owner can no longer see.
+    package static func delete(_ db: Database, id: Int) throws {
+        // UNION (not UNION ALL) so a merge cycle terminates rather than
+        // recursing forever. The seed is returned whether or not it exists,
+        // making a delete of an unknown id a clean no-op.
+        let doomed = try Int.fetchAll(db, sql: """
+            WITH RECURSIVE doomed(id) AS (
+                SELECT ?
+                UNION
+                SELECT ideas.id FROM ideas JOIN doomed ON ideas.merged_into_id = doomed.id
+            )
+            SELECT id FROM doomed
+            """, arguments: [id])
+
+        for doomedID in doomed {
+            if let conversation = try ChatConversationQueries.fetchByContext(db, type: "idea", id: String(doomedID)) {
+                // Mirrors ChatMessageQueries.deleteByConversation, which lives
+                // in the app target and isn't reachable from Core.
+                try db.execute(sql: "DELETE FROM chat_messages WHERE conversation_id = ?", arguments: [conversation.id])
+                try ChatConversationQueries.delete(db, id: conversation.id)
+            }
+            // Explicit, though the FK is ON DELETE CASCADE — independent of
+            // the connection's foreign_keys pragma.
+            try db.execute(sql: "DELETE FROM idea_mentions WHERE idea_id = ?", arguments: [doomedID])
+            try db.execute(sql: "DELETE FROM ideas WHERE id = ?", arguments: [doomedID])
+        }
+
+        // Neither column carries a foreign key, so a survivor pointing into
+        // what was just deleted would keep a dangling link. `merged_into_id`
+        // needs no such pass: every row that could point into the chain is
+        // itself in `doomed`.
+        let placeholders = doomed.map { _ in "?" }.joined(separator: ",")
+        let survivorArgs = StatementArguments(doomed)
+        try db.execute(
+            sql: "UPDATE ideas SET similar_to_id = NULL WHERE similar_to_id IN (\(placeholders))",
+            arguments: survivorArgs
+        )
+        try db.execute(
+            sql: "UPDATE ideas SET superseded_by_id = NULL WHERE superseded_by_id IN (\(placeholders))",
+            arguments: survivorArgs
+        )
     }
 
     /// Marks an idea converted into a Target, recording the link. Keeps the row,
