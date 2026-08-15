@@ -325,6 +325,40 @@ func TestFindPendingMentions(t *testing.T) {
 	assert.True(t, gotTS["1003.001"], "pipe <@U_ME|Name> form should match")
 }
 
+// TestFindPendingMentions_NamespacedUserID pins the multi-account fix:
+// GetCurrentUserID returns a namespaced id ("1:U_ME") post migration 00048,
+// but messages.text carries Slack's raw mention markup ("<@U_ME>") untouched
+// since it is source data no migration rewrites. FindPendingMentions must
+// reduce the namespaced id to its raw form for the LIKE patterns while still
+// comparing m.user_id — itself namespaced — against the namespaced id as-is.
+func TestFindPendingMentions_NamespacedUserID(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	require.NoError(t, err)
+
+	// Raw markup mentioning our user, written by someone else — should match.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', '1:U_OTHER', 'hey <@U_ME> look')`)
+	require.NoError(t, err)
+
+	// Mentions a different user whose id is a prefix-match of ours — must NOT
+	// match. Pins the closing `>` boundary with a namespaced caller id.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1001.001', '1:U_OTHER', 'cc <@U_MEOW> hello')`)
+	require.NoError(t, err)
+
+	// Mentions our user but written by ourselves (namespaced sender) — must
+	// NOT match. Only catches a regression if m.user_id != ? is bound with
+	// the namespaced id; binding the raw form here would let this leak through.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1002.001', '1:U_ME', '<@U_ME> self-mention')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindPendingMentions("1:U_ME", 0)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "1000.001", candidates[0].MessageTS)
+	assert.Equal(t, "1:U_OTHER", candidates[0].SenderUserID)
+}
+
 func TestFindPendingDMs(t *testing.T) {
 	db := openTestDB(t)
 
