@@ -117,21 +117,31 @@ func syncResultPath(cfg *config.Config) string {
 // maxLogSize is the size past which a log file is rotated at open:
 // the current file is renamed to "<name>.1" (replacing the previous
 // generation) and a fresh file is started. In-process growth between
-// daemon restarts stays unbounded by design — the daemon is restarted
-// on every app launch/rebuild, and one generation bounds disk use.
+// daemon restarts stays unbounded by design — a long-lived tray-launched
+// daemon can overshoot the cap by its uptime's worth of logging (~MBs/day)
+// until the next restart (reboot, app update, rebuild) rotates it.
 const maxLogSize = 20 * 1024 * 1024
 
 // rotateLogIfOversized renames path to path+".1" when the file exceeds
-// maxLogSize, so the next open starts fresh. Any error (stat, rename) is
-// non-fatal: the caller proceeds and appends to the existing file —
-// rotation must never block a sync.
-func rotateLogIfOversized(path string) {
+// maxLogSize, so the next open starts fresh. The returned error is for
+// logging only — rotation must never block a sync, so the caller proceeds
+// and appends to the existing file on failure.
+func rotateLogIfOversized(path string) error {
 	info, err := os.Stat(path)
-	if err != nil || info.Size() <= maxLogSize {
-		return
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() <= maxLogSize {
+		return nil
 	}
 	// os.Rename replaces an existing ".1" atomically on POSIX.
-	_ = os.Rename(path, path+".1")
+	if err := os.Rename(path, path+".1"); err != nil {
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
+	return nil
 }
 
 func runSyncStop(cfg *config.Config) error {
@@ -180,12 +190,16 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
-	rotateLogIfOversized(logPath)
+	rotationErr := rotateLogIfOversized(logPath)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
 	}
 	defer logFile.Close()
+	if rotationErr != nil {
+		fmt.Fprintf(logFile, "%s log rotation: %v (continuing without rotation)\n",
+			time.Now().Format("2006/01/02 15:04:05"), rotationErr)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -276,7 +290,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
-	rotateLogIfOversized(syncLog)
+	rotationErr := rotateLogIfOversized(syncLog)
 	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
@@ -289,6 +303,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
+	if rotationErr != nil {
+		logger.Printf("log rotation: %v (continuing without rotation)", rotationErr)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

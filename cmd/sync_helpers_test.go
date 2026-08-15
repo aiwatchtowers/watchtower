@@ -84,7 +84,7 @@ func TestRotateLogIfOversized(t *testing.T) {
 		path := filepath.Join(dir, "watchtower.log")
 		makeOversized(t, path, "old generation")
 
-		rotateLogIfOversized(path)
+		require.NoError(t, rotateLogIfOversized(path))
 
 		_, err := os.Stat(path)
 		assert.True(t, os.IsNotExist(err), "original path should be gone after rotation")
@@ -109,7 +109,7 @@ func TestRotateLogIfOversized(t *testing.T) {
 		require.NoError(t, os.WriteFile(path+".1", []byte("older generation"), 0o600))
 		makeOversized(t, path, "newer generation")
 
-		rotateLogIfOversized(path)
+		require.NoError(t, rotateLogIfOversized(path))
 
 		content, err := os.ReadFile(path + ".1")
 		require.NoError(t, err)
@@ -121,7 +121,7 @@ func TestRotateLogIfOversized(t *testing.T) {
 		path := filepath.Join(dir, "watchtower.log")
 		require.NoError(t, os.WriteFile(path, []byte("small"), 0o600))
 
-		rotateLogIfOversized(path)
+		require.NoError(t, rotateLogIfOversized(path))
 
 		content, err := os.ReadFile(path)
 		require.NoError(t, err)
@@ -134,12 +134,43 @@ func TestRotateLogIfOversized(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "watchtower.log")
 
-		rotateLogIfOversized(path)
+		require.NoError(t, rotateLogIfOversized(path))
 
 		_, err := os.Stat(path)
 		assert.True(t, os.IsNotExist(err))
 		_, err = os.Stat(path + ".1")
 		assert.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("file at exactly maxLogSize is not rotated", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path, []byte("boundary"), 0o600))
+		require.NoError(t, os.Truncate(path, maxLogSize))
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, int64(maxLogSize), info.Size())
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err), "no .1 should appear at the exact cap")
+	})
+
+	t.Run("rename failure is reported and leaves the file in place", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		makeOversized(t, path, "stuck generation")
+		// A directory at the .1 path makes os.Rename fail (EISDIR/ENOTDIR).
+		require.NoError(t, os.Mkdir(path+".1", 0o755))
+
+		err := rotateLogIfOversized(path)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rename")
+		info, statErr := os.Stat(path)
+		require.NoError(t, statErr)
+		assert.Equal(t, int64(maxLogSize+1), info.Size(), "the caller keeps appending to the original file")
 	})
 }
 
