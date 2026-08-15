@@ -36,6 +36,7 @@
 
 **Test guards:**
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveSlackOnUserReply`
+- `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveSlackAccount2OnOwnerReply`
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveJiraOnUserComment`
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveCalendarOnUserRSVP`
 - `internal/db/targets_remind_test.go::TestInbox02_AutoResolveTargetOnClose`
