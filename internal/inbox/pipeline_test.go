@@ -915,6 +915,60 @@ func TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark(t *testing.
 		"an unresolved-identity account must be skipped cleanly and must not freeze the watermark")
 }
 
+// TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation documents a known,
+// investigated gap — it is deliberately named outside the TestInbox09_
+// guard-test convention and is NOT listed in docs/inventory/inbox-pulse.md's
+// INBOX-09 Test guards, since a skipped test proves nothing and listing it
+// there would be exactly the kind of overclaim this branch's review rounds
+// have been correcting elsewhere.
+//
+// What it would guard: with two accounts, the first hitting a genuine
+// (non-skip) detector error, the second must still be attempted — its item
+// created, the joined error still returned, the watermark still frozen.
+// TestInbox09_SlackDetectorErrorFreezesWatermark cannot stand in for this:
+// it seeds a single account, so a regression that turned detectSlackAccounts'
+// per-account "append the error and keep looping" into an early return would
+// not be observable there (there is no second account to fail to reach).
+// Confirmed empirically: temporarily changing that loop's
+// `errs = append(...)` branch to `return created, fmt.Errorf(...)` left the
+// entire internal/inbox suite green (160/160) before this test existed —
+// the regression was, and without this test remains, unguarded.
+//
+// Investigated and rejected, in order:
+//  1. Corrupting one account's messages/reactions rows to make its own
+//     FindPendingMentions/FindPendingDMs query fail while a sibling
+//     account's identical query (same SQL text, different bind parameters)
+//     succeeds. Every column either detector actually scans is NOT NULL
+//     (channel_id, ts, user_id, text, permalink, reactions.user_id — all
+//     schema.sql), COALESCE-wrapped (thread_ts), or a NOT-NULL-derived
+//     GENERATED ALWAYS ... STORED column fed by SQLite's lenient TEXT->REAL
+//     CAST, which cannot produce NULL from a NOT NULL source (ts_unix).
+//     FindPendingDMs' JOIN with channels and FindReactionRequests' JOIN with
+//     reactions were checked too: neither query actually SELECTs a column
+//     from its join partner that isn't already covered above.
+//  2. SQLite enforces CHECK/NOT NULL constraints at write time, not read
+//     time, so no reachable row state can defer a failure into a later
+//     SELECT — only a table-wide DROP TABLE (breaks every account's query
+//     uniformly, not just one) or a query-syntax break is achievable, and
+//     both already have coverage via TestInbox09_SlackDetectorErrorFreezesWatermark
+//     and TestInbox09_WatermarkFrozenOnDetectorError respectively.
+//  3. No DB-layer test seam exists anywhere in this repo to fake a
+//     per-call failure: db.DB embeds *sql.DB directly with no hook/
+//     interceptor, no test in internal/db or internal/inbox uses a mock/
+//     fake driver, and go.mod carries no SQL-mocking dependency (e.g.
+//     DATA-DOG/go-sqlmock). Building one — a custom driver.Driver, or
+//     restructuring detectSlackAccounts to accept an injectable querier —
+//     is a production/test-infrastructure change, not a test, and was not
+//     undertaken here.
+//
+// The property still holds by code shape today: there is no continue/return
+// after `errs = append(...)` in detectSlackAccounts, so execution always
+// falls through to the next account. That must be preserved by code review
+// until a real test mechanism is found.
+func TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation(t *testing.T) {
+	t.Skip("no mechanism found to make one Slack account's detector query fail while a sibling's succeeds against the same shared tables — see the doc comment above for what was tried; reported as a documented limitation, not silently treated as covered")
+}
+
 // TestInbox09_WatermarkFrozenOnTriageError guards INBOX-09 for the triage
 // stage: when runTriage itself fails (AI call/parse error), the watermark
 // must NOT advance past what was never fully triaged, and Run must surface
