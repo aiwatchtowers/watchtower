@@ -15,6 +15,9 @@ enum QuickCaptureState: Equatable {
     case unavailable
     case loading
     case recording
+    case paused
+    /// Stop pressed — the buffered audio is being transcribed.
+    case stopping
     case cleaning
     /// `raw` is `center.lastRaw` — present whenever something was actually
     /// transcribed before the failure (e.g. a cleanup failure), so the
@@ -39,8 +42,9 @@ enum QuickCaptureState: Equatable {
         switch phase {
         case .idle: return .loading
         case .recording: return .recording
-        case .paused: return .recording // Task 7 wires the real paused state
-        case .stopping, .cleaning: return .cleaning
+        case .paused: return .paused
+        case .stopping: return .stopping
+        case .cleaning: return .cleaning
         case .failed(let message): return .failed(message: message, raw: lastRaw)
         }
     }
@@ -107,6 +111,19 @@ final class QuickCaptureViewModel {
     func stop() {
         guard ownsCapture else { return }
         center?.stop()
+    }
+
+    /// Pause/resume ride the same ownership gate as `stop()`/`cancel()` — a
+    /// quick capture that never won the shared slot must not touch whichever
+    /// capture did.
+    func pause() {
+        guard ownsCapture else { return }
+        center?.pause()
+    }
+
+    func resume() {
+        guard ownsCapture else { return }
+        center?.resume()
     }
 
     /// Walks away from the capture entirely — the window-close path. Gated
@@ -221,6 +238,10 @@ struct QuickCaptureView: View {
             loadingState(text: "Loading…")
         case .recording:
             recordingState
+        case .paused:
+            pausedState
+        case .stopping:
+            loadingState(text: "Transcribing…")
         case .cleaning:
             loadingState(text: "Cleaning up…")
         case let .failed(message, raw):
@@ -255,16 +276,24 @@ struct QuickCaptureView: View {
                 Image(systemName: "mic.fill")
                     .foregroundStyle(.red)
                     .symbolEffect(.pulse)
-                Text("Listening…")
-                    .foregroundStyle(.secondary)
+                if let center {
+                    // The mic is already hot and buffering while the engine
+                    // loads — loading presents as "already listening", and
+                    // Stop still finalizes (buffered speech is delivered).
+                    Text(center.isEngineLoading
+                         ? "Loading model… speak freely, nothing is lost."
+                         : "Listening…")
+                        .foregroundStyle(.secondary)
+                    MicLevelBars(level: center.micLevel)
+                    timerText(center)
+                } else {
+                    Text("Listening…")
+                        .foregroundStyle(.secondary)
+                }
             }
-            ScrollView {
-                Text(viewModel.liveText.isEmpty ? "Say what's on your mind." : viewModel.liveText)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 160)
+            liveTextScroll
             HStack {
+                Button("Pause") { viewModel.pause() }
                 Button("Stop") { viewModel.stop() }
                     .buttonStyle(.borderedProminent)
                 Button("Cancel") {
@@ -272,6 +301,51 @@ struct QuickCaptureView: View {
                     dismiss()
                 }
             }
+        }
+    }
+
+    private var pausedState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "pause.fill")
+                    .foregroundStyle(.secondary)
+                Text("Paused")
+                    .foregroundStyle(.secondary)
+                if let center {
+                    timerText(center)
+                }
+            }
+            liveTextScroll
+            HStack {
+                Button("Resume") { viewModel.resume() }
+                Button("Stop") { viewModel.stop() }
+                    .buttonStyle(.borderedProminent)
+                Button("Cancel") {
+                    viewModel.cancel()
+                    dismiss()
+                }
+            }
+        }
+    }
+
+    private var liveTextScroll: some View {
+        ScrollView {
+            Text(viewModel.liveText.isEmpty ? "Say what's on your mind." : viewModel.liveText)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 160)
+    }
+
+    /// The elapsed-time readout; paused time never ticks (`elapsed(at:)`
+    /// freezes while no recording span is open, so the 1 s tick cadence just
+    /// re-renders the same label).
+    private func timerText(_ center: DictationCenter) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(DictationButton.timerLabel(center.elapsed(at: context.date)))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -203,6 +203,70 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         XCTAssertNil(center.activeTargetID)
     }
 
+    /// The ownership gate extends to the Task-7 pause controls: `pause()`/
+    /// `resume()` from a quick capture that never won the shared slot must
+    /// never touch the capture that DID win it (the same M1 rule `stop()`/
+    /// `cancel()` follow above).
+    func testPauseAndResumeAreNoOpsWithoutOwnership() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["other field's speech"]), supportsLive: true) },
+            runnerResolver: { FakeCLIRunner(stdout: ideaCleanedEnvelope) },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "other-field", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("other dictation recording") { center.phase == .recording }
+
+        let vm = QuickCaptureViewModel()
+        vm.start(center: center)
+        XCTAssertFalse(vm.ownsCapture, "quick capture must not have won an already-held shared slot")
+
+        vm.pause()
+        XCTAssertEqual(center.phase, .recording,
+                       "pause() from a non-owning quick capture must not pause the other capture")
+
+        center.pause()
+        vm.resume()
+        XCTAssertEqual(center.phase, .paused,
+                       "resume() from a non-owning quick capture must not resume the other capture")
+
+        center.cancel()
+    }
+
+    /// The owning case, as a control: quick capture's own pause()/resume() DO
+    /// drive its own capture through `.paused` and back.
+    func testPauseAndResumeControlOwnCapture() async throws {
+        let defaults = try isolatedDefaults()
+        let recorder = FakeMicRecorder()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { FakeCLIRunner() },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        let vm = QuickCaptureViewModel()
+        vm.start(center: center)
+        await waitUntil("recording") { center.phase == .recording }
+        XCTAssertTrue(vm.ownsCapture)
+
+        vm.pause()
+        XCTAssertEqual(center.phase, .paused)
+        XCTAssertEqual(vm.state, .paused)
+
+        vm.resume()
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertEqual(vm.state, .recording)
+
+        vm.cancel()
+    }
+
     // MARK: - m5 (final review): scene reuse must not show a stale outcome
 
     /// A reopened Quick Capture window reuses the scene (and can reuse the
@@ -270,12 +334,35 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         XCTAssertEqual(state, .loading)
     }
 
-    /// `.stopping` (stop pressed, transcription finishing) projects onto the
-    /// same "Cleaning up…" visual for now; Task 7 wires the dedicated
-    /// stopping/paused states.
-    func testDeriveStateCleaningWhilePhaseStopping() {
+    /// `.stopping` (stop pressed, transcription finishing) has its own
+    /// dedicated state — the window shows "Transcribing…", not "Cleaning up…".
+    func testDeriveStateStoppingWhilePhaseStopping() {
         let state = QuickCaptureState.derive(ownsCapture: true, phase: .stopping, lastRaw: nil, result: nil, savedIdeaID: nil)
-        XCTAssertEqual(state, .cleaning)
+        XCTAssertEqual(state, .stopping)
+    }
+
+    func testDeriveStatePausedWhileOwningAndPhasePaused() {
+        let state = QuickCaptureState.derive(ownsCapture: true, phase: .paused, lastRaw: nil, result: nil, savedIdeaID: nil)
+        XCTAssertEqual(state, .paused)
+    }
+
+    func testDeriveStateUnavailableWhenNotOwningEvenWhilePaused() {
+        let state = QuickCaptureState.derive(ownsCapture: false, phase: .paused, lastRaw: nil, result: nil, savedIdeaID: nil)
+        XCTAssertEqual(state, .unavailable)
+    }
+
+    func testDeriveStateResultReadyWinsOverPausedPhase() {
+        let result = DictationCleanResult(title: "T", text: "hi")
+        let state = QuickCaptureState.derive(ownsCapture: true, phase: .paused, lastRaw: nil, result: result, savedIdeaID: nil)
+        XCTAssertEqual(state, .resultReady(result))
+    }
+
+    func testDeriveStateSavedWinsOverPausedPhase() {
+        let state = QuickCaptureState.derive(
+            ownsCapture: true, phase: .paused, lastRaw: nil,
+            result: DictationCleanResult(title: nil, text: "ignored"), savedIdeaID: 42
+        )
+        XCTAssertEqual(state, .saved(42))
     }
 
     func testDeriveStateCleaningWhilePhaseCleaning() {
