@@ -65,9 +65,7 @@ struct DictationButton: View {
             revertToast
         }
         .onExitCommand {
-            // center.stop() is global — a button for a target that isn't the
-            // one actually recording must not stop someone else's dictation.
-            if center.activeTargetID == targetID { center.stop() }
+            escPressed(center: center)
         }
         .onDisappear {
             // The host view is going away: nothing renders this dictation's
@@ -80,30 +78,40 @@ struct DictationButton: View {
 
     @ViewBuilder
     private func button(_ center: DictationCenter) -> some View {
-        if center.activeTargetID == targetID, case .recording = center.phase, center.isEngineLoading {
-            // The engine is still loading but the mic is already hot and
-            // buffering — pressing the spinner stops and finalizes (speech
-            // spoken during the load is delivered, never discarded). Task 5
-            // replaces this rendering with the capsule + loading badge.
-            Button {
-                center.stop()
-            } label: {
-                ProgressView()
-                    .controlSize(.small)
+        if center.activeTargetID == targetID {
+            switch center.phase {
+            case .recording:
+                recordingCapsule(center)
+            case .paused:
+                pausedCapsule(center)
+            case .stopping:
+                progressCapsule("Transcribing…")
+            case .cleaning:
+                progressCapsule("Cleaning…")
+            case .failed(let message):
+                retryButton(center, message: message)
+            case .idle:
+                idleButton(center)
             }
-            .buttonStyle(.plain)
-            .help("Stop dictating")
-        } else if center.activeTargetID == targetID, case .recording = center.phase {
-            stopButton(center)
-        } else if center.activeTargetID == targetID,
-                  center.phase == .stopping || center.phase == .cleaning {
-            ProgressView()
-                .controlSize(.small)
-        } else if center.activeTargetID == targetID, case .failed(let message) = center.phase {
-            retryButton(center, message: message)
         } else {
             idleButton(center)
         }
+    }
+
+    /// Esc discards — Stop has its own always-visible button in the capsule,
+    /// so finalizing on Esc would surprise anyone using it to back out.
+    /// `center.cancel()` is global — a button for a target that isn't the one
+    /// actually dictating must not cancel someone else's dictation, hence the
+    /// ownership guard. Internal (not private) as the tests' hook.
+    func escPressed(center: DictationCenter) {
+        guard center.activeTargetID == targetID else { return }
+        center.cancel()
+    }
+
+    /// mm:ss with hours folded into minutes (3661 s → "61:01").
+    static func timerLabel(_ d: Duration) -> String {
+        let totalSeconds = Int(d.components.seconds)
+        return "\(totalSeconds / 60):" + String(format: "%02d", totalSeconds % 60)
     }
 
     private func idleButton(_ center: DictationCenter) -> some View {
@@ -113,22 +121,93 @@ struct DictationButton: View {
             startDictation(center)
         } label: {
             Image(systemName: "mic.fill")
+                .frame(width: 28, height: 28)
+                .background(.quaternary, in: Circle())
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(disabled)
         .help(disabled ? disabledReason(center: center, anotherActive: anotherActive) : "Dictate")
     }
 
-    private func stopButton(_ center: DictationCenter) -> some View {
-        Button {
-            center.stop()
-        } label: {
-            Image(systemName: "mic.fill")
-                .foregroundStyle(.red)
-                .symbolEffect(.pulse)
+    // MARK: - Capsule states
+
+    /// The `RecordingIndicatorView` `indicatorCapsule` look, compact.
+    private func capsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 8) { content() }
+            .controlSize(.small)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.separator))
+    }
+
+    private func recordingCapsule(_ center: DictationCenter) -> some View {
+        capsule {
+            MicLevelBars(level: center.micLevel)
+            timerText(center)
+            if center.isEngineLoading {
+                // The mic is already hot and buffering while the engine loads —
+                // loading presents as "already listening" with this badge, and
+                // Stop still finalizes (buffered speech is delivered, never
+                // discarded).
+                Text("Loading model…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            capsuleControl(systemName: "pause.fill", identifier: "dictation.pause",
+                           help: "Pause dictation") { center.pause() }
+            capsuleControl(systemName: "stop.fill", identifier: "dictation.stop",
+                           help: "Stop and insert (Esc cancels)") { center.stop() }
+        }
+    }
+
+    private func pausedCapsule(_ center: DictationCenter) -> some View {
+        capsule {
+            Text("Paused")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            timerText(center)
+            capsuleControl(systemName: "play.fill", identifier: "dictation.resume",
+                           help: "Resume dictation") { center.resume() }
+            capsuleControl(systemName: "stop.fill", identifier: "dictation.stop",
+                           help: "Stop and insert (Esc cancels)") { center.stop() }
+        }
+    }
+
+    private func progressCapsule(_ label: String) -> some View {
+        capsule {
+            ProgressView()
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func capsuleControl(
+        systemName: String,
+        identifier: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
         }
         .buttonStyle(.plain)
-        .help("Stop dictating (Esc)")
+        .accessibilityIdentifier(identifier)
+        .help(help)
+    }
+
+    /// The elapsed-time readout; paused time never ticks (`elapsed(at:)`
+    /// freezes while no recording span is open, so a 1 s tick cadence just
+    /// re-renders the same label).
+    private func timerText(_ center: DictationCenter) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(Self.timerLabel(center.elapsed(at: context.date)))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func retryButton(_ center: DictationCenter, message: String) -> some View {
