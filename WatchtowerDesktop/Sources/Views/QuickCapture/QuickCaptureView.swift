@@ -37,9 +37,10 @@ enum QuickCaptureState: Equatable {
         if let result { return .resultReady(result) }
         guard ownsCapture else { return .unavailable }
         switch phase {
-        case .idle, .loadingEngine: return .loading
+        case .idle: return .loading
         case .recording: return .recording
-        case .cleaning: return .cleaning
+        case .paused: return .recording // Task 7 wires the real paused state
+        case .stopping, .cleaning: return .cleaning
         case .failed(let message): return .failed(message: message, raw: lastRaw)
         }
     }

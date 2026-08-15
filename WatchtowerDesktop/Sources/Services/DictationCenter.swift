@@ -4,7 +4,7 @@ import WatchtowerCore
 /// State machine driving one voice dictation: mic capture → live (or batch)
 /// transcription → `DictationCleanService` cleanup → the caller's callbacks.
 enum DictationPhase: Equatable {
-    case idle, loadingEngine, recording, cleaning
+    case idle, recording, paused, stopping, cleaning
     case failed(String)
 }
 
@@ -24,6 +24,11 @@ enum DictationPhase: Equatable {
 @Observable
 final class DictationCenter {
     private(set) var phase: DictationPhase = .idle
+    /// True from `start()` until the engine resolves (or the run ends). The
+    /// mic is already hot and buffering while the engine loads, so loading
+    /// presents as "already listening" (phase `.recording`) with this flag
+    /// driving a badge — never as a dedicated visible phase.
+    private(set) var isEngineLoading = false
     private(set) var activeTargetID: String?
     /// Accumulated raw text delivered so far, chunk by chunk, while live.
     private(set) var liveText: String = ""
@@ -106,7 +111,11 @@ final class DictationCenter {
         activeTargetID = targetID
         liveText = ""
         lastRaw = nil
-        phase = .loadingEngine
+        // Recording begins NOW from the user's point of view — the mic opens
+        // and buffers before the engine resolves, so the engine load is a
+        // flag over `.recording`, not a phase of its own.
+        phase = .recording
+        isEngineLoading = true
         // The engine is about to be used again — the idle countdown from the
         // previous dictation (if any) no longer applies.
         engineReleaseTask?.cancel()
@@ -126,20 +135,19 @@ final class DictationCenter {
         }
     }
 
-    /// Stops the mic; the already-running dictation task takes it from there
-    /// (finish transcription → clean → onResult). During the engine-load
-    /// spinner nothing recorded is worth keeping yet, so a stop there is the
-    /// user walking away — it cancels. Otherwise a no-op unless a dictation
-    /// is actively recording — calling it twice is safe, since the underlying
-    /// task only ever resolves once regardless of how many times the mic is
-    /// told to stop.
+    /// Stops the mic and finalizes; the already-running dictation task takes
+    /// it from there (wait for the engine if it is still loading, finish
+    /// transcription → clean → onResult). `.stopping` covers the gap until
+    /// transcription completes, then the existing `.cleaning` flow. Speech
+    /// spoken during an engine load was buffered from t0 and is batch-decoded
+    /// once the engine resolves — never discarded; `cancel()` is the only
+    /// discard path. A no-op in any other phase — calling it twice is safe,
+    /// since the underlying task only ever resolves once regardless of how
+    /// many times the mic is told to stop.
     func stop() {
-        if phase == .loadingEngine {
-            cancel()
-            return
-        }
-        guard phase == .recording, let recorder else { return }
-        recorder.stop()
+        guard phase == .recording else { return }
+        recorder?.stop()
+        phase = .stopping
     }
 
     /// Discards everything in flight and returns to idle. Unlike a cleanup
@@ -154,34 +162,28 @@ final class DictationCenter {
         lastRaw = nil
         activeTargetID = nil
         phase = .idle
+        isEngineLoading = false
         engineBecameIdle()
     }
 
     /// The meeting recorder is about to claim the (shared) engine slot.
-    /// Recording → deliver what was said, same as `stop()`, then drop the
-    /// resident engine as soon as transcription completes. Idle with a warm
-    /// engine → drop it immediately. Loading → cancel the dictation outright
-    /// (the stop-during-load rule: almost nothing has been decoded yet), so
-    /// the slot frees without any user stop. Cleaning → the engine plays no
-    /// part in the CLI cleanup — drop it right away while the cleanup runs
-    /// to completion and still delivers its result.
+    /// Recording (even while the engine is still loading), paused, or already
+    /// stopping → finalize: deliver what was said, same as `stop()`, then
+    /// drop the resident engine as soon as transcription completes — speech
+    /// buffered during an engine load is real and gets delivered, never
+    /// cancelled. Idle with a warm engine → drop it immediately. Cleaning →
+    /// the engine plays no part in the CLI cleanup — drop it right away while
+    /// the cleanup runs to completion and still delivers its result.
     func meetingCaptureWillStart() {
         switch phase {
-        case .recording:
+        case .recording, .paused, .stopping:
+            // For `.stopping` (already finalizing) — and `.paused`, until
+            // Task 3 wires pause into stop() — the extra stop() is a
+            // harmless no-op: the flag alone routes the completing run
+            // through the engine drop.
             dropEngineAfterCleanup = true
             stop()
-        case .idle, .failed:
-            dropEngineImmediately()
-        case .loadingEngine:
-            // The cancelled load's late resolution never re-caches
-            // (`resolveTranscriber`'s Task.isCancelled guard). The flag makes
-            // cancel()'s engineBecameIdle DROP a warm engine from the reuse
-            // window instead of arming the TTL timer — either way the slot is
-            // genuinely free (and engineReleased fired) the moment this
-            // returns.
-            dropEngineAfterCleanup = true
-            cancel()
-        case .cleaning:
+        case .idle, .failed, .cleaning:
             dropEngineImmediately()
         }
     }
@@ -192,6 +194,7 @@ final class DictationCenter {
         guard case .failed = phase else { return }
         activeTargetID = nil
         phase = .idle
+        isEngineLoading = false
     }
 
     // MARK: - Dictation flow
@@ -213,22 +216,27 @@ final class DictationCenter {
         }
         guard !Task.isCancelled else { return }
 
+        // Buffering starts BEFORE the engine resolves: every sample from t0
+        // lands in the buffer (and the teed stream), so speech spoken during
+        // a cold engine load is never lost.
+        let buffers = startBuffering(recorder: recorder)
+
         let transcriber: Transcriber
         do {
             transcriber = try await resolveTranscriber(config: config)
         } catch {
             recorder.stop()
+            await buffers.feedTask?.value
             guard !Task.isCancelled else { return }
             finish(failed: "engine failed to load: \(error.localizedDescription)")
             return
         }
         guard !Task.isCancelled else { return }
-
-        phase = .recording
+        isEngineLoading = false
 
         let rawText: String
         do {
-            rawText = try await capture(recorder: recorder, transcriber: transcriber, config: config,
+            rawText = try await capture(transcriber: transcriber, buffers: buffers, config: config,
                                         onLiveText: onLiveText)
         } catch {
             guard !Task.isCancelled else { return }
@@ -252,6 +260,7 @@ final class DictationCenter {
                 return
             }
             phase = .idle
+            isEngineLoading = false
             activeTargetID = nil
             engineBecameIdle()
             onResult(DictationCleanResult(title: nil, text: ""))
@@ -292,6 +301,7 @@ final class DictationCenter {
             let result = try await DictationCleanService(runner: runner).clean(transcript: rawText, mode: mode)
             guard !Task.isCancelled else { return }
             phase = .idle
+            isEngineLoading = false
             activeTargetID = nil
             engineBecameIdle()
             onResult(result)
@@ -302,11 +312,45 @@ final class DictationCenter {
         }
     }
 
-    /// Runs until the mic stream ends (`stop()`/`cancel()`), buffering every
-    /// sample and — when the engine supports it — feeding a live session at
-    /// the same time. `recorder.samples` is single-consumer (`AsyncStream`),
-    /// so this is the one place that reads it: the buffering loop re-yields
-    /// each chunk into a private stream handed to the live session.
+    /// The always-on capture plumbing between the mic and the engine, built
+    /// before the engine resolves. `recorder.samples` is single-consumer
+    /// (`AsyncStream`), so the feed task is the one place that reads it: it
+    /// appends every chunk to `buffer` from t0 and re-yields it into the
+    /// teed stream, so a live session that only starts once the engine has
+    /// loaded still catches up on everything said meanwhile.
+    @MainActor
+    private final class CaptureBuffers {
+        let teedStream: AsyncStream<[Float]>
+        let teedContinuation: AsyncStream<[Float]>.Continuation
+        var buffer: [Float] = []
+        var feedTask: Task<Void, Never>?
+
+        init() {
+            let (stream, continuation) = AsyncStream<[Float]>.makeStream()
+            teedStream = stream
+            teedContinuation = continuation
+        }
+    }
+
+    private func startBuffering(recorder: MicRecording) -> CaptureBuffers {
+        let buffers = CaptureBuffers()
+        buffers.feedTask = Task { @MainActor in
+            for await chunk in recorder.samples {
+                buffers.buffer.append(contentsOf: chunk)
+                buffers.teedContinuation.yield(chunk)
+            }
+            buffers.teedContinuation.finish()
+        }
+        return buffers
+    }
+
+    /// Runs until the mic stream ends (`stop()`/`cancel()`) and produces the
+    /// raw transcript. When the mic is still open and the engine supports it,
+    /// a live session runs over the teed stream — it buffered everything
+    /// since t0, so it catches up on speech spoken during the engine load. A
+    /// mic already stopped (stop during load) or a batch-only provider skips
+    /// the live session; the teed continuation is finished so the unconsumed
+    /// stream stops accumulating chunks, and the buffer alone is decoded.
     ///
     /// The buffer is always populated, live session or not, so a mid-stream
     /// live failure (or a batch-only provider) still has something to fall
@@ -315,59 +359,50 @@ final class DictationCenter {
     /// throws — the caller turns that into a visible failure rather than
     /// letting it masquerade as silence.
     private func capture(
-        recorder: MicRecording,
         transcriber: Transcriber,
+        buffers: CaptureBuffers,
         config: TranscriptionConfig,
         onLiveText: @escaping @MainActor (String) -> Void
     ) async throws -> String {
-        var buffer: [Float] = []
-        let liveSession = transcriber.makeLiveSession(config: config)
-
-        var teedStream: AsyncStream<[Float]>?
-        var teedContinuation: AsyncStream<[Float]>.Continuation?
-        if liveSession != nil {
-            let (stream, continuation) = AsyncStream<[Float]>.makeStream()
-            teedStream = stream
-            teedContinuation = continuation
-        }
-
-        let feedTask = Task { @MainActor in
-            for await chunk in recorder.samples {
-                buffer.append(contentsOf: chunk)
-                teedContinuation?.yield(chunk)
-            }
-            teedContinuation?.finish()
-        }
+        let liveSession = phase == .recording ? transcriber.makeLiveSession(config: config) : nil
 
         var liveOutput: TranscriptionOutput?
-        if let liveSession, let teedStream {
-            liveOutput = try? await liveSession.run(samples: teedStream) { [weak self] chunk in
+        if let liveSession {
+            liveOutput = try? await liveSession.run(samples: buffers.teedStream) { [weak self] chunk in
                 Task { @MainActor in
                     // A phase that has already moved past `.recording` means
-                    // stop/cancel already resolved the dictation — a late
-                    // chunk from the draining tail must not reopen it.
+                    // stop/cancel already resolved the recording span — a
+                    // late chunk from the draining tail must not reopen it.
+                    // (On a stop the final text still arrives through the
+                    // session's return value, so nothing is lost.)
                     guard let self, self.phase == .recording else { return }
                     self.liveText += self.liveText.isEmpty ? chunk.text : " " + chunk.text
                     onLiveText(self.liveText)
                 }
             }
+        } else {
+            // Nothing will ever consume the teed stream — finish it so it
+            // stops accumulating chunks (yields onto a finished continuation
+            // are dropped; the buffer keeps the audio).
+            buffers.teedContinuation.finish()
         }
-        await feedTask.value
+        await buffers.feedTask?.value
 
         if let liveOutput, !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return liveOutput.text
         }
-        guard !buffer.isEmpty else { return "" }
+        guard !buffers.buffer.isEmpty else { return "" }
         // A genuine empty decode (no speech found) still returns "" and
         // takes the ordinary degenerate-stop path in the caller; only a
         // THROWN error propagates, since that means the buffer's contents
         // were never actually transcribed.
-        let output = try await transcriber.transcribe(buffer, config: config) { _, _ in }
+        let output = try await transcriber.transcribe(buffers.buffer, config: config) { _, _ in }
         return output.text
     }
 
     private func finish(failed message: String) {
         phase = .failed(message)
+        isEngineLoading = false
         engineBecameIdle()
     }
 
@@ -377,7 +412,7 @@ final class DictationCenter {
     /// shared physical engine slot. Read by the meeting recorder at record
     /// start to decide whether its live pass must park until `engineReleased`.
     var hasResidentEngine: Bool {
-        warmTranscriber != nil || phase == .loadingEngine
+        warmTranscriber != nil || (phase != .idle && isEngineLoading)
     }
 
     /// The Settings pair the engine choice hangs on. Same keys and fallbacks

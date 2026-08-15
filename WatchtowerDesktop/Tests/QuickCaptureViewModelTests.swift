@@ -230,7 +230,9 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNil(vm.error)
         XCTAssertEqual(vm.liveText, "")
-        XCTAssertEqual(vm.state, .loading, "a fresh start must render the capture, not the previous outcome")
+        // Listening starts synchronously now (the mic is hot while the engine
+        // loads), so a fresh start renders the capture immediately.
+        XCTAssertEqual(vm.state, .recording, "a fresh start must render the capture, not the previous outcome")
 
         vm.cancel()
     }
@@ -263,9 +265,17 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         XCTAssertEqual(state, .recording)
     }
 
-    func testDeriveStateLoadingWhileEngineLoads() {
-        let state = QuickCaptureState.derive(ownsCapture: true, phase: .loadingEngine, lastRaw: nil, result: nil, savedIdeaID: nil)
+    func testDeriveStateLoadingWhileOwningWithPhaseStillIdle() {
+        let state = QuickCaptureState.derive(ownsCapture: true, phase: .idle, lastRaw: nil, result: nil, savedIdeaID: nil)
         XCTAssertEqual(state, .loading)
+    }
+
+    /// `.stopping` (stop pressed, transcription finishing) projects onto the
+    /// same "Cleaning up…" visual for now; Task 7 wires the dedicated
+    /// stopping/paused states.
+    func testDeriveStateCleaningWhilePhaseStopping() {
+        let state = QuickCaptureState.derive(ownsCapture: true, phase: .stopping, lastRaw: nil, result: nil, savedIdeaID: nil)
+        XCTAssertEqual(state, .cleaning)
     }
 
     func testDeriveStateCleaningWhilePhaseCleaning() {

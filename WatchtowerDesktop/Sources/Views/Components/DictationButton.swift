@@ -80,12 +80,11 @@ struct DictationButton: View {
 
     @ViewBuilder
     private func button(_ center: DictationCenter) -> some View {
-        if center.activeTargetID == targetID, case .recording = center.phase {
-            stopButton(center)
-        } else if center.activeTargetID == targetID, center.phase == .loadingEngine {
-            // The spinner doubles as a cancel affordance: before the engine
-            // has loaded there is nothing worth keeping, and center.stop()
-            // during the load cancels the dictation outright.
+        if center.activeTargetID == targetID, case .recording = center.phase, center.isEngineLoading {
+            // The engine is still loading but the mic is already hot and
+            // buffering — pressing the spinner stops and finalizes (speech
+            // spoken during the load is delivered, never discarded). Task 5
+            // replaces this rendering with the capsule + loading badge.
             Button {
                 center.stop()
             } label: {
@@ -93,8 +92,11 @@ struct DictationButton: View {
                     .controlSize(.small)
             }
             .buttonStyle(.plain)
-            .help("Cancel dictation")
-        } else if center.activeTargetID == targetID, center.phase == .cleaning {
+            .help("Stop dictating")
+        } else if center.activeTargetID == targetID, case .recording = center.phase {
+            stopButton(center)
+        } else if center.activeTargetID == targetID,
+                  center.phase == .stopping || center.phase == .cleaning {
             ProgressView()
                 .controlSize(.small)
         } else if center.activeTargetID == targetID, case .failed(let message) = center.phase {

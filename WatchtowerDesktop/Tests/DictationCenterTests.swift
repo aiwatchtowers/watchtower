@@ -81,6 +81,22 @@ private final class GatedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
 @MainActor
 final class DictationCenterTests: MeetingRecorderTestCase {
 
+    /// Like `waitUntil`, but with wall-clock patience: the mid-stream live
+    /// decode of a full window runs on the global executor across several
+    /// actor hops, and 400 bare main-actor yields can burn through before
+    /// the background chain ever gets scheduled.
+    private func waitPatiently(_ what: String, _ condition: @escaping () -> Bool) async {
+        for _ in 0..<400 {
+            if condition() { return }
+            await Task.yield()
+        }
+        for _ in 0..<400 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("timed out waiting for \(what)")
+    }
+
     // MARK: 1. Live happy path
 
     func testLiveHappyPathDeliversLiveTextThenCleanedResult() async throws {
@@ -102,10 +118,16 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        XCTAssertEqual(center.phase, .loadingEngine)
-        await waitUntil("recording") { center.phase == .recording }
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading, "the mic is hot immediately; the engine load is a flag, not a phase")
+        await waitUntil("engine loaded") { !center.isEngineLoading }
 
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        // A full decidable window (windowSec 10 + snap tolerance 2.5), so the
+        // live chunk arrives while still `.recording` — a chunk decoded only
+        // in the post-stop draining tail is deliberately suppressed (the
+        // final text then arrives via the session's return value alone).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
 
         await waitUntil("result delivered") { result != nil }
@@ -138,7 +160,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -168,7 +190,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -212,8 +234,11 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        // A full decidable window, so the live chunk lands pre-stop (the
+        // happy-path test documents why).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
         await waitUntil("result delivered") { result != nil }
 
@@ -241,7 +266,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         center.stop() // no samples emitted at all
 
         await waitUntil("result delivered") { result != nil }
@@ -273,8 +298,11 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onResult: { _ in resultCalls += 1 },
                      onCleanupFailure: { cleanupFailureRaw = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        // A full decidable window, so the live chunk lands pre-stop (the
+        // happy-path test documents why).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !center.liveText.isEmpty }
         center.stop()
 
         await waitUntil("failed") {
@@ -314,7 +342,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onResult: { field = DictationSpan.compose(base: base, dictated: $0.text) },
                      onCleanupFailure: { field = DictationSpan.compose(base: base, dictated: $0) })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -356,7 +384,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
@@ -393,7 +421,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
@@ -433,11 +461,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         )
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        // `phase` flips to `.loadingEngine` synchronously inside `start()`,
-        // before the dictation task is even scheduled — waiting on it would
-        // let cancel()/meetingCaptureWillStart() below race ahead of the
-        // engine factory ever being called at all. Wait for the factory call
-        // itself so the race this test targets is the one actually created.
+        // `phase` flips to `.recording` (with `isEngineLoading`) synchronously
+        // inside `start()`, before the dictation task is even scheduled —
+        // waiting on it would let cancel()/meetingCaptureWillStart() below
+        // race ahead of the engine factory ever being called at all. Wait for
+        // the factory call itself so the race this test targets is the one
+        // actually created.
         await waitUntil("engine load started") { engineLoads >= 1 }
         XCTAssertEqual(engineLoads, 1)
 
@@ -454,7 +483,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         // just-resolved (but cancelled) engine with no release timer armed.
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
@@ -487,7 +516,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
 
         center.meetingCaptureWillStart()
@@ -499,7 +528,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var secondResult: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
-        await waitUntil("recording again") { center.phase == .recording }
+        await waitUntil("engine loaded again") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second result delivered") { secondResult != nil }
@@ -532,7 +561,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
@@ -543,7 +572,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var secondResult: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
-        await waitUntil("recording again") { center.phase == .recording }
+        await waitUntil("engine loaded again") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second result delivered") { secondResult != nil }
@@ -551,11 +580,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(engineLoads, 2, "an idle warm engine must be dropped immediately, not left to the TTL")
     }
 
-    /// Final-review P2 (a): the meeting claiming the slot during the engine
-    /// load must cancel the dictation outright — almost nothing has been
-    /// decoded yet (the stop-during-load rule) — freeing the slot without any
-    /// user stop, and the cancelled load's late resolution must not re-cache.
-    func testMeetingCaptureWillStartDuringEngineLoadCancelsTheDictation() async throws {
+    /// The meeting claiming the slot during the engine load now finalizes
+    /// the dictation instead of cancelling it — speech buffered during a
+    /// load is real and gets delivered — and still frees the slot: the
+    /// engine is dropped (not parked) as soon as transcription completes,
+    /// and `engineReleased` wakes the parked meeting live pass.
+    func testMeetingCaptureWillStartDuringEngineLoadFinalizesAndFreesTheSlot() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
@@ -567,41 +597,46 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             engineFactory: { _ in
                 engineLoads += 1
                 await gate.wait()
-                return TestTranscriber(ScriptedEngine(texts: ["never delivered"]), supportsLive: true)
+                return TestTranscriber(ScriptedEngine(texts: ["spoken during load"]), supportsLive: true)
             },
             runnerResolver: { runner },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
         )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
 
-        var callbackFired = false
+        var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat,
-                     onLiveText: { _ in callbackFired = true },
-                     onResult: { _ in callbackFired = true })
+                     onLiveText: { _ in },
+                     onResult: { result = $0 })
         await waitUntil("engine load started") { engineLoads >= 1 }
-        XCTAssertEqual(center.phase, .loadingEngine)
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
         XCTAssertTrue(center.hasResidentEngine, "an in-flight load counts as holding the slot")
 
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.meetingCaptureWillStart()
 
-        XCTAssertEqual(center.phase, .idle, "the meeting-wins rule: a loading dictation is cancelled outright")
-        XCTAssertNil(center.activeTargetID)
+        XCTAssertEqual(center.phase, .stopping, "the meeting handshake finalizes, it no longer cancels")
         XCTAssertEqual(recorder.stopCalls, 1, "the mic must be turned off")
-        XCTAssertFalse(center.hasResidentEngine, "the slot must be free without any user stop")
 
-        gate.release() // the stale, already-cancelled load resolves now
-        for _ in 0..<5 { await Task.yield() }
+        gate.release() // the engine resolves now; the buffer is batch-decoded
+        await waitUntil("result delivered") { result != nil }
 
-        XCTAssertFalse(center.hasResidentEngine, "the cancelled load must never re-cache a resident engine")
-        XCTAssertFalse(callbackFired)
-        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "speech spoken during the load must be delivered, not discarded")
+        XCTAssertFalse(center.hasResidentEngine, "the engine must be dropped, not parked, once transcription completes")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
+        XCTAssertEqual(center.phase, .idle)
     }
 
-    /// Judge-verify residual: the loading-branch cancel must DROP a warm
-    /// engine from the reuse window, not leave it to the 15-min TTL — cancel
-    /// routes through engineBecameIdle, which without the drop flag arms the
-    /// timer, keeps hasResidentEngine true and parks the meeting live pass
-    /// with nothing left to ever fire engineReleased.
+    /// Judge-verify residual, reshaped for the finalize semantics: the
+    /// meeting claiming the slot while a dictation is (re)starting inside
+    /// the warm-engine reuse window must DROP the warm engine as the
+    /// finalizing run completes, not leave it to the 15-min TTL — otherwise
+    /// hasResidentEngine stays true and the meeting live pass parks with
+    /// nothing left to ever fire engineReleased.
     func testMeetingCaptureWillStartDuringLoadWithWarmEngineDropsItImmediately() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
@@ -628,26 +663,33 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         // First dictation completes and leaves the engine warm.
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
         XCTAssertTrue(center.hasResidentEngine)
 
-        // Second dictation is synchronously in .loadingEngine right after
-        // start() — the reuse window, warm engine still resident.
-        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        XCTAssertEqual(center.phase, .loadingEngine)
+        // Second dictation is synchronously recording (engine still resolving
+        // out of the warm slot) right after start() — the reuse window, warm
+        // engine still resident.
+        var secondResult: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
 
         center.meetingCaptureWillStart()
 
+        // The handshake finalizes: nothing was said yet, so the run resolves
+        // with an empty result — and drops the warm engine on its way out.
+        await waitUntil("second (empty) result delivered") { secondResult != nil }
+
         XCTAssertFalse(center.hasResidentEngine,
-                       "the warm engine must be dropped by the cancel, not left to the 15-min TTL")
-        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken immediately")
+                       "the warm engine must be dropped by the finalize, not left to the 15-min TTL")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
         XCTAssertEqual(center.phase, .idle)
 
         for _ in 0..<5 { await Task.yield() }
-        XCTAssertEqual(engineLoads, 1, "the cancelled second dictation must never have loaded a new engine")
+        XCTAssertEqual(engineLoads, 1, "the finalizing second dictation must reuse the warm engine, never load a new one")
         XCTAssertFalse(center.hasResidentEngine)
     }
 
@@ -673,7 +715,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("cleaning") { center.phase == .cleaning }
@@ -735,7 +777,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var firstResult: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { firstResult = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
 
         var secondCallbackFired = false
         center.start(targetID: "t2", mode: .chat,
@@ -769,7 +811,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
 
         center.stop()
@@ -805,7 +847,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         )
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         let firstRecorder = try XCTUnwrap(lastRecorder)
 
         // The onDisappear closure's exact logic: cancel only when owning.
@@ -817,7 +859,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("second target recording") { center.phase == .recording }
+        await waitUntil("second target engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second target result") { result != nil }
@@ -859,7 +901,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("second target recording") { center.phase == .recording }
+        await waitUntil("second target engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second target result") { result != nil }
@@ -890,7 +932,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         center.stop() // no samples ever arrived — but an error was latched
 
         await waitUntil("failed") {
@@ -934,11 +976,57 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
-    // MARK: 12. Stop during engine load (m2, final review)
+    // MARK: 12. Stop / cancel during engine load
 
-    /// A stop while the engine is still loading is the user walking away —
-    /// it must cancel (mic off, no callbacks, idle), not be swallowed.
-    func testStopDuringEngineLoadCancelsTheDictation() async throws {
+    /// A stop while the engine is still loading finalizes: the mic was hot
+    /// and buffering the whole time, so the speech is batch-decoded once the
+    /// engine resolves, cleaned, and delivered — never thrown away. Cancel
+    /// (below) is the only discard path.
+    func testStopDuringEngineLoadFinalizesAndDeliversText() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["spoken during load"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in },
+                     onResult: { result = $0 })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop() // during the load — must finalize, not cancel
+
+        XCTAssertEqual(center.phase, .stopping, "stop during the load waits for the engine, it no longer cancels")
+
+        gate.release() // the engine resolves now; the buffer is batch-decoded
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    /// Cancel is the only discard path — during the engine load it must
+    /// still discard everything: mic off, idle, no callbacks, no decode of
+    /// the buffered speech, no cleanup call (the old stop-during-load
+    /// coverage under its true name).
+    func testCancelDuringEngineLoadDiscardsEverything() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
@@ -962,9 +1050,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { _ in callbackFired = true },
                      onResult: { _ in callbackFired = true })
         await waitUntil("engine load started") { engineLoads >= 1 }
-        XCTAssertEqual(center.phase, .loadingEngine)
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
 
-        center.stop() // during the load — must behave as cancel()
+        center.cancel()
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.activeTargetID)
@@ -1005,7 +1093,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
