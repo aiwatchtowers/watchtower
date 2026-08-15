@@ -649,20 +649,29 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 // item instead when one already covers the same thread. Non-threaded
 // messages (ThreadTS="") are grouped by channel using key (channelID, "").
 //
-// This is the shared creation path behind detectSlackTriggers (all four
-// per-cycle trigger types) and BackfillMentions (mentions only, against an
-// explicit --since timestamp instead of the watermark, see backfill.go) —
-// kept as one path deliberately so grouping, closing-signal filtering, and
-// item creation cannot drift between the two callers. Known pre-existing
-// limitation both callers inherit unchanged: the closing-signal check below
-// runs only against a group's latest message, so an acknowledgment reply
-// suppresses the whole group, including a substantive message it followed
-// (see TestPipeline_ClosingSignalSkipped).
+// This is detectSlackTriggers' own creation path for its per-cycle window
+// (minutes, not weeks). BackfillMentions deliberately does NOT call this —
+// see backfill.go's backfillAccountMentions — because grouping to one item
+// per thread and folding into whatever pending item already sits on a
+// thread are both live-cycle assumptions (the existing item is always about
+// the same conversation) that stop holding over a multi-week historical
+// window, where a shared thread can just as easily belong to an unrelated,
+// currently-live conversation; the backfill runs its own create-only loop
+// instead. Known pre-existing limitation only detectSlackTriggers still
+// carries: the closing-signal check below runs only against a group's
+// latest message, so an acknowledgment reply suppresses the whole group,
+// including a substantive message it followed (see
+// TestPipeline_ClosingSignalSkipped).
 //
 // currentUserID is used only for the closing-signal reply check
-// (CheckUserRepliedBefore). When dryRun is true every read still runs, so
-// the returned count matches exactly what a real run would create, but both
-// writes that mutate inbox_items (the existing-thread fold, and
+// (CheckUserRepliedBefore). dryRun has no live caller today — detectSlackTriggers,
+// the only remaining call site, always passes false — but is left in place
+// rather than stripped: removing a parameter that exists solely for a
+// caller this branch deleted would mean touching this detector path for
+// that reason alone, and this is not the moment to churn the live detector
+// right before a production run. When dryRun is true every read still runs,
+// so the returned count matches exactly what a real run would create, but
+// both writes that mutate inbox_items (the existing-thread fold, and
 // CreateInboxItem for a new item) are skipped.
 func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
 	type threadKey struct{ channelID, threadTS string }
