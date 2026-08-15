@@ -433,13 +433,30 @@ func TestIsClosingSignal(t *testing.T) {
 	}
 }
 
+// TestPipeline_ClosingSignalSkipped guards the closing-signal pre-filter: a
+// "thanks"-only reply after the user already answered must not spawn its own
+// inbox item.
+//
+// KNOWN LIMITATION (confirmed pre-existing and unrelated to account-scoping —
+// present identically at this branch's fork point, commit 2e6df15b, before
+// any change in this branch): detectSlackTriggers groups Slack candidates by
+// (channel, thread) and runs the closing-signal check only against the
+// group's LATEST message by timestamp. Because "Спасибо!" lands in the SAME
+// thread as the original mention and is chronologically last, the whole
+// group — including the substantive original mention — is suppressed, not
+// just the closing signal. So today NO item is created here at all, rather
+// than the mention being created and then auto-resolved (the simpler
+// no-closing-signal case TestInbox02_AutoResolveSlackOnUserReply pins).
+// Whether "silently drop" or "create then auto-resolve" is the right product
+// behavior is an open question flagged for the owner — this test pins only
+// the CURRENT behavior and must not be read as endorsing it as correct.
 func TestPipeline_ClosingSignalSkipped(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 
 	seedWorkspaceAndUser(t, database, "U_ME")
 
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
 
 	// User replied first, then other person says "спасибо".
@@ -447,26 +464,24 @@ func TestPipeline_ClosingSignalSkipped(t *testing.T) {
 	ts2 := recentTS(20)
 	ts3 := recentTS(10) // "спасибо"
 
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', ?, 'U_OTHER', 'Hey <@U_ME> can you check?', ?)`, ts1, ts1)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> can you check?', ?)`, ts1, ts1)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', ?, 'U_ME', 'Done!', ?)`, ts2, ts1)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', ?, 'U_ME', 'Done!', ?)`, ts2, ts1)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', ?, 'U_OTHER', 'Спасибо!', ?)`, ts3, ts1)
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', ?, 'U_OTHER', 'Спасибо!', ?)`, ts3, ts1)
 	require.NoError(t, err)
 
 	p := New(database, cfg, nil, log.Default())
-	_, _, err = p.Run(context.Background())
+	created, _, err := p.Run(context.Background())
 	require.NoError(t, err)
 
-	// The "спасибо" should be skipped (closing signal + user replied before).
-	// The original mention should be auto-resolved (user replied after).
+	// See the KNOWN LIMITATION note above: the closing signal's thread-merge
+	// suppresses the whole group, not just the closing signal itself.
+	assert.Equal(t, 0, created, "current behavior: the thread-merge with the closing signal suppresses the whole group")
+
 	items, err := database.GetInboxItems(db.InboxFilter{IncludeResolved: true})
 	require.NoError(t, err)
-
-	// Only the original mention should have been created, not the "спасибо".
-	for _, item := range items {
-		assert.NotContains(t, item.Snippet, "Спасибо", "closing signal should not create an inbox item")
-	}
+	assert.Empty(t, items, "no item — including one carrying the closing signal's text — should exist")
 }
 
 func TestPipeline_ClosingSignalNoUserReply(t *testing.T) {
