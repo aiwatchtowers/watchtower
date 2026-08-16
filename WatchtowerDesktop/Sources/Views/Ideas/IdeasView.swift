@@ -39,7 +39,9 @@ struct IdeasView: View {
         }
         .navigationTitle("Ideas")
         .sheet(isPresented: $showCreateSheet) {
-            IdeaCreateSheet(vm: vm)
+            // Seeded from the visible segment: creating from the Notes segment
+            // and landing on "Idea" would file the new row out of sight.
+            IdeaCreateSheet(vm: vm, initialKind: Idea.Kind(rawValue: vm.kindMode))
         }
         .sheet(isPresented: $showBackfillSheet) {
             IdeaBackfillSheet(vm: vm)
@@ -100,6 +102,14 @@ struct IdeasView: View {
             // background layered under it — on an empty segment the whole
             // panel reads as a wallpaper-tinted hole (BoardsView precedent).
             .scrollContentBackground(.hidden)
+            // Hiding that backdrop also leaves the row-selection fill blending
+            // against the wallpaper instead of the list material, which tints
+            // the highlight (owner: "unique" brown/yellow selection). Painting
+            // an opaque surface under the rows restores the standard grey.
+            // windowBackgroundColor, not controlBackgroundColor: filterBar
+            // above has no background of its own, so the panel stays one
+            // continuous surface.
+            .background(Color(nsColor: .windowBackgroundColor))
             .overlay {
                 if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
                     Text(emptySegmentMessage)
@@ -111,7 +121,7 @@ struct IdeasView: View {
     }
 
     private var filterBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Ideas")
                     .font(.title2)
@@ -136,35 +146,48 @@ struct IdeasView: View {
                 .help("Create an idea or note")
             }
 
-            Picker("Kind", selection: $vm.kindMode) {
-                Text(segmentLabel("Ideas", kind: "idea")).tag("idea")
-                Text(segmentLabel("Notes", kind: "note")).tag("note")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            HStack(spacing: 8) {
+                Picker("Kind", selection: $vm.kindMode) {
+                    Text(segmentLabel("Ideas", kind: "idea")).tag("idea")
+                    Text(segmentLabel("Notes", kind: "note")).tag("note")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-            Picker("Status", selection: $vm.statusFilter) {
-                Text("All statuses").tag(String?.none)
-                Text("Proposed").tag(String?.some("proposed"))
-                Text("Active").tag(String?.some("active"))
-                Text("Not now").tag(String?.some("not_now"))
-                Text("Converted").tag(String?.some("converted"))
-                Text("Dropped").tag(String?.some("dropped"))
-                Text("Rejected").tag(String?.some("rejected"))
-                Text("Merged").tag(String?.some("merged"))
+                Picker("Status", selection: $vm.statusFilter) {
+                    Text("All statuses").tag(String?.none)
+                    Text("Proposed").tag(String?.some("proposed"))
+                    Text("Active").tag(String?.some("active"))
+                    Text("Not now").tag(String?.some("not_now"))
+                    Text("Converted").tag(String?.some("converted"))
+                    Text("Dropped").tag(String?.some("dropped"))
+                    Text("Rejected").tag(String?.some("rejected"))
+                    Text("Merged").tag(String?.some("merged"))
+                }
+                .labelsHidden()
+                // Sized to its own content so the segments keep the rest of
+                // the row; without it the two pickers split the width evenly
+                // and "Ideas (3)" truncates on a narrow panel.
+                .fixedSize()
+                .help("Filter by status")
             }
-            .labelsHidden()
+            .controlSize(.small)
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField("Search ideas…", text: $vm.searchText)
                     .textFieldStyle(.plain)
+                    .font(.callout)
             }
-            .padding(6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
         .onChange(of: vm.kindMode) { vm.load() }
         .onChange(of: vm.statusFilter) { vm.load() }
         // Search runs a triple-LIKE query across ideas AND their mentions;
