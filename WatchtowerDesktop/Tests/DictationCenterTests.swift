@@ -1106,6 +1106,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                 return FakeDictationSession(updates: ["hi"], finalText: "hi there")
             },
             appleSupported: { true },
+            appleRuntimeSupportsLanguage: { _ in true },
             runnerResolver: { runner },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
@@ -1145,6 +1146,59 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(engineLoads, 1, "the apple lane must never load a whisper engine")
         XCTAssertFalse(center.hasResidentEngine)
         XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// The 2026-08-16 live-repro: `dictation.model` resolves to the apple
+    /// lane, but this machine's `SpeechTranscriber` runtime ships no model
+    /// for the dictation language (the catalog said ru is fine; the runtime
+    /// disagreed and BOTH the streaming session and the batch fallback died
+    /// with no text). The run must degrade to the whisper lane and deliver.
+    func testAppleLaneDegradesToWhisperWhenRuntimeLacksTheLanguage() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("apple", forKey: "dictation.model")
+        defaults.set("ru", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var checkedLocales: [Locale] = []
+        var sessionChoices: [DictationEngineChoice] = []
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { config in
+                XCTAssertEqual(config.model, "small", "the degrade must load the fallback whisper model")
+                return TestTranscriber(ScriptedEngine(texts: ["сказал что-то"]), supportsLive: true)
+            },
+            sessionFactory: { choice, transcriber, config in
+                sessionChoices.append(choice)
+                if case .whisper = choice, let transcriber {
+                    return WhisperDictationSession(transcriber: transcriber, config: config)
+                }
+                return FakeDictationSession(updates: ["never"], finalText: "never")
+            },
+            appleSupported: { true },
+            appleRuntimeSupportsLanguage: { locale in
+                checkedLocales.append(locale)
+                return false
+            },
+            runnerResolver: { runner },
+            defaults: defaults
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording") { center.phase == .recording && !center.isEngineLoading }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(checkedLocales.map(\.identifier), ["ru-RU"],
+                       "the gate checks the app's resolved dictation locale")
+        XCTAssertEqual(sessionChoices, [.whisper(model: "small")],
+                       "an unsupported runtime language never builds the apple session")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
     }
 
     // MARK: 14. Pause / resume, elapsed time, mic level
@@ -1903,6 +1957,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
+            appleRuntimeSupportsLanguage: { _ in true },
             runnerResolver: { runner },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
@@ -1948,6 +2003,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
+            appleRuntimeSupportsLanguage: { _ in true },
             runnerResolver: { runner },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
@@ -1993,6 +2049,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
+            appleRuntimeSupportsLanguage: { _ in true },
             appleBatchFallback: { samples, _ in
                 decodedBuffers.append(samples)
                 return "buffer decoded"

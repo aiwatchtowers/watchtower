@@ -67,6 +67,12 @@ final class DictationCenter {
     /// consulted by `DictationEngineChoice.current` once per run.
     /// Parameterized so tests pin either lane regardless of host OS.
     private let appleSupported: () -> Bool
+    /// Async runtime half of the apple-lane gate (`SpeechTranscriber
+    /// .supportedLocales` is async): consulted by `runDictation` before the
+    /// session handoff, so an apple choice whose dictation language this
+    /// machine's runtime doesn't ship degrades to the whisper lane instead of
+    /// dying in the analyzer with no text.
+    private let appleRuntimeSupportsLanguage: (Locale) async -> Bool
     /// Batch decode of the t0 buffer for the APPLE lane's fallback (session
     /// threw, or returned empty): a fresh batch run over the buffered audio.
     /// Injectable for tests; the default is the existing `AppleTranscriber`.
@@ -118,6 +124,8 @@ final class DictationCenter {
          sessionFactory: @escaping (DictationEngineChoice, Transcriber?, TranscriptionConfig) -> DictationTranscribing
              = DictationCenter.defaultSessionFactory,
          appleSupported: @escaping () -> Bool = { AppleDictationSession.isSupported },
+         appleRuntimeSupportsLanguage: @escaping (Locale) async -> Bool
+             = { await AppleDictationSession.runtimeSupportsLanguage(of: $0) },
          appleBatchFallback: @escaping ([Float], TranscriptionConfig) async throws -> String
              = { samples, config in
                  try await AppleTranscriber().transcribe(samples, config: config) { _, _ in }.text
@@ -132,6 +140,7 @@ final class DictationCenter {
         self.engineFactory = engineFactory
         self.sessionFactory = sessionFactory
         self.appleSupported = appleSupported
+        self.appleRuntimeSupportsLanguage = appleRuntimeSupportsLanguage
         self.appleBatchFallback = appleBatchFallback
         self.runnerResolver = runnerResolver
         self.defaults = defaults
@@ -386,6 +395,28 @@ final class DictationCenter {
         // lands in the buffer (and the teed stream), so speech spoken during
         // a cold engine load is never lost.
         let buffers = startBuffering(recorder: recorder)
+
+        // Apple-lane runtime gate: the catalog says which languages Apple
+        // ships SpeechTranscriber models for at all, but the actual set on
+        // this machine/OS build is narrower (live-repro 2026-08-16: ru-RU
+        // passes the catalog yet is unsupported at runtime, and BOTH the
+        // streaming session and the batch fallback die with no text). The
+        // check is cheap and the buffer is already running, so nothing said
+        // so far is lost; unsupported → the whisper lane, the same
+        // degrade-to-a-working-engine shape as `DictationEngineChoice
+        // .resolve`.
+        var config = config
+        if case .apple = runChoice {
+            let locale = AppleLocaleCatalog.resolveDictationLocale(
+                forced: config.forcedLanguage, langset: config.langset)
+            if await !appleRuntimeSupportsLanguage(locale) {
+                NSLog("[Dictation] Apple lane has no runtime model for %@ — using Whisper small",
+                      locale.identifier)
+                runChoice = .whisper(model: "small")
+                config.model = "small"
+            }
+        }
+        guard !Task.isCancelled else { return }
 
         // Only whisper lanes resolve a Transcriber (engine factory + warm
         // slot); the apple lane loads nothing — its session IS the engine.
