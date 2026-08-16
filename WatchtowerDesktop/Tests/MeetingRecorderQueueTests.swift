@@ -1399,6 +1399,9 @@ private final class OneShotGate: @unchecked Sendable {
 /// a job is already waiting for the engine.
 private final class GatedFailingRecorder: AudioRecording, @unchecked Sendable {
     let liveSamples: AsyncStream<[Float]>
+    /// Levels are irrelevant here; an immediately-finished stream satisfies
+    /// the protocol without feeding the Center anything.
+    var liveLevels: AsyncStream<CaptureLevels> { AsyncStream { $0.finish() } }
 
     private let gate: OneShotGate
 

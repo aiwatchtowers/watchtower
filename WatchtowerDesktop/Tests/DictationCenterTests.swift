@@ -27,59 +27,28 @@ private final class ThrowingEngine: WhisperWindowEngine, @unchecked Sendable {
     }
 }
 
-/// Suspends `wait()` callers until `release()` is called, then lets every
-/// subsequent `wait()` (including ones that arrive after release) return
-/// immediately — lets a test control exactly when an async fake (here,
-/// `engineFactory`) resolves relative to other actions it wants to
-/// interleave first (e.g. `cancel()`, `meetingCaptureWillStart()`).
-private final class AsyncGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var released = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            if released {
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-                lock.unlock()
-            }
-        }
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        let toResume = waiters
-        waiters = []
-        lock.unlock()
-        toResume.forEach { $0.resume() }
-    }
-}
-
-/// A `CLIRunnerProtocol` that suspends `run` on an `AsyncGate` before
-/// returning its canned stdout — lets a test hold a dictation in `.cleaning`
-/// while it interleaves other actions (the P2 handoff tests).
-private final class GatedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
-    private let gate: AsyncGate
-    private let stdoutData: Data
-
-    init(gate: AsyncGate, stdout: Data) {
-        self.gate = gate
-        self.stdoutData = stdout
-    }
-
-    func run(args: [String]) async throws -> Data {
-        await gate.wait()
-        return stdoutData
-    }
-}
+// `AsyncGate` and `GatedCLIRunner` live in
+// `Tests/Helpers/DictationTestSupport.swift` — `DictationButtonViewTests`
+// drives the same gated-center states.
 
 @MainActor
 final class DictationCenterTests: MeetingRecorderTestCase {
+
+    /// Like `waitUntil`, but with wall-clock patience: the mid-stream live
+    /// decode of a full window runs on the global executor across several
+    /// actor hops, and 400 bare main-actor yields can burn through before
+    /// the background chain ever gets scheduled.
+    private func waitPatiently(_ what: String, _ condition: @escaping () -> Bool) async {
+        for _ in 0..<400 {
+            if condition() { return }
+            await Task.yield()
+        }
+        for _ in 0..<400 {
+            if condition() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("timed out waiting for \(what)")
+    }
 
     // MARK: 1. Live happy path
 
@@ -102,10 +71,16 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        XCTAssertEqual(center.phase, .loadingEngine)
-        await waitUntil("recording") { center.phase == .recording }
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading, "the mic is hot immediately; the engine load is a flag, not a phase")
+        await waitUntil("engine loaded") { !center.isEngineLoading }
 
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        // A full decidable window (windowSec 10 + snap tolerance 2.5), so the
+        // live chunk arrives while still `.recording` — a chunk decoded only
+        // in the post-stop draining tail is deliberately suppressed (the
+        // final text then arrives via the session's return value alone).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
 
         await waitUntil("result delivered") { result != nil }
@@ -138,7 +113,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -168,7 +143,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -212,8 +187,11 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        // A full decidable window, so the live chunk lands pre-stop (the
+        // happy-path test documents why).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
         await waitUntil("result delivered") { result != nil }
 
@@ -241,7 +219,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         center.stop() // no samples emitted at all
 
         await waitUntil("result delivered") { result != nil }
@@ -273,8 +251,11 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onResult: { _ in resultCalls += 1 },
                      onCleanupFailure: { cleanupFailureRaw = $0 })
 
-        await waitUntil("recording") { center.phase == .recording }
-        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        // A full decidable window, so the live chunk lands pre-stop (the
+        // happy-path test documents why).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !center.liveText.isEmpty }
         center.stop()
 
         await waitUntil("failed") {
@@ -314,7 +295,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onResult: { field = DictationSpan.compose(base: base, dictated: $0.text) },
                      onCleanupFailure: { field = DictationSpan.compose(base: base, dictated: $0) })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
 
@@ -356,7 +337,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
@@ -393,7 +374,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
@@ -443,11 +424,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         )
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        // `phase` flips to `.loadingEngine` synchronously inside `start()`,
-        // before the dictation task is even scheduled — waiting on it would
-        // let cancel()/meetingCaptureWillStart() below race ahead of the
-        // engine factory ever being called at all. Wait for the factory call
-        // itself so the race this test targets is the one actually created.
+        // `phase` flips to `.recording` (with `isEngineLoading`) synchronously
+        // inside `start()`, before the dictation task is even scheduled —
+        // waiting on it would let cancel()/meetingCaptureWillStart() below
+        // race ahead of the engine factory ever being called at all. Wait for
+        // the factory call itself so the race this test targets is the one
+        // actually created.
         await waitUntil("engine load started") { engineLoads >= 1 }
         XCTAssertEqual(engineLoads, 1)
 
@@ -464,7 +446,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         // just-resolved (but cancelled) engine with no release timer armed.
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         currentRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
@@ -497,7 +479,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
 
         center.meetingCaptureWillStart()
@@ -509,7 +491,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var secondResult: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
-        await waitUntil("recording again") { center.phase == .recording }
+        await waitUntil("engine loaded again") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second result delivered") { secondResult != nil }
@@ -542,7 +524,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
@@ -553,7 +535,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var secondResult: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
-        await waitUntil("recording again") { center.phase == .recording }
+        await waitUntil("engine loaded again") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second result delivered") { secondResult != nil }
@@ -561,11 +543,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(engineLoads, 2, "an idle warm engine must be dropped immediately, not left to the TTL")
     }
 
-    /// Final-review P2 (a): the meeting claiming the slot during the engine
-    /// load must cancel the dictation outright — almost nothing has been
-    /// decoded yet (the stop-during-load rule) — freeing the slot without any
-    /// user stop, and the cancelled load's late resolution must not re-cache.
-    func testMeetingCaptureWillStartDuringEngineLoadCancelsTheDictation() async throws {
+    /// The meeting claiming the slot during the engine load now finalizes
+    /// the dictation instead of cancelling it — speech buffered during a
+    /// load is real and gets delivered — and still frees the slot: the
+    /// engine is dropped (not parked) as soon as transcription completes,
+    /// and `engineReleased` wakes the parked meeting live pass.
+    func testMeetingCaptureWillStartDuringEngineLoadFinalizesAndFreesTheSlot() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
@@ -577,41 +560,46 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             engineFactory: { _ in
                 engineLoads += 1
                 await gate.wait()
-                return TestTranscriber(ScriptedEngine(texts: ["never delivered"]), supportsLive: true)
+                return TestTranscriber(ScriptedEngine(texts: ["spoken during load"]), supportsLive: true)
             },
             runnerResolver: { runner },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
         )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
 
-        var callbackFired = false
+        var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat,
-                     onLiveText: { _ in callbackFired = true },
-                     onResult: { _ in callbackFired = true })
+                     onLiveText: { _ in },
+                     onResult: { result = $0 })
         await waitUntil("engine load started") { engineLoads >= 1 }
-        XCTAssertEqual(center.phase, .loadingEngine)
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
         XCTAssertTrue(center.hasResidentEngine, "an in-flight load counts as holding the slot")
 
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.meetingCaptureWillStart()
 
-        XCTAssertEqual(center.phase, .idle, "the meeting-wins rule: a loading dictation is cancelled outright")
-        XCTAssertNil(center.activeTargetID)
+        XCTAssertEqual(center.phase, .stopping, "the meeting handshake finalizes, it no longer cancels")
         XCTAssertEqual(recorder.stopCalls, 1, "the mic must be turned off")
-        XCTAssertFalse(center.hasResidentEngine, "the slot must be free without any user stop")
 
-        gate.release() // the stale, already-cancelled load resolves now
-        for _ in 0..<5 { await Task.yield() }
+        gate.release() // the engine resolves now; the buffer is batch-decoded
+        await waitUntil("result delivered") { result != nil }
 
-        XCTAssertFalse(center.hasResidentEngine, "the cancelled load must never re-cache a resident engine")
-        XCTAssertFalse(callbackFired)
-        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "speech spoken during the load must be delivered, not discarded")
+        XCTAssertFalse(center.hasResidentEngine, "the engine must be dropped, not parked, once transcription completes")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
+        XCTAssertEqual(center.phase, .idle)
     }
 
-    /// Judge-verify residual: the loading-branch cancel must DROP a warm
-    /// engine from the reuse window, not leave it to the 15-min TTL — cancel
-    /// routes through engineBecameIdle, which without the drop flag arms the
-    /// timer, keeps hasResidentEngine true and parks the meeting live pass
-    /// with nothing left to ever fire engineReleased.
+    /// Judge-verify residual, reshaped for the finalize semantics: the
+    /// meeting claiming the slot while a dictation is (re)starting inside
+    /// the warm-engine reuse window must DROP the warm engine as the
+    /// finalizing run completes, not leave it to the 15-min TTL — otherwise
+    /// hasResidentEngine stays true and the meeting live pass parks with
+    /// nothing left to ever fire engineReleased.
     func testMeetingCaptureWillStartDuringLoadWithWarmEngineDropsItImmediately() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
@@ -638,26 +626,33 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         // First dictation completes and leaves the engine warm.
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("result delivered") { result != nil }
         XCTAssertTrue(center.hasResidentEngine)
 
-        // Second dictation is synchronously in .loadingEngine right after
-        // start() — the reuse window, warm engine still resident.
-        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        XCTAssertEqual(center.phase, .loadingEngine)
+        // Second dictation is synchronously recording (engine still resolving
+        // out of the warm slot) right after start() — the reuse window, warm
+        // engine still resident.
+        var secondResult: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { secondResult = $0 })
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
 
         center.meetingCaptureWillStart()
 
+        // The handshake finalizes: nothing was said yet, so the run resolves
+        // with an empty result — and drops the warm engine on its way out.
+        await waitUntil("second (empty) result delivered") { secondResult != nil }
+
         XCTAssertFalse(center.hasResidentEngine,
-                       "the warm engine must be dropped by the cancel, not left to the 15-min TTL")
-        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken immediately")
+                       "the warm engine must be dropped by the finalize, not left to the 15-min TTL")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
         XCTAssertEqual(center.phase, .idle)
 
         for _ in 0..<5 { await Task.yield() }
-        XCTAssertEqual(engineLoads, 1, "the cancelled second dictation must never have loaded a new engine")
+        XCTAssertEqual(engineLoads, 1, "the finalizing second dictation must reuse the warm engine, never load a new one")
         XCTAssertFalse(center.hasResidentEngine)
     }
 
@@ -683,7 +678,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("cleaning") { center.phase == .cleaning }
@@ -745,7 +740,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var firstResult: DictationCleanResult?
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { firstResult = $0 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
 
         var secondCallbackFired = false
         center.start(targetID: "t2", mode: .chat,
@@ -779,7 +774,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
 
         center.stop()
@@ -815,7 +810,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         )
 
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         let firstRecorder = try XCTUnwrap(lastRecorder)
 
         // The onDisappear closure's exact logic: cancel only when owning.
@@ -827,7 +822,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("second target recording") { center.phase == .recording }
+        await waitUntil("second target engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second target result") { result != nil }
@@ -869,7 +864,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
         var result: DictationCleanResult?
         center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-        await waitUntil("second target recording") { center.phase == .recording }
+        await waitUntil("second target engine loaded") { center.phase == .recording && !center.isEngineLoading }
         lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
         await waitUntil("second target result") { result != nil }
@@ -900,7 +895,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var resultCalls = 0
         center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
 
-        await waitUntil("recording") { center.phase == .recording }
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         center.stop() // no samples ever arrived — but an error was latched
 
         await waitUntil("failed") {
@@ -944,11 +939,57 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
-    // MARK: 12. Stop during engine load (m2, final review)
+    // MARK: 12. Stop / cancel during engine load
 
-    /// A stop while the engine is still loading is the user walking away —
-    /// it must cancel (mic off, no callbacks, idle), not be swallowed.
-    func testStopDuringEngineLoadCancelsTheDictation() async throws {
+    /// A stop while the engine is still loading finalizes: the mic was hot
+    /// and buffering the whole time, so the speech is batch-decoded once the
+    /// engine resolves, cleaned, and delivered — never thrown away. Cancel
+    /// (below) is the only discard path.
+    func testStopDuringEngineLoadFinalizesAndDeliversText() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["spoken during load"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { _ in },
+                     onResult: { result = $0 })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertTrue(center.isEngineLoading)
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop() // during the load — must finalize, not cancel
+
+        XCTAssertEqual(center.phase, .stopping, "stop during the load waits for the engine, it no longer cancels")
+
+        gate.release() // the engine resolves now; the buffer is batch-decoded
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    /// Cancel is the only discard path — during the engine load it must
+    /// still discard everything: mic off, idle, no callbacks, no decode of
+    /// the buffered speech, no cleanup call (the old stop-during-load
+    /// coverage under its true name).
+    func testCancelDuringEngineLoadDiscardsEverything() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
@@ -972,9 +1013,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                      onLiveText: { _ in callbackFired = true },
                      onResult: { _ in callbackFired = true })
         await waitUntil("engine load started") { engineLoads >= 1 }
-        XCTAssertEqual(center.phase, .loadingEngine)
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
 
-        center.stop() // during the load — must behave as cancel()
+        center.cancel()
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.activeTargetID)
@@ -1015,7 +1056,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         func runOneDictation() async {
             var result: DictationCleanResult?
             center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
-            await waitUntil("recording") { center.phase == .recording }
+            await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
             lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
             center.stop()
             await waitUntil("result delivered") { result != nil }
@@ -1027,5 +1068,660 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         defaults.set("model-b", forKey: "transcription.model")
         await runOneDictation()
         XCTAssertEqual(engineLoads, 2, "a Settings change must drop the warm engine and reload")
+    }
+
+    // MARK: 14. Pause / resume, elapsed time, mic level
+
+    /// Pause gates samples out of the session (the mic stays hot, the
+    /// recorder simply drops chunks); resume continues the SAME session — one
+    /// stop at the end delivers everything said across the pause.
+    func testPauseGatesSamplesAndResumeContinuesSameSession() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["part one part two"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        // The feed loop consumes chunks asynchronously — wait for this one to
+        // land so pause()'s micLevel reset can't be overwritten by it.
+        await waitUntil("chunk fed") { center.micLevel > 0 }
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+        XCTAssertEqual(recorder.pausedStates, [true])
+        XCTAssertEqual(center.micLevel, 0, "pause must zero the level meter")
+
+        recorder.emit([Float](repeating: 0.9, count: 1_600)) // dropped by the fake's gate
+
+        center.resume()
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertEqual(recorder.pausedStates, [true, false])
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// Stop from `.paused` finalizes exactly like from `.recording` — pause
+    /// never becomes a trap the user can only cancel out of.
+    func testStopFromPausedFinalizes() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+        center.stop()
+
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    /// Paused time never ticks: pause folds the open span into
+    /// `elapsedAccumulated` and nils `spanStartedAt`, so `elapsed(now:)` is
+    /// frozen no matter how far the (monotonic) clock advances.
+    func testElapsedDoesNotTickWhilePaused() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("recording") { center.phase == .recording }
+
+        center.pause()
+
+        XCTAssertNil(center.spanStartedAt)
+        let t0 = ContinuousClock.now
+        let frozen = center.elapsed(now: t0)
+        XCTAssertEqual(center.elapsed(now: t0 + .seconds(10)), frozen,
+                       "elapsedAccumulated must be frozen while paused")
+
+        center.cancel()
+    }
+
+    /// `micLevel` is the RMS of the latest chunk while recording, and reads 0
+    /// once the dictation is back to idle.
+    func testMicLevelTracksChunkRMSAndResetsOnIdle() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0.2, count: 8_000))
+        await waitUntil("mic level updated") { center.micLevel > 0 }
+        XCTAssertEqual(center.micLevel, 0.2, accuracy: 0.01, "RMS of a constant 0.2 chunk is 0.2")
+
+        center.stop()
+        // waitPatiently: the decode + cleanup chain hops executors, and bare
+        // main-actor yields can burn out before it gets scheduled under load.
+        await waitPatiently("result delivered") { result != nil }
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(center.micLevel, 0, "idle must zero the level meter")
+    }
+
+    /// The meeting claiming the slot while the dictation is paused takes the
+    /// finalize path: deliver what was said, drop the engine (not parked),
+    /// wake the parked meeting live pass.
+    func testMeetingCaptureWillStartFromPausedFinalizes() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+
+        center.meetingCaptureWillStart()
+
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "speech said before the pause must be delivered, not discarded")
+        XCTAssertFalse(center.hasResidentEngine, "the engine must be dropped, not parked")
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 15. Safety automations (silence auto-pause, pause-timeout auto-stop)
+
+    /// Silence tracking is sample-clock based: N samples of sub-threshold RMS
+    /// accumulate `N / 16_000` seconds of silence, so the test emits audio
+    /// instead of sleeping. Crossing the injected 1 s threshold auto-pauses.
+    func testSilenceAutoPausesAfterThreshold() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            silenceAutoPauseAfter: .seconds(1),
+            silenceRMSThreshold: 0.01
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        // 0.5 s of loud audio — well under the 1 s silence threshold.
+        recorder.emit([Float](repeating: 0.2, count: 8_000))
+        await waitUntil("loud chunk fed") { center.micLevel > 0 }
+        XCTAssertEqual(center.phase, .recording, "loud audio must never trigger the silence auto-pause")
+
+        // 1.5 s of silence (zeros) crosses the 1 s threshold mid-stream.
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        await waitUntil("auto-paused") { center.phase == .paused }
+
+        XCTAssertEqual(recorder.pausedStates, [true], "the auto-pause must gate the recorder like a manual pause")
+
+        center.cancel()
+    }
+
+    /// A loud chunk resets the silence counter — only CONSECUTIVE silence
+    /// auto-pauses, so 0.8 s + 0.8 s split by speech never adds up to 1 s.
+    func testLoudChunkResetsSilenceCounter() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            silenceAutoPauseAfter: .seconds(1),
+            silenceRMSThreshold: 0.01
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0, count: 12_800)) // 0.8 s silence
+        recorder.emit([Float](repeating: 0.2, count: 1_600)) // speech — resets the counter
+        // The feed loop consumes in order: once the loud chunk's level lands,
+        // the preceding silence has been accounted too.
+        await waitUntil("loud chunk fed") { center.micLevel > 0 }
+
+        recorder.emit([Float](repeating: 0, count: 12_800)) // 0.8 s silence again
+        await waitUntil("second silence fed") { center.micLevel == 0 }
+
+        XCTAssertEqual(center.phase, .recording,
+                       "0.8 s + 0.8 s of silence split by speech must never add up to an auto-pause")
+
+        center.cancel()
+    }
+
+    /// A dictation left `.paused` past the timeout performs a NORMAL stop:
+    /// finalize + clean + deliver — nothing is lost, nothing keeps holding
+    /// the mic or the engine.
+    func testPauseTimeoutAutoStopsAndDelivers() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            pauseAutoStopAfter: .milliseconds(50)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.pause()
+        XCTAssertEqual(center.phase, .paused)
+
+        // waitPatiently, not waitUntil: bare yields burn no wall-clock, and
+        // the 50 ms timeout must actually elapse before the auto-stop fires.
+        await waitPatiently("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "the auto-stop must finalize and deliver, exactly like a manual stop")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    /// Resuming before the timeout fires cancels it — the session keeps
+    /// recording, nothing is delivered behind the user's back.
+    func testResumeCancelsPauseTimeout() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            pauseAutoStopAfter: .milliseconds(50)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        center.pause()
+        center.resume()
+
+        try await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(center.phase, .recording, "resume must cancel the pause-timeout auto-stop")
+        XCTAssertNil(result, "nothing may be delivered while the resumed session is still recording")
+
+        center.cancel()
+    }
+
+    // MARK: 16. Stop racing mic startup (hot-mic blocker)
+
+    /// A stop that lands while the mic is still starting up (the real
+    /// recorder suspends in the permission request) must never leave the
+    /// just-started engine hot with nothing left to stop it: the recorder
+    /// latches the stop and backs out of its startup, and the center
+    /// belt-and-braces re-stops once `start()` has completed. The fake's
+    /// ordering log is the assertable proxy — "stop-after-start" proves a
+    /// REAL stop happened on a completed start.
+    func testStopWhileMicIsStartingNeverLeavesTheMicHot() async throws {
+        let defaults = try isolatedDefaults()
+        let recorder = FakeMicRecorder()
+        let gate = AsyncGate()
+        recorder.onStart = { await gate.wait() }
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("mic start began") { recorder.events.contains("start-begin") }
+
+        center.stop() // lands while the mic startup is still suspended
+        XCTAssertEqual(center.phase, .stopping)
+        XCTAssertEqual(recorder.events, ["start-begin", "stop"])
+
+        gate.release() // the mic startup completes now
+
+        await waitUntil("resolved") { result != nil }
+        XCTAssertEqual(center.phase, .idle, "the run must reach a terminal state, not hang")
+        XCTAssertGreaterThanOrEqual(recorder.stopCalls, 2,
+                                    "the completed start must be answered with a second, real stop")
+        XCTAssertEqual(recorder.events, ["start-begin", "stop", "start-end", "stop-after-start"],
+                       "the belt-and-braces re-stop must land AFTER start completed — the mic is never left hot")
+    }
+
+    // MARK: 17. Pause during engine load (live-session blocker)
+
+    /// A pause during the engine load must not permanently kill live
+    /// transcription: the mic is still open (`.paused` gates samples, it
+    /// does not stop), so once the engine resolves and the user resumes,
+    /// live chunks must flow.
+    func testPauseDuringEngineLoadStillDeliversLiveTextAfterResume() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["hello world"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+
+        center.pause() // during the load
+        XCTAssertEqual(center.phase, .paused)
+
+        gate.release()
+        await waitUntil("engine loaded") { !center.isEngineLoading }
+
+        center.resume()
+        XCTAssertEqual(center.phase, .recording)
+
+        // A full decodable window (windowSec 10 + snap tolerance 2.5) so the
+        // live chunk lands while still `.recording` (the happy-path test
+        // documents why).
+        recorder.emit([Float](repeating: 0.1, count: 240_000))
+        await waitPatiently("live text delivered") { !liveTexts.isEmpty }
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(liveTexts.last, "hello world",
+                       "a pause during the engine load must not permanently kill live transcription")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 18. Stale pause timeout
+
+    /// An engine-load failure landing while `.paused` must disarm the pause
+    /// timeout — a stale 50 ms timer must never fire a stop() into the NEXT
+    /// dictation.
+    func testEngineLoadFailureWhilePausedDisarmsPauseTimeout() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { FakeMicRecorder() },
+            engineFactory: { _ in
+                engineLoads += 1
+                if engineLoads == 1 {
+                    await gate.wait()
+                    throw StubTranscribeError()
+                }
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            pauseAutoStopAfter: .milliseconds(50)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        center.pause() // arms the 50 ms pause timeout
+        XCTAssertEqual(center.phase, .paused)
+
+        gate.release() // the load throws now → `.failed` while paused
+        await waitUntil("failed") {
+            if case .failed = center.phase { return true }
+            return false
+        }
+
+        // A fresh dictation from another target (the orphaned-failure
+        // unwedge path). A stale pause timer, were it still armed, would
+        // fire ~50 ms in and stop this brand-new session behind the
+        // user's back.
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("second dictation recording") { center.phase == .recording && !center.isEngineLoading }
+
+        try await Task.sleep(for: .milliseconds(150))
+
+        XCTAssertEqual(center.phase, .recording,
+                       "a stale pause timeout from the failed session must never stop the new one")
+
+        center.cancel()
+    }
+
+    // MARK: 19. Cancel during stopping/cleaning
+
+    /// The user walking away mid-cleanup: cancel returns to idle and the
+    /// gated CLI call resolving after the fact must not resurrect any state,
+    /// fire a late onResult, or block a fresh start for another target.
+    func testCancelDuringStoppingDoesNotResurrectState() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        var lastRecorder: FakeMicRecorder!
+        let gate = AsyncGate()
+        let runner = GatedCLIRunner(gate: gate, stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            // Two scripted windows: the cancelled first dictation consumes
+            // one, the fresh second dictation (same warm engine) the other.
+            engineFactory: { _ in
+                TestTranscriber(ScriptedEngine(texts: ["said something", "said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var resultCalls = 0
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in resultCalls += 1 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("cleaning") { center.phase == .cleaning }
+
+        center.cancel()
+        XCTAssertEqual(center.phase, .idle)
+
+        gate.release() // the gated CLI call resolves after the fact
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(center.phase, .idle, "a late-resolving cleanup must never resurrect state after cancel")
+        XCTAssertEqual(resultCalls, 0, "no onResult may fire after cancel")
+        XCTAssertNil(center.activeTargetID)
+
+        // The slot is immediately usable by another target.
+        var result: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("second engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("second result") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+    }
+
+    // MARK: 20. Draining silent tail after stop
+
+    /// Silent chunks draining through the feed loop AFTER a stop (phase
+    /// `.stopping`) must never re-trigger the silence auto-pause — the
+    /// resolution completes normally.
+    func testDrainingSilentTailAfterStopNeverRePauses() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            silenceAutoPauseAfter: .seconds(1),
+            silenceRMSThreshold: 0.01
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        // Speech, then ~0.9 s of silence accumulated while still recording.
+        recorder.emit([Float](repeating: 0.2, count: 1_600))
+        await waitUntil("speech chunk fed") { center.micLevel > 0 }
+        recorder.emit([Float](repeating: 0, count: 14_400)) // 0.9 s
+        await waitUntil("silence fed") { center.micLevel == 0 }
+
+        // More silence emitted back-to-back with the stop: those chunks
+        // drain through the feed loop while the phase is already
+        // `.stopping`, and together with the 0.9 s they'd cross the 1 s
+        // threshold were they (wrongly) still counted.
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        center.stop()
+
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertTrue(recorder.pausedStates.isEmpty,
+                      "the draining silent tail after a stop must never re-pause")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 21. Meeting handshake while already stopping
+
+    /// The meeting claiming the slot while a manual stop is already
+    /// finalizing (`.stopping` held open by a gated engine load): a single
+    /// delivery, a single recorder stop, the engine dropped for the meeting
+    /// and `engineReleased` fired.
+    func testSecondMeetingCaptureWillStartWhileAlreadyStoppingIsANoOp() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        let gate = AsyncGate()
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                engineLoads += 1
+                await gate.wait()
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var resultCalls = 0
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in },
+                     onResult: { result = $0; resultCalls += 1 })
+        await waitUntil("engine load started") { engineLoads >= 1 }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.stop() // manual stop first — the run is already finalizing
+        XCTAssertEqual(center.phase, .stopping)
+
+        center.meetingCaptureWillStart() // second claim, while already stopping
+
+        XCTAssertEqual(center.phase, .stopping, "the handshake must not disturb the in-flight finalize")
+        XCTAssertEqual(recorder.stopCalls, 1, "the handshake's stop() is a guarded no-op while already stopping")
+
+        gate.release()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(resultCalls, 1, "exactly one delivery")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertFalse(center.hasResidentEngine, "the engine must be dropped for the meeting")
+        XCTAssertEqual(releaseFires, 1, "engineReleased must fire (once) to wake the parked live pass")
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 22. Silence auto-pause → pause timeout, end to end
+
+    /// The two safety automations chained: silence auto-pauses, the untouched
+    /// pause times out, and the auto-stop finalizes and delivers — the
+    /// abandoned-session path never loses what was said.
+    func testSilenceAutoPauseThenPauseTimeoutDeliversEndToEnd() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900),
+            silenceAutoPauseAfter: .seconds(1),
+            pauseAutoStopAfter: .milliseconds(50),
+            silenceRMSThreshold: 0.01
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("recording, engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        recorder.emit([Float](repeating: 0.2, count: 8_000)) // 0.5 s of speech
+        // 1.5 s of silence crosses the 1 s threshold → auto-pause.
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        recorder.emit([Float](repeating: 0, count: 8_000))
+        await waitUntil("auto-paused") { center.phase == .paused }
+
+        // Do nothing: the pause timeout must auto-stop and deliver.
+        await waitPatiently("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "silence auto-pause chained into the pause timeout must still deliver")
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(recorder.stopCalls, 1)
     }
 }

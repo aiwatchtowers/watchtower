@@ -6,6 +6,15 @@ struct RecordingResult: Equatable {
     let durationSec: Int
 }
 
+/// One ~100 ms window of live capture levels for the recording UI's meters.
+/// Both values are RMS over the RAW pre-gain samples — the `rec_X.activity`
+/// sidecar's convention — so the meter reflects what the mic actually picks
+/// up, not what `MicAGC` makes of it.
+struct CaptureLevels: Equatable, Sendable {
+    let mic: Float     // raw pre-AGC mic RMS over the last ~100 ms
+    let system: Float  // system-channel RMS over the same window
+}
+
 /// Abstraction over the audio capture stack so MeetingRecorderCenter is
 /// testable without CoreAudio or TCC permissions.
 protocol AudioRecording: AnyObject {
@@ -21,6 +30,8 @@ protocol AudioRecording: AnyObject {
     /// in-progress transcription. Finishes when `stop()` is called. Consuming it
     /// is optional — a recording works identically whether or not anyone reads it.
     var liveSamples: AsyncStream<[Float]> { get }
+    /// Throttled (~10 Hz) live level pairs; finishes on stop(). Optional to consume.
+    var liveLevels: AsyncStream<CaptureLevels> { get }
 }
 
 enum AudioRecordingError: LocalizedError {

@@ -14,6 +14,7 @@ struct IdeaCreateSheet: View {
     let allowedKinds: [Idea.Kind]
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dictationCenter) private var dictationCenter
     @State private var kind: Idea.Kind
     @State private var title: String = ""
     @State private var essence: String = ""
@@ -84,6 +85,7 @@ struct IdeaCreateSheet: View {
                         .frame(minHeight: 140)
                         .background(Color(nsColor: .textBackgroundColor))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .dictationHighlight(targetID: "idea-create.essence", center: dictationCenter)
                 }
             }
             .padding()

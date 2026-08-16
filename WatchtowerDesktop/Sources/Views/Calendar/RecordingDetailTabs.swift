@@ -382,6 +382,7 @@ struct RecordingNotesTab: View {
     @State private var isEditing = false
     @State private var copied = false
     @State private var saveTask: Task<Void, Never>?
+    @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -454,23 +455,29 @@ struct RecordingNotesTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            if isEditing {
-                TextEditor(text: $draft)
-                    .font(.callout)
-                    // Editing is locked during generation so the finished AI output
-                    // can never clobber text typed mid-run (adoption guard below).
-                    .disabled(isGenerating)
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
+            // Highlight rides the whole editor slot (both modes): dictation
+            // appends into `draft` in the rendered view too, not just the
+            // TextEditor (see the autosave comment below).
+            Group {
+                if isEditing {
+                    TextEditor(text: $draft)
+                        .font(.callout)
+                        // Editing is locked during generation so the finished AI output
+                        // can never clobber text typed mid-run (adoption guard below).
+                        .disabled(isGenerating)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ScrollView {
+                        MarkdownText(text: draft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
                     .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-            } else {
-                ScrollView {
-                    MarkdownText(text: draft)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
                 }
-                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
             }
+            .dictationHighlight(targetID: "notes.\(transcript.id ?? 0)", center: dictationCenter)
         }
         .padding(12)
         // On the VStack, not the TextEditor, so dictation appending into the

@@ -68,6 +68,9 @@ struct ChatInputContent: View {
                 RoundedRectangle(cornerRadius: 18)
                     .strokeBorder(Color(.separatorColor).opacity(0.3), lineWidth: 0.5)
             )
+            // "" is a sentinel for a nil dictationTargetID: it never matches a
+            // real activeTargetID, so a mic-less input never lights up.
+            .dictationHighlight(targetID: dictationTargetID ?? "", center: dictationCenter, cornerRadius: 18)
 
             if let id = dictationTargetID, let center = dictationCenter {
                 DictationButton(text: $text, mode: .chat, targetID: id, center: center)

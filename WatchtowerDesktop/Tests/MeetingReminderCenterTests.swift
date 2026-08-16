@@ -9,6 +9,9 @@ import WatchtowerTestSupport
 /// Center into `.recording`; never touches real audio (JoinFakeRecorder shape).
 private final class ReminderFakeRecorder: AudioRecording, @unchecked Sendable {
     let liveSamples: AsyncStream<[Float]>
+    /// Levels are irrelevant here; an immediately-finished stream satisfies
+    /// the protocol without feeding the Center anything.
+    var liveLevels: AsyncStream<CaptureLevels> { AsyncStream { $0.finish() } }
     private var liveContinuation: AsyncStream<[Float]>.Continuation!
 
     init() {

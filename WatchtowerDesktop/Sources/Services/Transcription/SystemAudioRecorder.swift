@@ -22,18 +22,24 @@ final class SystemAudioRecorder: AudioRecording {
     private var impl: AnyObject?
     private var liveContinuation: AsyncStream<[Float]>.Continuation?
     let liveSamples: AsyncStream<[Float]>
+    private var levelsContinuation: AsyncStream<CaptureLevels>.Continuation?
+    let liveLevels: AsyncStream<CaptureLevels>
 
     init() {
         var continuation: AsyncStream<[Float]>.Continuation!
         liveSamples = AsyncStream { continuation = $0 }
         liveContinuation = continuation
+        var levels: AsyncStream<CaptureLevels>.Continuation!
+        liveLevels = AsyncStream { levels = $0 }
+        levelsContinuation = levels
     }
 
     func start(to url: URL) async throws {
         guard #available(macOS 14.4, *) else { throw AudioRecordingError.unsupportedOS }
         guard impl == nil else { throw AudioRecordingError.deviceSetupFailed("recording already in progress") }
-        let recorder = TapRecorderImpl(liveContinuation: liveContinuation)
+        let recorder = TapRecorderImpl(liveContinuation: liveContinuation, levelsContinuation: levelsContinuation)
         liveContinuation = nil
+        levelsContinuation = nil
         try await recorder.start(to: url)
         impl = recorder
     }
@@ -44,6 +50,38 @@ final class SystemAudioRecorder: AudioRecording {
         }
         impl = nil
         return try recorder.stop()
+    }
+}
+
+/// Accumulates per-frame raw mic/system samples into ~100 ms RMS pairs for the
+/// recording UI's live level meters — the `MicActivityAccumulator` shape, but
+/// yielding a `CaptureLevels` value instead of sidecar lines. Pure (no I/O) so
+/// it is unit-testable; the recorder drains `flush` once per IO cycle on its
+/// write queue. Internal for tests only.
+struct LevelAccumulator {
+    private var micSquares: Double = 0
+    private var sysSquares: Double = 0
+    private var count = 0
+
+    mutating func add(mic: Float, sys: Float) {
+        micSquares += Double(mic * mic)
+        sysSquares += Double(sys * sys)
+        count += 1
+    }
+
+    /// The RMS pair once ≥ 0.1 s of frames accumulated (then resets), else nil —
+    /// which is what throttles the level stream to ~10 Hz regardless of the
+    /// device's IO buffer size.
+    mutating func flush(sampleRate: Double) -> CaptureLevels? {
+        guard Double(count) >= sampleRate * 0.1 else { return nil }
+        let levels = CaptureLevels(
+            mic: Float((micSquares / Double(count)).squareRoot()),
+            system: Float((sysSquares / Double(count)).squareRoot())
+        )
+        micSquares = 0
+        sysSquares = 0
+        count = 0
+        return levels
     }
 }
 
@@ -67,6 +105,12 @@ private final class TapRecorderImpl {
     /// Live sample sink, handed off from the facade at construction; finished
     /// on `stop()`/`deinit` so a downstream `for await` loop ends.
     private let liveContinuation: AsyncStream<[Float]>.Continuation?
+    /// Live level sink (same handoff/finish contract as `liveContinuation`).
+    private let levelsContinuation: AsyncStream<CaptureLevels>.Continuation?
+    /// ~10 Hz live level throttle. Like `activityAccumulator`, touched only
+    /// inside the IO block (which CoreAudio schedules on `writeQueue`), and fed
+    /// the same RAW pre-gain values — never the AGC-scaled mic term.
+    private var levelAccumulator = LevelAccumulator()
     /// Best-effort mic/system RMS sidecar (rec_X.activity) for the diarization
     /// post-pass. Losing it only loses the «Я» speaker label, so every failure
     /// here is ignored and never latched into `firstWriteError`.
@@ -83,8 +127,10 @@ private final class TapRecorderImpl {
 
     private static let outputSampleRate: Double = 16_000
 
-    init(liveContinuation: AsyncStream<[Float]>.Continuation?) {
+    init(liveContinuation: AsyncStream<[Float]>.Continuation?,
+         levelsContinuation: AsyncStream<CaptureLevels>.Continuation?) {
         self.liveContinuation = liveContinuation
+        self.levelsContinuation = levelsContinuation
     }
 
     func start(to url: URL) async throws {
@@ -175,6 +221,7 @@ private final class TapRecorderImpl {
             return result
         }
         liveContinuation?.finish()
+        levelsContinuation?.finish()
         guard let audioURL = url else {
             throw AudioRecordingError.deviceSetupFailed("no file was open")
         }
@@ -194,6 +241,7 @@ private final class TapRecorderImpl {
         }
         teardownDevices()
         liveContinuation?.finish()
+        levelsContinuation?.finish()
     }
 
     // MARK: Capture path
@@ -301,8 +349,15 @@ private final class TapRecorderImpl {
             if firstWriteError == nil {
                 activityAccumulator?.add(mic: mic, sys: system)
             }
+            // The live level meter uses the same RAW pre-gain values as the
+            // sidecar, and unlike it keeps running past a write error — it
+            // reports what the capture hardware hears, not what the file holds.
+            levelAccumulator.add(mic: mic, sys: system)
             out[frame] = tanhf(system + 0.9 * agcGain * mic)
             agcGain += glide.step
+        }
+        if let levels = levelAccumulator.flush(sampleRate: format.sampleRate) {
+            levelsContinuation?.yield(levels)
         }
         if let lines = activityAccumulator?.flushLines(), !lines.isEmpty, let handle = activityHandle {
             do {
