@@ -59,11 +59,15 @@ final class DictationButtonViewTests: XCTestCase {
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber
             = { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) }
     ) throws -> DictationCenter {
-        DictationCenter(
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)"))
+        // Pin the whisper lane (absent key → Apple on macOS 26) so these
+        // suites stay on the injectable engineFactory path.
+        defaults.set("small", forKey: DictationEngineChoice.defaultsKey)
+        return DictationCenter(
             recorderFactory: { FakeMicRecorder() },
             engineFactory: engineFactory,
             runnerResolver: { nil },
-            defaults: try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)")),
+            defaults: defaults,
             engineIdleTTL: .seconds(900)
         )
     }
@@ -185,6 +189,7 @@ final class DictationButtonViewTests: XCTestCase {
         let runner = GatedCLIRunner(gate: gate, stdout: Data(#"{"mode":"chat","text":"cleaned"}"#.utf8))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)"))
         defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set("small", forKey: DictationEngineChoice.defaultsKey) // pin the whisper lane
         let center = DictationCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },

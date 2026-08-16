@@ -75,15 +75,18 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.isEngineLoading, "the mic is hot immediately; the engine load is a flag, not a phase")
         await waitUntil("engine loaded") { !center.isEngineLoading }
 
-        // A full decidable window (windowSec 10 + snap tolerance 2.5), so the
-        // live chunk arrives while still `.recording` — a chunk decoded only
-        // in the post-stop draining tail is deliberately suppressed (the
-        // final text then arrives via the session's return value alone).
+        // A full decidable window (windowSec 4 + its capped snap tolerance),
+        // so the live chunk arrives while still `.recording` — a chunk
+        // decoded only in the post-stop draining tail is deliberately
+        // suppressed (the final text then arrives via the session's return
+        // value alone).
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
 
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         XCTAssertEqual(liveTexts.last, "hello world")
         XCTAssertEqual(center.lastRaw, "hello world")
@@ -152,7 +155,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
             return false
         }
 
-        XCTAssertEqual(center.phase, .failed("transcription failed"))
+        guard case .failed(let message) = center.phase else { return XCTFail("expected .failed") }
+        XCTAssertTrue(message.hasPrefix("transcription failed: "),
+                      "the failure must carry the error detail, got: \(message)")
         XCTAssertEqual(resultCalls, 0, "a thrown batch decode must never present as a successful (empty) result")
         XCTAssertTrue(runner.invocations.isEmpty, "cleanup must never be reached when the transcript itself failed")
     }
@@ -193,10 +198,12 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         let config = try XCTUnwrap(capturedConfig)
-        XCTAssertEqual(config.windowSec, 10)
+        XCTAssertEqual(config.windowSec, 4)
         XCTAssertFalse(config.diarization)
         XCTAssertEqual(config.boundarySnapSec, 7.0, "boundarySnapSec is untouched — whatever fromDefaults produced")
         XCTAssertFalse(liveTexts.isEmpty, "a false liveTranscription default must not force a batch fallback")
@@ -258,7 +265,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitPatiently("live text delivered") { !center.liveText.isEmpty }
         center.stop()
 
-        await waitUntil("failed") {
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before the (failing) cleanup is even reached.
+        await waitPatiently("failed") {
             if case .failed = center.phase { return true }
             return false
         }
@@ -1034,7 +1043,6 @@ final class DictationCenterTests: MeetingRecorderTestCase {
     func testWarmEngineIsDroppedWhenModelSettingChangesBetweenDictations() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
-        defaults.set("model-a", forKey: "transcription.model")
         let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
         var engineLoads = 0
         var lastRecorder: FakeMicRecorder!
@@ -1065,9 +1073,78 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await runOneDictation()
         XCTAssertEqual(engineLoads, 1)
 
-        defaults.set("model-b", forKey: "transcription.model")
+        defaults.set("base", forKey: "dictation.model")
         await runOneDictation()
         XCTAssertEqual(engineLoads, 2, "a Settings change must drop the warm engine and reload")
+    }
+
+    /// Switching `dictation.model` to Apple must not strand a parked whisper
+    /// engine: the apple lane skips `resolveTranscriber` (the only other
+    /// invalidation site), so without an explicit drop `hasResidentEngine`
+    /// would stay true forever and a meeting live pass would park on a dead
+    /// reference with nothing left to ever fire `engineReleased`.
+    func testSwitchingToAppleDropsParkedWhisperEngine() async throws {
+        let defaults = try isolatedDefaults() // pins dictation.model = "small"
+        defaults.set("en", forKey: "transcription.forceLang")
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        var engineLoads = 0
+        var lastRecorder: FakeMicRecorder!
+        let center = DictationCenter(
+            recorderFactory: {
+                let recorder = FakeMicRecorder()
+                lastRecorder = recorder
+                return recorder
+            },
+            engineFactory: { _ in
+                engineLoads += 1
+                return TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true)
+            },
+            sessionFactory: { choice, transcriber, config in
+                if case .whisper = choice, let transcriber {
+                    return WhisperDictationSession(transcriber: transcriber, config: config)
+                }
+                return FakeDictationSession(updates: ["hi"], finalText: "hi there")
+            },
+            appleSupported: { true },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        // A whisper dictation parks its engine warm.
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(engineLoads, 1)
+        XCTAssertTrue(center.hasResidentEngine, "the whisper engine is parked warm after the dictation")
+        XCTAssertEqual(releaseFires, 0)
+
+        defaults.set("apple", forKey: "dictation.model")
+
+        var liveTexts: [String] = []
+        var secondResult: DictationCleanResult?
+        center.start(targetID: "t2", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { secondResult = $0 })
+        await waitUntil("apple session delivering") { !liveTexts.isEmpty }
+
+        XCTAssertFalse(center.hasResidentEngine,
+                       "the apple run must drop the stale parked whisper engine, not carry it forever")
+        XCTAssertEqual(releaseFires, 1, "the slot genuinely frees — a parked meeting live pass must be woken")
+
+        lastRecorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("second result delivered") { secondResult != nil }
+
+        XCTAssertEqual(secondResult, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(engineLoads, 1, "the apple lane must never load a whisper engine")
+        XCTAssertFalse(center.hasResidentEngine)
+        XCTAssertEqual(center.phase, .idle)
     }
 
     // MARK: 14. Pause / resume, elapsed time, mic level
@@ -1465,13 +1542,15 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         center.resume()
         XCTAssertEqual(center.phase, .recording)
 
-        // A full decodable window (windowSec 10 + snap tolerance 2.5) so the
-        // live chunk lands while still `.recording` (the happy-path test
-        // documents why).
+        // A full decodable window (windowSec 4 + its capped snap tolerance)
+        // so the live chunk lands while still `.recording` (the happy-path
+        // test documents why).
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        await waitUntil("result delivered") { result != nil }
+        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // the global executor before cleanup can even start.
+        await waitPatiently("result delivered") { result != nil }
 
         XCTAssertEqual(liveTexts.last, "hello world",
                        "a pause during the engine load must not permanently kill live transcription")
@@ -1723,5 +1802,227 @@ final class DictationCenterTests: MeetingRecorderTestCase {
                        "silence auto-pause chained into the pause timeout must still deliver")
         XCTAssertEqual(center.phase, .idle)
         XCTAssertEqual(recorder.stopCalls, 1)
+    }
+
+    // MARK: 23. Dictation model + session seam (realtime dictation, Task 2)
+
+    /// The dictation config is decoupled from the meeting stack: ~4 s windows
+    /// and the whisper model resolved from `dictation.model` (carried to the
+    /// engine factory on `config.model`), never the meeting keys.
+    func testDictationConfigUsesFourSecondWindowsAndDictationModel() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        // The meeting model key must be IGNORED — proven by config.model
+        // below still being the dictation choice.
+        defaults.set("large-v3-v20240930", forKey: "transcription.model")
+
+        var capturedConfig: TranscriptionConfig?
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { config in
+                capturedConfig = config
+                return TestTranscriber(ScriptedEngine(texts: ["hi"]), supportsLive: true)
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+
+        let config = try XCTUnwrap(capturedConfig)
+        XCTAssertEqual(config.windowSec, 4, "dictation decodes ~4 s windows, not the meeting default")
+        XCTAssertEqual(config.model, "small",
+                       "the whisper model must come from dictation.model, never transcription.model")
+        XCTAssertFalse(config.diarization)
+
+        center.cancel()
+    }
+
+    /// A session update REPLACES the live text wholesale (volatile refinement
+    /// lands in the field), the session's returned string is the raw
+    /// transcript, and cleanup runs on that return.
+    func testLiveTextIsFullReplacementNotAppend() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
+        let session = FakeDictationSession(updates: ["hello", "hello world corrected"],
+                                           finalText: "hello world corrected")
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: []), supportsLive: true) },
+            sessionFactory: { _, _, _ in session },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        await waitUntil("both updates delivered") { liveTexts.count == 2 }
+
+        XCTAssertEqual(liveTexts, ["hello", "hello world corrected"],
+                       "a refined update must REPLACE the live text wholesale, never append")
+        XCTAssertEqual(center.liveText, "hello world corrected")
+
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(center.lastRaw, "hello world corrected",
+                       "the session's returned string is the raw transcript")
+        XCTAssertEqual(runner.savedTranscripts, ["hello world corrected"],
+                       "cleanup must run on the session's final return")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    // MARK: 24. Apple lane (realtime dictation, Task 3)
+
+    /// The apple lane never touches the whisper engine machinery: no
+    /// engineFactory call, no warm slot — `hasResidentEngine` stays false the
+    /// whole dictation, so the meeting recorder never waits on it.
+    func testAppleLaneNeverHoldsTheEngineSlot() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("apple", forKey: "dictation.model")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let session = FakeDictationSession(updates: ["hi"], finalText: "hi there")
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                XCTFail("the apple lane must never load a whisper engine")
+                throw StubTranscribeError()
+            },
+            sessionFactory: { _, _, _ in session },
+            appleSupported: { true },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+
+        await waitUntil("session delivering") { !liveTexts.isEmpty }
+        XCTAssertEqual(center.phase, .recording)
+        XCTAssertFalse(center.hasResidentEngine,
+                       "an apple dictation with no parked whisper engine must never hold the slot")
+        XCTAssertFalse(center.isEngineLoading,
+                       "the badge covers only the run-up to the session owning the stream")
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.lastRaw, "hi there", "the session's returned string is the raw transcript")
+        XCTAssertFalse(center.hasResidentEngine)
+    }
+
+    /// The meeting handshake mid-apple-dictation: finalize + deliver like
+    /// stop(), and the slot is free — `engineReleased` still fires so a
+    /// parked meeting live pass re-checks (a guarded no-op wake, since
+    /// nothing was ever resident).
+    func testMeetingHandshakeDuringAppleDictationFinalizesAndFreesSlot() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("apple", forKey: "dictation.model")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let session = FakeDictationSession(updates: ["hi"], finalText: "hi there")
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                XCTFail("the apple lane must never load a whisper engine")
+                throw StubTranscribeError()
+            },
+            sessionFactory: { _, _, _ in session },
+            appleSupported: { true },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+        await waitUntil("session delivering") { !liveTexts.isEmpty }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+
+        center.meetingCaptureWillStart()
+
+        await waitUntil("result delivered") { result != nil }
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"),
+                       "the handshake finalizes and delivers, like stop()")
+        XCTAssertFalse(center.hasResidentEngine)
+        XCTAssertEqual(releaseFires, 1, "the parked meeting live pass must be woken")
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// A thrown apple session must not lose the speech: the t0 buffer is
+    /// batch-decoded through the apple-lane fallback (a fresh batch
+    /// transcriber over the buffered audio), and the decode's text flows
+    /// into cleanup exactly like a session return.
+    func testAppleSessionFailureFallsBackToBufferDecode() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("apple", forKey: "dictation.model")
+        let recorder = FakeMicRecorder()
+        let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
+        let session = FakeDictationSession(updates: ["hi"], finalText: "never returned",
+                                           errorAfterDrain: StubTranscribeError())
+        var decodedBuffers: [[Float]] = []
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in
+                XCTFail("the apple lane must never load a whisper engine")
+                throw StubTranscribeError()
+            },
+            sessionFactory: { _, _, _ in session },
+            appleSupported: { true },
+            appleBatchFallback: { samples, _ in
+                decodedBuffers.append(samples)
+                return "buffer decoded"
+            },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var liveTexts: [String] = []
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat,
+                     onLiveText: { liveTexts.append($0) },
+                     onResult: { result = $0 })
+        await waitUntil("session delivering") { !liveTexts.isEmpty }
+
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        // The feed loop consumes chunks asynchronously — make sure this one
+        // reached the t0 buffer before the stop, so the fallback has audio.
+        await waitUntil("chunk buffered") { center.micLevel > 0 }
+        center.stop()
+
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(decodedBuffers.count, 1, "the thrown session must trigger exactly one buffer decode")
+        XCTAssertEqual(decodedBuffers.first?.count, 1_600, "the decode must cover the t0 buffer")
+        XCTAssertEqual(center.lastRaw, "buffer decoded")
+        XCTAssertEqual(runner.savedTranscripts, ["buffer decoded"],
+                       "cleanup must run on the fallback decode's text")
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertEqual(center.phase, .idle)
     }
 }

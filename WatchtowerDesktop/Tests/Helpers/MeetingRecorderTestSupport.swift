@@ -275,6 +275,13 @@ class MeetingRecorderTestCase: XCTestCase {
         // path. `MeetingRecorderWarmEngineTests` owns the warm-slot behavior
         // and re-enables the toggle via its `warmDefaults()`.
         defaults.set(false, forKey: MeetingRecorderCenter.preloadBeforeMeetingsKey)
+        // Dictation resolves `dictation.model` (absent → Apple on macOS 26):
+        // pin the whisper lane so every suite driving a `DictationCenter` on
+        // these defaults stays on the injectable engineFactory path — the
+        // default apple lane would build a real `AppleDictationSession`
+        // (Speech.framework) inside a unit test. Apple-lane tests override
+        // this key (and inject their own session) explicitly.
+        defaults.set("small", forKey: DictationEngineChoice.defaultsKey)
         return defaults
     }
 

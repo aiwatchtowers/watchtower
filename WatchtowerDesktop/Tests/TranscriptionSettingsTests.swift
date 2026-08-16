@@ -101,3 +101,51 @@ struct TranscriptionSettingsTests {
         #expect(config.langset == ["ru", "uk", "en"])
     }
 }
+
+@Suite("Dictation model picker")
+struct DictationModelPickerTests {
+    @Test("Apple row is offered only when the Apple session is supported")
+    func appleRowGatedBySupport() throws {
+        let supported = DictationEngineChoice.pickerOptions(appleSupported: true)
+        #expect(supported.first == DictationEngineChoice.PickerOption(
+            id: "apple", label: "Apple (realtime)"))
+
+        let unsupported = DictationEngineChoice.pickerOptions(appleSupported: false)
+        #expect(!unsupported.contains { $0.id == "apple" })
+    }
+
+    @Test("The whisper trio is always present, in order")
+    func whisperTrioAlwaysPresent() throws {
+        for appleSupported in [true, false] {
+            let whisper = DictationEngineChoice.pickerOptions(appleSupported: appleSupported)
+                .filter { $0.id != "apple" }
+            #expect(whisper == [
+                DictationEngineChoice.PickerOption(id: "large-v3-v20240930", label: "Whisper large-v3 turbo"),
+                DictationEngineChoice.PickerOption(id: "small", label: "Whisper small (fast)"),
+                DictationEngineChoice.PickerOption(id: "base", label: "Whisper base (fastest)")
+            ])
+        }
+    }
+
+    @Test("Absent storage resolves to the default selection, never empty")
+    func absentStorageShowsResolvedDefault() throws {
+        #expect(DictationEngineChoice.resolve(rawValue: nil, appleSupported: true).storedRawValue == "apple")
+        #expect(DictationEngineChoice.resolve(rawValue: nil, appleSupported: false).storedRawValue == "small")
+        // @AppStorage's empty-string default takes the same path as absent.
+        #expect(DictationEngineChoice.resolve(rawValue: "", appleSupported: true).storedRawValue == "apple")
+    }
+
+    @Test("A stored whisper model round-trips through the proxy")
+    func storedModelRoundTrips() throws {
+        #expect(DictationEngineChoice.resolve(rawValue: "base", appleSupported: true).storedRawValue == "base")
+        #expect(DictationEngineChoice.resolve(rawValue: "base", appleSupported: false).storedRawValue == "base")
+    }
+
+    @Test("Every picker option's id resolves back to itself when supported")
+    func optionIDsAreStableRawValues() throws {
+        for option in DictationEngineChoice.pickerOptions(appleSupported: true) {
+            #expect(DictationEngineChoice.resolve(
+                rawValue: option.id, appleSupported: true).storedRawValue == option.id)
+        }
+    }
+}
