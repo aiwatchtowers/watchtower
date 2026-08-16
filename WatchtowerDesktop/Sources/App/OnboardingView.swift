@@ -1004,10 +1004,20 @@ struct OnboardingView: View {
     /// job, moved here now that the splash sits between profile generation
     /// and completion. The pinned ordering itself lives in
     /// `OnboardingCompletion.finish`; this just binds it to the view's real
-    /// dependencies.
-    private func finishOnboarding() async {
+    /// dependencies. Returns whether onboarding actually finished — the
+    /// splash shows an inline retry on `false` rather than silently moving
+    /// on (a missing `onboardingVM` counts as failure too: there is no VM to
+    /// verify the DB write against, so completing anyway would be the same
+    /// silent-success bug this return value exists to prevent).
+    private func finishOnboarding() async -> Bool {
         await OnboardingCompletion.finish(
-            markOnboardingDone: { await onboardingVM?.markOnboardingDone() },
+            markOnboardingDone: {
+                guard let vm = onboardingVM else { return false }
+                await vm.markOnboardingDone()
+                // The same check the old (pre-splash) completion closure
+                // made right after this same call.
+                return vm.errorMessage == nil
+            },
             startPipelines: {
                 appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
             },

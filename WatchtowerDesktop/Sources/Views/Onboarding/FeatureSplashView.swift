@@ -16,9 +16,16 @@ import WatchtowerCore
 /// which is fine for a first-run pick) — and no sub-toggle editing (Memory's
 /// "Advanced" disclosure stays a Settings-only affordance).
 struct FeatureSplashView: View {
-    let onFinish: () async -> Void
+    /// Returns whether onboarding actually finished (`OnboardingCompletion.finish`'s
+    /// result) — `false` means the DB write failed and nothing else ran, so
+    /// the splash stays up and shows an inline retry instead of moving on.
+    let onFinish: () async -> Bool
 
     @Environment(AppState.self) private var appState
+    /// Set when the most recent `onFinish()` call returned `false`. Distinct
+    /// from `service.loadError`: that one is about the feature list/apply
+    /// step, this one is about the completion step that runs after it.
+    @State private var finishFailed = false
 
     private var service: FeatureManagerService { appState.featureManager }
 
@@ -247,6 +254,9 @@ struct FeatureSplashView: View {
             if let error = service.loadError {
                 errorBanner(error)
             }
+            if finishFailed {
+                finishErrorBanner
+            }
             HStack(spacing: 16) {
                 Button("Keep everything on") {
                     keepEverythingOnTapped()
@@ -298,6 +308,26 @@ struct FeatureSplashView: View {
         }
     }
 
+    /// Shown when `onFinish()` itself returned `false` (the DB "onboarding
+    /// done" write failed) — distinct from `errorBanner`, which is about the
+    /// feature list/apply step. No per-failure detail is available across
+    /// the `onFinish` boundary (a plain success/fail signal, wired in
+    /// `OnboardingView.finishOnboarding()`), so this is a fixed message.
+    private var finishErrorBanner: some View {
+        HStack(spacing: 12) {
+            Text("Couldn't finish setup. Please try again.")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.leading)
+            Spacer()
+            Button("Retry") {
+                retryFinishTapped()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
     // MARK: - Actions
 
     private func continueTapped() {
@@ -311,7 +341,7 @@ struct FeatureSplashView: View {
             let hadPendingChanges = !service.pending.isEmpty
             await service.apply { await DaemonManager.restart() }
             guard !(hadPendingChanges && service.loadError != nil) else { return }
-            await onFinish()
+            await runFinish()
         }
     }
 
@@ -321,7 +351,19 @@ struct FeatureSplashView: View {
         // failed: completion must never depend on a working feature list (a
         // broken CLI must not trap a new user in onboarding).
         service.pending.removeAll()
-        Task { await onFinish() }
+        Task { await runFinish() }
+    }
+
+    /// By the time either exit reaches this point, `pending` is already
+    /// empty either way (apply() cleared what succeeded, "Keep everything
+    /// on" discarded the rest) — so a failed finish's retry is always just a
+    /// bare re-run of `onFinish()`, regardless of which button got here.
+    private func retryFinishTapped() {
+        Task { await runFinish() }
+    }
+
+    private func runFinish() async {
+        finishFailed = !(await onFinish())
     }
 
     // MARK: - Bindings & derived text

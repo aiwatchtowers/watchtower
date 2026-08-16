@@ -468,6 +468,12 @@ final class OnboardingChatViewModel {
 
     /// Mark onboarding as complete in the profile.
     func markOnboardingDone() async {
+        // Cleared up front (the FeatureManagerService.load() precedent) so a
+        // retry after a transient write failure can actually report success:
+        // the `do` block below never clears errorMessage on its own success
+        // path, and the feature splash's completion check reads
+        // `errorMessage == nil` after every call, including retries.
+        errorMessage = nil
         let currentUserID = getCurrentUserID()
         guard !currentUserID.isEmpty else { return }
         guard let dbManager else { return }
