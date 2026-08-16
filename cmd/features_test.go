@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,6 +30,27 @@ func writeFeaturesConfig(t *testing.T, extraYAML string) string {
 	flagConfig = configPath
 	t.Cleanup(func() { flagConfig = original })
 	return configPath
+}
+
+// TestFeaturesCmd_PersistentPreRunAlsoRunsRootHook pins that the features
+// hook does not shadow rootCmd's. cobra runs only the CLOSEST
+// PersistentPreRunE in the chain (EnableTraverseRunHooks is unset), so
+// declaring one on featuresCmd replaced the root's ensureSchemaFormat for
+// every `features` subcommand. Both effects are asserted on the config file:
+// the schema-format bump (root hook) and the migration marker (features
+// hook). No database file exists under the temp HOME, so ensureSchemaFormat
+// skips RunSchemaUpgrade and the test stays cheap.
+func TestFeaturesCmd_PersistentPreRunAlsoRunsRootHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+
+	require.NoError(t, featuresCmd.PersistentPreRunE(featuresCmd, nil))
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
+	assert.True(t, v.IsSet("features.migrated"), "the features hook's own migration must run too")
 }
 
 func TestFeaturesList_JSONShape(t *testing.T) {

@@ -29,7 +29,16 @@ var featuresCmd = &cobra.Command{
 	// PersistentPreRunE runs the one-time legacy digest-gate migration before
 	// any features subcommand. Log-only on error (the daemon's own call site
 	// does the same) so a migration hiccup never blocks list/enable/disable.
-	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `features` subcommand would silently
+	// skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
 		if _, err := config.MigrateFeatureGates(flagConfig); err != nil {
 			log.Printf("warning: legacy feature-gate migration failed: %v", err)
 		}
