@@ -28,7 +28,7 @@ This applies to all gated phases: `phaseFastInbox`, `phaseChannelDigests`, `phas
 **Why locked:** Disabling a feature must stop all its data generation in progress; if a gated phase could still write lock files or pipeline run records, the owner couldn't trust that the feature is truly off. The earliest gate position is necessary to prevent leaks from slow initialization paths.
 
 **Test guards:**
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledPhaseWritesNoPipelineRun` (table-driven over digests, inbox, tracks, people, ideas, next_step, briefing, day_plan, feed; asserts no `pipeline_runs` rows and no `ideas_backfill.lock` for ideas; each phase gate tested with its feature flag disabled)
+- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledPhaseWritesNoPipelineRun` (13-case table: digests, inbox, tracks, tracks_starved_without_digest, people, people_starved_without_digest, ideas, stream_digests, memory, next_step, briefing, day_plan, feed; asserts no `pipeline_runs` rows and no `ideas_backfill.lock` for ideas; each phase gate tested with its feature flag disabled)
 
 **Locked since:** 2026-08-16
 
@@ -64,7 +64,7 @@ The enable flow is sequential (fast-forward DB writes first, config key write se
 
 **Test guards:**
 - `internal/features/fastforward_test.go::TestFastForward_Inbox` (watermark + compose ts == now.Unix() after enable)
-- `internal/features/fastforward_test.go::TestFastForward_Ideas` (floors == MAX(id) of each source table)
+- `internal/features/fastforward_test.go::TestFastForward_Ideas` (floors == MAX(id) of each source table; also pins that Stream Digests' per-account Gmail/Jira stage-1 floors are left untouched — Ideas and Stream Digests toggle independently and enabling one must never advance the other's watermark)
 - `internal/features/fastforward_test.go::TestFastForward_Memory` (watermark == now.Unix())
 - `internal/features/fastforward_test.go::TestFastForward_NoHookIsNil` (briefing, day_plan, people have no hook)
 - `cmd/features_test.go::TestFeaturesEnable_RunsFastForward` (enable writes config and runs fast-forward; watermark advances)
