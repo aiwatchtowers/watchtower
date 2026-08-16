@@ -1493,12 +1493,14 @@ final class OnboardingStateMachineTests: XCTestCase {
     @MainActor
     func testResumeFromStoredRawSixReportsFeatures() {
         // Persisted-rawValue migration: `.features` was inserted at raw 6,
-        // shifting `.complete` to 7 (see the enum's migration comment). A
-        // pre-upgrade install that had stored 6 (old `.complete`) now
-        // resumes at `.features` instead of `.complete` — harmless, because
-        // AppState.initialize() reconciles against `user_profile.onboarding_done`
-        // on every launch and calls markComplete() immediately when the DB
-        // already says done.
+        // shifting `.complete` to 7 (see the enum's migration comment), so a
+        // stored 6 now resumes at `.features`. Landing there is safe on its
+        // own terms: the `.features` step's `.task` constructs `onboardingVM`
+        // when it is nil, so the splash's exits can still finish onboarding.
+        // AppState.initialize()'s reconciliation against
+        // `user_profile.onboarding_done` short-circuits this only when the DB
+        // flag is already true — it cannot help an install whose flag is
+        // still false, which is exactly the case that needs the `.task`.
         UserDefaults.standard.set(6, forKey: stepKey)
         let sm = OnboardingStateMachine()
         XCTAssertEqual(sm.currentStep, .features)

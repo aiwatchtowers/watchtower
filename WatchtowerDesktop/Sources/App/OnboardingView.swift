@@ -61,7 +61,7 @@ struct OnboardingView: View {
             case .generating:
                 generatingStep
             case .features:
-                FeatureSplashView { await finishOnboarding() }
+                featuresStep
             case .complete:
                 EmptyView()
             }
@@ -995,6 +995,28 @@ struct OnboardingView: View {
                     .font(.caption)
             }
         }
+    }
+
+    // MARK: - Features Step
+
+    private var featuresStep: some View {
+        FeatureSplashView { await finishOnboarding() }
+            .task {
+                // Ensure VM exists when resuming from a restart at features step.
+                // finishOnboarding() marks onboarding done THROUGH this VM and
+                // counts a nil one as failure, so without this every exit the
+                // splash offers (Continue, "Keep everything on", the inline
+                // retry) would fail forever on a relaunch that lands here.
+                guard onboardingVM == nil else { return }
+                let configSvc = ConfigService()
+                let language = configSvc.digestLanguage ?? settingsLanguage
+                if let db = appState.databaseManager {
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                } else {
+                    // DB not available — need sync first, go back to chat
+                    appState.onboarding.goTo(.chat)
+                }
+            }
     }
 
     // MARK: - Onboarding Completion
