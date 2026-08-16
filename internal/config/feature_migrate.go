@@ -27,16 +27,30 @@ var legacyDigestOffFeatureKeys = []string{
 
 // MigrateFeatureGates performs the one-time back-compat migration for
 // installs that relied on digest.enabled=false as a de-facto "all AI off"
-// switch. If the yaml file at configPath explicitly sets digest.enabled to
-// false and has not already been migrated (no features.migrated key), it
-// writes false into every key in legacyDigestOffFeatureKeys plus
-// features.migrated: 1, atomically, and returns migrated=true.
+// switch, and stamps the features.migrated marker that makes that migration
+// one-time. It is called on daemon start and before every `features`
+// subcommand, and behaves as follows:
 //
-// In every other case — the file is absent, digest.enabled is absent or
-// true, or the migrated marker is already present — MigrateFeatureGates
-// writes nothing and returns migrated=false. The marker is only ever written
-// together with a real migration, so a default install's config file stays
-// byte-identical.
+//   - The file is absent: nothing to migrate, nothing written, (false, nil).
+//   - features.migrated is already set: (false, nil), and nothing is
+//     written — the file stays byte-identical from here on, forever.
+//   - digest.enabled is explicitly false and there is no marker: a real
+//     legacy install. Every key in legacyDigestOffFeatureKeys is written
+//     false alongside the marker, atomically; returns (true, nil).
+//   - digest.enabled is true or absent and there is no marker: first
+//     contact with a non-legacy install. The marker is written ALONE — no
+//     feature key is touched — and it returns (false, nil).
+//
+// That last case is why the marker is stamped on first contact rather than
+// only alongside a real migration. digest.enabled=false is the legacy
+// signature, but it is ALSO exactly what `features disable slack-digests`
+// writes; without a marker already on the file the two are
+// indistinguishable, so the owner's ordinary one-key disable read back as a
+// legacy install and the next call — a read-only `features list`, or the
+// daemon restarting right after the Desktop applied the change — cascaded
+// nine features off. Stamping on first contact closes that window: by the
+// time any product write can flip digest.enabled, the marker is already
+// there.
 func MigrateFeatureGates(configPath string) (bool, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
@@ -50,19 +64,22 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 		return false, fmt.Errorf("reading config: %w", err)
 	}
 
-	if !v.IsSet("digest.enabled") || v.GetBool("digest.enabled") || v.IsSet("features.migrated") {
+	if v.IsSet("features.migrated") {
 		return false, nil
 	}
 
-	for _, key := range legacyDigestOffFeatureKeys {
-		v.Set(key, false)
+	legacy := v.IsSet("digest.enabled") && !v.GetBool("digest.enabled")
+	if legacy {
+		for _, key := range legacyDigestOffFeatureKeys {
+			v.Set(key, false)
+		}
 	}
 	v.Set("features.migrated", 1)
 
 	if err := writeFeatureMigrationConfig(v, configPath); err != nil {
 		return false, err
 	}
-	return true, nil
+	return legacy, nil
 }
 
 // writeFeatureMigrationConfig writes viper config to a temp file with 0o600
