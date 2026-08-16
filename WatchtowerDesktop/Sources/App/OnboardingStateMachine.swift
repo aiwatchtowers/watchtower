@@ -10,7 +10,17 @@ enum OnboardingStep: Int, CaseIterable, Comparable, Codable {
     case chat = 3         // Role questionnaire + AI conversation (sync runs in background)
     case teamForm = 4     // Team form (reports, manager, peers)
     case generating = 5   // Profile generation via AI
-    case complete = 6     // Done
+    case features = 6     // Feature splash — pick which features to enable/disable
+    case complete = 7     // Done
+
+    // Persisted-rawValue migration note: `onboarding_current_step` stores the
+    // raw Int. A mid-onboarding install that had stored 6 (`.complete` in the
+    // numbering before `.features` was inserted) now decodes as `.features`
+    // instead — harmless: on every launch `AppState.initialize()` reconciles
+    // the machine against `user_profile.onboarding_done`, and calls
+    // `markComplete()` immediately when the DB already says done. Completed
+    // installs are unaffected either way — their UserDefaults keys were
+    // already removed by `markComplete()`. No migration code needed.
 
     static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -22,7 +32,7 @@ enum OnboardingStep: Int, CaseIterable, Comparable, Codable {
         case .connect: "Connect"
         case .settings: "Settings"
         case .claude: "AI Setup"
-        case .chat, .teamForm, .generating: "Setup"
+        case .chat, .teamForm, .generating, .features: "Setup"
         case .complete: nil
         }
     }

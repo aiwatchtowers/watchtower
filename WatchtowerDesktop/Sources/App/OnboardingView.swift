@@ -60,6 +60,8 @@ struct OnboardingView: View {
                 teamFormStep
             case .generating:
                 generatingStep
+            case .features:
+                FeatureSplashView { await finishOnboarding() }
             case .complete:
                 EmptyView()
             }
@@ -950,11 +952,12 @@ struct OnboardingView: View {
                     appState.onboarding.goTo(.generating)
                     Task {
                         await vm.generatePromptContext()
-                        await vm.markOnboardingDone()
                         if vm.errorMessage == nil {
-                            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
-                            appState.completeOnboarding()
-                            onRetry()
+                            // Onboarding isn't done yet — the feature splash
+                            // is next; it (not this closure) now runs the
+                            // completion sequence on its own exit. See
+                            // finishOnboarding() below.
+                            appState.onboarding.goTo(.features)
                         } else {
                             appState.onboarding.goTo(.teamForm)
                         }
@@ -992,6 +995,25 @@ struct OnboardingView: View {
                     .font(.caption)
             }
         }
+    }
+
+    // MARK: - Onboarding Completion
+
+    /// Runs once, from either of the feature splash's exits (Continue,
+    /// "Keep everything on") — the former team-form completion closure's
+    /// job, moved here now that the splash sits between profile generation
+    /// and completion. The pinned ordering itself lives in
+    /// `OnboardingCompletion.finish`; this just binds it to the view's real
+    /// dependencies.
+    private func finishOnboarding() async {
+        await OnboardingCompletion.finish(
+            markOnboardingDone: { await onboardingVM?.markOnboardingDone() },
+            startPipelines: {
+                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+            },
+            completeOnboarding: { appState.completeOnboarding() },
+            onRetry: onRetry
+        )
     }
 
     private var syncProgressCompactBanner: some View {

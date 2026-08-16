@@ -1485,7 +1485,23 @@ final class OnboardingStateMachineTests: XCTestCase {
         sm.advance()
         XCTAssertEqual(sm.currentStep, .generating)
         sm.advance()
+        XCTAssertEqual(sm.currentStep, .features)
+        sm.advance()
         XCTAssertEqual(sm.currentStep, .complete)
+    }
+
+    @MainActor
+    func testResumeFromStoredRawSixReportsFeatures() {
+        // Persisted-rawValue migration: `.features` was inserted at raw 6,
+        // shifting `.complete` to 7 (see the enum's migration comment). A
+        // pre-upgrade install that had stored 6 (old `.complete`) now
+        // resumes at `.features` instead of `.complete` — harmless, because
+        // AppState.initialize() reconciles against `user_profile.onboarding_done`
+        // on every launch and calls markComplete() immediately when the DB
+        // already says done.
+        UserDefaults.standard.set(6, forKey: stepKey)
+        let sm = OnboardingStateMachine()
+        XCTAssertEqual(sm.currentStep, .features)
     }
 
     @MainActor
@@ -1580,7 +1596,8 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertTrue(OnboardingStep.claude < .chat)
         XCTAssertTrue(OnboardingStep.chat < .teamForm)
         XCTAssertTrue(OnboardingStep.teamForm < .generating)
-        XCTAssertTrue(OnboardingStep.generating < .complete)
+        XCTAssertTrue(OnboardingStep.generating < .features)
+        XCTAssertTrue(OnboardingStep.features < .complete)
     }
 
     @MainActor
@@ -1597,6 +1614,7 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertEqual(OnboardingStep.chat.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.teamForm.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.generating.indicatorTitle, "Setup")
+        XCTAssertEqual(OnboardingStep.features.indicatorTitle, "Setup")
         XCTAssertNil(OnboardingStep.complete.indicatorTitle)
     }
 }
