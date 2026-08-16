@@ -177,6 +177,63 @@ func TestFeaturesDisable_DryRunWritesNothing(t *testing.T) {
 	assert.Contains(t, buf.String(), "slack-digests")
 }
 
+// TestFeaturesDisable_DryRunJSONWireShape pins the exact JSON the Desktop
+// cascade dialog decodes (`FeatureDependents` in
+// WatchtowerDesktop/Sources/Services/FeatureManagerService.swift). It decodes
+// into map[string]any rather than the Go struct on purpose: a renamed field
+// then breaks a Go test here instead of only surfacing as a silent decode
+// failure in the Desktop at runtime.
+func TestFeaturesDisable_DryRunJSONWireShape(t *testing.T) {
+	writeFeaturesConfig(t, "")
+
+	featuresDisableFlagDryRun = true
+	featuresDisableFlagJSON = true
+	t.Cleanup(func() {
+		featuresDisableFlagDryRun = false
+		featuresDisableFlagJSON = false
+	})
+
+	runDryRun := func(t *testing.T, id string) (map[string]any, string) {
+		t.Helper()
+		buf := new(bytes.Buffer)
+		featuresDisableCmd.SetOut(buf)
+		featuresDisableCmd.SetErr(&bytes.Buffer{})
+		require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{id}))
+
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+		return payload, buf.String()
+	}
+
+	payload, _ := runDryRun(t, "slack-digests")
+	assert.Len(t, payload, 2, "the top-level wire contract is exactly feature+dependents: %v", payload)
+	assert.Equal(t, "slack-digests", payload["feature"])
+
+	deps, ok := payload["dependents"].([]any)
+	require.True(t, ok, "dependents must be a JSON array, got %T", payload["dependents"])
+	require.NotEmpty(t, deps, "slack-digests has enabled dependents by default — an empty list here would make the loop below assert nothing")
+
+	for _, raw := range deps {
+		dep, depOK := raw.(map[string]any)
+		require.True(t, depOK, "each dependent must be a JSON object, got %T", raw)
+		assert.Len(t, dep, 2, "a dependent is exactly id+title: %v", dep)
+		id, idOK := dep["id"].(string)
+		require.True(t, idOK, "dependent.id must be a string, got %T", dep["id"])
+		assert.NotEmpty(t, id)
+		title, titleOK := dep["title"].(string)
+		require.True(t, titleOK, "dependent.title must be a string, got %T", dep["title"])
+		assert.NotEmpty(t, title)
+	}
+
+	// A leaf feature must still emit `[]`, never `null`: Swift's non-optional
+	// [Dependent] throws on a null (review-rules "wire shape").
+	leaf, rawJSON := runDryRun(t, "briefing")
+	leafDeps, ok := leaf["dependents"].([]any)
+	require.True(t, ok, "dependents must be a JSON array even with no dependents, got %T", leaf["dependents"])
+	assert.Empty(t, leafDeps)
+	assert.Contains(t, rawJSON, `"dependents":[]`, "an empty dependent list must marshal as [], not null")
+}
+
 func TestFeaturesDisable_WritesOnlyNamedKey(t *testing.T) {
 	configPath := writeFeaturesConfig(t, "")
 

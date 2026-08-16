@@ -939,10 +939,10 @@ const streamsLockSkipLogThrottle = 10 * time.Minute
 // phaseIdeas does — the two never interleave consumption of the same
 // account floors — with the same log-throttle-not-skip-throttle shape (GB7).
 func (d *Daemon) phaseStreamDigests(ctx context.Context) {
-	if d.ideasPipe == nil {
+	if !d.config.Streams.Enabled {
 		return
 	}
-	if !d.config.Streams.Enabled {
+	if d.ideasPipe == nil {
 		return
 	}
 	interval := time.Duration(d.config.Streams.IntervalHours) * time.Hour
@@ -992,11 +992,11 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 // no trackedPipelineRun wrapper here. Errors are logged and never abort the
 // cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
 func (d *Daemon) phaseMemory(ctx context.Context) {
-	if d.memoryPipe == nil {
-		return
-	}
 	if !d.config.Memory.Enabled {
 		d.logger.Printf("memory: disabled, skipping")
+		return
+	}
+	if d.memoryPipe == nil {
 		return
 	}
 	stats, err := d.memoryPipe.Run(ctx)

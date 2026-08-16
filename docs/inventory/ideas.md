@@ -26,6 +26,8 @@ The same contract applies one level up, per stage-1 source: the Gmail (`ideas.di
 
 Floors are seeded at install time: migration 00050 stamps the three `workspace` floors at the current top of each source table, so the registry starts from material mined after it shipped instead of backfilling all of history on the first run. The per-account stage-1 floors self-initialize on their first run instead, since an account connected later has no migration to seed it.
 
+**Feature Manager extension (2026-08-16):** re-enabling a feature writes these floors from outside the pipeline — an explicit owner action, not consolidator logic. `features enable ideas` stamps the three `workspace` floors at the current top of their source tables (exactly migration 00050's install-time seeding); `features enable stream-digests` stamps the per-account `ideas_email_floor`/`ideas_jira_floor`. The two hooks are disjoint on purpose: the toggles are independent, so enabling one must never advance the other's floors. Nothing is consumed-without-being-applied here — the owner is choosing not to back-fill the window the feature was off, and `watchtower ideas mine --from <date>` remains the way to mine it. See `docs/inventory/features.md` FEAT-03.
+
 **Why locked:** The consolidator is the only place ideas/decisions get created from raw material; if a floor could advance on a failed or partial run, that cycle's candidates would be silently lost — the exact "nothing gets lost" promise this feature exists to deliver would break on its own error path.
 
 **Test guards:**

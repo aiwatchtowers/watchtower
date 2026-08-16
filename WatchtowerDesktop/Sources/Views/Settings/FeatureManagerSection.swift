@@ -210,7 +210,14 @@ struct FeatureManagerSection: View {
             return
         }
         Task {
-            let dependents = await service.dependents(of: feature.id)
+            guard let dependents = await service.dependents(of: feature.id) else {
+                // The preview call failed, so we do not know whether this
+                // feature has dependents. Stage nothing and leave the row
+                // switched on — the existing `loadError` row explains why.
+                // Staging the disable here would silently skip a cascade
+                // decision the owner never got to make (FEAT-04).
+                return
+            }
             if dependents.isEmpty {
                 service.applyWithDependents.remove(feature.id)
                 service.setPending(feature.id, enabled: false)

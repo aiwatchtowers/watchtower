@@ -115,17 +115,20 @@ final class FeatureManagerService {
 
     /// Previews the cascade for disabling `id` (`disable --dry-run --json`)
     /// without writing anything — the input for the Desktop cascade dialog.
-    /// The method itself never throws (a dialog needs *a* list to render);
-    /// a CLI failure is still surfaced through `loadError` rather than
-    /// disappearing silently, and reads as "no dependents" to the caller.
-    func dependents(of id: String) async -> [FeatureDependents.Dependent] {
+    /// The method itself never throws, but it returns nil rather than an
+    /// empty list when the CLI call fails, so the caller can tell "asked,
+    /// and there are none" apart from "could not ask". Folding the two
+    /// together would let a transient CLI failure stage a disable as if the
+    /// owner had been shown an empty cascade. The failure is also surfaced
+    /// through `loadError` for the UI to render.
+    func dependents(of id: String) async -> [FeatureDependents.Dependent]? {
         loadError = nil
         do {
             let data = try await runner.run(args: ["features", "disable", id, "--dry-run", "--json"])
             return try JSONDecoder().decode(FeatureDependents.self, from: data).dependents
         } catch {
             loadError = error.localizedDescription
-            return []
+            return nil
         }
     }
 

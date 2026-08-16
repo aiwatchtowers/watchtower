@@ -248,21 +248,46 @@ struct SidebarView: View {
         }
     }
 
+    /// A section's items after BOTH filters: the user's own hide choices and
+    /// feature-gated visibility. Static and pure — the badge math below is
+    /// otherwise only reachable through an `@Environment`-backed view
+    /// instance, which a test cannot construct (see SidebarSectionTests).
+    static func visibleItems(
+        in section: SidebarSection,
+        hidden: Set<String>,
+        disabledFeatures: Set<String>
+    ) -> [SidebarDestination] {
+        section.partition(hidden: hidden).visible
+            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+    }
+
     /// Sum of badge counts for a section's VISIBLE items (drives the collapsed-header
     /// badge). Hidden items are excluded — hiding an item also silences its noise —
     /// and so are feature-disabled ones, for the same reason: a collapsed section
     /// must not promise a count the expanded list won't actually show.
+    static func sectionBadgeCount(
+        in section: SidebarSection,
+        hidden: Set<String>,
+        disabledFeatures: Set<String>,
+        count: (SidebarDestination) -> Int
+    ) -> Int {
+        visibleItems(in: section, hidden: hidden, disabledFeatures: disabledFeatures)
+            .reduce(0) { $0 + count($1) }
+    }
+
     private func sectionBadgeCount(_ section: SidebarSection) -> Int {
-        section.partition(hidden: hiddenItems).visible
-            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
-            .reduce(0) { $0 + count(for: $1) }
+        Self.sectionBadgeCount(
+            in: section,
+            hidden: hiddenItems,
+            disabledFeatures: disabledFeatures,
+            count: count(for:)
+        )
     }
 
     /// Color of the collapsed-header badge: red if any visible child is a red source
     /// (inbox-high/digests/briefings/statistics/catch-up), otherwise blue.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
-        let visible = section.partition(hidden: hiddenItems).visible
-            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+        let visible = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
         if visible.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
         if visible.contains(.digests), unreadDigestCount > 0 { return .red }
         if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }

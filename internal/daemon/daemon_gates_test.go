@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
 	"watchtower/internal/inbox"
+	"watchtower/internal/memory"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
 )
@@ -149,6 +150,35 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				_, err := os.Stat(filepath.Join(cfg.WorkspaceDir(), "ideas_backfill.lock"))
 				assert.True(t, os.IsNotExist(err), "ideas.enabled=false must never acquire the backfill lock")
 			},
+		},
+		{
+			// Stream digests share the ideas consolidator's backfill lock,
+			// so the same "no lock file" assertion applies — and the pipe is
+			// wired whenever streams.enabled OR ideas.enabled, so a non-nil
+			// pipe with the flag off is the real configuration.
+			name: "stream_digests",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Streams.Enabled = false
+				d.SetIdeasPipeline(ideas.New(database, cfg, gen, l))
+			},
+			run: func(d *Daemon) { d.phaseStreamDigests(context.Background()) },
+			check: func(t *testing.T, cfg *config.Config, database *db.DB) {
+				assertNoPipelineRuns(t, cfg, database)
+				_, err := os.Stat(filepath.Join(cfg.WorkspaceDir(), "ideas_backfill.lock"))
+				assert.True(t, os.IsNotExist(err), "streams.enabled=false must never acquire the backfill lock")
+			},
+		},
+		{
+			name: "memory",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Memory.Enabled = false
+				vault, err := memory.OpenVault(filepath.Join(cfg.WorkspaceDir(), "memory"))
+				require.NoError(t, err)
+				pipe := memory.NewPipeline(database, vault, gen, cfg.Memory, l.Printf)
+				pipe.Source = "daemon"
+				d.SetMemoryPipeline(pipe)
+			},
+			run: func(d *Daemon) { d.phaseMemory(context.Background()) },
 		},
 		{
 			name: "next_step",

@@ -150,12 +150,24 @@ struct FeatureManagerServiceTests {
         let deps = await service.dependents(of: "memory")
 
         #expect(runner.invocations == [["features", "disable", "memory", "--dry-run", "--json"]])
-        #expect(deps.map(\.id) == ["briefing", "day-plan"])
-        #expect(deps.map(\.title) == ["Daily Briefing", "Day Plan"])
+        #expect(deps?.map(\.id) == ["briefing", "day-plan"])
+        #expect(deps?.map(\.title) == ["Daily Briefing", "Day Plan"])
         #expect(service.loadError == nil)
     }
 
-    @Test("dependents(of:) reports a CLI failure via loadError and returns no dependents")
+    @Test("dependents(of:) decodes an empty cascade as an empty list, not nil")
+    func dependentsDecodesEmptyList() async {
+        // The Go side always marshals `[]`, never null, for a leaf feature —
+        // the caller stages the disable directly on this, so it must stay
+        // distinguishable from the failure case below.
+        let (service, _) = Self.makeService(stdout: #"{"feature":"briefing","dependents":[]}"#)
+        let deps = await service.dependents(of: "briefing")
+
+        #expect(deps?.isEmpty == true)
+        #expect(service.loadError == nil)
+    }
+
+    @Test("dependents(of:) returns nil on a CLI failure, so the caller can tell it apart from an empty cascade")
     func dependentsSurfacesFailure() async {
         let (service, _) = Self.makeService(
             stdout: "",
@@ -163,8 +175,9 @@ struct FeatureManagerServiceTests {
         )
         let deps = await service.dependents(of: "nope")
 
-        #expect(deps.isEmpty)
+        #expect(deps == nil, "an empty list would read as \"asked, and there are none\" and stage the disable")
         #expect(service.loadError?.contains("boom: unknown feature") == true)
+        #expect(service.pending.isEmpty, "a failed preview must stage nothing")
     }
 
     // MARK: - apply() — degenerate no-op
