@@ -248,12 +248,6 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	value := args[1]
 	configPath := flagConfig
 
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-
 	// Warn on unrecognized keys (allow workspace-level keys like workspaces.*.slack_token)
 	if !knownConfigKeys[key] && !strings.HasPrefix(key, "workspaces.") {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %q is not a recognized config key\n", key)
@@ -274,8 +268,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		// can parse them correctly into time.Duration on read.
 		typedValue = value
 	}
-	v.Set(key, typedValue)
-	if err := writeConfigAtomic(v, configPath); err != nil {
+	if err := setConfigKey(configPath, key, typedValue); err != nil {
 		return err
 	}
 
