@@ -63,7 +63,8 @@ The registry is static Go code — no DB table, no yaml section describing featu
 
 Notes:
 - `stream-digests` is presented nested under `slack-digests` in the UI (`Parent` field), but is an independent gate — the daemon runs streams regardless of Slack digests. Its edge into `secretary-inbox` is the Jira comment sync feeding the `jira_comment_mention` trigger (INBOX-02).
-- `tracks` covers auto tracks, rollups, TrackContext, and custom track scans (one key gates all four phases).
+- `tracks` covers auto tracks (+ TrackContext injection) and custom track scans — both also compound-gated on `digest.enabled` at the phase level, since they mine the digests table and would otherwise leak an empty `pipeline_runs` row every cycle with tracks on and digests off (see the phase table below). Rollups are a separate half of `phaseTracksAndRollups` and ride `digest.enabled` alone, independent of `tracks.enabled`.
+- `people-cards` is likewise compound-gated on `digest.enabled` — it mines `people_signals` that only `phaseChannelDigests` produces.
 - Sub-toggles v1: `memory` surfaces its existing branch (`memory.semantic.enabled`, `memory.sources.*` ×6, `memory.surfaces.*` ×6) in a collapsed "Advanced" disclosure. Dev/compare flags (`memory.retrieve.*_compare`, `memory.renders.digest_compare`, `memory.focus.enabled`) stay config-only — they are instruments, not options.
 - Cost labels are static editorial judgments (heavy = many strong-tier calls per cycle), not live telemetry. Telemetry is a non-goal (v1).
 - On-demand AI (chat, target Extract, manual backfills, dictation clean) is not gated by the manager: it spends tokens only on explicit user action and rides its surface's visibility.
@@ -76,8 +77,9 @@ The single `if cfg.Digest.Enabled` around the pipeline wiring block in `cmd/sync
 |---|---|
 | phaseChannelDigests | `digest.enabled` |
 | phaseFastInbox, phaseInbox | `inbox.enabled` (the `&& digest.enabled` coupling is dropped) |
-| phaseTracksAndRollups, phaseCustomTrackScan | `tracks.enabled` |
-| phasePeopleCards | `people.enabled` |
+| phaseTracksAndRollups (tracks half), phaseCustomTrackScan | `tracks.enabled && digest.enabled` — a real data dependency, not just a naming split: tracks mine the digests table (custom tracks' scan activity includes digest-derived events too), so `tracks.enabled` alone would still pass the phase gate, insert a `pipeline_runs` row, and have the pipeline return immediately — an empty row leaking every cycle instead of a clean skip |
+| phaseTracksAndRollups (rollups half) | `digest.enabled` — independent of `tracks.enabled` |
+| phasePeopleCards | `people.enabled && digest.enabled` — same empty-row-leak risk as tracks: people cards mine `people_signals` that only `phaseChannelDigests` produces |
 | phaseNextStep | `targets.next_step.enabled` |
 | phaseStreamDigests (+ Jira comment sync) | `streams.enabled` |
 | phaseIdeas | `ideas.enabled` — moved from inside the pipeline up to the phase, so a disabled consolidator no longer takes the backfill lock or writes empty `pipeline_runs` rows every 6h |

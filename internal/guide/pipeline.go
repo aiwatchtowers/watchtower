@@ -127,16 +127,20 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 	return int(p.totalInputTokens.Load()), int(p.totalOutputTokens.Load()), 0, int(p.totalAPITokens.Load())
 }
 
-// Run executes the people card pipeline for the current 7-day window.
+// Run executes the people card pipeline for the current 7-day window. Every
+// caller now enforces the Digest.Enabled data dependency itself before
+// reaching here — the daemon's phasePeopleCards compound-gates on it
+// (people cards read people_signals produced by digests), and both CLI
+// entry points (cmd/people.go, cmd/sync.go's runPostSyncPipelines) force or
+// require it true beforehand — so this used to be a second, redundant
+// line of defense; removed because it silently produced an empty
+// pipeline_runs row on every throttled cycle when reached with the daemon's
+// old People.Enabled-only gate (Digest off, People on).
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens.Store(0)
 	p.totalOutputTokens.Store(0)
 	p.totalAPITokens.Store(0)
-
-	if !p.cfg.Digest.Enabled {
-		return 0, nil
-	}
 
 	now := time.Now()
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())

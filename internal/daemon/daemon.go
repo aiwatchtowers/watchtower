@@ -732,10 +732,14 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 
 // phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
 // track context into the digest pipeline, then runs daily/weekly rollups.
-// The two halves are independently gated (tracks.enabled / digest.enabled)
-// since either pipeline may be wired while the other is off.
+// The tracks half is compound-gated on Digest.Enabled too: tracks mine
+// digests (its own Run reads from the digests table), so with tracks.enabled
+// but digest.enabled off there is nothing for it to read — gating on
+// Tracks.Enabled alone would still create an empty pipeline_runs row every
+// cycle instead of skipping outright. The rollups half stays gated on
+// Digest.Enabled alone, unrelated to whether tracks itself is on.
 func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
-	if d.config.Tracks.Enabled && d.tracksPipe != nil {
+	if d.config.Tracks.Enabled && d.config.Digest.Enabled && d.tracksPipe != nil {
 		d.trackedPipelineRun("tracks", func() pipelineRunStats {
 			n, updated, err := d.tracksPipe.Run(ctx)
 			if err != nil {
@@ -774,9 +778,13 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 }
 
 // phasePeopleCards (group B) generates per-user people cards from people_signals
-// produced by phaseChannelDigests. Throttled to once per 24h.
+// produced by phaseChannelDigests. Throttled to once per 24h. Compound-gated
+// on Digest.Enabled too: people cards mine people_signals that only
+// phaseChannelDigests produces — starved without them, and gating on
+// People.Enabled alone would still create an empty pipeline_runs row every
+// throttle window instead of skipping outright.
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
-	if !d.config.People.Enabled {
+	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
 	}
 	if d.peoplePipe == nil {
@@ -1052,8 +1060,12 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 
 // phaseCustomTrackScan runs enabled custom tracks over recent activity,
 // appending timeline events. Runs before auto-track extraction so folds land.
+// Compound-gated on Digest.Enabled too: the activity it scans
+// (db.GetScanActivity) includes digest-derived events, so with digest off
+// there is materially less for it to find — the same "tracks mine digests"
+// dependency phaseTracksAndRollups's tracks half has.
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
-	if !d.config.Tracks.Enabled {
+	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
 		return
 	}
 	if d.customTracksPipe == nil {

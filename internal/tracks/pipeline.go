@@ -189,6 +189,17 @@ func (p *Pipeline) lastTracksStartedAt() string {
 
 // Run executes the tracks extraction pipeline.
 // Returns (stored count, error).
+//
+// Unlike guide.Pipeline.Run's equivalent check (deleted — every caller now
+// enforces this itself), this one stays: cmd/tracks.go's standalone
+// `watchtower tracks generate` calls Run directly with no outer
+// Digest.Enabled gate and no override forcing it true (contrast
+// cmd/people.go/cmd/digest.go, which force cfg.Digest.Enabled = true before
+// constructing their pipe), so it genuinely relies on this no-op for a
+// digest-disabled config. The daemon path (phaseTracksAndRollups) now
+// compound-gates on Tracks.Enabled && Digest.Enabled before ever reaching
+// here, making this check redundant-but-harmless from the daemon, and load-
+// bearing only for that one CLI command.
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens.Store(0)

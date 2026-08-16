@@ -93,9 +93,41 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			},
 		},
 		{
+			// Tracks mine digests (tracks.Pipeline.Run reads the digests
+			// table; customtracks' scan activity includes digest-derived
+			// events) — tracks.enabled alone is not enough. Before the
+			// compound gate, this combination let the phase gate pass,
+			// trackedPipelineRun insert a row, and the pipeline return
+			// immediately: an empty row leaking every cycle instead of a
+			// clean skip.
+			name: "tracks_starved_without_digest",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.Tracks.Enabled = true
+				cfg.Digest.Enabled = false
+				d.SetTracksPipeline(tracks.New(database, cfg, gen, l))
+				d.SetCustomTracksPipeline(customtracks.New(database, gen, cfg.Digest.Language, l))
+			},
+			run: func(d *Daemon) {
+				d.phaseTracksAndRollups(context.Background())
+				d.phaseCustomTrackScan(context.Background())
+			},
+		},
+		{
 			name: "people",
 			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
 				cfg.People.Enabled = false
+				d.SetPeoplePipeline(guide.New(database, cfg, gen, l))
+			},
+			run: func(d *Daemon) { d.phasePeopleCards(context.Background()) },
+		},
+		{
+			// People cards mine people_signals produced only by
+			// phaseChannelDigests — people.enabled alone is not enough. Same
+			// empty-row-leak class as tracks above.
+			name: "people_starved_without_digest",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.People.Enabled = true
+				cfg.Digest.Enabled = false
 				d.SetPeoplePipeline(guide.New(database, cfg, gen, l))
 			},
 			run: func(d *Daemon) { d.phasePeopleCards(context.Background()) },
@@ -134,12 +166,13 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				// Enabled flag under test — pin Hour so shouldRunBriefing
 				// would return true were Enabled the only gate (the
 				// TestShouldRunBriefing_AfterHourFreshDB precedent), so this
-				// case actually exercises the Enabled check instead of
-				// passing for the wrong reason.
+				// case exercises the Enabled check rather than passing for
+				// the wrong reason. No t.Skip: during the 00:00-00:59 local
+				// hour shouldRunBriefing's own Hour check would ALSO return
+				// false, so the assertion still holds (zero rows) — just
+				// without distinguishing which gate fired for that one hour
+				// a day, rather than skipping the case outright.
 				cfg.Briefing.Hour = 1
-				if time.Now().Hour() < 1 {
-					t.Skip("hour is below briefing threshold")
-				}
 				d.SetBriefingPipeline(briefing.New(database, cfg, gen, l))
 			},
 			run: func(d *Daemon) { d.phaseBriefing(context.Background()) },
@@ -152,6 +185,15 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 					ID: "T1", Name: "test-ws", Domain: "test-ws",
 				}))
 				_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+				require.NoError(t, err)
+				// Seed today's plan so runDayPlanConflictPhase reaches its
+				// own Enabled gate instead of returning early via its
+				// pre-existing "no plan yet" check (prev == nil) — the
+				// latter would pass regardless of the gate under test.
+				_, err = database.UpsertDayPlan(&db.DayPlan{
+					UserID: "U001", PlanDate: time.Now().Format("2006-01-02"),
+					Status: "active", GeneratedAt: time.Now(), FeedbackHistory: "[]",
+				})
 				require.NoError(t, err)
 				d.SetDayPlanPipeline(dayplan.New(database, cfg, gen, l))
 			},
