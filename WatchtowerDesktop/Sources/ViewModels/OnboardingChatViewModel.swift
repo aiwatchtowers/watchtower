@@ -466,28 +466,46 @@ final class OnboardingChatViewModel {
         }
     }
 
-    /// Mark onboarding as complete in the profile.
-    func markOnboardingDone() async {
+    /// Mark onboarding as complete in the profile. Returns whether the flag
+    /// actually landed — an affirmative signal, not the absence of an error:
+    /// both guards below and an UPDATE that matches no row write nothing while
+    /// leaving `errorMessage` nil, so a caller keying completion off
+    /// `errorMessage == nil` would treat three distinct ways of writing
+    /// nothing as success and finish onboarding over a still-false DB flag.
+    /// `errorMessage` is still set on every failure path — that one is what
+    /// the UI renders; this return value is what the caller decides on.
+    func markOnboardingDone() async -> Bool {
         // Cleared up front (the FeatureManagerService.load() precedent) so a
-        // retry after a transient write failure can actually report success:
-        // the `do` block below never clears errorMessage on its own success
-        // path, and the feature splash's completion check reads
-        // `errorMessage == nil` after every call, including retries.
+        // retry after a transient write failure isn't left showing the
+        // previous attempt's message.
         errorMessage = nil
         let currentUserID = getCurrentUserID()
-        guard !currentUserID.isEmpty else { return }
-        guard let dbManager else { return }
+        guard !currentUserID.isEmpty else {
+            errorMessage = "Failed to complete onboarding: no connected Slack account to record it against."
+            return false
+        }
+        guard let dbManager else {
+            errorMessage = "Failed to complete onboarding: the database is not open."
+            return false
+        }
 
         do {
-            try await dbManager.dbPool.write { db in
+            let changed = try await dbManager.dbPool.write { db -> Int in
                 try db.execute(sql: """
                     UPDATE user_profile SET onboarding_done = 1,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                     WHERE slack_user_id = ?
                     """, arguments: [currentUserID])
+                return db.changesCount
             }
+            guard changed > 0 else {
+                errorMessage = "Failed to complete onboarding: no profile found for \(currentUserID)."
+                return false
+            }
+            return true
         } catch {
             errorMessage = "Failed to complete onboarding: \(error.localizedDescription)"
+            return false
         }
     }
 

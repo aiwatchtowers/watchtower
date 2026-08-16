@@ -1377,12 +1377,58 @@ final class OnboardingChatViewModelTests: XCTestCase {
         }
 
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        await vm.markOnboardingDone()
+        let done = await vm.markOnboardingDone()
 
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.errorMessage)
         let profile = try await dbManager.dbPool.read { db in
             try ProfileQueries.fetchProfile(db, slackUserID: "U001")
         }
         XCTAssertEqual(profile?.onboardingDone, true)
+    }
+
+    /// The exact failure the return value exists for: the UPDATE runs, throws
+    /// nothing and leaves `errorMessage` nil, but matches no row — so
+    /// `onboarding_done` never flips. A completion check keyed off
+    /// `errorMessage == nil` read this as success and let onboarding finish
+    /// over a still-false DB flag.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWhenNoProfileRowMatches() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            // Deliberately no user_profile row for U001.
+        }
+
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    /// No connected Slack account: `getCurrentUserID()` finds nothing, so
+    /// there is no id to key the UPDATE on.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutCurrentUser() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    /// No database at all. Both early guards are separate code paths, but
+    /// only one outcome is observable from outside: `getCurrentUserID()`
+    /// already returns "" without a `dbManager`, so the empty-id guard is what
+    /// fires here.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutDatabase() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: nil)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     @MainActor

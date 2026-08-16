@@ -1035,10 +1035,7 @@ struct OnboardingView: View {
         await OnboardingCompletion.finish(
             markOnboardingDone: {
                 guard let vm = onboardingVM else { return false }
-                await vm.markOnboardingDone()
-                // The same check the old (pre-splash) completion closure
-                // made right after this same call.
-                return vm.errorMessage == nil
+                return await vm.markOnboardingDone()
             },
             startPipelines: {
                 appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
