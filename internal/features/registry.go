@@ -50,14 +50,14 @@ var registry = []Feature{
 	{
 		ID:          "dashboard",
 		Title:       "Dashboard",
-		Description: "The secretary's home screen: every situation clustered from Slack, email, Jira, calendar and meetings, with a secretary card and Discuss chat per situation. Always on — it is where the rest of Watchtower's output surfaces.",
+		Description: "The secretary's home screen: every situation clustered from Slack, email, Jira and calendar activity, with a secretary card and Discuss chat per situation, plus a parallel timeline of upcoming meetings. Always on — it is where the rest of Watchtower's output surfaces.",
 		Core:        true,
 		Cost:        CostNone,
 	},
 	{
 		ID:          "targets",
 		Title:       "Targets",
-		Description: "The ledger of tracked commitments and follow-ups, created automatically from conversations and meetings or added by hand, with statuses and resolution history. Always on — Slack Digests, Tracks, and other pipelines write into it; only the AI-generated Next Step suggestions have their own switch.",
+		Description: "The ledger of tracked commitments and follow-ups, created automatically from conversations or added by hand, with statuses and resolution history. Always on — Slack Digests, Tracks, and other pipelines write into it; only the AI-generated Next Step suggestions have their own switch.",
 		Core:        true,
 		Cost:        CostNone,
 	},
