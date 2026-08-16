@@ -87,6 +87,12 @@ final class OnboardingChatViewModel {
     private var streamTask: Task<Void, Never>?
     private var chatCompleted = false
 
+    // Last stream request, remembered so a failed AI call can be retried.
+    private var lastPrompt: String?
+    private var lastSystemPrompt: String?
+    private var lastSessionID: String?
+    private var lastOnComplete: (() -> Void)?
+
     /// The UI language selected during onboarding settings step.
     let language: String
 
@@ -238,6 +244,11 @@ final class OnboardingChatViewModel {
         sessionID: String?,
         onComplete: (() -> Void)? = nil
     ) {
+        lastPrompt = prompt
+        lastSystemPrompt = systemPrompt
+        lastSessionID = sessionID
+        lastOnComplete = onComplete
+
         let assistantMsg = ChatMessage(
             id: UUID(),
             role: .assistant,
@@ -303,6 +314,33 @@ final class OnboardingChatViewModel {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Skip the interview entirely: cancel any in-flight stream and clear
+    /// the quick-reply questionnaire so the user is never stuck on a broken
+    /// or missing AI provider.
+    func skipChat() {
+        streamTask?.cancel()
+        streamTask = nil
+        isStreaming = false
+        quickReplies = []
+    }
+
+    /// Retry the last stream request after an AI error. Replays the exact
+    /// prompt/system-prompt/session captured by `beginStreaming`, including
+    /// the original completion behavior (e.g. [READY]-marker stripping).
+    func retryAfterError() {
+        guard errorMessage != nil, !isStreaming, let prompt = lastPrompt else { return }
+        errorMessage = nil
+        if let last = messages.last, last.role == .assistant, last.text.isEmpty {
+            messages.removeLast()
+        }
+        beginStreaming(
+            prompt: prompt,
+            systemPrompt: lastSystemPrompt,
+            sessionID: lastSessionID,
+            onComplete: lastOnComplete
+        )
     }
 
     /// Finish the chat phase and extract profile data from the conversation via LLM.

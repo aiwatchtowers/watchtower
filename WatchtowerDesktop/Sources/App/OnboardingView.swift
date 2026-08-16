@@ -75,6 +75,17 @@ struct OnboardingView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            if appState.onboarding.currentStep != .complete {
+                Button("Skip setup") {
+                    skipOnboarding()
+                }
+                .buttonStyle(.plain)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(16)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if appState.onboarding.currentStep <= .claude {
                 onboardingStatusBar
@@ -345,6 +356,14 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
+                Button("Skip for now") {
+                    claudeHealthError = nil
+                    appState.onboarding.goTo(.chat)
+                    runSync()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
                 Button {
                     runClaudeHealthCheck()
                 } label: {
@@ -501,6 +520,13 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(isRunning)
+
+                // Slack can be connected later from Settings; runSync()'s
+                // no-token guard handles the unconnected case downstream.
+                Button("Skip for now") {
+                    appState.onboarding.goTo(.settings)
+                }
+                .buttonStyle(.bordered)
 
                 if isRunning, !oauthStatus.isEmpty {
                     Text(oauthStatus)
@@ -836,13 +862,12 @@ struct OnboardingView: View {
     @ViewBuilder
     private var chatActiveView: some View {
         if let vm = onboardingVM {
-            OnboardingChatView(viewModel: vm) {
-                appState.onboarding.chatFinished = true
-                // Continue even if the DB open fails — the team form degrades
-                // gracefully with no users and teamFormStep has its own DB fallback.
-                ensureOnboardingDatabase()
-                appState.onboarding.goTo(.teamForm)
-            }
+            OnboardingChatView(
+                viewModel: vm,
+                onComplete: { advanceToTeamForm() },
+                // Same transition, minus the AI profile extraction (`finishChat`).
+                onSkip: { advanceToTeamForm() }
+            )
         } else {
             ProgressView("Preparing...")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -909,7 +934,10 @@ struct OnboardingView: View {
                             appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
                             appState.completeOnboarding()
                             onRetry()
-                        } else {
+                        } else if appState.onboarding.currentStep == .generating {
+                            // Only bounce back while still on the generating step —
+                            // a late-failing generation must not yank a user who
+                            // already skipped setup back into onboarding.
                             appState.onboarding.goTo(.teamForm)
                         }
                     }
@@ -947,6 +975,14 @@ struct OnboardingView: View {
                     .foregroundStyle(.red)
                     .font(.caption)
             }
+
+            // Escape hatch: this step can hang on an AI call.
+            Button("Skip and finish setup") {
+                skipOnboarding()
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1170,6 +1206,29 @@ struct OnboardingView: View {
             cliError = "Failed to open database: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Global escape hatch: abandon the rest of onboarding and enter the app.
+    /// Best-effort DB creation + profile flag; completion itself is persisted
+    /// in UserDefaults by `OnboardingStateMachine.markComplete()`, so this
+    /// works even with no database or Slack account at all.
+    private func skipOnboarding() {
+        _ = ensureOnboardingDatabase()
+        Task {
+            await onboardingVM?.markOnboardingDone()
+            appState.completeOnboarding()
+            onRetry()
+        }
+    }
+
+    /// Shared chat → team-form transition, used by both the normal interview
+    /// completion and the "Skip interview" escape hatch.
+    private func advanceToTeamForm() {
+        appState.onboarding.chatFinished = true
+        // Continue even if the DB open fails — the team form degrades
+        // gracefully with no users and teamFormStep has its own DB fallback.
+        ensureOnboardingDatabase()
+        appState.onboarding.goTo(.teamForm)
     }
 
     private func runSync() {

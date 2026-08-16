@@ -1466,6 +1466,67 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages[0].text, "Let's understand your role. Do people report to you?")
         XCTAssertEqual(vm.quickReplies[0].label, "Yes")
     }
+
+    @MainActor
+    func testSkipChatCancelsInFlightStream() async throws {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        vm.startQuestionnaire()
+        XCTAssertFalse(vm.quickReplies.isEmpty)
+
+        vm.inputText = "Hello"
+        vm.send()
+        XCTAssertTrue(vm.isStreaming)
+
+        vm.skipChat()
+
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertTrue(vm.quickReplies.isEmpty)
+
+        // Let any cancelled stream task drain — it must not surface an error.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    @MainActor
+    func testRetryAfterErrorReattemptsSameRequest() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(vm.messages.count, 2) // user bubble + empty assistant bubble
+        let callsBeforeRetry = mock.prompts.count
+
+        vm.retryAfterError()
+        XCTAssertTrue(vm.isStreaming)
+        try await Task.sleep(for: .milliseconds(300))
+
+        // Exactly one re-attempt of the same prompt; the mock errors again.
+        XCTAssertEqual(mock.prompts.count, callsBeforeRetry + 1)
+        XCTAssertEqual(mock.prompts.last, "Hello")
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(vm.isStreaming)
+        // The trailing empty assistant bubble was replaced, not accumulated.
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[0].role, .user)
+        XCTAssertEqual(vm.messages[1].role, .assistant)
+    }
+
+    @MainActor
+    func testRetryAfterErrorNoOpWithoutError() {
+        let mock = MockClaudeService()
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.retryAfterError()
+
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertTrue(vm.messages.isEmpty)
+        XCTAssertEqual(mock.prompts.count, 0)
+    }
 }
 
 // MARK: - OnboardingStateMachine
