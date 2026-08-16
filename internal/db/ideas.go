@@ -373,6 +373,24 @@ func (db *DB) GetIdeasFloors() (digest, stream, transcript int64, err error) {
 	return digest, stream, transcript, nil
 }
 
+// IdeasFloorTops returns the current highest id of each of the three source
+// tables the registry floors track (digest_topics/stream_digests/
+// meeting_transcripts) — exactly the values migration 00050 seeded the
+// workspace floors to at install time. It is the fast-forward counterpart to
+// that seeding (internal/features): re-enabling the Ideas pillar after it
+// was off calls SetIdeasFloors with these tops so the consolidator resumes
+// from "now" instead of mining everything that piled up while it was off.
+func (db *DB) IdeasFloorTops() (digest, stream, transcript int64, err error) {
+	err = db.QueryRow(`SELECT
+			(SELECT COALESCE(MAX(id), 0) FROM digest_topics),
+			(SELECT COALESCE(MAX(id), 0) FROM stream_digests),
+			(SELECT COALESCE(MAX(id), 0) FROM meeting_transcripts)`).Scan(&digest, &stream, &transcript)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("getting ideas floor tops: %w", err)
+	}
+	return digest, stream, transcript, nil
+}
+
 // SetIdeasFloorsTx updates the three registry watermarks. A workspace row that
 // does not exist yet is an error, not a silent zero-row update (the
 // SetIdeasEmailFloor sibling shape): the caller's transaction must roll back
