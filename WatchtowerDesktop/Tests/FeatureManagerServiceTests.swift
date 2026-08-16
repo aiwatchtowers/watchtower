@@ -17,16 +17,37 @@ struct FeatureManagerServiceTests {
     {"features":[
       {
         "id":"ideas","title":"Ideas & Decisions","description":"Mines ideas.",
+        "tagline":"Every idea and decision, kept in one registry",
+        "benefits":[
+          "Proposed ideas and decisions mined from Slack, email, Jira and meetings",
+          "Consolidated into one registry for your review",
+          "Nothing decided in passing gets forgotten"
+        ],
+        "icon":"lightbulb",
         "state":"enabled","core":false,"parent":"","config_key":"ideas.enabled",
         "cost":"medium","feeds_into":[],"sub_toggles":[]
       },
       {
         "id":"tracks","title":"Tracks","description":"Narrative tracks.",
+        "tagline":"Follow the story of a project, not just its messages",
+        "benefits":[
+          "Multi-message threads and projects tracked as one ongoing narrative",
+          "Define your own custom tracks to watch",
+          "Feeds the daily Briefing with what moved"
+        ],
+        "icon":"binoculars",
         "state":"disabled","core":false,"parent":"","config_key":"tracks.enabled",
         "cost":"heavy","feeds_into":["briefing","memory"],"sub_toggles":[]
       },
       {
         "id":"memory","title":"Memory","description":"Long-term memory vault.",
+        "tagline":"A secretary that remembers, not just reacts",
+        "benefits":[
+          "Durable memory of people, projects and beliefs",
+          "Later answers and briefings start with real context, not a blank slate",
+          "Feeds the daily Briefing and Day Plan once it's on"
+        ],
+        "icon":"archivebox",
         "state":"disabled","core":false,"parent":"","config_key":"memory.enabled",
         "cost":"medium","feeds_into":["briefing","day-plan"],
         "sub_toggles":[
@@ -38,6 +59,13 @@ struct FeatureManagerServiceTests {
       },
       {
         "id":"dashboard","title":"Dashboard","description":"The home screen.",
+        "tagline":"Everything that needs you, in one place",
+        "benefits":[
+          "Situations from Slack, email, Jira and calendar merged into one view",
+          "A secretary card explains why each one matters",
+          "Discuss each situation directly with your secretary"
+        ],
+        "icon":"tray",
         "state":"core","core":true,"parent":"","config_key":"","cost":"none",
         "feeds_into":[],"sub_toggles":[]
       }
@@ -51,16 +79,37 @@ struct FeatureManagerServiceTests {
     {"features":[
       {
         "id":"ideas","title":"Ideas & Decisions","description":"Mines ideas.",
+        "tagline":"Every idea and decision, kept in one registry",
+        "benefits":[
+          "Proposed ideas and decisions mined from Slack, email, Jira and meetings",
+          "Consolidated into one registry for your review",
+          "Nothing decided in passing gets forgotten"
+        ],
+        "icon":"lightbulb",
         "state":"disabled","core":false,"parent":"","config_key":"ideas.enabled",
         "cost":"medium","feeds_into":[],"sub_toggles":[]
       },
       {
         "id":"tracks","title":"Tracks","description":"Narrative tracks.",
+        "tagline":"Follow the story of a project, not just its messages",
+        "benefits":[
+          "Multi-message threads and projects tracked as one ongoing narrative",
+          "Define your own custom tracks to watch",
+          "Feeds the daily Briefing with what moved"
+        ],
+        "icon":"binoculars",
         "state":"disabled","core":false,"parent":"","config_key":"tracks.enabled",
         "cost":"heavy","feeds_into":["briefing","memory"],"sub_toggles":[]
       },
       {
         "id":"memory","title":"Memory","description":"Long-term memory vault.",
+        "tagline":"A secretary that remembers, not just reacts",
+        "benefits":[
+          "Durable memory of people, projects and beliefs",
+          "Later answers and briefings start with real context, not a blank slate",
+          "Feeds the daily Briefing and Day Plan once it's on"
+        ],
+        "icon":"archivebox",
         "state":"disabled","core":false,"parent":"","config_key":"memory.enabled",
         "cost":"medium","feeds_into":["briefing","day-plan"],
         "sub_toggles":[
@@ -72,6 +121,13 @@ struct FeatureManagerServiceTests {
       },
       {
         "id":"dashboard","title":"Dashboard","description":"The home screen.",
+        "tagline":"Everything that needs you, in one place",
+        "benefits":[
+          "Situations from Slack, email, Jira and calendar merged into one view",
+          "A secretary card explains why each one matters",
+          "Discuss each situation directly with your secretary"
+        ],
+        "icon":"tray",
         "state":"core","core":true,"parent":"","config_key":"","cost":"none",
         "feeds_into":[],"sub_toggles":[]
       }
@@ -104,10 +160,16 @@ struct FeatureManagerServiceTests {
         #expect(memory.feedsInto == ["briefing", "day-plan"])
         #expect(memory.subToggles.first?.key == "memory.semantic.enabled")
         #expect(memory.subToggles.first?.enabled == false)
+        #expect(memory.tagline == "A secretary that remembers, not just reacts")
+        #expect(memory.benefits.count == 3)
+        #expect(memory.benefits.first == "Durable memory of people, projects and beliefs")
+        #expect(memory.icon == "archivebox")
 
         let dashboard = try #require(service.features.first { $0.id == "dashboard" })
         #expect(dashboard.core == true)
         #expect(dashboard.state == "core")
+        #expect(dashboard.tagline == "Everything that needs you, in one place")
+        #expect(dashboard.icon == "tray")
     }
 
     @Test("load() surfaces a CLI failure via loadError and leaves features empty")
@@ -120,6 +182,30 @@ struct FeatureManagerServiceTests {
 
         #expect(service.features.isEmpty)
         #expect(service.loadError?.contains("boom: config missing") == true)
+    }
+
+    @Test("load() decodes an empty benefits array as [], not null — Go always marshals []")
+    func loadDecodesEmptyBenefitsArray() async throws {
+        // Mirrors `dependentsDecodesEmptyList` below: the Go side never emits
+        // a nil slice here (`append([]string{}, f.Benefits...)` in
+        // cmd/features.go), but a non-optional Swift `[String]` would throw
+        // on decode if that ever regressed to `null` — pin the wire shape.
+        let json = """
+        {"features":[
+          {
+            "id":"next-step","title":"Next Step","description":"Suggests actions.",
+            "tagline":"Always know what to do next","benefits":[],"icon":"arrow.turn.down.right",
+            "state":"disabled","core":false,"parent":"","config_key":"targets.next_step.enabled",
+            "cost":"medium","feeds_into":[],"sub_toggles":[]
+          }
+        ]}
+        """
+        let (service, _) = Self.makeService(stdout: json)
+        await service.load()
+
+        #expect(service.loadError == nil)
+        let feature = try #require(service.features.first)
+        #expect(feature.benefits.isEmpty)
     }
 
     // MARK: - disabledFeatureIDs

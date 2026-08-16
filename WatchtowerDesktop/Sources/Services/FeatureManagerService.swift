@@ -11,6 +11,9 @@ struct FeatureInfo: Codable, Identifiable, Equatable {
     let id: String
     let title: String
     let description: String
+    let tagline: String
+    let benefits: [String]
+    let icon: String
     let state: String // enabled | disabled | core
     let core: Bool
     let parent: String
@@ -20,7 +23,7 @@ struct FeatureInfo: Codable, Identifiable, Equatable {
     let subToggles: [FeatureSubToggle]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, state, core, parent
+        case id, title, description, tagline, benefits, icon, state, core, parent
         case configKey = "config_key", cost
         case feedsInto = "feeds_into", subToggles = "sub_toggles"
     }
