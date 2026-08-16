@@ -413,6 +413,10 @@ final class OnboardingChatViewModel {
 
     /// Generate custom_prompt_context via LLM based on the full onboarding conversation.
     func generatePromptContext() async {
+        // A fresh generation attempt invalidates any stale error from a prior
+        // run — otherwise the teamForm completion gate re-fails forever even
+        // when this run succeeds.
+        errorMessage = nil
         let contextText = await extractContextFromConversation()
         await saveProfileWithContext(contextText)
     }
