@@ -501,6 +501,17 @@ final class AppState {
         }
     }
 
+    /// Re-runs the full launch bootstrap after onboarding completes or is skipped.
+    /// `initialize()` latches on `isInitializing` to keep window-reopen `onAppear`
+    /// calls idempotent; onboarding completion is the one legitimate re-entry
+    /// point — the DB, feature view models, pipelines, and daemon may all still
+    /// be unwired when the launch-time bootstrap failed or ran before onboarding
+    /// created the database.
+    func reinitializeAfterOnboarding() {
+        isInitializing = false
+        initialize()
+    }
+
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
     private func initSidebarCounts(dbPool: DatabasePool) async {
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)

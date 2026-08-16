@@ -2,6 +2,10 @@ import SwiftUI
 import WatchtowerCore
 
 struct OnboardingView: View {
+    /// Re-runs the app bootstrap once onboarding completes or is skipped
+    /// (`NavigationRoot` passes `AppState.reinitializeAfterOnboarding()`),
+    /// wiring the DB, feature view models, and daemon that a failed or
+    /// pre-onboarding launch bootstrap left uninitialized.
     let onRetry: () -> Void
 
     @Environment(AppState.self) private var appState
