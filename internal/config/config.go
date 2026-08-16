@@ -104,13 +104,13 @@ type CatchupCaps struct {
 
 // TracksConfig holds settings for the tracks extraction pipeline.
 type TracksConfig struct {
-	Enabled     bool `mapstructure:"enabled"`     // enable tracks extraction (default: true)
+	Enabled     bool `mapstructure:"enabled"`      // enable tracks extraction (default: true)
 	MinMessages int  `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
 }
 
-// PeopleConfig holds settings for the people analysis pipeline.
+// PeopleConfig holds settings for the people-cards pipeline.
 type PeopleConfig struct {
-	Enabled bool `mapstructure:"enabled"` // enable people analysis (default: true)
+	Enabled bool `mapstructure:"enabled"` // enable people-cards extraction (default: true)
 }
 
 // CalendarConfig holds Google Calendar integration settings.
