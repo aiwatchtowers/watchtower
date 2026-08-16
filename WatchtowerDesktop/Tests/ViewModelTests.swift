@@ -1386,6 +1386,24 @@ final class OnboardingChatViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testMarkOnboardingDoneCreatesRowWhenMissing() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            // Deliberately NO user_profile row — the upsert must create it.
+        }
+
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        await vm.markOnboardingDone()
+
+        XCTAssertNil(vm.errorMessage)
+        let profile = try await dbManager.dbPool.read { db in
+            try ProfileQueries.fetchProfile(db, slackUserID: "U001")
+        }
+        XCTAssertEqual(profile?.onboardingDone, true)
+    }
+
+    @MainActor
     func testSendWithError() async throws {
         let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
         let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
@@ -1455,10 +1473,12 @@ final class OnboardingChatViewModelTests: XCTestCase {
 final class OnboardingStateMachineTests: XCTestCase {
     private let stepKey = "onboarding_current_step"
     private let syncKey = "onboarding_sync_completed"
+    private let chatKey = "onboarding_chat_finished"
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: stepKey)
         UserDefaults.standard.removeObject(forKey: syncKey)
+        UserDefaults.standard.removeObject(forKey: chatKey)
         super.tearDown()
     }
 
@@ -1551,15 +1571,21 @@ final class OnboardingStateMachineTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkCompleteRemovesUserDefaults() {
+    func testMarkCompletePersistsAcrossRelaunch() {
         UserDefaults.standard.removeObject(forKey: stepKey)
         let sm = OnboardingStateMachine()
         sm.goTo(.generating)
         sm.syncCompleted = true
+        sm.chatFinished = true
         sm.markComplete()
         XCTAssertEqual(sm.currentStep, .complete)
-        XCTAssertNil(UserDefaults.standard.object(forKey: stepKey))
-        XCTAssertNil(UserDefaults.standard.object(forKey: syncKey))
+
+        // A new instance (simulated relaunch) must read .complete, never fall back
+        // to .connect — completion survives even if the DB profile row is missing.
+        let sm2 = OnboardingStateMachine()
+        XCTAssertEqual(sm2.currentStep, .complete)
+        XCTAssertFalse(sm2.syncCompleted)
+        XCTAssertFalse(sm2.chatFinished)
     }
 
     @MainActor

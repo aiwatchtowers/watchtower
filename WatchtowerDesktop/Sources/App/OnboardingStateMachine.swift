@@ -87,12 +87,15 @@ final class OnboardingStateMachine {
         persist()
     }
 
-    /// Mark onboarding as fully complete and clean up UserDefaults.
+    /// Mark onboarding as fully complete. Completion is PERSISTED (the step key keeps
+    /// `.complete`) so a relaunch never re-enters onboarding, even if the DB profile
+    /// row is missing (e.g. Slack was never connected). Only the transient sync/chat
+    /// flags are cleared.
     func markComplete() {
         currentStep = .complete
         syncCompleted = false
         chatFinished = false
-        UserDefaults.standard.removeObject(forKey: Self.stepKey)
+        UserDefaults.standard.set(OnboardingStep.complete.rawValue, forKey: Self.stepKey)
         UserDefaults.standard.removeObject(forKey: Self.syncCompletedKey)
         UserDefaults.standard.removeObject(forKey: Self.chatFinishedKey)
     }

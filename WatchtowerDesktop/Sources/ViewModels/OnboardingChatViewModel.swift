@@ -466,7 +466,7 @@ final class OnboardingChatViewModel {
         }
     }
 
-    /// Mark onboarding as complete in the profile.
+    /// Mark onboarding as complete in the profile, creating the row if it does not exist yet.
     func markOnboardingDone() async {
         let currentUserID = getCurrentUserID()
         guard !currentUserID.isEmpty else { return }
@@ -475,9 +475,11 @@ final class OnboardingChatViewModel {
         do {
             try await dbManager.dbPool.write { db in
                 try db.execute(sql: """
-                    UPDATE user_profile SET onboarding_done = 1,
+                    INSERT INTO user_profile (slack_user_id, onboarding_done, updated_at)
+                    VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                    ON CONFLICT(slack_user_id) DO UPDATE SET
+                        onboarding_done = 1,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE slack_user_id = ?
                     """, arguments: [currentUserID])
             }
         } catch {
