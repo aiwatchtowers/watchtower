@@ -2025,4 +2025,66 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
         XCTAssertEqual(center.phase, .idle)
     }
+
+    // MARK: 16. ML engines residency toggle (Feature Manager, ml.keepEnginesWarm)
+
+    /// `ml.keepEnginesWarm=false` (the Settings → Features "Keep ML engines in
+    /// memory" row): a finished dictation must drop its engine right away
+    /// instead of parking it for `engineIdleTTL` — the
+    /// `testMeetingCaptureWillStartWhileIdleDropsWarmEngineImmediately` shape,
+    /// triggered by the toggle instead of the meeting handshake. A long TTL
+    /// proves only the toggle (never elapsed time) explains the drop.
+    func testKeepEnginesWarmOffDropsEngineImmediatelyAfterDictation() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        defaults.set(false, forKey: DictationCenter.keepEnginesWarmKey)
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        var releaseFires = 0
+        center.engineReleased = { releaseFires += 1 }
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "cleaned"))
+        XCTAssertFalse(center.hasResidentEngine,
+                       "keepEnginesWarm=false must drop the engine right after delivery, not park it")
+        XCTAssertEqual(releaseFires, 1, "the drop must wake a parked meeting live pass like any other release")
+    }
+
+    /// The default (key absent) must still be ON — every other sticky-engine
+    /// test in this suite relies on that and never sets the key.
+    func testKeepEnginesWarmAbsentDefaultsToOnAndKeepsEngineWarm() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let recorder = FakeMicRecorder()
+        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let center = DictationCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
+            runnerResolver: { runner },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+
+        var result: DictationCleanResult?
+        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
+        recorder.emit([Float](repeating: 0.1, count: 1_600))
+        center.stop()
+        await waitUntil("result delivered") { result != nil }
+
+        XCTAssertTrue(center.hasResidentEngine, "absent ml.keepEnginesWarm must default to ON, parking the engine")
+    }
 }

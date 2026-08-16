@@ -11,6 +11,13 @@ import WatchtowerCore
 struct FeatureManagerSection: View {
     let service: FeatureManagerService
     @State private var cascadeCandidate: CascadeCandidate?
+    /// Displayed state for the Swift-local ML residency row below — reads
+    /// `DictationCenter.keepEnginesWarmKey` only (absent = on), the same key
+    /// `DictationCenter` itself reads fresh at its idle-unload scheduling
+    /// site. Unlike every other row in this section this one is NOT staged
+    /// through `service.pending`/`apply()`: it writes UserDefaults live, no
+    /// CLI call and no daemon restart.
+    @AppStorage(DictationCenter.keepEnginesWarmKey) private var keepEnginesWarm = true
 
     private var topLevelFeatures: [FeatureInfo] {
         service.features.filter { $0.parent.isEmpty }
@@ -30,6 +37,8 @@ struct FeatureManagerSection: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
+            Divider()
+            mlResidencyRow
         }
         .disabled(service.isApplying)
         .onAppear {
@@ -131,6 +140,28 @@ struct FeatureManagerSection: View {
         }
     }
 
+    /// Swift-local row: not a registry entry (`internal/features/registry.go`
+    /// has no entry for it), so it never appears in `service.features` and
+    /// never routes through `handleToggle`'s cascade dialog — this ML knob
+    /// has no dependents to cascade to. Placed after the Go-sourced rows,
+    /// separated by a `Divider()`, so it reads as its own group.
+    private var mlResidencyRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Keep ML engines in memory")
+                Text("Keeps the transcription engine warm between recordings and dictations, "
+                    + "and preloads it before meetings. Turn off to free RAM — engines then load "
+                    + "on demand and unload right after use.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: mlResidencyBinding)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+
     private func costBadge(_ cost: String) -> some View {
         Text(cost.capitalized)
             .font(.caption2)
@@ -181,6 +212,22 @@ struct FeatureManagerSection: View {
         Binding(
             get: { service.pending[sub.key] ?? sub.enabled },
             set: { service.setPending(sub.key, enabled: $0) }
+        )
+    }
+
+    /// Writes BOTH residency keys on every change so one switch governs ML
+    /// residency everywhere: `DictationCenter`'s sticky-engine TTL and
+    /// `MeetingRecorderCenter`'s warm-slot prewarm/park policy
+    /// (`MeetingsSettings` hosts its own separate toggle for the latter key
+    /// alone — both are @AppStorage-backed, so either surface changing it
+    /// live-updates the other).
+    private var mlResidencyBinding: Binding<Bool> {
+        Binding(
+            get: { keepEnginesWarm },
+            set: { newValue in
+                keepEnginesWarm = newValue
+                UserDefaults.standard.set(newValue, forKey: MeetingRecorderCenter.preloadBeforeMeetingsKey)
+            }
         )
     }
 }
