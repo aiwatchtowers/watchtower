@@ -83,26 +83,60 @@ struct DashboardView: View {
 
     // MARK: - Left: feed list
 
+    /// Plain `ScrollView` + `LazyVStack` of `Button` rows rather than a `List`
+    /// (the `TargetsListView` pattern). A `.listStyle(.sidebar)` selection fill
+    /// rides an NSVisualEffectView that samples the desktop wallpaper behind the
+    /// window; an opaque background under the rows does not stop it, so the
+    /// selected row read as a wallpaper-tinted pill. Buttons draw their own
+    /// selection fill and never touch vibrancy.
     private var feedList: some View {
         VStack(spacing: 0) {
             FeedFilterBar(vm: feedVM)
             Divider()
-            List(selection: Binding(
-                get: { feedVM.selectedFeedItemID },
-                set: { feedVM.select($0) }
-            )) {
-                ForEach(feedVM.entries) { entry in
-                    FeedRow(entry: entry)
-                        .tag(entry.id)
-                        .contextMenu { feedContextMenu(for: entry) }
-                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(feedVM.entries) { entry in
+                            feedRowButton(entry)
+                                .id(entry.id)
+                        }
 
-                Button("Load more") { feedVM.loadMore() }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+                        Button("Load more") { feedVM.loadMore() }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                    }
+                }
+                // Selection also changes programmatically (deep links into a
+                // situation), so follow it into view.
+                .onChange(of: feedVM.selectedFeedItemID) { _, newID in
+                    guard let newID else { return }
+                    proxy.scrollTo(newID)
+                }
             }
-            .listStyle(.sidebar)
         }
+    }
+
+    /// One feed row as a selectable button — `FeedRow`'s two row bodies already
+    /// carry `.padding(.vertical, 4)`, so the template's vertical padding is
+    /// halved here to land on the same density as a Targets row.
+    private func feedRowButton(_ entry: FeedEntry) -> some View {
+        let isSelected = feedVM.selectedFeedItemID == entry.id
+        return Button {
+            feedVM.select(entry.id)
+        } label: {
+            FeedRow(entry: entry)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(
+                    isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu { feedContextMenu(for: entry) }
     }
 
     @ViewBuilder

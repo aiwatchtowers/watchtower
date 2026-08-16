@@ -21,6 +21,10 @@ struct CatchUpReviewPane: View {
     /// Source rows (digests/tracks) the operator has expanded inline, keyed by
     /// `CatchUpRef.compositeID`. Reset per theme via the `.id(theme.id)` below.
     @State private var expandedSources: Set<String> = []
+    /// Per-source dates + external links, keyed by `CatchUpRef.compositeID`.
+    /// Loaded by the `.task` below; keyed on `theme.refs` (not `theme.id`) so
+    /// the refs filling in when expansion completes re-fetches it.
+    @State private var sourceMeta: [String: CatchUpSourceMeta] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,6 +54,9 @@ struct CatchUpReviewPane: View {
         }
         // Reset the comment field when switching to a different theme.
         .id(theme.id)
+        .task(id: theme.refs) {
+            sourceMeta = await vm.sourceMeta(for: theme.decodedRefs)
+        }
     }
 
     // MARK: - Header
@@ -86,6 +93,31 @@ struct CatchUpReviewPane: View {
                 .font(.largeTitle.bold())
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            activityLine
+        }
+    }
+
+    /// The span of the underlying sources' own timestamps — when this actually
+    /// happened. The theme row's created_at only says when the session was
+    /// built, which loses the operator's sense of time and urgency.
+    @ViewBuilder
+    private var activityLine: some View {
+        let dates = theme.decodedRefs.compactMap { sourceMeta[$0.compositeID]?.date }
+        if let latest = dates.max() {
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .font(.caption2)
+                if let earliest = dates.min(), !Calendar.current.isDate(earliest, inSameDayAs: latest) {
+                    Text("\(TimeFormatting.shortDateTime(from: earliest)) – \(TimeFormatting.shortDateTime(from: latest))")
+                } else {
+                    Text(TimeFormatting.shortDateTime(from: latest))
+                }
+                Text("· \(TimeFormatting.relativeTime(from: latest))")
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -169,39 +201,59 @@ struct CatchUpReviewPane: View {
     private func sourceRow(_ ref: CatchUpRef) -> some View {
         let expandable = isExpandable(ref.area)
         let expanded = expandedSources.contains(ref.compositeID)
+        let meta = sourceMeta[ref.compositeID]
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                tapSource(ref)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: sourceSymbol(ref.area))
-                        .font(.caption)
-                        .foregroundStyle(sourceColor(ref.area))
-                        .frame(width: 18)
+            HStack(spacing: 8) {
+                Button {
+                    tapSource(ref)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: sourceSymbol(ref.area))
+                            .font(.caption)
+                            .foregroundStyle(sourceColor(ref.area))
+                            .frame(width: 18)
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(ref.label.isEmpty ? "\(areaLabel(ref.area)) #\(ref.id)" : ref.label)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                        Text(areaLabel(ref.area))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ref.label.isEmpty ? "\(areaLabel(ref.area)) #\(ref.id)" : ref.label)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            HStack(spacing: 4) {
+                                Text(areaLabel(ref.area))
+                                if let date = meta?.date {
+                                    Text("· \(TimeFormatting.shortDateTime(from: date))")
+                                }
+                            }
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        // Chevron points down/up for the inline-expandable areas, right
+                        // for the navigate-away ones.
+                        Image(systemName: expandable ? (expanded ? "chevron.up" : "chevron.down") : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
-
-                    Spacer()
-
-                    // Chevron points down/up for the inline-expandable areas, right
-                    // for the navigate-away ones.
-                    Image(systemName: expandable ? (expanded ? "chevron.up" : "chevron.down") : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    .contentShape(Rectangle())
                 }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(sourceColor(ref.area).opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                .buttonStyle(.plain)
+
+                // Outside the expand/navigate Button — a Link nested inside its
+                // label would never receive the click.
+                if let url = meta?.url {
+                    Link(destination: url) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .help("Open in Slack")
+                }
             }
-            .buttonStyle(.plain)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(sourceColor(ref.area).opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
 
             if expandable && expanded {
                 sourceExpansion(for: ref)

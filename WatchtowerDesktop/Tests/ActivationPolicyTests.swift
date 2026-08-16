@@ -104,4 +104,32 @@ final class ActivationPolicyTests: XCTestCase {
         let panel = NSPanel(contentRect: .zero, styleMask: [.nonactivatingPanel], backing: .buffered, defer: true)
         XCTAssertFalse(panel.canBecomeMain, "the property the predicate filters on")
     }
+
+    // MARK: - Quit with a popup open (requestQuit's window filter)
+
+    /// Sheet presence is stubbed, not staged — see StubWindow's note on
+    /// ordering real windows front from an xctest process.
+    private final class SheetedStubWindow: NSWindow {
+        private let sheetStub: NSWindow?
+
+        init(sheet: NSWindow?) {
+            self.sheetStub = sheet
+            super.init(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        }
+
+        override var attachedSheet: NSWindow? { sheetStub }
+    }
+
+    /// SwiftUI vetoes app termination while any scene presents a sheet, so
+    /// `requestQuit` closes exactly the sheet-carrying windows first — and
+    /// must leave every sheetless window for normal termination teardown.
+    @MainActor
+    func testWindowsBlockingTerminationPicksOnlySheetedWindows() {
+        let plain = SheetedStubWindow(sheet: nil)
+        let sheet = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: true)
+        let sheeted = SheetedStubWindow(sheet: sheet)
+
+        XCTAssertEqual(TrayAppDelegate.windowsBlockingTermination([plain, sheeted]), [sheeted])
+        XCTAssertTrue(TrayAppDelegate.windowsBlockingTermination([plain]).isEmpty)
+    }
 }

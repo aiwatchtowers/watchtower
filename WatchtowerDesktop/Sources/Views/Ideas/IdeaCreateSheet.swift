@@ -8,7 +8,8 @@ import WatchtowerCore
 // to the mined pipeline. `allowedKinds` scopes which kinds the sheet offers:
 // the Ideas tab presents it with the default idea/note pair, while the
 // Decisions segment (Task 10) re-presents the same sheet with
-// `allowedKinds: [.decision]`.
+// `allowedKinds: [.decision]`. `initialKind` picks which of them the sheet
+// opens on — the Ideas tab passes its visible segment.
 struct IdeaCreateSheet: View {
     let vm: IdeasViewModel
     let allowedKinds: [Idea.Kind]
@@ -20,10 +21,13 @@ struct IdeaCreateSheet: View {
     @State private var essence: String = ""
     @State private var createError: String?
 
-    init(vm: IdeasViewModel, allowedKinds: [Idea.Kind] = [.idea, .note]) {
+    init(vm: IdeasViewModel, allowedKinds: [Idea.Kind] = [.idea, .note], initialKind: Idea.Kind? = nil) {
         self.vm = vm
         self.allowedKinds = allowedKinds
-        _kind = State(initialValue: allowedKinds.first ?? .idea)
+        // A seed outside `allowedKinds` would leave the picker on a segment it
+        // doesn't render, so it falls back rather than being trusted.
+        let seed = initialKind.flatMap { allowedKinds.contains($0) ? $0 : nil }
+        _kind = State(initialValue: seed ?? allowedKinds.first ?? .idea)
     }
 
     private var canCreate: Bool {
@@ -43,7 +47,7 @@ struct IdeaCreateSheet: View {
 
     private var sheetHeader: some View {
         HStack {
-            Text("New Idea")
+            Text("New \(Self.label(for: kind))")
                 .font(.headline)
             Spacer()
             Button("Cancel") { dismiss() }

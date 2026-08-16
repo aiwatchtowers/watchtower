@@ -57,6 +57,28 @@ final class AppleDictationSession: DictationTranscribing, Sendable {
         return false
     }
 
+    /// Whether THIS machine's `SpeechTranscriber` runtime actually ships a
+    /// model for `locale`'s language. The `AppleLocaleCatalog` says which
+    /// languages Apple ships at all; the runtime set is narrower and varies by
+    /// OS build — live-repro 2026-08-16: ru-RU passes the catalog yet is
+    /// unsupported at runtime, killing both the streaming session and the
+    /// batch fallback (SFSpeechErrorDomain Code=4) with no text. Matched by
+    /// language code, not full identifier, so identifier normalization
+    /// differences (en-US vs en_US) can't cause a false negative.
+    static func runtimeSupportsLanguage(of locale: Locale) async -> Bool {
+        await runtimeLocale(matching: locale) != nil
+    }
+
+    /// The runtime's own locale instance for `locale`'s language (nil when the
+    /// runtime has none) — the instance handed to `SpeechTranscriber` so the
+    /// exact supported spelling is used, never our catalog's.
+    static func runtimeLocale(matching locale: Locale) async -> Locale? {
+        guard #available(macOS 26, *) else { return nil }
+        let code = locale.language.languageCode?.identifier
+        let supported = await SpeechTranscriber.supportedLocales
+        return supported.first { $0.language.languageCode?.identifier == code }
+    }
+
     private let locale: Locale
 
     init(locale: Locale) {
@@ -75,12 +97,24 @@ final class AppleDictationSession: DictationTranscribing, Sendable {
     @available(macOS 26, *)
     private func stream(samples: AsyncStream<[Float]>,
                         onUpdate: @escaping @MainActor (String) -> Void) async throws -> String {
+        // The runtime's own locale instance, never the catalog's spelling: an
+        // unsupported locale doesn't throw from the initializer — it kills the
+        // analyzer's input loop later with no text at all, so it must be
+        // rejected here, loudly. (DictationCenter degrades to the whisper lane
+        // before ever building this session; this guard covers direct use.)
+        guard let runtimeLocale = await Self.runtimeLocale(matching: locale) else {
+            throw NSError(domain: "AppleDictationSession", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Apple dictation does not support this language "
+                    + "on this Mac — pick a Whisper model under Settings → Meetings → Dictation model."
+            ])
+        }
+
         // `.progressiveTranscription`, not the batch flow's `.transcription`:
         // only the progressive preset reports `.volatileResults`, and without
         // volatile results nothing streams — the lane would degrade to
         // final-only lumps, defeating its purpose (spec §2: "volatile results
         // replace the tail").
-        let transcriberModule = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        let transcriberModule = SpeechTranscriber(locale: runtimeLocale, preset: .progressiveTranscription)
 
         // Asset install first — the `AppleProvider.prefetch` flow (a nil
         // request means the locale's assets are already on-device).

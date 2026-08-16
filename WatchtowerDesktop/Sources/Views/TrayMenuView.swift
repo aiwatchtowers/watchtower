@@ -81,7 +81,10 @@ struct TrayMenuContent: View {
             Button("Settings…", action: settingsAction)
             Divider()
             Button("Quit Watchtower") {
-                NSApp.terminate(nil)
+                // Not NSApp.terminate directly: a presented sheet anywhere
+                // makes SwiftUI veto termination before the delegate runs
+                // (see TrayAppDelegate.requestQuit).
+                TrayAppDelegate.requestQuit()
             }
         }
     }

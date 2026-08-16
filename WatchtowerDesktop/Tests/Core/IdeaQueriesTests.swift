@@ -149,6 +149,25 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(count, 2, "the sidebar badge counts both kinds regardless of the active segment")
     }
 
+    /// An active search must narrow the review queue too — review items that
+    /// don't match a search staying on screen read as a broken search. The
+    /// predicate is the same title/essence/mention-quote triple as `fetchList`.
+    func testFetchForReviewQueryFiltersQueue() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, title: "DevOps knowledge base", status: "proposed")
+            let quoted = try TestDatabase.insertIdea(db, title: "Release notes automation", status: "proposed")
+            try TestDatabase.insertIdeaMention(db, ideaID: quoted, quote: "the DevOps team asked for this")
+            try TestDatabase.insertIdea(db, title: "SumSub umbrella account", status: "proposed")
+        }
+
+        let matched = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea", query: "DevOps") }
+        XCTAssertEqual(Set(matched.map(\.title)), ["DevOps knowledge base", "Release notes automation"])
+
+        let all = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea") }
+        XCTAssertEqual(all.count, 3, "no query keeps the queue unfiltered")
+    }
+
     func testCountForReviewMatchesFetchForReview() throws {
         let db = try TestDatabase.create()
         try db.write { db in
