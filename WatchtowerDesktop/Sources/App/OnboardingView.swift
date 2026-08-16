@@ -8,6 +8,11 @@ struct OnboardingView: View {
     @State private var isRunning = false
     @State private var output = ""
     @State private var cliError: String?
+    @State private var dbError: String?
+    // True only when runSync() actually ran a Slack sync (token present) —
+    // gates the "Sync complete!" banner so a user with no Slack connected
+    // never sees a false green checkmark.
+    @State private var syncRanWithSlack = false
     @State private var syncProgress: SyncProgressData?
     @State private var syncPhaseStartedAt: Date?
     @State private var syncLastPhase: String?
@@ -883,10 +888,13 @@ struct OnboardingView: View {
         if isRunning {
             Divider()
             syncProgressCompactBanner
+        } else if dbError != nil {
+            Divider()
+            dbFailedCompactBanner
         } else if cliError != nil {
             Divider()
             syncFailedCompactBanner
-        } else if appState.onboarding.syncCompleted {
+        } else if syncRanWithSlack && appState.onboarding.syncCompleted {
             Divider()
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
@@ -898,6 +906,25 @@ struct OnboardingView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
+    }
+
+    /// DB-open failures get their own line: they are not a Slack sync failure,
+    /// and the background daemon will not retry them — only the button does.
+    private var dbFailedCompactBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("Couldn't open the local database")
+                .font(.caption)
+                .fontWeight(.medium)
+            Button("Retry") {
+                dbError = nil
+                ensureOnboardingDatabase()
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     private var syncFailedCompactBanner: some View {
@@ -1143,7 +1170,11 @@ struct OnboardingView: View {
                 isRunning = false
                 oauthStatus = ""
                 if result.exitCode == 0 {
-                    appState.onboarding.goTo(.settings)
+                    // Guard against a late OAuth completion clobbering a step
+                    // the user (or persisted completion) has already moved past.
+                    if appState.onboarding.currentStep == .connect {
+                        appState.onboarding.goTo(.settings)
+                    }
                 } else {
                     cliError = result.stderr.isEmpty
                         ? "Authentication failed (exit code \(result.exitCode))"
@@ -1186,7 +1217,11 @@ struct OnboardingView: View {
 
             await MainActor.run {
                 isRunning = false
-                appState.onboarding.goTo(.claude)
+                // Guard against a late settings save clobbering a step the
+                // user has already moved past (e.g. after skipping setup).
+                if appState.onboarding.currentStep == .settings {
+                    appState.onboarding.goTo(.claude)
+                }
             }
         }
     }
@@ -1195,15 +1230,21 @@ struct OnboardingView: View {
     /// No-op if the VM already has users loaded.
     @discardableResult
     private func ensureOnboardingDatabase() -> Bool {
-        guard onboardingVM?.allUsers.isEmpty ?? true else { return true }
+        guard onboardingVM?.allUsers.isEmpty ?? true else {
+            dbError = nil
+            return true
+        }
         do {
             DatabaseManager.runCLIMigrations()
             let dbPath = try DatabaseManager.resolveDBPath()
             let manager = try DatabaseManager(path: dbPath)
             onboardingVM?.setDatabase(manager)
+            dbError = nil
             return true
         } catch {
-            cliError = "Failed to open database: \(error.localizedDescription)"
+            // Deliberately NOT cliError: the strip renders a DB-specific line
+            // for this, never the "Slack sync failed" banner.
+            dbError = "Failed to open database: \(error.localizedDescription)"
             return false
         }
     }
@@ -1213,9 +1254,27 @@ struct OnboardingView: View {
     /// in UserDefaults by `OnboardingStateMachine.markComplete()`, so this
     /// works even with no database or Slack account at all.
     private func skipOnboarding() {
+        // Cancel any in-flight interview stream (and its claude subprocess)
+        // before tearing the flow down.
+        onboardingVM?.skipChat()
+        // The DB flag write must not depend on the user having reached the
+        // chat step — construct the VM exactly like chatStep's .task does.
+        if onboardingVM == nil {
+            let configSvc = ConfigService()
+            let language = configSvc.digestLanguage ?? settingsLanguage
+            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+        }
         _ = ensureOnboardingDatabase()
         Task {
             await onboardingVM?.markOnboardingDone()
+            if let flagError = onboardingVM?.errorMessage {
+                // Best-effort by design (the view is being torn down), but it
+                // must be diagnosable.
+                NSLog("Onboarding skip: markOnboardingDone failed: %@", flagError)
+            }
+            // Mirror the teamForm completion path — without this the skip
+            // path entered the app with no background processing or daemon.
+            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
             appState.completeOnboarding()
             onRetry()
         }
@@ -1240,6 +1299,7 @@ struct OnboardingView: View {
             appState.onboarding.syncCompleted = true
             return
         }
+        syncRanWithSlack = true
         isRunning = true
         cliError = nil
         syncProgress = nil

@@ -244,6 +244,10 @@ final class OnboardingChatViewModel {
         sessionID: String?,
         onComplete: (() -> Void)? = nil
     ) {
+        // A new attempt invalidates any previous stream error — a stale
+        // errorMessage would otherwise permanently fail the teamForm
+        // completion gate in OnboardingView even when generation succeeds.
+        errorMessage = nil
         lastPrompt = prompt
         lastSystemPrompt = systemPrompt
         lastSessionID = sessionID
@@ -320,6 +324,9 @@ final class OnboardingChatViewModel {
     /// the quick-reply questionnaire so the user is never stuck on a broken
     /// or missing AI provider.
     func skipChat() {
+        // Skipping abandons the interview — a stream error from it must not
+        // stick around to fail the downstream completion gate.
+        errorMessage = nil
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
@@ -332,13 +339,18 @@ final class OnboardingChatViewModel {
     func retryAfterError() {
         guard errorMessage != nil, !isStreaming, let prompt = lastPrompt else { return }
         errorMessage = nil
-        if let last = messages.last, last.role == .assistant, last.text.isEmpty {
+        // Drop the trailing assistant bubble even when it holds partial text —
+        // a mid-stream failure leaves a partial bubble that would otherwise
+        // duplicate the turn and pollute the extraction transcript.
+        if let last = messages.last, last.role == .assistant {
             messages.removeLast()
         }
         beginStreaming(
             prompt: prompt,
             systemPrompt: lastSystemPrompt,
-            sessionID: lastSessionID,
+            // Prefer the freshest session id learned from a `.sessionID`
+            // stream event over the call-start snapshot.
+            sessionID: sessionID ?? lastSessionID,
             onComplete: lastOnComplete
         )
     }
@@ -478,25 +490,33 @@ final class OnboardingChatViewModel {
             return
         }
 
-        let existingProfile: UserProfile? = try? await dbManager.dbPool.read { db in
-            try ProfileQueries.fetchProfile(db, slackUserID: currentUserID)
-        }
-
-        let profile = UserProfile(
-            slackUserID: currentUserID,
-            role: role,
-            team: team,
-            reports: encodeJSON(reportIDs),
-            peers: encodeJSON(peerIDs),
-            manager: managerID,
-            painPoints: encodeJSON(painPoints),
-            trackFocus: encodeJSON(trackFocus),
-            onboardingDone: existingProfile?.onboardingDone ?? false,
-            customPromptContext: contextText.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        let role = self.role
+        let team = self.team
+        let managerID = self.managerID
+        let reportsJSON = encodeJSON(reportIDs)
+        let peersJSON = encodeJSON(peerIDs)
+        let painPointsJSON = encodeJSON(painPoints)
+        let trackFocusJSON = encodeJSON(trackFocus)
+        let trimmedContext = contextText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {
+            // Read + upsert in ONE transaction: a separate read would let a
+            // concurrent markOnboardingDone() land between read and write and
+            // get clobbered back to onboarding_done = 0 by the stale snapshot.
             try await dbManager.dbPool.write { db in
+                let existingProfile = try? ProfileQueries.fetchProfile(db, slackUserID: currentUserID)
+                let profile = UserProfile(
+                    slackUserID: currentUserID,
+                    role: role,
+                    team: team,
+                    reports: reportsJSON,
+                    peers: peersJSON,
+                    manager: managerID,
+                    painPoints: painPointsJSON,
+                    trackFocus: trackFocusJSON,
+                    onboardingDone: existingProfile?.onboardingDone ?? false,
+                    customPromptContext: trimmedContext
+                )
                 try ProfileQueries.upsertProfile(db, profile: profile)
             }
         } catch {

@@ -1273,6 +1273,21 @@ final class OnboardingChatViewModelTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Deadline-based poll (the `MeetingRecorderTestSupport.waitUntil` shape,
+    /// local because this suite is not a subclass): yields the main actor
+    /// until `condition` holds, failing instead of hanging.
+    @MainActor
+    private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
+        let deadline: Duration = .seconds(5)
+        let start = ContinuousClock.now
+        repeat {
+            if condition() { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now - start < deadline
+        XCTFail("timed out waiting for \(what)")
+    }
+
     @MainActor
     func testInitialState() {
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
@@ -1482,8 +1497,8 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isStreaming)
         XCTAssertTrue(vm.quickReplies.isEmpty)
 
-        // Let any cancelled stream task drain — it must not surface an error.
-        try await Task.sleep(for: .milliseconds(300))
+        // Let the cancelled stream task drain — it must not surface an error.
+        await waitUntil("cancelled stream drained") { vm.messages.last?.isStreaming == false }
         XCTAssertFalse(vm.isStreaming)
         XCTAssertNil(vm.errorMessage)
     }
@@ -1495,7 +1510,7 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
         vm.inputText = "Hello"
         vm.send()
-        try await Task.sleep(for: .milliseconds(300))
+        await waitUntil("first attempt failed") { vm.errorMessage != nil && !vm.isStreaming }
 
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertEqual(vm.messages.count, 2) // user bubble + empty assistant bubble
@@ -1503,7 +1518,7 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
         vm.retryAfterError()
         XCTAssertTrue(vm.isStreaming)
-        try await Task.sleep(for: .milliseconds(300))
+        await waitUntil("retry failed") { vm.errorMessage != nil && !vm.isStreaming }
 
         // Exactly one re-attempt of the same prompt; the mock errors again.
         XCTAssertEqual(mock.prompts.count, callsBeforeRetry + 1)
@@ -1526,6 +1541,96 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isStreaming)
         XCTAssertTrue(vm.messages.isEmpty)
         XCTAssertEqual(mock.prompts.count, 0)
+    }
+
+    @MainActor
+    func testSkipChatClearsStaleStreamError() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        await waitUntil("stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        vm.skipChat()
+
+        // A stale interview error must not survive the skip — it would
+        // permanently fail the teamForm completion gate downstream.
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertFalse(vm.isStreaming)
+    }
+
+    @MainActor
+    func testSendClearsStaleErrorBeforeStreaming() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "First"
+        vm.send()
+        await waitUntil("first stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        vm.inputText = "Second"
+        vm.send()
+        // The new attempt invalidates the previous error synchronously,
+        // before any stream event arrives.
+        XCTAssertNil(vm.errorMessage)
+
+        await waitUntil("second attempt finished") { !vm.isStreaming }
+    }
+
+    @MainActor
+    func testRetryAfterErrorRemovesPartialAssistantBubble() async throws {
+        // Mid-stream failure: a session id and partial text arrive, then the
+        // stream throws.
+        let mock = MockClaudeService(
+            events: [.sessionID("sess-live"), .text("Partial answer")],
+            thenError: WatchtowerAIError.cliNotFound
+        )
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        await waitUntil("mid-stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[1].text, "Partial answer")
+
+        vm.retryAfterError()
+        await waitUntil("retry finished") { vm.errorMessage != nil && !vm.isStreaming }
+
+        // The partial trailing assistant bubble was removed, not duplicated:
+        // still exactly one user turn and one assistant bubble.
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[0].role, .user)
+        XCTAssertEqual(vm.messages[1].role, .assistant)
+        // The retry re-sent the same prompt with the freshest session id
+        // learned from the failed stream, not the call-start snapshot (nil).
+        XCTAssertEqual(mock.prompts, ["Hello", "Hello"])
+        XCTAssertEqual(mock.sessionIDs.count, 2)
+        XCTAssertNil(mock.sessionIDs[0])
+        XCTAssertEqual(mock.sessionIDs[1], "sess-live")
+    }
+
+    @MainActor
+    func testSaveProfileWithContextPreservesOnboardingDoneFlag() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            try TestDatabase.insertProfile(db, slackUserID: "U001", onboardingDone: true)
+        }
+        let mock = MockClaudeService(events: [.text("Context about the user."), .done])
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        // The context-saving path (now read + upsert in ONE transaction) must
+        // never clobber an already-set onboarding_done flag.
+        await vm.generatePromptContext()
+
+        XCTAssertNil(vm.errorMessage)
+        let profile = try await dbManager.dbPool.read { db in
+            try ProfileQueries.fetchProfile(db, slackUserID: "U001")
+        }
+        XCTAssertEqual(profile?.onboardingDone, true)
+        XCTAssertEqual(profile?.customPromptContext, "Context about the user.")
     }
 }
 
