@@ -540,7 +540,10 @@ func TestRunInboxBackfillMentions_CancelledContextStillPrintsEnvelope(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancelled: stands in for a Ctrl-C/SIGTERM that lands before any work starts
 	inboxBackfillMentionsCmd.SetContext(ctx)
-	defer inboxBackfillMentionsCmd.SetContext(nil)
+	// Reset to a fresh Background rather than nil: that's the state Execute
+	// would leave it in, and a nil context here would leak the cancellation
+	// into whichever test runs next (and trips staticcheck SA1012).
+	defer inboxBackfillMentionsCmd.SetContext(context.Background())
 
 	buf := new(bytes.Buffer)
 	inboxBackfillMentionsCmd.SetOut(buf)
