@@ -60,6 +60,12 @@ struct FeaturesSettings: View {
                 await appState.featureManager.apply {
                     await DaemonManager.restart()
                 }
+                // The CLI calls apply() just made are the single writer of
+                // the feature on/off keys, so the shared ConfigService
+                // snapshot is now stale — reload before anything reads it
+                // again. Runs on the failure path too: a batch that stopped
+                // partway through still changed real config on disk.
+                config.reload()
                 if hadPendingChanges, let error = appState.featureManager.loadError {
                     throw FeatureManagerApplyError.applyFailed(error)
                 }
@@ -90,10 +96,15 @@ struct FeaturesSettings: View {
         !appState.featureManager.disabledFeatureIDs.contains("ideas")
     }
 
+    // MARK: - Tuning sections
+    //
+    // On/off belongs to the Feature Manager section above and to it alone
+    // (it is the single writer of every feature key, via the CLI). A tuning
+    // section only renders while its pillar is enabled, and holds only
+    // tuning controls — `briefingSection` is the shape they all follow.
+
     private var digestSection: some View {
         Section("Digest") {
-            Toggle("Enabled", isOn: $config.digestEnabled)
-
             TextField(
                 "Model",
                 text: Binding(
@@ -140,8 +151,6 @@ struct FeaturesSettings: View {
 
     private var dayPlanSection: some View {
         Section("Day Plan") {
-            Toggle("Enable day plan", isOn: $config.dayPlanEnabled)
-
             Picker("Generate at hour", selection: $config.dayPlanHour) {
                 ForEach(5..<13, id: \.self) { h in
                     Text(String(format: "%02d:00", h)).tag(h)
@@ -192,9 +201,6 @@ struct FeaturesSettings: View {
 
     private var ideasSection: some View {
         Section("Ideas") {
-            Toggle("Enable ideas registry", isOn: $config.ideasEnabled)
-                .help("Mines ideas, notes, and decisions from Slack, meetings, email, and Jira into the Ideas registry")
-
             Stepper(
                 "Mining interval (hours): \(config.ideasMineIntervalHours)",
                 value: $config.ideasMineIntervalHours,
