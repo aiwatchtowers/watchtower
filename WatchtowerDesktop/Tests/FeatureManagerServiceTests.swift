@@ -297,6 +297,20 @@ struct FeatureManagerServiceTests {
         #expect(service.pending == ["ideas": false])
     }
 
+    @Test("discardPending() clears the staged changes AND the cascade consent collected for them")
+    func discardPendingClearsBoth() async {
+        let (service, _) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+
+        service.setPending("ideas", enabled: false)
+        service.applyWithDependents = ["ideas"]
+
+        service.discardPending()
+
+        #expect(service.pending.isEmpty)
+        #expect(service.applyWithDependents.isEmpty, "consent for a disable that is no longer staged must not survive")
+    }
+
     // MARK: - dependents(of:)
 
     @Test("dependents(of:) decodes the dry-run cascade preview")

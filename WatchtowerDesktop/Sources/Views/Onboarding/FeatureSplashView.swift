@@ -43,6 +43,14 @@ struct FeatureSplashView: View {
     /// from `service.loadError`: that one is about the feature list/apply
     /// step, this one is about the completion step that runs after it.
     @State private var finishFailed = false
+    /// True for the whole completion window. All three exits (Continue, "Keep
+    /// everything on", the inline Retry) run the same non-idempotent
+    /// sequence — DB write, pipeline start, state-machine flip — so a second
+    /// tap while the first is in flight must not start a second one.
+    @State private var isFinishing = false
+    /// Which cards carry the "Experimental" tag, snapshotted at the first
+    /// successful load. See `isExperimental`.
+    @State private var experimentalIDs: Set<String> = []
 
     private var service: FeatureManagerService { appState.featureManager }
 
@@ -79,9 +87,22 @@ struct FeatureSplashView: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Cards as well as the footer, the FeatureManagerSection precedent:
+        // a toggle flipped while its own batch is being applied would stage a
+        // change against a state the CLI is in the middle of moving.
+        .disabled(isBusy)
         .onAppear {
-            Task { await service.load() }
+            Task {
+                await service.load()
+                captureExperimentalIDs()
+            }
         }
+    }
+
+    /// Blocks input for both non-idempotent windows: the CLI batch and the
+    /// completion sequence after it.
+    private var isBusy: Bool {
+        service.isApplying || isFinishing
     }
 
     // MARK: - Hero
@@ -287,7 +308,7 @@ struct FeatureSplashView: View {
                     continueTapped()
                 } label: {
                     HStack {
-                        if service.isApplying {
+                        if isBusy {
                             ProgressView().controlSize(.small)
                         }
                         Text("Continue")
@@ -300,7 +321,6 @@ struct FeatureSplashView: View {
             }
         }
         .padding(20)
-        .disabled(service.isApplying)
     }
 
     private func errorBanner(_ message: String) -> some View {
@@ -317,7 +337,10 @@ struct FeatureSplashView: View {
             // just re-fetch the same list without touching pending at all.
             if service.features.isEmpty {
                 Button("Retry") {
-                    Task { await service.load() }
+                    Task {
+                        await service.load()
+                        captureExperimentalIDs()
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -367,7 +390,7 @@ struct FeatureSplashView: View {
         // stay in effect, nothing to apply. Must work even when load()
         // failed: completion must never depend on a working feature list (a
         // broken CLI must not trap a new user in onboarding).
-        service.pending.removeAll()
+        service.discardPending()
         Task { await runFinish() }
     }
 
@@ -379,7 +402,14 @@ struct FeatureSplashView: View {
         Task { await runFinish() }
     }
 
+    /// `.disabled(isBusy)` is what the owner sees, but it cannot be the whole
+    /// guard: Continue reaches here across an await boundary (after apply()
+    /// has already cleared `isApplying`), leaving one main-actor hop in which
+    /// a queued tap on another exit could start a second completion.
     private func runFinish() async {
+        guard !isFinishing else { return }
+        isFinishing = true
+        defer { isFinishing = false }
         finishFailed = !(await onFinish())
     }
 
@@ -395,13 +425,23 @@ struct FeatureSplashView: View {
         )
     }
 
-    /// Keyed off the freshly-loaded `state`, not `disabledFeatureIDs` (which
-    /// folds in the owner's own not-yet-applied toggle for THIS card): the
-    /// tag means "this ships off by default", not "is currently off in this
-    /// session" — toggling some other card off must never make an unrelated
-    /// card suddenly read as experimental.
+    /// Read from a snapshot taken at the first successful load, not from the
+    /// live `state`: the tag means "this ships off by default", not "is
+    /// currently off". `apply()` reloads when it finishes, including after a
+    /// partial failure, and that reload correctly reports the cards the owner
+    /// just switched off as `state == "disabled"` — reading the tag off it
+    /// would stamp Experimental onto their cards in front of them. Also not
+    /// `disabledFeatureIDs`, which folds in staged, not-yet-applied toggles.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {
-        feature.state == "disabled"
+        experimentalIDs.contains(feature.id)
+    }
+
+    /// Fills the snapshot from the first load that actually returned
+    /// features; later loads leave it alone. An unsuccessful load leaves it
+    /// empty, so the next successful one still gets to fill it.
+    private func captureExperimentalIDs() {
+        guard experimentalIDs.isEmpty, !service.features.isEmpty else { return }
+        experimentalIDs = Set(service.features.filter { $0.state == "disabled" }.map(\.id))
     }
 
     private func costWords(_ cost: String) -> String? {

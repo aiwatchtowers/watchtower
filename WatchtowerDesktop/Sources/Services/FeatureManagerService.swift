@@ -161,6 +161,17 @@ final class FeatureManagerService {
         pending[id] = enabled
     }
 
+    /// Throws away every staged change, including any cascade consent
+    /// collected for them (the splash's "Keep everything on" exit). Clearing
+    /// `pending` alone would leave an `applyWithDependents` entry standing for
+    /// a disable that is no longer staged, ready to append `--with-dependents`
+    /// to some later disable of the same id (FEAT-04 spirit: consent must not
+    /// outlive the decision it was given for).
+    func discardPending() {
+        pending.removeAll()
+        applyWithDependents.removeAll()
+    }
+
     /// The last-loaded enabled state behind a `pending` key — a top-level
     /// feature id, or a sub-toggle's full config key — or nil when neither
     /// knows it. `state` is tri-state (enabled | disabled | core) and is read
