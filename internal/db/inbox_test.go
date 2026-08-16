@@ -290,26 +290,26 @@ func TestFindPendingMentions(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert a channel and a message that mentions our user
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('C1', '1000.001', 'U_OTHER', 'Hey <@U_ME> can you check this?', 'https://slack.com/p1')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('1:C1', '1000.001', 'U_OTHER', 'Hey <@U_ME> can you check this?', 'https://slack.com/p1')`)
 	require.NoError(t, err)
 	// Pipe-form mention `<@U_ME|Display Name>` — Slack frequently rewrites mentions
 	// to this form once it knows the display name. Detector must match both forms.
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('C1', '1003.001', 'U_OTHER', 'cc <@U_ME|Vadym Trunov> please review', 'https://slack.com/p2')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('1:C1', '1003.001', 'U_OTHER', 'cc <@U_ME|Vadym Trunov> please review', 'https://slack.com/p2')`)
 	require.NoError(t, err)
 	// Message that doesn't mention the user
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1001.001', 'U_OTHER', 'Regular message')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1001.001', 'U_OTHER', 'Regular message')`)
 	require.NoError(t, err)
 	// Message from the user themselves (should not match)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1002.001', 'U_ME', '<@U_ME> testing self-mention')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1002.001', 'U_ME', '<@U_ME> testing self-mention')`)
 	require.NoError(t, err)
 	// Mention of a different user whose ID is a prefix-match of ours — must NOT match.
 	// Ensures the closing `>` / `|` boundary is enforced and `LIKE '%<@U_ME%'` is not used.
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1004.001', 'U_OTHER', 'cc <@U_MEEK> hello')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1004.001', 'U_OTHER', 'cc <@U_MEEK> hello')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindPendingMentions("U_ME", 0)
+	candidates, err := db.FindPendingMentions(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 2)
 
@@ -317,7 +317,7 @@ func TestFindPendingMentions(t *testing.T) {
 	gotTS := map[string]bool{}
 	for _, c := range candidates {
 		gotTS[c.MessageTS] = true
-		assert.Equal(t, "C1", c.ChannelID)
+		assert.Equal(t, "1:C1", c.ChannelID)
 		assert.Equal(t, "mention", c.TriggerType)
 		assert.Equal(t, "U_OTHER", c.SenderUserID)
 	}
@@ -325,23 +325,114 @@ func TestFindPendingMentions(t *testing.T) {
 	assert.True(t, gotTS["1003.001"], "pipe <@U_ME|Name> form should match")
 }
 
+// TestFindPendingMentions_NamespacedUserID pins the multi-account fix:
+// GetCurrentUserID returns a namespaced id ("1:U_ME") post migration 00048,
+// but messages.text carries Slack's raw mention markup ("<@U_ME>") untouched
+// since it is source data no migration rewrites. FindPendingMentions must
+// reduce the namespaced id to its raw form for the LIKE patterns while still
+// comparing m.user_id — itself namespaced — against the namespaced id as-is.
+func TestFindPendingMentions_NamespacedUserID(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
+	require.NoError(t, err)
+
+	// Raw markup mentioning our user, written by someone else — should match.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', '1:U_OTHER', 'hey <@U_ME> look')`)
+	require.NoError(t, err)
+
+	// Mentions a different user whose id is a prefix-match of ours — must NOT
+	// match. Pins the closing `>` boundary with a namespaced caller id.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1001.001', '1:U_OTHER', 'cc <@U_MEOW> hello')`)
+	require.NoError(t, err)
+
+	// Mentions our user but written by ourselves (namespaced sender) — must
+	// NOT match. Only catches a regression if m.user_id != ? is bound with
+	// the namespaced id; binding the raw form here would let this leak through.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1002.001', '1:U_ME', '<@U_ME> self-mention')`)
+	require.NoError(t, err)
+
+	// Pipe-form mention, written by someone else — should also match. Pins
+	// that the fix reduces both LIKE patterns to the raw id, not just the
+	// strict one: a half-fix leaving the pipe pattern namespaced would miss
+	// this silently.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1003.001', '1:U_OTHER', 'cc <@U_ME|Name> ping')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindPendingMentions(1, "1:U_ME", 0)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+
+	gotTS := map[string]bool{}
+	for _, c := range candidates {
+		gotTS[c.MessageTS] = true
+		assert.Equal(t, "1:U_OTHER", c.SenderUserID)
+	}
+	assert.True(t, gotTS["1000.001"], "strict <@U_ME> form should match")
+	assert.True(t, gotTS["1003.001"], "pipe <@U_ME|Name> form should match")
+}
+
+// TestFindPendingMentions_ScopedToAccount guards the multi-account regression:
+// the same raw mention markup can appear in two different accounts' channels
+// (both happen to be named "C1" pre-namespace) — a call for account 1 must
+// only see account 1's channel, never account 2's.
+func TestFindPendingMentions_ScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', 'U_OTHER', 'Hey <@U_ME> can you check this?')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', '1000.002', 'U_OTHER', 'Hey <@U_ME> can you check this?')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindPendingMentions(1, "U_ME", 0)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1, "the identical mention in the other account's channel must not leak in")
+	assert.Equal(t, "1:C1", candidates[0].ChannelID)
+}
+
 func TestFindPendingDMs(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert a DM channel and messages
-	_, err := db.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-user', 'dm', 'U_OTHER')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('1:D1', 'dm-user', 'dm', 'U_OTHER')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', '1000.001', 'U_OTHER', 'Hey, got a minute?')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', '1000.001', 'U_OTHER', 'Hey, got a minute?')`)
 	require.NoError(t, err)
 	// Our own message — should not be a candidate
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', '1001.001', 'U_ME', 'Sure')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', '1001.001', 'U_ME', 'Sure')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindPendingDMs("U_ME", 0)
+	candidates, err := db.FindPendingDMs(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 1)
-	assert.Equal(t, "D1", candidates[0].ChannelID)
+	assert.Equal(t, "1:D1", candidates[0].ChannelID)
 	assert.Equal(t, "dm", candidates[0].TriggerType)
+}
+
+// TestFindPendingDMs_ScopedToAccount guards the multi-account regression: the
+// owner's own outgoing DM in a second connected account must never surface as
+// an incoming DM, neither by leaking into account 1's results (no channel
+// scoping) nor by slipping past account 2's own-message exclusion.
+func TestFindPendingDMs_ScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('2:CDM', 'dm-user', 'dm', '2:U_OTHER')`)
+	require.NoError(t, err)
+	// The owner's own outgoing DM, sent from the second connected account.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:CDM', '1000.001', '2:U_ME', 'Sure, will do')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindPendingDMs(1, "1:U_ME", 0)
+	require.NoError(t, err)
+	assert.Len(t, candidates, 0, "another account's channel must not leak into account 1's results")
+
+	candidates, err = db.FindPendingDMs(2, "2:U_ME", 0)
+	require.NoError(t, err)
+	assert.Len(t, candidates, 0, "the owner's own DM in its own account must still be excluded")
 }
 
 func TestCheckUserReplied(t *testing.T) {
@@ -391,31 +482,31 @@ func TestFindThreadRepliesToUser(t *testing.T) {
 	db := openTestDB(t)
 
 	// Insert a channel
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
 
 	// Root message by our user (thread_ts == ts means it's the root)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1000.001', 'U_ME', 'Starting a thread', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1000.001', 'U_ME', 'Starting a thread', '1000.001')`)
 	require.NoError(t, err)
 
 	// Reply from someone else in that thread
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, permalink) VALUES ('C1', '1001.001', 'U_OTHER', 'Replying to your thread', '1000.001', 'https://slack.com/p2')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, permalink) VALUES ('1:C1', '1001.001', 'U_OTHER', 'Replying to your thread', '1000.001', 'https://slack.com/p2')`)
 	require.NoError(t, err)
 
 	// Reply from ourselves (should not match)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1002.001', 'U_ME', 'My own reply', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1002.001', 'U_ME', 'My own reply', '1000.001')`)
 	require.NoError(t, err)
 
 	// Reply in a thread started by someone else (should not match)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '2000.001', 'U_OTHER2', 'Other root', '2000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '2000.001', 'U_OTHER2', 'Other root', '2000.001')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '2001.001', 'U_OTHER', 'Reply to other thread', '2000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '2001.001', 'U_OTHER', 'Reply to other thread', '2000.001')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindThreadRepliesToUser("U_ME", 0)
+	candidates, err := db.FindThreadRepliesToUser(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 1)
-	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, "1:C1", candidates[0].ChannelID)
 	assert.Equal(t, "1001.001", candidates[0].MessageTS)
 	assert.Equal(t, "1000.001", candidates[0].ThreadTS)
 	assert.Equal(t, "U_OTHER", candidates[0].SenderUserID)
@@ -426,18 +517,18 @@ func TestFindThreadRepliesToUser(t *testing.T) {
 func TestFindThreadRepliesToUser_ExcludesExistingInbox(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1000.001', 'U_ME', 'Root', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1000.001', 'U_ME', 'Root', '1000.001')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1001.001', 'U_OTHER', 'Reply', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1001.001', 'U_OTHER', 'Reply', '1000.001')`)
 	require.NoError(t, err)
 
 	// Create an existing inbox item for this message
-	_, err = db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1001.001", SenderUserID: "U_OTHER", TriggerType: "thread_reply"})
+	_, err = db.CreateInboxItem(InboxItem{ChannelID: "1:C1", MessageTS: "1001.001", SenderUserID: "U_OTHER", TriggerType: "thread_reply"})
 	require.NoError(t, err)
 
-	candidates, err := db.FindThreadRepliesToUser("U_ME", 0)
+	candidates, err := db.FindThreadRepliesToUser(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 0)
 }
@@ -445,15 +536,15 @@ func TestFindThreadRepliesToUser_ExcludesExistingInbox(t *testing.T) {
 func TestFindThreadRepliesToUser_SinceTS(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1000.001', 'U_ME', 'Root', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1000.001', 'U_ME', 'Root', '1000.001')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '1001.001', 'U_OTHER', 'Old reply', '1000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '1001.001', 'U_OTHER', 'Old reply', '1000.001')`)
 	require.NoError(t, err)
 
 	// sinceTS after the reply — should find nothing
-	candidates, err := db.FindThreadRepliesToUser("U_ME", 2000.0)
+	candidates, err := db.FindThreadRepliesToUser(1, "U_ME", 2000.0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 0)
 }
@@ -461,26 +552,26 @@ func TestFindThreadRepliesToUser_SinceTS(t *testing.T) {
 func TestFindThreadRepliesToUser_ParticipantNotRoot(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
 
 	// Root message by someone else
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '3000.001', 'U_OTHER', 'Other starts a thread', '3000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '3000.001', 'U_OTHER', 'Other starts a thread', '3000.001')`)
 	require.NoError(t, err)
 
 	// U_ME replies in that thread (participant, not root author)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '3001.001', 'U_ME', 'I chime in', '3000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '3001.001', 'U_ME', 'I chime in', '3000.001')`)
 	require.NoError(t, err)
 
 	// Third person replies after U_ME — should be detected
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, permalink) VALUES ('C1', '3002.001', 'U_THIRD', 'Follow-up for you', '3000.001', 'https://slack.com/p3')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, permalink) VALUES ('1:C1', '3002.001', 'U_THIRD', 'Follow-up for you', '3000.001', 'https://slack.com/p3')`)
 	require.NoError(t, err)
 
 	// U_ME's own reply should NOT appear
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('C1', '3003.001', 'U_ME', 'My second reply', '3000.001')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('1:C1', '3003.001', 'U_ME', 'My second reply', '3000.001')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindThreadRepliesToUser("U_ME", 0)
+	candidates, err := db.FindThreadRepliesToUser(1, "U_ME", 0)
 	require.NoError(t, err)
 	// Only U_THIRD's reply — root (thread_ts==ts) is filtered, U_ME's own replies are excluded
 	assert.Len(t, candidates, 1)
@@ -490,24 +581,47 @@ func TestFindThreadRepliesToUser_ParticipantNotRoot(t *testing.T) {
 	assert.Equal(t, "https://slack.com/p3", candidates[0].Permalink)
 }
 
+// TestFindThreadRepliesToUser_ScopedToAccount guards the multi-account
+// regression: a qualifying thread reply under account 2 must be invisible to
+// account 1's call and only surface when called for account 2.
+func TestFindThreadRepliesToUser_ScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('2:C1', '1000.001', 'U_ME', 'Starting a thread', '1000.001')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES ('2:C1', '1001.001', 'U_OTHER', 'Replying to your thread', '1000.001')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindThreadRepliesToUser(1, "U_ME", 0)
+	require.NoError(t, err)
+	assert.Len(t, candidates, 0, "account 1 must not see account 2's thread reply")
+
+	candidates, err = db.FindThreadRepliesToUser(2, "U_ME", 0)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "2:C1", candidates[0].ChannelID)
+}
+
 func TestFindReactionRequests(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
 
 	// Message by our user
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('C1', '1000.001', 'U_ME', 'Here is my proposal', 'https://slack.com/p1')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, permalink) VALUES ('1:C1', '1000.001', 'U_ME', 'Here is my proposal', 'https://slack.com/p1')`)
 	require.NoError(t, err)
 
 	// Question reaction from someone else
-	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('C1', '1000.001', 'U_OTHER', 'question')`)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', '1000.001', 'U_OTHER', 'question')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindReactionRequests("U_ME", 0)
+	candidates, err := db.FindReactionRequests(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 1)
-	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, "1:C1", candidates[0].ChannelID)
 	assert.Equal(t, "1000.001", candidates[0].MessageTS)
 	assert.Equal(t, "U_OTHER", candidates[0].SenderUserID)
 	assert.Equal(t, "reaction", candidates[0].TriggerType)
@@ -517,16 +631,16 @@ func TestFindReactionRequests(t *testing.T) {
 func TestFindReactionRequests_IgnoresNonAttentionEmoji(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', 'U_ME', 'Nice work')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', 'U_ME', 'Nice work')`)
 	require.NoError(t, err)
 
 	// Thumbs up reaction (not an attention emoji)
-	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('C1', '1000.001', 'U_OTHER', '+1')`)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', '1000.001', 'U_OTHER', '+1')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindReactionRequests("U_ME", 0)
+	candidates, err := db.FindReactionRequests(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 0)
 }
@@ -534,16 +648,16 @@ func TestFindReactionRequests_IgnoresNonAttentionEmoji(t *testing.T) {
 func TestFindReactionRequests_IgnoresOwnReaction(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', 'U_ME', 'My message')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', 'U_ME', 'My message')`)
 	require.NoError(t, err)
 
 	// Own reaction should not match
-	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('C1', '1000.001', 'U_ME', 'question')`)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', '1000.001', 'U_ME', 'question')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindReactionRequests("U_ME", 0)
+	candidates, err := db.FindReactionRequests(1, "U_ME", 0)
 	require.NoError(t, err)
 	assert.Len(t, candidates, 0)
 }
@@ -551,22 +665,45 @@ func TestFindReactionRequests_IgnoresOwnReaction(t *testing.T) {
 func TestFindReactionRequests_DeduplicatesMultipleReactions(t *testing.T) {
 	db := openTestDB(t)
 
-	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')`)
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', 'U_ME', 'My message')`)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', 'U_ME', 'My message')`)
 	require.NoError(t, err)
 
 	// Multiple attention reactions from different users on the same message
-	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('C1', '1000.001', 'U_A', 'question')`)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', '1000.001', 'U_A', 'question')`)
 	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('C1', '1000.001', 'U_B', 'eyes')`)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('1:C1', '1000.001', 'U_B', 'eyes')`)
 	require.NoError(t, err)
 
-	candidates, err := db.FindReactionRequests("U_ME", 0)
+	candidates, err := db.FindReactionRequests(1, "U_ME", 0)
 	require.NoError(t, err)
 	// Should return only one candidate per message
 	assert.Len(t, candidates, 1)
 	assert.Equal(t, "reaction", candidates[0].TriggerType)
+}
+
+// TestFindReactionRequests_ScopedToAccount guards the multi-account
+// regression: a qualifying reaction request under account 2 must be invisible
+// to account 1's call and only surface when called for account 2.
+func TestFindReactionRequests_ScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+
+	_, err := db.Exec(`INSERT INTO channels (id, name, type) VALUES ('2:C1', 'general', 'public')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', '1000.001', 'U_ME', 'Here is my proposal')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO reactions (channel_id, message_ts, user_id, emoji) VALUES ('2:C1', '1000.001', 'U_OTHER', 'question')`)
+	require.NoError(t, err)
+
+	candidates, err := db.FindReactionRequests(1, "U_ME", 0)
+	require.NoError(t, err)
+	assert.Len(t, candidates, 0, "account 1 must not see account 2's reaction request")
+
+	candidates, err = db.FindReactionRequests(2, "U_ME", 0)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "2:C1", candidates[0].ChannelID)
 }
 
 func TestGetInboxItems_IncludeResolved(t *testing.T) {

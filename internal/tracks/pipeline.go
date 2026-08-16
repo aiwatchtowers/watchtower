@@ -1454,7 +1454,10 @@ func scoreChannel(channelID string, topics []db.DigestTopic, userID string,
 		score += 2
 	}
 
-	mentionTag := "<@" + userID + ">"
+	// userID (from GetCurrentUserID) is namespaced ("1:U123"), but topic text is
+	// model-authored and today contains no mention markup at all — so this keeps
+	// the mention check correct rather than making the dormant signal fire.
+	mentionTag := watchtowerslack.MentionTag(userID)
 	for _, t := range topics {
 		// Check @mention in key_messages and situations.
 		if strings.Contains(t.KeyMessages, mentionTag) || strings.Contains(t.Situations, mentionTag) {

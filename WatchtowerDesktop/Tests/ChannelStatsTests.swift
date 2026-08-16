@@ -82,6 +82,17 @@ final class ChannelStatsTests: XCTestCase {
         XCTAssertEqual(stats[0].mentionCount, 1) // only <@U001>
     }
 
+    func testFetchAllMentionsMatchNamespacedCurrentUserAgainstRawMarkup() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "general")
+            // Message text keeps raw markup forever; current_user_id is namespaced (migration 00048).
+            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000001.000100", userID: "U002", text: "hey <@U1>")
+        }
+        let stats = try db.read { try ChannelStatsQueries.fetchAll($0, currentUserID: "1:U1") }
+        XCTAssertEqual(stats[0].mentionCount, 1)
+    }
+
     func testFetchAllIncludesWatchedStatus() throws {
         let db = try TestDatabase.create()
         try db.write { db in

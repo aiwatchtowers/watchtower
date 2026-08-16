@@ -186,6 +186,25 @@ func (db *DB) UserNameByID(userID string) (string, error) {
 	return name, nil
 }
 
+// UserNameByRawID returns a display name for a user by a raw (non-namespaced)
+// Slack id — one parsed directly out of "<@U123>" markup in message text,
+// which keeps the bare id forever regardless of how users.id is stored.
+// Since migration 00048, users.id may be namespaced ("<accountID>:U123"), so
+// this matches either form. A raw id parsed from text carries no account, so
+// if the same raw id exists under two connected workspaces this resolves to
+// an arbitrary one of them — acceptable for a display name.
+func (db *DB) UserNameByRawID(rawID string) (string, error) {
+	var name, displayName string
+	err := db.QueryRow(`SELECT name, display_name FROM users WHERE id = ? OR id LIKE '%:' || ?`, rawID, rawID).Scan(&name, &displayName)
+	if err != nil {
+		return rawID, err // fallback to ID
+	}
+	if displayName != "" {
+		return displayName, nil
+	}
+	return name, nil
+}
+
 // SetBotOverride sets or clears the manual bot override for a user.
 // Pass nil to clear (revert to Slack-provided value), or a bool pointer to force.
 func (db *DB) SetBotOverride(userID string, isBot *bool) error {

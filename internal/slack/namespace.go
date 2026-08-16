@@ -56,3 +56,26 @@ func RawIDsJSON(blob string) string {
 	}
 	return string(out)
 }
+
+// MentionPatterns returns the SQL LIKE patterns that match a Slack mention of
+// userID inside stored message text. Slack writes message text with raw ids
+// exactly as sent, never namespaced, so userID (which may be namespaced, e.g.
+// a value read from slack_accounts.current_user_id) must be reduced via
+// SplitAccountID before it is embedded in the pattern.
+//
+// Mentions appear in two forms — `<@U123>` (raw) and `<@U123|Display Name>`
+// (resolved) — so both patterns must be checked. The closing `>` / `|`
+// boundary in each is load-bearing: without it, a search for U_ME would also
+// match a mention of U_MEOW.
+func MentionPatterns(userID string) (strict, pipe string) {
+	_, rawID, _ := SplitAccountID(userID)
+	return "%<@" + rawID + ">%", "%<@" + rawID + "|%"
+}
+
+// MentionTag returns the raw Slack mention markup (`<@U123>`) for userID, as
+// it would appear in message text. As with MentionPatterns, userID is reduced
+// to its raw form via SplitAccountID before use.
+func MentionTag(userID string) string {
+	_, rawID, _ := SplitAccountID(userID)
+	return "<@" + rawID + ">"
+}

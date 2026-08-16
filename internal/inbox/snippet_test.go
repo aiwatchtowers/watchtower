@@ -23,7 +23,7 @@ func TestEnrichSnippetWithoutDB(t *testing.T) {
 		{
 			name: "user mention without display name",
 			in:   "hello <@U010T16N5LN> how are you",
-			want: "hello how are you",
+			want: "hello @U010T16N5LN how are you",
 		},
 		{
 			name: "channel reference",
@@ -92,6 +92,28 @@ func TestEnrichSnippetResolvesRawMentionViaDB(t *testing.T) {
 	require.NoError(t, d.UpsertUser(db.User{ID: "U3", Name: "bob", DisplayName: "Bob Brown"}))
 
 	assert.Equal(t, "ping @Bob Brown please", enrichSnippet("ping <@U3> please", d))
-	assert.Equal(t, "ping please", enrichSnippet("ping <@U404NOPE> please", d),
-		"unknown raw mention is dropped, not left as an ID")
+	assert.Equal(t, "ping @U404NOPE please", enrichSnippet("ping <@U404NOPE> please", d),
+		"unknown raw mention keeps the raw id; the addressee must never be dropped")
+}
+
+// TestEnrichSnippetResolvesNamespacedMentionViaDB covers the mixed-form case
+// introduced by migration 00048: message text keeps the raw id forever
+// ("<@U1>"), while users.id may be namespaced ("1:U1").
+func TestEnrichSnippetResolvesNamespacedMentionViaDB(t *testing.T) {
+	d := newTestDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U1", Name: "alice", DisplayName: "Alice A"}))
+
+	assert.Equal(t, "hey @Alice A", enrichSnippet("hey <@U1>", d),
+		"a raw id parsed from message text must resolve against a namespaced users.id")
+}
+
+// TestEnrichSnippetPipeFormNeverQueriesDB confirms the "<@U1|Name>" form
+// always short-circuits to the markup's own name, without a DB lookup — the
+// DB is seeded with a conflicting name for the same raw id to prove the
+// markup name wins rather than being overridden by a lookup.
+func TestEnrichSnippetPipeFormNeverQueriesDB(t *testing.T) {
+	d := newTestDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U1", Name: "alice", DisplayName: "DB Name"}))
+
+	assert.Equal(t, "hey @Explicit Name", enrichSnippet("hey <@U1|Explicit Name>", d))
 }

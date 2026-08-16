@@ -559,6 +559,30 @@ func TestComputeUserInteractions_Mentions(t *testing.T) {
 	assert.Equal(t, 1, interactions[0].MentionsFrom) // U2 mentioned U1 once
 }
 
+// TestComputeUserInteractions_MentionsNamespacedIDs covers the mixed-form
+// case introduced by migration 00048: users.id/messages.user_id are
+// namespaced ("1:U1"), but message text keeps the raw mention markup
+// ("<@U1>") forever.
+func TestComputeUserInteractions_MentionsNamespacedIDs(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertUser(User{ID: "1:U1", Name: "alice"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U2", Name: "bob"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
+
+	// U1 mentions U2
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000001", UserID: "1:U1", Text: "hey <@U2> check this"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000002", UserID: "1:U1", Text: "<@U2> please review"}))
+	// U2 mentions U1
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000003", UserID: "1:U2", Text: "done <@U1>"}))
+
+	interactions, err := db.ComputeUserInteractions("1:U1", 1000000, 2000000)
+	require.NoError(t, err)
+	require.Len(t, interactions, 1)
+	assert.Equal(t, 2, interactions[0].MentionsTo)   // U1 mentioned U2 twice
+	assert.Equal(t, 1, interactions[0].MentionsFrom) // U2 mentioned U1 once
+}
+
 func TestComputeUserInteractions_Reactions(t *testing.T) {
 	db := openTestDB(t)
 

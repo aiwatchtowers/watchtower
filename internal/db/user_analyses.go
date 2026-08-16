@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // UpsertUserAnalysis inserts or replaces a user analysis based on the unique
@@ -743,13 +745,17 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 
 	// 5. @-mentions: parse <@USERID> patterns from message text
 	// A mentioned B: currentUser's messages containing <@otherUID>
+	// message text keeps Slack's raw mention markup forever, while u2.id may
+	// be namespaced (migration 00048: "<accountID>:U123") — reduce it to the
+	// raw form before the LIKE match; substr/instr is a no-op for an id with
+	// no colon, so a non-namespaced id still works.
 	mentToRows, err := db.Query(`
 		SELECT mentioned_uid, COUNT(*) as cnt
 		FROM (
 			SELECT m.text, u2.id as mentioned_uid
 			FROM messages m
 			JOIN channels c ON c.id = m.channel_id
-			JOIN users u2 ON m.text LIKE '%<@' || u2.id || '>%'
+			JOIN users u2 ON m.text LIKE '%<@' || substr(u2.id, instr(u2.id, ':') + 1) || '>%'
 			WHERE m.user_id = ? AND m.ts_unix >= ? AND m.ts_unix <= ?
 				AND m.is_deleted = 0 AND m.text LIKE '%<@%>%'
 				AND u2.id != ? AND u2.is_bot = 0 AND u2.is_deleted = 0
@@ -774,6 +780,11 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 	}
 
 	// B mentioned A: other users' messages containing <@currentUserID>
+	// The LIKE match needs the raw form (message text carries Slack's raw
+	// markup forever), while the != exclusion compares directly against the
+	// namespaced m.user_id column, so the two placeholders below bind
+	// different reductions of currentUserID.
+	_, rawCurrentUserID, _ := watchtowerslack.SplitAccountID(currentUserID)
 	mentFromRows, err := db.Query(`
 		SELECT m.user_id, COUNT(*) as cnt
 		FROM messages m
@@ -784,7 +795,7 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 			AND m.is_deleted = 0
 			AND u.is_bot = 0 AND u.is_deleted = 0
 		GROUP BY m.user_id`,
-		currentUserID, currentUserID, from, to)
+		rawCurrentUserID, currentUserID, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("computing mentions_from: %w", err)
 	}

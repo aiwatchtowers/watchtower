@@ -123,6 +123,31 @@ func TestGetChannelStats(t *testing.T) {
 	assert.Equal(t, 0, c2.UserMsgs)
 }
 
+// TestGetChannelStats_MentionCountNamespacedUserID pins the same
+// reduce-before-LIKE fix as FindPendingMentions: currentUserID is namespaced
+// ("1:U1") but messages.text carries Slack's raw mention markup ("<@U1>")
+// untouched, since it is source data no migration rewrites.
+func TestGetChannelStats_MentionCountNamespacedUserID(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', '1:U2', 'hey <@U1> check this')`)
+	require.NoError(t, err)
+
+	stats, err := db.GetChannelStats("1:U1")
+	require.NoError(t, err)
+
+	var c1 *ChannelStatRow
+	for i := range stats {
+		if stats[i].ChannelID == "C1" {
+			c1 = &stats[i]
+			break
+		}
+	}
+	require.NotNil(t, c1, "C1 should be in stats")
+	assert.Equal(t, 1, c1.Mentions)
+}
+
 func TestGetChannelStats_EmptyUserID(t *testing.T) {
 	db := openTestDB(t)
 	_, err := db.GetChannelStats("")
