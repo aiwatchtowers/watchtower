@@ -5,8 +5,8 @@ import WatchtowerCore
 //
 // The Ideas & Decisions registry screen: a master-detail split over a review
 // queue ("For review", `vm.reviewItems`) and a filterable browsable registry
-// (`vm.registryItems`) — copies `DashboardView`'s HSplitView + List(selection:)
-// shape.
+// (`vm.registryItems`) — an HSplitView whose master list follows the
+// `TargetsListView` scrolling-rows shape rather than a List.
 struct IdeasView: View {
     @Bindable var vm: IdeasViewModel
     @Environment(AppState.self) private var appState
@@ -79,45 +79,79 @@ struct IdeasView: View {
         VStack(spacing: 0) {
             filterBar
             Divider()
-            List(selection: Binding(
-                get: { vm.selectedID },
-                set: { vm.select($0) }
-            )) {
-                if !vm.reviewItems.isEmpty {
-                    Section("For review") {
-                        ForEach(vm.reviewItems) { idea in
-                            IdeaRow(idea: idea).tag(idea.id)
+            // Not a List: `.listStyle(.sidebar)` renders selection through an
+            // NSVisualEffectView that samples the desktop wallpaper, so the
+            // highlight arrives tinted (owner: a brown selection pill) no
+            // matter what opaque background is layered under the rows. The
+            // Targets list (TargetsListView) is the reference look — plain
+            // scrolling rows with a self-drawn accent fill.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if !vm.reviewItems.isEmpty {
+                            sectionHeader("For review", count: vm.reviewItems.count)
+                            ForEach(vm.reviewItems) { idea in
+                                ideaRow(idea)
+                            }
+                        }
+                        sectionHeader("Registry", count: vm.registryItems.count)
+                        ForEach(vm.registryItems) { idea in
+                            ideaRow(idea)
                         }
                     }
                 }
-                Section("Registry") {
-                    ForEach(vm.registryItems) { idea in
-                        IdeaRow(idea: idea).tag(idea.id)
+                .overlay {
+                    if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
+                        Text(emptySegmentMessage)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
                 }
-            }
-            .listStyle(.sidebar)
-            // The sidebar list style rides an NSVisualEffectView that samples
-            // the desktop wallpaper behind the window, ignoring any SwiftUI
-            // background layered under it — on an empty segment the whole
-            // panel reads as a wallpaper-tinted hole (BoardsView precedent).
-            .scrollContentBackground(.hidden)
-            // Hiding that backdrop also leaves the row-selection fill blending
-            // against the wallpaper instead of the list material, which tints
-            // the highlight (owner: "unique" brown/yellow selection). Painting
-            // an opaque surface under the rows restores the standard grey.
-            // windowBackgroundColor, not controlBackgroundColor: filterBar
-            // above has no background of its own, so the panel stays one
-            // continuous surface.
-            .background(Color(nsColor: .windowBackgroundColor))
-            .overlay {
-                if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
-                    Text(emptySegmentMessage)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                // The selection also moves without a click — reconcileSelection
+                // lands it on a neighbour after a delete, and a reload can drop
+                // the selected row far down the list — so follow it.
+                .onChange(of: vm.selectedID) { _, newValue in
+                    guard let id = newValue else { return }
+                    withAnimation { proxy.scrollTo(id, anchor: .center) }
                 }
             }
         }
+    }
+
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func ideaRow(_ idea: Idea) -> some View {
+        let isSelected = vm.selectedID == idea.id
+        return Button {
+            vm.select(idea.id)
+        } label: {
+            IdeaRow(idea: idea)
+                .padding(.horizontal, 12)
+                // IdeaRow carries its own .padding(.vertical, 4); 4 more here
+                // matches the Targets rows' 8 without doubling it.
+                .padding(.vertical, 4)
+                .background(
+                    isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .id(idea.id)
     }
 
     private var filterBar: some View {
