@@ -46,6 +46,11 @@ struct SidebarView: View {
         UserDefaults.standard.set(Array(hiddenItems), forKey: Self.hiddenItemsKey)
     }
 
+    /// Feature ids currently disabled — read fresh on every render so a live
+    /// Feature Manager change (or the initial load) hides/reveals tabs
+    /// without a separate observation wire-up.
+    private var disabledFeatures: Set<String> { appState.featureVisibility.disabledFeatureIDs }
+
     private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
     private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
     private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
@@ -61,7 +66,7 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SidebarDestination.rootItems) { item in
+            ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
                 sidebarButton(item)
             }
 
@@ -69,7 +74,7 @@ struct SidebarView: View {
                 sectionView(section)
             }
 
-            ForEach(SidebarDestination.mainTrailingItems) { item in
+            ForEach(SidebarDestination.mainTrailingItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
                 sidebarButton(item)
             }
 
@@ -86,7 +91,7 @@ struct SidebarView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 2)
 
-                ForEach(SidebarDestination.toolItems) { item in
+                ForEach(SidebarDestination.toolItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
                     sidebarButton(item)
                 }
             }
@@ -302,7 +307,13 @@ struct SidebarView: View {
 
             if !collapsed {
                 let parts = section.partition(hidden: hiddenItems)
-                ForEach(parts.visible) { item in
+                // Feature-gated visibility is filtered on top of the user's
+                // own show/hide choice, on BOTH halves — a feature-disabled
+                // item disappears from the section entirely rather than
+                // resurfacing in the "Hidden" sub-list.
+                let visibleItems = parts.visible.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+                let userHiddenItems = parts.hidden.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+                ForEach(visibleItems) { item in
                     sidebarButton(item)
                         .contextMenu {
                             Button("Hide") {
@@ -311,13 +322,13 @@ struct SidebarView: View {
                         }
                 }
 
-                if !parts.hidden.isEmpty {
+                if !userHiddenItems.isEmpty {
                     Text("HIDDEN")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.quaternary)
                         .padding(.horizontal, 12)
                         .padding(.top, 4)
-                    ForEach(parts.hidden) { item in
+                    ForEach(userHiddenItems) { item in
                         sidebarButton(item)
                             .opacity(0.5)
                             .contextMenu {

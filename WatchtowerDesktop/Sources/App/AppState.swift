@@ -14,6 +14,12 @@ final class AppState {
     static let shared = AppState()
 
     var selectedDestination: SidebarDestination = .inbox
+
+    /// Which feature ids are currently disabled — drives sidebar visibility,
+    /// navigation fallback, and the Dashboard banner. Populated by the
+    /// Feature Manager service (wired in separately); empty until then.
+    let featureVisibility = FeatureVisibilityStore()
+
     var databaseManager: DatabaseManager?
     var errorMessage: String?
     /// Non-nil when the CLI binary store could not be synced this launch. The

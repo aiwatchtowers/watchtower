@@ -53,4 +53,45 @@ final class SidebarSectionTests: XCTestCase {
             XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")
         }
     }
+
+    // MARK: - Feature-gated visibility
+
+    func testDisabledFeatureHidesItsTabs() {
+        XCTAssertFalse(SidebarDestination.ideas.isVisible(disabledFeatures: ["ideas"]))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["ideas"]))
+    }
+
+    /// .digests requires ANY of slack-digests/stream-digests/ideas: hidden
+    /// only when all three are disabled, visible if any one is enabled.
+    func testDigestsAnyOfRule() {
+        XCTAssertFalse(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests", "ideas"]))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests"]))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "ideas"]))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["stream-digests", "ideas"]))
+    }
+
+    func testCoreTabsAlwaysVisible() {
+        let everythingDisabled: Set<String> = [
+            "slack-digests", "stream-digests", "ideas", "memory",
+            "briefing", "day-plan", "tracks", "people-cards", "secretary-inbox"
+        ]
+        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled))
+        XCTAssertTrue(SidebarDestination.targets.isVisible(disabledFeatures: everythingDisabled))
+        XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled))
+        XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled))
+    }
+
+    func testRootItemTracksFilterable() {
+        XCTAssertFalse(SidebarDestination.tracks.isVisible(disabledFeatures: ["tracks"]))
+    }
+
+    // MARK: - Navigation fallback
+
+    func testFallbackDestinationSwitchesAwayWhenCurrentBecomesHidden() {
+        XCTAssertEqual(SidebarDestination.fallbackDestination(current: .ideas, disabled: ["ideas"]), .inbox)
+    }
+
+    func testFallbackDestinationNilWhenCurrentStillVisible() {
+        XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"]))
+    }
 }
