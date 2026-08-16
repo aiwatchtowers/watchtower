@@ -404,63 +404,11 @@ final class DictationCenter {
         // a cold engine load is never lost.
         let buffers = startBuffering(recorder: recorder)
 
-        // Apple-lane runtime gate: the catalog says which languages Apple
-        // ships SpeechTranscriber models for at all, but the actual set on
-        // this machine/OS build is narrower (live-repro 2026-08-16: ru-RU
-        // passes the catalog yet is unsupported at runtime, and BOTH the
-        // streaming session and the batch fallback die with no text). The
-        // check is cheap and the buffer is already running, so nothing said
-        // so far is lost; unsupported → the whisper lane, the same
-        // degrade-to-a-working-engine shape as `DictationEngineChoice
-        // .resolve`.
-        var config = config
-        if case .apple = runChoice {
-            let locale = AppleLocaleCatalog.resolveDictationLocale(
-                forced: config.forcedLanguage, langset: config.langset)
-            if await !appleRuntimeSupportsLanguage(locale) {
-                NSLog("[Dictation] Apple lane has no runtime model for %@ — using Whisper small",
-                      locale.identifier)
-                runChoice = .whisper(model: "small")
-                config.model = "small"
-            }
+        guard let resolved = await resolveEngineForRun(config: config, recorder: recorder, buffers: buffers) else {
+            return
         }
-        guard !Task.isCancelled else { return }
-
-        // Only whisper lanes resolve a Transcriber (engine factory + warm
-        // slot); the apple lane loads nothing — its session IS the engine.
-        // For apple, `isEngineLoading` therefore clears as soon as the run
-        // reaches the session handoff below: session construction is
-        // synchronous and `run()` starts consuming immediately, so this is
-        // the simplest observable "session setup done" point. (Clearing on
-        // the first onUpdate instead would leave the badge on for an entire
-        // silent dictation; the first-run language-asset install inside
-        // `run()` is accepted as not badge-covered.)
-        let transcriber: Transcriber?
-        if case .whisper = runChoice {
-            do {
-                transcriber = try await resolveTranscriber(config: config)
-            } catch {
-                NSLog("[Dictation] engine failed to load: %@", String(describing: error))
-                recorder.stop()
-                await buffers.feedTask?.value
-                guard !Task.isCancelled else { return }
-                finish(failed: "engine failed to load: \(error.localizedDescription)")
-                return
-            }
-        } else {
-            // The apple lane skips resolveTranscriber — the only other warm-slot
-            // invalidation site — so a whisper engine parked by an earlier
-            // dictation would otherwise stay resident forever after the owner
-            // switched `dictation.model` to Apple, keeping `hasResidentEngine`
-            // true with nothing left to ever release it (a meeting live pass
-            // would park on a dead reference). Drop it now; `engineReleased`
-            // firing is correct — the slot genuinely frees.
-            if warmTranscriber != nil {
-                dropEngineImmediately()
-            }
-            transcriber = nil
-        }
-        guard !Task.isCancelled else { return }
+        let transcriber = resolved.transcriber
+        let config = resolved.config
         isEngineLoading = false
 
         let rawText: String
@@ -511,6 +459,61 @@ final class DictationCenter {
         phase = .cleaning
         await runCleanup(rawText: rawText, mode: mode,
                          onResult: onResult, onCleanupFailure: onCleanupFailure)
+    }
+
+    /// Resolves which engine this run actually uses, split from `runDictation`
+    /// (complexity). Apple-lane runtime gate: the catalog says which languages
+    /// Apple ships SpeechTranscriber models for at all, but the actual set on
+    /// this machine/OS build is narrower (live-repro 2026-08-16: ru-RU passes
+    /// the catalog yet is unsupported at runtime, and BOTH the streaming
+    /// session and the batch fallback die with no text). The check is cheap
+    /// and the buffer is already running, so nothing said so far is lost;
+    /// unsupported → the whisper lane, the same degrade-to-a-working-engine
+    /// shape as `DictationEngineChoice.resolve`. Only whisper lanes resolve a
+    /// Transcriber (engine factory + warm slot); the apple lane loads nothing
+    /// — its session IS the engine, and it drops a stale warm whisper engine
+    /// left resident by an earlier dictation (the only other warm-slot
+    /// invalidation site) so `hasResidentEngine` doesn't stay true forever
+    /// after the owner switched `dictation.model` to Apple. Returns nil on
+    /// cancellation or a terminal engine-load failure — in both cases the
+    /// caller must simply return; `finish(failed:)` is already called here on
+    /// the failure path.
+    private func resolveEngineForRun(
+        config: TranscriptionConfig, recorder: MicRecording, buffers: CaptureBuffers
+    ) async -> (transcriber: Transcriber?, config: TranscriptionConfig)? {
+        var config = config
+        if case .apple = runChoice {
+            let locale = AppleLocaleCatalog.resolveDictationLocale(
+                forced: config.forcedLanguage, langset: config.langset)
+            if await !appleRuntimeSupportsLanguage(locale) {
+                NSLog("[Dictation] Apple lane has no runtime model for %@ — using Whisper small",
+                      locale.identifier)
+                runChoice = .whisper(model: "small")
+                config.model = "small"
+            }
+        }
+        guard !Task.isCancelled else { return nil }
+
+        let transcriber: Transcriber?
+        if case .whisper = runChoice {
+            do {
+                transcriber = try await resolveTranscriber(config: config)
+            } catch {
+                NSLog("[Dictation] engine failed to load: %@", String(describing: error))
+                recorder.stop()
+                await buffers.feedTask?.value
+                guard !Task.isCancelled else { return nil }
+                finish(failed: "engine failed to load: \(error.localizedDescription)")
+                return nil
+            }
+        } else {
+            if warmTranscriber != nil {
+                dropEngineImmediately()
+            }
+            transcriber = nil
+        }
+        guard !Task.isCancelled else { return nil }
+        return (transcriber, config)
     }
 
     /// The cleanup step, split from `runDictation` (complexity): resolves the
