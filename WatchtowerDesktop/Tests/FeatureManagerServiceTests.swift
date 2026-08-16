@@ -228,9 +228,73 @@ struct FeatureManagerServiceTests {
         #expect(service.disabledFeatureIDs == ["memory", "ideas"])
 
         // A staged SUB-TOGGLE is keyed by its config key, not a feature id,
-        // and must never land in a set of feature ids.
-        service.setPending("memory.semantic.enabled", enabled: false)
+        // and must never land in a set of feature ids. Staged ON, because
+        // it loads as false and setPending drops an entry that matches the
+        // loaded state — staging it off would leave nothing staged at all,
+        // and this assertion would then hold vacuously.
+        service.setPending("memory.semantic.enabled", enabled: true)
+        #expect(service.pending["memory.semantic.enabled"] == true)
         #expect(service.disabledFeatureIDs == ["memory", "ideas"])
+    }
+
+    // MARK: - setPending()
+
+    @Test("setPending() drops an entry that matches the loaded state: toggling off then back on leaves nothing staged")
+    func setPendingDropsNoOpFeatureEntry() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+
+        // "ideas" is loaded enabled. Off is a real change...
+        service.setPending("ideas", enabled: false)
+        #expect(service.pending == ["ideas": false])
+        // ...and back on returns it to exactly the loaded state.
+        service.setPending("ideas", enabled: true)
+        #expect(service.pending.isEmpty, "nothing left to apply")
+
+        // Left staged, `features enable ideas` would run its fast-forward
+        // hook (FEAT-03) and reset the watermarks of a feature that was never
+        // off, skipping past freshly-synced history.
+        let spy = RestartSpy()
+        await service.apply { await spy.restart() }
+
+        #expect(runner.invocations == [["features", "list", "--json"]], "only the seed load(); apply() had nothing to do")
+        #expect(spy.callCount == 0)
+    }
+
+    @Test("setPending() keeps an entry that really differs from the loaded state")
+    func setPendingKeepsRealChange() async {
+        let (service, _) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+
+        // "tracks" is loaded disabled, so enabling it is a genuine change.
+        service.setPending("tracks", enabled: true)
+        #expect(service.pending == ["tracks": true])
+    }
+
+    @Test("setPending() applies the same drop-on-equal rule to a sub-toggle key, which has no feature entry of its own")
+    func setPendingDropsNoOpSubToggleEntry() async {
+        let (service, _) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+
+        // "memory.semantic.enabled" is loaded false — named by config key,
+        // found on its parent's subToggles rather than as a feature id.
+        service.setPending("memory.semantic.enabled", enabled: true)
+        #expect(service.pending == ["memory.semantic.enabled": true])
+        service.setPending("memory.semantic.enabled", enabled: false)
+        #expect(service.pending.isEmpty)
+    }
+
+    @Test("setPending() stages a key nothing loaded knows about as-is")
+    func setPendingStagesUnknownKeyAsIs() async {
+        let (service, _) = Self.makeService(stdout: Self.featuresListJSON)
+
+        // No load() — `features` is empty, so even a real feature id has no
+        // known current state to compare against. Dropping the entry here
+        // would silently lose a choice made before the list arrived (the
+        // stage-then-load path `loadInvokesOnDisabledChangedWithPendingFolded`
+        // covers).
+        service.setPending("ideas", enabled: false)
+        #expect(service.pending == ["ideas": false])
     }
 
     // MARK: - dependents(of:)
@@ -318,13 +382,17 @@ struct FeatureManagerServiceTests {
         let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
         await service.load()
 
-        service.setPending("memory", enabled: false)
-        service.applyWithDependents = ["memory"]
+        // "ideas" rather than "memory": setPending drops an entry matching the
+        // loaded state, and the fixture already has "memory" disabled, so
+        // staging a disable on it would stage nothing. Only a feature that is
+        // actually on can be disabled, with or without dependents.
+        service.setPending("ideas", enabled: false)
+        service.applyWithDependents = ["ideas"]
         let spy = RestartSpy()
         await service.apply { await spy.restart() }
 
         let cliCalls = runner.invocations.filter { $0 != ["features", "list", "--json"] }
-        #expect(cliCalls == [["features", "disable", "memory", "--with-dependents"]])
+        #expect(cliCalls == [["features", "disable", "ideas", "--with-dependents"]])
         #expect(service.applyWithDependents.isEmpty, "consumed by apply(), must not leak into the next batch")
     }
 

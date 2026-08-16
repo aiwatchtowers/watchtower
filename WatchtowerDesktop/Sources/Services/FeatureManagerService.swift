@@ -142,8 +142,35 @@ final class FeatureManagerService {
         }
     }
 
+    /// Stages a change, or drops the entry when `enabled` is already the
+    /// loaded state — so toggling a row off and back on stages nothing rather
+    /// than a round trip through the CLI. That round trip is not free:
+    /// `features enable <id>` runs the feature's fast-forward hook (FEAT-03)
+    /// and resets its watermarks to now, skipping past history synced in the
+    /// meantime, for a feature that was never actually off. It would also
+    /// restart the daemon for no change at all.
+    ///
+    /// A key nothing loaded knows about is staged as-is: with no current
+    /// state to compare against (`features` still empty before the first
+    /// `load()`, say) dropping it would silently lose the owner's choice.
     func setPending(_ id: String, enabled: Bool) {
+        if loadedState(of: id) == enabled {
+            pending.removeValue(forKey: id)
+            return
+        }
         pending[id] = enabled
+    }
+
+    /// The last-loaded enabled state behind a `pending` key — a top-level
+    /// feature id, or a sub-toggle's full config key — or nil when neither
+    /// knows it. `state` is tri-state (enabled | disabled | core) and is read
+    /// exactly the way `disabledFeatureIDs` reads it: only "disabled" is off,
+    /// so an always-on core feature counts as enabled.
+    private func loadedState(of id: String) -> Bool? {
+        if let feature = features.first(where: { $0.id == id }) {
+            return feature.state != "disabled"
+        }
+        return features.flatMap(\.subToggles).first { $0.key == id }?.enabled
     }
 
     /// Replays every staged `pending` change through the CLI, sequentially
