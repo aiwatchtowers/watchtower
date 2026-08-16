@@ -74,6 +74,14 @@ final class FeatureManagerService {
     /// `--with-dependents` for exactly these ids, then clears the set.
     var applyWithDependents: Set<String> = []
 
+    /// Fires with the freshly computed `disabledFeatureIDs` after every
+    /// successful `load()` — including the trailing reload inside a fully
+    /// successful `apply()`, which calls `load()` as its last step. Wired by
+    /// `AppState` to `FeatureVisibilityStore` so sidebar/navigation
+    /// visibility stays in sync with the manager; nil by default, so this
+    /// type has no knowledge of that store.
+    var onDisabledChanged: ((Set<String>) -> Void)?
+
     private let runner: CLIRunnerProtocol
 
     init(runner: CLIRunnerProtocol) {
@@ -99,6 +107,7 @@ final class FeatureManagerService {
         do {
             let data = try await runner.run(args: ["features", "list", "--json"])
             features = try JSONDecoder().decode(FeaturesListResponse.self, from: data).features
+            onDisabledChanged?(disabledFeatureIDs)
         } catch {
             loadError = error.localizedDescription
         }
@@ -125,40 +134,70 @@ final class FeatureManagerService {
     }
 
     /// Replays every staged `pending` change through the CLI, sequentially
-    /// and in a deterministic (sorted-key) order, then restarts the daemon
-    /// once and reloads. A key that matches a top-level feature id routes
-    /// through `features enable`/`disable`; anything else is treated as a
-    /// sub-toggle's config key and routes through `config set <key> <bool>`.
+    /// and in a deterministic (sorted-key) order. A key that matches a
+    /// top-level feature id routes through `features enable`/`disable`;
+    /// anything else is treated as a sub-toggle's config key and routes
+    /// through `config set <key> <bool>`.
     ///
     /// Each entry is removed from `pending` only once its own CLI call has
     /// actually succeeded — not optimistically up front, and not as one
     /// final bulk clear (the Jira Features screen's per-toggle rollback
     /// precedent, adapted: a "restore the whole batch" rollback would put
     /// an already-applied entry back into `pending`, inviting a redundant
-    /// or confusing re-apply). On the first failed call the loop simply
-    /// stops: everything already removed stays removed (it is genuinely
-    /// live now), and the failed entry plus anything not yet attempted
-    /// stays in `pending` for the user to retry.
+    /// or confusing re-apply). On the first failed call the loop stops:
+    /// everything already removed stays removed (it is genuinely live
+    /// now), and the failed entry plus anything not yet attempted stays in
+    /// `pending` for the user to retry.
+    ///
+    /// `restart()` fires whenever at least one change actually went live —
+    /// even from a batch that then failed partway through: the feature
+    /// exists to stop unwanted AI/token spend, so a user who successfully
+    /// disabled something expects it to stop now, not only after some
+    /// later fully-successful apply. `load()` always runs at the end,
+    /// success or failure, so `features`/`disabledFeatureIDs` (and
+    /// `onDisabledChanged`) never go stale relative to whatever subset of
+    /// the batch actually landed.
     func apply(restart: @MainActor () async -> Void) async {
         guard !pending.isEmpty else { return }
         isApplying = true
         defer { isApplying = false }
 
         let featureIDs = Set(features.map(\.id))
+        var appliedCount = 0
+        var failure: Error?
+
         for id in pending.keys.sorted() {
             guard let enabled = pending[id] else { continue }
             do {
                 try await applyOne(id: id, enabled: enabled, isFeature: featureIDs.contains(id))
             } catch {
-                loadError = error.localizedDescription
-                return
+                failure = error
+                break
             }
             pending.removeValue(forKey: id)
+            appliedCount += 1
         }
 
-        applyWithDependents = []
-        await restart()
+        if failure == nil {
+            applyWithDependents = []
+        }
+        if appliedCount > 0 {
+            await restart()
+        }
+
+        // Always reload, success or failure: a batch that stopped partway
+        // through may still have changed real feature state (the calls
+        // that succeeded are live), so skipping this on failure would
+        // leave `features` stale and make `disabledFeatureIDs` misreport
+        // an already-applied change as unchanged.
         await load()
+        if let failure {
+            // `load()` just cleared loadError (or set its own reload
+            // error) — the apply failure is what the user needs to see
+            // and retry, so it takes precedence over a quiet successful
+            // reload.
+            loadError = failure.localizedDescription
+        }
     }
 
     private func applyOne(id: String, enabled: Bool, isFeature: Bool) async throws {
@@ -171,5 +210,31 @@ final class FeatureManagerService {
             args.append("--with-dependents")
         }
         _ = try await runner.run(args: args)
+    }
+}
+
+// MARK: - Production wiring
+
+extension FeatureManagerService {
+    /// Production convenience initializer for `AppState`, resolving the CLI
+    /// runner the same way `MeetingRecorderCenter`/`DictationCenter` do (a
+    /// resolver defaulting to `ProcessCLIRunner.makeDefault()`) so this type
+    /// can still be a plain, always-constructed `let` there instead of an
+    /// optional gated on DB/launch timing — `FeatureManagerService` has no DB
+    /// dependency at all. Falls back to a runner that reports
+    /// `.binaryNotFound` through the normal `loadError` path on first use
+    /// for the (dev-only) case where no CLI is resolvable. Tests keep using
+    /// `init(runner:)` directly with a fake runner.
+    convenience init() {
+        self.init(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner())
+    }
+}
+
+/// Always throws `.binaryNotFound` on `run(args:)` — the fallback the
+/// parameterless `FeatureManagerService()` convenience initializer uses only
+/// when `ProcessCLIRunner.makeDefault()` itself fails to resolve a binary.
+private struct UnresolvedCLIRunner: CLIRunnerProtocol {
+    func run(args: [String]) async throws -> Data {
+        throw CLIRunnerError.binaryNotFound
     }
 }
