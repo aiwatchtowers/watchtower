@@ -211,6 +211,13 @@ final class AppState {
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
 
+    /// Desktop-side manager for the Settings → Features panel. Unlike the
+    /// DB-gated ViewModels built in `initFeatureViewModels`, it has no DB
+    /// dependency at all (it is backed entirely by the `watchtower features`
+    /// CLI), so it can live as a plain, always-constructed `let` here and
+    /// load independently of the DB-open Task in `initialize()`.
+    let featureManager = FeatureManagerService()
+
     /// Manages background pipeline tasks (digests, people) started after onboarding sync.
     let backgroundTaskManager = BackgroundTaskManager()
 
@@ -432,6 +439,9 @@ final class AppState {
         }
         // Check for updates in background (once per 24h)
         Task { await updateService.checkIfNeeded() }
+        // No DB dependency, so this does not wait on the DB-open Task above
+        // (Settings → Features may be reached before that Task resolves).
+        Task { await featureManager.load() }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so

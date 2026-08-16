@@ -1,24 +1,66 @@
 import SwiftUI
+import WatchtowerCore
 
-/// Features tab — per-feature tuning (Digest, Briefing, Day Plan, Ideas)
-/// plus notification preferences.
+/// Features tab — the Feature Manager (on/off toggles + cascade dialog) on
+/// top, then per-feature tuning (Digest, Briefing, Day Plan, Ideas) for
+/// whichever of those pillars is currently enabled, plus notification
+/// preferences. Save runs the ordinary config.yaml save AND replays any
+/// staged Feature Manager changes through the CLI, restarting the daemon
+/// once — see `ConfigSaveBar.extraSave`.
 struct FeaturesSettings: View {
+    @Environment(AppState.self) private var appState
     @Bindable var config: ConfigService
 
     var body: some View {
         Form {
-            digestSection
-            briefingSection
-            dayPlanSection
-            ideasSection
+            FeatureManagerSection(service: appState.featureManager)
+            if slackDigestsEnabled {
+                digestSection
+            }
+            if briefingEnabled {
+                briefingSection
+            }
+            if dayPlanEnabled {
+                dayPlanSection
+            }
+            if ideasEnabled {
+                ideasSection
+            }
             NotificationSettings()
         }
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
         .safeAreaInset(edge: .bottom) {
-            ConfigSaveBar(config: config)
+            ConfigSaveBar(config: config) {
+                await appState.featureManager.apply {
+                    await DaemonManager.restart()
+                }
+            }
         }
+    }
+
+    // MARK: - Tuning-section gating
+    //
+    // A tuning section renders only while its pillar is *effectively*
+    // enabled: the last-loaded state XOR any not-yet-saved Feature Manager
+    // toggle — so switching a pillar off hides its tuning controls
+    // immediately, before Save/restart actually applies the change.
+
+    private var slackDigestsEnabled: Bool {
+        !appState.featureManager.disabledFeatureIDs.contains("slack-digests")
+    }
+
+    private var briefingEnabled: Bool {
+        !appState.featureManager.disabledFeatureIDs.contains("briefing")
+    }
+
+    private var dayPlanEnabled: Bool {
+        !appState.featureManager.disabledFeatureIDs.contains("day-plan")
+    }
+
+    private var ideasEnabled: Bool {
+        !appState.featureManager.disabledFeatureIDs.contains("ideas")
     }
 
     private var digestSection: some View {

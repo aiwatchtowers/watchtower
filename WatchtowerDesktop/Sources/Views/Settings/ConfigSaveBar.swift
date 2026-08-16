@@ -6,8 +6,15 @@ import SwiftUI
 /// tabs edit one in-memory config.
 struct ConfigSaveBar: View {
     @Bindable var config: ConfigService
+    /// Runs after `config.save()` succeeds, before the "Saved" confirmation
+    /// — e.g. `FeaturesSettings` uses this to replay the Feature Manager's
+    /// staged CLI changes and restart the daemon as part of the same Save
+    /// action, so a tab with a manager section gets one combined save
+    /// instead of a second, separate control.
+    var extraSave: (() async throws -> Void)?
     @State private var saveError: String?
     @State private var showSaved = false
+    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,9 +36,20 @@ struct ConfigSaveBar: View {
                     config.reload()
                     saveError = nil
                 }
-                Button("Save") { save() }
-                    .keyboardShortcut("s", modifiers: .command)
-                    .buttonStyle(.borderedProminent)
+                .disabled(isSaving)
+                Button {
+                    Task { await save() }
+                } label: {
+                    if isSaving {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Save")
+                    }
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .disabled(isSaving)
             }
             .padding(.horizontal)
             .padding(.vertical, 10)
@@ -50,9 +68,12 @@ struct ConfigSaveBar: View {
             .padding(.top, 6)
     }
 
-    private func save() {
+    private func save() async {
+        isSaving = true
+        defer { isSaving = false }
         do {
             try config.save()
+            try await extraSave?()
             saveError = nil
             withAnimation { showSaved = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
