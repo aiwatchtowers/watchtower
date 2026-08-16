@@ -636,8 +636,44 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 	candidates = append(candidates, threadReplies...)
 	candidates = append(candidates, reactions...)
 
-	// Group by (channel, thread): keep latest message + collect all unique senders.
-	// Non-threaded messages (ThreadTS="") are grouped by channel using key (channelID, "").
+	created := p.createItemsFromCandidates(candidates, currentUserID, false)
+
+	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
+		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
+	return created, nil
+}
+
+// createItemsFromCandidates groups candidates by (channel, thread) — keeping
+// the latest message per group and collecting all unique senders — then
+// creates one inbox item per group, folding into an existing pending thread
+// item instead when one already covers the same thread. Non-threaded
+// messages (ThreadTS="") are grouped by channel using key (channelID, "").
+//
+// This is detectSlackTriggers' own creation path for its per-cycle window
+// (minutes, not weeks). BackfillMentions deliberately does NOT call this —
+// see backfill.go's backfillAccountMentions — because grouping to one item
+// per thread and folding into whatever pending item already sits on a
+// thread are both live-cycle assumptions (the existing item is always about
+// the same conversation) that stop holding over a multi-week historical
+// window, where a shared thread can just as easily belong to an unrelated,
+// currently-live conversation; the backfill runs its own create-only loop
+// instead. Known pre-existing limitation only detectSlackTriggers still
+// carries: the closing-signal check below runs only against a group's
+// latest message, so an acknowledgment reply suppresses the whole group,
+// including a substantive message it followed (see
+// TestPipeline_ClosingSignalSkipped).
+//
+// currentUserID is used only for the closing-signal reply check
+// (CheckUserRepliedBefore). dryRun has no live caller today — detectSlackTriggers,
+// the only remaining call site, always passes false — but is left in place
+// rather than stripped: removing a parameter that exists solely for a
+// caller this branch deleted would mean touching this detector path for
+// that reason alone, and this is not the moment to churn the live detector
+// right before a production run. When dryRun is true every read still runs,
+// so the returned count matches exactly what a real run would create, but
+// both writes that mutate inbox_items (the existing-thread fold, and
+// CreateInboxItem for a new item) are skipped.
+func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
 	type threadKey struct{ channelID, threadTS string }
 	type threadGroup struct {
 		latest  db.InboxCandidate
@@ -687,12 +723,20 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 
 		existingID, _ := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
 		if existingID > 0 {
+			if dryRun {
+				continue
+			}
 			if err := p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink); err != nil {
 				p.logger.Printf("inbox: error updating thread item %d: %v", existingID, err)
 			}
 			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
 				p.logger.Printf("inbox: error merging waiting users for item %d: %v", existingID, err)
 			}
+			continue
+		}
+
+		if dryRun {
+			created++
 			continue
 		}
 
@@ -717,10 +761,7 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 		}
 		created++
 	}
-
-	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
-		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
-	return created, nil
+	return created
 }
 
 // loadContext loads thread or channel context for an inbox item.
