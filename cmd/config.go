@@ -224,6 +224,23 @@ var knownConfigKeys = map[string]bool{
 	"memory.surfaces.meeting_prep":         true,
 	"memory.semantic.preferences":          true,
 	"claude_path":                          true,
+	"tracks.enabled":                       true,
+	"people.enabled":                       true,
+	"targets.next_step.enabled":            true,
+	"inbox.enabled":                        true,
+	"ideas.enabled":                        true,
+	"ideas.mine_interval_hours":            true,
+	"streams.enabled":                      true,
+	"streams.interval_hours":               true,
+	"briefing.enabled":                     true,
+	"briefing.hour":                        true,
+	"day_plan.enabled":                     true,
+	"feed.enabled":                         true,
+	"calendar.enabled":                     true,
+	"gmail.enabled":                        true,
+	"jira.enabled":                         true,
+	"transcripts.audio_retention_days":     true,
+	"features.migrated":                    true,
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {

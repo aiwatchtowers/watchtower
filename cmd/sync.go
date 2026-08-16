@@ -459,6 +459,22 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
+	// Perform one-time feature-gate migration for digest.enabled=false installs.
+	// On migration, reload the config so this daemon process uses migrated values.
+	migrated, err := config.MigrateFeatureGates(flagConfig)
+	if err != nil {
+		logger.Printf("feature-gate migration error: %v (continuing with current config)", err)
+	}
+	if migrated {
+		freshCfg, err := config.Load(flagConfig)
+		if err != nil {
+			logger.Printf("failed to reload config after feature-gate migration: %v (continuing with pre-migration config)", err)
+		} else {
+			cfg = freshCfg
+			logger.Printf("feature-gate migration applied; config reloaded")
+		}
+	}
+
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)

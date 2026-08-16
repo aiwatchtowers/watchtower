@@ -257,3 +257,47 @@ func TestMaskValue(t *testing.T) {
 	assert.Equal(t, "twelv****", maskValue("twelve-char"))
 	assert.Equal(t, "xoxp-****", maskValue("xoxp-secret-token-here"))
 }
+
+func TestConfigSet_FeatureGateKeys_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	// All feature-gate keys that should be recognized
+	keys := []string{
+		"tracks.enabled",
+		"people.enabled",
+		"targets.next_step.enabled",
+		"inbox.enabled",
+		"ideas.enabled",
+		"ideas.mine_interval_hours",
+		"streams.enabled",
+		"streams.interval_hours",
+		"briefing.enabled",
+		"briefing.hour",
+		"day_plan.enabled",
+		"feed.enabled",
+		"calendar.enabled",
+		"gmail.enabled",
+		"jira.enabled",
+		"transcripts.audio_retention_days",
+		"features.migrated",
+	}
+
+	for _, key := range keys {
+		buf := new(bytes.Buffer)
+		errBuf := new(bytes.Buffer)
+		configSetCmd.SetOut(buf)
+		configSetCmd.SetErr(errBuf)
+
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err, "failed to set %q", key)
+		assert.NotContains(t, errBuf.String(), "not a recognized config key", "key %q was flagged as unrecognized", key)
+	}
+}
