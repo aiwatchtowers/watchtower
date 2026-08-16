@@ -51,6 +51,15 @@ struct CatchUpView: View {
                 }
             }
             .listStyle(.sidebar)
+            // The sidebar list style rides an NSVisualEffectView that samples
+            // the desktop wallpaper behind the window, ignoring any SwiftUI
+            // background layered under it — the whole theme panel reads as a
+            // wallpaper-tinted hole (IdeasView/BoardsView precedent). The
+            // opaque layer under the rows keeps the row-selection fill the
+            // standard grey instead of blending against the wallpaper
+            // (IdeasView's listPanel precedent).
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
