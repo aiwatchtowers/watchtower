@@ -777,6 +777,15 @@ func TestScoreChannel(t *testing.T) {
 		assert.Equal(t, 2, score)
 	})
 
+	// userID as read from GetCurrentUserID is namespaced ("1:U1"), while the
+	// topic text carries the raw id exactly as Slack wrote it — the same
+	// mismatch already fixed at MentionPatterns' call sites in internal/db.
+	t.Run("user mention = 2, namespaced userID probe", func(t *testing.T) {
+		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: "[]", KeyMessages: `["<@U1> please review"]`}}
+		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, nil)
+		assert.Equal(t, 2, score)
+	})
+
 	t.Run("related user in situations = 1", func(t *testing.T) {
 		topics := []db.DigestTopic{{Title: "Test", ActionItems: "[]", Situations: `[{"topic":"x","participants":[{"user_id":"1:U456"}]}]`, KeyMessages: "[]"}}
 		score := scoreChannel("1:C_NEW", topics, "1:U1", nil, nil, relatedUsers)

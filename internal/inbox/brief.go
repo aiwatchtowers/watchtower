@@ -111,9 +111,14 @@ func writeTracksSection(b *strings.Builder, database *db.DB) {
 			if i >= maxBriefTracks {
 				break
 			}
-			// BallOn holds a raw user id; track text can carry <@U...> mentions.
-			// Resolve both — the AI treats whatever appears here as the person's
-			// name and copies it into situation titles verbatim.
+			// BallOn is namespaced since migration 00048 (tracks.ball_on),
+			// which is why UserNameByID's exact match against users.id
+			// resolves it correctly. It is also AI-populated (internal/tracks),
+			// so a value written by the model after the migration may still
+			// arrive raw — the documented mixed-form class (see CLAUDE.md).
+			// Track text separately can carry <@U...> mentions. Resolve both —
+			// the AI treats whatever appears here as the person's name and
+			// copies it into situation titles verbatim.
 			ballOn, _ := database.UserNameByID(tr.BallOn)
 			fmt.Fprintf(b, "- [%s] %s (ball on: %s)\n", tr.Priority, enrichSnippet(tr.Text, database), ballOn)
 		}

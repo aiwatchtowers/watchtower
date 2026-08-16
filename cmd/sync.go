@@ -114,6 +114,36 @@ func syncResultPath(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspaceDir(), "last_sync.json")
 }
 
+// maxLogSize is the size past which a log file is rotated at open:
+// the current file is renamed to "<name>.1" (replacing the previous
+// generation) and a fresh file is started. In-process growth between
+// daemon restarts stays unbounded by design — a long-lived tray-launched
+// daemon can overshoot the cap by its uptime's worth of logging (~MBs/day)
+// until the next restart (reboot, app update, rebuild) rotates it.
+const maxLogSize = 20 * 1024 * 1024
+
+// rotateLogIfOversized renames path to path+".1" when the file exceeds
+// maxLogSize, so the next open starts fresh. The returned error is for
+// logging only — rotation must never block a sync, so the caller proceeds
+// and appends to the existing file on failure.
+func rotateLogIfOversized(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() <= maxLogSize {
+		return nil
+	}
+	// os.Rename replaces an existing ".1" atomically on POSIX.
+	if err := os.Rename(path, path+".1"); err != nil {
+		return fmt.Errorf("rename %s: %w", path, err)
+	}
+	return nil
+}
+
 func runSyncStop(cfg *config.Config) error {
 	pidPath := pidFilePath(cfg)
 	pid, err := daemon.FindProcess(pidPath)
@@ -160,11 +190,16 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
 
+	rotationErr := rotateLogIfOversized(logPath)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
 	}
 	defer logFile.Close()
+	if rotationErr != nil {
+		fmt.Fprintf(logFile, "%s log rotation: %v (continuing without rotation)\n",
+			time.Now().Format("2006/01/02 15:04:05"), rotationErr)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -255,6 +290,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
 		return fmt.Errorf("creating log directory: %w", err)
 	}
+	rotationErr := rotateLogIfOversized(syncLog)
 	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening log file: %w", err)
@@ -267,6 +303,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 		logWriter = io.MultiWriter(logFile, os.Stderr)
 	}
 	logger := log.New(logWriter, "", log.LstdFlags)
+	if rotationErr != nil {
+		logger.Printf("log rotation: %v (continuing without rotation)", rotationErr)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -283,63 +322,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	// Daemon mode: run periodic syncs until interrupted
 	if syncFlagDaemon {
-		d := daemon.New(cfg)
-		d.SetOrchestrators(orchestrators)
-		d.SetLogger(logger)
-		d.SetDB(database)
-		d.SetPIDPath(pidFilePath(cfg))
-		if cfg.Digest.Enabled {
-			gen, cleanupPool := cliPooledGenerator(cfg, logger)
-			defer cleanupPool()
-			tracksPipe := tracks.New(database, cfg, gen, logger)
-			pipe := digest.New(database, cfg, gen, logger)
-			pipe.TrackLinker = tracksPipe
-			d.SetDigestPipeline(pipe)
-			d.SetTracksPipeline(tracksPipe)
-			d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
-			if cfg.Briefing.Enabled {
-				d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
-			}
-			if cfg.Inbox.Enabled {
-				inboxPipe := inbox.New(database, cfg, gen, logger)
-				inboxPipe.SetPromptStore(prompts.New(database, nil))
-				d.SetInboxPipeline(inboxPipe)
-			}
-			wireIdeasPipeline(d, database, cfg, gen, logger)
-			wireMemoryPipeline(d, database, cfg, logger)
-			d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
-			customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
-			d.SetCustomTracksPipeline(customTracksPipe)
-			if cfg.DayPlan.Enabled {
-				dayPlanPipe := dayplan.New(database, cfg, gen, logger)
-				dayPlanPipe.SetPromptStore(prompts.New(database, nil))
-				d.SetDayPlanPipeline(dayPlanPipe)
-			}
-			if cfg.Feed.Enabled {
-				d.SetFeedPipeline(feed.New(database, cfg, logger))
-			}
-		}
-		// Seed jira_accounts from a pre-multi-account legacy token file
-		// before wiring, so a single-account install keeps syncing without
-		// a re-login.
-		if _, err := ensureLegacyJiraAccount(cfg, database, logger); err != nil {
-			logger.Printf("jira: failed to seed legacy account: %v", err)
-		}
-		// Wire one Jira syncer per connected, enabled jira_accounts row.
-		wireJiraSyncers(d, cfg, database, logger)
-		// Seed google_accounts from a pre-multi-account legacy token file
-		// before wiring, so a single-account install keeps syncing without
-		// a re-login.
-		if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
-			logger.Printf("google: failed to seed legacy account: %v", err)
-		}
-		// Wire one calendar/gmail syncer per connected google_accounts row.
-		wireGoogleSyncers(ctx, d, cfg, database, logger)
-		// Wire one IMAP/Outlook syncer per connected email_accounts row.
-		wireImapSyncers(ctx, d, cfg, database, logger)
-		// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
-		wireCalDAVSyncers(d, cfg, database, logger)
-		return d.Run(ctx)
+		return runSyncDaemon(ctx, cfg, database, logger, orchestrators)
 	}
 
 	// One-shot sync is a Slack sync — nothing to do without a connected account.
@@ -395,6 +378,31 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// orchestrator runs in turn with its own progress display; failures are
 	// recorded but do not block the remaining accounts (the fan-out pattern),
 	// and a single aggregated result is written after all accounts finish.
+	snaps, firstErr := runOrchestratorsWithProgress(ctx, orchestrators, opts, out, cfg)
+
+	if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); wErr != nil {
+		logger.Printf("warning: failed to write sync result: %v", wErr)
+	}
+	if firstErr != nil {
+		return fmt.Errorf("sync failed: %w", firstErr)
+	}
+	// Skip post-sync pipelines in --progress-json mode: the desktop app
+	// runs them independently via BackgroundTaskManager after onboarding.
+	if !syncFlagProgressJSON && !syncFlagNoPipelines {
+		runPostSyncPipelines(ctx, database, cfg, logger)
+	}
+	return nil
+}
+
+// runOrchestratorsWithProgress runs each orchestrator in turn against opts,
+// rendering a live progress display to out while it syncs (a ticker repaints
+// the display every 500ms; a panic inside Run is recovered and reported as
+// that orchestrator's error rather than crashing the process). One account's
+// failure is recorded but does not block the remaining accounts — the
+// fan-out pattern used throughout this file — so the returned snapshots
+// always cover every orchestrator passed in, and the returned error is only
+// the first one encountered.
+func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orchestrator, opts sync.SyncOptions, out io.Writer, cfg *config.Config) ([]sync.Snapshot, error) {
 	progressLines.Store(0)
 	var snaps []sync.Snapshot
 	var firstErr error
@@ -436,19 +444,76 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	return snaps, firstErr
+}
 
-	if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); wErr != nil {
-		logger.Printf("warning: failed to write sync result: %v", wErr)
+// runSyncDaemon builds a daemon.Daemon around the already-wired Slack
+// orchestrators, attaches every enabled digest/pipeline stage plus one syncer
+// per connected Jira/Google/IMAP/CalDAV account (seeding each source's legacy
+// single-account config into its accounts table first, so an existing install
+// keeps syncing without a re-login), and runs it until ctx is cancelled. A
+// source that fails to seed or wire records its own error and is skipped —
+// the fan-out pattern shared by wireJiraSyncers/wireGoogleSyncers/
+// wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
+// rest of the daemon from starting.
+func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
+	d := daemon.New(cfg)
+	d.SetOrchestrators(orchestrators)
+	d.SetLogger(logger)
+	d.SetDB(database)
+	d.SetPIDPath(pidFilePath(cfg))
+	if cfg.Digest.Enabled {
+		gen, cleanupPool := cliPooledGenerator(cfg, logger)
+		defer cleanupPool()
+		tracksPipe := tracks.New(database, cfg, gen, logger)
+		pipe := digest.New(database, cfg, gen, logger)
+		pipe.TrackLinker = tracksPipe
+		d.SetDigestPipeline(pipe)
+		d.SetTracksPipeline(tracksPipe)
+		d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
+		if cfg.Briefing.Enabled {
+			d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
+		}
+		if cfg.Inbox.Enabled {
+			inboxPipe := inbox.New(database, cfg, gen, logger)
+			inboxPipe.SetPromptStore(prompts.New(database, nil))
+			d.SetInboxPipeline(inboxPipe)
+		}
+		wireIdeasPipeline(d, database, cfg, gen, logger)
+		wireMemoryPipeline(d, database, cfg, logger)
+		d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
+		customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
+		d.SetCustomTracksPipeline(customTracksPipe)
+		if cfg.DayPlan.Enabled {
+			dayPlanPipe := dayplan.New(database, cfg, gen, logger)
+			dayPlanPipe.SetPromptStore(prompts.New(database, nil))
+			d.SetDayPlanPipeline(dayPlanPipe)
+		}
+		if cfg.Feed.Enabled {
+			d.SetFeedPipeline(feed.New(database, cfg, logger))
+		}
 	}
-	if firstErr != nil {
-		return fmt.Errorf("sync failed: %w", firstErr)
+	// Seed jira_accounts from a pre-multi-account legacy token file
+	// before wiring, so a single-account install keeps syncing without
+	// a re-login.
+	if _, err := ensureLegacyJiraAccount(cfg, database, logger); err != nil {
+		logger.Printf("jira: failed to seed legacy account: %v", err)
 	}
-	// Skip post-sync pipelines in --progress-json mode: the desktop app
-	// runs them independently via BackgroundTaskManager after onboarding.
-	if !syncFlagProgressJSON && !syncFlagNoPipelines {
-		runPostSyncPipelines(ctx, database, cfg, logger)
+	// Wire one Jira syncer per connected, enabled jira_accounts row.
+	wireJiraSyncers(d, cfg, database, logger)
+	// Seed google_accounts from a pre-multi-account legacy token file
+	// before wiring, so a single-account install keeps syncing without
+	// a re-login.
+	if _, err := ensureLegacyGoogleAccount(ctx, cfg, database, logger); err != nil {
+		logger.Printf("google: failed to seed legacy account: %v", err)
 	}
-	return nil
+	// Wire one calendar/gmail syncer per connected google_accounts row.
+	wireGoogleSyncers(ctx, d, cfg, database, logger)
+	// Wire one IMAP/Outlook syncer per connected email_accounts row.
+	wireImapSyncers(ctx, d, cfg, database, logger)
+	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
+	wireCalDAVSyncers(d, cfg, database, logger)
+	return d.Run(ctx)
 }
 
 // wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // ChannelStatRow holds computed statistics for a single channel.
@@ -41,7 +43,9 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 		return nil, fmt.Errorf("currentUserID is required")
 	}
 
-	mentionPattern := fmt.Sprintf("%%<@%s>%%", currentUserID)
+	// currentUserID may be namespaced (e.g. "1:U123"); reduce to the raw form
+	// for the LIKE pattern since messages.text carries Slack's markup untouched.
+	mentionPattern, _ := watchtowerslack.MentionPatterns(currentUserID)
 
 	rows, err := db.Query(`
 		SELECT
