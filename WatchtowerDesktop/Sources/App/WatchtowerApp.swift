@@ -346,6 +346,18 @@ struct WatchtowerApp: App {
             }
         }
         .defaultSize(width: 1200, height: 800)
+        // Cmd+Q routes through requestQuit: with a sheet presented anywhere,
+        // the stock termination is vetoed by SwiftUI's scene layer before the
+        // app delegate is consulted, leaving the app unquittable until the
+        // popup is dismissed by hand (see TrayAppDelegate.requestQuit).
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Watchtower") {
+                    TrayAppDelegate.requestQuit()
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            }
+        }
 
         Window("Pipeline Progress", id: "progress-detail") {
             ProgressDetailView()
