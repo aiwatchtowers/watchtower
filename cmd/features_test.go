@@ -70,6 +70,9 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 			ID          string   `json:"id"`
 			Title       string   `json:"title"`
 			Description string   `json:"description"`
+			Tagline     string   `json:"tagline"`
+			Benefits    []string `json:"benefits"`
+			Icon        string   `json:"icon"`
 			State       string   `json:"state"`
 			Core        bool     `json:"core"`
 			Parent      string   `json:"parent"`
@@ -86,6 +89,20 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
 	require.NotEmpty(t, payload.Features)
+
+	// Selling attributes decode for every entry, not just the spot-checked
+	// ones below — the wire-shape counterpart to TestRegistry_Valid.
+	for _, f := range payload.Features {
+		assert.NotEmpty(t, f.Tagline, "feature %q missing tagline in JSON", f.ID)
+		assert.NotEmpty(t, f.Icon, "feature %q missing icon in JSON", f.ID)
+		assert.GreaterOrEqual(t, len(f.Benefits), 2, "feature %q has fewer than 2 benefits in JSON", f.ID)
+		assert.LessOrEqual(t, len(f.Benefits), 3, "feature %q has more than 3 benefits in JSON", f.ID)
+	}
+	// A leaf entry (no FeedsInto) must still marshal benefits as `[]`-shaped
+	// content, never `null` — the feeds_into empty-array convention, proven
+	// here directly on the raw bytes the way TestFeaturesDisable_DryRunJSONWireShape
+	// proves it for "dependents".
+	assert.NotContains(t, buf.String(), `"benefits":null`, "benefits must never marshal as null")
 
 	var sawInbox, sawTargets, sawMemory bool
 	for _, f := range payload.Features {
