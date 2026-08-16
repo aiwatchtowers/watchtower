@@ -1,6 +1,23 @@
 import SwiftUI
 import WatchtowerCore
 
+/// The splash's one decision, kept pure so it can be pinned as a truth table
+/// (the `ActivationPolicyDecision`/`MeetingReminderLogic` precedent).
+enum FeatureSplashLogic {
+    /// Whether Continue may go on to finish onboarding once `apply()` has
+    /// returned. Only a staged batch that failed holds the user here.
+    ///
+    /// `apply()` is a no-op guarded by `!pending.isEmpty` that returns without
+    /// touching `loadError`, so with nothing staged a non-nil `loadError` is a
+    /// leftover from a failed `load()` — about the feature list, not about
+    /// anything the owner asked to change. Treating it as an apply failure
+    /// would trap a new user in onboarding because the CLI could not list
+    /// features.
+    static func shouldFinishAfterApply(hadPendingChanges: Bool, loadError: String?) -> Bool {
+        !(hadPendingChanges && loadError != nil)
+    }
+}
+
 /// The final onboarding step (owner decision: new users only — existing
 /// installs already have Settings → Features, no what's-new mechanism) — a
 /// selling screen built directly on `FeatureManagerService`
@@ -333,14 +350,14 @@ struct FeatureSplashView: View {
     private func continueTapped() {
         Task {
             // Captured before the call, mirroring FeaturesSettings: apply()
-            // is a no-op guarded by !pending.isEmpty that returns without
-            // touching loadError at all when nothing was staged, so checking
-            // loadError unconditionally afterward would treat a stale
-            // load() failure as an apply failure and trap the user even
-            // though nothing they staged actually failed to apply.
+            // clears what it applied, so afterwards there is no longer any
+            // way to tell whether the owner had staged anything.
             let hadPendingChanges = !service.pending.isEmpty
             await service.apply { await DaemonManager.restart() }
-            guard !(hadPendingChanges && service.loadError != nil) else { return }
+            guard FeatureSplashLogic.shouldFinishAfterApply(
+                hadPendingChanges: hadPendingChanges,
+                loadError: service.loadError
+            ) else { return }
             await runFinish()
         }
     }
