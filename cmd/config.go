@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,30 @@ import (
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage watchtower configuration",
+	// PersistentPreRunE runs the one-time legacy digest-gate migration before
+	// any config subcommand. Log-only on error (the daemon's own call site
+	// does the same) so a migration hiccup never blocks init/set/show. This
+	// matters most for `config set`: without it, `config set digest.enabled
+	// false` on an unmigrated install would write the legacy signature
+	// (digest.enabled=false, no features.migrated marker) and the next
+	// MigrateFeatureGates call — a daemon start, or any `features`
+	// subcommand — would read that file as a genuine legacy install and
+	// cascade nine feature keys off.
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `config` subcommand would silently
+	// skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
+		if _, err := config.MigrateFeatureGates(flagConfig); err != nil {
+			log.Printf("warning: legacy feature-gate migration failed: %v", err)
+		}
+		return nil
+	},
 }
 
 var configInitCmd = &cobra.Command{
