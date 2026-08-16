@@ -62,6 +62,13 @@ VERSION="${VERSION:-0.2.0}"
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+
+# Without create-dmg the DMG silently degrades to a bare hdiutil image (no
+# window layout, opens like a plain folder), so surface that up front.
+if ! $DEV_MODE && ! command -v create-dmg &>/dev/null; then
+    echo "WARNING: create-dmg not found — DMG will be a bare hdiutil image without installer window layout." >&2
+    echo "         Install it with: brew install create-dmg" >&2
+fi
 FLAVOR_NOTE="${FLAVOR:+ [flavor: $FLAVOR]}"
 if $DEV_MODE; then
     echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE [DEV MODE — no DMG/ZIP/notarization]"
