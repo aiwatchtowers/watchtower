@@ -260,4 +260,37 @@ struct UpdateChannelTests {
         let hex = try UpdateService.sha256Hex(ofFileAt: tmp)
         #expect(hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     }
+
+    @Test("updatesSupported reflects the resolved channel")
+    func updatesSupportedFlag() async {
+        await MainActor.run {
+            let svc = UpdateService()
+            svc.buildFlavor = ""
+            #expect(svc.updatesSupported)
+
+            svc.buildFlavor = "dev"
+            #expect(!svc.updatesSupported)
+
+            svc.buildFlavor = "corp"  // no keys injected
+            #expect(!svc.updatesSupported)
+
+            svc.updateFeedURL = "https://feed.example/p"
+            svc.updateClientID = "id"
+            svc.updateClientSecret = "sec"
+            #expect(svc.updatesSupported)
+        }
+    }
+
+    @Test("flavored build without channel keys stays idle on check")
+    func flavoredNoKeysIdle() async {
+        let svc = await UpdateService()
+        await MainActor.run {
+            svc.buildFlavor = "corp"
+            svc.updateFeedURL = nil
+            svc.updateClientID = nil
+            svc.updateClientSecret = nil
+        }
+        await svc.checkForUpdates()
+        await MainActor.run { #expect(svc.state == .idle) }
+    }
 }

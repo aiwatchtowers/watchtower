@@ -88,9 +88,40 @@ final class UpdateService {
     /// credential set and is distributed out-of-band, so it must never update
     /// from the public release feed — every public release would silently
     /// replace it with the default-credential build (same signer, so the
-    /// Team-ID pin would pass). Instance property so tests can inject a flavor.
+    /// Team-ID pin would pass). Gated-channel keys route flavored builds to
+    /// their own update feed instead of disabling updates outright.
+    /// Instance property so tests can inject a flavor.
     var buildFlavor: String =
         (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
+
+    /// Gated-channel keys stamped into Info.plist by build-app.sh (absent on
+    /// default and dev builds). Instance properties so tests can inject them.
+    var updateFeedURL: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateFeedURL") as? String
+    var updateClientID: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientID") as? String
+    var updateClientSecret: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientSecret") as? String
+
+    var channel: UpdateChannel {
+        Self.resolveChannel(flavor: buildFlavor, feedURL: updateFeedURL,
+                            clientID: updateClientID, clientSecret: updateClientSecret)
+    }
+
+    /// False when this build has no update channel at all (dev, or a flavored
+    /// build whose profile carried no channel keys). Settings uses this to
+    /// swap the check button for an "out of band" note.
+    var updatesSupported: Bool { channel != .disabled }
+
+    /// Set when the current `.available` state came from the gated channel;
+    /// carries what the download step needs (headers + expected checksum).
+    private struct GatedDownloadContext {
+        let sha256: String
+        let clientID: String
+        let clientSecret: String
+    }
+    private var gatedDownload: GatedDownloadContext?
+
     private static let cacheDir: URL = {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             return FileManager.default.temporaryDirectory.appendingPathComponent("com.watchtower.desktop/updates", isDirectory: true)
@@ -101,12 +132,19 @@ final class UpdateService {
     // MARK: - Check for Updates
 
     func checkForUpdates() async {
-        guard buildFlavor.isEmpty else {
+        gatedDownload = nil
+        switch channel {
+        case .disabled:
             state = .idle
-            return
+        case .publicGitHub:
+            await checkPublic()
+        case .gated(let feedURL, let clientID, let clientSecret):
+            await checkGated(feedURL: feedURL, clientID: clientID, clientSecret: clientSecret)
         }
-        state = .checking
+    }
 
+    private func checkPublic() async {
+        state = .checking
         do {
             let release = try await fetchLatestRelease()
             let current = Constants.appVersion
@@ -116,8 +154,9 @@ final class UpdateService {
                 return
             }
 
-            guard let asset = release.assets.first(where: { $0.name.hasSuffix(".zip") }) else {
-                state = .error("No ZIP asset in release \(release.tagName)")
+            let expected = Self.expectedPublicAssetName(forTag: release.tagName)
+            guard let asset = release.assets.first(where: { $0.name == expected }) else {
+                state = .error("No asset named \(expected) in release \(release.tagName)")
                 return
             }
 
@@ -135,6 +174,55 @@ final class UpdateService {
         } catch {
             state = .error(error.localizedDescription)
         }
+    }
+
+    private func checkGated(feedURL: URL, clientID: String, clientSecret: String) async {
+        state = .checking
+        do {
+            let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
+            let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
+            let manifest = try JSONDecoder().decode(GatedManifest.self, from: data)
+
+            guard Self.zipKeyMatchesFlavor(manifest.zipKey, flavor: buildFlavor) else {
+                state = .error("Update manifest points at a different build flavor (\(manifest.zipKey))")
+                return
+            }
+
+            guard Self.isNewer(manifest.version, than: Constants.appVersion) else {
+                state = .idle
+                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+                return
+            }
+
+            let downloadURL = feedURL.appendingPathComponent("dl/\(manifest.zipKey)")
+            gatedDownload = GatedDownloadContext(
+                sha256: manifest.sha256, clientID: clientID, clientSecret: clientSecret
+            )
+            state = .available(
+                version: manifest.version,
+                notes: manifest.notes ?? "",
+                downloadURL: downloadURL
+            )
+            UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    /// GET on the gated channel. Redirects are never followed — Cloudflare
+    /// Access answers a bad/revoked service token with a 302 to its login
+    /// page, and following it would hand back HTML that only fails later as
+    /// a confusing decode error.
+    private func gatedGET(_ url: URL, clientID: String, clientSecret: String) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue(clientID, forHTTPHeaderField: "CF-Access-Client-Id")
+        request.setValue(clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request, delegate: RedirectBlocker())
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let err = Self.classifyGatedStatus(status) { throw err }
+        return data
     }
 
     /// Check if 24 hours have passed since last check, and if so, check for updates.
@@ -167,6 +255,15 @@ final class UpdateService {
             let (localURL, _) = try await downloadWithProgress(from: downloadURL)
 
             try fm.moveItem(at: localURL, to: zipPath)
+
+            if let ctx = gatedDownload {
+                let actual = try Self.sha256Hex(ofFileAt: zipPath)
+                guard actual.caseInsensitiveCompare(ctx.sha256) == .orderedSame else {
+                    try? fm.removeItem(at: zipPath)
+                    state = .error(GatedChannelError.checksumMismatch.localizedDescription)
+                    return
+                }
+            }
 
             state = .downloading(progress: 0.9)
 
@@ -405,9 +502,19 @@ final class UpdateService {
     }
 
     private func downloadWithProgress(from url: URL) async throws -> (URL, URLResponse) {
-        // Use a simple download — URLSession delegate progress would add complexity
-        // For ~12MB ZIP this is fast enough
-        let (localURL, response) = try await URLSession.shared.download(from: url)
+        var request = URLRequest(url: url)
+        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
+        var delegate: URLSessionTaskDelegate?
+        if let ctx = gatedDownload {
+            request.setValue(ctx.clientID, forHTTPHeaderField: "CF-Access-Client-Id")
+            request.setValue(ctx.clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+            delegate = RedirectBlocker()
+        }
+        let (localURL, response) = try await URLSession.shared.download(for: request, delegate: delegate)
+        if gatedDownload != nil {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let err = Self.classifyGatedStatus(status) { throw err }
+        }
         await MainActor.run { state = .downloading(progress: 0.8) }
         return (localURL, response)
     }
@@ -511,4 +618,16 @@ enum GatedChannelError: LocalizedError, Equatable {
             "Downloaded update failed checksum verification"
         }
     }
+}
+
+// MARK: - Redirect Blocker
+
+/// Refuses HTTP redirects so a Cloudflare Access login bounce surfaces as its
+/// 3xx status instead of the login page's HTML.
+private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? { nil }
 }
