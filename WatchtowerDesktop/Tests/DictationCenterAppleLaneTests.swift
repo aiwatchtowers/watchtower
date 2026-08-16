@@ -7,8 +7,12 @@ import WatchtowerTestSupport
 /// A thrown apple session / whisper engine-load failure in this file — kept
 /// distinct from `DictationCenterTests`'s `StubCleanupError` so a test
 /// failure message can't be confused between "the cleanup CLI failed" and
-/// "the transcriber/session itself failed".
-private struct StubTranscribeError: Error {}
+/// "the transcriber/session itself failed". Named apart from
+/// `DictationCenterRealtimeTests`'s identical private helper too — sentrux's
+/// symbol resolver doesn't respect Swift's `private` file scoping, so two
+/// same-named private declarations in sibling files register as a spurious
+/// cross-file edge and trip the god-file gate.
+private struct AppleLaneStubTranscribeError: Error {}
 
 /// Canned `watchtower dictate clean --mode chat` stdout envelope.
 private let chatCleanedEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
@@ -77,7 +81,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
             recorderFactory: { recorder },
             engineFactory: { _ in
                 XCTFail("the apple lane must never load a whisper engine")
-                throw StubTranscribeError()
+                throw AppleLaneStubTranscribeError()
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
@@ -123,7 +127,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
             recorderFactory: { recorder },
             engineFactory: { _ in
                 XCTFail("the apple lane must never load a whisper engine")
-                throw StubTranscribeError()
+                throw AppleLaneStubTranscribeError()
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
@@ -163,13 +167,13 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
         let recorder = FakeMicRecorder()
         let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
         let session = FakeDictationSession(updates: ["hi"], finalText: "never returned",
-                                           errorAfterDrain: StubTranscribeError())
+                                           errorAfterDrain: AppleLaneStubTranscribeError())
         var decodedBuffers: [[Float]] = []
         let center = DictationCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in
                 XCTFail("the apple lane must never load a whisper engine")
-                throw StubTranscribeError()
+                throw AppleLaneStubTranscribeError()
             },
             sessionFactory: { _, _, _ in session },
             appleSupported: { true },
