@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
@@ -126,5 +127,67 @@ final class CatchUpViewModelTests: XCTestCase {
         // Selection advances to the next pending theme.
         await waitFor { vm.selected?.title == "Second" }
         XCTAssertEqual(vm.selected?.title, "Second", "selection advances to next pending theme")
+    }
+
+    // MARK: - Source metadata (dates + external links)
+
+    func testSourceMetaResolvesDatesAndLinksPerArea() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let ids = try await pool.write { db -> (digest: Int, track: Int, inbox: Int, linked: Int) in
+            try TestDatabase.insertDigest(db, channelID: "1:C123", periodTo: 1_755_000_000)
+            let digestID = Int(db.lastInsertedRowID)
+            let trackID = Int(try TestDatabase.insertTrack(db, channelIDs: "[\"1:C456\"]"))
+            let inboxID = Int(try TestDatabase.insertInboxItem(
+                db, channelID: "1:C789", messageTS: "1755000123.000100"))
+            let linkedID = Int(try TestDatabase.insertInboxItem(
+                db, channelID: "1:C789", messageTS: "1755000456.000100",
+                permalink: "https://acme.slack.com/archives/C789/p1755000456000100"))
+            return (digestID, trackID, inboxID, linkedID)
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        let meta = await vm.sourceMeta(for: [
+            CatchUpRef(area: "digests", id: ids.digest, label: "d"),
+            CatchUpRef(area: "tracks", id: ids.track, label: "t"),
+            CatchUpRef(area: "inbox", id: ids.inbox, label: "i"),
+            CatchUpRef(area: "inbox", id: ids.linked, label: "p"),
+            CatchUpRef(area: "digests", id: 99_999, label: "gone")
+        ])
+
+        let digestMeta = try XCTUnwrap(meta["digests:\(ids.digest)"])
+        XCTAssertEqual(digestMeta.date, Date(timeIntervalSince1970: 1_755_000_000),
+                       "digest date is the period end")
+        XCTAssertEqual(digestMeta.url?.absoluteString, "https://slack.com/archives/C123",
+                       "channel link strips the account namespace")
+
+        let trackMeta = try XCTUnwrap(meta["tracks:\(ids.track)"])
+        XCTAssertNotNil(trackMeta.date, "track date parses from updated_at")
+        XCTAssertEqual(trackMeta.url?.absoluteString, "https://slack.com/archives/C456")
+
+        let inboxMeta = try XCTUnwrap(meta["inbox:\(ids.inbox)"])
+        let inboxDate = try XCTUnwrap(inboxMeta.date)
+        XCTAssertEqual(inboxDate.timeIntervalSince1970, 1_755_000_123.0001, accuracy: 0.01,
+                       "inbox date comes from the message ts")
+        XCTAssertEqual(inboxMeta.url?.absoluteString,
+                       "https://slack.com/archives/C789/p1755000123000100",
+                       "no stored permalink: built from channel + ts")
+
+        let linkedMeta = try XCTUnwrap(meta["inbox:\(ids.linked)"])
+        XCTAssertEqual(linkedMeta.url?.absoluteString,
+                       "https://acme.slack.com/archives/C789/p1755000456000100",
+                       "a stored permalink wins over the built link")
+
+        XCTAssertNil(meta["digests:99999"], "a vanished source row is simply absent")
+    }
+
+    func testSlackChannelURLEmptyAndBareIDs() {
+        XCTAssertNil(CatchUpViewModel.slackChannelURL(""),
+                     "cross-channel digests have no channel — no link")
+        XCTAssertEqual(CatchUpViewModel.slackChannelURL("C1")?.absoluteString,
+                       "https://slack.com/archives/C1",
+                       "a pre-migration bare id passes through untouched")
     }
 }
