@@ -181,7 +181,10 @@ final class UpdateService {
         do {
             let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
             let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
-            let manifest = try JSONDecoder().decode(GatedManifest.self, from: data)
+            guard let manifest = try? JSONDecoder().decode(GatedManifest.self, from: data) else {
+                state = .error("Update manifest is malformed")
+                return
+            }
 
             guard Self.zipKeyMatchesFlavor(manifest.zipKey, flavor: buildFlavor) else {
                 state = .error("Update manifest points at a different build flavor (\(manifest.zipKey))")
@@ -513,7 +516,10 @@ final class UpdateService {
         let (localURL, response) = try await URLSession.shared.download(for: request, delegate: delegate)
         if gatedDownload != nil {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if let err = Self.classifyGatedStatus(status) { throw err }
+            if let err = Self.classifyGatedStatus(status) {
+                try? FileManager.default.removeItem(at: localURL)
+                throw err
+            }
         }
         await MainActor.run { state = .downloading(progress: 0.8) }
         return (localURL, response)
