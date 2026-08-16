@@ -236,7 +236,15 @@ final class DictationCenter {
         runChoice = DictationEngineChoice.current(defaults: defaults, appleSupported: appleSupported())
 
         var config = TranscriptionConfig.fromDefaults(defaults)
-        config.windowSec = 4
+        // Latency-first dictation tuning (owner call 2026-08-16): a window is
+        // only decidable once windowSec + snap tolerance is buffered, so the
+        // meeting-grade 4 s window with snapping meant the FIRST live text
+        // landed ~5-6 s into the dictation and anything shorter arrived only
+        // at stop. 3 s windows with snapping off cut that to ~3-4 s; the
+        // cleanup pass smooths whatever the rougher un-snapped cuts cost.
+        // Dictation-only: the meeting keys are never written.
+        config.windowSec = 3
+        config.boundarySnapSec = 0
         config.diarization = false
         if case .whisper(let model) = runChoice { config.model = model }
 

@@ -84,7 +84,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
 
-        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // waitPatiently: the post-stop drain decodes several short windows on
         // the global executor before cleanup can even start.
         await waitPatiently("result delivered") { result != nil }
 
@@ -164,7 +164,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
     // MARK: 3. Dictation config
 
-    func testConfigOverridesWindowAndDiarizationButLeavesBoundarySnapAndIgnoresLiveTranscriptionFlag() async throws {
+    func testConfigOverridesWindowSnapAndDiarizationAndIgnoresLiveTranscriptionFlag() async throws {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         defaults.set(7.0, forKey: "transcription.boundarySnapSec")
@@ -198,14 +198,16 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // waitPatiently: the post-stop drain decodes several short windows on
         // the global executor before cleanup can even start.
         await waitPatiently("result delivered") { result != nil }
 
         let config = try XCTUnwrap(capturedConfig)
-        XCTAssertEqual(config.windowSec, 4)
+        XCTAssertEqual(config.windowSec, 3)
         XCTAssertFalse(config.diarization)
-        XCTAssertEqual(config.boundarySnapSec, 7.0, "boundarySnapSec is untouched — whatever fromDefaults produced")
+        XCTAssertEqual(config.boundarySnapSec, 0,
+                       "dictation disables boundary snapping (latency-first, owner call 2026-08-16) "
+                       + "— the meeting Settings value must not leak in")
         XCTAssertFalse(liveTexts.isEmpty, "a false liveTranscription default must not force a batch fallback")
     }
 
@@ -265,7 +267,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitPatiently("live text delivered") { !center.liveText.isEmpty }
         center.stop()
 
-        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // waitPatiently: the post-stop drain decodes several short windows on
         // the global executor before the (failing) cleanup is even reached.
         await waitPatiently("failed") {
             if case .failed = center.phase { return true }
@@ -1602,7 +1604,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         recorder.emit([Float](repeating: 0.1, count: 240_000))
         await waitPatiently("live text delivered") { !liveTexts.isEmpty }
         center.stop()
-        // waitPatiently: the post-stop drain decodes several 4 s windows on
+        // waitPatiently: the post-stop drain decodes several short windows on
         // the global executor before cleanup can even start.
         await waitPatiently("result delivered") { result != nil }
 
@@ -1860,7 +1862,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
 
     // MARK: 23. Dictation model + session seam (realtime dictation, Task 2)
 
-    /// The dictation config is decoupled from the meeting stack: ~4 s windows
+    /// The dictation config is decoupled from the meeting stack: ~3 s windows
     /// and the whisper model resolved from `dictation.model` (carried to the
     /// engine factory on `config.model`), never the meeting keys.
     func testDictationConfigUsesFourSecondWindowsAndDictationModel() async throws {
@@ -1888,7 +1890,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
 
         let config = try XCTUnwrap(capturedConfig)
-        XCTAssertEqual(config.windowSec, 4, "dictation decodes ~4 s windows, not the meeting default")
+        XCTAssertEqual(config.windowSec, 3, "dictation decodes ~3 s windows, not the meeting default")
         XCTAssertEqual(config.model, "small",
                        "the whisper model must come from dictation.model, never transcription.model")
         XCTAssertFalse(config.diarization)
