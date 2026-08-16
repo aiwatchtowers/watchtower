@@ -55,6 +55,17 @@ func TestRegistry_Valid(t *testing.T) {
 		assert.NotEmpty(t, f.Title, "feature %q has no Title", f.ID)
 		assert.NotEmpty(t, f.Description, "feature %q has no Description", f.ID)
 
+		// Selling attributes (onboarding splash + Desktop Feature Manager
+		// cards): every entry, core included, needs real copy — core
+		// features are sold too, just without a toggle.
+		assert.NotEmpty(t, f.Tagline, "feature %q has no Tagline", f.ID)
+		assert.NotEmpty(t, f.Icon, "feature %q has no Icon", f.ID)
+		assert.GreaterOrEqual(t, len(f.Benefits), 2, "feature %q has fewer than 2 Benefits", f.ID)
+		assert.LessOrEqual(t, len(f.Benefits), 3, "feature %q has more than 3 Benefits", f.ID)
+		for i, b := range f.Benefits {
+			assert.NotEmpty(t, b, "feature %q Benefits[%d] is empty", f.ID, i)
+		}
+
 		if f.Core {
 			// Core entries have no Enabled/ConfigKey requirement — some carry
 			// a real ConfigKey + Enabled anyway (e.g. "feed"), some don't.
