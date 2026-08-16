@@ -447,6 +447,12 @@ final class AppState {
         Task { await updateService.checkIfNeeded() }
         // No DB dependency, so this does not wait on the DB-open Task above
         // (Settings → Features may be reached before that Task resolves).
+        // Every successful service load (launch, post-apply, failure-path
+        // reload) pushes the fresh disabled set into the visibility store
+        // the sidebar/navigation/banner read.
+        featureManager.onDisabledChanged = { [featureVisibility] ids in
+            featureVisibility.disabledFeatureIDs = ids
+        }
         Task { await featureManager.load() }
     }
 
