@@ -155,6 +155,100 @@ func TestMigrateFeatureGates_NoFile(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "a missing config must not be created by the migration")
 }
 
+// TestMigrateFeatureGates_LegacyDetectedEvenWhenWriteFails pins the input to
+// the daemon's fail-closed path: a legacy install whose migration could not
+// be persisted must still be REPORTED as legacy, or runSyncDaemon has no way
+// to tell it apart from a healthy install and comes up with nine AI features
+// on. The config dir is made unwritable so the atomic temp-file write fails.
+func TestMigrateFeatureGates_LegacyDetectedEvenWhenWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(p, []byte("digest:\n  enabled: false\n"), 0o600))
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	legacyDetected, err := MigrateFeatureGates(p)
+	require.Error(t, err, "an unwritable config dir must surface as an error")
+	assert.True(t, legacyDetected, "a failed write must still report the legacy signature")
+
+	v := rawConfig(t, p)
+	assert.False(t, v.IsSet("features.migrated"), "nothing was persisted, so the next start retries")
+}
+
+func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
+	base := Config{
+		ActiveWorkspace: "keep-me",
+		Digest:          DigestConfig{Enabled: false, MinMessages: 7, Language: "English"},
+		Inbox:           InboxConfig{Enabled: true, MaxTriageMessages: 42},
+		Streams:         StreamsConfig{Enabled: true, IntervalHours: 3},
+		Tracks:          TracksConfig{Enabled: true},
+		People:          PeopleConfig{Enabled: true},
+		Ideas:           IdeasConfig{Enabled: true, MineIntervalHours: 12},
+		Memory:          MemoryConfig{Enabled: true},
+		Briefing:        BriefingConfig{Enabled: true, Hour: 9},
+		DayPlan:         DayPlanConfig{Enabled: true, Hour: 8},
+		Targets:         TargetsConfig{NextStep: TargetsNextStepConfig{Enabled: true}},
+		Calendar:        CalendarConfig{Enabled: true},
+		Gmail:           GmailConfig{Enabled: true},
+		Jira:            JiraConfig{Enabled: true},
+	}
+
+	got := base
+	ApplyLegacyDigestOff(&got)
+
+	for name, on := range map[string]bool{
+		"inbox": got.Inbox.Enabled, "streams": got.Streams.Enabled,
+		"tracks": got.Tracks.Enabled, "people": got.People.Enabled,
+		"ideas": got.Ideas.Enabled, "memory": got.Memory.Enabled,
+		"briefing": got.Briefing.Enabled, "day_plan": got.DayPlan.Enabled,
+		"next_step": got.Targets.NextStep.Enabled,
+	} {
+		assert.False(t, on, "%s must be forced off", name)
+	}
+
+	// Nothing else moved: restoring exactly the nine gates must reproduce
+	// the original config field for field — including the integration
+	// switches (calendar/gmail/jira), which are deliberately NOT part of
+	// the mapping (stopping an owner's data sync is worse than a degraded
+	// feature; see docs/inventory/features.md).
+	got.Inbox.Enabled = true
+	got.Streams.Enabled = true
+	got.Tracks.Enabled = true
+	got.People.Enabled = true
+	got.Ideas.Enabled = true
+	got.Memory.Enabled = true
+	got.Briefing.Enabled = true
+	got.DayPlan.Enabled = true
+	got.Targets.NextStep.Enabled = true
+	assert.Equal(t, base, got, "ApplyLegacyDigestOff must touch nothing but the nine feature gates")
+}
+
+// TestApplyLegacyDigestOff_MatchesOnDiskMigration is the lockstep pin: the
+// in-memory fail-closed mapping and the on-disk migration's key list are two
+// spellings of one rule, and a key added to only one of them is exactly the
+// drift this catches. It runs the real migration over a legacy file and
+// compares the resulting config against ApplyLegacyDigestOff over the
+// pre-migration one.
+func TestApplyLegacyDigestOff_MatchesOnDiskMigration(t *testing.T) {
+	legacyYAML := []byte("active_workspace: test\ndigest:\n  enabled: false\n")
+
+	beforePath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(beforePath, legacyYAML, 0o600))
+	inMemory, err := Load(beforePath)
+	require.NoError(t, err)
+	ApplyLegacyDigestOff(inMemory)
+
+	migratedPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(migratedPath, legacyYAML, 0o600))
+	legacyDetected, err := MigrateFeatureGates(migratedPath)
+	require.NoError(t, err)
+	require.True(t, legacyDetected)
+	onDisk, err := Load(migratedPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, onDisk, inMemory, "the fail-closed mapping must equal what the migration writes to disk")
+}
+
 // assertSecondCallIsByteIdenticalNoOp pins the marker-present contract: once
 // the marker is on the file, MigrateFeatureGates writes nothing at all.
 func assertSecondCallIsByteIdenticalNoOp(t *testing.T, path string) {

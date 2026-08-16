@@ -459,16 +459,26 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
-	// Perform one-time feature-gate migration for digest.enabled=false installs.
-	// On migration, reload the config so this daemon process uses migrated values.
-	migrated, err := config.MigrateFeatureGates(flagConfig)
-	if err != nil {
+	// Perform the one-time feature-gate migration (and its first-contact
+	// marker stamp) for digest.enabled=false installs. On a real migration,
+	// reload the config so this daemon process uses the migrated values.
+	legacyDigestOff, err := config.MigrateFeatureGates(flagConfig)
+	switch {
+	case err != nil && legacyDigestOff:
+		// The mapping could not be persisted on an install that still needs
+		// it. Honoring the raw config here would turn nine AI features ON
+		// for an owner who believes everything is off — and spend tokens
+		// proving it. Fail closed for this process; the next start retries
+		// the on-disk write.
+		logger.Printf("feature-gate migration failed: %v — running FAIL-CLOSED with all AI features off this session; fix the config file and restart", err)
+		config.ApplyLegacyDigestOff(cfg)
+	case err != nil:
 		logger.Printf("feature-gate migration error: %v (continuing with current config)", err)
-	}
-	if migrated {
+	case legacyDigestOff:
 		freshCfg, err := config.Load(flagConfig)
 		if err != nil {
-			logger.Printf("failed to reload config after feature-gate migration: %v (continuing with pre-migration config)", err)
+			logger.Printf("failed to reload config after feature-gate migration: %v (applying it in memory instead)", err)
+			config.ApplyLegacyDigestOff(cfg)
 		} else {
 			cfg = freshCfg
 			logger.Printf("feature-gate migration applied; config reloaded")

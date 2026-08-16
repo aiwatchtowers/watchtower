@@ -41,6 +41,15 @@ var legacyDigestOffFeatureKeys = []string{
 //     contact with a non-legacy install. The marker is written ALONE — no
 //     feature key is touched — and it returns (false, nil).
 //
+// The returned bool is legacyDetected: the install carried the legacy
+// signature. When err is nil that also means the mapping was written, so a
+// caller wanting "the config on disk just changed" checks both. When err is
+// non-nil it means the mapping is what the install NEEDS but could not be
+// written — see ApplyLegacyDigestOff for the fail-closed counterpart. A
+// failure to READ the file returns false: the install could not be
+// classified at all, and config.Load would have failed on the same file
+// before any caller got this far.
+//
 // That last case is why the marker is stamped on first contact rather than
 // only alongside a real migration. digest.enabled=false is the legacy
 // signature, but it is ALSO exactly what `features disable slack-digests`
@@ -76,10 +85,35 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 	}
 	v.Set("features.migrated", 1)
 
-	if err := writeFeatureMigrationConfig(v, configPath); err != nil {
-		return false, err
-	}
-	return legacy, nil
+	// legacy is returned even when the write fails: "this install needs the
+	// mapping and did not get it" is exactly the signal the daemon's
+	// fail-closed path (ApplyLegacyDigestOff) keys on.
+	return legacy, writeFeatureMigrationConfig(v, configPath)
+}
+
+// ApplyLegacyDigestOff applies the legacy digest.enabled=false mapping to an
+// already-loaded config IN MEMORY, for the current process only — the
+// fail-closed counterpart to MigrateFeatureGates' on-disk write, for when
+// that write fails on an install that still needs it. Without it the daemon
+// would come up honoring the raw config, which for a legacy install means
+// nine AI features ON for an owner who believes everything is off — and
+// tokens spent to prove it. Nothing is persisted: the next start retries the
+// real migration.
+//
+// The field list mirrors legacyDigestOffFeatureKeys one-for-one and is kept
+// in lockstep by TestApplyLegacyDigestOff_MatchesOnDiskMigration.
+// digest.enabled itself is already false on such a config — that is the
+// signature — so it is not repeated here.
+func ApplyLegacyDigestOff(cfg *Config) {
+	cfg.Inbox.Enabled = false
+	cfg.Streams.Enabled = false
+	cfg.Tracks.Enabled = false
+	cfg.People.Enabled = false
+	cfg.Ideas.Enabled = false
+	cfg.Memory.Enabled = false
+	cfg.Briefing.Enabled = false
+	cfg.DayPlan.Enabled = false
+	cfg.Targets.NextStep.Enabled = false
 }
 
 // writeFeatureMigrationConfig writes viper config to a temp file with 0o600
