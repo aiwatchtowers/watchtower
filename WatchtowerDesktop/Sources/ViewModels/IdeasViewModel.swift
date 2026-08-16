@@ -39,8 +39,10 @@ final class IdeasViewModel {
     /// review queue included, so a flagged note is reviewed under Notes.
     var kindMode: String = "idea"
 
-    /// Registry browse filters — ignored by the review queue, which always
-    /// shows every proposed/flagged idea of the active kind regardless of these.
+    /// Registry browse filters. The status filter is ignored by the review
+    /// queue (its items are proposed/flagged by definition); the search text
+    /// narrows BOTH sections — review items that don't match a search staying
+    /// on screen read as a broken search.
     var statusFilter: String?
     var searchText: String = ""
 
@@ -140,7 +142,11 @@ final class IdeasViewModel {
         isLoading = true
         do {
             let loaded = try dbManager.dbPool.read { db in
-                let review = try IdeaQueries.fetchForReview(db, kind: kindMode)
+                let review = try IdeaQueries.fetchForReview(
+                    db,
+                    kind: kindMode,
+                    query: searchText.isEmpty ? nil : searchText
+                )
                 let registry = try IdeaQueries.fetchList(
                     db,
                     kind: kindMode,

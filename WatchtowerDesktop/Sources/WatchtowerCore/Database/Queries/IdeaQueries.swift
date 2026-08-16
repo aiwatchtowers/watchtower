@@ -69,16 +69,34 @@ package enum IdeaQueries {
     /// Ideas/Notes segments each review their own queue, so a flagged note
     /// surfaces under Notes instead of mixing into Ideas.
     ///
+    /// `query` narrows the queue with the same title/essence/mention-quote
+    /// predicate as `fetchList` — a search that only filtered the registry
+    /// while every review item stayed on screen read as a broken search. The
+    /// status filter, by contrast, still never applies here.
+    ///
     /// The `kind != 'decision'` clause stays alongside the caller's kind:
     /// decisions are born 'active' and never enter this queue whatever is
     /// asked for — mirrors the Go side's `CountIdeasForReview`, which this is
     /// the dual path of.
-    package static func fetchForReview(_ db: Database, kind: String) throws -> [Idea] {
-        try Idea.fetchAll(db, sql: """
+    package static func fetchForReview(_ db: Database, kind: String, query: String? = nil) throws -> [Idea] {
+        var sql = """
             SELECT * FROM ideas
             WHERE (status = 'proposed' OR needs_review = 1) AND kind = ? AND kind != 'decision'
-            ORDER BY updated_at DESC
-            """, arguments: [kind])
+            """
+        var args: [any DatabaseValueConvertible] = [kind]
+        if let query, !query.isEmpty {
+            sql += """
+                 AND (title LIKE ? OR essence LIKE ? OR id IN (
+                    SELECT idea_id FROM idea_mentions WHERE quote LIKE ?
+                ))
+                """
+            let pattern = "%\(query)%"
+            args.append(pattern)
+            args.append(pattern)
+            args.append(pattern)
+        }
+        sql += " ORDER BY updated_at DESC"
+        return try Idea.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
     package static func fetchOne(_ db: Database, id: Int) throws -> Idea? {
