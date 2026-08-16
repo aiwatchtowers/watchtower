@@ -450,7 +450,21 @@ class OpaqueBackgroundView: NSView {
 
         // Persist window frame (position + size) across launches. The name is
         // also the mount-time half of `TrayAppDelegate.isMainWindow`.
+        //
+        // This synchronous stamp alone is NOT enough: SwiftUI's scene bridge
+        // sets its own autosave name derived from the content view's MANGLED
+        // TYPE NAME ("NSWindow Frame SwiftUI.(unknown context at $…).
+        // SceneBridgeReader<…>-1-AppWindow-1"), overriding ours after mount —
+        // and that key changes with every code change, so after a rebuild the
+        // saved frame is orphaned and the window opens at defaultSize. The
+        // deferred re-stamp lands after the bridge's: restore whatever was
+        // saved under the STABLE name, then keep saving under it.
         window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            window.setFrameUsingName(TrayAppDelegate.mainWindowAutosaveName)
+            window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        }
 
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor
