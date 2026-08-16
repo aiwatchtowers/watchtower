@@ -154,7 +154,7 @@ final class FeatureManagerService {
     /// state to compare against (`features` still empty before the first
     /// `load()`, say) dropping it would silently lose the owner's choice.
     func setPending(_ id: String, enabled: Bool) {
-        if loadedState(of: id) == enabled {
+        if matchesLoadedState(id, enabled: enabled) {
             pending.removeValue(forKey: id)
             return
         }
@@ -172,16 +172,21 @@ final class FeatureManagerService {
         applyWithDependents.removeAll()
     }
 
-    /// The last-loaded enabled state behind a `pending` key — a top-level
-    /// feature id, or a sub-toggle's full config key — or nil when neither
-    /// knows it. `state` is tri-state (enabled | disabled | core) and is read
-    /// exactly the way `disabledFeatureIDs` reads it: only "disabled" is off,
-    /// so an always-on core feature counts as enabled.
-    private func loadedState(of id: String) -> Bool? {
+    /// Whether `enabled` is already the last-loaded state behind a `pending`
+    /// key — a top-level feature id, or a sub-toggle's full config key.
+    ///
+    /// `state` is tri-state (enabled | disabled | core), read exactly the way
+    /// `disabledFeatureIDs` reads it: only "disabled" is off, so an always-on
+    /// core feature counts as enabled. A key nothing loaded knows about
+    /// matches nothing and therefore stays staged.
+    private func matchesLoadedState(_ id: String, enabled: Bool) -> Bool {
         if let feature = features.first(where: { $0.id == id }) {
-            return feature.state != "disabled"
+            return (feature.state != "disabled") == enabled
         }
-        return features.flatMap(\.subToggles).first { $0.key == id }?.enabled
+        if let sub = features.flatMap(\.subToggles).first(where: { $0.key == id }) {
+            return sub.enabled == enabled
+        }
+        return false
     }
 
     /// Replays every staged `pending` change through the CLI, sequentially
