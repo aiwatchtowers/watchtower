@@ -52,11 +52,11 @@ There is no cascading deletion logic triggered by a feature disable. The only de
 
 **Status:** Enforced
 
-**Observable:** When a feature is re-enabled via `watchtower features enable <id>`, the CLI immediately runs the feature's fast-forward hook (if it has one) before returning. Fast-forward hooks reset the feature's processing watermarks — digests to the current top of the digest table, ideas to the top of its source tables, memory to now, etc. — so the feature resumes processing from the present moment forward, never auto-backfilling historical material.
+**Observable:** When a feature is re-enabled via `watchtower features enable <id>`, the CLI runs the feature's fast-forward hook (if it has one) first, writing watermarks and other state to the database. Only if the hook succeeds does the CLI write the feature's config key true to the yaml file; if the hook fails, no config change is written and the feature remains off.
 
-The consequence is that material accumulated while the feature was off is not automatically re-processed. If the owner wants to backfill historical windows for ideas, they must explicitly run `watchtower ideas mine --from <date>` afterwards.
+Fast-forward hooks reset the feature's processing watermarks — digests to the current top of the digest table, ideas to the top of its source tables, memory to now, etc. — so the feature resumes processing from the present moment forward, never auto-backfilling historical material. The consequence is that material accumulated while the feature was off is not automatically re-processed. If the owner wants to backfill historical windows for ideas, they must explicitly run `watchtower ideas mine --from <date>` afterwards.
 
-Fast-forward hooks are run exactly once per enable, inside the same transaction that writes the feature key true to the config file. If the hook fails, no config change is written (rollback).
+The enable flow is sequential (fast-forward DB writes first, config key write second), not transactional — it involves two independent stores (database and yaml file) with different consistency semantics.
 
 **Why locked:** An unexpected backfill of months of data when flipping a feature back on would violate the owner's expectations and could incur unbounded AI costs. The explicit backfill command makes the owner's intent clear.
 
