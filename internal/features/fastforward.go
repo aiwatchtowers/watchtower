@@ -53,14 +53,18 @@ func fastForwardSecretaryInbox(database *db.DB, now time.Time) error {
 // fastForwardIdeas stamps the three workspace-level consolidator floors to
 // the current top of the source tables they track — exactly migration
 // 00050's install-time seeding semantics (digest_topics/stream_digests/
-// meeting_transcripts) — plus the per-account Gmail/Jira stage-1 floors,
-// since ideas.enabled is the umbrella switch for the whole two-stage
-// pipeline and stage-1 material left unconsumed would otherwise get mined
-// straight into the registry on the very next cycle.
+// meeting_transcripts). Those three are the whole of it: they are what
+// ideas.enabled actually gates (stage 2, the consolidator), and stamping
+// them is what stops the accumulated backlog from being mined on the next
+// cycle.
+//
+// The per-account Gmail/Jira stage-1 floors are deliberately NOT touched
+// here. They belong to Stream Digests (streams.enabled), a feature that
+// toggles independently and may well have been running the whole time
+// Ideas was off; advancing its floors from an Ideas enable would skip a
+// window of email/Jira digest generation the owner never asked to skip.
+// See fastForwardStreamFloors, the hook that does own them.
 func fastForwardIdeas(database *db.DB, now time.Time) error {
-	if err := fastForwardStreamFloors(database, now); err != nil {
-		return err
-	}
 	digestTop, streamTop, transcriptTop, err := database.IdeasFloorTops()
 	if err != nil {
 		return fmt.Errorf("fast-forwarding ideas floors: reading table tops: %w", err)
@@ -75,9 +79,8 @@ func fastForwardIdeas(database *db.DB, now time.Time) error {
 // (google_accounts.ideas_email_floor / jira_accounts.ideas_jira_floor) to
 // the same value each account's own stage-1 self-init would pick on a fresh
 // connection — see runEmailDigestAccount/runJiraDigestAccount in
-// internal/ideas. It is its own hook (Stream Digests, streams.enabled, can
-// be re-enabled independently of Ideas) and also a building block "ideas"
-// reuses, since both toggles gate the same per-account floors.
+// internal/ideas. It is the Stream Digests hook (streams.enabled) and its
+// sole owner: enabling Ideas does not run it (see fastForwardIdeas).
 //
 // Gmail mirrors self-init exactly: the floor becomes the account's own
 // Gmail sync watermark (gmail_last_internal_date, already on the row

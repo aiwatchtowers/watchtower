@@ -74,26 +74,18 @@ func TestFastForward_Ideas(t *testing.T) {
 	_, err = database.InsertMeetingTranscript(db.MeetingTranscript{Title: "m1", TranscriptText: "hello"})
 	require.NoError(t, err)
 
-	// A connected, Gmail-enabled account with a real sync watermark: its
-	// ideas_email_floor should fast-forward to that watermark (self-init
-	// mirror), not to "now".
+	// Per-account stage-1 floors seeded to known values: they belong to
+	// Stream Digests (streams.enabled), which toggles independently of
+	// Ideas, so an Ideas enable must leave them exactly where they are.
 	gmailAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", GmailEnabled: true})
 	require.NoError(t, err)
 	require.NoError(t, database.SetGmailAccountWatermark(gmailAcct, 555))
-
-	// A Gmail-enabled account with NO synced mail yet (watermark still 0):
-	// the degenerate clean-exit branch — must be left untouched, exactly
-	// like the stage-1 self-init's own "retry initialization next run".
-	freshGmailAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "fresh@x.com", GmailEnabled: true})
-	require.NoError(t, err)
-
-	// A connected Google account with Gmail NOT enabled: must be skipped
-	// entirely, never touched.
-	calendarOnlyAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "cal@x.com", GmailEnabled: false, CalendarEnabled: true})
-	require.NoError(t, err)
+	require.NoError(t, database.SetIdeasEmailFloor(gmailAcct, 111))
 
 	jiraAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-1", SiteURL: "https://x.atlassian.net"})
 	require.NoError(t, err)
+	seededJiraFloor := db.FormatJiraTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, database.SetIdeasJiraFloor(jiraAcct, seededJiraFloor))
 
 	require.NoError(t, FastForward("ideas", database, now))
 
@@ -105,19 +97,13 @@ func TestFastForward_Ideas(t *testing.T) {
 
 	emailFloor, err := database.IdeasEmailFloor(gmailAcct)
 	require.NoError(t, err)
-	assert.Equal(t, float64(555), emailFloor, "email floor should mirror the account's own gmail sync watermark")
-
-	freshEmailFloor, err := database.IdeasEmailFloor(freshGmailAcct)
-	require.NoError(t, err)
-	assert.Zero(t, freshEmailFloor, "an account with no synced mail yet must be left untouched")
-
-	calOnlyFloor, err := database.IdeasEmailFloor(calendarOnlyAcct)
-	require.NoError(t, err)
-	assert.Zero(t, calOnlyFloor, "a Gmail-disabled account must be left untouched")
+	assert.Equal(t, float64(111), emailFloor,
+		"enabling Ideas must not advance Stream Digests' per-account email floor — that would skip a generation window the owner never asked to skip")
 
 	jiraFloor, err := database.IdeasJiraFloor(jiraAcct)
 	require.NoError(t, err)
-	assert.Equal(t, db.FormatJiraTime(now.UTC()), jiraFloor, "jira floor should fast-forward to now in Jira's own format")
+	assert.Equal(t, seededJiraFloor, jiraFloor,
+		"enabling Ideas must not advance Stream Digests' per-account jira floor")
 }
 
 // TestFastForward_StreamDigests pins that "stream-digests" advances only the
@@ -129,9 +115,23 @@ func TestFastForward_StreamDigests(t *testing.T) {
 	database := testDB(t)
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 
+	// A connected, Gmail-enabled account with a real sync watermark: its
+	// ideas_email_floor fast-forwards to that watermark (self-init mirror),
+	// not to "now".
 	gmailAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", GmailEnabled: true})
 	require.NoError(t, err)
 	require.NoError(t, database.SetGmailAccountWatermark(gmailAcct, 777))
+
+	// A Gmail-enabled account with NO synced mail yet (watermark still 0):
+	// the degenerate clean-exit branch — must be left untouched, exactly
+	// like the stage-1 self-init's own "retry initialization next run".
+	freshGmailAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "fresh@x.com", GmailEnabled: true})
+	require.NoError(t, err)
+
+	// A connected Google account with Gmail NOT enabled: skipped entirely,
+	// never touched.
+	calendarOnlyAcct, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "cal@x.com", GmailEnabled: false, CalendarEnabled: true})
+	require.NoError(t, err)
 
 	jiraAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-1", SiteURL: "https://x.atlassian.net"})
 	require.NoError(t, err)
@@ -141,6 +141,14 @@ func TestFastForward_StreamDigests(t *testing.T) {
 	emailFloor, err := database.IdeasEmailFloor(gmailAcct)
 	require.NoError(t, err)
 	assert.Equal(t, float64(777), emailFloor)
+
+	freshEmailFloor, err := database.IdeasEmailFloor(freshGmailAcct)
+	require.NoError(t, err)
+	assert.Zero(t, freshEmailFloor, "an account with no synced mail yet must be left untouched")
+
+	calOnlyFloor, err := database.IdeasEmailFloor(calendarOnlyAcct)
+	require.NoError(t, err)
+	assert.Zero(t, calOnlyFloor, "a Gmail-disabled account must be left untouched")
 
 	jiraFloor, err := database.IdeasJiraFloor(jiraAcct)
 	require.NoError(t, err)
