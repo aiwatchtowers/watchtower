@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 import WatchtowerCore
 
 /// Handles checking for updates via GitHub Releases API, downloading, and installing.
@@ -16,12 +17,67 @@ final class UpdateService {
         case error(String)
     }
 
+    /// Which feed this build updates from. Resolved from the build flavor and
+    /// the channel keys stamped into Info.plist by build-app.sh. `disabled`
+    /// covers dev builds and flavored builds whose profile carried no channel
+    /// keys — those must fail closed, never fall back to the public feed.
+    enum UpdateChannel: Equatable {
+        case publicGitHub
+        case gated(feedURL: URL, clientID: String, clientSecret: String)
+        case disabled
+    }
+
     var state: UpdateState = .idle
 
     var isUpdateAvailable: Bool {
         if case .available = state { return true }
         if case .readyToInstall = state { return true }
         return false
+    }
+
+    // MARK: - Channel Routing & Helpers
+
+    nonisolated static func resolveChannel(
+        flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
+    ) -> UpdateChannel {
+        if flavor.isEmpty { return .publicGitHub }
+        if flavor == "dev" { return .disabled }
+        guard let feedURL, let url = URL(string: feedURL), url.scheme == "https",
+              let clientID, !clientID.isEmpty,
+              let clientSecret, !clientSecret.isEmpty else { return .disabled }
+        return .gated(feedURL: url, clientID: clientID, clientSecret: clientSecret)
+    }
+
+    /// Release assets are produced by build-app.sh as
+    /// "Watchtower-<version>-arm64.zip"; match exactly, never "first .zip".
+    nonisolated static func expectedPublicAssetName(forTag tag: String) -> String {
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        return "Watchtower-\(version)-arm64.zip"
+    }
+
+    /// A manifest for the wrong flavor must never cross over — the zip key
+    /// carries the flavor as a "-<flavor>-" token (build-app.sh naming).
+    nonisolated static func zipKeyMatchesFlavor(_ zipKey: String, flavor: String) -> Bool {
+        zipKey.contains("-\(flavor)-")
+    }
+
+    /// Cloudflare Access answers a rejected service token with a redirect to
+    /// the login page (or 401/403) — surface that as an auth error so a
+    /// revoked token never masquerades as "no updates available".
+    nonisolated static func classifyGatedStatus(_ status: Int) -> GatedChannelError? {
+        if status == 200 { return nil }
+        if (300...399).contains(status) || status == 401 || status == 403 { return .authRejected }
+        return .httpError(status)
+    }
+
+    nonisolated static func sha256Hex(ofFileAt url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static let repo = "aiwatchtowers/watchtower"
@@ -421,6 +477,38 @@ enum UpdateError: LocalizedError {
         switch self {
         case .httpError(let code):
             "GitHub API returned status \(code)"
+        }
+    }
+}
+
+struct GatedManifest: Decodable {
+    let version: String
+    let zipKey: String
+    let sha256: String
+    let size: Int?
+    let publishedAt: String?
+    let notes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case version, sha256, size, notes
+        case zipKey = "zip_key"
+        case publishedAt = "published_at"
+    }
+}
+
+enum GatedChannelError: LocalizedError, Equatable {
+    case authRejected
+    case httpError(Int)
+    case checksumMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .authRejected:
+            "Update channel rejected this build's access credentials — the update token may have been revoked."
+        case .httpError(let code):
+            "Update channel returned status \(code)"
+        case .checksumMismatch:
+            "Downloaded update failed checksum verification"
         }
     }
 }
