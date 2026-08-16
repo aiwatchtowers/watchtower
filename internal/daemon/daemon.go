@@ -581,6 +581,9 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // before the LLM-heavy digest pipeline. Phase 5 (phaseInbox) still runs later
 // to detect decision_made/briefing_ready from fresh digests.
 func (d *Daemon) phaseFastInbox(ctx context.Context) {
+	if !d.config.Inbox.Enabled {
+		return
+	}
 	if d.inboxPipe == nil {
 		return
 	}
@@ -593,6 +596,9 @@ func (d *Daemon) phaseFastInbox(ctx context.Context) {
 // phaseChannelDigests generates per-channel digests (MAP phase that produces
 // people_signals consumed later by phasePeopleCards).
 func (d *Daemon) phaseChannelDigests(ctx context.Context) {
+	if !d.config.Digest.Enabled {
+		return
+	}
 	if d.digestPipe == nil {
 		return
 	}
@@ -726,8 +732,10 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 
 // phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
 // track context into the digest pipeline, then runs daily/weekly rollups.
+// The two halves are independently gated (tracks.enabled / digest.enabled)
+// since either pipeline may be wired while the other is off.
 func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
-	if d.tracksPipe != nil {
+	if d.config.Tracks.Enabled && d.tracksPipe != nil {
 		d.trackedPipelineRun("tracks", func() pipelineRunStats {
 			n, updated, err := d.tracksPipe.Run(ctx)
 			if err != nil {
@@ -758,7 +766,7 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 	}
 
 	// Phase 3: Daily/weekly rollups (track-aware).
-	if d.digestPipe != nil {
+	if d.config.Digest.Enabled && d.digestPipe != nil {
 		if err := d.digestPipe.RunRollups(ctx); err != nil {
 			d.logger.Printf("rollup error: %v", err)
 		}
@@ -768,6 +776,9 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 // phasePeopleCards (group B) generates per-user people cards from people_signals
 // produced by phaseChannelDigests. Throttled to once per 24h.
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
+	if !d.config.People.Enabled {
+		return
+	}
 	if d.peoplePipe == nil {
 		return
 	}
@@ -796,6 +807,9 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 // fresh digests, AI triage, secretary card generation). Runs after digest/tracks/
 // people so detectors see fresh data.
 func (d *Daemon) phaseInbox(ctx context.Context) {
+	if !d.config.Inbox.Enabled {
+		return
+	}
 	if d.inboxPipe == nil {
 		return
 	}
@@ -828,7 +842,13 @@ const ideasLockSkipLogThrottle = 10 * time.Minute
 
 // phaseIdeas runs the ideas & decisions registry pipeline (Gmail/Jira
 // pre-digests, then the stage-2 consolidator). Runs after inbox so the
-// registry sees fresh digests/transcripts. Throttled to once per
+// registry sees fresh digests/transcripts. Gated on ideas.enabled FIRST,
+// before even the nil-pipe check: wireIdeasPipeline attaches an ideas.Pipeline
+// unconditionally now (Task 3), shared with the independently-gated
+// phaseStreamDigests, so d.ideasPipe is non-nil even when the registry
+// consolidator itself is off — without this gate, a disabled registry would
+// still fall through to the throttle and ACQUIRE the backfill lock below for
+// nothing (the quirk this gate closes). Throttled to once per
 // ideas.mine_interval_hours (default 6 when unset/non-positive, the
 // DefaultIdeasMineIntervalHours precedent) — the phasePeopleCards pattern.
 // When the throttle says it's time to run, phaseIdeas ACQUIRES the same
@@ -840,6 +860,9 @@ const ideasLockSkipLogThrottle = 10 * time.Minute
 // check runs BEFORE the lock acquire so an idle poll tick (nothing due to
 // run yet) never touches the lock file at all.
 func (d *Daemon) phaseIdeas(ctx context.Context) {
+	if !d.config.Ideas.Enabled {
+		return
+	}
 	if d.ideasPipe == nil {
 		return
 	}
@@ -991,6 +1014,9 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 // plans). AI-free and best-effort: errors are logged, never propagated, and
 // never affect the inbox pipeline or its watermarks (DASH-06).
 func (d *Daemon) phaseFeed() {
+	if !d.config.Feed.Enabled {
+		return
+	}
 	if d.feedPipe == nil {
 		return
 	}
@@ -1007,6 +1033,9 @@ func (d *Daemon) phaseFeed() {
 // suggestion is missing or stale (regenerated after a user edit). Runs after
 // inbox so any targets just surfaced/created are included.
 func (d *Daemon) phaseNextStep(ctx context.Context) {
+	if !d.config.Targets.NextStep.Enabled {
+		return
+	}
 	if d.nextStepPipe == nil {
 		return
 	}
@@ -1024,6 +1053,9 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 // phaseCustomTrackScan runs enabled custom tracks over recent activity,
 // appending timeline events. Runs before auto-track extraction so folds land.
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
+	if !d.config.Tracks.Enabled {
+		return
+	}
 	if d.customTracksPipe == nil {
 		return
 	}
@@ -1040,6 +1072,9 @@ func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 
 // phaseBriefing generates the daily briefing once per scheduled day.
 func (d *Daemon) phaseBriefing(ctx context.Context) {
+	if !d.config.Briefing.Enabled {
+		return
+	}
 	if d.briefingPipe == nil || !d.shouldRunBriefing() {
 		return
 	}
@@ -1267,6 +1302,9 @@ func (d *Daemon) shouldRunDayPlan(now time.Time) bool {
 // runDayPlanPhase is Phase 7: generate today's day plan once per day after
 // the configured hour, immediately after the briefing phase.
 func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time) {
+	if !d.config.DayPlan.Enabled {
+		return
+	}
 	if !d.shouldRunDayPlan(now) {
 		return
 	}
@@ -1297,7 +1335,14 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time) {
 
 // runDayPlanConflictPhase is Phase 8: every cycle, sync calendar items and
 // re-detect conflicts on today's plan. Fires a log notice on false→true flip.
+// Unlike runDayPlanPhase, this has no shouldRunDayPlan to inherit a
+// cfg.Enabled check from — it previously had no Enabled gate of its own at
+// all, so disabling day_plan after a plan already existed for today left
+// this phase syncing/re-detecting conflicts on it forever.
 func (d *Daemon) runDayPlanConflictPhase(ctx context.Context, now time.Time) {
+	if !d.config.DayPlan.Enabled {
+		return
+	}
 	if d.dayPlanPipeline == nil || d.db == nil {
 		return
 	}
