@@ -138,7 +138,7 @@ final class UpdateService {
             state = .idle
         case .publicGitHub:
             await checkPublic()
-        case .gated(let feedURL, let clientID, let clientSecret):
+        case let .gated(feedURL, clientID, clientSecret):
             await checkGated(feedURL: feedURL, clientID: clientID, clientSecret: clientSecret)
         }
     }
@@ -632,7 +632,8 @@ enum GatedChannelError: LocalizedError, Equatable {
 /// 3xx status instead of the login page's HTML.
 private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
     func urlSession(
-        _ session: URLSession, task: URLSessionTask,
+        _ session: URLSession,
+        task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest
     ) async -> URLRequest? { nil }

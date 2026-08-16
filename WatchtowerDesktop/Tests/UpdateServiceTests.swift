@@ -80,7 +80,7 @@ struct UpdateServicePureTests {
 
     @Test("GitHubRelease decodes snake_case keys")
     func decodeRelease() throws {
-        let json = """
+        let json = Data("""
         {
             "tag_name": "v1.2.3",
             "name": "Release 1.2.3",
@@ -89,7 +89,7 @@ struct UpdateServicePureTests {
                 {"name":"Watchtower.app.zip","browser_download_url":"https://gh/x.zip","size":12345}
             ]
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let release = try JSONDecoder().decode(GitHubRelease.self, from: json)
         #expect(release.tagName == "v1.2.3")
@@ -103,9 +103,9 @@ struct UpdateServicePureTests {
 
     @Test("GitHubRelease tolerates missing optional fields")
     func decodeReleaseMinimal() throws {
-        let json = """
+        let json = Data("""
         {"tag_name":"v0.1.0","assets":[]}
-        """.data(using: .utf8)!
+        """.utf8)
 
         let release = try JSONDecoder().decode(GitHubRelease.self, from: json)
         #expect(release.tagName == "v0.1.0")
@@ -233,9 +233,9 @@ struct UpdateChannelTests {
 
     @Test("GatedManifest decodes snake_case keys and tolerates missing optionals")
     func manifestDecode() throws {
-        let full = """
+        let full = Data("""
         {"version":"0.8.0","zip_key":"Watchtower-0.8.0-corp-arm64.zip","sha256":"abc123","size":42,"published_at":"2026-08-16T12:00:00Z","notes":"n"}
-        """.data(using: .utf8)!
+        """.utf8)
         let m = try JSONDecoder().decode(GatedManifest.self, from: full)
         #expect(m.version == "0.8.0")
         #expect(m.zipKey == "Watchtower-0.8.0-corp-arm64.zip")
@@ -244,9 +244,9 @@ struct UpdateChannelTests {
         #expect(m.publishedAt == "2026-08-16T12:00:00Z")
         #expect(m.notes == "n")
 
-        let minimal = """
+        let minimal = Data("""
         {"version":"0.8.0","zip_key":"k.zip","sha256":"x"}
-        """.data(using: .utf8)!
+        """.utf8)
         let m2 = try JSONDecoder().decode(GatedManifest.self, from: minimal)
         #expect(m2.size == nil && m2.publishedAt == nil && m2.notes == nil)
     }
