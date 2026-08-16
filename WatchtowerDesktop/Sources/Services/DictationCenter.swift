@@ -168,7 +168,8 @@ final class DictationCenter {
             return WhisperDictationSession(transcriber: transcriber, config: config)
         }
         return AppleDictationSession(
-            locale: AppleLocaleCatalog.resolveDictationLocale(forced: config.forcedLanguage))
+            locale: AppleLocaleCatalog.resolveDictationLocale(
+                forced: config.forcedLanguage, langset: config.langset))
     }
 
     // MARK: - Controls
