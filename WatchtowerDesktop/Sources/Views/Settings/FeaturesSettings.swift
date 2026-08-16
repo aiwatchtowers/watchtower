@@ -1,6 +1,21 @@
 import SwiftUI
 import WatchtowerCore
 
+/// `apply()` itself never throws (partial-failure detail lives in
+/// `service.loadError`/`service.pending`), so `FeaturesSettings` wraps a
+/// post-apply failure into a thrown error itself — otherwise
+/// `ConfigSaveBar.save()`'s `try await extraSave?()` always falls through to
+/// its success path and shows "Saved" even when the CLI replay failed.
+private enum FeatureManagerApplyError: LocalizedError {
+    case applyFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .applyFailed(let message): return message
+        }
+    }
+}
+
 /// Features tab — the Feature Manager (on/off toggles + cascade dialog) on
 /// top, then per-feature tuning (Digest, Briefing, Day Plan, Ideas) for
 /// whichever of those pillars is currently enabled, plus notification
@@ -33,8 +48,20 @@ struct FeaturesSettings: View {
         .padding(.top, 4)
         .safeAreaInset(edge: .bottom) {
             ConfigSaveBar(config: config) {
+                // Captured before the call: `apply()` is a no-op guarded by
+                // `!pending.isEmpty` that returns without touching
+                // `loadError` at all when nothing was staged — checking
+                // `loadError` unconditionally after the call would risk
+                // surfacing a STALE error left over from an earlier, wholly
+                // unrelated `dependents(of:)` failure (e.g. the user backed
+                // out of a toggle earlier this session) on a Save that never
+                // touched the Feature Manager.
+                let hadPendingChanges = !appState.featureManager.pending.isEmpty
                 await appState.featureManager.apply {
                     await DaemonManager.restart()
+                }
+                if hadPendingChanges, let error = appState.featureManager.loadError {
+                    throw FeatureManagerApplyError.applyFailed(error)
                 }
             }
         }

@@ -54,6 +54,7 @@ struct FeatureManagerSection: View {
             presenting: cascadeCandidate
         ) { candidate in
             Button("Disable only \(candidate.feature.title)") {
+                service.applyWithDependents.remove(candidate.feature.id)
                 service.setPending(candidate.feature.id, enabled: false)
                 cascadeCandidate = nil
             }
@@ -193,14 +194,25 @@ struct FeatureManagerSection: View {
         )
     }
 
+    /// `applyWithDependents` is a standing "the owner already confirmed the
+    /// cascade for this id" flag, so every path that does NOT go through
+    /// that confirmation this time — re-enabling, or a direct disable with
+    /// no dependents to confirm — must clear it. Otherwise a stale entry
+    /// from an earlier "Disable X and dependents" choice silently survives
+    /// a toggle-back-on-then-off-again and `apply()` appends
+    /// `--with-dependents` to a disable the owner never actually confirmed
+    /// this time (FEAT-04 spirit: consent must not outlive the decision it
+    /// was given for).
     private func handleToggle(_ feature: FeatureInfo, enabled: Bool) {
         guard !enabled else {
+            service.applyWithDependents.remove(feature.id)
             service.setPending(feature.id, enabled: true)
             return
         }
         Task {
             let dependents = await service.dependents(of: feature.id)
             if dependents.isEmpty {
+                service.applyWithDependents.remove(feature.id)
                 service.setPending(feature.id, enabled: false)
             } else {
                 cascadeCandidate = CascadeCandidate(feature: feature, dependents: dependents)
