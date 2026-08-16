@@ -140,6 +140,11 @@ struct FeatureManagerServiceTests {
         // the last-loaded snapshot still says disabled.
         service.setPending("tracks", enabled: true)
         #expect(service.disabledFeatureIDs == ["memory", "ideas"])
+
+        // A staged SUB-TOGGLE is keyed by its config key, not a feature id,
+        // and must never land in a set of feature ids.
+        service.setPending("memory.semantic.enabled", enabled: false)
+        #expect(service.disabledFeatureIDs == ["memory", "ideas"])
     }
 
     // MARK: - dependents(of:)

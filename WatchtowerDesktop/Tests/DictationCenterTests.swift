@@ -2026,7 +2026,7 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         XCTAssertEqual(center.phase, .idle)
     }
 
-    // MARK: 16. ML engines residency toggle (Feature Manager, ml.keepEnginesWarm)
+    // MARK: 25. ML engines residency toggle (Feature Manager, ml.keepEnginesWarm)
 
     /// `ml.keepEnginesWarm=false` (the Settings → Features "Keep ML engines in
     /// memory" row): a finished dictation must drop its engine right away

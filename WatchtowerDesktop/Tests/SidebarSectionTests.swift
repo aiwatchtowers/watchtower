@@ -97,9 +97,8 @@ final class SidebarSectionTests: XCTestCase {
         SidebarView.sectionBadgeCount(
             in: .today,
             hidden: hidden,
-            disabledFeatures: disabled,
-            count: { Self.todayCounts[$0] ?? 0 }
-        )
+            disabledFeatures: disabled
+        ) { Self.todayCounts[$0] ?? 0 }
     }
 
     func testSectionBadgeSumsEveryVisibleItem() {

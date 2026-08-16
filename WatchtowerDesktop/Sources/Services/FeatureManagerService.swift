@@ -90,9 +90,16 @@ final class FeatureManagerService {
 
     /// Every feature id currently disabled, folding staged `pending` changes
     /// over the last-loaded state (pending always wins).
+    ///
+    /// `pending` is keyed by feature id OR by a sub-toggle's full config key
+    /// (e.g. "memory.semantic.enabled"), so only keys that name a real
+    /// feature are folded here — otherwise staging a sub-toggle off would
+    /// put its config key into a set of FEATURE ids, which the sidebar
+    /// filter and tuning-section gates then compare against.
     var disabledFeatureIDs: Set<String> {
+        let featureIDs = Set(features.map(\.id))
         var ids = Set(features.filter { $0.state == "disabled" }.map(\.id))
-        for (id, enabled) in pending {
+        for (id, enabled) in pending where featureIDs.contains(id) {
             if enabled {
                 ids.remove(id)
             } else {

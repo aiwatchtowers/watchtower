@@ -236,10 +236,14 @@ struct FeatureManagerSection: View {
 
     /// Writes BOTH residency keys on every change so one switch governs ML
     /// residency everywhere: `DictationCenter`'s sticky-engine TTL and
-    /// `MeetingRecorderCenter`'s warm-slot prewarm/park policy
-    /// (`MeetingsSettings` hosts its own separate toggle for the latter key
-    /// alone — both are @AppStorage-backed, so either surface changing it
-    /// live-updates the other).
+    /// `MeetingRecorderCenter`'s warm-slot prewarm/park policy.
+    ///
+    /// The sync is one-directional by design. `MeetingsSettings` hosts a
+    /// narrower toggle bound to the prewarm key ALONE, so flipping it there
+    /// changes meeting prewarm without touching dictation's engine TTL —
+    /// and this row, which displays the dictation key, then reads as
+    /// unchanged. That is the intended split (one broad switch here, one
+    /// specific switch there), not a missing write-back.
     private var mlResidencyBinding: Binding<Bool> {
         Binding(
             get: { keepEnginesWarm },
