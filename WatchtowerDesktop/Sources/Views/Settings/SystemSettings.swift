@@ -240,13 +240,18 @@ struct SystemSettings: View {
 
             switch service.state {
             case .idle:
-                HStack {
-                    Text("No updates available")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check for Updates") {
-                        Task { await service.checkForUpdates() }
+                if service.updatesSupported {
+                    HStack {
+                        Text("No updates available")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Check for Updates") {
+                            Task { await service.checkForUpdates() }
+                        }
                     }
+                } else {
+                    Text("Updates for this build are distributed out of band")
+                        .foregroundStyle(.secondary)
                 }
 
             case .checking:
