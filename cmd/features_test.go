@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/features"
 )
 
 // writeFeaturesConfig writes a minimal config.yaml (just active_workspace,
@@ -51,6 +52,22 @@ func TestFeaturesCmd_PersistentPreRunAlsoRunsRootHook(t *testing.T) {
 	require.NoError(t, v.ReadInConfig())
 	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
 	assert.True(t, v.IsSet("features.migrated"), "the features hook's own migration must run too")
+}
+
+// TestToFeatureJSON_NilSlicesMarshalAsEmptyArrays pins the nil-slice
+// normalisation inside toFeatureJSON. TestFeaturesList_JSONShape cannot: every
+// registry entry carries 2-3 benefits, so nothing in that command's output is
+// ever a nil slice and the check passed regardless of what toFeatureJSON did.
+// The Desktop side decodes benefits into a non-optional [String], which throws
+// on `null` (FeatureManagerServiceTests' loadDecodesEmptyBenefitsArray is this
+// pin's other half).
+func TestToFeatureJSON_NilSlicesMarshalAsEmptyArrays(t *testing.T) {
+	out := toFeatureJSON(features.Feature{ID: "test", Benefits: nil, FeedsInto: nil}, &config.Config{})
+
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"benefits":[]`, "benefits must never marshal as null")
+	assert.Contains(t, string(raw), `"feeds_into":[]`, "feeds_into must never marshal as null")
 }
 
 func TestFeaturesList_JSONShape(t *testing.T) {
@@ -98,11 +115,9 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 		assert.GreaterOrEqual(t, len(f.Benefits), 2, "feature %q has fewer than 2 benefits in JSON", f.ID)
 		assert.LessOrEqual(t, len(f.Benefits), 3, "feature %q has more than 3 benefits in JSON", f.ID)
 	}
-	// A leaf entry (no FeedsInto) must still marshal benefits as `[]`-shaped
-	// content, never `null` — the feeds_into empty-array convention, proven
-	// here directly on the raw bytes the way TestFeaturesDisable_DryRunJSONWireShape
-	// proves it for "dependents".
-	assert.NotContains(t, buf.String(), `"benefits":null`, "benefits must never marshal as null")
+	// The never-`null` half of the benefits wire contract is pinned on
+	// toFeatureJSON directly, in TestToFeatureJSON_NilSlicesMarshalAsEmptyArrays
+	// — this command's output has no nil slice in it to normalise.
 
 	var sawInbox, sawTargets, sawMemory bool
 	for _, f := range payload.Features {

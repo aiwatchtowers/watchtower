@@ -13,14 +13,14 @@ enum OnboardingStep: Int, CaseIterable, Comparable, Codable {
     case features = 6     // Feature splash — pick which features to enable/disable
     case complete = 7     // Done
 
-    // Persisted-rawValue migration note: `onboarding_current_step` stores the
-    // raw Int. A mid-onboarding install that had stored 6 (`.complete` in the
-    // numbering before `.features` was inserted) now decodes as `.features`
-    // instead — harmless: on every launch `AppState.initialize()` reconciles
-    // the machine against `user_profile.onboarding_done`, and calls
-    // `markComplete()` immediately when the DB already says done. Completed
-    // installs are unaffected either way — their UserDefaults keys were
-    // already removed by `markComplete()`. No migration code needed.
+    // Persisted-rawValue note: `onboarding_current_step` stores the raw Int,
+    // and inserting `.features` at 6 shifted `.complete` to 7. No install can
+    // actually be carrying the old 6 — `.complete` is only ever reached
+    // through `markComplete()`, which REMOVES the key instead of storing it,
+    // and nothing in production calls `advance()` or `goTo(.complete)`. This
+    // is a defensive note, not a live upgrade path: a stored 6 would resume
+    // at `.features`, whose own `.task` builds the view model that step needs.
+    // No migration code needed.
 
     static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
