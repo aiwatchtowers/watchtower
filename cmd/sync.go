@@ -448,8 +448,10 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 }
 
 // runSyncDaemon builds a daemon.Daemon around the already-wired Slack
-// orchestrators, attaches every enabled digest/pipeline stage plus one syncer
-// per connected Jira/Google/IMAP/CalDAV account (seeding each source's legacy
+// orchestrators, attaches every pipeline stage (unconditionally — each
+// pipeline's own daemon phase gates its execution on that feature's own
+// config flag, see internal/daemon/daemon.go) plus one syncer per connected
+// Jira/Google/IMAP/CalDAV account (seeding each source's legacy
 // single-account config into its accounts table first, so an existing install
 // keeps syncing without a re-login), and runs it until ctx is cancelled. A
 // source that fails to seed or wire records its own error and is skipped —
@@ -457,42 +459,63 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
+	// Perform the one-time feature-gate migration (and its first-contact
+	// marker stamp) for digest.enabled=false installs. On a real migration,
+	// reload the config so this daemon process uses the migrated values.
+	legacyDigestOff, err := config.MigrateFeatureGates(flagConfig)
+	switch {
+	case err != nil && legacyDigestOff:
+		// The mapping could not be persisted on an install that still needs
+		// it. Honoring the raw config here would turn nine AI features ON
+		// for an owner who believes everything is off — and spend tokens
+		// proving it. Fail closed for this process; the next start retries
+		// the on-disk write.
+		logger.Printf("feature-gate migration failed: %v — running FAIL-CLOSED with all AI features off this session; fix the config file and restart", err)
+		config.ApplyLegacyDigestOff(cfg)
+	case err != nil:
+		logger.Printf("feature-gate migration error: %v (continuing with current config)", err)
+	case legacyDigestOff:
+		freshCfg, err := config.Load(flagConfig)
+		if err != nil {
+			logger.Printf("failed to reload config after feature-gate migration: %v (applying it in memory instead)", err)
+			config.ApplyLegacyDigestOff(cfg)
+		} else {
+			cfg = freshCfg
+			logger.Printf("feature-gate migration applied; config reloaded")
+		}
+	}
+
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
 	d.SetPIDPath(pidFilePath(cfg))
-	if cfg.Digest.Enabled {
-		gen, cleanupPool := cliPooledGenerator(cfg, logger)
-		defer cleanupPool()
-		tracksPipe := tracks.New(database, cfg, gen, logger)
-		pipe := digest.New(database, cfg, gen, logger)
-		pipe.TrackLinker = tracksPipe
-		d.SetDigestPipeline(pipe)
-		d.SetTracksPipeline(tracksPipe)
-		d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
-		if cfg.Briefing.Enabled {
-			d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
-		}
-		if cfg.Inbox.Enabled {
-			inboxPipe := inbox.New(database, cfg, gen, logger)
-			inboxPipe.SetPromptStore(prompts.New(database, nil))
-			d.SetInboxPipeline(inboxPipe)
-		}
-		wireIdeasPipeline(d, database, cfg, gen, logger)
-		wireMemoryPipeline(d, database, cfg, logger)
-		d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
-		customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
-		d.SetCustomTracksPipeline(customTracksPipe)
-		if cfg.DayPlan.Enabled {
-			dayPlanPipe := dayplan.New(database, cfg, gen, logger)
-			dayPlanPipe.SetPromptStore(prompts.New(database, nil))
-			d.SetDayPlanPipeline(dayPlanPipe)
-		}
-		if cfg.Feed.Enabled {
-			d.SetFeedPipeline(feed.New(database, cfg, logger))
-		}
-	}
+	// Every pipeline is constructed unconditionally now (Task 3 demoted
+	// digest.enabled from a master switch to a per-phase gate) — each is a
+	// cheap struct, and the daemon's own phase methods gate execution on
+	// their own feature's config flag (internal/daemon/daemon.go), not on
+	// whether it was wired here.
+	gen, cleanupPool := cliPooledGenerator(cfg, logger)
+	defer cleanupPool()
+	tracksPipe := tracks.New(database, cfg, gen, logger)
+	pipe := digest.New(database, cfg, gen, logger)
+	pipe.TrackLinker = tracksPipe
+	d.SetDigestPipeline(pipe)
+	d.SetTracksPipeline(tracksPipe)
+	d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
+	d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
+	inboxPipe := inbox.New(database, cfg, gen, logger)
+	inboxPipe.SetPromptStore(prompts.New(database, nil))
+	d.SetInboxPipeline(inboxPipe)
+	wireIdeasPipeline(d, database, cfg, gen, logger)
+	wireMemoryPipeline(d, database, cfg, logger)
+	d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
+	customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)
+	d.SetCustomTracksPipeline(customTracksPipe)
+	dayPlanPipe := dayplan.New(database, cfg, gen, logger)
+	dayPlanPipe.SetPromptStore(prompts.New(database, nil))
+	d.SetDayPlanPipeline(dayPlanPipe)
+	d.SetFeedPipeline(feed.New(database, cfg, logger))
 	// Seed jira_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
 	// a re-login.
@@ -626,14 +649,14 @@ func wireJiraSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logg
 		if jiraCommentSyncEnabled(cfg) {
 			syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
 		}
-		// Wire board analyzer for auto-refresh of changed configs.
-		if cfg.Digest.Enabled {
-			aiProvider := newAIClient(cfg, cfg.DBPath())
-			analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
-			analyzer.SetLanguage(cfg.Digest.Language)
-			syncer.SetBoardAnalyzer(analyzer)
-			syncer.SetAutoRefresh(true)
-		}
+		// Wire board analyzer for auto-refresh of changed configs. This
+		// serves Boards, not digests, so it attaches whenever the account
+		// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).
+		aiProvider := newAIClient(cfg, cfg.DBPath())
+		analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
+		analyzer.SetLanguage(cfg.Digest.Language)
+		syncer.SetBoardAnalyzer(analyzer)
+		syncer.SetAutoRefresh(true)
 		syncers = append(syncers, syncer)
 	}
 	d.SetJiraSyncers(syncers)

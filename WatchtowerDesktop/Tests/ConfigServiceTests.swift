@@ -97,7 +97,7 @@ struct ConfigServiceTests {
         #expect(svc.ideasMineIntervalHours == 12)
     }
 
-    @Test("Save round-trips ideas settings and preserves unrelated keys")
+    @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""
         active_workspace: keep-me
@@ -109,14 +109,85 @@ struct ConfigServiceTests {
         #expect(svc.ideasEnabled == false)
         #expect(svc.ideasMineIntervalHours == 12)
 
+        // The on/off property is display-only: flipping it and saving must
+        // not write it back — the Feature Manager CLI owns that key.
         svc.ideasEnabled = true
         svc.ideasMineIntervalHours = 24
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
-        #expect(svc2.ideasEnabled == true)
-        #expect(svc2.ideasMineIntervalHours == 24)
+        #expect(svc2.ideasMineIntervalHours == 24, "tuning keys still round-trip")
+        #expect(svc2.ideasEnabled == false, "on-disk ideas.enabled must survive a save that changed another field")
         #expect(svc2.activeWorkspace == "keep-me", "unrelated keys must survive the save merge")
+    }
+
+    /// The three feature on/off keys have exactly one writer — the
+    /// `watchtower features enable|disable` CLI. `ConfigService.save()`
+    /// parses them (other views read the properties) but must never write
+    /// them back, or an ordinary Settings Save races the CLI and silently
+    /// reverts whatever the Feature Manager just applied.
+    @Test("Save leaves the three Feature Manager on/off keys exactly as the CLI wrote them")
+    func saveNeverWritesFeatureOnOffKeys() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        digest:
+          enabled: false
+          language: English
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        day_plan:
+          enabled: false
+          hour: 7
+        """)
+        let svc = ConfigService(configPath: path)
+
+        // Flip all three display-only properties AND change one real tuning
+        // field, so the save definitely rewrites every section involved.
+        svc.digestEnabled = true
+        svc.ideasEnabled = true
+        svc.dayPlanEnabled = true
+        svc.briefingHour = 11
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        let digest = yaml?["digest"] as? [String: Any]
+        let ideas = yaml?["ideas"] as? [String: Any]
+        let dayPlan = yaml?["day_plan"] as? [String: Any]
+
+        #expect(digest?["enabled"] as? Bool == false, "digest.enabled must pass through untouched; got: \(raw)")
+        #expect(ideas?["enabled"] as? Bool == false, "ideas.enabled must pass through untouched; got: \(raw)")
+        #expect(dayPlan?["enabled"] as? Bool == false, "day_plan.enabled must pass through untouched; got: \(raw)")
+
+        // Tuning keys in the same sections still save normally.
+        #expect(digest?["language"] as? String == "English")
+        #expect(dayPlan?["hour"] as? Int == 7)
+        #expect(ideas?["mine_interval_hours"] as? Int == 12)
+    }
+
+    /// `digestEnabled` defaults to `false` when the config has no digest
+    /// section, so writing it unconditionally used to make a plain Save on a
+    /// fresh install materialize `digest.enabled: false` — precisely the
+    /// legacy "all AI off" signature the Go migration looks for.
+    @Test("Save does not invent a digest section on a config that has none")
+    func saveDoesNotInventDigestSection() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.briefingHour = 9
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        #expect(yaml?.keys.contains("digest") == false, "an absent digest section must stay absent; got: \(raw)")
+        #expect(
+            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") == false,
+            "ideas.enabled must not be created by a save; got: \(raw)"
+        )
+        #expect(
+            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") == false,
+            "day_plan.enabled must not be created by a save; got: \(raw)"
+        )
     }
 
     @Test("Load parses ai and digest sections")

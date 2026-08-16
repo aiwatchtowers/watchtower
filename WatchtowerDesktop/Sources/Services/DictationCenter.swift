@@ -714,6 +714,22 @@ final class DictationCenter {
 
     // MARK: - Engine stickiness
 
+    /// `@AppStorage("ml.keepEnginesWarm")` — the Settings → Features "Keep ML
+    /// engines in memory" row (`FeatureManagerSection`, which writes this key
+    /// AND `MeetingRecorderCenter.preloadBeforeMeetingsKey` together); absent
+    /// = true (the `preloadBeforeMeetingsKey` precedent). Off makes a
+    /// finished dictation drop its engine immediately instead of parking it
+    /// for `engineIdleTTL` — see `armEngineReleaseTimer`.
+    static let keepEnginesWarmKey = "ml.keepEnginesWarm"
+
+    /// Read fresh at the scheduling moment via the injected `defaults`
+    /// (never snapshotted), the `MeetingRecorderCenter.preloadEnabled`
+    /// precedent.
+    private var keepEnginesWarm: Bool {
+        defaults.object(forKey: Self.keepEnginesWarmKey) == nil
+            || defaults.bool(forKey: Self.keepEnginesWarmKey)
+    }
+
     /// Whether this center still holds — or is mid-load about to hold — the
     /// shared physical engine slot. Read by the meeting recorder at record
     /// start to decide whether its live pass must park until `engineReleased`.
@@ -766,6 +782,10 @@ final class DictationCenter {
     }
 
     private func armEngineReleaseTimer() {
+        guard keepEnginesWarm else {
+            dropEngineImmediately()
+            return
+        }
         engineReleaseTask?.cancel()
         let ttl = engineIdleTTL
         engineReleaseTask = Task { @MainActor [weak self] in

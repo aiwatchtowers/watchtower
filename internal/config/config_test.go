@@ -573,3 +573,19 @@ func TestConfigRecordingsDir(t *testing.T) {
 			"default must match the Swift MeetingRecorderCenter path, got %q", got)
 	})
 }
+
+func TestFeatureGateDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Tracks.Enabled {
+		t.Error("tracks.enabled should default true")
+	}
+	if !cfg.People.Enabled {
+		t.Error("people.enabled should default true")
+	}
+	if !cfg.Targets.NextStep.Enabled {
+		t.Error("targets.next_step.enabled should default true")
+	}
+}

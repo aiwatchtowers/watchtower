@@ -14,6 +14,12 @@ final class AppState {
     static let shared = AppState()
 
     var selectedDestination: SidebarDestination = .inbox
+
+    /// Which feature ids are currently disabled — drives sidebar visibility,
+    /// navigation fallback, and the Dashboard banner. Populated by the
+    /// Feature Manager service (wired in separately); empty until then.
+    let featureVisibility = FeatureVisibilityStore()
+
     var databaseManager: DatabaseManager?
     var errorMessage: String?
     /// Non-nil when the CLI binary store could not be synced this launch. The
@@ -210,6 +216,13 @@ final class AppState {
 
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
+
+    /// Desktop-side manager for the Settings → Features panel. Unlike the
+    /// DB-gated ViewModels built in `initFeatureViewModels`, it has no DB
+    /// dependency at all (it is backed entirely by the `watchtower features`
+    /// CLI), so it can live as a plain, always-constructed `let` here and
+    /// load independently of the DB-open Task in `initialize()`.
+    let featureManager = FeatureManagerService()
 
     /// Manages background pipeline tasks (digests, people) started after onboarding sync.
     let backgroundTaskManager = BackgroundTaskManager()
@@ -432,6 +445,15 @@ final class AppState {
         }
         // Check for updates in background (once per 24h)
         Task { await updateService.checkIfNeeded() }
+        // No DB dependency, so this does not wait on the DB-open Task above
+        // (Settings → Features may be reached before that Task resolves).
+        // Every successful service load (launch, post-apply, failure-path
+        // reload) pushes the fresh disabled set into the visibility store
+        // the sidebar/navigation/banner read.
+        featureManager.onDisabledChanged = { [featureVisibility] ids in
+            featureVisibility.disabledFeatureIDs = ids
+        }
+        Task { await featureManager.load() }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
