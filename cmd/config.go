@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,30 @@ import (
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage watchtower configuration",
+	// PersistentPreRunE runs the one-time legacy digest-gate migration before
+	// any config subcommand. Log-only on error (the daemon's own call site
+	// does the same) so a migration hiccup never blocks init/set/show. This
+	// matters most for `config set`: without it, `config set digest.enabled
+	// false` on an unmigrated install would write the legacy signature
+	// (digest.enabled=false, no features.migrated marker) and the next
+	// MigrateFeatureGates call — a daemon start, or any `features`
+	// subcommand — would read that file as a genuine legacy install and
+	// cascade nine feature keys off.
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `config` subcommand would silently
+	// skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
+		if _, err := config.MigrateFeatureGates(flagConfig); err != nil {
+			log.Printf("warning: legacy feature-gate migration failed: %v", err)
+		}
+		return nil
+	},
 }
 
 var configInitCmd = &cobra.Command{
@@ -218,24 +243,36 @@ var knownConfigKeys = map[string]bool{
 	"memory.sources.actions":               true,
 	"memory.sources.calendar":              true,
 	"memory.sources.chats":                 true,
+	"memory.sources.jira":                  true,
 	"memory.renders.digest_compare":        true,
 	"memory.sources.operational":           true,
 	"memory.surfaces.day_plan":             true,
 	"memory.surfaces.meeting_prep":         true,
 	"memory.semantic.preferences":          true,
 	"claude_path":                          true,
+	"tracks.enabled":                       true,
+	"people.enabled":                       true,
+	"targets.next_step.enabled":            true,
+	"inbox.enabled":                        true,
+	"ideas.enabled":                        true,
+	"ideas.mine_interval_hours":            true,
+	"streams.enabled":                      true,
+	"streams.interval_hours":               true,
+	"briefing.enabled":                     true,
+	"briefing.hour":                        true,
+	"day_plan.enabled":                     true,
+	"feed.enabled":                         true,
+	"calendar.enabled":                     true,
+	"gmail.enabled":                        true,
+	"jira.enabled":                         true,
+	"transcripts.audio_retention_days":     true,
+	"features.migrated":                    true,
 }
 
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
 	configPath := flagConfig
-
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
 
 	// Warn on unrecognized keys (allow workspace-level keys like workspaces.*.slack_token)
 	if !knownConfigKeys[key] && !strings.HasPrefix(key, "workspaces.") {
@@ -257,8 +294,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		// can parse them correctly into time.Duration on read.
 		typedValue = value
 	}
-	v.Set(key, typedValue)
-	if err := writeConfigAtomic(v, configPath); err != nil {
+	if err := setConfigKey(configPath, key, typedValue); err != nil {
 		return err
 	}
 

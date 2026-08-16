@@ -78,71 +78,39 @@ workspaces:
 	return database
 }
 
-// TestIdeasPipelineNeeded pins wireIdeasPipeline's gate now that the stage-1
-// stream digests are decoupled from ideas.enabled (Task 6): a pipeline is
-// needed whenever EITHER the registry consolidator (ideas.enabled) or the
-// stream digests phase (streams.enabled) is on, and needed by neither only
-// when both are off.
-func TestIdeasPipelineNeeded(t *testing.T) {
+// TestWireIdeasPipeline_AlwaysAttachesPipeline pins Task 3's demotion of
+// wireIdeasPipeline's old ideas.enabled || streams.enabled gate: a pipeline
+// is now attached unconditionally (cheap struct construction), regardless of
+// either flag — phaseIdeas and phaseStreamDigests each gate their own
+// execution on their own flag at phase time instead (internal/daemon/daemon.go).
+func TestWireIdeasPipeline_AlwaysAttachesPipeline(t *testing.T) {
 	tests := []struct {
 		name           string
 		ideasEnabled   bool
 		streamsEnabled bool
-		want           bool
 	}{
-		{"both enabled", true, true, true},
-		{"only ideas enabled", true, false, true},
-		{"only streams enabled", false, true, true},
-		{"both disabled", false, false, false},
+		{"both enabled", true, true},
+		{"only ideas enabled", true, false},
+		{"only streams enabled", false, true},
+		{"both disabled", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			database := setupIdeasTestEnv(t)
+			defer database.Close()
+
 			cfg := &config.Config{
 				Ideas:   config.IdeasConfig{Enabled: tt.ideasEnabled},
 				Streams: config.StreamsConfig{Enabled: tt.streamsEnabled},
 			}
-			assert.Equal(t, tt.want, ideasPipelineNeeded(cfg))
+
+			d := daemon.New(cfg)
+			wireIdeasPipeline(d, database, cfg, nil, nil)
+
+			assert.True(t, d.HasIdeasPipeline(),
+				"wireIdeasPipeline must always attach a pipeline, regardless of ideas.enabled/streams.enabled")
 		})
 	}
-}
-
-// TestWireIdeasPipeline_StreamsOnlyWiresPipeline verifies the end-to-end
-// wiring path (not just the predicate): with ideas.enabled=false and
-// streams.enabled=true, wireIdeasPipeline still attaches an ideas.Pipeline to
-// the daemon, so the independently-gated stream digests phase has something
-// to run.
-func TestWireIdeasPipeline_StreamsOnlyWiresPipeline(t *testing.T) {
-	database := setupIdeasTestEnv(t)
-	defer database.Close()
-
-	cfg := &config.Config{
-		Ideas:   config.IdeasConfig{Enabled: false},
-		Streams: config.StreamsConfig{Enabled: true, IntervalHours: 6},
-	}
-
-	d := daemon.New(cfg)
-	wireIdeasPipeline(d, database, cfg, nil, nil)
-
-	assert.True(t, d.HasIdeasPipeline(),
-		"wireIdeasPipeline must attach a pipeline even with ideas.enabled=false, so the streams-only phase has something to run")
-}
-
-// TestWireIdeasPipeline_BothDisabledLeavesNoPipeline is the control: with
-// both ideas.enabled and streams.enabled false, wireIdeasPipeline must not
-// attach a pipeline at all.
-func TestWireIdeasPipeline_BothDisabledLeavesNoPipeline(t *testing.T) {
-	database := setupIdeasTestEnv(t)
-	defer database.Close()
-
-	cfg := &config.Config{
-		Ideas:   config.IdeasConfig{Enabled: false},
-		Streams: config.StreamsConfig{Enabled: false},
-	}
-
-	d := daemon.New(cfg)
-	wireIdeasPipeline(d, database, cfg, nil, nil)
-
-	assert.False(t, d.HasIdeasPipeline())
 }
 
 func seedIdeaRowCmd(t *testing.T, database *db.DB, idea db.Idea) int64 {

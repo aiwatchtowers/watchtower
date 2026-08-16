@@ -70,24 +70,17 @@ func validateEnumFlag(flag, value string, allowed []string) error {
 	return fmt.Errorf("invalid --%s %q (valid: %s)", flag, value, strings.Join(allowed, ", "))
 }
 
-// wireIdeasPipeline attaches the ideas registry phase to the daemon when
-// needed (the wireMemoryPipeline precedent — it also keeps runSync under the
-// cyclomatic-complexity gate).
+// wireIdeasPipeline attaches the ideas registry phase to the daemon
+// unconditionally (Task 3 — cheap struct construction; it also keeps
+// runSync under the cyclomatic-complexity gate as a separate function). The
+// registry's stage-2 consolidator (phaseIdeas, ideas.enabled) and the stage-1
+// stream digests (phaseStreamDigests, streams.enabled) each gate their own
+// execution at phase time instead of gating whether a pipeline exists to run
+// at all — see internal/daemon/daemon.go.
 func wireIdeasPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) {
-	if !ideasPipelineNeeded(cfg) {
-		return
-	}
 	ideasPipe := ideas.New(database, cfg, gen, logger)
 	ideasPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetIdeasPipeline(ideasPipe)
-}
-
-// ideasPipelineNeeded reports whether an ideas.Pipeline must be wired onto
-// the daemon at all: either the registry's stage-2 consolidator
-// (ideas.enabled) or the stage-1 stream digests (streams.enabled, now its
-// own independently-throttled daemon phase — phaseStreamDigests) needs one.
-func ideasPipelineNeeded(cfg *config.Config) bool {
-	return cfg.Ideas.Enabled || cfg.Streams.Enabled
 }
 
 // ideasConfigAndDB loads the config (with the usual workspace/provider flag
@@ -156,8 +149,9 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	// stage-2 consolidator), so it only has nothing to do when BOTH stages
 	// are off — a streams-only config (ideas.enabled=false,
 	// streams.enabled=true, which is also the default) must still reach
-	// runIdeasMineIncremental so stage 1 runs; see ideasPipelineNeeded's own
-	// OR for the same split.
+	// runIdeasMineIncremental so stage 1 runs (the same
+	// ideas.Enabled || streams.Enabled split the daemon's own phaseIdeas/
+	// phaseStreamDigests gates apply independently at phase time).
 	if fromStr != "" {
 		if !cfg.Ideas.Enabled {
 			return reportIdeasDisabled(cmd, fromStr, out)

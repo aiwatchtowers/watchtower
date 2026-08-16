@@ -1010,6 +1010,7 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 
 func TestDaemon_DayPlanConflictPhase(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
+	cfg.DayPlan.Enabled = true
 
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -1108,6 +1109,13 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 		},
 		Sync:   config.SyncConfig{PollInterval: 10 * time.Second},
 		Digest: config.DigestConfig{Enabled: true, MinMessages: 1},
+		// Tracks/People/Inbox now each need their own Enabled flag (Task 3
+		// demoted digest.enabled from a master switch to a per-phase gate) —
+		// without these, the phases below stay wired but the daemon gate
+		// skips them before trackedPipelineRun ever runs.
+		Tracks: config.TracksConfig{Enabled: true},
+		People: config.PeopleConfig{Enabled: true},
+		Inbox:  config.InboxConfig{Enabled: true},
 	}
 
 	gen := &mockGenerator{}

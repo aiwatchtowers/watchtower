@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
 )
 
 func TestConfigSubcommands(t *testing.T) {
@@ -256,4 +259,108 @@ func TestMaskValue(t *testing.T) {
 	assert.Equal(t, "****", maskValue("short"))
 	assert.Equal(t, "twelv****", maskValue("twelve-char"))
 	assert.Equal(t, "xoxp-****", maskValue("xoxp-secret-token-here"))
+}
+
+func TestConfigSet_FeatureGateKeys_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	// All feature-gate keys that should be recognized
+	keys := []string{
+		"tracks.enabled",
+		"people.enabled",
+		"targets.next_step.enabled",
+		"inbox.enabled",
+		"ideas.enabled",
+		"ideas.mine_interval_hours",
+		"streams.enabled",
+		"streams.interval_hours",
+		"briefing.enabled",
+		"briefing.hour",
+		"day_plan.enabled",
+		"feed.enabled",
+		"calendar.enabled",
+		"gmail.enabled",
+		"jira.enabled",
+		"transcripts.audio_retention_days",
+		"features.migrated",
+	}
+
+	for _, key := range keys {
+		buf := new(bytes.Buffer)
+		errBuf := new(bytes.Buffer)
+		configSetCmd.SetOut(buf)
+		configSetCmd.SetErr(errBuf)
+
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err, "failed to set %q", key)
+		assert.NotContains(t, errBuf.String(), "not a recognized config key", "key %q was flagged as unrecognized", key)
+	}
+}
+
+// TestConfigSet_StampsMigrationMarkerBeforeWrite pins that `config set` can
+// never produce the legacy signature (digest.enabled=false with no
+// features.migrated marker) that config.MigrateFeatureGates uses to detect a
+// pre-feature-manager install. Before configCmd grew its own
+// PersistentPreRunE, `config set digest.enabled false` on a config that had
+// never been touched by a `features` subcommand or a daemon start wrote
+// digest.enabled=false without ever stamping the marker; the next
+// MigrateFeatureGates call (the next daemon start, or any `features`
+// subcommand) then read that file as a genuine legacy install and cascaded
+// all nine legacyDigestOffFeatureKeys off, even though the owner only meant
+// to disable Slack digests via the modern per-feature key.
+//
+// Driven through rootCmd.Execute() (not configSetCmd.RunE directly) because
+// PersistentPreRunE only fires via cobra's own command dispatch — exercising
+// it directly would prove nothing about whether the hook is actually wired
+// into the command the owner runs.
+func TestConfigSet_StampsMigrationMarkerBeforeWrite(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	initial := "active_workspace: test\ndigest:\n  enabled: true\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"config", "set", "digest.enabled", "false"})
+	require.NoError(t, rootCmd.Execute())
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+
+	assert.True(t, v.IsSet("features.migrated"), "the marker must be stamped before config set can write the legacy signature")
+	assert.False(t, v.GetBool("digest.enabled"), "the requested write must still go through")
+
+	legacyKeys := []string{
+		"inbox.enabled",
+		"streams.enabled",
+		"tracks.enabled",
+		"people.enabled",
+		"ideas.enabled",
+		"memory.enabled",
+		"briefing.enabled",
+		"day_plan.enabled",
+		"targets.next_step.enabled",
+	}
+	for _, key := range legacyKeys {
+		assert.False(t, v.IsSet(key), "cascade key %q must stay untouched — this config is marked, not legacy", key)
+	}
+
+	legacyDetected, err := config.MigrateFeatureGates(configPath)
+	require.NoError(t, err)
+	assert.False(t, legacyDetected, "a second MigrateFeatureGates call must not re-detect the marked file as legacy")
 }

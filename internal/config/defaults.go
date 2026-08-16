@@ -37,12 +37,16 @@ const (
 	DefaultStreamsEnabled       = true
 	DefaultStreamsIntervalHours = 6
 
-	DefaultTracksMinMsgs      = 3
-	DefaultBatchMaxChannels   = 20
-	DefaultBatchMaxMessages   = 1500
-	DefaultMaxBatchesPerRun   = 25  // max AI calls per digest run (budget cap)
-	DefaultDigestCooldownMins = 30  // skip channel if digested < N minutes ago with few messages
-	DefaultMessageTruncateLen = 500 // truncate individual messages longer than this (chars)
+	// Tracks and people pipelines
+	DefaultTracksEnabled          = true
+	DefaultTracksMinMsgs          = 3
+	DefaultPeopleEnabled          = true
+	DefaultTargetsNextStepEnabled = true
+	DefaultBatchMaxChannels       = 20
+	DefaultBatchMaxMessages       = 1500
+	DefaultMaxBatchesPerRun       = 25  // max AI calls per digest run (budget cap)
+	DefaultDigestCooldownMins     = 30  // skip channel if digested < N minutes ago with few messages
+	DefaultMessageTruncateLen     = 500 // truncate individual messages longer than this (chars)
 
 	// Tiered batching thresholds (visible message count).
 	DefaultBatchHighActivityThreshold = 200 // >200 → individual batch (1 channel)

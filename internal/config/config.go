@@ -104,7 +104,13 @@ type CatchupCaps struct {
 
 // TracksConfig holds settings for the tracks extraction pipeline.
 type TracksConfig struct {
-	MinMessages int `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+	Enabled     bool `mapstructure:"enabled"`      // enable tracks extraction (default: true)
+	MinMessages int  `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+}
+
+// PeopleConfig holds settings for the people-cards pipeline.
+type PeopleConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable people-cards extraction (default: true)
 }
 
 // CalendarConfig holds Google Calendar integration settings.
@@ -194,10 +200,16 @@ type TargetsResolverConfig struct {
 	ActiveSnapshotLimit int  `mapstructure:"active_snapshot_limit"`
 }
 
+// TargetsNextStepConfig holds settings for the targets next step feature.
+type TargetsNextStepConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable next step feature (default: true)
+}
+
 // TargetsConfig holds settings for the targets extraction and resolution pipeline.
 type TargetsConfig struct {
 	Extract  TargetsExtractConfig  `mapstructure:"extract"`
 	Resolver TargetsResolverConfig `mapstructure:"resolver"`
+	NextStep TargetsNextStepConfig `mapstructure:"next_step"`
 }
 
 // TranscriptsConfig holds settings for meeting transcript storage.
@@ -329,6 +341,7 @@ type Config struct {
 	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
+	People          PeopleConfig                `mapstructure:"people"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Gmail           GmailConfig                 `mapstructure:"gmail"`
 	Imap            ImapConfig                  `mapstructure:"imap"`
@@ -392,7 +405,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
 	v.SetDefault("dashboard.max_compose_signals", DefaultDashboardMaxComposeSignals)
+	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
+	v.SetDefault("people.enabled", DefaultPeopleEnabled)
+	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
 	v.SetDefault("catchup.max_age_days", 30)
 	v.SetDefault("catchup.caps.digests", 150)
 	v.SetDefault("catchup.caps.tracks", 80)
