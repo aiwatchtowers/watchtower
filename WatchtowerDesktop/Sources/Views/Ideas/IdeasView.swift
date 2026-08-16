@@ -95,6 +95,11 @@ struct IdeasView: View {
                 }
             }
             .listStyle(.sidebar)
+            // The sidebar list style rides an NSVisualEffectView that samples
+            // the desktop wallpaper behind the window, ignoring any SwiftUI
+            // background layered under it — on an empty segment the whole
+            // panel reads as a wallpaper-tinted hole (BoardsView precedent).
+            .scrollContentBackground(.hidden)
             .overlay {
                 if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
                     Text(emptySegmentMessage)
