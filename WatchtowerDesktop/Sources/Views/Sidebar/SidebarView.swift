@@ -249,15 +249,20 @@ struct SidebarView: View {
     }
 
     /// Sum of badge counts for a section's VISIBLE items (drives the collapsed-header
-    /// badge). Hidden items are excluded — hiding an item also silences its noise.
+    /// badge). Hidden items are excluded — hiding an item also silences its noise —
+    /// and so are feature-disabled ones, for the same reason: a collapsed section
+    /// must not promise a count the expanded list won't actually show.
     private func sectionBadgeCount(_ section: SidebarSection) -> Int {
-        section.partition(hidden: hiddenItems).visible.reduce(0) { $0 + count(for: $1) }
+        section.partition(hidden: hiddenItems).visible
+            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+            .reduce(0) { $0 + count(for: $1) }
     }
 
     /// Color of the collapsed-header badge: red if any visible child is a red source
     /// (inbox-high/digests/briefings/statistics/catch-up), otherwise blue.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
         let visible = section.partition(hidden: hiddenItems).visible
+            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
         if visible.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
         if visible.contains(.digests), unreadDigestCount > 0 { return .red }
         if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
