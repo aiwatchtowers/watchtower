@@ -94,6 +94,46 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 	assert.True(t, sawMemory, "memory must be present in the JSON output")
 }
 
+// TestFeaturesList_JSONReflectsSubToggleWrite pins subToggleEnabled's
+// key->field wiring end to end: write exactly one of memory's 13 sub-toggle
+// keys through the same setConfigKey path `features enable`/`disable` use,
+// then assert `list --json` reports that one enabled=true and every sibling
+// still false — so a copy-paste mistake in the switch (e.g. two cases
+// reading the same struct field) can't pass silently.
+func TestFeaturesList_JSONReflectsSubToggleWrite(t *testing.T) {
+	configPath := writeFeaturesConfig(t, "")
+	require.NoError(t, setConfigKey(configPath, "memory.sources.gmail", true))
+
+	featuresListFlagJSON = true
+	t.Cleanup(func() { featuresListFlagJSON = false })
+
+	buf := new(bytes.Buffer)
+	featuresListCmd.SetOut(buf)
+	featuresListCmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, featuresListCmd.RunE(featuresListCmd, nil))
+
+	var payload featuresListJSON
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &payload))
+
+	var memory *featureJSON
+	for i := range payload.Features {
+		if payload.Features[i].ID == "memory" {
+			memory = &payload.Features[i]
+		}
+	}
+	require.NotNil(t, memory, "memory feature must be present")
+	require.Len(t, memory.SubToggles, 13)
+
+	for _, st := range memory.SubToggles {
+		if st.Key == "memory.sources.gmail" {
+			assert.True(t, st.Enabled, "memory.sources.gmail should read back as enabled")
+		} else {
+			assert.False(t, st.Enabled, "sub-toggle %q must stay disabled — only gmail was written", st.Key)
+		}
+	}
+}
+
 func TestFeaturesDisable_DryRunWritesNothing(t *testing.T) {
 	configPath := writeFeaturesConfig(t, "digest:\n  enabled: true\n")
 
@@ -189,6 +229,46 @@ func TestFeaturesEnable_RunsFastForward(t *testing.T) {
 	reloaded, err := config.Load(flagConfig)
 	require.NoError(t, err)
 	assert.True(t, reloaded.Inbox.Enabled, "enable must write the config key too")
+}
+
+// TestFeaturesEnable_FailedFastForwardLeavesKeyUnwritten pins FEAT-03's
+// failure side: if opening the DB (or fast-forwarding) fails, the config key
+// must stay unwritten rather than leave the feature enabled with stale
+// watermarks — which would let the next daemon cycle process the entire
+// historical backlog accumulated while it was off. It blocks db.Open by
+// putting a plain file where the workspace directory needs to be, so
+// os.MkdirAll fails instead of creating it.
+//
+// Asserts on the raw file bytes (the dry-run test's precedent), not on
+// reloaded.Inbox.Enabled: inbox.enabled defaults to true, so an untouched
+// file would read back as "enabled" via the default regardless of whether
+// setConfigKey ever ran — only a byte comparison actually proves nothing
+// was written.
+func TestFeaturesEnable_FailedFastForwardLeavesKeyUnwritten(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := writeLegacyConfig(t, "")
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(cfg.WorkspaceDir()), 0o700))
+	require.NoError(t, os.WriteFile(cfg.WorkspaceDir(), []byte("blocked"), 0o600))
+
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	buf := new(bytes.Buffer)
+	featuresEnableCmd.SetOut(buf)
+	featuresEnableCmd.SetErr(&bytes.Buffer{})
+
+	err = featuresEnableCmd.RunE(featuresEnableCmd, []string{"secretary-inbox"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not enabled")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a failed fast-forward must leave the config file untouched")
 }
 
 func TestFeatures_CoreRejected(t *testing.T) {

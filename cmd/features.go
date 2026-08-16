@@ -166,18 +166,24 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	if err := setConfigKey(flagConfig, f.ConfigKey, true); err != nil {
-		return fmt.Errorf("enabling %q: %w", id, err)
-	}
-
+	// Fast-forward BEFORE writing the config key (FEAT-03): if opening the DB
+	// or fast-forwarding fails, the feature must stay off rather than end up
+	// enabled with stale watermarks — that would let the next daemon cycle
+	// process the entire historical backlog it accumulated while off. A
+	// failed fast-forward is safe to retry: the feature is simply still off,
+	// exactly as it was before this call.
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return fmt.Errorf("%q was not enabled: opening database: %w", id, err)
 	}
 	defer database.Close()
 
 	if err := features.FastForward(id, database, time.Now()); err != nil {
-		return fmt.Errorf("fast-forwarding %q: %w", id, err)
+		return fmt.Errorf("%q was not enabled: fast-forwarding: %w", id, err)
+	}
+
+	if err := setConfigKey(flagConfig, f.ConfigKey, true); err != nil {
+		return fmt.Errorf("enabling %q: %w", id, err)
 	}
 
 	out := cmd.OutOrStdout()
