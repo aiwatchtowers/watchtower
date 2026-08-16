@@ -24,11 +24,7 @@ This applies to all gated phases: `phaseFastInbox`, `phaseChannelDigests`, `phas
 **Why locked:** Disabling a feature must stop all its data generation in progress; if a gated phase could still write lock files or pipeline run records, the owner couldn't trust that the feature is truly off. The earliest gate position is necessary to prevent leaks from slow initialization paths.
 
 **Test guards:**
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledPhaseWritesNoPipelineRun` (table-driven over digests, inbox, tracks, people, ideas, next_step, briefing, day_plan, feed; asserts no `pipeline_runs` rows and no `ideas_backfill.lock` for ideas)
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledInboxHasNoTriage` (inbox.enabled=false ⇒ no triage pipeline run)
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledTracksWritesNoCustomTrackScan` (tracks.enabled=false ⇒ no custom track scan pipeline run)
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledPeopleWritesNoPeopleCardPass` (people.enabled=false ⇒ no people card pass)
-- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledIdeasWritesNoLockFile` (ideas.enabled=false ⇒ no ideas_backfill.lock created)
+- `internal/daemon/daemon_gates_test.go::TestFeatureGates_DisabledPhaseWritesNoPipelineRun` (table-driven over digests, inbox, tracks, people, ideas, next_step, briefing, day_plan, feed; asserts no `pipeline_runs` rows and no `ideas_backfill.lock` for ideas; each phase gate tested with its feature flag disabled)
 
 **Locked since:** 2026-08-16
 
@@ -83,10 +79,9 @@ The `--dry-run` flag prints the would-be cascade without writing anything, allow
 **Why locked:** A dependent feature left enabled but starved of upstream data (e.g., Briefing enabled but Inbox disabled) could enter a degraded state or produce confusing empty outputs. A silent cascade would hide this state change from the owner and could lead to confusion about what is actually running.
 
 **Test guards:**
-- `cmd/features_test.go::TestFeaturesDisable_WithDependents` (without flag, returns error naming dependents)
-- `cmd/features_test.go::TestFeaturesDisable_WithDependentsFlag` (with flag, disables target + all enabled transitive dependents)
+- `cmd/features_test.go::TestFeaturesDisable_WithDependents` (both with and without flag: without --with-dependents returns error naming dependents; with flag disables target + all enabled transitive dependents)
 - `cmd/features_test.go::TestFeaturesDisable_DryRunWritesNothing` (--dry-run prints but doesn't write)
-- `cmd/features_test.go::TestFeaturesDisable_CoreCannotBeDisabled` (disable on core feature returns error)
+- `cmd/features_test.go::TestFeatures_CoreRejected` (disable on core feature returns error)
 
 **Locked since:** 2026-08-16
 
