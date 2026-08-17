@@ -39,6 +39,7 @@
 		EE5E4DA751DE6531DB4EB8F9 /* ReplicaObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = B19850E1E7DE844258BE84CF /* ReplicaObserver.swift */; };
 		F4FDFE8B73AAC6038E75BC76 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF609973C6F27C56B9BD9A9 /* TasksView.swift */; };
 		FB8013BC2F645E939B2A0E44 /* SyncStatusFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD0D2129829244B8B949C65D /* SyncStatusFooter.swift */; };
+		FB94D88645E0456312946785 /* DigestsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D8857B9DAE4518254C8C8CD /* DigestsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +63,7 @@
 		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
 		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
+		5D8857B9DAE4518254C8C8CD /* DigestsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DigestsView.swift; sourceTree = "<group>"; };
 		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
 		649E02AF149E7AB38609A747 /* BadgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BadgeTests.swift; sourceTree = "<group>"; };
 		6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateTargetSheet.swift; sourceTree = "<group>"; };
@@ -199,6 +201,7 @@
 				0374C759543223E96F51029A /* ChatView.swift */,
 				6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */,
 				E3F00F256559A237BEABEB3D /* DayPlanView.swift */,
+				5D8857B9DAE4518254C8C8CD /* DigestsView.swift */,
 				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
 				211E805C97CFC4405C7263AB /* QuickActions.swift */,
 				B7C826A435973DBF359BE581 /* RecordingDetailView.swift */,
@@ -314,6 +317,7 @@
 				6F4653DC7997A2F36BD7543F /* CreateTargetSheet.swift in Sources */,
 				2D2CFA0BA9C98C58F17E4451 /* DayPlanView.swift in Sources */,
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
+				FB94D88645E0456312946785 /* DigestsView.swift in Sources */,
 				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
 				39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */,
 				AC491EE585F1CB3A9F911402 /* QuickActions.swift in Sources */,

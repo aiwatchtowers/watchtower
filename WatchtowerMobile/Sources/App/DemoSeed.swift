@@ -209,6 +209,47 @@ enum DemoSeed {
             "updated_at": Self.iso.string(from: now.addingTimeInterval(-86_400)),
         ]))
 
+        // MARK: Digests (Digests screen, reached from Today)
+        // A channel digest with a per-topic row, exactly as the publisher
+        // projects it (channel_name resolved in SQL).
+        records.append(try record(.digest, "1", now, [
+            "id": 1,
+            "channel_id": SlackID.namespaced(accountID: 1, rawID: "C_DEMO"),
+            "channel_name": "launch",
+            "period_from": now.timeIntervalSince1970 - 86_400,
+            "period_to": now.timeIntervalSince1970,
+            "type": "channel",
+            "summary": "Launch prep continued: the checklist review is the last open gate before Friday.",
+            "topics": #"["Launch checklist"]"#,
+            "decisions": "[]",
+            "action_items": "[]",
+            "message_count": 24,
+            "model": "claude-demo",
+            "created_at": Self.iso.string(from: now),
+        ]))
+        records.append(try record(.digestTopic, "1", now, [
+            "id": 1,
+            "digest_id": 1,
+            "idx": 0,
+            "title": "Launch checklist",
+            "summary": "Alice pushed for the final review; Bob confirmed rollout notes are done.",
+            "decisions": #"[{"text":"Freeze scope until the Friday go/no-go","by":"Alice"}]"#,
+            "action_items": "[]",
+            "situations": "[]",
+            "key_messages": "[]",
+        ]))
+        // A stream digest (Gmail) with decision + idea candidates.
+        records.append(try record(.streamDigest, "1", now, [
+            "id": 1,
+            "source": "gmail",
+            "account_id": 1,
+            "scope": "inbox",
+            "period_from": Self.iso.string(from: now.addingTimeInterval(-86_400)),
+            "period_to": Self.iso.string(from: now),
+            "topics_json": #"[{"title":"Refund escalation","summary":"Support thread about June invoices.","ideas":[{"text":"Automate small refunds","author":"alice@example.com"}],"decisions":[{"text":"Refund the June invoices this week","author":"bob@example.com"}]}]"#,
+            "created_at": Self.iso.string(from: now.addingTimeInterval(-3_600)),
+        ]))
+
         // MARK: Desktop heartbeat (Chat liveness)
         // Refreshed every launch so the Chat tab demos the reachable state;
         // it goes stale — and the "Mac unreachable" banner appears — if the

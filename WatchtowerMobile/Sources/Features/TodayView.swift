@@ -84,6 +84,19 @@ struct TodayView: View {
                                 .font(.subheadline)
                         }
                     }
+                    // Digests are catch-up reading, not a live surface — a
+                    // row here instead of a seventh tab (the Recordings
+                    // precedent). Own section: unlike recordings they are
+                    // not meeting-shaped, so they don't hang off the
+                    // calendar.
+                    Section("Catch up") {
+                        NavigationLink {
+                            DigestsView()
+                        } label: {
+                            Label("Digests", systemImage: "newspaper")
+                                .font(.subheadline)
+                        }
+                    }
                 }
                 SyncStatusFooter()
             }
