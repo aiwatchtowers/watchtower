@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,15 @@ const backfillLockFilename = "ideas_backfill.lock"
 // treated as stale (a crashed backfill that never removed its own lock) —
 // spec §5.
 const backfillLockFreshWindow = 2 * time.Hour
+
+// backfillLockHeartbeatInterval is how often a HELD lock's started= stamp is
+// refreshed while its holder runs (F7/D4). started= is written once at acquire
+// and freshness is judged on it (BackfillLockFresh), so without a periodic
+// re-stamp a legitimate run outliving backfillLockFreshWindow would read as
+// stale and a concurrent acquire could reclaim it mid-run — two live miners.
+// Comfortably shorter than the freshness window; a package-level var so tests
+// can shrink it (SetBackfillLockHeartbeatIntervalForTest).
+var backfillLockHeartbeatInterval = 30 * time.Minute
 
 // AcquireBackfillLock takes the ideas backfill lock in workspaceDir: it
 // exclusively creates ideas_backfill.lock (contents "pid=<n>
@@ -68,9 +78,94 @@ func AcquireBackfillLock(workspaceDir, owner string) (release func(), err error)
 		}
 	}
 
-	return func() {
-		releaseIfStillOwned(path, written)
-	}, nil
+	// Keep the lock's started= stamp fresh for as long as this holder runs, so
+	// a run longer than backfillLockFreshWindow is never judged stale and
+	// reclaimed out from under itself (F7/D4). The returned release stops the
+	// heartbeat and performs the ownership-checked removal.
+	return startLockHeartbeat(path, owner, written).stop, nil
+}
+
+// lockHeartbeat keeps a held backfill lock's started= stamp fresh for the life
+// of its holder (F7/D4). own holds the exact bytes this holder last wrote,
+// mutex-guarded because the ticker goroutine updates it and stop() reads it; it
+// is cleared to "" once the file is observed reclaimed by another process,
+// after which neither the heartbeat nor the release will touch it (GB7).
+type lockHeartbeat struct {
+	path  string
+	owner string
+	mu    sync.Mutex
+	own   string
+	done  chan struct{}
+	wg    sync.WaitGroup
+}
+
+// startLockHeartbeat launches the re-stamp ticker for a freshly-acquired lock
+// whose current on-disk contents are initial.
+func startLockHeartbeat(path, owner, initial string) *lockHeartbeat {
+	h := &lockHeartbeat{path: path, owner: owner, own: initial, done: make(chan struct{})}
+	h.wg.Add(1)
+	go h.loop()
+	return h
+}
+
+func (h *lockHeartbeat) loop() {
+	defer h.wg.Done()
+	t := time.NewTicker(backfillLockHeartbeatInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-h.done:
+			return
+		case <-t.C:
+			h.beat()
+		}
+	}
+}
+
+// beat re-stamps started= if this holder still owns the file. A missing file
+// or contents that no longer match what this holder last wrote mean the lock
+// went stale and was reclaimed — beat gives up ownership so neither it nor the
+// eventual release ever overwrites or removes the new owner's lock (GB7).
+func (h *lockHeartbeat) beat() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.own == "" {
+		return
+	}
+	data, err := os.ReadFile(h.path)
+	if err != nil || string(data) != h.own {
+		h.own = "" // reclaimed or gone — stop owning
+		return
+	}
+	refreshed := lockContents(h.owner)
+	if err := os.WriteFile(h.path, []byte(refreshed), 0o644); err != nil {
+		return // keep the old own; retry next tick
+	}
+	h.own = refreshed
+}
+
+// stop halts the heartbeat and releases the lock, ownership-checked (GB7): it
+// removes the file only if it still holds exactly the bytes this holder last
+// wrote.
+func (h *lockHeartbeat) stop() {
+	close(h.done)
+	h.wg.Wait()
+	h.mu.Lock()
+	own := h.own
+	h.mu.Unlock()
+	if own == "" {
+		return
+	}
+	releaseIfStillOwned(h.path, own)
+}
+
+// SetBackfillLockHeartbeatIntervalForTest shrinks the heartbeat interval for
+// the life of a test (the SetBackfillMaxCyclesForTest precedent) so a re-stamp
+// is observable without waiting the production 30 minutes.
+func SetBackfillLockHeartbeatIntervalForTest(d time.Duration) (restore func()) {
+	prev := backfillLockHeartbeatInterval
+	backfillLockHeartbeatInterval = d
+	return func() { backfillLockHeartbeatInterval = prev }
 }
 
 // createLockFile exclusively creates the lock file — os.IsExist(err) is true
@@ -87,7 +182,7 @@ func createLockFile(path, owner string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	contents := fmt.Sprintf("pid=%d started=%s owner=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339), owner)
+	contents := lockContents(owner)
 	if _, werr := f.WriteString(contents); werr != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
@@ -97,6 +192,16 @@ func createLockFile(path, owner string) (string, error) {
 		return "", fmt.Errorf("closing lock file: %w", cerr)
 	}
 	return contents, nil
+}
+
+// lockContents renders a lock file's body for this process: pid, a fresh
+// started= stamp, and the owner tag. createLockFile and the heartbeat both go
+// through it so the two produce identical shapes. The stamp is RFC3339Nano so a
+// heartbeat re-stamp is observably newer than the last even within the same
+// wall-clock second; parseLockStarted's RFC3339 parse accepts the fractional
+// seconds and older second-resolution locks alike.
+func lockContents(owner string) string {
+	return fmt.Sprintf("pid=%d started=%s owner=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano), owner)
 }
 
 // releaseIfStillOwned removes the lock file only if its current contents
