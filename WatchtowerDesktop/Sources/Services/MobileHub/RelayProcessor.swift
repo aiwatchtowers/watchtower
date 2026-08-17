@@ -482,6 +482,16 @@ final class RelayProcessor: Sendable {
             // Skipping does NOT cascade: the block is not happening today, but
             // the underlying task is still open.
             try DayPlanQueries.markItemSkipped(db, itemId: Int64(id))
+        case .digestRead:
+            let id = try entityInt(action)
+            try requireRow(db, table: "digests", id: id)
+            // Idempotent by construction (read_at IS NULL guard): a duplicate
+            // that slips past the processed set keeps the FIRST read stamp.
+            try DigestQueries.markDigestRead(db, id: id)
+        case .streamDigestRead:
+            let id = try entityInt(action)
+            try requireRow(db, table: "stream_digests", id: id)
+            try StreamDigestQueries.markRead(db, id: id)
         }
     }
 

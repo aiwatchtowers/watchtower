@@ -20,6 +20,7 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     /// features are never toggled from the phone (owner decision,
     /// 2026-08-17 reanimation plan Workstream 3).
     case featureState = "feature_state"
+    case streamDigest = "stream_digest"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

@@ -334,6 +334,10 @@ The phone follows this Mac's Settings → Features choices — it is a satellite
 
 The phone's Inbox tab is the same secretary dashboard as the desktop's: a ranked feed of **situations** (not raw signals), each opening into a review screen with the secretary card (why it matters / summary / chronology) and the member-signal bubbles behind it. Swipe a situation for **Done** / **Dismiss**, or swipe the other way to **Snooze**; when the secretary has marked a situation "looks resolved", the review screen offers **Done / Keep open** (DASH-07). Actions are queued through the mobile relay and applied by this Mac — rows show a "pending" chip until the desktop confirms. Only open situations sync; closing one on either device removes it from the phone.
 
+### Digests (phone)
+
+From the Today tab, the "Catch up" section's **Digests** row opens a read-only digest feed (no seventh tab): Slack digests (per-channel plus daily/weekly rollups) and Gmail/Jira stream digests, merged newest first. A blue dot marks unread digests. A Slack digest opens into its summary and topics, each with its decisions; a stream digest opens into its topics with decision and idea candidates. Opening a digest marks it read — the mark is relayed to this Mac (the same relay actions use), so read state stays in sync on both devices; generation, editing, and deletion stay on the Mac.
+
 ### Sync transport
 
 The phone picks its data source automatically at launch — there is nothing to configure. The app probes its own code signature for the iCloud entitlement: signed builds (TestFlight / device) connect to your private iCloud (CloudKit) and hydrate their local replica from the data this Mac publishes; unsigned development builds (simulator, CI) fall back to built-in demo data. The iOS Settings tab shows which path won in the "Sync" row: **iCloud** or **Demo**. Real sync requires the phone and the Mac to be signed in to the same Apple ID; all data stays in your private CloudKit zone — nothing goes through third-party servers.

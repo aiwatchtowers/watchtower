@@ -519,6 +519,58 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertTrue((none["recap_json"] as DatabaseValue?)?.isNull ?? false)
     }
 
+    // MARK: - Digest slices
+
+    /// The stream_digest slice ships the full row: topics_json IS the digest
+    /// body (no transcript_text-class column exists to project away), and
+    /// read_at rides along so the phone renders the unread dot.
+    func testStreamDigestSlicePublishesFullRow() async throws {
+        let topics = #"[{"title":"Refund thread","summary":"Support escalation","decisions":[{"text":"Refund the June invoices"}]}]"#
+        try await dbPool.write { db in
+            _ = try TestDatabase.insertStreamDigest(db, source: "gmail", scope: "inbox", topicsJSON: topics)
+            _ = try TestDatabase.insertStreamDigest(
+                db, source: "jira", accountID: 2, scope: "PROJ",
+                readAt: "2026-07-06T11:00:00Z"
+            )
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let gmail = try await publishedRow(named: "stream_digest-1")
+        XCTAssertEqual(gmail["source"] as String?, "gmail")
+        XCTAssertEqual(gmail["scope"] as String?, "inbox")
+        XCTAssertEqual(gmail["topics_json"] as String?, topics)
+        XCTAssertTrue((gmail["read_at"] as DatabaseValue?)?.isNull ?? false)
+
+        let jira = try await publishedRow(named: "stream_digest-2")
+        XCTAssertEqual(jira["source"] as String?, "jira")
+        XCTAssertEqual(jira["account_id"] as Int?, 2)
+        XCTAssertEqual(jira["read_at"] as String?, "2026-07-06T11:00:00Z")
+        // Degenerate: the default empty topics list publishes as-is.
+        XCTAssertEqual(jira["topics_json"] as String?, "[]")
+    }
+
+    /// The digest slice resolves channel_name in SQL (the event_title
+    /// precedent): a synced channel joins its name in; a cross-channel daily
+    /// digest (channel_id '') and an unsynced channel publish NULL.
+    func testDigestSliceResolvesChannelNameOrNull() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertChannel(db, id: "C042", name: "launch")
+            try TestDatabase.insertDigest(db, channelID: "C042", summary: "Channel digest")
+            try TestDatabase.insertDigest(db, channelID: "", periodFrom: 1_700_086_400, type: "daily", summary: "Daily digest")
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let channel = try await publishedRow(named: "digest-1")
+        XCTAssertEqual(channel["channel_name"] as String?, "launch")
+        XCTAssertEqual(channel["summary"] as String?, "Channel digest")
+
+        let daily = try await publishedRow(named: "digest-2")
+        XCTAssertTrue((daily["channel_name"] as DatabaseValue?)?.isNull ?? false)
+        XCTAssertEqual(daily["type"] as String?, "daily")
+    }
+
     /// Deleting a recording is a hard DELETE (MeetingTranscriptQueries.delete),
     /// so there is no soft-delete filter in the window: the row simply leaves
     /// the slice and the diff removes it from the phone.

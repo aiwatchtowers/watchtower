@@ -327,6 +327,57 @@ final class RelayProcessorActionTests: XCTestCase {
         XCTAssertFalse(payload?.errorMessage?.isEmpty ?? true)
     }
 
+    // MARK: - Digest read actions
+
+    /// digest_read / stream_digest_read stamp read_at through the same
+    /// Queries the desktop's own detail panes use, echo .applied, and never
+    /// clobber an existing stamp (read_at IS NULL guard).
+    func testDigestReadActionsStampReadAtAndPreserveFirstStamp() async throws {
+        let firstStamp = "2020-01-01T00:00:00Z"
+        try await dbPool.write { db in
+            try TestDatabase.insertDigest(db)                                        // digest id 1, unread
+            _ = try TestDatabase.insertStreamDigest(db)                              // stream id 1, unread
+            _ = try TestDatabase.insertStreamDigest(db, source: "jira", readAt: firstStamp) // stream id 2, read
+        }
+        let names = [
+            try await enqueue(.digestRead, id: "r1", entityID: "1"),
+            try await enqueue(.streamDigestRead, id: "r2", entityID: "1"),
+            try await enqueue(.streamDigestRead, id: "r3", entityID: "2")
+        ]
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 3)
+        for name in names {
+            let payload = try await statusPayload(recordName: name)
+            XCTAssertEqual(payload?.status, .applied)
+            XCTAssertNil(payload?.errorMessage)
+        }
+        let (digestRead, streamRead, keptStamp) = try await dbPool.read { db -> (String?, String?, String?) in
+            (try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE id = 1"),
+             try String.fetchOne(db, sql: "SELECT read_at FROM stream_digests WHERE id = 1"),
+             try String.fetchOne(db, sql: "SELECT read_at FROM stream_digests WHERE id = 2"))
+        }
+        XCTAssertNotNil(digestRead)
+        XCTAssertNotNil(streamRead)
+        XCTAssertEqual(keptStamp, firstStamp, "an already-read digest keeps its first stamp")
+    }
+
+    func testDigestReadActionsOnMissingRowsFail() async throws {
+        let digestName = try await enqueue(.digestRead, id: "r4", entityID: "404")
+        let streamName = try await enqueue(.streamDigestRead, id: "r5", entityID: "404")
+
+        let applied = try await processor.processOnce()
+
+        XCTAssertEqual(applied, 0)
+        let digest = try await statusPayload(recordName: digestName)
+        XCTAssertEqual(digest?.status, .failed)
+        XCTAssertEqual(digest?.errorMessage, "no row in digests with id 404")
+        let stream = try await statusPayload(recordName: streamName)
+        XCTAssertEqual(stream?.status, .failed)
+        XCTAssertEqual(stream?.errorMessage, "no row in stream_digests with id 404")
+    }
+
     func testHygieneSparesUnprocessedPendingActionAndDeletesAppliedOne() async throws {
         let age: TimeInterval = 8 * 86_400 // 8 days — past the 7-day threshold
         // Use fixedNow as the reference so the injected clock and record ages align.

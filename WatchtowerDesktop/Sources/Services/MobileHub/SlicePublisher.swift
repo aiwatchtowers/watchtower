@@ -64,7 +64,14 @@ final class SlicePublisher: Sendable {
         .inboxItem: "SELECT * FROM inbox_items WHERE archived_at IS NULL ORDER BY id DESC LIMIT 200",
         .target: "SELECT * FROM targets WHERE status != 'dismissed' ORDER BY id DESC LIMIT 300",
         .track: "SELECT * FROM tracks WHERE dismissed_at = '' ORDER BY id DESC LIMIT 200",
-        .digest: "SELECT * FROM digests ORDER BY id DESC LIMIT 50",
+        // `channel_name` is resolved here (the meeting_transcript slice's
+        // event_title precedent): the phone has no channels table, and the
+        // list rows need "#launch", not "C042". NULL for cross-channel
+        // (daily/weekly) digests and channels the sync never stored.
+        .digest: """
+            SELECT d.*, (SELECT name FROM channels WHERE id = d.channel_id) AS channel_name
+            FROM digests d ORDER BY d.id DESC LIMIT 50
+            """,
         .digestTopic: """
             SELECT * FROM digest_topics
             WHERE digest_id IN (SELECT id FROM digests ORDER BY id DESC LIMIT 50)
@@ -144,7 +151,12 @@ final class SlicePublisher: Sendable {
                 WHERE plan_date = date('now','localtime')
                 ORDER BY id DESC LIMIT 1
             )
-            """
+            """,
+        // Same window shape as the digest slice. SELECT * on purpose: the
+        // only content column is topics_json, which IS the digest body — a
+        // stream digest tops out at a few KB of topic candidates, so there
+        // is no transcript_text-class column to project away.
+        .streamDigest: "SELECT * FROM stream_digests ORDER BY id DESC LIMIT 50"
     ]
 
     // MARK: - Publishing

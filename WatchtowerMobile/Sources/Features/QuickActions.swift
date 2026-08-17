@@ -145,7 +145,9 @@ enum PendingOverlay {
         case .inboxDismiss, .situationDismiss: return "dismissed"
         case .dayPlanItemDone: return "done"
         case .dayPlanItemSkip: return "skipped"
-        case .taskCreate, .trackRead, .situationKeepOpen: return nil
+        // The digest reads have no status-shaped outcome either: read_at is a
+        // timestamp column, not a status the chip could compare against.
+        case .taskCreate, .trackRead, .situationKeepOpen, .digestRead, .streamDigestRead: return nil
         }
     }
 
@@ -157,7 +159,7 @@ enum PendingOverlay {
         case .inboxResolve: return "Resolve"
         case .inboxDismiss, .situationDismiss: return "Dismiss"
         case .taskCreate: return "Create task"
-        case .trackRead: return "Mark read"
+        case .trackRead, .digestRead, .streamDigestRead: return "Mark read"
         case .situationKeepOpen: return "Keep open"
         case .dayPlanItemDone: return "Mark done"
         case .dayPlanItemSkip: return "Skip"

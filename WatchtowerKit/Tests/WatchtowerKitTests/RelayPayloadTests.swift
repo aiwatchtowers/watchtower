@@ -95,8 +95,40 @@ final class RelayPayloadTests: XCTestCase {
                 "target_done", "target_snooze", "inbox_resolve", "inbox_dismiss", "inbox_snooze",
                 "task_create", "track_read",
                 "situation_done", "situation_dismiss", "situation_snooze", "situation_keep_open",
-                "day_plan_item_done", "day_plan_item_skip"
+                "day_plan_item_done", "day_plan_item_skip",
+                "digest_read", "stream_digest_read"
             ]
+        )
+    }
+
+    /// The digest mark-as-read actions ship no params — entity id only. The
+    /// literal pins the whole record so the wire cannot drift.
+    func testDigestReadWireFormatIsFrozen() throws {
+        let action = ActionRequestPayload(
+            id: "A9",
+            kind: .digestRead,
+            entityID: "12",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(action), encoding: .utf8))
+        XCTAssertEqual(
+            json,
+            #"{"created_at":1700000000,"entity_id":"12","id":"A9","kind":"digest_read","params":{},"status":"pending"}"#
+        )
+        let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.kind, .digestRead)
+        XCTAssertEqual(decoded.entityID, "12")
+
+        let stream = ActionRequestPayload(
+            id: "A10",
+            kind: .streamDigestRead,
+            entityID: "3",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let streamJSON = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(stream), encoding: .utf8))
+        XCTAssertEqual(
+            streamJSON,
+            #"{"created_at":1700000000,"entity_id":"3","id":"A10","kind":"stream_digest_read","params":{},"status":"pending"}"#
         )
     }
 
