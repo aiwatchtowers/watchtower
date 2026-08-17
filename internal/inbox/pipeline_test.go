@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -364,6 +365,31 @@ func TestPipeline_LastProcessedTS(t *testing.T) {
 	ts, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Greater(t, ts, float64(0))
+}
+
+// TestTruncateRunes_MultibyteBoundary is the D5 regression: byte-slicing a
+// UTF-8 string at a fixed offset (s[:n]) can land inside a multibyte rune and
+// produce invalid UTF-8. truncateRunes must cut on rune boundaries instead.
+func TestTruncateRunes_MultibyteBoundary(t *testing.T) {
+	// Each "я" is 2 bytes in UTF-8, so a byte-offset cut at an odd byte count
+	// would split one in half; a rune-based cut never does.
+	text := strings.Repeat("я", 600)
+
+	got := truncateRunes(text, 500)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateRunes produced invalid UTF-8: %q", got)
+	}
+	want := strings.Repeat("я", 500) + "..."
+	if got != want {
+		t.Fatalf("truncateRunes(600 runes, 500) = %q, want %q", got, want)
+	}
+}
+
+func TestTruncateRunes_ShortStringUnchanged(t *testing.T) {
+	if got := truncateRunes("short", 500); got != "short" {
+		t.Fatalf("truncateRunes(short) = %q, want unchanged", got)
+	}
 }
 
 func TestIsClosingSignal(t *testing.T) {

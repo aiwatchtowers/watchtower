@@ -62,6 +62,17 @@ func isClosingSignal(text string) bool {
 	return closingSignals[s]
 }
 
+// truncateRunes truncates s to at most max runes, appending "..." — a
+// rune-safe alternative to byte-slicing (s[:n]), which can split a multibyte
+// UTF-8 rune in half and write an invalid string. A no-op when s already fits.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
+}
+
 // toWaitingJSON converts a list of user IDs to a JSON array string.
 func toWaitingJSON(userIDs []string) string {
 	if len(userIDs) == 0 {
@@ -710,9 +721,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			}
 		}
 
-		if len(snippet) > 500 {
-			snippet = snippet[:500] + "..."
-		}
+		snippet = truncateRunes(snippet, 500)
 		itemCtx := p.loadContext(c.ChannelID, c.MessageTS, c.ThreadTS)
 
 		var senderList []string

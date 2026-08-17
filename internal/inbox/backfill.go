@@ -197,9 +197,7 @@ func (p *Pipeline) backfillAccountMentions(ctx context.Context, accountID int64,
 			result.EmptySnippet++
 			continue
 		}
-		if len(snippet) > 500 {
-			snippet = snippet[:500] + "..."
-		}
+		snippet = truncateRunes(snippet, 500)
 
 		if dryRun {
 			result.Created++
