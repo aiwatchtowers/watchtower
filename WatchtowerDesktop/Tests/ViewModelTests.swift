@@ -1402,21 +1402,23 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertEqual(profile?.onboardingDone, true)
     }
 
-    /// No connected Slack account: `getCurrentUserID()` finds nothing, so
-    /// there is no id to key the UPDATE on.
+    /// No connected Slack account: `getCurrentUserID()` finds nothing, so there
+    /// is no id to key the profile row on — but with a working database that is
+    /// a legitimate local-only completion (a Gmail/Jira/Calendar-only user),
+    /// not a failure. Returning `true` here is what unlocks the feature splash
+    /// for a user who never connected Slack (audit H2).
     @MainActor
-    func testMarkOnboardingDoneReturnsFalseWithoutCurrentUser() async {
+    func testMarkOnboardingDoneReturnsTrueWithoutSlackAccount() async {
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
         let done = await vm.markOnboardingDone()
 
-        XCTAssertFalse(done)
-        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.errorMessage)
     }
 
-    /// No database at all. Both early guards are separate code paths, but
-    /// only one outcome is observable from outside: `getCurrentUserID()`
-    /// already returns "" without a `dbManager`, so the empty-id guard is what
-    /// fires here.
+    /// No database at all is a real failure: the `dbManager` guard fires first
+    /// (before the empty-id branch), so a nil database is reported as a failure
+    /// rather than mistaken for a local-only completion.
     @MainActor
     func testMarkOnboardingDoneReturnsFalseWithoutDatabase() async {
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: nil)

@@ -1057,11 +1057,22 @@ struct OnboardingView: View {
     private func finishOnboarding() async -> Bool {
         await OnboardingCompletion.finish(
             markOnboardingDone: {
+                // Reaching the splash without the chat step having created the
+                // VM (e.g. via "Skip interview") must not itself fail
+                // completion — construct it exactly like skipOnboarding and
+                // chatStep's .task do, so markOnboardingDone (which now treats
+                // a no-Slack install as a legitimate local completion) can run
+                // instead of returning false and looping Retry forever.
+                if onboardingVM == nil {
+                    let language = ConfigService().digestLanguage ?? settingsLanguage
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+                }
+                _ = ensureOnboardingDatabase()
                 guard let vm = onboardingVM else { return false }
                 return await vm.markOnboardingDone()
             },
             startPipelines: {
-                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode, disabledFeatures: appState.featureManager.disabledFeatureIDs)
             },
             completeOnboarding: { appState.completeOnboarding() },
             onRetry: onRetry
@@ -1312,6 +1323,12 @@ struct OnboardingView: View {
         // Cancel any in-flight interview stream (and its claude subprocess)
         // before tearing the flow down.
         onboardingVM?.skipChat()
+        // Skipping abandons the flow WITHOUT confirming the feature splash, so
+        // any staged (unapplied) feature toggles must be dropped — otherwise
+        // they linger on the app-wide FeatureManagerService singleton and get
+        // silently replayed the next time Settings → Features calls apply()
+        // (audit H3). A no-op when nothing was staged.
+        appState.featureManager.discardPending()
         // The DB flag write must not depend on the user having reached the
         // chat step — construct the VM exactly like chatStep's .task does.
         if onboardingVM == nil {
@@ -1332,7 +1349,7 @@ struct OnboardingView: View {
             }
             // Mirror the teamForm completion path — without this the skip
             // path entered the app with no background processing or daemon.
-            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode, disabledFeatures: appState.featureManager.disabledFeatureIDs)
             appState.completeOnboarding()
             onRetry()
         }
@@ -1348,12 +1365,27 @@ struct OnboardingView: View {
         appState.onboarding.goTo(.teamForm)
     }
 
+    /// A connected Slack account is an enabled, non-removed `slack_accounts`
+    /// row — the multi-account replacement for the retired config.yaml
+    /// `slack_token` check (`SlackAuthService.tokenPresent`), which the
+    /// multi-account CLI no longer writes.
+    private func hasConnectedSlackAccount() -> Bool {
+        guard let dbPool = appState.databaseManager?.dbPool else { return false }
+        return (try? dbPool.read { db in
+            try SlackAccountQueries.fetchAll(db).contains { $0.enabled && $0.status != "removed" }
+        }) ?? false
+    }
+
     private func runSync() {
         guard let path = cliPath else { return }
+        _ = ensureOnboardingDatabase()
         // No Slack connected — the one-shot CLI sync is Slack-only, so skip it;
-        // other sources sync via the daemon after onboarding.
-        guard SlackAuthService.tokenPresent() else {
-            _ = ensureOnboardingDatabase()
+        // other sources sync via the daemon after onboarding. Connection is a
+        // slack_accounts row (the multi-account model), NOT the retired
+        // config.yaml slack_token that SlackAuthService.tokenPresent() reads —
+        // the CLI stopped writing that, so the old check made a freshly
+        // connected account look disconnected and never synced (audit fn #6).
+        guard hasConnectedSlackAccount() else {
             appState.onboarding.syncCompleted = true
             return
         }
