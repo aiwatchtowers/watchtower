@@ -219,6 +219,13 @@ final class AppState {
     /// via `mobileHubStatus` instead of dying silently in a log.
     private(set) var mobileHubInitError: String?
 
+    /// Last effective feature map from `featureManager.onDisabledChanged`
+    /// (feature id → enabled), kept so a mobile hub built after the first
+    /// feature load still starts with the current satellite state. nil until
+    /// the first successful `features list` — the publisher then skips the
+    /// `feature_state` kind entirely (fail-open on the phone).
+    private var latestFeatureStates: [String: Bool]?
+
     /// What Settings shows: the hub's own status, or the init failure when
     /// the hub could not even be built.
     var mobileHubStatus: HubStatus {
@@ -473,8 +480,20 @@ final class AppState {
         // Every successful service load (launch, post-apply, failure-path
         // reload) pushes the fresh disabled set into the visibility store
         // the sidebar/navigation/banner read.
-        featureManager.onDisabledChanged = { [featureVisibility] ids in
-            featureVisibility.disabledFeatureIDs = ids
+        // The same callback also feeds the mobile satellite: the phone
+        // mirrors the desktop's effective feature state (one map per load,
+        // covering every registry id; core features publish as enabled) and
+        // never toggles anything back. The map is kept in
+        // `latestFeatureStates` so a hub built AFTER the first load is
+        // seeded in makeMobileHub.
+        featureManager.onDisabledChanged = { [weak self] ids in
+            guard let self else { return }
+            self.featureVisibility.disabledFeatureIDs = ids
+            let states = Dictionary(
+                uniqueKeysWithValues: self.featureManager.features.map { ($0.id, !ids.contains($0.id)) }
+            )
+            self.latestFeatureStates = states
+            self.mobileHub?.updateFeatureStates(states)
         }
         Task { await featureManager.load() }
     }
@@ -682,6 +701,11 @@ final class AppState {
         let transport = CloudKitTransport(store: store)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         let publisher = SlicePublisher(dbPool: dbPool, state: sidecar, transport: transport)
+        // Seed the satellite state for a hub built after the first feature
+        // load (the usual case: the load races the DB-open Task and wins).
+        if let states = latestFeatureStates {
+            publisher.updateFeatureStates(states)
+        }
         let processor = RelayProcessor(
             dbPool: dbPool,
             transport: transport,
