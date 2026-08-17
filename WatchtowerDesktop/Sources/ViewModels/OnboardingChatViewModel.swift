@@ -541,14 +541,26 @@ final class OnboardingChatViewModel {
         // retry after a transient write failure isn't left showing the
         // previous attempt's message.
         errorMessage = nil
-        let currentUserID = getCurrentUserID()
-        guard !currentUserID.isEmpty else {
-            errorMessage = "Failed to complete onboarding: no connected Slack account to record it against."
-            return false
-        }
+        // A genuinely missing database is a real failure and must be reported
+        // as one — check it BEFORE the empty-id branch below, otherwise a nil
+        // dbManager (which makes getCurrentUserID() return "") would fall into
+        // the local-completion path and mask the failure as success.
         guard let dbManager else {
             errorMessage = "Failed to complete onboarding: the database is not open."
             return false
+        }
+        let currentUserID = getCurrentUserID()
+        guard !currentUserID.isEmpty else {
+            // No Slack account means no `slack_user_id` to key the profile row
+            // against — but that is a legitimate local-only completion, not a
+            // failure. `OnboardingStateMachine.markComplete()` persists
+            // completion in UserDefaults, which `checkNeedsOnboarding` already
+            // treats as authoritative (it short-circuits the DB check once the
+            // step is `.complete`), so a Gmail/Jira/Calendar-only user is not
+            // trapped on the final screen. The DB flag is written later if and
+            // when they connect Slack and re-key the profile. Returning `false`
+            // here is what looped the feature-splash Retry forever (audit H2).
+            return true
         }
 
         do {

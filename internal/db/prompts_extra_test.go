@@ -58,7 +58,7 @@ func TestUpdatePrompt_WithHistory(t *testing.T) {
 
 	require.NoError(t, db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "v1", Version: 1}))
 
-	err := db.UpdatePrompt("test.prompt", "updated template", "manual edit")
+	err := db.UpdatePrompt("test.prompt", "updated template", "manual edit", true)
 	require.NoError(t, err)
 
 	p, err := db.GetPrompt("test.prompt")
@@ -77,7 +77,7 @@ func TestUpdatePrompt_WithHistory(t *testing.T) {
 func TestUpdatePrompt_NotFound(t *testing.T) {
 	db := openTestDB(t)
 
-	err := db.UpdatePrompt("nonexistent", "template", "reason")
+	err := db.UpdatePrompt("nonexistent", "template", "reason", true)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -108,7 +108,7 @@ func TestGetPromptAtVersion_AllVersions(t *testing.T) {
 	db := openTestDB(t)
 
 	require.NoError(t, db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "v1", Version: 1}))
-	require.NoError(t, db.UpdatePrompt("test.prompt", "v2", "update"))
+	require.NoError(t, db.UpdatePrompt("test.prompt", "v2", "update", true))
 
 	// Get v1
 	h, err := db.GetPromptAtVersion("test.prompt", 1)
@@ -132,7 +132,7 @@ func TestRollbackPrompt_FullCycle(t *testing.T) {
 	db := openTestDB(t)
 
 	require.NoError(t, db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "v1", Version: 1}))
-	require.NoError(t, db.UpdatePrompt("test.prompt", "v2", "update"))
+	require.NoError(t, db.UpdatePrompt("test.prompt", "v2", "update", true))
 
 	// Rollback to v1
 	err := db.RollbackPrompt("test.prompt", 1)

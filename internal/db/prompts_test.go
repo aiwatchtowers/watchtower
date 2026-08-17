@@ -51,7 +51,7 @@ func TestUpdatePrompt(t *testing.T) {
 	db := openTestDB(t)
 	_ = db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "original", Version: 1})
 
-	err := db.UpdatePrompt("test.prompt", "improved version", "tuned: 5 negative feedbacks")
+	err := db.UpdatePrompt("test.prompt", "improved version", "tuned: 5 negative feedbacks", true)
 	require.NoError(t, err)
 
 	p, err := db.GetPrompt("test.prompt")
@@ -70,7 +70,7 @@ func TestUpdatePrompt(t *testing.T) {
 
 func TestUpdatePromptNotFound(t *testing.T) {
 	db := openTestDB(t)
-	err := db.UpdatePrompt("nonexistent", "text", "reason")
+	err := db.UpdatePrompt("nonexistent", "text", "reason", true)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -90,8 +90,8 @@ func TestGetAllPrompts(t *testing.T) {
 func TestRollbackPrompt(t *testing.T) {
 	db := openTestDB(t)
 	_ = db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "v1 original", Version: 1})
-	_ = db.UpdatePrompt("test.prompt", "v2 tuned", "auto-tune")
-	_ = db.UpdatePrompt("test.prompt", "v3 broken", "auto-tune")
+	_ = db.UpdatePrompt("test.prompt", "v2 tuned", "auto-tune", true)
+	_ = db.UpdatePrompt("test.prompt", "v3 broken", "auto-tune", true)
 
 	// Rollback to v1
 	err := db.RollbackPrompt("test.prompt", 1)
@@ -121,7 +121,7 @@ func TestRollbackPromptBadVersion(t *testing.T) {
 func TestGetPromptAtVersion(t *testing.T) {
 	db := openTestDB(t)
 	_ = db.UpsertPrompt(Prompt{ID: "test.prompt", Template: "version one", Version: 1})
-	_ = db.UpdatePrompt("test.prompt", "version two", "edit")
+	_ = db.UpdatePrompt("test.prompt", "version two", "edit", true)
 
 	h, err := db.GetPromptAtVersion("test.prompt", 1)
 	require.NoError(t, err)

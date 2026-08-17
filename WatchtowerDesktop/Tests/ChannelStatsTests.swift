@@ -85,9 +85,41 @@ final class ChannelStatsTests: XCTestCase {
     func testFetchAllMentionsMatchNamespacedCurrentUserAgainstRawMarkup() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
+            // channel_id is namespaced too (migration 00048 rewrote it along
+            // with user_id), matching currentUserID's own account.
+            try TestDatabase.insertChannel(db, id: "1:C001", name: "general")
             // Message text keeps raw markup forever; current_user_id is namespaced (migration 00048).
-            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000001.000100", userID: "U002", text: "hey <@U1>")
+            try TestDatabase.insertMessage(db, channelID: "1:C001", ts: "1700000001.000100", userID: "1:U002", text: "hey <@U1>")
+        }
+        let stats = try db.read { try ChannelStatsQueries.fetchAll($0, currentUserID: "1:U1") }
+        XCTAssertEqual(stats[0].mentionCount, 1)
+    }
+
+    /// Pins the account-scoping half of the fix (audit F2): a raw mention is
+    /// account-blind, so a colliding raw id in a DIFFERENT connected
+    /// account's channel must not count toward this owner's mentions.
+    func testFetchAllMentionsScopedToAccount() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "1:C001", name: "acct1-general")
+            try TestDatabase.insertChannel(db, id: "2:C001", name: "acct2-general")
+            try TestDatabase.insertMessage(db, channelID: "1:C001", ts: "1700000001.000100", userID: "1:U002", text: "hey <@U1>")
+            // Different account, colliding raw id — refers to a different person.
+            try TestDatabase.insertMessage(db, channelID: "2:C001", ts: "1700000002.000100", userID: "2:U002", text: "hey <@U1>")
+        }
+        let stats = try db.read { try ChannelStatsQueries.fetchAll($0, currentUserID: "1:U1") }
+        let byID = Dictionary(uniqueKeysWithValues: stats.map { ($0.id, $0) })
+        XCTAssertEqual(byID["1:C001"]?.mentionCount, 1)
+        XCTAssertEqual(byID["2:C001"]?.mentionCount, 0)
+    }
+
+    /// Pins the pipe-form fix (audit F2): both the strict `<@U123>` and
+    /// resolved `<@U123|Display Name>` markup forms must be counted.
+    func testFetchAllMentionsCountsPipeForm() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "1:C001", name: "general")
+            try TestDatabase.insertMessage(db, channelID: "1:C001", ts: "1700000001.000100", userID: "1:U002", text: "hey <@U1|Owner Name>")
         }
         let stats = try db.read { try ChannelStatsQueries.fetchAll($0, currentUserID: "1:U1") }
         XCTAssertEqual(stats[0].mentionCount, 1)

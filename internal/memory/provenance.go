@@ -60,11 +60,35 @@ func newProvenanceRegistry(resolvers ...provenanceResolver) *provenanceRegistry 
 // "mail:abc"→"mail", "act:inbox_feedback:7"→"act" (the act scheme carries two
 // colons but classifies on its first segment), "bogus:x"→"bogus". The registry
 // then decides whether that scheme has a resolver (MEM-12).
+//
+// An account-namespaced Slack ref ("<accountID>:<rawSlackID>", e.g.
+// "1:C0473A5GC6N", the slack.Namespace shape from the multi-account migration)
+// is still scheme "" (message), not a scheme named after the digits: every
+// registered scheme name is alphabetic and every account id is purely
+// numeric, so a pre-colon segment that is entirely digits is unambiguously an
+// account prefix, not a scheme. Without this, every namespaced Slack ref would
+// classify into an unregistered numeric "scheme" and be dropped as invented
+// (MEM-01/MEM-12), discarding every Slack episode ref post-migration.
 func schemeOf(channelID string) string {
-	if i := strings.IndexByte(channelID, ':'); i >= 0 {
-		return channelID[:i]
+	i := strings.IndexByte(channelID, ':')
+	if i < 0 {
+		return ""
 	}
-	return ""
+	seg := channelID[:i]
+	if seg != "" && isDigits(seg) {
+		return ""
+	}
+	return seg
+}
+
+// isDigits reports whether s is non-empty and consists only of ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate dispatches ref to its scheme's resolver. registered is false when no

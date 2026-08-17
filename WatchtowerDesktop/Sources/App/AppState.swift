@@ -426,7 +426,7 @@ final class AppState {
                 initFeatureViewModels(manager: manager)
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
-                    backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
+                    backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
                 } else if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
@@ -552,7 +552,7 @@ final class AppState {
         // 4. Reset pipelines flag and re-run
         UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         backgroundTaskManager.tasks.removeAll()
-        backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode)
+        backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
     }
 
     /// Ensure the daemon is running against the current CLI binary.

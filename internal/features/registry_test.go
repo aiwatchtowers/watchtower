@@ -120,13 +120,23 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	defaults := defaultConfig(t)
 	deps := idSet(Dependents("slack-digests", defaults))
 
-	for _, want := range []string{"secretary-inbox", "tracks", "people-cards", "ideas", "briefing"} {
+	// day-plan is included here via people-cards -> day-plan and
+	// briefing -> day-plan (both real consumers: internal/dayplan/gather.go
+	// reads people_cards and the daily briefing directly), independent of
+	// memory — memory is only ONE of three paths that reach it.
+	for _, want := range []string{"secretary-inbox", "tracks", "people-cards", "ideas", "briefing", "day-plan"} {
 		assert.True(t, deps[want], "slack-digests dependents should include %q", want)
 	}
 	assert.False(t, deps["memory"], "memory defaults off; it must not appear as a dependent")
-	assert.False(t, deps["day-plan"],
-		"day-plan is only reachable through memory, which is off by default; "+
-			"a disabled intermediate must not propagate further")
+
+	// Isolate the memory -> day-plan edge specifically: day-plan has three
+	// paths in (people-cards, briefing, memory). Turn off the two that are
+	// enabled by default so only the memory path remains, then confirm a
+	// disabled intermediate still does not propagate further.
+	peopleAndBriefingOff := loadConfig(t, "people:\n  enabled: false\nbriefing:\n  enabled: false\n")
+	depsNarrow := idSet(Dependents("slack-digests", peopleAndBriefingOff))
+	assert.False(t, depsNarrow["day-plan"],
+		"with people-cards and briefing both off, day-plan's only remaining path is through memory, which is off by default")
 
 	memoryOn := loadConfig(t, "memory:\n  enabled: true\n")
 	depsWithMemory := idSet(Dependents("slack-digests", memoryOn))
@@ -135,5 +145,8 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	assert.True(t, depsWithMemory["day-plan"],
 		"day-plan should appear transitively via memory once memory.enabled is true")
 
-	assert.Empty(t, Dependents("briefing", defaults), "briefing feeds nothing else")
+	assert.True(t, idSet(Dependents("briefing", defaults))["day-plan"],
+		"briefing now feeds day-plan directly")
+	assert.True(t, idSet(Dependents("people-cards", defaults))["day-plan"],
+		"people-cards now feeds day-plan directly")
 }

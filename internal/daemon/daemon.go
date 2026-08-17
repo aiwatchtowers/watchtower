@@ -1021,10 +1021,16 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 // it sees everything this cycle produced (situations, briefings, recaps, day
 // plans). AI-free and best-effort: errors are logged, never propagated, and
 // never affect the inbox pipeline or its watermarks (DASH-06).
+//
+// Deliberately NOT gated on cfg.Feed.Enabled: Feed is a Core feature in the
+// registry (features.ByID("feed").Core == true, no toggle) precisely because
+// the Dashboard depends on it, so `features enable/disable feed` is refused
+// at the CLI/Desktop layer — but feed.enabled was still an accepted config
+// key that `config set feed.enabled false` could flip directly, permanently
+// killing the Dashboard timeline with no way back through the feature
+// manager. The config field stays parseable (existing configs must still
+// load), it just no longer acts as a kill switch here.
 func (d *Daemon) phaseFeed() {
-	if !d.config.Feed.Enabled {
-		return
-	}
 	if d.feedPipe == nil {
 		return
 	}

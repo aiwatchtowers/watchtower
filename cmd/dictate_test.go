@@ -212,7 +212,10 @@ func TestDictateCleanMissingRequiredKey(t *testing.T) {
 	dictateCleanFlagFile = f
 	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `{"title":"x"}`)
+	// D2: the error must never embed the raw model reply (dictated speech) —
+	// only the failure category.
+	assert.Contains(t, err.Error(), "title/body")
+	assert.NotContains(t, err.Error(), `{"title":"x"}`)
 }
 
 func TestDictateCleanMissingMarkdownKeyNoteMode(t *testing.T) {

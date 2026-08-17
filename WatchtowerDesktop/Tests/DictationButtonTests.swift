@@ -35,16 +35,29 @@ final class DictationSpanTests: XCTestCase {
     func test_composeAppendsDictatedVerbatim() {
         // No trimming of the dictated chunk — leading/trailing whitespace in
         // what the engine returned is kept exactly as delivered.
-        XCTAssertEqual(DictationSpan.compose(base: "hello ", dictated: "  world  "),
+        XCTAssertEqual(DictationSpan.compose(base: "hello ", dictated: "  world  ", mode: .chat),
                        "hello   world  ")
     }
 
     func test_composeEmptyDictated_returnsOriginalExistingText() {
         let noteBase = DictationSpan.base(existing: "hello", mode: .note)
-        XCTAssertEqual(DictationSpan.compose(base: noteBase, dictated: ""), "hello")
+        XCTAssertEqual(DictationSpan.compose(base: noteBase, dictated: "", mode: .note), "hello")
 
         let chatBase = DictationSpan.base(existing: "hello", mode: .chat)
-        XCTAssertEqual(DictationSpan.compose(base: chatBase, dictated: ""), "hello")
+        XCTAssertEqual(DictationSpan.compose(base: chatBase, dictated: "", mode: .chat), "hello")
+    }
+
+    /// D1 regression: a base string that itself starts with whitespace (e.g. a
+    /// Notes field holding "\n  draft") must keep that leading whitespace
+    /// after an empty dictation — only the trailing separator `base()`
+    /// appended is stripped, never a blanket trim of the whole string.
+    func test_composeEmptyDictated_preservesBaseLeadingWhitespace() {
+        let existing = "\n  draft"
+        let noteBase = DictationSpan.base(existing: existing, mode: .note)
+        XCTAssertEqual(DictationSpan.compose(base: noteBase, dictated: "", mode: .note), existing)
+
+        let chatBase = DictationSpan.base(existing: existing, mode: .chat)
+        XCTAssertEqual(DictationSpan.compose(base: chatBase, dictated: "", mode: .chat), existing)
     }
 }
 

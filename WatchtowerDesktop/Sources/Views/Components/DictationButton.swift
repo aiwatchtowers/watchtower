@@ -11,20 +11,31 @@ enum DictationSpan {
     /// empty field needs no separator — the dictation IS the whole field.
     static func base(existing: String, mode: DictationMode) -> String {
         guard !existing.isEmpty else { return existing }
+        return existing + separator(for: mode)
+    }
+
+    /// The mode-appropriate separator `base` appends after non-empty existing
+    /// text — the exact suffix `compose` strips back off when a dictation
+    /// comes back empty.
+    private static func separator(for mode: DictationMode) -> String {
         switch mode {
         case .note:
-            return existing + "\n\n"
+            return "\n\n"
         case .idea, .chat:
-            return existing + " "
+            return " "
         }
     }
 
     /// `base` plus the dictated chunk verbatim (no trimming — whitespace the
     /// engine produced is kept as-is). An empty chunk collapses back to the
-    /// original existing text by trimming `base`'s trailing separator.
-    static func compose(base: String, dictated: String) -> String {
+    /// original existing text by dropping only `base`'s trailing separator —
+    /// never a blanket trim, which would also eat whitespace the existing
+    /// text started with (a Notes field holding "\n  draft" must stay exactly
+    /// that after an empty dictation).
+    static func compose(base: String, dictated: String, mode: DictationMode) -> String {
         guard !dictated.isEmpty else {
-            return base.trimmingCharacters(in: .whitespacesAndNewlines)
+            let sep = separator(for: mode)
+            return base.hasSuffix(sep) ? String(base.dropLast(sep.count)) : base
         }
         return base + dictated
     }
@@ -259,14 +270,14 @@ struct DictationButton: View {
             targetID: targetID,
             mode: mode,
             onLiveText: { raw in
-                text = DictationSpan.compose(base: base, dictated: raw)
+                text = DictationSpan.compose(base: base, dictated: raw, mode: mode)
             },
             onResult: { result in
                 guard !(result.text.isEmpty && result.title == nil) else {
-                    text = base.trimmingCharacters(in: .whitespacesAndNewlines)
+                    text = DictationSpan.compose(base: base, dictated: "", mode: mode)
                     return
                 }
-                text = DictationSpan.compose(base: base, dictated: result.text)
+                text = DictationSpan.compose(base: base, dictated: result.text, mode: mode)
                 if let title = result.title {
                     onTitleCallback?(title)
                 }
@@ -279,7 +290,7 @@ struct DictationButton: View {
                 // field. On a live provider this recomposes the same value the
                 // live chunks already wrote; on a batch-only provider it is
                 // the only delivery the field ever gets.
-                text = DictationSpan.compose(base: base, dictated: raw)
+                text = DictationSpan.compose(base: base, dictated: raw, mode: mode)
             })
     }
 
@@ -295,7 +306,7 @@ struct DictationButton: View {
 
     private func revertToRaw() {
         guard let revert else { return }
-        text = DictationSpan.compose(base: revert.base, dictated: revert.raw)
+        text = DictationSpan.compose(base: revert.base, dictated: revert.raw, mode: mode)
         clearRevert()
     }
 

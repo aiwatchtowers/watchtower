@@ -14,7 +14,11 @@ import (
 // TestSchemeOf pins the ref-grammar classifier: a bare Slack channel id (no
 // colon) is scheme "", every colon-bearing ref classifies on its first
 // segment — including an act: ref that carries two colons and an unregistered
-// scheme like bogus:, which the registry then rejects (MEM-12).
+// scheme like bogus:, which the registry then rejects (MEM-12). An
+// account-namespaced Slack ref ("<accountID>:<rawSlackID>", the
+// slack.Namespace shape from the multi-account migration) is scheme "" too:
+// a purely-numeric pre-colon segment is an account id, never a scheme name,
+// since every registered scheme is alphabetic — see schemeOf's doc comment.
 func TestSchemeOf(t *testing.T) {
 	cases := map[string]string{
 		"C0123":                "",
@@ -25,10 +29,29 @@ func TestSchemeOf(t *testing.T) {
 		"act:inbox_feedback:7": "act",
 		"bogus:x":              "bogus",
 		"":                     "",
+		"1:C0473A5GC6N":        "",
+		"42:U999":              "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, schemeOf(in), "schemeOf(%q)", in)
 	}
+}
+
+// TestProvenanceRegistryDispatchesNamespacedSlackMessage is the MEM-12
+// regression pin for the multi-account namespacing bug: a namespaced Slack
+// message ref ("1:C0473A5GC6N") must dispatch to the message resolver (scheme
+// "") and validate against the messages table exactly like a bare ref, not
+// fall into an unregistered numeric "scheme" and get rejected as invented.
+func TestProvenanceRegistryDispatchesNamespacedSlackMessage(t *testing.T) {
+	d := newTestDB(t)
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C0473A5GC6N', '100.000100', '1:U1', 'hi')`)
+	require.NoError(t, err)
+	reg := fullRegistry(d)
+
+	ok, registered, err := reg.Validate(episodeRef{ChannelID: "1:C0473A5GC6N", TS: "100.000100"})
+	require.NoError(t, err)
+	assert.True(t, registered, "a namespaced Slack ref must classify as the message scheme")
+	assert.True(t, ok, "a real namespaced message resolves")
 }
 
 // TestProvenanceRegistryDispatchesMessage: a bare-channel ref routes to the

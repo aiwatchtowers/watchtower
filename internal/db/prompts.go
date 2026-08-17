@@ -48,8 +48,12 @@ func (db *DB) UpsertPrompt(p Prompt) error {
 }
 
 // UpdatePrompt updates a prompt's template, bumps version, and records history.
+// customized marks whether this write moves the row off the built-in default
+// lineage (a tuner apply or a manual edit) or restores it to that lineage (a
+// reset to default) — Store.Seed's auto-upgrade skips customized rows so a
+// later default-version bump never silently clobbers a customized template.
 // H2 fix: entire check-then-act is inside a single transaction to prevent race conditions.
-func (db *DB) UpdatePrompt(id, template, reason string) error {
+func (db *DB) UpdatePrompt(id, template, reason string, customized bool) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("beginning tx: %w", err)
@@ -68,9 +72,9 @@ func (db *DB) UpdatePrompt(id, template, reason string) error {
 
 	newVersion := current.Version + 1
 
-	if _, err := tx.Exec(`UPDATE prompts SET template = ?, version = ?,
+	if _, err := tx.Exec(`UPDATE prompts SET template = ?, version = ?, customized = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ?`, template, newVersion, id); err != nil {
+		WHERE id = ?`, template, newVersion, customized, id); err != nil {
 		return fmt.Errorf("updating prompt: %w", err)
 	}
 
@@ -85,8 +89,8 @@ func (db *DB) UpdatePrompt(id, template, reason string) error {
 // GetPrompt returns a prompt by ID, or nil if not found.
 func (db *DB) GetPrompt(id string) (*Prompt, error) {
 	var p Prompt
-	err := db.QueryRow(`SELECT id, template, version, language, updated_at FROM prompts WHERE id = ?`, id).
-		Scan(&p.ID, &p.Template, &p.Version, &p.Language, &p.UpdatedAt)
+	err := db.QueryRow(`SELECT id, template, version, language, updated_at, customized FROM prompts WHERE id = ?`, id).
+		Scan(&p.ID, &p.Template, &p.Version, &p.Language, &p.UpdatedAt, &p.Customized)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -98,7 +102,7 @@ func (db *DB) GetPrompt(id string) (*Prompt, error) {
 
 // GetAllPrompts returns all prompts sorted by ID.
 func (db *DB) GetAllPrompts() ([]Prompt, error) {
-	rows, err := db.Query(`SELECT id, template, version, language, updated_at FROM prompts ORDER BY id`)
+	rows, err := db.Query(`SELECT id, template, version, language, updated_at, customized FROM prompts ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("querying prompts: %w", err)
 	}
@@ -107,7 +111,7 @@ func (db *DB) GetAllPrompts() ([]Prompt, error) {
 	var prompts []Prompt
 	for rows.Next() {
 		var p Prompt
-		if err := rows.Scan(&p.ID, &p.Template, &p.Version, &p.Language, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Template, &p.Version, &p.Language, &p.UpdatedAt, &p.Customized); err != nil {
 			return nil, fmt.Errorf("scanning prompt: %w", err)
 		}
 		prompts = append(prompts, p)
@@ -150,7 +154,9 @@ func (db *DB) GetPromptAtVersion(promptID string, version int) (*PromptHistory, 
 	return &h, nil
 }
 
-// RollbackPrompt reverts a prompt to a previous version.
+// RollbackPrompt reverts a prompt to a previous version. This is a deliberate
+// user override, not a Seed-driven default, so the row is marked customized —
+// see UpdatePrompt.
 func (db *DB) RollbackPrompt(promptID string, targetVersion int) error {
 	hist, err := db.GetPromptAtVersion(promptID, targetVersion)
 	if err != nil {
@@ -159,5 +165,5 @@ func (db *DB) RollbackPrompt(promptID string, targetVersion int) error {
 	if hist == nil {
 		return fmt.Errorf("version %d not found for prompt %q", targetVersion, promptID)
 	}
-	return db.UpdatePrompt(promptID, hist.Template, fmt.Sprintf("rollback to v%d", targetVersion))
+	return db.UpdatePrompt(promptID, hist.Template, fmt.Sprintf("rollback to v%d", targetVersion), true)
 }
