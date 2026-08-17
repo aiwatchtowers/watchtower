@@ -134,46 +134,10 @@ public actor RelayFeed {
         var chunks = 0
         var appliedEchoRouted = false
         for record in batch.changed {
-            switch RelayRecordKind(rawValue: record.kind) {
-            case .action:
-                guard let action = decode(ActionRequestPayload.self, from: record) else { continue }
-                // A still-pending record is our OWN enqueue reflecting back
-                // through the shared zone — not a desktop verdict. Skip.
-                guard action.status != .pending else { continue }
-                try await outbox.applyEcho(action)
-                echoes += 1
-                if action.status == .applied { appliedEchoRouted = true }
-            case .chatMessage:
-                // Our own outgoing user turns; the desktop is their consumer.
-                break
-            case .chatChunk:
-                guard let chunk = decode(ChatChunkPayload.self, from: record) else { continue }
-                guard let assembler else {
-                    // Dropped for good — see the seam note on `assembler`.
-                    logger.warning("chat chunk dropped, no assembler wired (Task 5): \(record.recordName, privacy: .public)")
-                    continue
-                }
-                try await assembler.ingest(chunk)
-                chunks += 1
-            case .heartbeat:
-                guard let heartbeat = decode(HeartbeatPayload.self, from: record) else { continue }
-                try store.setHeartbeat(updatedAt: heartbeat.updatedAt)
-            case .recordingUpload:
-                guard let upload = decode(RecordingUploadPayload.self, from: record) else { continue }
-                // A still-pending record is our OWN upload reflecting back —
-                // the hub's verdict is what flips the ledger. Skip.
-                guard upload.status != .pending else { continue }
-                guard let uploads else {
-                    logger.warning("recording upload echo skipped, no uploader wired: \(record.recordName, privacy: .public)")
-                    continue
-                }
-                try await uploads.applyEcho(upload)
-                echoes += 1
-            case nil:
-                if loggedUnknownKinds.insert(record.kind).inserted {
-                    logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
-                }
-            }
+            let outcome = try await route(record)
+            echoes += outcome.echoes
+            chunks += outcome.chunks
+            if outcome.appliedEcho { appliedEchoRouted = true }
         }
 
         try store.setRelayToken(batch.newToken)
@@ -186,6 +150,53 @@ public actor RelayFeed {
             Task { await onActionApplied() }
         }
         return (echoes: echoes, chunks: chunks)
+    }
+
+    /// Routes ONE relay record to its consumer; every path is idempotent
+    /// (the batch replays on a mid-batch throw — see `performPoll`).
+    /// `appliedEcho` is true only for a desktop `applied` action verdict —
+    /// the trigger for the post-batch hydrate nudge.
+    private func route(_ record: CloudRecord) async throws -> (echoes: Int, chunks: Int, appliedEcho: Bool) {
+        switch RelayRecordKind(rawValue: record.kind) {
+        case .action:
+            guard let action = decode(ActionRequestPayload.self, from: record) else { break }
+            // A still-pending record is our OWN enqueue reflecting back
+            // through the shared zone — not a desktop verdict. Skip.
+            guard action.status != .pending else { break }
+            try await outbox.applyEcho(action)
+            return (echoes: 1, chunks: 0, appliedEcho: action.status == .applied)
+        case .chatMessage:
+            // Our own outgoing user turns; the desktop is their consumer.
+            break
+        case .chatChunk:
+            guard let chunk = decode(ChatChunkPayload.self, from: record) else { break }
+            guard let assembler else {
+                // Dropped for good — see the seam note on `assembler`.
+                logger.warning("chat chunk dropped, no assembler wired (Task 5): \(record.recordName, privacy: .public)")
+                break
+            }
+            try await assembler.ingest(chunk)
+            return (echoes: 0, chunks: 1, appliedEcho: false)
+        case .heartbeat:
+            guard let heartbeat = decode(HeartbeatPayload.self, from: record) else { break }
+            try store.setHeartbeat(updatedAt: heartbeat.updatedAt)
+        case .recordingUpload:
+            guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
+            // A still-pending record is our OWN upload reflecting back —
+            // the hub's verdict is what flips the ledger. Skip.
+            guard upload.status != .pending else { break }
+            guard let uploads else {
+                logger.warning("recording upload echo skipped, no uploader wired: \(record.recordName, privacy: .public)")
+                break
+            }
+            try await uploads.applyEcho(upload)
+            return (echoes: 1, chunks: 0, appliedEcho: false)
+        case nil:
+            if loggedUnknownKinds.insert(record.kind).inserted {
+                logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
+            }
+        }
+        return (echoes: 0, chunks: 0, appliedEcho: false)
     }
 
     /// Decodes a relay payload of a KNOWN kind; a failure is logged and
