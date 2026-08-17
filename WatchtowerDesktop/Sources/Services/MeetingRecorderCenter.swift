@@ -1563,7 +1563,7 @@ final class MeetingRecorderCenter {
         let title: String?
     }
 
-    private static func metaURL(for audioURL: URL) -> URL {
+    nonisolated private static func metaURL(for audioURL: URL) -> URL {
         audioURL.deletingPathExtension().appendingPathExtension("meta")
     }
 
@@ -1572,7 +1572,7 @@ final class MeetingRecorderCenter {
     /// is read as "already saved" and is NOT offered for recovery after a crash.
     /// The audio file itself always survives (the Go orphan sweep reclaims it).
     /// Hence the logging — this failure must not be invisible.
-    private static func writeMetaSidecar(eventID: String?, title: String?, for audioURL: URL) {
+    nonisolated private static func writeMetaSidecar(eventID: String?, title: String?, for audioURL: URL) {
         let url = metaURL(for: audioURL)
         do {
             let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
@@ -1596,23 +1596,28 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Chronological sort key for a `rec_<timestamp>[-N].caf` name: the
+    /// Audio extensions the recovery scan accepts: `.caf` from this Mac's own
+    /// recorder, `.m4a` from phone recordings relayed through the mobile hub.
+    /// Both are AVFoundation-readable, so the batch decode path is shared.
+    private static let recoverableAudioExtensions: Set<String> = ["caf", "m4a"]
+
+    /// Chronological sort key for a `rec_<timestamp>[-N].<ext>` name: the
     /// timestamp, then the collision suffix as a number (absent = the first
     /// recording of that second). Plain lexicographic order gets a same-second
     /// pair backwards twice over — `-` sorts before `.`, so `rec_X-2.caf` would
     /// lead `rec_X.caf`, and `-10` would lead `-2` — which matters because the
     /// recovered pill acts on `recoverable.first`.
     private static func recoverySortKey(_ name: String) -> (String, Int) {
-        let base = String(name.dropLast(".caf".count))
+        let base = (name as NSString).deletingPathExtension
         guard let dash = base.lastIndex(of: "-"),
               let suffix = Int(base[base.index(after: dash)...]) else { return (base, 1) }
         return (String(base[..<dash]), suffix)
     }
 
-    /// `rec_*.caf` files that still carry a `.meta` sidecar, oldest first. A
-    /// sidecar that is present but unreadable still proves the recording was
-    /// never saved, so it comes back without its event link rather than being
-    /// lost.
+    /// `rec_*` audio files (see `recoverableAudioExtensions`) that still carry
+    /// a `.meta` sidecar, oldest first. A sidecar that is present but
+    /// unreadable still proves the recording was never saved, so it comes
+    /// back without its event link rather than being lost.
     private static func scanRecoverable(in directory: URL) -> [RecoverableRecording] {
         let names: [String]
         do {
@@ -1623,7 +1628,7 @@ final class MeetingRecorderCenter {
             return []
         }
         return names
-            .filter { $0.hasPrefix("rec_") && $0.hasSuffix(".caf") }
+            .filter { $0.hasPrefix("rec_") && recoverableAudioExtensions.contains(($0 as NSString).pathExtension) }
             .sorted { recoverySortKey($0) < recoverySortKey($1) }
             .compactMap { name -> RecoverableRecording? in
                 let audioURL = directory.appendingPathComponent(name)
@@ -1724,31 +1729,81 @@ final class MeetingRecorderCenter {
         return base.appendingPathComponent("Watchtower/recordings", isDirectory: true)
     }
 
-    private static func timestampComponent(_ date: Date = Date()) -> String {
+    nonisolated private static func timestampComponent(_ date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter.string(from: date)
     }
 
-    /// `rec_<timestamp>.caf`, disambiguated with a `-N` suffix while either the
-    /// audio file or its `.meta` sidecar already exists. The timestamp has
+    /// `rec_<timestamp>.<ext>`, disambiguated with a `-N` suffix while either
+    /// the audio file or its `.meta` sidecar already exists. The timestamp has
     /// one-second resolution, so two recordings started inside the same second
     /// would otherwise share a path — the second overwriting the first's audio
     /// and stealing its recovery sidecar. The `rec_` prefix and the timestamp
     /// stay: the Go orphan sweep matches on the family, and the name is what
     /// makes a recovered recording identifiable. Internal (not private) so the
     /// disambiguation is testable without racing the wall clock.
-    static func uniqueRecordingURL(in directory: URL, date: Date = Date()) -> URL {
+    nonisolated static func uniqueRecordingURL(
+        in directory: URL,
+        date: Date = Date(),
+        fileExtension: String = "caf"
+    ) -> URL {
         let base = "rec_\(timestampComponent(date))"
-        var candidate = directory.appendingPathComponent("\(base).caf")
+        var candidate = directory.appendingPathComponent("\(base).\(fileExtension)")
         var suffix = 2
         while FileManager.default.fileExists(atPath: candidate.path)
                 || FileManager.default.fileExists(atPath: metaURL(for: candidate).path) {
-            candidate = directory.appendingPathComponent("\(base)-\(suffix).caf")
+            candidate = directory.appendingPathComponent("\(base)-\(suffix).\(fileExtension)")
             suffix += 1
         }
         return candidate
+    }
+
+    // MARK: - Phone recording ingest (mobile hub)
+
+    /// Drops an externally captured audio file (a phone recording relayed via
+    /// CloudKit) into `directory` as a first-class member of the `rec_*`
+    /// family: unique name, `.m4a` extension, and the SAME `.meta` sidecar the
+    /// crash-recovery scan keys on — so if the app quits before the job runs,
+    /// the recording surfaces through the normal recovered-recordings flow on
+    /// next launch (and the Go orphan sweep covers the audio either way).
+    /// Copies rather than moves: the source is the transport's stashed asset,
+    /// which the hub deletes only after this whole ingest step succeeded.
+    nonisolated static func ingestExternalRecording(
+        from sourceURL: URL,
+        title: String?,
+        in directory: URL,
+        date: Date = Date()
+    ) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a")
+        try FileManager.default.copyItem(at: sourceURL, to: audioURL)
+        writeMetaSidecar(eventID: nil, title: title, for: audioURL)
+        return audioURL
+    }
+
+    /// Hands a hub-ingested phone recording to the transcription queue —
+    /// through the recovery machinery, never a second pipeline: the entry is
+    /// registered as recoverable (so a failure to enqueue leaves it exactly
+    /// where a crashed local recording would sit) and then enqueued like the
+    /// recovered pill's own action. The serial job queue and the engine-slot
+    /// handshake apply as for any other job; the transcript lands in the DB
+    /// and reaches the phone via the meeting_transcript slice.
+    func ingestPhoneRecording(audioURL: URL, title: String?, config: TranscriptionConfig) async {
+        addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: nil, title: title))
+        await transcribeRecovered(audioURL: audioURL, config: config)
+    }
+
+    /// Enqueues ONE recoverable entry (by audio URL) on the processing queue.
+    /// Unlike `retryTranscription` this does not require idle — phone
+    /// ingests queue up behind whatever is running.
+    private func transcribeRecovered(audioURL: URL, config: TranscriptionConfig) async {
+        guard let index = recoverable.firstIndex(where: { $0.audioURL == audioURL }) else { return }
+        let entry = recoverable.remove(at: index)
+        let job = ProcessingJob(audioURL: entry.audioURL, eventID: entry.eventID, title: entry.title)
+        jobs.append(job)
+        await startJobTask(jobID: job.id, config: config).value
     }
 }
 
