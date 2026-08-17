@@ -536,4 +536,89 @@ final class SlicePublisherTests: XCTestCase {
         let batch = try await transport.changes(in: .data, since: nil)
         XCTAssertTrue(batch.deletedRecordNames.contains("meeting_transcript-1"))
     }
+
+    // MARK: - Payload size guard (plan item 14)
+
+    /// Text long enough that the row's RowPayloadCoder JSON exceeds
+    /// `SlicePublisher.maxPayloadBytes` — JSON framing only ever ADDS bytes
+    /// on top of the raw text, so text of threshold+1 chars is sufficient.
+    private static func oversizedText(filler: String = "x") -> String {
+        String(repeating: filler, count: SlicePublisher.maxPayloadBytes + 1)
+    }
+
+    /// An oversized row must be skipped WITHOUT recording its hash (so the
+    /// diff keeps re-offering it), it must never reach the transport, and a
+    /// sibling normal row in the same cycle publishes untouched. Once the row
+    /// shrinks below the threshold, the very next cycle publishes it normally.
+    func testOversizedRowIsSkippedWithoutHashAndPublishesAfterShrinking() async throws {
+        let hugeID = try await dbPool.write { db in
+            let id = try TestDatabase.insertTarget(db, text: Self.oversizedText())
+            _ = try TestDatabase.insertTarget(db, text: "Normal sibling")
+            return id
+        }
+
+        let first = try await publisher.publishOnce()
+
+        XCTAssertEqual(first.pushed, 1, "only the normal sibling publishes")
+        XCTAssertEqual(first.deleted, 0)
+        XCTAssertEqual(first.skipped, ["target-\(hugeID)"])
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertEqual(batch.changed.map(\.recordName), ["target-2"])
+        XCTAssertNil(
+            try state.hashes(forKind: .target)["target-\(hugeID)"],
+            "oversized row must not get its hash recorded — the diff would believe it published"
+        )
+
+        // Shrink the row: the next cycle must publish it like any new row.
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE targets SET text = 'Now small' WHERE id = ?", arguments: [hugeID])
+        }
+        let token = batch.newToken
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(second.pushed, 1)
+        XCTAssertTrue(second.skipped.isEmpty)
+        let delta = try await transport.changes(in: .data, since: token)
+        XCTAssertEqual(delta.changed.map(\.recordName), ["target-\(hugeID)"])
+        XCTAssertNotNil(try state.hashes(forKind: .target)["target-\(hugeID)"])
+    }
+
+    /// A stuck oversized row is skipped EVERY cycle (the stat keeps counting)
+    /// but warned about only ONCE — until its payload changes, which is a new
+    /// situation worth a fresh warning.
+    func testOversizedWarningIsThrottledPerPayloadHash() async throws {
+        let hugeID = try await dbPool.write { db in
+            try TestDatabase.insertTarget(db, text: Self.oversizedText())
+        }
+
+        let first = try await publisher.publishOnce()
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(first.skipped, ["target-\(hugeID)"])
+        XCTAssertEqual(second.skipped, ["target-\(hugeID)"], "still skipped every cycle")
+        XCTAssertEqual(
+            publisher.oversizedWarningCount.withLock { $0 }, 1,
+            "the same stuck payload must warn exactly once"
+        )
+
+        // Same row, still oversized, but DIFFERENT content → new warning.
+        try await dbPool.write { db in
+            try db.execute(
+                sql: "UPDATE targets SET text = ? WHERE id = ?",
+                arguments: [Self.oversizedText(filler: "y"), hugeID]
+            )
+        }
+        let third = try await publisher.publishOnce()
+        XCTAssertEqual(third.skipped, ["target-\(hugeID)"])
+        XCTAssertEqual(publisher.oversizedWarningCount.withLock { $0 }, 2)
+    }
+
+    /// Boundary discipline: a payload of exactly `maxPayloadBytes` still fits
+    /// (the headroom below CloudKit's 1 MB cap absorbs record overhead); one
+    /// byte more does not.
+    func testPayloadSizeBoundary() {
+        XCTAssertFalse(SlicePublisher.isOversized(Data(count: SlicePublisher.maxPayloadBytes)))
+        XCTAssertTrue(SlicePublisher.isOversized(Data(count: SlicePublisher.maxPayloadBytes + 1)))
+        XCTAssertFalse(SlicePublisher.isOversized(Data()), "empty payload is degenerate but fine")
+    }
 }

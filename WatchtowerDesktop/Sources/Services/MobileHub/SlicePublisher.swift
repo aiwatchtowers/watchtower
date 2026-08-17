@@ -15,6 +15,19 @@ final class SlicePublisher: Sendable {
     private let logger = Logger(subsystem: Constants.bundleID, category: "SlicePublisher")
     private let pollTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
+    /// CloudKit's per-record cap is 1 MB. The 100 KB headroom covers system
+    /// fields, `kind`/`modifiedAt`/`notifyLevel` and record-name overhead, so
+    /// the check runs against the ENCODED row payload alone.
+    static let maxPayloadBytes = 900_000
+
+    /// recordName → payload hash of the last oversized payload warned about.
+    /// Throttles the oversized warning: an unchanged stuck row warns once per
+    /// publisher lifetime, a CHANGED oversized payload warns again.
+    private let oversizedWarned = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+    /// Count of oversized warnings actually emitted — observability for tests
+    /// and debugging of the throttle.
+    let oversizedWarningCount = OSAllocatedUnfairLock<Int>(initialState: 0)
+
     init(dbPool: DatabasePool, state: HubSyncState, transport: any CloudSyncTransport & Sendable) {
         self.dbPool = dbPool
         self.state = state
@@ -122,11 +135,17 @@ final class SlicePublisher: Sendable {
 
     /// One full push cycle over all slice kinds. Returns what happened;
     /// skipped (un-encodable) records are also logged once per cycle.
+    /// Oversized records (payload above `maxPayloadBytes`) are skipped WITHOUT
+    /// recording their hash — the diff re-offers the row every cycle, so a
+    /// later smaller version publishes normally. Their warning is throttled
+    /// per (recordName, payload hash) and they stay out of the end-of-cycle
+    /// un-encodable line, so a stuck row does not spam the log.
     @discardableResult
     func publishOnce() async throws -> (pushed: Int, deleted: Int, skipped: [String]) {
         var pushed = 0
         var deleted = 0
         var skipped: [String] = []
+        var diffSkipped: [String] = []
         let now = Date()
         let startGen = try state.generation()
 
@@ -141,8 +160,18 @@ final class SlicePublisher: Sendable {
                 now: now
             )
 
-            if !result.upserts.isEmpty {
-                try await transport.save(result.upserts.map { CloudRecordFactory.record(for: $0) })
+            var saveable: [SliceRecord] = []
+            for record in result.upserts {
+                if Self.isOversized(record.payload) {
+                    skipped.append(record.recordName)
+                    warnOversizedIfNeeded(record)
+                } else {
+                    saveable.append(record)
+                }
+            }
+
+            if !saveable.isEmpty {
+                try await transport.save(saveable.map { CloudRecordFactory.record(for: $0) })
                 // Guard: abort if a mid-cycle account reset wiped the state.
                 // The next cycle will re-diff against empty hashes and re-push everything.
                 // Residual race (accepted, Plan 3 final review): a reset landing in the
@@ -151,10 +180,13 @@ final class SlicePublisher: Sendable {
                     logger.warning("publishOnce: generation changed mid-cycle — aborting to avoid recording stale hashes")
                     return (pushed, deleted, skipped)
                 }
-                for record in result.upserts {
+                for record in saveable {
                     try state.setHash(SliceDiff.hashHex(record.payload), for: record.recordName)
+                    // A published record's throttle entry is stale: if the row
+                    // ever grows oversized again, that deserves a fresh warning.
+                    oversizedWarned.withLock { $0.removeValue(forKey: record.recordName) }
                 }
-                pushed += result.upserts.count
+                pushed += saveable.count
             }
             if !result.deletions.isEmpty {
                 try await transport.delete(recordNames: result.deletions, in: .data)
@@ -166,12 +198,40 @@ final class SlicePublisher: Sendable {
                 deleted += result.deletions.count
             }
             skipped.append(contentsOf: result.skipped)
+            diffSkipped.append(contentsOf: result.skipped)
         }
 
-        if !skipped.isEmpty {
-            logger.warning("skipped \(skipped.count) un-encodable slice records: \(skipped.joined(separator: ", "), privacy: .public)")
+        // Only diff-level skips (encoder throw / invalid id) — oversized rows
+        // have their own throttled warning and would re-spam this line every
+        // cycle while stuck.
+        if !diffSkipped.isEmpty {
+            logger.warning("skipped \(diffSkipped.count) un-encodable slice records: \(diffSkipped.joined(separator: ", "), privacy: .public)")
         }
         return (pushed, deleted, skipped)
+    }
+
+    /// True when `payload` exceeds the publishable budget. `==` is fine:
+    /// exactly `maxPayloadBytes` still fits within the headroom.
+    static func isOversized(_ payload: Data) -> Bool {
+        payload.count > maxPayloadBytes
+    }
+
+    /// Warns about an oversized record, throttled per (recordName, payload
+    /// hash): the same stuck payload warns once, a changed one warns again.
+    private func warnOversizedIfNeeded(_ record: SliceRecord) {
+        let hash = SliceDiff.hashHex(record.payload)
+        let firstSighting = oversizedWarned.withLock { warned in
+            guard warned[record.recordName] != hash else { return false }
+            warned[record.recordName] = hash
+            return true
+        }
+        guard firstSighting else { return }
+        oversizedWarningCount.withLock { $0 += 1 }
+        logger.warning("""
+            oversized slice record skipped: \(record.recordName, privacy: .public) \
+            payload \(record.payload.count) bytes exceeds \(Self.maxPayloadBytes) — \
+            not published, will retry when the row shrinks
+            """)
     }
 
     /// Synchronous on purpose: GRDB's async `read` requires `T: Sendable`,
