@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,97 @@ esac
 	}
 	if got != "got:"+marker {
 		t.Errorf("result = %q, want %q — the user message did not reach the subprocess via stdin", got, "got:"+marker)
+	}
+}
+
+// fakeClaude writes a shell script that prints body on stdout and exits with
+// code, standing in for the real CLI via the claudePath override.
+func fakeClaude(t *testing.T, body string, code int) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	scriptBody := "#!/bin/sh\ncat >/dev/null\nprintf '%s' " + shellQuote(body) + "\nexit " + strconv.Itoa(code) + "\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake claude binary: %v", err)
+	}
+	return script
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestClaudeGeneratorSurfacesEnvelopeErrorOnNonZeroExit pins the diagnostic
+// contract for the CLI's own failures: it reports an API/usage error as an
+// ordinary result envelope on stdout and exits 1, with the human-readable
+// "result" sitting behind kilobytes of usage/telemetry JSON. Dumping that blob
+// raw buries the one field a reader needs (and it is what the owner saw in the
+// wild — the message truncated before "result" ever appeared).
+func TestClaudeGeneratorSurfacesEnvelopeErrorOnNonZeroExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Field order mirrors the real CLI: result comes last, after usage.
+	envelope := `[{"type":"system","subtype":"init","session_id":"s1"},` +
+		`{"is_error":true,"duration_api_ms":59744,"num_turns":1,"stop_reason":"stop_sequence",` +
+		`"session_id":"s1","total_cost_usd":0.003,` +
+		`"usage":{"input_tokens":10,"cache_read_input_tokens":12174,"output_tokens":4},` +
+		`"subtype":"error_during_execution","type":"result",` +
+		`"result":"API Error: request was interrupted"}]`
+
+	gen := NewClaudeGenerator("test-model", fakeClaude(t, envelope, 1))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for an is_error envelope")
+	}
+	if !strings.Contains(err.Error(), "API Error: request was interrupted") {
+		t.Errorf("error = %q, want the CLI's own result message", err)
+	}
+	for _, diag := range []string{"stop_sequence", "error_during_execution"} {
+		if !strings.Contains(err.Error(), diag) {
+			t.Errorf("error = %q, want it to carry %q", err, diag)
+		}
+	}
+	if strings.Contains(err.Error(), "cache_read_input_tokens") {
+		t.Errorf("error = %q, want the raw envelope JSON kept out of it", err)
+	}
+}
+
+// TestClaudeGeneratorEnvelopeErrorWithoutMessage covers the degenerate shape:
+// a valid error envelope whose result string is empty still has to produce an
+// error a reader can act on, not an empty tail.
+func TestClaudeGeneratorEnvelopeErrorWithoutMessage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	envelope := `{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}`
+	gen := NewClaudeGenerator("test-model", fakeClaude(t, envelope, 1))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for an is_error envelope")
+	}
+	if !strings.Contains(err.Error(), "error_max_turns") {
+		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
+	}
+}
+
+// TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed keeps the
+// DescribeOutput doctrine on the failure path: stdout the parser cannot
+// understand is model-derived text and must reach logs/UI as a fingerprint.
+func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	const secret = "acme-merger-with-globex-is-confidential"
+	gen := NewClaudeGenerator("test-model", fakeClaude(t, secret, 1))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for a failing CLI")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error = %q, want the stdout content described, not echoed", err)
+	}
+	if !strings.Contains(err.Error(), "sha256:") {
+		t.Errorf("error = %q, want a DescribeOutput fingerprint", err)
 	}
 }
 

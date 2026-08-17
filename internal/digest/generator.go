@@ -146,7 +146,19 @@ type cliResponse struct {
 	NumTurns   int      `json:"num_turns"`
 	IsError    bool     `json:"is_error"`
 	SessionID  string   `json:"session_id"`
+	Subtype    string   `json:"subtype"`
+	StopReason string   `json:"stop_reason"`
 	Usage      cliUsage `json:"usage"`
+}
+
+// errorEnvelopeMessage returns the CLI's own message for a failed run, falling
+// back to a fixed string when the envelope carries none — an error whose tail
+// is empty tells a reader nothing.
+func errorEnvelopeMessage(resp *cliResponse) string {
+	if msg := strings.TrimSpace(resp.Result); msg != "" {
+		return msg
+	}
+	return "no message in the CLI result envelope"
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -246,14 +258,22 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 			}
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			// The CLI reports an API or usage failure as an ordinary result
+			// envelope on stdout and exits 1, with the human-readable message
+			// behind kilobytes of usage telemetry. Parse it so the error
+			// carries that message instead of the whole blob.
+			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
+				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp))
+			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg == "" {
 				stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 			}
-			// Include any stdout output for debugging
-			stdoutMsg := strings.TrimSpace(string(output))
-			if stderrMsg == "" && stdoutMsg != "" {
-				stderrMsg = stdoutMsg
+			// Stdout the parser could not understand is model-derived text:
+			// describe it, never echo it (see claude.DescribeOutput).
+			if stderrMsg == "" && len(bytes.TrimSpace(output)) > 0 {
+				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
 				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg)
