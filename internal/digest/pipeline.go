@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // Usage holds token metrics from an AI generation call.
@@ -49,12 +50,13 @@ type DigestResult struct {
 // Topic is a self-contained thematic unit within a digest.
 // Each topic carries its own decisions, action items, situations, and key messages.
 type Topic struct {
-	Title       string         `json:"title"`
-	Summary     string         `json:"summary"`
-	Decisions   []Decision     `json:"decisions"`
-	ActionItems []ActionItem   `json:"action_items"`
-	Situations  []db.Situation `json:"situations"`
-	KeyMessages []string       `json:"key_messages"`
+	Title       string          `json:"title"`
+	Summary     string          `json:"summary"`
+	Decisions   []Decision      `json:"decisions"`
+	ActionItems []ActionItem    `json:"action_items"`
+	Situations  []db.Situation  `json:"situations"`
+	KeyMessages []string        `json:"key_messages"`
+	Ideas       []IdeaCandidate `json:"ideas"`
 }
 
 // DigestSituationParticipant mirrors db.SituationParticipant for JSON parsing.
@@ -88,6 +90,14 @@ type ActionItem struct {
 	Text     string `json:"text"`
 	Assignee string `json:"assignee"`
 	Status   string `json:"status"`
+}
+
+// IdeaCandidate represents a proposal — something new suggested but not (yet)
+// decided — extracted from messages. Stage-1 material for the ideas registry.
+type IdeaCandidate struct {
+	Text      string `json:"text"`
+	By        string `json:"by"`
+	MessageTS string `json:"message_ts"`
 }
 
 // TrackLinker runs the tracks pipeline between channel digests and rollups.
@@ -937,6 +947,9 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 			Topics:         r.Topics,
 			RunningSummary: r.RunningSummary,
 		}
+		if n := blankInventedMessageRefs(dr.Topics, entry.msgs); n > 0 {
+			p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, entry.channelName)
+		}
 
 		lastMsgTS := sinceUnix
 		for _, m := range entry.msgs {
@@ -1271,7 +1284,13 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 	}
 
 	result, err := parseDigestResult(raw)
-	return result, usage, pv, err
+	if err != nil {
+		return nil, usage, pv, err
+	}
+	if n := blankInventedMessageRefs(result.Topics, msgs); n > 0 {
+		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, channelName)
+	}
+	return result, usage, pv, nil
 }
 
 func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int) error {
@@ -1330,7 +1349,6 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	if len(result.Topics) > 0 {
 		var dbTopics []db.DigestTopic
 		for i, t := range result.Topics {
-			dec, _ := json.Marshal(t.Decisions)
 			ai, _ := json.Marshal(t.ActionItems)
 			sit, _ := json.Marshal(t.Situations)
 			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
@@ -1338,10 +1356,11 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 				Idx:         i,
 				Title:       t.Title,
 				Summary:     t.Summary,
-				Decisions:   string(dec),
+				Decisions:   marshalArray(t.Decisions),
 				ActionItems: string(ai),
 				Situations:  string(sit),
 				KeyMessages: string(km),
+				Ideas:       marshalArray(t.Ideas),
 			})
 		}
 		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
@@ -1361,6 +1380,22 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	}
 
 	return nil
+}
+
+// marshalArray renders a slice as JSON, emitting "[]" — never "null" — for an
+// empty or nil one. digest_topics.ideas/decisions are read back by the ideas
+// registry's ListDigestTopicIdeasAfter, whose "carries candidates" filter is a
+// literal `!= '[]'` string compare: a "null" would sail past it and hand the
+// consolidator an inert unit for every topic ever written.
+func marshalArray[T any](items []T) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 // updatePeriodBounds atomically updates the earliest/latest period bounds.
@@ -1590,6 +1625,10 @@ func (p *Pipeline) lastDigestTime() float64 {
 	return since
 }
 
+// formatMessages renders messages for a digest prompt. Every line carries the
+// raw Slack ts ("ts=") next to the human-readable HH:MM: the prompts ask the
+// model to copy message_ts exactly from the messages it is shown, so the ref it
+// cites must be present verbatim — HH:MM alone leaves it constructing one.
 func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.ReactionSummary) string {
 	truncateLimit := config.DefaultMessageTruncateLen
 
@@ -1647,7 +1686,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 				userName := p.userName(r.UserID)
 				ts := time.Unix(int64(r.TSUnix), 0).Local().Format("15:04")
 				reactStr := db.FormatReactions(reactions[r.TS])
-				fmt.Fprintf(&sb, "  ↳ [%s @%s (%s)] %s%s\n", ts, userName, r.UserID, sanitizeText(r.Text), reactStr)
+				fmt.Fprintf(&sb, "  ↳ [%s ts=%s @%s (%s)] %s%s\n", ts, r.TS, userName, r.UserID, sanitizeText(r.Text), reactStr)
 			}
 			continue
 		}
@@ -1655,7 +1694,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 		userName := p.userName(m.UserID)
 		ts := time.Unix(int64(m.TSUnix), 0).Local().Format("15:04")
 		reactStr := db.FormatReactions(reactions[m.TS])
-		fmt.Fprintf(&sb, "[%s @%s (%s)] %s%s\n", ts, userName, m.UserID, sanitizeText(m.Text), reactStr)
+		fmt.Fprintf(&sb, "[%s ts=%s @%s (%s)] %s%s\n", ts, m.TS, userName, m.UserID, sanitizeText(m.Text), reactStr)
 		// Emit grouped replies if this is a thread parent.
 		if replies, ok := threadReplies[m.TS]; ok {
 			emitted[m.TS] = true
@@ -1663,7 +1702,7 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 				rUserName := p.userName(r.UserID)
 				rTS := time.Unix(int64(r.TSUnix), 0).Local().Format("15:04")
 				rReactStr := db.FormatReactions(reactions[r.TS])
-				fmt.Fprintf(&sb, "  ↳ [%s @%s (%s)] %s%s\n", rTS, rUserName, r.UserID, sanitizeText(r.Text), rReactStr)
+				fmt.Fprintf(&sb, "  ↳ [%s ts=%s @%s (%s)] %s%s\n", rTS, r.TS, rUserName, r.UserID, sanitizeText(r.Text), rReactStr)
 			}
 		}
 	}
@@ -1837,14 +1876,17 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString("- Prioritize decisions and action items relevant to this user's role and responsibilities\n")
 	sb.WriteString("- Highlight topics that fall within the user's area of focus\n")
 
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced.
 	if p.profile.StarredChannels != "" && p.profile.StarredChannels != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(p.profile.StarredChannels)))
+		sb.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredChannels))))
 	}
 	if p.profile.StarredPeople != "" && p.profile.StarredPeople != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(p.profile.StarredPeople)))
+		sb.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredPeople))))
 	}
 	if p.profile.Reports != "" && p.profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(p.profile.Reports)))
+		sb.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.Reports))))
 	}
 
 	return sb.String()
@@ -1898,6 +1940,41 @@ func filterValidTimestamps(msgs []string) []string {
 		}
 	}
 	return filtered
+}
+
+// blankInventedMessageRefs clears every decision/idea message_ts that does not
+// match a message actually rendered into the prompt (formatMessages skips empty
+// and deleted ones, so a ts the model never saw is not citable either). The item
+// itself is kept — digest content is user-visible and a fabricated ref is no
+// reason to lose it; only the ref dies, leaving the candidate uncitable
+// downstream instead of pointing at a message that does not exist. Returns the
+// number of refs blanked.
+func blankInventedMessageRefs(topics []Topic, msgs []db.Message) int {
+	rendered := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if m.Text == "" || m.IsDeleted {
+			continue
+		}
+		rendered[m.TS] = true
+	}
+
+	blanked := 0
+	for i := range topics {
+		t := &topics[i]
+		for j := range t.Decisions {
+			if ts := t.Decisions[j].MessageTS; ts != "" && !rendered[ts] {
+				t.Decisions[j].MessageTS = ""
+				blanked++
+			}
+		}
+		for j := range t.Ideas {
+			if ts := t.Ideas[j].MessageTS; ts != "" && !rendered[ts] {
+				t.Ideas[j].MessageTS = ""
+				blanked++
+			}
+		}
+	}
+	return blanked
 }
 
 // parseDigestResult extracts a DigestResult from Claude's response.

@@ -48,11 +48,12 @@ var authCompleteCmd = &cobra.Command{
 
 var authLogoutCmd = &cobra.Command{
 	Use:   "logout",
-	Short: "Disconnect Slack and purge Slack data",
-	Long: `Removes the Slack token from config and deletes all Slack data from the
-database: synced messages, users, channels, and the AI products built on them
-(digests, tracks, people cards, briefings, Slack inbox items and situations).
-Data from other sources (Gmail, Calendar, Jira) and targets are preserved.`,
+	Short: "Disconnect account #1's Slack workspace (non-destructive: keeps synced data)",
+	Long: `Legacy alias for "slack remove" on account #1: deletes the account's stored
+OAuth token and marks it removed so it stops syncing. Its synced messages,
+channels, digests, tracks, situations, and memory are deliberately kept —
+this is a soft delete, not a purge. Use "slack accounts"/"slack remove <id>"
+for multi-account control.`,
 	RunE: runAuthLogout,
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct ConnectionsView: View {
     let interactions: [UserInteraction]

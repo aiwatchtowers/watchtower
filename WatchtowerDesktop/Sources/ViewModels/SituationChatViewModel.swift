@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // MARK: - SituationChatViewModel
 
@@ -18,6 +19,9 @@ final class SituationChatViewModel {
     var isStreaming = false
     var inputText = ""
     var errorMessage: String?
+
+    /// Stable identity for a dictation targetID.
+    var situationID: Int { situation.id }
 
     private var conversationID: Int64?
     private var sessionID: String?

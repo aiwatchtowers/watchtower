@@ -78,6 +78,10 @@ func TestToolsList(t *testing.T) {
 		"list_jira_issues", "get_jira_issue",
 		"list_messages",
 		"list_transcripts", "get_transcript",
+		"list_ideas", "get_idea",
+		"list_situations", "get_situation",
+		"get_task_context",
+		"find_experts",
 		"memory_map", "memory_open", "memory_recall",
 	}
 	for _, name := range want {
@@ -101,8 +105,13 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	}
 	// The memory_ tools are read surfaces over the vault + index; memory_open
 	// additionally bumps memory_node_stats — best-effort usage telemetry, not
-	// domain data — the one deliberate exception to "no writes".
-	readVerbs := map[string]bool{"memory_map": true, "memory_open": true, "memory_recall": true}
+	// domain data — the one deliberate exception to "no writes". find_experts
+	// is a pure read (mechanical SQL + arithmetic over existing tables) that
+	// just doesn't fit the list_/get_ naming.
+	readVerbs := map[string]bool{
+		"memory_map": true, "memory_open": true, "memory_recall": true,
+		"find_experts": true,
+	}
 	for _, tool := range res.Tools {
 		if !strings.HasPrefix(tool.Name, "list_") &&
 			!strings.HasPrefix(tool.Name, "get_") &&
@@ -112,13 +121,21 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	}
 }
 
-// TestNoToolMutatesDatabase is the behavioural read-only guard. Two layers:
-// the session runs over a query_only connection (any write inside a handler
-// errors at the SQLite level), and row counts are compared before/after as a
-// belt-and-braces check. Note the count check alone would not catch an UPDATE;
-// the query_only pragma is the real guarantee.
-func TestNoToolMutatesDatabase(t *testing.T) {
-	database := seedDB(t)
+// guardTables is every table TestNoToolMutatesDatabase seeds and then checks
+// for an unchanged row count across the read-only tool calls.
+var guardTables = []string{
+	"targets", "digests", "tracks", "jira_issues", "calendar_events", "people_cards", "briefings", "workspace",
+	"situations", "situation_signals", "inbox_items", "channels", "users", "messages",
+}
+
+// seedGuardFixture seeds everything TestNoToolMutatesDatabase's calls need to
+// reach their substantive read path, not just return cleanly on an empty
+// database. A tool that degenerates into a permanent soft error (or a
+// happy-path branch that a missing row lets it skip entirely, e.g.
+// find_experts' accumulator never touching GetUserByID/GetLatestPeopleCard)
+// would still pass a guard that only checks row counts.
+func seedGuardFixture(t *testing.T, database *db.DB) {
+	t.Helper()
 	if _, err := database.CreateTarget(db.Target{
 		Text: "guard", Intent: "x", Level: "week", Status: "todo",
 		Priority: "high", Ownership: "mine", SourceType: "manual",
@@ -131,27 +148,87 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 	if _, err := database.UpsertTrack(db.Track{Text: "guard track", Ownership: "mine", Priority: "low"}); err != nil {
 		t.Fatalf("seeding track: %v", err)
 	}
+	if _, err := database.UpsertPeopleCard(db.PeopleCard{
+		UserID: "U1", Summary: "guard person card", Status: "active", PeriodFrom: 1, PeriodTo: 2,
+	}); err != nil {
+		t.Fatalf("seeding people card: %v", err)
+	}
+	db.SeedTestJiraAccount(t, database)
 	if err := database.UpsertJiraIssue(db.JiraIssue{
-		Key: "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "s", Status: "To Do", StatusCategory: "To Do",
-		CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
+		AccountID: 1,
+		Key:       "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "s", Status: "To Do", StatusCategory: "To Do",
+		AssigneeSlackID: "1:U1",
+		CreatedAt:       "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
 	}); err != nil {
 		t.Fatalf("seeding jira issue: %v", err)
 	}
+	seedGuardSituation(t, database)
+	seedGuardExpertsFixture(t, database)
+}
 
-	tables := []string{"targets", "digests", "tracks", "jira_issues", "calendar_events", "people_cards", "briefings", "workspace"}
-	counts := func() map[string]int {
-		m := map[string]int{}
-		for _, tbl := range tables {
-			var n int
-			if err := database.QueryRow("SELECT count(*) FROM " + tbl).Scan(&n); err != nil {
-				t.Fatalf("counting %s: %v", tbl, err)
-			}
-			m[tbl] = n
-		}
-		return m
+// seedGuardSituation gives get_situation a real situation row plus one
+// signal, so GetSituation succeeds and ListSituationSignals actually runs
+// (situations_test.go's TestGetSituationIncludesSignalsAndMissingIdIsSoftError
+// fixture, id 1).
+func seedGuardSituation(t *testing.T, database *db.DB) {
+	t.Helper()
+	if _, err := database.Exec(`INSERT INTO situations (id, title, status, why_matters, summary, chronology)
+		VALUES (1, 'Guard situation', 'open', 'guard the read-only path', 'guard summary', 'guard chronology')`); err != nil {
+		t.Fatalf("seeding situation: %v", err)
 	}
+	if _, err := database.Exec(`INSERT INTO inbox_items (id, trigger_type, channel_id, message_ts, sender_user_id, snippet, status)
+		VALUES (1, 'mention', '1:C1', '111.1', '1:U1', 'guard signal snippet', 'pending')`); err != nil {
+		t.Fatalf("seeding inbox item: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (1, 1)`); err != nil {
+		t.Fatalf("seeding situation signal: %v", err)
+	}
+}
 
-	before := counts()
+// seedGuardExpertsFixture gives find_experts' topic path a channel, a user
+// and a message that "guard" (the topic argument in the calls list) actually
+// matches, so SearchMessages returns a hit and the accumulator's rank()
+// reaches GetUserByID/GetLatestPeopleCard for that user (experts_test.go's
+// seedExpertsFixture shape).
+func seedGuardExpertsFixture(t *testing.T, database *db.DB) {
+	t.Helper()
+	if err := database.UpsertChannel(db.Channel{ID: "1:C1", Name: "guard-channel", Type: "public"}); err != nil {
+		t.Fatalf("seeding channel: %v", err)
+	}
+	if err := database.UpsertUser(db.User{ID: "1:U1", Name: "guardian", Email: "guardian@example.com"}); err != nil {
+		t.Fatalf("seeding user: %v", err)
+	}
+	if err := database.UpsertMessage(db.Message{
+		ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "the guard clause needs review", RawJSON: "{}",
+	}); err != nil {
+		t.Fatalf("seeding message: %v", err)
+	}
+}
+
+// countRows snapshots the row count of every table in tables, keyed by name.
+func countRows(t *testing.T, database *db.DB, tables []string) map[string]int {
+	t.Helper()
+	m := map[string]int{}
+	for _, tbl := range tables {
+		var n int
+		if err := database.QueryRow("SELECT count(*) FROM " + tbl).Scan(&n); err != nil {
+			t.Fatalf("counting %s: %v", tbl, err)
+		}
+		m[tbl] = n
+	}
+	return m
+}
+
+// TestNoToolMutatesDatabase is the behavioural read-only guard. Two layers:
+// the session runs over a query_only connection (any write inside a handler
+// errors at the SQLite level), and row counts are compared before/after as a
+// belt-and-braces check. Note the count check alone would not catch an UPDATE;
+// the query_only pragma is the real guarantee.
+func TestNoToolMutatesDatabase(t *testing.T) {
+	database := seedDB(t)
+	seedGuardFixture(t, database)
+
+	before := countRows(t, database, guardTables)
 	cs := newTestSession(t, database)
 	// The session connection must reject direct writes — proves query_only is on.
 	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WGUARD', 'w', 1)`); err == nil {
@@ -165,15 +242,27 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
 		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
 		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "list_situations"}, {Name: "get_situation", Arguments: map[string]any{"id": 1}},
+		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
+		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},
 	}
 	for _, c := range calls {
-		if _, err := cs.CallTool(ctx, &c); err != nil {
+		res, err := cs.CallTool(ctx, &c)
+		if err != nil {
 			t.Fatalf("call %s: %v", c.Name, err)
 		}
+		// A tool that degenerated into a permanent soft error would still
+		// leave row counts untouched — this is the check that actually
+		// proves each tool's read path still works, not just that it
+		// doesn't write.
+		if res.IsError {
+			t.Errorf("call %s returned an error result: %s", c.Name, textContent(t, res))
+		}
 	}
-	after := counts()
+	after := countRows(t, database, guardTables)
 
-	for _, tbl := range tables {
+	for _, tbl := range guardTables {
 		if before[tbl] != after[tbl] {
 			t.Errorf("table %s row count changed %d -> %d after read tools ran", tbl, before[tbl], after[tbl])
 		}

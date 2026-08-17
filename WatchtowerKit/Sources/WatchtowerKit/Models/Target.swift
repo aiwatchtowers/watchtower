@@ -16,7 +16,7 @@ public struct TargetSubItem: Codable, Identifiable, Equatable {
         self.dueDate = dueDate
     }
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text, done
         case dueDate = "due_date"
     }
@@ -53,7 +53,7 @@ public struct TargetNote: Codable, Identifiable, Equatable {
         self.createdAt = createdAt
     }
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case createdAt = "created_at"
     }
@@ -84,7 +84,7 @@ public struct TargetNextStep: Codable, Equatable {
     public var urgencyDetail: String
     public var actions: [TargetNextStepAction]
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case title, rationale, urgency
         case urgencyDetail = "urgency_detail"
         case actions
@@ -141,7 +141,7 @@ public struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equat
     public let nextStep: String        // JSON, "" when not yet generated
     public let nextStepAt: String      // when nextStep was generated
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id
         case text
         case intent

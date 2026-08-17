@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct TrainingView: View {
     @Environment(AppState.self) private var appState
@@ -12,7 +13,6 @@ struct TrainingView: View {
     @State private var tuneOutput: String = ""
     @State private var tuneError: String?
     @State private var showTuneOutput = false
-    @State private var importanceCorrectionCount: Int = 0
     @State private var showManualTune = false
 
     private var totalFeedback: Int { feedbackStats.reduce(0) { $0 + $1.total } }
@@ -135,16 +135,6 @@ struct TrainingView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
                 }
-            }
-
-            // Importance corrections
-            TrainingStatCard(title: "Corrections", icon: "arrow.up.arrow.down", accent: .orange) {
-                Text("\(importanceCorrectionCount)")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(importanceCorrectionCount > 0 ? .orange : .secondary)
-                Text(importanceCorrectionCount > 0 ? "pending" : "none")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             // Active prompts
@@ -372,14 +362,10 @@ struct TrainingView: View {
             let loadedRecent = (try? await db.dbPool.read { db in
                 try FeedbackQueries.getAllFeedback(db, limit: 20)
             }) ?? []
-            let corrections = (try? await db.dbPool.read { db in
-                try ImportanceCorrectionQueries.allCorrections(db)
-            }) ?? [:]
             await MainActor.run {
                 prompts = loadedPrompts
                 feedbackStats = loadedStats
                 recentFeedback = loadedRecent
-                importanceCorrectionCount = corrections.count
                 isLoading = false
             }
         }

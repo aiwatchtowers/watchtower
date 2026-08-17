@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// The actual CLI-driving run loop for `TargetExtractCenter`, split out of
 /// `TargetExtractLifecycle.swift` — combined with start/cancel/retry/dismiss

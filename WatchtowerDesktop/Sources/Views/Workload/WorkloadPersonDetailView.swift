@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct WorkloadPersonDetailView: View {
     let entry: WorkloadViewModel.WorkloadEntry

@@ -7,6 +7,14 @@ public struct Decision: Codable, Identifiable, Equatable {
     public let channelID: String?
     public let importance: String?  // "high", "medium", "low" — nil defaults to "medium"
 
+    public init(text: String, by: String?, messageTS: String?, channelID: String?, importance: String?) {
+        self.text = text
+        self.by = by
+        self.messageTS = messageTS
+        self.channelID = channelID
+        self.importance = importance
+    }
+
     // M2: stable ID using hash to avoid collisions from underscore separator
     public var id: Int { var hasher = Hasher(); hasher.combine(text); hasher.combine(by); hasher.combine(messageTS); return hasher.finalize() }
 

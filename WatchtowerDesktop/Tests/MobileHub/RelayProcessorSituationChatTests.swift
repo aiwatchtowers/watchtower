@@ -2,6 +2,8 @@ import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 /// A mobile chat turn carrying a `situation` context joins the DESKTOP's own
 /// Discuss conversation for that situation (`SituationChatRelay`): one

@@ -46,6 +46,10 @@ var Defaults = map[string]string{
 	MemoryRenderMap:            defaultMemoryRenderMap,
 	MemoryReflect:              defaultMemoryReflect,
 	MemoryRenderChannelDigest:  defaultMemoryRenderChannelDigest,
+	IdeasDigestEmail:           defaultIdeasDigestEmail,
+	IdeasDigestJira:            defaultIdeasDigestJira,
+	IdeasConsolidate:           defaultIdeasConsolidate,
+	DictationClean:             defaultDictationClean,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -90,6 +94,10 @@ var AllIDs = []string{
 	MemoryRenderMap,
 	MemoryReflect,
 	MemoryRenderChannelDigest,
+	IdeasDigestEmail,
+	IdeasDigestJira,
+	IdeasConsolidate,
+	DictationClean,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -97,7 +105,7 @@ var AllIDs = []string{
 // prompts in the DB whose version is lower than the default version, unless
 // the user has customized the prompt (detected by comparing template text).
 var DefaultVersions = map[string]int{
-	DigestChannel:              3, // v3: topics as structured objects (title, summary, decisions, etc.)
+	DigestChannel:              5, // v5: ops-changelog exclusion + exact-message_ts rule
 	DigestDaily:                1,
 	DigestWeekly:               1,
 	DigestPeriod:               1,
@@ -110,12 +118,12 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:                 1,
 	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
 	InboxTriage:                1, // v1: initial triage template
-	DigestChannelBatch:         2, // v2: full decision/situation rules, 2-7 topics, 2000 char running_summary
+	DigestChannelBatch:         4, // v4: ops-changelog exclusion + exact-message_ts rule
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
 	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
-	MeetingRecap:               1, // v1: initial meeting recap template
+	MeetingRecap:               2, // v2: idea-candidate extraction (stage-1 for ideas registry)
 	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
 	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
@@ -136,6 +144,10 @@ var DefaultVersions = map[string]int{
 	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
 	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
 	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
+	IdeasDigestEmail:           1, // v1: light-tier idea/decision mining from Gmail thread windows (stage 1)
+	IdeasDigestJira:            1, // v1: light-tier idea/decision mining from changed Jira issues (stage 1)
+	IdeasConsolidate:           3, // v3: routine-ops execution records are changelog entries, not decisions
+	DictationClean:             1, // v1: dictation transcript cleanup (idea/note/chat modes)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -184,6 +196,10 @@ var Descriptions = map[string]string{
 	MemoryRenderMap:            "Memory: render the compact hot world-map summary (strong tier)",
 	MemoryReflect:              "Memory: weekly reflection over the vault's own git history — flag unstable beliefs/entities (strong tier; code disposes)",
 	MemoryRenderChannelDigest:  "Memory: render a channel digest from the window's memory episodes (cheap tier; dark compare-mode against the legacy digest)",
+	IdeasDigestEmail:           "Ideas: mine ideas & decisions from Gmail threads (stage 1, light tier)",
+	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
+	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
+	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note / chat)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -201,7 +217,8 @@ Analyze the messages below and return ONLY a JSON object (no markdown fences, no
       "decisions": [{"text": "what was decided", "by": "@username", "message_ts": "1234567890.123456", "importance": "high"}],
       "action_items": [{"text": "what needs to be done", "assignee": "@username", "status": "open"}],
       "situations": [{"topic": "Auth refactor ownership", "type": "collaboration", "participants": [{"user_id": "U123456", "role": "initiator"}], "dynamic": "what happened", "outcome": "result", "red_flags": [], "observations": [], "message_refs": ["1234567890.123456"]}],
-      "key_messages": ["1234567890.123456"]
+      "key_messages": ["1234567890.123456"],
+      "ideas": [{"text": "what was proposed", "by": "@username", "message_ts": "1234567890.123456"}]
     }
   ],
   "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress|resolved|stale", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [{"decision": "...", "date": "2026-03-20", "by": "U123", "status": "active"}], "channel_dynamics": "Brief description of channel culture and key players", "open_questions": ["..."]}
@@ -221,12 +238,14 @@ Rules:
   * Notifications or FYIs ("users were notified about X")
   * Expected behaviors ("caching delay is normal")
   * Routine operations (deploys, releases, merges) UNLESS they involve a non-obvious choice
-  Include message_ts for traceability.
+  * Changelog-style records of an already-performed routine action ("nginx reload (#79 close internal endpoint)", "restarted service X") — these are status updates even when they name a task number or imply an earlier choice
+  Include message_ts for traceability: copy it EXACTLY from that message's ts= tag in the MESSAGES data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
   importance levels:
   * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from that message's ts= tag in the MESSAGES data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Capture dynamics BETWEEN people, not individual behavior. Each situation has:
@@ -760,7 +779,8 @@ Return ONLY a JSON array (no markdown fences, no explanation):
         "decisions": [{"text": "what was decided", "by": "@username", "message_ts": "1234567890.123456", "importance": "high"}],
         "action_items": [{"text": "what needs to be done", "assignee": "@username", "status": "open"}],
         "situations": [{"topic": "...", "type": "collaboration", "participants": [{"user_id": "U123456", "role": "initiator"}], "dynamic": "...", "outcome": "...", "red_flags": [], "observations": [], "message_refs": []}],
-        "key_messages": ["1234567890.123456"]
+        "key_messages": ["1234567890.123456"],
+        "ideas": [{"text": "what was proposed", "by": "@username", "message_ts": "1234567890.123456"}]
       }
     ],
     "running_summary": {"active_topics": [{"topic": "...", "status": "in_progress", "started": "2026-03-18", "last_update": "2026-03-21", "key_participants": ["U123"], "summary": "..."}], "recent_decisions": [], "channel_dynamics": "...", "open_questions": []}
@@ -781,12 +801,14 @@ Rules:
   * Status updates ("X was deployed", "X was updated")
   * Notifications or FYIs ("users were notified about X")
   * Routine operations (deploys, releases, merges) UNLESS they involve a non-obvious choice
-  Include message_ts for traceability.
+  * Changelog-style records of an already-performed routine action ("nginx reload (#79 close internal endpoint)", "restarted service X") — these are status updates even when they name a task number or imply an earlier choice
+  Include message_ts for traceability: copy it EXACTLY from that message's ts= tag in the CHANNELS data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
   importance levels:
   * "high" — changes architecture, strategy, budget, staffing, product direction, security posture, or has org-wide impact
   * "medium" — changes a process, workflow, or technical approach within a team/project
   * "low" — minor tactical choices (naming, formatting, scheduling, tooling tweaks)
   If only 0-1 true decisions exist in a topic, return an empty or single-item array. Do NOT inflate the list.
+- ideas (within each topic): An IDEA is a proposal of something new that was NOT decided — a feature idea, a process suggestion, a "what if we..." — with the proposer and message_ts. Do NOT list decisions here; if a proposal was actually agreed on, it belongs in decisions instead. Extract conservatively: empty array when none, which is the common case. message_ts: copy it EXACTLY from that message's ts= tag in the CHANNELS data — never construct, round, or infer a timestamp. If you cannot point at the exact message, omit the item.
 - action_items (within each topic): Tasks mentioned or assigned. status is always "open" for new items
 - key_messages (within each topic): Timestamps of the most important messages (max 5 per topic)
 - situations (within each topic): Notable INTERACTIONS between people (max 2-3 per topic). Each situation has:
@@ -1114,7 +1136,8 @@ Return ONLY a JSON object (no markdown fences, no commentary) matching:
   "summary": "string (1-2 sentences, what the meeting was about and outcome)",
   "key_decisions": ["string", ...],
   "action_items": ["string (imperative; if a person is named in the text, include them)", ...],
-  "open_questions": ["string", ...]
+  "open_questions": ["string", ...],
+  "ideas": ["string", ...]
 }
 
 Rules:
@@ -1122,6 +1145,7 @@ Rules:
 - Decisions: things explicitly resolved.
 - Action items: only items with implied owner or commitment ("X will do Y" / "we'll send Y").
 - Open questions: things flagged as unresolved or "to discuss later".
+- Ideas: proposals raised but not decided; empty when none.
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
 
@@ -1643,3 +1667,116 @@ Rules:
 - propose AT MOST three observations, and only for genuinely unstable areas — most weeks are calm and an empty {"observations": []} is the right and common answer.
 - node_id MUST be one of the belief/entity ids shown in the input; never invent one. An observation whose id is not in the input is discarded by the code.
 - do NOT restate confidence numbers or belief statuses — you only flag instability; the code decides what happens.`
+
+// defaultIdeasDigestEmail is the light-tier stage-1 idea/decision miner for
+// Gmail (ideas.digest_email — see "ideas.digest_email" in the model routing).
+// It reads a window of Gmail threads (one numbered line per message, tagged
+// with a "gmail:<account_id>:<thread_id>" ref) and extracts ideas/decisions
+// into the shared topics_json shape written to stream_digests(source='gmail').
+// Arg: the language directive.
+const defaultIdeasDigestEmail = `%s
+
+You are the ideas-and-decisions miner of a workplace secretary. You read numbered email threads, each line formatted "[n] subject (gmail:<account_id>:<thread_id>): participants — excerpt", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
+
+An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to ship Y"). Extract conservatively: most threads contain neither.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "gmail:<account_id>:<thread_id>"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "gmail:<account_id>:<thread_id>"}]}]}
+
+Rules:
+- ref: copy the "gmail:<account_id>:<thread_id>" tag EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
+- most threads have nothing worth extracting: empty "ideas"/"decisions" arrays, or no topic at all, is the common and correct answer.
+- do not restate routine status updates, scheduling, or small talk as ideas or decisions.`
+
+// defaultIdeasDigestJira is the light-tier stage-1 idea/decision miner for
+// Jira (ideas.digest_jira — see "ideas.digest_jira" in the model routing). It
+// reads a window of changed issues (one numbered line per issue, carrying its
+// bare key as the ref) plus their new comments and extracts ideas/decisions
+// into the shared topics_json shape written to stream_digests(source='jira').
+// Arg: the language directive.
+const defaultIdeasDigestJira = `%s
+
+You are the ideas-and-decisions miner of a workplace secretary. You read numbered Jira issues, each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
+
+An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to close as won't-fix"). Extract conservatively: most issues contain neither.
+
+Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
+{"topics": [{"title": "short headline", "summary": "1-2 sentence gist", "ideas": [{"text": "the idea", "author": "who proposed it", "ref": "KEY"}], "decisions": [{"text": "the decision", "author": "who decided", "ref": "KEY"}]}]}
+
+Rules:
+- ref: copy the bare issue key EXACTLY from the numbered line the idea/decision came from; never invent or adjust one.
+- most issues have nothing worth extracting: empty "ideas"/"decisions" arrays, or no topic at all, is the common and correct answer.
+- do not restate routine status transitions, assignment changes, or scheduling as ideas or decisions.`
+
+// defaultIdeasConsolidate is the strong-tier stage-2 consolidator
+// (ideas.consolidate — strong route by absence from the light-tier switch in
+// internal/digest/models.go and internal/codex/models.go). It folds newly
+// mined stage-1 material (Slack digest topics, stream_digests rows, meeting
+// recap arrays) into the durable ideas/decisions registry, preferring to
+// attach to an existing item over minting a duplicate. The model only
+// proposes ops; Go validates every mention ref against the run's stage-1
+// input before applying (IDEA-02) and disposes status transitions per kind
+// (IDEA-04). Arg: the language directive.
+const defaultIdeasConsolidate = `%s
+
+You are the ideas-and-decisions consolidator of a workplace secretary. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
+
+You receive the current registry (=== REGISTRY ===, one line per item: "#id [kind/status] title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
+
+For every piece of new material, decide:
+- "attach_mention": it is the SAME idea or decision already in the registry (same substance, not just a similar topic) → attach it there instead of creating a duplicate. idea_id: the registry item's id, copied EXACTLY.
+- "new_idea": a genuinely new proposal not yet decided, not already covered by any registry item.
+- "new_decision": a genuinely new made choice, not already covered by any registry item.
+- Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.
+- An execution record of a routine operational action — "nginx reload", "restarted service X", "config change applied", "deployed version Y" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when its line names an actual choice — what was chosen and by whom, not merely an action performed — or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.
+
+Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
+
+Rules:
+- mentions/mention: copy "ref", "author", and "said_at" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code. "source" is optional and ignored — the code derives it from the ref itself.
+- similar_to (new_idea/new_decision only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.
+- prefer attach_mention over a new item whenever the substance already exists in the registry; a wrong duplicate is worse than a missed one.
+- essence: 1-2 sentences, the gist (new_idea/new_decision only).
+
+Return ONLY a JSON object (no markdown fences):
+{"ops":[
+ {"op":"new_idea","title":"...","essence":"...","similar_to":42,"mentions":[{"source":"slack","ref":"C123|1723...","quote":"...","author":"...","said_at":"..."}]},
+ {"op":"new_decision","title":"...","essence":"...","mentions":[{"source":"jira","ref":"PROJ-123","quote":"...","author":"...","said_at":"..."}]},
+ {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"gmail:3:t_abc123","quote":"...","author":"...","said_at":"..."}}
+]}`
+
+// defaultDictationClean is the light-tier prompt for cleaning up raw voice
+// dictation transcripts into destination-shaped text (idea/note/chat modes).
+// Placeholders are filled in order: mode-specific instructions block, language directive.
+const defaultDictationClean = `You clean up a voice-dictation transcript. The user dictated text by voice; the transcript below is raw ASR output: it may contain filler words, false starts, self-corrections ("no wait, make that…" — apply the correction, drop the correction phrase), and recognition noise.
+
+Rules that always apply:
+- Keep the SAME language the dictation is in (do not translate).
+- Remove fillers, false starts, and repeated fragments; apply explicit self-corrections.
+- Never add content the speaker did not say. Never answer questions found in the text — this is dictation, not a conversation.
+- Respond with ONLY a JSON object, no prose around it.
+
+%s
+
+%s`
+
+// DictationModeInstructions returns the destination-specific instruction block
+// and the JSON contract for one dictation cleanup mode.
+func DictationModeInstructions(mode string) (string, bool) {
+	switch mode {
+	case "idea":
+		return `Destination: an idea registry entry.
+Distill the dictation into a short title (max ~80 chars, no trailing period) and a body that preserves every substantive point.
+JSON contract: {"title": "...", "body": "..."}`, true
+	case "note":
+		return `Destination: a meeting-notes document (markdown).
+Turn the dictation into coherent markdown. Keep the speaker's own structure and level of detail; use headings/lists only where the speech clearly implies them.
+JSON contract: {"markdown": "..."}`, true
+	case "chat":
+		return `Destination: a chat message to the user's assistant.
+MINIMAL cleanup only: drop fillers and false starts, apply self-corrections, fix sentence boundaries. Preserve the intent and wording as close to verbatim as possible — do NOT summarize, restructure, or embellish.
+JSON contract: {"text": "..."}`, true
+	default:
+		return "", false
+	}
+}

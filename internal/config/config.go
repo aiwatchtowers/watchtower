@@ -58,6 +58,23 @@ type InboxConfig struct {
 	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
 }
 
+// IdeasConfig holds settings for the ideas & decisions registry pipeline
+// (internal/ideas) — stage-1 substrate prep (Gmail/Jira digests) plus the
+// stage-2 consolidator (InboxConfig shape precedent).
+type IdeasConfig struct {
+	Enabled                 bool `mapstructure:"enabled"`                     // enable the ideas registry pipeline (default: true — headline feature, not a dark experiment)
+	MineIntervalHours       int  `mapstructure:"mine_interval_hours"`         // throttle between consolidator runs (default: 6, the phasePeopleCards throttle precedent)
+	MaxCommentIssuesPerSync int  `mapstructure:"max_comment_issues_per_sync"` // max Jira issues fetched for new comments per sync pass (default: 50)
+	MaxPromptChars          int  `mapstructure:"max_prompt_chars"`            // truncate stage-1/consolidator input assembly beyond this (default: 60000)
+}
+
+// StreamsConfig controls the stage-1 Gmail/Jira stream pre-digests
+// (generation only; the Ideas consolidator is gated by ideas.enabled).
+type StreamsConfig struct {
+	Enabled       bool `mapstructure:"enabled"`        // enable the streams pipeline (default: true)
+	IntervalHours int  `mapstructure:"interval_hours"` // throttle between stream digest runs (default: 6)
+}
+
 // FeedConfig holds settings for the dashboard feed publisher (internal/feed).
 type FeedConfig struct {
 	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
@@ -87,7 +104,13 @@ type CatchupCaps struct {
 
 // TracksConfig holds settings for the tracks extraction pipeline.
 type TracksConfig struct {
-	MinMessages int `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+	Enabled     bool `mapstructure:"enabled"`      // enable tracks extraction (default: true)
+	MinMessages int  `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+}
+
+// PeopleConfig holds settings for the people-cards pipeline.
+type PeopleConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable people-cards extraction (default: true)
 }
 
 // CalendarConfig holds Google Calendar integration settings.
@@ -177,10 +200,16 @@ type TargetsResolverConfig struct {
 	ActiveSnapshotLimit int  `mapstructure:"active_snapshot_limit"`
 }
 
+// TargetsNextStepConfig holds settings for the targets next step feature.
+type TargetsNextStepConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable next step feature (default: true)
+}
+
 // TargetsConfig holds settings for the targets extraction and resolution pipeline.
 type TargetsConfig struct {
 	Extract  TargetsExtractConfig  `mapstructure:"extract"`
 	Resolver TargetsResolverConfig `mapstructure:"resolver"`
+	NextStep TargetsNextStepConfig `mapstructure:"next_step"`
 }
 
 // TranscriptsConfig holds settings for meeting transcript storage.
@@ -307,9 +336,12 @@ type Config struct {
 	Digest          DigestConfig                `mapstructure:"digest"`
 	Briefing        BriefingConfig              `mapstructure:"briefing"`
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
+	Ideas           IdeasConfig                 `mapstructure:"ideas"`
+	Streams         StreamsConfig               `mapstructure:"streams"`
 	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
+	People          PeopleConfig                `mapstructure:"people"`
 	Calendar        CalendarConfig              `mapstructure:"calendar"`
 	Gmail           GmailConfig                 `mapstructure:"gmail"`
 	Imap            ImapConfig                  `mapstructure:"imap"`
@@ -363,11 +395,20 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
 	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
+	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
+	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
+	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)
+	v.SetDefault("ideas.max_prompt_chars", DefaultIdeasMaxPromptChars)
+	v.SetDefault("streams.enabled", DefaultStreamsEnabled)
+	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
 	v.SetDefault("feed.enabled", true)
 	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
 	v.SetDefault("dashboard.max_compose_signals", DefaultDashboardMaxComposeSignals)
+	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
+	v.SetDefault("people.enabled", DefaultPeopleEnabled)
+	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
 	v.SetDefault("catchup.max_age_days", 30)
 	v.SetDefault("catchup.caps.digests", 150)
 	v.SetDefault("catchup.caps.tracks", 80)

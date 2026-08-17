@@ -217,8 +217,9 @@ func (m *mockMCPClient) GetJiraIssue(ctx context.Context, key string) (*db.JiraI
 func TestJiraResolver_LocalHit(t *testing.T) {
 	d := newTestDB(t)
 
-	_, err := d.Exec(`INSERT INTO jira_issues(key, id, project_key, summary, status, priority, status_category, is_deleted, created_at, updated_at, synced_at)
-		VALUES ('PROJ-1','1001','PROJ','Fix the bug','In Progress','High','in_progress',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
+	db.SeedTestJiraAccount(t, d)
+	_, err := d.Exec(`INSERT INTO jira_issues(account_id, key, id, project_key, summary, status, priority, status_category, is_deleted, created_at, updated_at, synced_at)
+		VALUES (1,'PROJ-1','1001','PROJ','Fix the bug','In Progress','High','in_progress',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
 	if err != nil {
 		t.Fatalf("insert jira issue: %v", err)
 	}

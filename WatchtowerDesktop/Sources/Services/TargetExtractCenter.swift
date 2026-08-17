@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// App-wide, single-slot registry for the "Extract with AI" target-extraction
 /// call. It owns its own cancellable `Task`, so the extraction — and its result

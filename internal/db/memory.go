@@ -1308,26 +1308,33 @@ func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit 
 	return out, rows.Err()
 }
 
-// MemoryJiraWatermark reads the Jira episode-extraction watermark — the FIFTH
-// extraction watermark (see 00040), unix seconds of the newest fully-committed
-// parsed jira_issues.updated_at. A fresh workspace reads 0.
-func (db *DB) MemoryJiraWatermark() (float64, error) {
+// MemoryJiraWatermark reads the Jira episode-extraction watermark for
+// accountID — the FIFTH extraction watermark (see 00040), unix seconds of the
+// newest fully-committed parsed jira_issues.updated_at. Moved onto
+// jira_accounts by migration 00049 (one per connected site, the
+// MemoryGmailWatermark precedent — a shared watermark would let an account
+// added later swallow the others' windows); a missing account reads as 0.
+func (db *DB) MemoryJiraWatermark(accountID int64) (float64, error) {
 	var ts float64
-	err := db.QueryRow(`SELECT COALESCE(memory_jira_last_extracted_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	err := db.QueryRow(`SELECT memory_jira_last_extracted_ts FROM jira_accounts WHERE id = ?`, accountID).Scan(&ts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("getting memory jira watermark: %w", err)
+		return 0, fmt.Errorf("getting memory jira watermark for account %d: %w", accountID, err)
 	}
 	return ts, nil
 }
 
-// SetMemoryJiraWatermark advances the Jira extraction watermark. Callers only
-// move it behind fully-committed issue episodes (MEM-04, adapted).
-func (db *DB) SetMemoryJiraWatermark(ts float64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_jira_last_extracted_ts = ?`, ts); err != nil {
-		return fmt.Errorf("setting memory jira watermark: %w", err)
+// SetMemoryJiraWatermark advances the Jira extraction watermark for accountID.
+// Callers only move it behind fully-committed issue episodes (MEM-04, adapted).
+func (db *DB) SetMemoryJiraWatermark(accountID int64, ts float64) error {
+	res, err := db.Exec(`UPDATE jira_accounts SET memory_jira_last_extracted_ts = ? WHERE id = ?`, ts, accountID)
+	if err != nil {
+		return fmt.Errorf("setting memory jira watermark for account %d: %w", accountID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting memory jira watermark: no jira_accounts row %d", accountID)
 	}
 	return nil
 }
@@ -1352,6 +1359,15 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 // jiraUpdatedLayout is Jira Cloud's updated_at format ("+0100" offset — no
 // colon, so SQLite's strftime cannot parse it; all time math happens in Go).
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
+
+// FormatJiraTime renders t the way Jira Cloud writes jira_issues.updated_at
+// and jira_comments.created_at. Anything compared against those columns with
+// SQL's plain string ordering MUST be formatted this way: bare RFC3339 puts a
+// 'Z' (0x5A) where Jira puts '.' (0x2E), so an RFC3339 bound sorts ABOVE every
+// Jira timestamp in the same second and silently excludes it.
+func FormatJiraTime(t time.Time) string {
+	return t.Format(jiraUpdatedLayout)
+}
 
 // ParseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
 // an unparseable value — the caller skips the row (the Gmail internal_date
@@ -1389,12 +1405,12 @@ type JiraExtractIssue struct {
 // small (low thousands), a full scan per run is fine — the whole filtered set
 // is already in memory before the cap, so the drain is a plain Go slice
 // extension, no second query needed (unlike the Slack/Gmail two-query drain).
-func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
+func (db *DB) ListJiraIssuesForExtract(accountID int64, sinceUnix int64, limit int) ([]JiraExtractIssue, error) {
 	rows, err := db.Query(`SELECT key, project_key, summary, description_text, issue_type,
 		status, status_category, priority, assignee_display_name, assignee_slack_id,
 		reporter_display_name, reporter_slack_id, sprint_name, epic_key, due_date,
 		story_points, updated_at, resolved_at
-		FROM jira_issues WHERE is_deleted = 0`)
+		FROM jira_issues WHERE account_id = ? AND is_deleted = 0`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issues for extract: %w", err)
 	}
@@ -1432,9 +1448,9 @@ func (db *DB) ListJiraIssuesForExtract(sinceUnix int64, limit int) ([]JiraExtrac
 }
 
 // MaxJiraUpdatedUnix is the no-backfill initializer's bound: the newest parsed
-// updated_at among non-deleted issues, 0 when none exist or parse.
-func (db *DB) MaxJiraUpdatedUnix() (int64, error) {
-	rows, err := db.Query(`SELECT updated_at FROM jira_issues WHERE is_deleted = 0`)
+// updated_at among one account's non-deleted issues, 0 when none exist or parse.
+func (db *DB) MaxJiraUpdatedUnix(accountID int64) (int64, error) {
+	rows, err := db.Query(`SELECT updated_at FROM jira_issues WHERE account_id = ? AND is_deleted = 0`, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("scanning jira updated_at for max: %w", err)
 	}
@@ -1482,21 +1498,26 @@ const gmailTSUnixExpr = `CAST(strftime('%s', internal_date) AS INTEGER)`
 // reloads with a strict >, which would permanently skip the unloaded rows of
 // that second — so when the limit cuts inside a second this query extends
 // past the limit to include ALL rows sharing the last loaded second (overshoot
-// at most one second of mail).
+// at most one second of mail). beforeTS is an optional upper bound on the
+// decoded internal_date (0 is unbounded — parity with the pre-bound
+// behavior). The boundary-drain query below needs no beforeTS of its own
+// (GB12, the ListJiraIssuesUpdatedSince precedent): the boundary second
+// itself already satisfied the bound in the main query, so every row
+// sharing it does too.
 //
 // gmail_messages is a migration-guaranteed base table (00016), so a query
 // failure propagates as a genuine error (freezing the Gmail watermark) rather
 // than being masked as an empty read.
-func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS float64, limit int) ([]GmailExtractMessage, error) {
+func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
-	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, limit)
+	out, err := db.queryGmailExtractMessages(accountID, ">", sinceTS, beforeTS, limit)
 	if err != nil || len(out) < limit {
 		return out, err
 	}
 	boundary := out[len(out)-1].TSUnix
-	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, -1) // LIMIT -1: unbounded
+	full, err := db.queryGmailExtractMessages(accountID, "=", boundary, 0, -1) // LIMIT -1: unbounded
 	if err != nil {
 		return nil, err
 	}
@@ -1509,18 +1530,27 @@ func (db *DB) ListGmailThreadsForExtract(accountID int64, sinceTS float64, limit
 
 // queryGmailExtractMessages runs the gmail-extract select for accountID with
 // the given comparison operator (">" or "="; never user input) against the
-// decoded internal_date. The ORDER BY ends in id (part of the gmail_messages
-// primary key) so the ordering is fully deterministic within a same-second
-// group, which the boundary-drain above relies on. gmail_messages is a
+// decoded internal_date, plus an optional beforeTS upper bound (0 is
+// unbounded). The ORDER BY ends in id (part of the gmail_messages primary
+// key) so the ordering is fully deterministic within a same-second group,
+// which the boundary-drain above relies on. gmail_messages is a
 // migration-guaranteed base table, so a query failure propagates rather than
 // being masked.
-func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg float64, limit int) ([]GmailExtractMessage, error) {
-	rows, err := db.Query(`
-		SELECT id, thread_id, subject, from_email, from_name, body_text, `+gmailTSUnixExpr+`
+func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg, beforeTS float64, limit int) ([]GmailExtractMessage, error) {
+	query := `
+		SELECT id, thread_id, subject, from_email, from_name, body_text, ` + gmailTSUnixExpr + `
 		FROM gmail_messages
-		WHERE account_id = ? AND internal_date != '' AND `+gmailTSUnixExpr+` `+op+` ?
-		ORDER BY `+gmailTSUnixExpr+`, id
-		LIMIT ?`, accountID, tsArg, limit)
+		WHERE account_id = ? AND internal_date != '' AND ` + gmailTSUnixExpr + ` ` + op + ` ?`
+	args := []any{accountID, tsArg}
+	if beforeTS != 0 {
+		query += ` AND ` + gmailTSUnixExpr + ` <= ?`
+		args = append(args, beforeTS)
+	}
+	query += `
+		ORDER BY ` + gmailTSUnixExpr + `, id
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing gmail threads for extract: %w", err)
 	}

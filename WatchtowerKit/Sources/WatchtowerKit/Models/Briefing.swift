@@ -13,7 +13,7 @@ public struct AttentionItem: Decodable, Identifiable, Equatable {
     public let suggestTrack: Bool? // swiftlint:disable:this discouraged_optional_boolean
     public let suggestTask: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case sourceType = "source_type"
         case sourceID = "source_id"
@@ -58,7 +58,7 @@ public struct YourDayItem: Decodable, Identifiable, Equatable {
     public let status: String?
     public let ownership: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case trackID = "track_id"
         case taskID = "task_id"
@@ -82,7 +82,7 @@ public struct WhatHappenedItem: Decodable, Identifiable, Equatable {
     public let itemType: String?
     public let importance: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case digestID = "digest_id"
         case channelName = "channel_name"
@@ -104,7 +104,7 @@ public struct TeamPulseItem: Decodable, Identifiable, Equatable {
     public let signalType: String?
     public let detail: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case userID = "user_id"
         case signalType = "signal_type"
@@ -123,7 +123,7 @@ public struct CoachingItem: Decodable, Identifiable, Equatable {
     public let relatedUserID: String?
     public let category: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text
         case relatedUserID = "related_user_id"
         case category
@@ -155,7 +155,7 @@ public struct Briefing: FetchableRecord, Decodable, Identifiable, Equatable {
     public let readAt: String?
     public let createdAt: String
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id, date, role, attention, coaching, model
         case userID = "user_id"
         case yourDay = "your_day"

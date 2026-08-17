@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 @MainActor
 @Observable
@@ -18,6 +19,9 @@ final class SidebarCountsViewModel {
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
     var memoryDisputedCount: Int = 0
+
+    /// Ideas & Decisions awaiting owner review — freshly proposed, or flagged.
+    var ideasCount: Int = 0
 
     /// Pending themes of the active Catch-Up review session, or nil when no
     /// session is active. When present, it drives the Catch-Up badge.
@@ -57,7 +61,7 @@ final class SidebarCountsViewModel {
             let observation = ValueObservation.tracking { db -> [Int] in
                 let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
                               "catchup_sessions", "catchup_themes", "situations",
-                              "memory_dispute_flags"]
+                              "memory_dispute_flags", "ideas"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -91,6 +95,7 @@ final class SidebarCountsViewModel {
         let inboxHighPriorityCount: Int
         var situationsCount: Int
         var memoryDisputedCount: Int
+        var ideasCount: Int
         var pendingThemeCount: Int?
 
         static let zero = Self(
@@ -105,6 +110,7 @@ final class SidebarCountsViewModel {
             inboxHighPriorityCount: 0,
             situationsCount: 0,
             memoryDisputedCount: 0,
+            ideasCount: 0,
             pendingThemeCount: nil
         )
     }
@@ -131,12 +137,15 @@ final class SidebarCountsViewModel {
                 let openSituations = try SituationQueries.openCount(db)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
+                // Ideas awaiting review, tolerant of a pre-ideas-registry schema.
+                let ideasForReview = (try? IdeaQueries.countForReview(db)) ?? 0
 
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
                     var zero = Counts.zero
                     zero.pendingThemeCount = activeThemeCount
                     zero.situationsCount = openSituations
                     zero.memoryDisputedCount = disputed
+                    zero.ideasCount = ideasForReview
                     return zero
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
@@ -171,6 +180,7 @@ final class SidebarCountsViewModel {
                     inboxHighPriorityCount: inboxCounts.highPriority,
                     situationsCount: openSituations,
                     memoryDisputedCount: disputed,
+                    ideasCount: ideasForReview,
                     pendingThemeCount: activeThemeCount
                 )
             }
@@ -192,6 +202,7 @@ final class SidebarCountsViewModel {
         inboxHighPriorityCount = c.inboxHighPriorityCount
         situationsCount = c.situationsCount
         memoryDisputedCount = c.memoryDisputedCount
+        ideasCount = c.ideasCount
         pendingThemeCount = c.pendingThemeCount
     }
 }

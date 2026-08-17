@@ -11,6 +11,11 @@ echo "==> Removing config & database..."
 rm -rf ~/.config/watchtower/
 rm -rf ~/.local/share/watchtower/
 
+echo "==> Removing the out-of-bundle CLI copy..."
+# The store the daemon and Desktop-spawned CLI processes run from
+# (CLIBinaryStore). Recordings live next to it and are NOT touched.
+rm -rf ~/Library/Application\ Support/Watchtower/bin/
+
 echo "==> Removing macOS preferences & caches..."
 rm -f ~/Library/Preferences/com.watchtower.desktop.plist
 rm -f ~/Library/Preferences/WatchtowerDesktop.plist

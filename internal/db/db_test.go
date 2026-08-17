@@ -35,6 +35,79 @@ func TestOpenCreatesDirectory(t *testing.T) {
 	assert.NoError(t, err, "directory should have been created")
 }
 
+// TestOpenRestrictsDatabaseFilePermissions: the database holds every synced
+// message, mail body and meeting transcript, so the file is owner-only (0600)
+// inside an owner-only directory (0700). SQLite creates the file itself, at
+// whatever the process umask allows (0644 in practice), so the mode is not
+// something the open path can leave to chance.
+func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "sub", "watchtower.db")
+
+	database, err := Open(dbPath)
+	require.NoError(t, err)
+	defer database.Close()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "database file must be owner-only")
+
+	dirInfo, err := os.Stat(filepath.Dir(dbPath))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), dirInfo.Mode().Perm(), "database directory must be owner-only")
+
+	// The WAL/SHM sidecars carry the same content and are live while the
+	// connection is open.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, serr := os.Stat(dbPath + suffix)
+		require.NoError(t, serr, "WAL mode must have created %s", suffix)
+		assert.Equal(t, os.FileMode(0o600), sidecar.Mode().Perm(), "sidecar %s must be owner-only", suffix)
+	}
+}
+
+// TestOpenTightensPreExistingDatabasePermissions: a database created before
+// the 0600 default existed is brought up to it on its next open. Setting the
+// mode only on newly created files would leave every current installation
+// world-readable forever, since the file is created once and never replaced.
+func TestOpenTightensPreExistingDatabasePermissions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
+
+	database, err := Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	// Put the file back the way a pre-0600 installation has it. Set the mode
+	// explicitly rather than inheriting whatever the test process umask is.
+	require.NoError(t, os.Chmod(dbPath, 0o644))
+
+	reopened, err := Open(dbPath)
+	require.NoError(t, err)
+	defer reopened.Close()
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "a pre-existing 0644 database must be tightened on open")
+}
+
+// TestTightenDBFilePermsMissingSidecars: SQLite removes the WAL and SHM files
+// on a clean close, so tightening a closed database finds neither. That is the
+// ordinary case, not a failure — the database file is still tightened and no
+// sidecar is conjured into existence.
+func TestTightenDBFilePermsMissingSidecars(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "closed.db")
+	require.NoError(t, os.WriteFile(dbPath, []byte("db contents"), 0o600))
+	require.NoError(t, os.Chmod(dbPath, 0o644))
+
+	tightenDBFilePerms(dbPath)
+
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	for _, suffix := range []string{"-wal", "-shm"} {
+		_, serr := os.Stat(dbPath + suffix)
+		assert.True(t, os.IsNotExist(serr), "sidecar %s must not have been created", suffix)
+	}
+}
+
 func TestPragmas(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
@@ -103,12 +176,13 @@ func TestAllTablesExist(t *testing.T) {
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
 		"feed_items", "feed_state", "meeting_transcripts", "voice_prints",
-		"gmail_messages", "google_accounts", "slack_accounts",
+		"gmail_messages", "google_accounts", "slack_accounts", "jira_accounts",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
 		"memory_focus_matches",
+		"ideas", "idea_mentions", "stream_digests", "jira_comments",
 	}
 
 	for _, table := range expectedTables {
@@ -1176,4 +1250,119 @@ func TestSetReadOnlyBlocksWrites(t *testing.T) {
 
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT count(*) FROM users`).Scan(&n), "reads must keep working")
+}
+
+func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
+	database := openTestDB(t)
+
+	id, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Roadmap sync",
+		TranscriptText: "[Я] we decided to postpone the payments migration",
+	})
+	require.NoError(t, err)
+
+	// Insert is indexed.
+	var got int64
+	err = database.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err)
+	assert.Equal(t, id, got)
+
+	// Porter stemming works the same way it does for messages_fts.
+	var n int
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'decide'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Update re-indexes rather than duplicating.
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = ? WHERE id = ?`,
+		"[Я] we shipped the invoicing rewrite", id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "stale text must not survive an update")
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcripts_fts MATCH 'invoicing'`,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Update to empty text leaves no stale row behind (the _au trigger's
+	// INSERT ... SELECT ... WHERE NEW.transcript_text != '' guard).
+	_, err = database.Exec(
+		`UPDATE meeting_transcripts SET transcript_text = '' WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(
+		`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, id,
+	).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "clearing transcript_text must not leave a stale FTS row")
+
+	// Delete removes the row from the index.
+	_, err = database.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	err = database.QueryRow(`SELECT count(*) FROM transcripts_fts`).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+// TestTranscriptsFTSBackfillIndexesPreExistingTranscripts proves the one-shot
+// backfill statement at the tail of 00052 — the line every installation that
+// predates this migration actually depends on, since transcripts have shipped
+// since v74 and every historical meeting is only searchable through that
+// single INSERT ... SELECT. TestTranscriptsFTSIndexesAndTracksRows above only
+// exercises the AFTER INSERT/UPDATE/DELETE triggers on rows written after
+// transcripts_fts already exists; it never runs against a database that had
+// transcripts BEFORE the migration, so it cannot catch a wrong column order
+// or a wrong predicate in the backfill SELECT.
+func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcripts-fts-backfill.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+
+	// Roll back to just before 00052: meeting_transcripts exists (since
+	// 00020) but transcripts_fts and its triggers do not yet, matching a
+	// pre-migration installation.
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 51))
+
+	res, err := d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Roadmap sync", "we decided to postpone the payments migration")
+	require.NoError(t, err)
+	withText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	res, err = d.Exec(
+		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
+		"Empty one", "")
+	require.NoError(t, err)
+	withoutText, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	// Apply 00052: creates transcripts_fts + triggers, then runs the backfill
+	// against the two rows seeded above.
+	require.NoError(t, goose.UpTo(d.DB, "migrations", 52))
+
+	var got int64
+	err = d.QueryRow(
+		`SELECT transcript_id FROM transcripts_fts WHERE transcripts_fts MATCH 'payments'`,
+	).Scan(&got)
+	require.NoError(t, err, "the pre-migration transcript must be findable through transcripts_fts after the backfill")
+	assert.Equal(t, withText, got)
+
+	var n int
+	err = d.QueryRow(`SELECT count(*) FROM transcripts_fts WHERE transcript_id = ?`, withoutText).Scan(&n)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "the empty-text transcript must not be backfilled into transcripts_fts")
 }

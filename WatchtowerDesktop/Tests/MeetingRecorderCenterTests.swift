@@ -1,282 +1,13 @@
 import Foundation
 import XCTest
 @testable import WatchtowerDesktop
-
-// MARK: - Fakes
-
-/// Scriptable `AudioRecording`. `start` never writes real audio; `stop` returns a
-/// caller-supplied `RecordingResult`. The Center's decode step is a seam the test
-/// stubs, so the returned `audioURL` need only exist on disk (a dummy byte file)
-/// where a test asserts the audio is preserved.
-private final class FakeRecorder: AudioRecording, @unchecked Sendable {
-    var startError: Error?
-    var stopError: Error?
-    var stopResult: RecordingResult?
-
-    private(set) var startCalls = 0
-    private(set) var stopCalls = 0
-    private(set) var lastStartURL: URL?
-
-    // Live-sample plumbing: a test can push samples then finish, or leave it to
-    // finish on stop() (the default: empty stream → live pass yields nothing).
-    private var liveContinuation: AsyncStream<[Float]>.Continuation!
-    let liveSamples: AsyncStream<[Float]>
-
-    init() {
-        var c: AsyncStream<[Float]>.Continuation!
-        liveSamples = AsyncStream { c = $0 }
-        liveContinuation = c
-    }
-
-    /// Emit one live piece (test drives the live path with this).
-    func emitLive(_ samples: [Float]) { liveContinuation.yield(samples) }
-
-    func start(to url: URL) async throws {
-        startCalls += 1
-        lastStartURL = url
-        if let startError { throw startError }
-    }
-
-    func stop() async throws -> RecordingResult {
-        stopCalls += 1
-        liveContinuation.finish()
-        if let stopError { throw stopError }
-        guard let stopResult else {
-            throw AudioRecordingError.deviceSetupFailed("FakeRecorder has no stopResult")
-        }
-        return stopResult
-    }
-}
-
-/// Returns canned window texts in order; `""` past the end (silence). Used with a
-/// forced-language config so `detectLanguage` is never consulted.
-private final class ScriptedEngine: WhisperWindowEngine, @unchecked Sendable {
-    let texts: [String]
-    private var index = 0
-
-    init(texts: [String]) { self.texts = texts }
-
-    func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
-
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
-        defer { index += 1 }
-        let text = index < texts.count ? texts[index] : ""
-        return [TranscribedSegment(text: text, startSec: 0,
-                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
-    }
-}
-
-/// Blocks on every `transcribeWindow` until the test releases it, and signals
-/// entry via `enteredStream`. This lock-steps the windowed loop with the test so
-/// progress delivery into `phase` can be asserted deterministically (no race
-/// between the off-main transcription and the main-actor progress consumer).
-private final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
-    let texts: [String]
-    let enteredStream: AsyncStream<Void>
-
-    private let enteredContinuation: AsyncStream<Void>.Continuation
-    private let lock = NSLock()
-    private var releaseContinuation: CheckedContinuation<Void, Never>?
-    private var releaseQueued = false
-    private var index = 0
-
-    init(texts: [String]) {
-        self.texts = texts
-        (enteredStream, enteredContinuation) = AsyncStream<Void>.makeStream()
-    }
-
-    func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 1.0] }
-
-    func transcribeWindow(_ samples: [Float], language: String) async throws -> [TranscribedSegment] {
-        enteredContinuation.yield(())
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            if releaseQueued {
-                releaseQueued = false
-                lock.unlock()
-                continuation.resume()
-            } else {
-                releaseContinuation = continuation
-                lock.unlock()
-            }
-        }
-        defer { index += 1 }
-        let text = index < texts.count ? texts[index] : ""
-        return [TranscribedSegment(text: text, startSec: 0,
-                                   endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
-    }
-
-    /// Lets the currently-blocked (or next) `transcribeWindow` return.
-    func release() {
-        lock.lock()
-        if let continuation = releaseContinuation {
-            releaseContinuation = nil
-            lock.unlock()
-            continuation.resume()
-        } else {
-            releaseQueued = true
-            lock.unlock()
-        }
-    }
-}
-
-/// Adapts a `WhisperWindowEngine` test double (`ScriptedEngine`/`GateEngine`) to
-/// the pluggable `Transcriber` contract, mirroring production's
-/// `WhisperTranscriber`/`WhisperLiveSession` shape (`Providers/WhisperKitProvider.swift`)
-/// so the existing engine fakes keep driving the real `WindowedTranscriber`/
-/// `StreamingTranscriber` algorithms unchanged after `MeetingRecorderCenter`'s
-/// `engineFactory` moved from `WhisperWindowEngine` to `Transcriber`.
-private final class TestTranscriber: Transcriber, @unchecked Sendable {
-    let engine: WhisperWindowEngine
-    let supportsLive: Bool
-
-    init(_ engine: WhisperWindowEngine, supportsLive: Bool = true) {
-        self.engine = engine
-        self.supportsLive = supportsLive
-    }
-
-    func transcribe(
-        _ samples: [Float],
-        config: TranscriptionConfig,
-        progress: @escaping @Sendable (Int, Int) -> Void
-    ) async throws -> TranscriptionOutput {
-        try await WindowedTranscriber(engine: engine, config: config).transcribe(samples: samples, progress: progress)
-    }
-
-    func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
-        guard supportsLive else { return nil }
-        return TestLiveSession(engine: engine, config: config)
-    }
-}
-
-private struct TestLiveSession: TranscriptionLiveSession {
-    let engine: WhisperWindowEngine
-    let config: TranscriptionConfig
-
-    func run(samples: AsyncStream<[Float]>,
-             onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
-        try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
-    }
-}
-
-/// Scriptable `SpeakerDiarizing`: canned segments or a thrown error, plus a
-/// call counter so tests can assert the diarizer was (not) consulted.
-private final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
-    var segments: [SpeakerSegment] = []
-    var error: Error?
-    private(set) var calls = 0
-
-    struct FakeError: Error {}
-
-    func diarize(_ samples: [Float]) async throws -> [SpeakerSegment] {
-        calls += 1
-        if let error { throw error }
-        return segments
-    }
-}
-
-/// Reads the files passed via --transcript-file / --segments-file /
-/// --speakers-file DURING the CLI invocation (the save service deletes them
-/// right after), capturing the exact saved text, segments JSON and speakers
-/// JSON (nil when the corresponding file was not passed).
-/// `shouldThrow` (cleared by the test for a retry) fails the save AFTER
-/// capturing, mirroring FakeCLIRunner's failure knob.
-private final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
-    private let stdoutData: Data
-    var shouldThrow: Error?
-    private(set) var savedTranscripts: [String] = []
-    private(set) var savedSegments: [String?] = []
-    private(set) var savedSpeakers: [String?] = []
-
-    init(stdout: Data) { self.stdoutData = stdout }
-
-    func run(args: [String]) async throws -> Data {
-        if let idx = args.firstIndex(of: "--transcript-file"), idx + 1 < args.count,
-           let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedTranscripts.append(text)
-        }
-        if let idx = args.firstIndex(of: "--segments-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSegments.append(json)
-        } else {
-            savedSegments.append(nil)
-        }
-        if let idx = args.firstIndex(of: "--speakers-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSpeakers.append(json)
-        } else {
-            savedSpeakers.append(nil)
-        }
-        if let shouldThrow { throw shouldThrow }
-        return stdoutData
-    }
-}
-
-private final class FakeNotifier: MeetingTranscriptNotifying, @unchecked Sendable {
-    private(set) var readyTitles: [String] = []
-    private(set) var failedReasons: [String] = []
-
-    func sendTranscriptReadyNotification(title: String) { readyTitles.append(title) }
-    func sendTranscriptFailedNotification(reason: String) { failedReasons.append(reason) }
-}
+import WatchtowerCore
+import WatchtowerTestSupport
 
 // MARK: - Tests
 
 @MainActor
-final class MeetingRecorderCenterTests: XCTestCase {
-
-    // Envelopes matching the `meeting-prep transcript save` CLI contract.
-    private let recapOKEnvelope = Data(#"{"transcript_id":7,"recap_ok":true,"recap_error":""}"#.utf8)
-    private let recapFailedEnvelope = Data(#"{"transcript_id":7,"recap_ok":false,"recap_error":"AI generation: boom"}"#.utf8)
-
-    private func isolatedDefaults() throws -> UserDefaults {
-        try XCTUnwrap(UserDefaults(suiteName: "MeetingRecorderCenterTests-\(UUID().uuidString)"))
-    }
-
-    /// A dummy on-disk file standing in for a finished recording. Its bytes are
-    /// never decoded (the Center's decode seam is stubbed); it only has to exist
-    /// so "audio preserved" assertions are meaningful.
-    private func makeDummyAudioFile() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rec-\(UUID().uuidString).caf")
-        try Data([0x00, 0x01, 0x02]).write(to: url)
-        return url
-    }
-
-    /// Fixed-length silent samples so downstream windowing is deterministic.
-    private func stubDecode(sampleCount: Int) -> @Sendable (URL) throws -> [Float] {
-        { _ in [Float](repeating: 0, count: sampleCount) }
-    }
-
-    /// Removes the recording's sidecars: the persisted transcript
-    /// (`<basename>.txt`/`.json`) and the mic-activity timeline (`.activity`).
-    private func removeSidecars(_ audio: URL) {
-        for ext in ["txt", "json", "activity"] {
-            try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
-        }
-    }
-
-    /// Diarization is off in the shared configs: a test whose output has
-    /// segments would otherwise hit the REAL FluidAudioDiarizer.load()
-    /// (network + CoreML) through the default factory. The diarization tests
-    /// opt back in via runDiarizationFlow with a FakeDiarizer.
-    private func singleWindowConfig() -> TranscriptionConfig {
-        var config = TranscriptionConfig()
-        config.forcedLanguage = "en"
-        config.diarization = false
-        return config
-    }
-
-    /// 0.1 s windows, no overlap → 4800 samples is exactly 3 windows.
-    private func threeWindowConfig() -> TranscriptionConfig {
-        var config = TranscriptionConfig()
-        config.forcedLanguage = "en"
-        config.windowSec = 0.1
-        config.overlapSec = 0
-        config.boundarySnapSec = 0 // exact 3-window layout is asserted
-        config.diarization = false // see singleWindowConfig
-        return config
-    }
+final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
     // MARK: Provider/model migration default
 
@@ -304,7 +35,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: "evt-1", title: "Weekly")
@@ -317,6 +49,32 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(recorder.startCalls, 1, "a second start while busy must be a no-op")
         XCTAssertEqual(center.currentEventID, "evt-1")
         XCTAssertEqual(center.currentTitle, "Weekly")
+    }
+
+    /// `DictationCenter` shares one physical engine slot with the meeting
+    /// recorder, so it needs to hear about an upcoming capture BEFORE any
+    /// engine work starts — a hook fired after the fact could race a
+    /// dictation into loading the very engine the meeting is about to need.
+    func testStartRecordingInvokesCaptureWillStartBeforeCaptureBegins() async throws {
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var firedBeforeCapture = false
+        center.captureWillStart = {
+            firedBeforeCapture = !center.isCapturing && recorder.startCalls == 0
+        }
+
+        await center.startRecording(eventID: "evt-1", title: "Weekly")
+
+        XCTAssertTrue(firedBeforeCapture, "captureWillStart must fire before any capture/engine work")
     }
 
     // MARK: Happy path
@@ -339,21 +97,24 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
         guard case .recording = center.phase else {
             return XCTFail("expected .recording, got \(center.phase)")
         }
-        XCTAssertNotNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
+        // Crash recovery rides a per-recording `rec_X.meta` sidecar; the
+        // single-slot UserDefaults pointer it replaced is never written again.
+        _ = try startedRecordingMeta()
+        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey),
+                     "the retired single-slot pointer must not be written any more")
 
         await center.stopAndProcess(config: singleWindowConfig())
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.pendingAudioURL)
-        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey),
-                     "the pending-audio key must be cleared once the transcript is saved")
         XCTAssertEqual(notifier.readyTitles, ["Ad hoc"])
         XCTAssertTrue(notifier.failedReasons.isEmpty)
         XCTAssertEqual(runner.invocations.count, 1)
@@ -381,7 +142,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: "evt-1", title: "Standup")
@@ -417,7 +179,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapFailedEnvelope) },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -429,6 +192,41 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(notifier.readyTitles.count, 1)
         XCTAssertTrue(notifier.readyTitles.first?.localizedCaseInsensitiveContains("recap") ?? false,
                       "ready notification must mention the recap needs retry, got \(notifier.readyTitles)")
+        XCTAssertTrue(notifier.failedReasons.isEmpty)
+    }
+
+    func testRecapSkippedStillCompletesWithFriendlierNotification() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 5)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["some talk"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapSkippedEnvelope) },
+            notifier: notifier,
+            defaults: try isolatedDefaults()
+        )
+
+        await center.startRecording(eventID: nil, title: "Ad hoc")
+        await center.stopAndProcess(config: singleWindowConfig())
+
+        // Skipped recap is not a failure to retry — the notification says so
+        // instead of implying the recap needs another attempt.
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(notifier.readyTitles.count, 1)
+        XCTAssertTrue(
+            notifier.readyTitles.first?.localizedCaseInsensitiveContains("too short for recap") ?? false,
+            "ready notification must mention the recap was skipped for being too short, got \(notifier.readyTitles)")
+        XCTAssertFalse(
+            notifier.readyTitles.first?.localizedCaseInsensitiveContains("needs retry") ?? true,
+            "a skipped recap must not read like a failure needing retry")
         XCTAssertTrue(notifier.failedReasons.isEmpty)
     }
 
@@ -444,7 +242,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: "evt-1", title: "Weekly")
@@ -468,7 +267,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -482,7 +282,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertTrue(reason.localizedCaseInsensitiveContains("device vanished"))
         XCTAssertEqual(center.pendingAudioURL, pendingBefore,
                        "the pending audio pointer must be kept after a stop error")
-        XCTAssertNotNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: metaSidecar(pendingBefore).path),
+                      "the recovery sidecar must survive a stop error so the audio comes back after a crash")
         XCTAssertEqual(runner.invocations.count, 0)
         XCTAssertEqual(notifier.failedReasons.count, 1)
     }
@@ -515,7 +316,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -553,7 +355,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -585,7 +388,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -614,7 +418,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: { _ in throw AudioFileDecoderError.unsupportedFormat },
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -645,7 +450,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -676,7 +482,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -716,7 +523,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { activeRunner },
             notifier: notifier,
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Ad hoc")
@@ -739,7 +547,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.pendingAudioURL)
-        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
+        XCTAssertNil(defaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey),
+                     "the retired single-slot pointer must not be written any more")
         XCTAssertEqual(goodRunner.invocations.count, 1)
         XCTAssertEqual(engineLoads, 1, "retry after a save failure must reuse the persisted transcript")
         XCTAssertFalse(FileManager.default.fileExists(atPath: transcriptFile.path))
@@ -759,7 +568,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         center.restorePendingOnLaunch()
@@ -774,7 +584,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: missingDefaults
+            defaults: missingDefaults,
+            recordingsDirectory: recordingsDir
         )
         center2.restorePendingOnLaunch()
         XCTAssertNil(center2.pendingAudioURL)
@@ -799,7 +610,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         center.restorePendingOnLaunch()
@@ -827,7 +639,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { nil },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: "evt-1", title: "Weekly")
@@ -862,13 +675,14 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
-        XCTAssertEqual(center.currentEventID, "evt-42", "the event link must survive relaunch")
-        XCTAssertEqual(center.currentTitle, "Weekly sync", "the title must survive relaunch")
+        XCTAssertEqual(center.recoverable.first?.eventID, "evt-42", "the event link must survive relaunch")
+        XCTAssertEqual(center.recoverable.first?.title, "Weekly sync", "the title must survive relaunch")
 
         // The recovered transcript saves event-linked, not as ad-hoc.
         await center.retryTranscription(config: singleWindowConfig())
@@ -904,7 +718,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
@@ -957,7 +772,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         center.restorePendingOnLaunch()
@@ -992,7 +808,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 4800), // 3 windows at 0.1 s / no overlap
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
@@ -1037,7 +854,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Live meeting")
@@ -1052,6 +870,124 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertNil(center.pendingAudioURL)
     }
 
+    func testLiveDisabledSkipsLivePassAndBatchTranscribesAfterStop() async throws {
+        let audio = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        var engineLoads = 0
+        var decodeCalls = 0
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in engineLoads += 1; return TestTranscriber(ScriptedEngine(texts: ["batch text"])) },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+
+        await center.startRecording(eventID: nil, title: "No live", config: config)
+        recorder.emitLive([Float](repeating: 0, count: 3200))
+        for _ in 0..<12 { await Task.yield() }
+        XCTAssertFalse(center.captureLiveEnabled, "the capture snapshots the disabled toggle")
+        XCTAssertEqual(center.liveEngineState, .off, "no live pass may start while disabled")
+        XCTAssertEqual(engineLoads, 0, "no engine loads during capture")
+        XCTAssertTrue(center.liveChunks.isEmpty)
+
+        await center.stopAndProcess(config: config)
+
+        XCTAssertEqual(center.phase, .idle)
+        XCTAssertEqual(engineLoads, 1, "the batch path loads the engine after Stop")
+        XCTAssertEqual(decodeCalls, 1, "the transcript comes from the file, not a live pass")
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertNil(center.pendingAudioURL)
+    }
+
+    func testLiveDisabledRecordingOverDrainingOrphanTailDoesNotAdoptIt() async throws {
+        // The scenario `consumeLivePassOwnership`'s `captureLiveEnabled` term
+        // guards: a live-DISABLED recording runs while a PREVIOUS recording's
+        // stop-error orphan tail still holds the engine slot. The disabled
+        // recording's Stop must not adopt the orphan's live output nor its
+        // engine — its job loads a fresh engine and batch-decodes the file.
+        let recorder1 = FakeRecorder()
+        let recorder2 = FakeRecorder()
+        let gateEngine = GateEngine(texts: ["stale-first-recording"])
+        let secondEngine = ScriptedEngine(texts: ["fresh-second-recording"])
+        var engineFactoryCalls = 0
+        var recorderFactoryCalls = 0
+        var decodeCalls = 0
+        let runner = FakeCLIRunner(stdout: recapOKEnvelope)
+        let center = MeetingRecorderCenter(
+            recorderFactory: {
+                recorderFactoryCalls += 1
+                return recorderFactoryCalls == 1 ? recorder1 : recorder2
+            },
+            engineFactory: { _ in
+                engineFactoryCalls += 1
+                return engineFactoryCalls == 1 ? TestTranscriber(gateEngine) : TestTranscriber(secondEngine)
+            },
+            decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
+            runnerResolver: { runner },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        let liveConfig = threeWindowConfig()
+
+        // Recording 1 (live ON): park its live pass inside the gate engine,
+        // then error the stop — the orphan tail keeps draining.
+        await center.startRecording(eventID: nil, title: "First", config: liveConfig)
+        recorder1.emitLive([Float](repeating: 0, count: 3200))
+        var entered = gateEngine.enteredStream.makeAsyncIterator()
+        _ = await entered.next()
+        recorder1.stopError = AudioRecordingError.deviceSetupFailed("device vanished")
+        await center.stopAndProcess(config: liveConfig)
+
+        // Recording 2 (live OFF) starts over the draining orphan.
+        var config = liveConfig
+        config.liveTranscription = false
+        let audio2 = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio2)
+            removeSidecars(audio2)
+        }
+        recorder2.stopResult = RecordingResult(audioURL: audio2, durationSec: 1)
+        await center.startRecording(eventID: nil, title: "Second", config: config)
+        XCTAssertEqual(center.liveEngineState, .off)
+
+        // Stop recording 2 while the orphan is still parked; its job waits on
+        // the engine slot, so release the gate concurrently.
+        let stopTask = Task { await center.stopAndProcess(config: config) }
+        for _ in 0..<12 { await Task.yield() }
+        gateEngine.release()
+        await stopTask.value
+
+        // Recording 1's failed job stays in the queue as retriable, so the
+        // legacy head-of-queue `phase` still reads .failed — assert on the
+        // second recording's own outcome instead.
+        XCTAssertEqual(runner.invocations.count, 1, "recording 2 saved exactly once")
+        XCTAssertEqual(decodeCalls, 1, "the disabled recording batch-decodes its own file")
+        XCTAssertEqual(engineFactoryCalls, 2,
+                       "the job loads a fresh engine — adopting the orphan's would mean Stop consumed a live pass it never owned")
+        XCTAssertEqual(center.liveEngineState, .off,
+                       "no parked live start may fire when the orphan frees the slot")
+        let savedText = runner.invocations.first.flatMap { inv in
+            inv.firstIndex(of: "--transcript-file").flatMap { idx in
+                inv.indices.contains(idx + 1) ? try? String(contentsOfFile: inv[idx + 1], encoding: .utf8) : nil
+            }
+        }
+        // nil = the temp file was already cleaned up post-save; only an actual
+        // read-back containing the orphan's text is a failure.
+        XCTAssertNotEqual(savedText?.contains("stale-first-recording"), true,
+                          "the orphan's live text must never reach the second recording's save")
+    }
+
     func testLiveChunksAccumulateAndSurviveViewLifetime() async throws {
         let audio = try makeDummyAudioFile()
         defer { try? FileManager.default.removeItem(at: audio); removeSidecars(audio) }
@@ -1064,7 +1000,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Live", config: threeWindowConfig())
@@ -1099,7 +1036,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "Live")
@@ -1137,7 +1075,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 1600) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         await center.startRecording(eventID: nil, title: "NonLive")
@@ -1180,7 +1119,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
         let liveConfig = threeWindowConfig() // 0.1 s window, no overlap → 1600 samples/window
 
@@ -1239,6 +1179,16 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center: MeetingRecorderCenter
         let notifier: FakeNotifier
         let runner: TranscriptCapturingRunner
+        /// Every eventID the attendee loader was called with — pins the
+        /// job → renderRoles → matchVoiceNames plumb-through.
+        let attendeeLoaderEventIDs: [String]
+    }
+
+    /// Collects the eventIDs handed to the attendee loader (the loader is
+    /// @Sendable, so the capture needs an actor).
+    private actor EventIDBox {
+        var values: [String] = []
+        func append(_ id: String) { values.append(id) }
     }
 
     /// Batch-path harness: recording → (empty live) → decode stub → scripted
@@ -1248,7 +1198,10 @@ final class MeetingRecorderCenterTests: XCTestCase {
         diarizer: FakeDiarizer,
         defaults: UserDefaults,
         rolesEnabled: Bool = true,
-        voicePrints: [VoicePrint] = []
+        voicePrints: [VoicePrint] = [],
+        eventID: String? = nil,
+        attendees: [EventAttendee]? = nil,
+        ownerEmails: Set<String>? = nil
     ) async throws -> DiarizationFlowResult {
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 1)
@@ -1257,22 +1210,34 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800), // 3 windows of 0.1 s
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
         // Always wire a loader (production has one once the DB opens); an
-        // empty array behaves exactly like no voice-print database.
+        // empty array behaves exactly like no voice-print database. The
+        // attendee/owner loaders stay nil unless a test supplies them —
+        // mirroring an install with no DB-backed identity.
         center.voicePrintsLoader = { voicePrints }
+        let receivedEventIDs = EventIDBox()
+        if let attendees {
+            center.attendeesLoader = { id in
+                await receivedEventIDs.append(id)
+                return attendees
+            }
+        }
+        if let ownerEmails { center.ownerEmailsLoader = { ownerEmails } }
         var config = threeWindowConfig()
         config.diarization = rolesEnabled
-        await center.startRecording(eventID: nil, title: "Roles")
+        await center.startRecording(eventID: eventID, title: "Roles")
         await center.stopAndProcess(config: config)
         return DiarizationFlowResult(savedText: runner.savedTranscripts.first,
                                      savedSegments: runner.savedSegments.first.flatMap { $0 },
-                                     center: center, notifier: notifier, runner: runner)
+                                     center: center, notifier: notifier, runner: runner,
+                                     attendeeLoaderEventIDs: await receivedEventIDs.values)
     }
 
     func testDiarizationRendersRolesIntoSavedText() async throws {
@@ -1427,6 +1392,230 @@ final class MeetingRecorderCenterTests: XCTestCase {
                        "the owner's cluster stays «Я» even when a voice print matches it")
     }
 
+    // MARK: - Owner identity vs «Я» (Center-level wiring)
+
+    /// The blocker scenario from review: the owner's own print is NAME-keyed
+    /// (minted by an ad-hoc/free-text rename), so it cannot be recognized as
+    /// the owner's. Owner identity alone must NOT arm the veto — otherwise
+    /// the owner's mic-dominant cluster carries a voice name, is "confidently
+    /// someone else", and «Я» disappears from every transcript.
+    func testNameKeyedOwnerPrintDoesNotArmVetoAndSelfSurvives() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("vadym", "vadym", [1, 0])], // name-keyed: NOT recognizable as owner
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ",
+                       "with no owner-identified print in the pool «Я» must keep its legacy absolute priority")
+    }
+
+    /// End-to-end tie-break: both clusters mic-dominant (meeting room), the
+    /// owner's EMAIL-keyed print matches the later/quieter one — «Я» goes to
+    /// the owner-matched cluster, not the earliest.
+    func testOwnerEmailKeyedPrintWinsSelfTieBreakEndToEnd() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        // Every bin mic-dominated → both clusters are «Я» candidates at share
+        // 1.0; legacy would give «Я» to the earliest (A).
+        try "0.500000 0.010000\n0.500000 0.010000\n0.500000 0.010000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("owner@x.com", "owner@x.com", [0, 1])],
+            ownerEmails: ["Owner@X.com "] // case/trim variance must not break the compare
+        ).savedText
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Я] ответ",
+                       "the owner-voice-matched cluster must win «Я» over the earlier equally-dominant one")
+    }
+
+    /// Event-linked recording: the eventID reaches the attendee loader
+    /// (plumb-through), a non-attendee stranger's print is scoped out, and
+    /// the owner's print survives scoping even though the owner is NOT on
+    /// the attendee list (organizer-only/alias case).
+    func testEventScopingDropsStrangerButKeepsOwnerPrint() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.500000 0.010000\n0.500000 0.010000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let flow = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                voicePrint("stranger@other.com", "Чужой", [1, 0]), // not an attendee → scoped out
+                voicePrint("owner@x.com", "owner@x.com", [0, 1])   // owner: survives scoping
+            ],
+            eventID: "evt-1",
+            attendees: [EventAttendee(email: "alice@corp.com", displayName: "Alice",
+                                      responseStatus: "accepted", slackUserID: "")],
+            ownerEmails: ["owner@x.com"]
+        )
+
+        XCTAssertEqual(flow.savedText, "[Speaker 1] привет\n[Я] ответ",
+                       "stranger must not be named (scoped out); owner print must survive scoping and win «Я»")
+        XCTAssertEqual(flow.attendeeLoaderEventIDs, ["evt-1"],
+                       "the job's eventID — not a title or nil — must reach the attendee loader")
+    }
+
+    /// End-to-end veto at the Center level: the pool holds a USABLE owner
+    /// print (armed), the mic-dominant cluster confidently matches a
+    /// colleague and does not resemble the owner → «Я» is withheld from the
+    /// saved transcript; the below-threshold owner-matched cluster keeps the
+    /// owner print's display name (pinned design: no «Я» beats a wrong «Я»).
+    func testColleagueMatchedMicWinnerIsVetoedEndToEnd() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        // Only bin 0 mic-dominated → A is the sole «Я» candidate.
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                voicePrint("colleague@x.com", "Коллега", [1, 0]), // matches mic-dominant A
+                voicePrint("owner@x.com", "owner@x.com", [0, 1])  // owner: matches B only
+            ],
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Коллега] привет\n[owner@x.com] ответ",
+                       "a colleague-matched mic winner must lose «Я» when the owner is identifiable elsewhere")
+    }
+
+    /// The mixed-print owner: a NAME-keyed print wins the global match for
+    /// the owner's cluster, but the EMAIL-keyed owner print also matches it
+    /// (≥ threshold) → the cluster is veto-exempt and «Я» survives via the
+    /// ordinary mic path (the conservative owner rule).
+    func testMixedKeyOwnerPrintsDoNotVetoTheOwner() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                voicePrint("vadym", "vadym", [1, 0]),            // name-keyed: wins the global match for A
+                voicePrint("owner@x.com", "owner@x.com", [0.9, 0.44]) // email-keyed: also matches A ≥ 0.7
+            ],
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ",
+                       "the owner's own name-keyed print must not veto «Я» when their email-keyed print resembles the cluster")
+    }
+
+    /// An email-keyed owner print learned under an OLDER embedding model
+    /// (dimension mismatch — unusable this run) must not arm the veto: the
+    /// colleague-matched mic winner keeps «Я» via the legacy path instead of
+    /// stripping it with no possible tie-break.
+    func testStaleDimensionOwnerPrintDoesNotArmVeto() async throws {
+        let audio = try makeDummyAudioFile()
+        let activityURL = MicActivity.url(for: audio)
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        try "0.500000 0.010000\n0.010000 0.500000\n0.010000 0.500000\n"
+            .write(to: activityURL, atomically: true, encoding: .utf8)
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [
+                // The colleague print matches the mic-dominant cluster A —
+                // with an ARMED veto this recording would lose «Я».
+                voicePrint("colleague@x.com", "Коллега", [1, 0]),
+                voicePrint("owner@x.com", "owner@x.com", [0, 1, 0]) // 3-dim: unusable against 2-dim clusters
+            ],
+            ownerEmails: ["owner@x.com"]
+        ).savedText
+
+        XCTAssertEqual(saved, "[Я] привет\n[Speaker 1] ответ",
+                       "an unusable owner print must disarm the veto — «Я» keeps its legacy absolute priority")
+    }
+
+    /// Event-linked recording whose event has expired (loader returns []) —
+    /// scoping must degrade to the GLOBAL pool, not to an empty one.
+    func testEventWithNoAttendeesDegradesToGlobalMatching() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let diarizer = FakeDiarizer()
+        diarizer.segments = [
+            SpeakerSegment(speakerID: "A", startSec: 0, endSec: 0.1, embedding: [1, 0]),
+            SpeakerSegment(speakerID: "B", startSec: 0.1, endSec: 0.25, embedding: [0, 1])
+        ]
+
+        let saved = try await runDiarizationFlow(
+            audio: audio, diarizer: diarizer, defaults: try isolatedDefaults(),
+            voicePrints: [voicePrint("sasha@corp.com", "Саша", [0, 1])],
+            eventID: "evt-gone",
+            attendees: []
+        ).savedText
+
+        XCTAssertEqual(saved, "[Speaker 1] привет\n[Саша] ответ",
+                       "an empty attendee list must fall back to global matching, same as ad-hoc")
+    }
+
     /// Diarizers without embeddings (non-FluidAudio) fully degrade: no voice
     /// names, no speakers file — byte-identical to the pre-identity behavior.
     func testNilEmbeddingsDegradeToNumberedSpeakers() async throws {
@@ -1450,6 +1639,99 @@ final class MeetingRecorderCenterTests: XCTestCase {
                        "no embeddings → no matching, even with a populated voice-print DB")
         XCTAssertNil(flow.runner.savedSpeakers.first.flatMap { $0 },
                      "no embeddings → no --speakers-file, the column stays NULL")
+    }
+
+    // MARK: - Mega-cluster guard (voice-print suppression)
+
+    /// Even shares totalling one meeting, so a test only states the share it
+    /// cares about: one 0.1 s segment per cluster, plus extra segments on
+    /// `dominant` until it owns `share` of the total speech.
+    private func megaClusterSegments(clusters: Int, dominant: String, share: Double) -> [SpeakerSegment] {
+        let names = (0..<clusters).map { String(UnicodeScalar(UInt8(65 + $0))) }
+        var segments = names.map { SpeakerSegment(speakerID: $0, startSec: 0, endSec: 0.1) }
+        // others = clusters - 1 tenths; dominant needs d with d/(d+others) = share.
+        let others = Double(clusters - 1) * 0.1
+        let dominantTotal = others * share / (1 - share)
+        segments.append(SpeakerSegment(speakerID: dominant, startSec: 1, endSec: 1 + dominantTotal - 0.1))
+        return segments
+    }
+
+    /// A 19-attendee meeting the diarizer under-split: one cluster hoovers up
+    /// half the speech, so its voice match is dropped (it renders as a plain
+    /// "Speaker N") while the honest clusters keep their names.
+    func testMegaClusterLosesItsVoiceName() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша", "E": "Егор"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
+
+        XCTAssertNil(filtered["C"], "a cluster holding 50% of speech in a 5-cluster meeting must lose its voice name")
+        XCTAssertEqual(filtered, ["A": "Аня", "B": "Борис", "D": "Даша", "E": "Егор"],
+                       "only the dominant cluster is suppressed")
+    }
+
+    /// A mega-suppressed cluster loses its OWNER status along with its name —
+    /// a merged blob must not win the «Я» tie-break as "the owner". (By
+    /// design it may still win «Я» by bare mic share: the legacy under-split
+    /// behavior, see filterMegaClusters' doc.)
+    func testMegaClusterLosesOwnerStatusWithItsName() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let names = ["C": "owner@x.com", "D": "Даша"]
+
+        let result = MeetingRecorderCenter.filterMegaClusters(
+            voiceNames: names, speakers: segments, ownerClusters: ["C"])
+
+        XCTAssertEqual(result.owners, [],
+                       "the suppressed blob must leave the owner set, but the set stays non-nil (identity still known)")
+        XCTAssertEqual(result.names, ["D": "Даша"])
+    }
+
+    /// Below the min-clusters gate the whole tuple passes through unchanged —
+    /// including a non-nil owner set.
+    func testBelowGatePassesOwnerClustersThroughUnchanged() throws {
+        let segments = megaClusterSegments(clusters: 2, dominant: "B", share: 0.6)
+        let result = MeetingRecorderCenter.filterMegaClusters(
+            voiceNames: ["B": "owner@x.com"], speakers: segments, ownerClusters: ["B"])
+        XCTAssertEqual(result.owners, ["B"])
+        XCTAssertEqual(result.names, ["B": "owner@x.com"])
+    }
+
+    /// Pins the owner-status proxy contract: above the gate, "still has a
+    /// name" stands for "not suppressed" — an owner cluster with NO
+    /// voiceNames entry loses its status even though nothing was suppressed.
+    /// Valid only because matchVoiceNames inserts names and owner status
+    /// together; this test is the tripwire for a future caller that does not.
+    func testOwnerClusterWithoutNameLosesStatusAboveGate() throws {
+        let segments = megaClusterSegments(clusters: 5, dominant: "C", share: 0.5)
+        let result = MeetingRecorderCenter.filterMegaClusters(
+            voiceNames: ["D": "Даша"], speakers: segments, ownerClusters: ["A"])
+        XCTAssertEqual(result.owners, [],
+                       "a nameless owner cluster falls out of the set above the gate — documented proxy edge")
+    }
+
+    /// The 1:1 case: the counterparty legitimately owns most of the speech, so
+    /// the guard must not fire below `megaClusterMinClusters`.
+    func testDominantClusterInOneOnOneKeepsItsVoiceName() throws {
+        let segments = megaClusterSegments(clusters: 2, dominant: "B", share: 0.6)
+        let names = ["A": "Я", "B": "Саша"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
+
+        XCTAssertEqual(filtered, names, "two clusters are below the min-clusters gate — a 60% counterparty is normal")
+    }
+
+    /// Enough clusters to arm the guard, but nobody dominates — every match
+    /// survives.
+    func testEvenlySplitClustersKeepAllVoiceNames() throws {
+        let segments = (0..<4).map {
+            SpeakerSegment(speakerID: String(UnicodeScalar(UInt8(65 + $0))), startSec: Double($0) * 0.1,
+                           endSec: Double($0) * 0.1 + 0.1)
+        }
+        let names = ["A": "Аня", "B": "Борис", "C": "Саша", "D": "Даша"]
+
+        let filtered = MeetingRecorderCenter.filterMegaClusters(voiceNames: names, speakers: segments, ownerClusters: nil).names
+
+        XCTAssertEqual(filtered, names, "four clusters at ~25% each are a plausible real split")
     }
 
     func testDiarizerFailureSavesPlainTranscript() async throws {
@@ -1489,11 +1771,12 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["live text"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: { _ in decodeCalls += 1; return [Float](repeating: 0, count: 4800) },
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
 
         var config = threeWindowConfig()
@@ -1534,11 +1817,12 @@ final class MeetingRecorderCenterTests: XCTestCase {
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["привет"])) },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800),
             runnerResolver: { runner },
             notifier: notifier,
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
         var config = threeWindowConfig()
         config.diarization = true
@@ -1599,11 +1883,12 @@ final class MeetingRecorderCenterTests: XCTestCase {
                 engineLoads += 1
                 return TestTranscriber(ScriptedEngine(texts: ["привет", "ответ"]))
             },
-            diarizerFactory: { diarizer },
+            diarizerFactory: { _ in diarizer },
             decode: stubDecode(sampleCount: 4800),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: try isolatedDefaults()
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
         )
         var config = threeWindowConfig()
         config.diarization = true
@@ -1656,7 +1941,8 @@ final class MeetingRecorderCenterTests: XCTestCase {
             decode: stubDecode(sampleCount: 4800),
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
 
         center.restorePendingOnLaunch()
@@ -1669,4 +1955,124 @@ final class MeetingRecorderCenterTests: XCTestCase {
         XCTAssertEqual(runner.savedSegments.count, 1)
         XCTAssertNil(runner.savedSegments[0], "a pre-segments sidecar retries as a segment-less save")
     }
+
+    // MARK: Dictation engine handoff (M2, final review)
+
+    /// A canned `dictate clean --mode chat` envelope for the dictation side
+    /// of the handoff tests (the DictationCenterTests fixture).
+    private static let dictationChatEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
+
+    /// Builds the meeting↔dictation pair wired exactly as `AppState.initialize()`
+    /// wires them, with a GateEngine (caller-released) behind the dictation
+    /// engine so tests control when the dictation's decode tail — and with it
+    /// the resident engine — lets go of the shared slot.
+    private func makeHandoffPair(
+        defaults: UserDefaults,
+        meetingRecorder: FakeRecorder,
+        dictationEngine: WhisperWindowEngine
+    ) -> (center: MeetingRecorderCenter, dictation: DictationCenter, mic: FakeMicRecorder) {
+        let mic = FakeMicRecorder()
+        let dictation = DictationCenter(
+            recorderFactory: { mic },
+            engineFactory: { _ in TestTranscriber(dictationEngine, supportsLive: true) },
+            runnerResolver: { FakeCLIRunner(stdout: Self.dictationChatEnvelope) },
+            defaults: defaults,
+            engineIdleTTL: .seconds(900)
+        )
+        let center = MeetingRecorderCenter(
+            recorderFactory: { meetingRecorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["meeting words"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: FakeNotifier(),
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
+        )
+        // The AppState.initialize() wiring, verbatim.
+        dictation.meetingBusy = { [weak center] in center?.isBusy ?? false }
+        center.captureWillStart = { [weak dictation] in dictation?.meetingCaptureWillStart() }
+        center.dictationEngineResident = { [weak dictation] in dictation?.hasResidentEngine ?? false }
+        dictation.engineReleased = { [weak center] in center?.dictationEngineDidRelease() }
+        return (center, dictation, mic)
+    }
+
+    /// Meeting start during an active dictation: the handshake stops the
+    /// dictation, but its engine stays resident until the decode tail drains —
+    /// the live pass must PARK (never a second engine) and catch up once the
+    /// dictation drops the engine.
+    func testMeetingStartDuringActiveDictationParksLivePassAndCatchesUp() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let meetingRecorder = FakeRecorder()
+        meetingRecorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        // The gate holds the dictation's final decode in flight, so its engine
+        // is deterministically still resident when the meeting checks.
+        let gateEngine = GateEngine(texts: ["dictated words"])
+        let (center, dictation, mic) = makeHandoffPair(
+            defaults: defaults, meetingRecorder: meetingRecorder, dictationEngine: gateEngine)
+
+        var dictationResult: DictationCleanResult?
+        dictation.start(targetID: "t1", mode: .chat,
+                        onLiveText: { _ in }, onResult: { dictationResult = $0 })
+        await waitUntil("dictation recording") { dictation.phase == .recording }
+        mic.emit([Float](repeating: 0.1, count: 1_600))
+
+        await center.startRecording(eventID: nil, title: "Standup")
+
+        XCTAssertEqual(mic.stopCalls, 1, "the handshake must stop the dictation mic")
+        XCTAssertEqual(center.liveEngineState, .waiting,
+                       "the live pass must park while the dictation engine is still resident")
+
+        gateEngine.release() // the dictation decode tail finishes now
+        await waitUntil("dictation result") { dictationResult != nil }
+        await waitUntil("live pass caught up") { center.liveEngineState == .running }
+
+        XCTAssertEqual(dictationResult, DictationCleanResult(title: nil, text: "cleaned"),
+                       "the interrupted dictation must still deliver what was said")
+
+        await center.stopAndProcess(config: singleWindowConfig())
+    }
+
+    /// Meeting start with an idle-but-warm dictation engine: the handshake
+    /// drops it synchronously, so the live pass proceeds immediately — no
+    /// parking, no waiting on a release that already happened.
+    func testMeetingStartWithIdleWarmDictationEngineStartsLivePassImmediately() async throws {
+        let defaults = try isolatedDefaults()
+        defaults.set("en", forKey: "transcription.forceLang")
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+        let meetingRecorder = FakeRecorder()
+        meetingRecorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        let (center, dictation, mic) = makeHandoffPair(
+            defaults: defaults, meetingRecorder: meetingRecorder,
+            dictationEngine: ScriptedEngine(texts: ["dictated words"]))
+
+        // A full dictation leaves the engine warm and the center idle.
+        var dictationResult: DictationCleanResult?
+        dictation.start(targetID: "t1", mode: .chat,
+                        onLiveText: { _ in }, onResult: { dictationResult = $0 })
+        await waitUntil("dictation recording") { dictation.phase == .recording }
+        mic.emit([Float](repeating: 0.1, count: 1_600))
+        dictation.stop()
+        await waitUntil("dictation result") { dictationResult != nil }
+        XCTAssertTrue(dictation.hasResidentEngine, "the finished dictation must leave a warm engine")
+
+        await center.startRecording(eventID: nil, title: "Standup")
+
+        XCTAssertFalse(dictation.hasResidentEngine, "the handshake must drop the idle warm engine synchronously")
+        XCTAssertNotEqual(center.liveEngineState, .waiting,
+                          "an already-released engine must not park the live pass")
+        await waitUntil("live pass running") { center.liveEngineState == .running }
+
+        await center.stopAndProcess(config: singleWindowConfig())
+    }
+
 }

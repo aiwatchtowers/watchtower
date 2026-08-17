@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // NOTE: This view is no longer used — the Guide tab has been merged into People.
 // Kept for backwards compatibility.

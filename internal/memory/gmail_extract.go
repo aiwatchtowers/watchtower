@@ -235,7 +235,7 @@ func (p *Pipeline) runGmailExtractAccount(ctx context.Context, runID int64, step
 	if err != nil {
 		return 0, err
 	}
-	msgs, err := p.db.ListGmailThreadsForExtract(accountID, wm, orDefault(p.cfg.MaxChunkMessages, 2000))
+	msgs, err := p.db.ListGmailThreadsForExtract(accountID, wm, 0, orDefault(p.cfg.MaxChunkMessages, 2000))
 	if err != nil {
 		return 0, err
 	}

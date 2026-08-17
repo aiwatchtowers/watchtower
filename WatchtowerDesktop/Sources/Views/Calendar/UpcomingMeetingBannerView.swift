@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Global top-aligned overlay: a countdown banner for the next meeting
 /// starting within the reminder window, driven by
@@ -54,7 +55,7 @@ struct UpcomingMeetingBannerView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(recorder.isBusy || !SystemAudioRecorder.isSupported)
+            .disabled(recorder.isCapturing || !SystemAudioRecorder.isSupported)
 
             Button {
                 center.dismissBanner(event)

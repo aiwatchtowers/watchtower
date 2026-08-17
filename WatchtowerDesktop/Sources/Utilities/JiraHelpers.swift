@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 enum JiraHelpers {
     // MARK: - Constants

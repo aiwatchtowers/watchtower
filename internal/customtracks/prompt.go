@@ -3,6 +3,7 @@ package customtracks
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -198,12 +199,52 @@ func parseComposeOutput(raw string) (ComposeResult, error) {
 	return r, nil
 }
 
+// allowedRefSchemes are the URL schemes a model-emitted source_ref may carry.
+// Mirrors the Desktop's AllowedURLSchemes — which gates what a rendered link
+// may hand to the system — minus watchtower-memory: that scheme is minted by
+// the app itself for vault wiki-links, never a permalink backing an event.
+var allowedRefSchemes = map[string]bool{
+	"https":  true,
+	"http":   true,
+	"mailto": true,
+	"slack":  true,
+}
+
+// validRef reports whether ref is an absolute URL with an allowed scheme.
+// The prompt asks for permalinks, but nothing binds the model to that: it can
+// emit prose, a relative path, or a javascript:/data: payload, and the
+// timeline renders every ref straight into Link(destination:).
+func validRef(ref string) bool {
+	u, err := url.Parse(ref)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if !allowedRefSchemes[scheme] {
+		return false
+	}
+	// mailto carries its target in the opaque part; the rest must name a host.
+	if scheme == "mailto" {
+		return u.Opaque != ""
+	}
+	return u.Host != ""
+}
+
 // encodeRefs marshals source refs to a JSON array string, never "".
+// Refs that are not absolute URLs with an allowed scheme are dropped rather
+// than persisted: the Desktop timeline turns each one into a clickable link,
+// so validating here keeps a hallucinated ref out of the UI at the source.
 func encodeRefs(refs []string) string {
-	if len(refs) == 0 {
+	valid := make([]string, 0, len(refs))
+	for _, r := range refs {
+		if r = strings.TrimSpace(r); validRef(r) {
+			valid = append(valid, r)
+		}
+	}
+	if len(valid) == 0 {
 		return "[]"
 	}
-	b, err := json.Marshal(refs)
+	b, err := json.Marshal(valid)
 	if err != nil {
 		return "[]"
 	}

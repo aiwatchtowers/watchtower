@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Reads and per-item state writes for the dashboard feed (`feed_items` index).
 /// Content is joined live from the source tables; an entry whose source row is

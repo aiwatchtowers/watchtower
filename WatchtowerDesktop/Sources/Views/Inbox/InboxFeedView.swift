@@ -34,6 +34,10 @@ struct InboxFeedView: View {
             case .feed:
                 if let dashboardVM, let feedVM {
                     VStack(spacing: 0) {
+                        if secretaryDisabled {
+                            secretaryOffBanner
+                            Divider()
+                        }
                         if !sourcesFullyConnected || google.isRunning {
                             connectSourcesBanner
                             Divider()
@@ -59,6 +63,36 @@ struct InboxFeedView: View {
             google.refresh()
             appState.emailAccountsViewModel?.refresh()
         }
+    }
+
+    // MARK: - Secretary Off Banner
+
+    /// True when the secretary-inbox feature is disabled. The Inbox tab
+    /// itself stays reachable (unlike the feature-gated sidebar tabs) so
+    /// previously-composed situations and their history remain visible —
+    /// this banner is the only signal that no NEW ones will appear.
+    private var secretaryDisabled: Bool {
+        appState.featureVisibility.disabledFeatureIDs.contains("secretary-inbox")
+    }
+
+    private var secretaryOffBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "power")
+                .foregroundStyle(.secondary)
+            Text("The secretary is off — no new situations will appear.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button("Features Settings") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            .buttonStyle(.link)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.secondary.opacity(0.08))
     }
 
     // MARK: - Connect Sources Banner

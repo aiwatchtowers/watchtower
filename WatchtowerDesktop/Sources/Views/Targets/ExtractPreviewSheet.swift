@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // MARK: - Proposed Target (input model for the preview)
 

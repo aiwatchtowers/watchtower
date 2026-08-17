@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// Native-notification seam for transcript completion/failure, so
 /// `MeetingRecorderCenter` is unit-testable without `UNUserNotificationCenter`
@@ -11,7 +12,32 @@ protocol MeetingTranscriptNotifying {
 
 extension NotificationService: MeetingTranscriptNotifying {}
 
-/// App-wide, single-slot registry for a meeting recording and its transcription.
+/// App-wide registry for meeting capture and the post-processing that follows.
+///
+/// Capture and post-processing are **decoupled**: `captureState` covers the one
+/// recording the machine can physically make, while `jobs` is a FIFO queue of
+/// finished recordings waiting to be transcribed → diarized → saved. Starting a
+/// recording is gated on capture alone (`isCapturing`), so back-to-back meetings
+/// no longer wait for the previous transcription to finish.
+///
+/// Exactly one transcription engine is ever resident. A queued job never starts
+/// while a recording is capturing — the recording's live pass owns that slot —
+/// and conversely a recording that starts while a job is running parks its live
+/// pass in `.waiting` until the job releases the slot. Nothing is lost meanwhile:
+/// the recorder's sample stream buffers from second zero, so the live pass drains
+/// the backlog when it finally loads (the same mechanism that already covers the
+/// mid-recording engine load).
+///
+/// The **warm slot** is the fourth state of that single-engine invariant: an
+/// engine can be held by the capture's live pass, a draining live tail, a job —
+/// or parked idle in `warmTranscriber`, ready for the next recording so Record
+/// skips the "Loading model…" wait. A finished job always parks its engine back
+/// into the slot (unless preloading is off or the run failed); the 30-second
+/// warm-policy poll (`WarmEnginePolicy`) is the single decision point for
+/// unloading it, and also pre-loads the engine when a meeting is ongoing or
+/// starts within `WarmEnginePolicy.prewarmLead`. Both load sites go through
+/// `takeWarmOrLoad`, which awaits an in-flight prewarm first — so a recording
+/// started mid-prewarm still produces exactly one load, never two engines.
 ///
 /// All state lives here (never view-local) so an in-flight recording — and the
 /// transcription/summarization that follows it — survives navigating away from
@@ -20,14 +46,162 @@ extension NotificationService: MeetingTranscriptNotifying {}
 /// starts it, and any view that renders progress, can be torn down while the run
 /// keeps mutating this `AppState`-held Center.
 ///
-/// The audio file is preserved on disk through every downstream failure, and its
-/// path is mirrored to `UserDefaults` so a recording captured before a crash can
-/// be re-transcribed after relaunch (`restorePendingOnLaunch`). Once transcription
-/// succeeds the transcript is also persisted next to the audio until the save
-/// lands, so retrying a failed save never re-transcribes.
+/// The audio file is preserved on disk through every downstream failure. A
+/// `rec_X.meta` sidecar written next to it at record start mirrors the event
+/// link/title, so a recording captured before a crash is recovered event-linked
+/// on relaunch (`restorePendingOnLaunch`) — one sidecar per recording, so N
+/// unprocessed recordings all come back. Once transcription succeeds the
+/// transcript is also persisted next to the audio until the save lands, so
+/// retrying a failed save never re-transcribes.
 @MainActor
 @Observable
 final class MeetingRecorderCenter {
+
+    // MARK: - State
+
+    enum CaptureState: Equatable {
+        case idle
+        case recording(startedAt: Date)
+    }
+
+    /// A loaded engine together with the provider+model identity (`engineKey()`)
+    /// it was loaded FOR, read at the load site and carried from there to the
+    /// warm slot. The two travel as one value precisely because they must not
+    /// be re-derived later: Settings can switch provider/model while a job is
+    /// transcribing, and stamping the finished engine with the key of the
+    /// moment it happened to finish would park it under an identity it does
+    /// not have — the next recording would then be served the wrong model.
+    struct LoadedEngine {
+        let transcriber: Transcriber
+        let key: String
+    }
+
+    /// One finished recording's post-processing run: queued behind whatever the
+    /// queue is already working, then transcribed → diarized → saved.
+    struct ProcessingJob: Identifiable {
+        enum Phase: Equatable {
+            case queued
+            case transcribing(done: Int, total: Int)
+            case diarizing
+            case summarizing
+            case failed(String)
+        }
+
+        let id = UUID()
+        let audioURL: URL
+        /// Calendar event this recording belongs to; nil for ad-hoc. Carried by
+        /// the job (not the Center) so a recording saves against the event it
+        /// was started for even when a later recording is already capturing.
+        let eventID: String?
+        let title: String?
+        var phase: Phase = .queued
+        /// Output of the recording's live pass when it produced usable text: the
+        /// job then skips the decode + batch pass entirely (the single-pass
+        /// contract). Nil → batch path from the audio file.
+        var liveOutput: TranscriptionOutput?
+        /// The recorder's reported duration, meaningful only alongside
+        /// `liveOutput` — the batch path derives it from the decoded samples.
+        var liveDurationSec: Int = 0
+        /// Engine the recording's live pass loaded, handed over on Stop so a
+        /// batch fallback never loads one a second time — carrying the key it
+        /// was loaded for, which is what the job's park stamps it with.
+        var engine: LoadedEngine?
+        /// Why this job's diarization post-pass failed (nil = roles rendered or
+        /// disabled). Only informs the completion notification — never blocks —
+        /// and survives a retry so a label-less persisted transcript keeps its
+        /// flag when the retry short-circuits to it.
+        var rolesError: String?
+    }
+
+    /// A finished recording with no transcript row yet: recovered from a crash
+    /// (audio + `.meta` sidecar still on disk), migrated from the legacy
+    /// single-slot `UserDefaults` pointer, dismissed out of a failed job, or
+    /// pointed at explicitly by `prepareRetry`. Nothing here is processed
+    /// automatically — the user opts in.
+    struct RecoverableRecording: Identifiable, Equatable {
+        let audioURL: URL
+        let eventID: String?
+        let title: String?
+
+        var id: URL { audioURL }
+    }
+
+    private(set) var captureState: CaptureState = .idle
+    /// The post-processing queue, oldest first. Read-only for the UI; a failed
+    /// job stays here (visible, retriable) and never blocks the queue.
+    private(set) var jobs: [ProcessingJob] = []
+    private(set) var recoverable: [RecoverableRecording] = []
+    /// A capture that failed before any audio existed (`recorder.start` threw):
+    /// there is no file, so no job can carry the message.
+    private(set) var captureError: String?
+
+    /// Fired synchronously at the top of `startRecording` (past the duplicate
+    /// -start guard), before any engine work — the meeting recorder and
+    /// `DictationCenter` share one physical engine slot, so this is how a
+    /// meeting capture claims it ahead of time (wired to
+    /// `DictationCenter.meetingCaptureWillStart()` in `AppState`).
+    var captureWillStart: (() -> Void)?
+
+    /// Wired by AppState to `DictationCenter.hasResidentEngine`: when the
+    /// dictation engine is still resident after the `captureWillStart`
+    /// handshake (a dictation mid-flight, draining its decode tail), the live
+    /// pass parks like the busy-queue path and catches up on the recorder's
+    /// buffered stream once `dictationEngineDidRelease()` fires — never two
+    /// engines resident at once.
+    var dictationEngineResident: (() -> Bool)?
+
+    /// Calendar event the active/last recording belongs to; `nil` for ad-hoc.
+    private(set) var currentEventID: String?
+    /// Title snapshot for the active/last recording.
+    private(set) var currentTitle: String?
+
+    /// Reads the voice-print database for the post-diarization matching pass.
+    /// Set by AppState once the shared DB opens; nil (no DB yet, tests)
+    /// disables voice matching — clusters keep their "Speaker N" labels, the
+    /// full degradation path. A loader failure must return [] rather than
+    /// throw: voice naming is a progressive enhancement like roles themselves.
+    var voicePrintsLoader: (@Sendable () async -> [VoicePrint])?
+
+    /// Reads an event's attendee identities (attendees + organizer — the
+    /// organizer is NOT in the attendees JSON) to scope the voice-print pool
+    /// for an event-linked recording (`VoicePrintMatcher.scoped`). Same
+    /// contract as `voicePrintsLoader`: set by AppState, nil or a failure
+    /// returns [] — which degrades to today's global matching, never to no
+    /// matching.
+    var attendeesLoader: (@Sendable (String) async -> [EventAttendee])?
+
+    /// The owner's email identities (`google_accounts` emails, lowercased) —
+    /// they mark which voice prints are the OWNER's for the «Я»
+    /// tie-break/veto (semantics: `RoleAssigner.clusterLabels`'s doc). nil
+    /// loader or an empty set = owner identity unknown = legacy «Я» behavior.
+    var ownerEmailsLoader: (@Sendable () async -> Set<String>)?
+
+    /// `.waiting` = a recording is capturing but a job still owns the engine
+    /// slot, so the live engine is deliberately not loaded yet.
+    enum LiveEngineState: Equatable { case off, waiting, loading, running, unavailable }
+    struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
+
+    private(set) var liveEngineState: LiveEngineState = .off
+    private(set) var liveChunks: [LiveChunk] = []
+
+    /// Latest ~100 ms raw mic/system RMS pair from the active capture's
+    /// recorder (`AudioRecording.liveLevels`), for the indicator's level
+    /// meters. Zero whenever nothing is being captured.
+    private(set) var captureLevels: CaptureLevels = .init(mic: 0, system: 0)
+
+    /// Monotonic counter bumped once per transcript that lands in the database.
+    /// Views that must refetch after a save observe THIS, never `phase`: with
+    /// capture decoupled from the queue, `phase` never dips to `.idle` while
+    /// another job is still queued or a failed one lingers, so a reload keyed
+    /// on it silently misses the new row.
+    private(set) var savedTick = 0
+
+    // MARK: - Legacy single-slot projection
+
+    /// Single-slot view of the state above, kept so the recorder UI that still
+    /// renders one thing at a time (the recovered pill, the re-transcribe
+    /// affordance) keeps working: capture wins, then the job the queue is
+    /// working, then whatever is waiting for the user.
     enum Phase: Equatable {
         case idle
         case recording(startedAt: Date)
@@ -37,36 +211,116 @@ final class MeetingRecorderCenter {
         case failed(String)
     }
 
-    private(set) var phase: Phase = .idle
-    /// Calendar event the active/last recording belongs to; `nil` for ad-hoc.
-    private(set) var currentEventID: String?
-    /// Title snapshot for the active/last recording.
-    private(set) var currentTitle: String?
-    /// Audio file awaiting (re-)transcription after a failure or relaunch.
-    private(set) var pendingAudioURL: URL?
-    /// Why the last diarization post-pass failed (nil = roles rendered or
-    /// disabled). Only informs the completion notification — never blocks.
-    private(set) var lastRolesError: String?
+    var phase: Phase {
+        if case let .recording(startedAt) = captureState { return .recording(startedAt: startedAt) }
+        if let running = jobs.first(where: { $0.id == activeJobID }) {
+            switch running.phase {
+            case .queued: return .transcribing(done: 0, total: 0)
+            case let .transcribing(done, total): return .transcribing(done: done, total: total)
+            case .diarizing: return .diarizing
+            case .summarizing: return .summarizing
+            case let .failed(message): return .failed(message)
+            }
+        }
+        if let captureError { return .failed(captureError) }
+        if let message = newestFailedJob?.phase.failureMessage { return .failed(message) }
+        if !jobs.isEmpty { return .transcribing(done: 0, total: 0) }
+        return .idle
+    }
 
-    /// Reads the voice-print database for the post-diarization matching pass.
-    /// Set by AppState once the shared DB opens; nil (no DB yet, tests)
-    /// disables voice matching — clusters keep their "Speaker N" labels, the
-    /// full degradation path. A loader failure must return [] rather than
-    /// throw: voice naming is a progressive enhancement like roles themselves.
-    var voicePrintsLoader: (@Sendable () async -> [VoicePrint])?
+    /// The failure the single-slot retry/dismiss pair works from: the newest
+    /// one, so the user clears backwards from what just broke.
+    private var newestFailedJob: ProcessingJob? {
+        jobs.last { $0.phase.isFailed }
+    }
 
-    enum LiveEngineState: Equatable { case off, loading, running, unavailable }
-    struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
+    /// Legacy pointer at "the recording the retry/recovered pill acts on": the
+    /// active capture, else an explicitly prepared/recovered recording, else the
+    /// newest failure, else the job at the head of the queue.
+    var pendingAudioURL: URL? {
+        if case .recording = captureState { return captureAudioURL }
+        if let entry = recoverable.first { return entry.audioURL }
+        if let failed = newestFailedJob { return failed.audioURL }
+        return jobs.first?.audioURL
+    }
 
-    private(set) var liveEngineState: LiveEngineState = .off
-    private(set) var liveChunks: [LiveChunk] = []
+    /// A recording is being captured, including a start still awaiting the
+    /// recorder (see `isStarting`). This — never the queue — gates the
+    /// Record/Join surfaces.
+    var isCapturing: Bool {
+        if isStarting { return true }
+        if case .recording = captureState { return true }
+        return false
+    }
 
-    /// Transcriber loaded at record-start for the live pass, reused for the
-    /// stop-time batch fallback so we never load twice on a single recording.
-    private var loadedTranscriber: Transcriber?
+    /// Anything at all in flight: capture, or a job the queue is working or
+    /// still holds. A queued job counts — it will run without further input, so
+    /// the single-slot `prepareRetry`/`retryTranscription` pair (and the
+    /// affordances that drive it) must stay parked until the queue drains. A
+    /// failed job does not: it needs the user, which is the whole point of
+    /// retry.
+    var isBusy: Bool { isCapturing || jobs.contains { !$0.phase.isFailed } }
+
+    /// The failed job `retryTranscription` would actually re-run, or nil when
+    /// it would do something else (a recovered recording takes precedence) or
+    /// nothing at all (busy, no failure). Lets a pill disable a button rather
+    /// than offer one that silently no-ops.
+    var retriableFailureID: ProcessingJob.ID? {
+        guard !isBusy, recoverable.isEmpty else { return nil }
+        return newestFailedJob?.id
+    }
+
+    /// The failed job `dismissFailure` would actually drop. It needs the
+    /// single-slot `phase` to read `.failed` (so nothing may be running) and
+    /// clears a capture error ahead of any job.
+    var dismissableFailureID: ProcessingJob.ID? {
+        guard case .failed = phase, captureError == nil else { return nil }
+        return newestFailedJob?.id
+    }
+
+    /// Whether `dismissFailure` would actually clear the `captureError` the
+    /// capsule is showing. Mirrors that method's own guard — the capture-error
+    /// branch is taken ahead of any failed job, so the only thing that can
+    /// block it is a job the queue is actively working (which owns `phase`).
+    /// Deliberately NOT `isBusy`: a merely queued job leaves the message's one
+    /// action available.
+    var captureErrorDismissable: Bool {
+        guard captureError != nil, case .failed = phase else { return false }
+        return true
+    }
+
+    /// `UserDefaults` keys of the pre-queue single-slot pointer. Read (and
+    /// cleared) exactly once, by `restorePendingOnLaunch`, so a recording
+    /// captured by an older build still recovers; nothing writes them any more —
+    /// `rec_X.meta` sidecars replaced them.
+    static let pendingAudioPathKey = "recorder.pendingAudioPath"
+    static let pendingEventIDKey = "recorder.pendingEventID"
+    static let pendingTitleKey = "recorder.pendingTitle"
+
+    // MARK: - Internals
+
+    /// Engine loaded at record-start for the live pass (with the key it was
+    /// loaded for), handed to the recording's job on Stop so a single
+    /// recording never loads it twice.
+    private var loadedEngine: LoadedEngine?
     /// The running live transcription; its value is the final output, or nil when
     /// the live pass never ran or produced no usable text (→ batch fallback).
+    /// Non-nil also means "the live pass holds the engine slot", which is what
+    /// keeps a queued job from loading a second engine while the tail drains.
     private var liveTask: Task<TranscriptionOutput?, Never>?
+
+    /// Consumer of the active recorder's `liveLevels` stream, feeding
+    /// `captureLevels`. Per-capture like the recorder itself (never part of the
+    /// engine-slot machinery): spawned when capture starts, torn down — with the
+    /// levels reset to zero — on every path that ends capture.
+    private var levelsTask: Task<Void, Never>?
+
+    /// The `liveGeneration` pattern for the level feed: bumped on every
+    /// capture start and teardown, captured by `startLevelsTask`'s loop, so a
+    /// stale buffered level pair from a cancelled task (a value already
+    /// delivered before the cancellation landed) can never clobber a new
+    /// capture's meters — or the zero reset.
+    private var levelsGeneration = 0
 
     /// Bumped every time a new live pass starts (`startLivePass`) and again when
     /// a stop-time error orphans the in-flight one. `onChunk` closes over the
@@ -77,41 +331,101 @@ final class MeetingRecorderCenter {
     /// `liveChunks` once one has started.
     private var liveGeneration = 0
 
+    /// A recording whose live pass is waiting for the engine slot, held until
+    /// the running job releases it.
+    private struct PendingLiveStart {
+        let recorder: AudioRecording
+        let config: TranscriptionConfig
+    }
+
+    private var pendingLiveStart: PendingLiveStart?
+
+    /// Whether the active capture wants a live pass at all
+    /// (`config.liveTranscription` snapshotted at start). False means Stop must
+    /// neither await nor cancel `liveTask` — one still standing belongs to a
+    /// PREVIOUS recording's draining tail, never to this capture. Readable so
+    /// the indicator gates the live affordance on what THIS capture actually
+    /// started with, not on a live Settings read a mid-recording toggle flips.
+    private(set) var captureLiveEnabled = true
+
+    /// The job the queue is currently working; nil when the queue is parked.
+    /// Readable so the indicator stack can promote the pill of the job that is
+    /// genuinely being worked, rather than guessing from a phase (with
+    /// diarization off a job can be active while its phase still reads
+    /// `.queued`).
+    private(set) var activeJobID: ProcessingJob.ID?
+    /// Task of the most recently enqueued job. A new job's task awaits it first,
+    /// which is what makes the queue FIFO and strictly serial.
+    private var lastJobTask: Task<Void, Never>?
+    /// Jobs parked waiting for the engine slot, resumed when capture (and its
+    /// live pass) let go of it.
+    private var engineSlotWaiters: [CheckedContinuation<Void, Never>] = []
+
+    // MARK: - Warm engine slot
+
+    /// `@AppStorage("transcription.preloadBeforeMeetings")` in Settings;
+    /// absent = true. Gates the warm slot as a whole: parking after a job and
+    /// prewarming ahead of meetings. Read fresh each poll tick (and each park),
+    /// never snapshotted — flipping it off drains the slot on the next tick.
+    static let preloadBeforeMeetingsKey = "transcription.preloadBeforeMeetings"
+
+    /// The idle engine parked between recordings (the single-engine
+    /// invariant's fourth holder — see the class doc). Filled by a finished
+    /// job or a prewarm; emptied by `takeWarmOrLoad` (taken by a recording)
+    /// or the warm-policy poll (unloaded).
+    private var warmTranscriber: Transcriber?
+    /// The provider+model identity (`engineKey()`) the warm engine was loaded
+    /// for. A mismatch at take/poll time means Settings changed since it was
+    /// parked — the stale engine is dropped, never handed to a recording.
+    private var warmKey: String?
+    /// The in-flight pre-load, when the poll decided to warm up ahead of a
+    /// meeting. `takeWarmOrLoad` awaits it before looking at the slot, which
+    /// is what makes a recording started mid-prewarm reuse that load instead
+    /// of starting a second one.
+    private var prewarmTask: Task<Void, Never>?
+    /// The 30-second warm-policy poll loop (`startWarmPolicy`).
+    private var warmPolicyTask: Task<Void, Never>?
+
+    /// Warm-slot observability for tests and diagnostics; the slot itself
+    /// stays private so nothing outside `takeWarmOrLoad`/the poll can move
+    /// the engine.
+    var isEngineWarm: Bool { warmTranscriber != nil }
+    var isPrewarming: Bool { prewarmTask != nil }
+
     /// Latched synchronously at the top of `startRecording`, before its first
     /// suspension point (`recorder.start`), and cleared when the start attempt
     /// resolves either way. Without it, two rapid start triggers (the Record
-    /// button plus two Join surfaces share one single-slot Center) could both
-    /// pass the `isBusy` check-then-act across that suspension and double-start,
+    /// button plus two Join surfaces share one Center) could both pass the
+    /// `isCapturing` check-then-act across that suspension and double-start,
     /// orphaning the first recorder as unstoppable capture.
     private var isStarting = false
 
-    /// A recording, transcription, or summarization is in flight (including a
-    /// start still awaiting the recorder — see `isStarting`). `.failed` is
-    /// not busy — a failed run can be retried or dismissed.
-    var isBusy: Bool {
-        if isStarting { return true }
-        switch phase {
-        case .idle, .failed:
-            return false
-        case .recording, .transcribing, .diarizing, .summarizing:
-            return true
-        }
-    }
-
-    /// `UserDefaults` keys mirroring the audio file awaiting transcription plus
-    /// the event link/title it belongs to, so a recording — and its Target/event
-    /// association — survives a crash/relaunch and is recovered event-linked.
-    static let pendingAudioPathKey = "recorder.pendingAudioPath"
-    static let pendingEventIDKey = "recorder.pendingEventID"
-    static let pendingTitleKey = "recorder.pendingTitle"
+    /// Audio file of the active capture.
+    private var captureAudioURL: URL?
 
     private let recorderFactory: () -> AudioRecording
     private let engineFactory: (TranscriptionConfig) async throws -> Transcriber
-    private let diarizerFactory: () async throws -> SpeakerDiarizing
+    private let diarizerFactory: (TranscriptionConfig) async throws -> SpeakerDiarizing
     private let decode: (URL) throws -> [Float]
     private let runnerResolver: () -> CLIRunnerProtocol?
     private let notifier: MeetingTranscriptNotifying
     private let defaults: UserDefaults
+    /// Directory the recorder writes `rec_*` files into and `restorePendingOnLaunch`
+    /// scans. Injectable so tests neither write to nor scan the user's real one.
+    private let recordingsDirectory: URL
+    /// Identity of the engine `engineFactory` would load right now (provider +
+    /// model, the same Settings keys `defaultEngineFactory` reads). Consulted
+    /// when parking and when taking from the warm slot, so a Settings change
+    /// between the two invalidates the parked engine instead of serving it.
+    private let engineKey: () -> String
+    /// Injectable clock for the warm-policy poll (the MeetingReminderCenter
+    /// convention).
+    private let clock: () -> Date
+    /// Reads the meeting window the warm policy decides against. The default
+    /// stub sees no meetings (the Center is constructed before the DB pool
+    /// exists); AppState hands in the real GRDB-backed provider via
+    /// `configureWarmPolicy` once the pool opens.
+    private var meetingsProvider: (Date) -> WarmMeetingWindow
 
     /// Recorder for the active recording; released once `stop()` is called.
     private var recorder: AudioRecording?
@@ -128,11 +442,17 @@ final class MeetingRecorderCenter {
     init(
         recorderFactory: @escaping () -> AudioRecording = { SystemAudioRecorder() },
         engineFactory: @escaping (TranscriptionConfig) async throws -> Transcriber = MeetingRecorderCenter.defaultEngineFactory,
-        diarizerFactory: @escaping () async throws -> SpeakerDiarizing = { try await FluidAudioDiarizer.load() },
+        diarizerFactory: @escaping (TranscriptionConfig) async throws -> SpeakerDiarizing = {
+            try await FluidAudioDiarizer.load(clusteringThreshold: $0.diarizationThreshold)
+        },
         decode: @escaping (URL) throws -> [Float] = AudioFileDecoder.decodePCM16k(url:),
         runnerResolver: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() },
         notifier: MeetingTranscriptNotifying = NotificationService.shared,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        recordingsDirectory: URL = MeetingRecorderCenter.defaultRecordingsDirectory(),
+        engineKey: @escaping () -> String = MeetingRecorderCenter.defaultEngineKey,
+        now: @escaping () -> Date = Date.init,
+        meetingsProvider: @escaping (Date) -> WarmMeetingWindow = { _ in .noMeetings }
     ) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
@@ -141,29 +461,200 @@ final class MeetingRecorderCenter {
         self.runnerResolver = runnerResolver
         self.notifier = notifier
         self.defaults = defaults
+        self.recordingsDirectory = recordingsDirectory
+        self.engineKey = engineKey
+        self.clock = now
+        self.meetingsProvider = meetingsProvider
     }
 
     /// Production factory: resolves the provider+model chosen in Settings
     /// (`transcription.provider`, default `whisperkit`; `transcription.model`,
     /// default `large-v3-v20240930` i.e. large-v3-turbo) via
     /// `TranscriptionProviderRegistry` and loads its `Transcriber`. Runs lazily
-    /// on first `stop()`, so first use may download model weights. The
+    /// on first use, so first use may download model weights. The
     /// `TranscriptionConfig` is unused here (provider/model are separate
     /// `@AppStorage` keys); the parameter exists so tests can vary the
     /// transcriber per config.
     static func defaultEngineFactory(_ config: TranscriptionConfig) async throws -> Transcriber {
-        let providerID = UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit"
-        let model = UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930"
+        let (providerID, model) = resolveProviderAndModel()
         let provider = TranscriptionProviderRegistry.resolve(providerID: providerID)
         return try await provider.makeTranscriber(model: model) { _ in }
     }
 
-    /// Diarization post-pass: renders role-tagged text from the finished
-    /// transcription. Every failure returns the plain text — roles are a
-    /// progressive enhancement and must never fail the pipeline (spec §3.6) —
-    /// but is logged and latched into `lastRolesError` so the completion
-    /// notification can flag the missing labels (the recap-failure precedent).
-    /// `samples` avoids a re-decode when the batch path already has them.
+    /// Production engine identity: the same two Settings keys (and defaults)
+    /// `defaultEngineFactory` resolves, so "key matches" means "the factory
+    /// would load exactly what is parked". `nonisolated` so it can serve as
+    /// the init's default argument (evaluated outside the main actor); it
+    /// only reads `UserDefaults.standard` — deliberately, like the factory,
+    /// NOT the injected `defaults` (provider/model are `@AppStorage` keys).
+    nonisolated static func defaultEngineKey() -> String {
+        let (providerID, model) = resolveProviderAndModel()
+        return "\(providerID)|\(model)"
+    }
+
+    /// The Settings selection both of the above read. Shared so the identity
+    /// and the load can never drift apart — a default changed in one place
+    /// only would silently make every key mismatch (or, worse, match an
+    /// engine the factory never loaded).
+    nonisolated private static func resolveProviderAndModel() -> (providerID: String, model: String) {
+        (UserDefaults.standard.string(forKey: "transcription.provider") ?? "whisperkit",
+         UserDefaults.standard.string(forKey: "transcription.model") ?? "large-v3-v20240930")
+    }
+
+    // MARK: - Warm engine policy
+
+    /// Preload toggle, absent = true (the `remindersEnabledKey` convention).
+    private var preloadEnabled: Bool {
+        defaults.object(forKey: Self.preloadBeforeMeetingsKey) == nil
+            || defaults.bool(forKey: Self.preloadBeforeMeetingsKey)
+    }
+
+    /// Whether anything but the warm slot holds (or is about to hold) the
+    /// engine: a capture, a live pass still draining, a job the queue is
+    /// working, or a job that has been handed an engine but has not claimed
+    /// the slot yet. The policy never prewarms — and never unloads — while
+    /// this is true.
+    ///
+    /// That last term is not redundant: `stopAndProcess` hands the engine to
+    /// the job and releases the live slot in one main-actor step, while the
+    /// job's own task claims `activeJobID` in a later one. Without it a tick
+    /// landing in between would see a free engine and prewarm a second model
+    /// alongside the one the job is holding.
+    private var isEngineBusy: Bool {
+        isCapturing || liveTask != nil || activeJobID != nil || jobs.contains { $0.engine != nil }
+    }
+
+    /// The single engine-acquisition point for both load sites
+    /// (`startLivePass` and the batch fallback in `transcribeAndSave`):
+    /// (1) an in-flight prewarm is awaited first, so a recording started
+    /// mid-prewarm reuses that load rather than starting a second one;
+    /// (2) a parked engine whose key still matches Settings is taken (the
+    /// slot is emptied — the engine now belongs to the caller); a key
+    /// mismatch drops the stale engine instead of serving it;
+    /// (3) otherwise the factory loads fresh, under the key read BEFORE the
+    /// load — the caller carries that key onward, so the engine is parked as
+    /// what it is rather than as whatever Settings say when it finishes.
+    ///
+    /// Step (1) awaits the prewarm even when Settings changed while it was
+    /// loading, and that is deliberate: an engine load is not cancellable, so
+    /// skipping the await would leave the arriving prewarm in memory next to
+    /// the one loaded here. The single-engine invariant outranks the stall a
+    /// switch-then-instantly-record costs.
+    private func takeWarmOrLoad(_ config: TranscriptionConfig) async throws -> LoadedEngine {
+        if let prewarmTask {
+            await prewarmTask.value
+        }
+        if let warm = warmTranscriber {
+            let parkedKey = warmKey
+            warmTranscriber = nil
+            warmKey = nil
+            if let parkedKey, parkedKey == engineKey() {
+                return LoadedEngine(transcriber: warm, key: parkedKey)
+            }
+            // Stale: Settings switched provider/model since it was parked.
+            // Fall through to load what the user actually selected now.
+        }
+        let key = engineKey()
+        return LoadedEngine(transcriber: try await engineFactory(config), key: key)
+    }
+
+    /// Parks a finished job's engine back into the warm slot so the next
+    /// recording skips the load — under the key it was LOADED for, never a
+    /// freshly read one. With preloading off the engine is dropped right here
+    /// instead — the slot must not keep a model in memory the user asked not
+    /// to keep (and the poll, the other unload point, may not even be
+    /// running), which also covers a toggle flipped off during a long load.
+    /// Never called on a failure path: an engine that just failed is dropped
+    /// by `failJob`, not parked.
+    private func parkTranscriber(_ engine: LoadedEngine) {
+        guard preloadEnabled else { return }
+        warmTranscriber = engine.transcriber
+        warmKey = engine.key
+    }
+
+    /// Starts the 30-second warm-policy poll (the `MeetingReminderCenter.start`
+    /// shape). Called by AppState once the meetings provider is wired.
+    func startWarmPolicy() {
+        warmPolicyTask?.cancel()
+        warmPolicyTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                self.warmPolicyTick()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+
+    func stopWarmPolicy() {
+        warmPolicyTask?.cancel()
+        warmPolicyTask = nil
+    }
+
+    /// Late wiring for the warm policy's calendar read: the Center is created
+    /// before the DB pool exists (the `voicePrintsLoader` precedent), so
+    /// AppState hands the GRDB-backed provider in here once the pool opens.
+    func configureWarmPolicy(meetingsProvider: @escaping (Date) -> WarmMeetingWindow) {
+        self.meetingsProvider = meetingsProvider
+    }
+
+    /// One warm-policy decision tick — called every 30 s by the poll loop and
+    /// directly from tests (the `MeetingReminderCenter.poll` convention). All
+    /// judgment lives in `WarmEnginePolicy.decide`; this only gathers inputs
+    /// (toggle and key read fresh each tick, never snapshotted) and applies
+    /// the verdict.
+    func warmPolicyTick(config: TranscriptionConfig = .fromDefaults()) {
+        let now = clock()
+        let decision = WarmEnginePolicy.decide(
+            toggleEnabled: preloadEnabled,
+            engineBusy: isEngineBusy,
+            warmPresent: warmTranscriber != nil,
+            prewarmInFlight: prewarmTask != nil,
+            keyMatches: warmKey == engineKey(),
+            window: meetingsProvider(now),
+            now: now
+        )
+        switch decision {
+        case .prewarm:
+            startPrewarm(config: config)
+        case .unload:
+            warmTranscriber = nil
+            warmKey = nil
+        case .none:
+            break
+        }
+    }
+
+    /// Loads the engine ahead of a meeting and parks it. Failure is silent by
+    /// contract (logged only): a failed prewarm must never surface an error —
+    /// the record-time load path reports errors as today, and the next tick
+    /// may simply retry. The key is captured at start so the parked engine is
+    /// labeled with what the factory was asked to load, even if Settings
+    /// change mid-load; parking goes through `parkTranscriber` so a toggle
+    /// switched off during the (long) load drops the arriving engine instead
+    /// of stocking the slot the user just asked to keep empty.
+    private func startPrewarm(config: TranscriptionConfig) {
+        let key = engineKey()
+        prewarmTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let transcriber = try await self.engineFactory(config)
+                self.parkTranscriber(LoadedEngine(transcriber: transcriber, key: key))
+            } catch {
+                print("[MeetingRecorder] prewarm failed (will retry on a later tick): "
+                      + error.localizedDescription)
+            }
+            self.prewarmTask = nil
+        }
+    }
+
+    // MARK: - Diarization post-pass
+
+    /// Renders role-tagged text from the finished transcription. Every failure
+    /// returns the plain text — roles are a progressive enhancement and must
+    /// never fail the pipeline (spec §3.6) — but is logged and latched into the
+    /// job's `rolesError` so the completion notification can flag the missing
+    /// labels (the recap-failure precedent). `samples` avoids a re-decode when
+    /// the batch path already has them.
     /// The returned utterances are the structured form of the same text
     /// (`text == TranscriptSegments.render(utterances)`); nil whenever roles
     /// were not rendered — the save then leaves `segments_json` NULL.
@@ -172,13 +663,15 @@ final class MeetingRecorderCenter {
     /// engines — or roles were not rendered); the save persists them to
     /// `speakers_json` so a later manual rename can learn a voice print.
     private func renderRoles(
+        jobID: ProcessingJob.ID,
         output: TranscriptionOutput,
         audioURL: URL,
         samples: [Float]?,
-        config: TranscriptionConfig
+        config: TranscriptionConfig,
+        eventID: String?
     ) async -> (text: String, utterances: [TranscriptUtterance]?, speakers: [SpeakerEmbedding]?) {
         guard config.diarization, !output.segments.isEmpty else { return (output.text, nil, nil) }
-        phase = .diarizing
+        updateJob(jobID) { $0.phase = .diarizing }
         do {
             let pcm: [Float]
             if let samples {
@@ -189,7 +682,7 @@ final class MeetingRecorderCenter {
                 let decode = self.decode
                 pcm = try await Task.detached { try decode(audioURL) }.value
             }
-            let diarizer = try await diarizerFactory()
+            let diarizer = try await diarizerFactory(config)
             let speakers = try await diarizer.diarize(pcm)
             // The sidecar parse is a full-file read (~36k lines per hour) —
             // off-main like the decode above.
@@ -202,10 +695,26 @@ final class MeetingRecorderCenter {
                     clusterEmbeddings[s.speakerID] = embedding
                 }
             }
-            let voiceNames = await matchVoiceNames(clusterEmbeddings: clusterEmbeddings)
+            // One dict for both RoleAssigner calls below, so the mega-cluster
+            // suppression cannot apply to the transcript labels but not to the
+            // embedding keys (or vice versa).
+            let (rawNames, rawOwners, ownerVoiceAlike) = await matchVoiceNames(
+                clusterEmbeddings: clusterEmbeddings, eventID: eventID)
+            let (voiceNames, ownerClusters) = Self.filterMegaClusters(
+                voiceNames: rawNames, speakers: speakers, ownerClusters: rawOwners)
+            // The «Я» veto silently removing the label would look like mic
+            // detection randomly stopped working — log it once, here (the
+            // mega-cluster suppression precedent; RoleAssigner stays pure).
+            if case let .vetoed(cluster, name) = RoleAssigner.detectSelf(
+                speakers: speakers, activity: activity, voiceNames: voiceNames,
+                ownerClusters: ownerClusters, ownerVoiceAlike: ownerVoiceAlike) {
+                print("[MeetingRecorder] «Я» veto: mic-dominant cluster \(cluster) confidently "
+                      + "matches \"\(name)\", not the owner — no «Я» in this transcript")
+            }
             if let utterances = RoleAssigner.assign(
                 segments: output.segments, speakers: speakers,
-                activity: activity, voiceNames: voiceNames
+                activity: activity, voiceNames: voiceNames, ownerClusters: ownerClusters,
+                ownerVoiceAlike: ownerVoiceAlike
             ) {
                 // Key the persisted embeddings by the SAME labels the
                 // transcript renders (clusterLabels is what assign used).
@@ -214,7 +723,9 @@ final class MeetingRecorderCenter {
                 // in the transcript, and shipping it would make the Go save
                 // drop it as an orphan.
                 let labels = RoleAssigner.clusterLabels(
-                    speakers: speakers, activity: activity, voiceNames: voiceNames)
+                    speakers: speakers, activity: activity,
+                    voiceNames: voiceNames, ownerClusters: ownerClusters,
+                    ownerVoiceAlike: ownerVoiceAlike)
                 let usedLabels = Set(utterances.map(\.speaker))
                 let speakerEmbeddings = clusterEmbeddings
                     .compactMap { cluster, embedding -> SpeakerEmbedding? in
@@ -228,70 +739,237 @@ final class MeetingRecorderCenter {
             // Roles undeterminable (diarizer found no speakers) — flag it like
             // the error path so the notification stays honest.
             print("[MeetingRecorder] diarization found no speakers, saving without labels")
-            lastRolesError = "no speakers detected"
+            updateJob(jobID) { $0.rolesError = "no speakers detected" }
             return (output.text, nil, nil)
         } catch {
             print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
-            lastRolesError = error.localizedDescription
+            updateJob(jobID) { $0.rolesError = error.localizedDescription }
             return (output.text, nil, nil)
         }
     }
 
     /// Voice matching (Level 1): each cluster embedding against the
     /// voice-print database, cosine ≥ threshold → the person's display name.
-    /// Empty when there is nothing to match against — no loader (no DB),
-    /// empty database, or no embeddings — which degrades to plain
-    /// "Speaker N" labels. «Я» keeps absolute priority downstream
-    /// (RoleAssigner.clusterLabels ignores a voiceName for the self cluster).
-    private func matchVoiceNames(clusterEmbeddings: [String: [Float]]) async -> [String: String] {
-        guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return [:] }
-        let prints = await voicePrintsLoader()
-        guard !prints.isEmpty else { return [:] }
+    /// For an event-linked recording the pool is first scoped to the event's
+    /// attendees (`VoicePrintMatcher.scoped`) so a voice-alike from another
+    /// meeting cannot claim a cluster; ad-hoc recordings (or an attendee-load
+    /// failure) keep the global pool, and the owner's EMAIL-KEYED prints are
+    /// never scoped out. Empty when there is nothing to match against — no
+    /// loader (no DB), empty database, or no embeddings — which degrades to
+    /// plain "Speaker N" labels.
+    ///
+    /// `ownerClusters` marks the matched clusters whose winning print is the
+    /// OWNER's (see `VoicePrintMatcher.isOwnerPrint`; semantics in
+    /// `RoleAssigner.clusterLabels`' doc). It is non-nil ONLY when the pool
+    /// holds an owner-identified print USABLE in this run (valid embedding
+    /// of this run's dimension) — owner identity without such a print
+    /// (typical for a name-keyed print minted by an ad-hoc rename, or a
+    /// print learned under an older embedding model) must NOT arm the veto,
+    /// or an unmatchable owner would lose «Я» with no possible tie-break.
+    ///
+    /// `ownerVoiceAlike` is the veto-suppression set: clusters ANY owner
+    /// print matches at ≥ threshold, even when the globally best match is
+    /// someone else's print (the mixed name-keyed + email-keyed owner case).
+    /// Conservative by owner decision: it protects a cluster from the veto,
+    /// it never promotes one to «Я».
+    private func matchVoiceNames(
+        clusterEmbeddings: [String: [Float]], eventID: String?
+    ) async -> (names: [String: String], ownerClusters: Set<String>?, ownerVoiceAlike: Set<String>) {
+        guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return ([:], nil, []) }
+        let allPrints = await voicePrintsLoader()
+        guard !allPrints.isEmpty else { return ([:], nil, []) }
+        let ownerEmails = await ownerEmailsLoader?() ?? []
+        var prints = allPrints
+        if let eventID, let attendeesLoader {
+            prints = VoicePrintMatcher.scoped(allPrints, attendees: await attendeesLoader(eventID),
+                                              ownerEmails: ownerEmails)
+        }
+        let ownerPrints = prints.filter { VoicePrintMatcher.isOwnerPrint($0, ownerEmails: ownerEmails) }
+        // Usable = the print could actually match SOME cluster of this run
+        // (valid vector of a present dimension) — an owner print learned
+        // under an older embedding model must not arm the veto it can never
+        // satisfy. Checked against all clusters, not a sampled one:
+        // Dictionary order is seed-randomized.
+        let dimensions = Set(clusterEmbeddings.values.map(\.count))
+        let ownerArmed = ownerPrints.contains {
+            dimensions.contains($0.embeddingVector.count)
+                && VoicePrintMatcher.normalize($0.embeddingVector) != nil
+        }
         var names: [String: String] = [:]
+        var ownerClusters: Set<String> = []
+        var ownerVoiceAlike: Set<String> = []
         for (cluster, embedding) in clusterEmbeddings {
             if let match = VoicePrintMatcher.bestMatch(embedding: embedding, prints: prints) {
                 names[cluster] = match.displayName
+                if VoicePrintMatcher.isOwnerPrint(match, ownerEmails: ownerEmails) {
+                    ownerClusters.insert(cluster)
+                }
+            }
+            if ownerArmed,
+               VoicePrintMatcher.bestMatch(embedding: embedding, prints: ownerPrints) != nil {
+                ownerVoiceAlike.insert(cluster)
             }
         }
-        return names
+        return (names, ownerArmed ? ownerClusters : nil, ownerVoiceAlike)
     }
 
-    // MARK: Recording
+    /// Share of total diarized speech above which a cluster is read as a
+    /// diarization under-split (several people merged into one cluster) rather
+    /// than a genuinely dominant speaker.
+    private static let megaClusterShareThreshold: Double = 0.4
+    /// How many distinct clusters must be detected before the mega-cluster
+    /// guard may fire. In a 1:1 the counterparty legitimately owns ~half the
+    /// speech, so the guard must not fire there; with 4+ detected clusters a
+    /// 40%+ cluster is far likelier an under-split than a real dominant
+    /// speaker, and a wrong person-name on a merged cluster is worse than an
+    /// anonymous "Speaker N".
+    private static let megaClusterMinClusters = 4
 
-    /// Starts a recording for `eventID` (nil = ad-hoc). No-op when already busy
-    /// (single-slot guard). The audio path is persisted to `UserDefaults` before
-    /// capture starts so a crash still leaves a recoverable pointer.
+    /// Strips voice-print names from suspiciously dominant clusters, so a
+    /// cluster the diarizer merged several people into is never renamed to one
+    /// of them — it falls back to a plain "Speaker N" label instead. Fires only
+    /// in multi-speaker meetings; see `megaClusterShareThreshold` /
+    /// `megaClusterMinClusters`. Pure (internal, not private, so it is testable
+    /// without driving the whole Center).
+    ///
+    /// A suppressed cluster also loses its owner status (`ownerClusters`) — a
+    /// merged blob must not win the «Я» tie-break as "the owner". Deliberate
+    /// residue: with no name left the blob cannot be vetoed either, so it MAY
+    /// still win «Я» by bare mic share — the legacy under-split behavior,
+    /// kept because a wrong «Я» heuristic beats guessing a person's name for
+    /// a blob of several people.
+    /// (`ownerVoiceAlike` is deliberately NOT filtered here: the veto — the
+    /// only thing it gates — needs a non-empty voice name, and a suppressed
+    /// cluster has none left, so an unfiltered alike entry cannot change any
+    /// outcome.)
+    static func filterMegaClusters(
+        voiceNames: [String: String],
+        speakers: [SpeakerSegment],
+        ownerClusters: Set<String>?
+    ) -> (names: [String: String], owners: Set<String>?) {
+        var speech: [String: Double] = [:]
+        for s in speakers {
+            speech[s.speakerID, default: 0] += max(0, s.endSec - s.startSec)
+        }
+        let total = speech.values.reduce(0, +)
+        guard speech.count >= megaClusterMinClusters, total > 0 else {
+            return (voiceNames, ownerClusters)
+        }
+        var filtered = voiceNames
+        for (cluster, duration) in speech.sorted(by: { $0.key < $1.key }) {
+            let share = duration / total
+            guard share > megaClusterShareThreshold, let name = filtered[cluster] else { continue }
+            // Silent suppression would look like voice matching randomly
+            // stopped working.
+            print("[MeetingRecorder] cluster \(cluster) holds \(Int((share * 100).rounded()))% "
+                  + "of speech across \(speech.count) clusters — suppressing voice match "
+                  + "\"\(name)\" (likely diarization under-split)")
+            filtered[cluster] = nil
+        }
+        // "Still has a name" is a valid suppression proxy ONLY because every
+        // owner cluster is inserted together with its name in matchVoiceNames
+        // — an owner cluster without a voiceNames entry would silently lose
+        // its status here even though nothing was suppressed.
+        return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
+    }
+
+    // MARK: - Capture
+
+    /// Starts a recording for `eventID` (nil = ad-hoc). No-op while a recording
+    /// is already being captured; the processing queue never blocks a start.
+    /// The `rec_X.meta` sidecar is written before capture starts, so a crash
+    /// still leaves a recoverable, event-linked pointer.
     func startRecording(eventID: String?, title: String?, config: TranscriptionConfig = .fromDefaults()) async {
-        guard !isBusy else { return }
+        guard !isCapturing else { return }
+        // Past the duplicate-start guard — a rejected start must not fire the
+        // dictation handshake — but before any capture/engine work begins.
+        captureWillStart?()
         // Close the check-then-act window across `recorder.start`: a second
-        // start arriving while this one is suspended must see busy. Cleared on
-        // every exit — by then `phase` itself carries the busy/failed state.
+        // start arriving while this one is suspended must see capture busy.
         isStarting = true
-        defer { isStarting = false }
+        defer {
+            isStarting = false
+            // A job parked on the engine slot must be woken once the start
+            // resolves; a successful start keeps the slot and releases it in
+            // `stopAndProcess` instead.
+            if !isCapturing { wakeEngineSlotWaiters() }
+        }
 
         currentEventID = eventID
         currentTitle = title
 
         let recorder = recorderFactory()
         self.recorder = recorder
+        let url = Self.uniqueRecordingURL(in: recordingsDirectory)
 
         do {
-            let directory = Self.recordingsDirectory()
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("rec_\(Self.timestampComponent()).caf")
-            persistPendingDefaults(audioURL: url)
+            try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
+            Self.writeMetaSidecar(eventID: eventID, title: title, for: url)
             try await recorder.start(to: url)
-            pendingAudioURL = url
-            phase = .recording(startedAt: Date())
-            startLivePass(recorder: recorder, config: config)
+            captureAudioURL = url
+            captureState = .recording(startedAt: Date())
+            captureError = nil
+            startLevelsTask(recorder: recorder)
+            captureLiveEnabled = config.liveTranscription
+            if !config.liveTranscription {
+                // Live pass disabled in Settings: capture only, the batch path
+                // transcribes from the file after Stop. The generation bump
+                // fences a previous recording's still-draining pass out of the
+                // just-cleared list (the `startLivePass` precedent).
+                liveGeneration += 1
+                liveChunks = []
+                liveEngineState = .off
+            } else if activeJobID == nil, liveTask == nil, dictationEngineResident?() != true {
+                startLivePass(recorder: recorder, config: config)
+            } else {
+                // A job, the previous recording's still-draining live tail, or
+                // a dictation engine not yet dropped by the captureWillStart
+                // handshake owns the engine slot. The recorder's live stream
+                // buffers unboundedly from second zero, so the live pass loads
+                // its engine when the slot frees and catches up on the backlog.
+                liveChunks = []
+                liveEngineState = .waiting
+                pendingLiveStart = PendingLiveStart(recorder: recorder, config: config)
+            }
         } catch {
             // Start failed before any audio was captured: nothing to keep.
             self.recorder = nil
+            captureAudioURL = nil
             currentEventID = nil
             currentTitle = nil
-            clearPending()
-            fail(error.localizedDescription)
+            Self.removeMetaSidecar(for: url)
+            captureError = error.localizedDescription
+            notifier.sendTranscriptFailedNotification(reason: error.localizedDescription)
         }
+    }
+
+    /// Mirrors the active recorder's throttled level pairs into
+    /// `captureLevels`, zeroing them when the stream finishes on its own
+    /// (`recorder.stop()`). A cancelled task skips the trailing reset — the
+    /// teardown path that cancelled it already reset on its behalf, and a new
+    /// capture's levels may have landed in between.
+    private func startLevelsTask(recorder: AudioRecording) {
+        levelsGeneration += 1
+        let generation = levelsGeneration
+        levelsTask = Task { @MainActor [weak self] in
+            for await levels in recorder.liveLevels {
+                guard let self, self.levelsGeneration == generation else { return }
+                self.captureLevels = levels
+            }
+            guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
+            self.captureLevels = .init(mic: 0, system: 0)
+        }
+    }
+
+    /// Ends the level feed for a capture that is over: every path that clears
+    /// `captureState` runs this so the meters never show a stale level. The
+    /// generation bump fences out a value the cancelled task had already
+    /// received but not yet written.
+    private func stopLevelsTask() {
+        levelsGeneration += 1
+        levelsTask?.cancel()
+        levelsTask = nil
+        captureLevels = .init(mic: 0, system: 0)
     }
 
     /// Loads the transcriber and, when it supports live (`makeLiveSession`
@@ -300,28 +978,39 @@ final class MeetingRecorderCenter {
     /// provider that simply does not support live — only sets
     /// `liveEngineState` to `.unavailable` and leaves the batch fallback to
     /// handle stop. The loaded transcriber is stashed either way so the
-    /// stop-time batch fallback reuses it instead of loading twice.
+    /// recording's job reuses it instead of loading twice.
     private func startLivePass(recorder: AudioRecording, config: TranscriptionConfig) {
         liveChunks = []
         liveEngineState = .loading
-        loadedTranscriber = nil
+        loadedEngine = nil
         liveGeneration += 1
         let generation = liveGeneration
         liveTask = Task { [weak self] () -> TranscriptionOutput? in
             guard let self else { return nil }
-            let transcriber: Transcriber
+            // Same fence as `liveChunks` below: an orphaned prior pass must not
+            // describe the recording that has since taken over the indicator.
+            let setState: @MainActor (LiveEngineState) -> Void = { state in
+                guard self.liveGeneration == generation else { return }
+                self.liveEngineState = state
+            }
+            let loaded: LoadedEngine
             do {
-                transcriber = try await self.engineFactory(config)
+                // Warm-slot fast path: a parked (or currently prewarming)
+                // engine is taken instead of loading a second one.
+                loaded = try await self.takeWarmOrLoad(config)
             } catch {
-                await MainActor.run { self.liveEngineState = .unavailable }
+                await MainActor.run { setState(.unavailable) }
                 return nil
             }
-            await MainActor.run { self.loadedTranscriber = transcriber }
-            guard let liveSession = transcriber.makeLiveSession(config: config) else {
-                await MainActor.run { self.liveEngineState = .unavailable }
+            await MainActor.run {
+                guard self.liveGeneration == generation else { return }
+                self.loadedEngine = loaded
+            }
+            guard let liveSession = loaded.transcriber.makeLiveSession(config: config) else {
+                await MainActor.run { setState(.unavailable) }
                 return nil // provider has no live session → batch fallback from file
             }
-            await MainActor.run { self.liveEngineState = .running }
+            await MainActor.run { setState(.running) }
             do {
                 return try await liveSession.run(samples: recorder.liveSamples) { chunk in
                     Task { @MainActor in
@@ -338,14 +1027,19 @@ final class MeetingRecorderCenter {
         }
     }
 
-    /// Stops the active recording and runs transcription → save. No-op unless a
-    /// recording is in flight. The finalized audio is always preserved on disk,
-    /// and stopping capture never depends on the `watchtower` CLI resolving —
-    /// the runner is looked up only at the save step.
+    /// Stops the active recording and enqueues it for post-processing, then
+    /// awaits that job — the caller who pressed Stop waits for their own
+    /// recording, while a NEW recording can start the moment capture ends.
+    /// No-op unless a recording is in flight. The finalized audio is always
+    /// preserved on disk, and stopping capture never depends on the
+    /// `watchtower` CLI resolving — the runner is looked up only at the save
+    /// step.
     func stopAndProcess(config: TranscriptionConfig) async {
-        guard case .recording = phase, let recorder else { return }
+        guard case .recording = captureState, let recorder else { return }
         self.recorder = nil
-        lastRolesError = nil // per-run state, reset at the run boundary
+        let startedURL = captureAudioURL
+        let eventID = currentEventID
+        let title = currentTitle
 
         let result: RecordingResult
         do {
@@ -359,71 +1053,131 @@ final class MeetingRecorderCenter {
             // already in flight (cancellation cannot interrupt an in-progress
             // `await engine.transcribeWindow`) is fenced out of whatever
             // recording starts next instead of contaminating it.
-            liveTask?.cancel()
-            liveTask = nil
-            loadedTranscriber = nil
-            liveGeneration += 1
-            fail(error.localizedDescription)
+            captureState = .idle
+            captureAudioURL = nil
+            stopLevelsTask()
+            liveEngineState = .off
+            if consumeLivePassOwnership() {
+                liveTask?.cancel()
+                let orphan = liveTask
+                liveGeneration += 1
+                // Cancellation cannot interrupt an in-progress
+                // `transcribeWindow`, so the engine the orphan is still
+                // decoding through is not free yet. `liveTask` therefore stays
+                // set until it has actually exited — it IS the engine-slot
+                // claim both residency gates read (`acquireEngineSlot` and
+                // `startRecording`'s live-pass branch), so keeping it means a
+                // parked job and a NEW recording alike wait rather than loading
+                // a second engine alongside the orphan. Clearing it (and the
+                // transcriber it loaded, which belongs to nobody now) plus the
+                // handoff all happen once the await returns. The failure itself
+                // surfaces immediately either way — only the slot waits.
+                Task { @MainActor [weak self] in
+                    _ = await orphan?.value
+                    guard let self else { return }
+                    self.liveTask = nil
+                    self.loadedEngine = nil
+                    self.startPendingLivePass()
+                    self.wakeEngineSlotWaiters()
+                }
+            } else {
+                wakeEngineSlotWaiters()
+            }
+            // The audio captured so far stays on disk with its sidecar: surface
+            // it as a failed job so Retry re-runs the batch path from the file.
+            if let startedURL {
+                var job = ProcessingJob(audioURL: startedURL, eventID: eventID, title: title)
+                job.phase = .failed(error.localizedDescription)
+                jobs.append(job)
+            }
+            notifier.sendTranscriptFailedNotification(reason: error.localizedDescription)
             return
         }
 
-        pendingAudioURL = result.audioURL
-        persistPendingDefaults(audioURL: result.audioURL)
+        captureState = .idle
+        captureAudioURL = nil
+        stopLevelsTask()
+        let ownsLivePass = consumeLivePassOwnership()
+        liveEngineState = .off
 
-        // Live path: the stream is now finished, so awaiting the task finalizes
-        // the tail. A usable result is saved directly — no re-decode.
-        if let liveTask {
-            phase = .transcribing(done: 0, total: 0)
-            let liveOutput = await liveTask.value
-            self.liveTask = nil
-            if let liveOutput,
+        // Enqueued — and given its place in the chain — before the live tail is
+        // drained, so the queue order is stop order and the legacy `phase` never
+        // dips through `.idle` mid-run. The task cannot start before the engine
+        // slot frees below, which is what guarantees it sees a fully built job.
+        let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title)
+        jobs.append(job)
+        let task = startJobTask(jobID: job.id, config: config)
+
+        if ownsLivePass {
+            // The stream is now finished, so awaiting the task finalizes the
+            // tail. A usable result is saved directly — no re-decode.
+            if let liveOutput = await liveTask?.value,
                !liveOutput.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let durationSec = result.durationSec
-                let rendered = await renderRoles(output: liveOutput, audioURL: result.audioURL,
-                                                 samples: nil, config: config)
-                Self.persistTranscript(text: rendered.text, utterances: rendered.utterances,
-                                       speakers: rendered.speakers, durationSec: durationSec,
-                                       langStats: liveOutput.langStats, audioURL: result.audioURL)
-                await saveTranscript(
-                    text: rendered.text,
-                    utterances: rendered.utterances,
-                    speakers: rendered.speakers,
-                    durationSec: durationSec,
-                    langStats: liveOutput.langStats,
-                    audioURL: result.audioURL
-                )
-                loadedTranscriber = nil
-                return
+                updateJob(job.id) {
+                    $0.liveOutput = liveOutput
+                    $0.liveDurationSec = result.durationSec
+                }
             }
+            // The engine the live pass loaded moves to the job (with the key
+            // it was loaded for), so a batch fallback reuses it instead of
+            // loading a second one.
+            updateJob(job.id) { $0.engine = loadedEngine }
+            releaseLiveEngineSlot()
+        } else {
+            // Capture ended, but the previous recording's tail still holds the
+            // engine; wake the queue anyway so it re-checks.
+            wakeEngineSlotWaiters()
         }
 
-        // Fallback: today's decode + batch path (reuses the loaded engine if any).
-        await transcribeAndSave(audioURL: result.audioURL, config: config)
+        await task.value
     }
 
-    /// Re-runs the pipeline from `pendingAudioURL` after a failure or relaunch.
-    /// When a persisted transcript from an earlier run (whose save failed) sits
-    /// next to the audio, decode + transcription are skipped and save is
-    /// re-invoked directly from it (spec §7). No-op when busy or when there is
-    /// no pending audio.
+    /// Whether the recording being stopped is the one that actually holds the
+    /// live pass, clearing the parked start either way (this recorder is
+    /// finished). One still `.waiting` for the engine slot has no live output,
+    /// and the `liveTask` standing at that point belongs to the PREVIOUS
+    /// recording, whose own Stop owns it — never this job. A capture that
+    /// disabled the live pass never owns one either.
+    private func consumeLivePassOwnership() -> Bool {
+        let owns = captureLiveEnabled && pendingLiveStart == nil
+        pendingLiveStart = nil
+        return owns
+    }
+
+    /// Releases the engine slot a finished capture's live pass held and hands it
+    /// on: to a recording that started while the tail was draining, otherwise to
+    /// whatever the queue has parked. Split from clearing `captureState`, which
+    /// happens the moment Stop is pressed — a new recording may start
+    /// immediately, while the engine stays claimed until the tail has drained.
+    private func releaseLiveEngineSlot() {
+        liveTask = nil
+        loadedEngine = nil
+        liveGeneration += 1
+        startPendingLivePass()
+        wakeEngineSlotWaiters()
+    }
+
+    // MARK: - Retry / recovery
+
+    /// Re-runs the pipeline for whatever the legacy retry/recovered pill points
+    /// at (`pendingAudioURL`) and awaits it. When a persisted transcript from an
+    /// earlier run (whose save failed) sits next to the audio, decode +
+    /// transcription are skipped and save is re-invoked directly from it
+    /// (spec §7). No-op when busy or when there is nothing pending.
     func retryTranscription(config: TranscriptionConfig) async {
-        guard !isBusy, let url = pendingAudioURL else { return }
-        // The persisted short-circuit re-saves THIS run's already-rendered
-        // text, so a latched roles failure still describes it — reset only
-        // below, before the paths that re-run renderRoles.
-        if let persisted = Self.loadPersistedTranscript(audioURL: url) {
-            await saveTranscript(
-                text: persisted.text,
-                utterances: persisted.utterances,
-                speakers: persisted.speakers,
-                durationSec: persisted.durationSec,
-                langStats: persisted.langStats,
-                audioURL: url
-            )
+        guard !isBusy else { return }
+        if let entry = recoverable.first {
+            recoverable.removeFirst()
+            let job = ProcessingJob(audioURL: entry.audioURL, eventID: entry.eventID, title: entry.title)
+            jobs.append(job)
+            await startJobTask(jobID: job.id, config: config).value
             return
         }
-        lastRolesError = nil // per-run state, reset at the run boundary
-        await transcribeAndSave(audioURL: url, config: config)
+        guard let failed = newestFailedJob else { return }
+        // Re-enqueues the SAME job, so its latched `rolesError` still describes
+        // the persisted transcript a short-circuiting retry re-sends.
+        updateJob(failed.id) { $0.phase = .queued }
+        await startJobTask(jobID: failed.id, config: config).value
     }
 
     /// Points the Center at an existing audio file (re-transcribe from the UI).
@@ -436,121 +1190,262 @@ final class MeetingRecorderCenter {
     func prepareRetry(audioURL: URL, eventID: String?, title: String?) {
         guard !isBusy else { return }
         Self.removePersistedTranscript(audioURL: audioURL)
-        pendingAudioURL = audioURL
-        currentEventID = eventID
-        currentTitle = title
-        persistPendingDefaults(audioURL: audioURL)
+        addRecoverable(RecoverableRecording(audioURL: audioURL, eventID: eventID, title: title), atHead: true)
     }
 
-    /// Clears a `.failed` phase back to `.idle`, keeping `pendingAudioURL` so the
-    /// audio can still be retried later.
+    /// Clears the failure the legacy pill shows. A failed job becomes a
+    /// recoverable recording rather than disappearing, so its audio — and event
+    /// link — stays retriable, exactly as the old `.failed → .idle` transition
+    /// kept `pendingAudioURL`.
     func dismissFailure() {
         guard case .failed = phase else { return }
-        phase = .idle
+        if captureError != nil {
+            captureError = nil
+            return
+        }
+        guard let index = jobs.lastIndex(where: { $0.phase.isFailed }) else { return }
+        let job = jobs.remove(at: index)
+        addRecoverable(RecoverableRecording(audioURL: job.audioURL, eventID: job.eventID, title: job.title))
     }
 
-    /// Forgets a recovered recording the user chose not to transcribe: clears the
-    /// pending pointer and its mirrored `UserDefaults` so the "recovered" pill
-    /// goes away for good — this session and on relaunch. The audio file is left
-    /// on disk; the Go orphan sweep reclaims it like any other `rec_*` file. Only
-    /// acts on the idle recovered state, never mid-run — otherwise an in-flight
-    /// recording would lose the pointer that lets it recover from a crash.
+    /// Forgets a recovered recording the user chose not to transcribe: drops the
+    /// entry and its `.meta` sidecar so the "recovered" pill goes away for good
+    /// — this session and on relaunch. The audio file is left on disk; the Go
+    /// orphan sweep reclaims it like any other `rec_*` file. Only acts on the
+    /// idle recovered state, never mid-capture — otherwise an in-flight
+    /// recording would lose the sidecar that lets it recover from a crash.
     func dismissRecovered() {
-        guard case .idle = phase, pendingAudioURL != nil else { return }
-        clearPending()
+        guard case .idle = captureState, !recoverable.isEmpty else { return }
+        let entry = recoverable.removeFirst()
+        Self.removeMetaSidecar(for: entry.audioURL)
     }
 
-    /// Restores a recording captured before a crash. If the mirrored path still
-    /// exists on disk, exposes it as `pendingAudioURL` (the UI offers to
-    /// transcribe it); if the file is gone, clears the stale key.
+    /// Recovers every recording captured before a crash: each `rec_*.caf` in the
+    /// recordings directory that still carries its `.meta` sidecar (the sidecar
+    /// is removed on a successful save, so its presence means "never saved").
+    /// The three legacy `UserDefaults` keys of the pre-queue single-slot pointer
+    /// are read — and cleared — once here, so a recording captured by an older
+    /// build recovers too.
     func restorePendingOnLaunch() {
-        guard let path = defaults.string(forKey: Self.pendingAudioPathKey) else { return }
-        if FileManager.default.fileExists(atPath: path) {
-            pendingAudioURL = URL(fileURLWithPath: path)
-            // Restore the event link/title so a recovered recording saves
-            // event-linked, not as ad-hoc.
-            currentEventID = defaults.string(forKey: Self.pendingEventIDKey)
-            currentTitle = defaults.string(forKey: Self.pendingTitleKey)
-        } else {
-            clearPending()
+        migrateLegacyPendingDefaults()
+        for entry in Self.scanRecoverable(in: recordingsDirectory) {
+            addRecoverable(entry)
         }
     }
 
-    // MARK: Pipeline
+    /// One-shot migration off the single-slot pointer. The legacy UserDefaults
+    /// pointer was durable across launches, so the migrated recording must stay
+    /// durable too: a `.meta` sidecar is written BEFORE the keys are cleared —
+    /// quitting without acting on the recovered pill would otherwise leave the
+    /// recording invisible to every later scan, and the Go orphan sweep would
+    /// eventually reclaim the audio. A crash mid-migration keeps the legacy
+    /// pointer for the next launch (the keys clear last).
+    private func migrateLegacyPendingDefaults() {
+        guard let path = defaults.string(forKey: Self.pendingAudioPathKey) else { return }
+        let eventID = defaults.string(forKey: Self.pendingEventIDKey)
+        let title = defaults.string(forKey: Self.pendingTitleKey)
+        if FileManager.default.fileExists(atPath: path) {
+            let url = URL(fileURLWithPath: path)
+            Self.writeMetaSidecar(eventID: eventID, title: title, for: url)
+            addRecoverable(RecoverableRecording(audioURL: url, eventID: eventID, title: title))
+        }
+        defaults.removeObject(forKey: Self.pendingAudioPathKey)
+        defaults.removeObject(forKey: Self.pendingEventIDKey)
+        defaults.removeObject(forKey: Self.pendingTitleKey)
+    }
 
-    private func transcribeAndSave(audioURL: URL, config: TranscriptionConfig) async {
-        phase = .transcribing(done: 0, total: 0)
+    private func addRecoverable(_ entry: RecoverableRecording, atHead: Bool = false) {
+        recoverable.removeAll { $0.audioURL == entry.audioURL }
+        if atHead {
+            recoverable.insert(entry, at: 0)
+        } else {
+            recoverable.append(entry)
+        }
+    }
 
-        // Capture and clear the reusable transcriber (if any) up front, before
-        // any early-return path below — so a stale, already-consumed-or-abandoned
-        // transcriber from a prior recording attempt is never left around for a
-        // later same-session retry to pick up.
-        let reusableTranscriber = loadedTranscriber
-        loadedTranscriber = nil
+    // MARK: - Queue
 
-        let samples: [Float]
-        do {
-            samples = try decode(audioURL)
-        } catch {
-            fail(error.localizedDescription)
+    /// Spawns the job's task behind the previously enqueued one. FIFO and
+    /// strictly serial: the task waits for its predecessor, then for the engine
+    /// slot, and only then runs.
+    private func startJobTask(jobID: ProcessingJob.ID, config: TranscriptionConfig) -> Task<Void, Never> {
+        let predecessor = lastJobTask
+        let task = Task { @MainActor [weak self] in
+            await predecessor?.value
+            guard let self else { return }
+            await self.acquireEngineSlot(for: jobID)
+            await self.runJob(jobID: jobID, config: config)
+        }
+        lastJobTask = task
+        return task
+    }
+
+    /// Parks until no capture (and no draining live pass) owns the engine slot,
+    /// then claims it. Claiming happens in the same main-actor step as the final
+    /// check, so a `startRecording` racing this cannot also load a live engine.
+    private func acquireEngineSlot(for jobID: ProcessingJob.ID) async {
+        while isCapturing || liveTask != nil {
+            await withCheckedContinuation { engineSlotWaiters.append($0) }
+        }
+        activeJobID = jobID
+    }
+
+    /// Resumes every job parked in `acquireEngineSlot` so it re-checks the slot.
+    /// It releases nothing itself — the slot is owned by `isCapturing`/`liveTask`,
+    /// and a woken job that still finds one of them set parks again.
+    private func wakeEngineSlotWaiters() {
+        let waiters = engineSlotWaiters
+        engineSlotWaiters = []
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// The dictation center dropped its resident engine (the other direction
+    /// of the shared-slot handshake): start the live pass parked on it, unless
+    /// a job or a draining live tail holds the slot — their own release paths
+    /// already call `startPendingLivePass`.
+    func dictationEngineDidRelease() {
+        guard activeJobID == nil, liveTask == nil else { return }
+        startPendingLivePass()
+    }
+
+    /// A recording that started while this job held the engine slot loads its
+    /// live engine now and drains the samples buffered since second zero.
+    private func startPendingLivePass() {
+        guard case .recording = captureState, let pending = pendingLiveStart else { return }
+        pendingLiveStart = nil
+        startLivePass(recorder: pending.recorder, config: pending.config)
+    }
+
+    private func runJob(jobID: ProcessingJob.ID, config: TranscriptionConfig) async {
+        defer {
+            activeJobID = nil
+            startPendingLivePass()
+        }
+        guard let job = self.job(jobID) else { return } // dismissed while queued
+
+        // A transcript persisted by a run whose save failed re-saves directly:
+        // no decode, no transcription, no re-diarization (spec §7). Its roles
+        // flag describes exactly that text, so it is NOT reset here.
+        if let persisted = Self.loadPersistedTranscript(audioURL: job.audioURL) {
+            await save(jobID: jobID,
+                       text: persisted.text,
+                       utterances: persisted.utterances,
+                       speakers: persisted.speakers,
+                       durationSec: persisted.durationSec,
+                       langStats: persisted.langStats)
             return
         }
 
-        let transcriber: Transcriber
-        if let reusableTranscriber {
-            transcriber = reusableTranscriber
+        updateJob(jobID) { $0.rolesError = nil } // per-run state, reset at the run boundary
+        if let liveOutput = job.liveOutput {
+            await renderAndSave(jobID: jobID, output: liveOutput, samples: nil,
+                                durationSec: job.liveDurationSec, config: config)
+        } else {
+            await transcribeAndSave(jobID: jobID, config: config)
+        }
+    }
+
+    /// Batch path: decode the file + run the windowed transcriber over it. Also
+    /// the crash-recovery and retry path.
+    private func transcribeAndSave(jobID: ProcessingJob.ID, config: TranscriptionConfig) async {
+        guard let job = self.job(jobID) else { return }
+        updateJob(jobID) { $0.phase = .transcribing(done: 0, total: 0) }
+
+        // Consume the reusable engine (if the live pass handed one over) up
+        // front, before any early-return path below — so an abandoned engine from
+        // a failed attempt is never left around for a later retry to pick up.
+        let reusableEngine = job.engine
+        updateJob(jobID) { $0.engine = nil }
+
+        let samples: [Float]
+        do {
+            samples = try decode(job.audioURL)
+        } catch {
+            failJob(jobID, error.localizedDescription)
+            return
+        }
+
+        let engine: LoadedEngine
+        if let reusableEngine {
+            engine = reusableEngine
         } else {
             do {
-                transcriber = try await engineFactory(config)
+                engine = try await takeWarmOrLoad(config)
             } catch {
-                fail(error.localizedDescription)
+                failJob(jobID, error.localizedDescription)
                 return
             }
         }
 
         let output: TranscriptionOutput
         do {
-            output = try await runTranscription(transcriber, samples: samples, config: config)
+            output = try await runTranscription(jobID: jobID, engine.transcriber, samples: samples, config: config)
         } catch {
-            fail(error.localizedDescription)
+            // A throwing engine is never parked — its retry loads fresh.
+            failJob(jobID, error.localizedDescription)
             return
         }
 
+        // Transcription succeeded and the engine has served this job — park it
+        // warm for the next recording. The poll is the single unload point
+        // (parkTranscriber itself drops it when preloading is off).
+        parkTranscriber(engine)
+
+        await renderAndSave(jobID: jobID, output: output, samples: samples,
+                            durationSec: samples.count / TranscriptionConfig.sampleRate, config: config)
+    }
+
+    /// Shared tail of both paths: role rendering → persist next to the audio →
+    /// save. `samples` is nil on the live path (no decode happened), which makes
+    /// the roles decode the only decode of the file.
+    private func renderAndSave(jobID: ProcessingJob.ID,
+                               output: TranscriptionOutput,
+                               samples: [Float]?,
+                               durationSec: Int,
+                               config: TranscriptionConfig) async {
+        guard let job = self.job(jobID) else { return }
+        // The transcription is done, so the handed-over live engine has served
+        // its purpose — park it into the warm slot (or drop it, when preloading
+        // is off) before the (slow) role rendering rather than pinning it on
+        // the job for the rest of its life. The batch path already consumed it
+        // in `transcribeAndSave`; this is the live path's release, and the job
+        // must not keep a second reference to what the slot now owns. It sits
+        // ABOVE the empty-text judgment for the same reason the batch path's
+        // park does: a recording of silence says nothing about the engine's
+        // health, so both paths keep it either way.
+        if let handedOver = job.engine {
+            parkTranscriber(handedOver)
+        }
+        updateJob(jobID) { $0.engine = nil }
         guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            fail("No speech recognized")
+            failJob(jobID, "No speech recognized")
             return
         }
-
-        let durationSec = samples.count / TranscriptionConfig.sampleRate
-        let rendered = await renderRoles(output: output, audioURL: audioURL, samples: samples, config: config)
+        let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
+                                         samples: samples, config: config, eventID: job.eventID)
         // Persist the (role-tagged) transcript next to the audio so a failed
         // save is retried from the file instead of paying for a full
         // re-transcription — or a re-diarization (spec §7).
         Self.persistTranscript(text: rendered.text, utterances: rendered.utterances,
                                speakers: rendered.speakers, durationSec: durationSec,
-                               langStats: output.langStats, audioURL: audioURL)
-        await saveTranscript(
-            text: rendered.text,
-            utterances: rendered.utterances,
-            speakers: rendered.speakers,
-            durationSec: durationSec,
-            langStats: output.langStats,
-            audioURL: audioURL
-        )
+                               langStats: output.langStats, audioURL: job.audioURL)
+        await save(jobID: jobID, text: rendered.text, utterances: rendered.utterances,
+                   speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats)
     }
 
     /// Save step: the only place the `watchtower` CLI is needed. Resolves the
     /// runner here — never earlier — so a missing CLI still leaves the recording
     /// stopped, the audio finalized, and the transcript persisted for retry.
-    private func saveTranscript(text: String,
-                                utterances: [TranscriptUtterance]?,
-                                speakers: [SpeakerEmbedding]?,
-                                durationSec: Int,
-                                langStats: [String: Int],
-                                audioURL: URL) async {
-        phase = .summarizing
+    private func save(jobID: ProcessingJob.ID,
+                      text: String,
+                      utterances: [TranscriptUtterance]?,
+                      speakers: [SpeakerEmbedding]?,
+                      durationSec: Int,
+                      langStats: [String: Int]) async {
+        guard let job = self.job(jobID) else { return }
+        updateJob(jobID) { $0.phase = .summarizing }
         guard let runner = runnerResolver() else {
-            fail("watchtower CLI not found — the recording and transcript are kept for retry")
+            failJob(jobID, "watchtower CLI not found — the recording and transcript are kept for retry")
             return
         }
         do {
@@ -558,47 +1453,60 @@ final class MeetingRecorderCenter {
                 transcriptText: text,
                 utterances: utterances,
                 speakers: speakers,
-                audioPath: audioURL.path,
+                audioPath: job.audioURL.path,
                 durationSec: durationSec,
-                eventID: currentEventID,
-                title: currentTitle,
+                eventID: job.eventID,
+                title: job.title,
                 langStatsJSON: Self.encodeLangStats(langStats)
             )
-            Self.removePersistedTranscript(audioURL: audioURL)
-            clearPending()
-            phase = .idle
+            let rolesError = self.job(jobID)?.rolesError
+            Self.removePersistedTranscript(audioURL: job.audioURL)
+            Self.removeMetaSidecar(for: job.audioURL)
+            // A failed job pointing at the SAME audio goes with it: this
+            // recording is persisted now, so retrying that one would save a
+            // duplicate transcript of it.
+            jobs.removeAll { $0.id == jobID || ($0.phase.isFailed && $0.audioURL == job.audioURL) }
+            recoverable.removeAll { $0.audioURL == job.audioURL }
+            savedTick += 1
             if !result.segmentsOK {
                 // The CLI dropped the segments file (render mismatch = Go↔Swift
                 // renderer drift, or a malformed payload). The transcript row is
                 // saved either way; log so the drift is not invisible.
                 print("[MeetingRecorder] CLI dropped segments: \(result.segmentsError ?? "unknown reason")")
             }
-            let title = currentTitle ?? "Recording"
+            let title = job.title ?? "Recording"
             // Recap/roles failures are non-fatal — the transcript row is saved;
             // flag them in the notification rather than reporting a failure.
             if !result.recapOK {
-                notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, recap needs retry")
+                if result.recapSkipped {
+                    notifier.sendTranscriptReadyNotification(
+                        title: "\(title) — transcript saved (too short for recap)")
+                } else {
+                    notifier.sendTranscriptReadyNotification(
+                        title: "\(title) — transcript saved, recap needs retry")
+                }
             } else if result.chapters == .failed {
                 // Auto-chapters failed after save (envelope-only signal, like
                 // the recap sibling) — retry via the in-UI "Generate
                 // chapters" button.
                 notifier.sendTranscriptReadyNotification(title: "\(title) — transcript saved, chapters need retry")
-            } else if lastRolesError != nil {
+            } else if rolesError != nil {
                 notifier.sendTranscriptReadyNotification(title: "\(title) — saved without speaker labels")
             } else {
                 notifier.sendTranscriptReadyNotification(title: title)
             }
-            currentEventID = nil
-            currentTitle = nil
         } catch {
-            fail(error.localizedDescription)
+            failJob(jobID, error.localizedDescription)
         }
     }
 
     /// Drives `Transcriber.transcribe` on a detached task and consumes its
-    /// progress on the main actor, so `phase` updates are ordered and never
-    /// race the phase transitions around them.
-    private func runTranscription(_ transcriber: Transcriber, samples: [Float], config: TranscriptionConfig) async throws -> TranscriptionOutput {
+    /// progress on the main actor, so the job's phase updates are ordered and
+    /// never race the phase transitions around them.
+    private func runTranscription(jobID: ProcessingJob.ID,
+                                  _ transcriber: Transcriber,
+                                  samples: [Float],
+                                  config: TranscriptionConfig) async throws -> TranscriptionOutput {
         let (stream, continuation) = AsyncStream<(Int, Int)>.makeStream()
         let task = Task.detached { () -> Result<TranscriptionOutput, Error> in
             do {
@@ -613,46 +1521,126 @@ final class MeetingRecorderCenter {
             }
         }
         for await (done, total) in stream {
-            phase = .transcribing(done: done, total: total)
+            updateJob(jobID) { $0.phase = .transcribing(done: done, total: total) }
         }
         return try await task.value.get()
     }
 
-    // MARK: Helpers
+    // MARK: - Helpers
 
-    /// Enters the failed state and fires the failure notification. The audio file
-    /// and `pendingAudioURL` are intentionally left untouched for retry.
-    private func fail(_ message: String) {
-        phase = .failed(message)
+    private func job(_ id: ProcessingJob.ID) -> ProcessingJob? {
+        jobs.first { $0.id == id }
+    }
+
+    private func updateJob(_ id: ProcessingJob.ID, _ mutate: (inout ProcessingJob) -> Void) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&jobs[index])
+    }
+
+    /// Fails a job and fires the failure notification. The job stays in the
+    /// queue (retriable, and never blocking what is behind it) and its audio
+    /// file is intentionally left untouched. Any engine the job still carried is
+    /// dropped: a failed job can sit here indefinitely, and its retry loads a
+    /// fresh one anyway.
+    private func failJob(_ id: ProcessingJob.ID, _ message: String) {
+        updateJob(id) {
+            $0.phase = .failed(message)
+            $0.engine = nil
+        }
         notifier.sendTranscriptFailedNotification(reason: message)
     }
 
-    private func clearPending() {
-        pendingAudioURL = nil
-        defaults.removeObject(forKey: Self.pendingAudioPathKey)
-        defaults.removeObject(forKey: Self.pendingEventIDKey)
-        defaults.removeObject(forKey: Self.pendingTitleKey)
+    // MARK: - Meta sidecar (crash recovery)
+
+    /// Per-recording sidecar (`rec_X.meta`, the `rec_X.activity` naming family,
+    /// so the Go daemon's orphan sweep reclaims it for free) holding the event
+    /// link and title a recording must come back with after a crash. Written
+    /// before capture starts, removed once the transcript is saved or the user
+    /// dismisses the recovered recording — so "sidecar present" means "this
+    /// recording was never saved".
+    private struct MetaSidecar: Codable {
+        let eventID: String?
+        let title: String?
     }
 
-    /// Mirrors the pending audio path plus the current event link/title to
-    /// `UserDefaults` so a crash before save recovers the recording fully — audio
-    /// AND its event association — on the next launch. A nil event/title clears
-    /// its key rather than leaving a stale value from a previous recording.
-    private func persistPendingDefaults(audioURL: URL) {
-        defaults.set(audioURL.path, forKey: Self.pendingAudioPathKey)
-        if let currentEventID {
-            defaults.set(currentEventID, forKey: Self.pendingEventIDKey)
-        } else {
-            defaults.removeObject(forKey: Self.pendingEventIDKey)
-        }
-        if let currentTitle {
-            defaults.set(currentTitle, forKey: Self.pendingTitleKey)
-        } else {
-            defaults.removeObject(forKey: Self.pendingTitleKey)
+    private static func metaURL(for audioURL: URL) -> URL {
+        audioURL.deletingPathExtension().appendingPathExtension("meta")
+    }
+
+    /// Best-effort, but the cost is not only the event link: the recovery scan
+    /// keys on the sidecar's presence, so a recording whose sidecar never landed
+    /// is read as "already saved" and is NOT offered for recovery after a crash.
+    /// The audio file itself always survives (the Go orphan sweep reclaims it).
+    /// Hence the logging — this failure must not be invisible.
+    private static func writeMetaSidecar(eventID: String?, title: String?, for audioURL: URL) {
+        let url = metaURL(for: audioURL)
+        do {
+            let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("[MeetingRecorder] failed to write recovery sidecar \(url.lastPathComponent): "
+                  + "\(error.localizedDescription) — this recording will not be offered for recovery")
         }
     }
 
-    // MARK: Transcript persistence (retry save without re-transcribing)
+    /// A sidecar left behind makes a saved recording look unsaved, so the
+    /// failure is logged. A sidecar that was never there is not a failure.
+    private static func removeMetaSidecar(for audioURL: URL) {
+        let url = metaURL(for: audioURL)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+        } catch {
+            print("[MeetingRecorder] failed to remove recovery sidecar \(url.lastPathComponent): "
+                  + "\(error.localizedDescription)")
+        }
+    }
+
+    /// Chronological sort key for a `rec_<timestamp>[-N].caf` name: the
+    /// timestamp, then the collision suffix as a number (absent = the first
+    /// recording of that second). Plain lexicographic order gets a same-second
+    /// pair backwards twice over — `-` sorts before `.`, so `rec_X-2.caf` would
+    /// lead `rec_X.caf`, and `-10` would lead `-2` — which matters because the
+    /// recovered pill acts on `recoverable.first`.
+    private static func recoverySortKey(_ name: String) -> (String, Int) {
+        let base = String(name.dropLast(".caf".count))
+        guard let dash = base.lastIndex(of: "-"),
+              let suffix = Int(base[base.index(after: dash)...]) else { return (base, 1) }
+        return (String(base[..<dash]), suffix)
+    }
+
+    /// `rec_*.caf` files that still carry a `.meta` sidecar, oldest first. A
+    /// sidecar that is present but unreadable still proves the recording was
+    /// never saved, so it comes back without its event link rather than being
+    /// lost.
+    private static func scanRecoverable(in directory: URL) -> [RecoverableRecording] {
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        } catch {
+            print("[MeetingRecorder] cannot scan \(directory.path) for recoverable recordings: "
+                  + "\(error.localizedDescription)")
+            return []
+        }
+        return names
+            .filter { $0.hasPrefix("rec_") && $0.hasSuffix(".caf") }
+            .sorted { recoverySortKey($0) < recoverySortKey($1) }
+            .compactMap { name -> RecoverableRecording? in
+                let audioURL = directory.appendingPathComponent(name)
+                let meta = metaURL(for: audioURL)
+                // No sidecar at all == saved (the save removes it) — leave it be.
+                guard FileManager.default.fileExists(atPath: meta.path) else { return nil }
+                guard let data = try? Data(contentsOf: meta),
+                      let decoded = try? JSONDecoder().decode(MetaSidecar.self, from: data) else {
+                    print("[MeetingRecorder] unreadable recovery sidecar \(meta.lastPathComponent) — "
+                          + "recovering \(name) without its event link")
+                    return RecoverableRecording(audioURL: audioURL, eventID: nil, title: nil)
+                }
+                return RecoverableRecording(audioURL: audioURL, eventID: decoded.eventID, title: decoded.title)
+            }
+    }
+
+    // MARK: - Transcript persistence (retry save without re-transcribing)
 
     /// Transcript + metadata persisted next to the audio file (same basename,
     /// `.txt`/`.json`) right after transcription succeeds, removed on a
@@ -728,7 +1716,9 @@ final class MeetingRecorderCenter {
         return json
     }
 
-    static func recordingsDirectory() -> URL {
+    /// `nonisolated` so it can serve as the init's default argument (evaluated
+    /// outside the main actor); it only reads `FileManager`.
+    nonisolated static func defaultRecordingsDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return base.appendingPathComponent("Watchtower/recordings", isDirectory: true)
@@ -739,5 +1729,34 @@ final class MeetingRecorderCenter {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter.string(from: date)
+    }
+
+    /// `rec_<timestamp>.caf`, disambiguated with a `-N` suffix while either the
+    /// audio file or its `.meta` sidecar already exists. The timestamp has
+    /// one-second resolution, so two recordings started inside the same second
+    /// would otherwise share a path — the second overwriting the first's audio
+    /// and stealing its recovery sidecar. The `rec_` prefix and the timestamp
+    /// stay: the Go orphan sweep matches on the family, and the name is what
+    /// makes a recovered recording identifiable. Internal (not private) so the
+    /// disambiguation is testable without racing the wall clock.
+    static func uniqueRecordingURL(in directory: URL, date: Date = Date()) -> URL {
+        let base = "rec_\(timestampComponent(date))"
+        var candidate = directory.appendingPathComponent("\(base).caf")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path)
+                || FileManager.default.fileExists(atPath: metaURL(for: candidate).path) {
+            candidate = directory.appendingPathComponent("\(base)-\(suffix).caf")
+            suffix += 1
+        }
+        return candidate
+    }
+}
+
+extension MeetingRecorderCenter.ProcessingJob.Phase {
+    var isFailed: Bool { failureMessage != nil }
+
+    var failureMessage: String? {
+        if case let .failed(message) = self { return message }
+        return nil
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // MARK: - MemoryView
 //
@@ -14,8 +15,16 @@ struct MemoryView: View {
             .onAppear {
                 Task { await vm.refresh() }
             }
+            // Stays local because it needs `vm` — the wiki-link tap resolves
+            // against this view's model, which the app-wide handler cannot
+            // reach. Its fallthrough consults the same allowlist instead of
+            // handing everything to `.systemAction`, so overriding the
+            // environment here can never be weaker than the app-wide gate
+            // (episodes carry calendar-invite and e-mail text verbatim).
             .environment(\.openURL, OpenURLAction { url in
-                guard url.scheme == MemoryMarkdown.linkScheme else { return .systemAction }
+                guard url.scheme == MemoryMarkdown.linkScheme else {
+                    return AllowedURLSchemes.permits(url) ? .systemAction : .discarded
+                }
                 vm.openWikiLink(url: url)
                 return .handled
             })

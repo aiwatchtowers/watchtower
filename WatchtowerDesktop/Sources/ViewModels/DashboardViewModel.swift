@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the secretary Dashboard — a single ranked feed of `Situation`s (clustered
 /// signals + work updates) that replaces the old two-tier Inbox feed. See

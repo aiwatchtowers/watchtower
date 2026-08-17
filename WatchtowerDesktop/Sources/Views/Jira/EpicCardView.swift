@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 struct EpicCardView: View {
     let epic: ProjectMapViewModel.EpicItem

@@ -1,7 +1,8 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
-struct DayEvents: Identifiable {
+struct DayEvents: Identifiable, Equatable {
     let id: Date
     let label: String
     let events: [CalendarEvent]

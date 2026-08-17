@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Yams
+import WatchtowerCore
 
 @MainActor
 @Observable
@@ -10,6 +11,15 @@ final class ConfigService {
     var syncWorkers: Int?
     var syncThreads: Bool = true
     var initialHistoryDays: Int?
+    /// Display-only, like `dayPlanEnabled` and `ideasEnabled`: `reload()`
+    /// parses it and other views read it, but `save()` never writes
+    /// `digest.enabled` back. The Feature Manager CLI (`watchtower features
+    /// enable|disable slack-digests`) is the single writer of every feature
+    /// on/off key — a second writer here would race it, and because this
+    /// property defaults to `false` when the config has no digest section at
+    /// all, an ordinary Save on a fresh install used to materialize
+    /// `digest.enabled: false`, which is exactly the legacy "all AI off"
+    /// signature `config.MigrateFeatureGates` looks for.
     var digestEnabled: Bool = false
     var digestModel: String?
     var digestMinMessages: Int?
@@ -29,6 +39,8 @@ final class ConfigService {
     var calendarHistoryDays: Int = 14
     var gmailEnabled: Bool = false
     var jiraFeatures: [String: Bool] = [:]
+    /// Display-only — `save()` never writes `day_plan.enabled`. See
+    /// `digestEnabled`.
     var dayPlanEnabled: Bool = true
     var dayPlanHour: Int = 8
     var workingHoursStart: String = "09:00"
@@ -37,6 +49,10 @@ final class ConfigService {
     var minBacklog: Int = 3
     var maxBacklog: Int = 8
     var transcriptAudioRetentionDays: Int = 30
+    /// Display-only — `save()` never writes `ideas.enabled`. See
+    /// `digestEnabled`.
+    var ideasEnabled: Bool = true
+    var ideasMineIntervalHours: Int = 6
     var parseError: String?
 
     private let configPath: String
@@ -118,6 +134,11 @@ final class ConfigService {
                 transcriptAudioRetentionDays = (transcripts["audio_retention_days"] as? Int) ?? 30
             }
 
+            if let ideas = yaml["ideas"] as? [String: Any] {
+                ideasEnabled = (ideas["enabled"] as? Bool) ?? true
+                ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
+            }
+
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
                 dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
                 dayPlanHour = (dayPlan["hour"] as? Int) ?? 8
@@ -154,9 +175,9 @@ final class ConfigService {
         if let val = initialHistoryDays { sync["initial_history_days"] = val } else { sync.removeValue(forKey: "initial_history_days") }
         if !sync.isEmpty { yaml["sync"] = sync } else { yaml.removeValue(forKey: "sync") }
 
-        // Digest section
+        // Digest section — `enabled` is deliberately not written, see the
+        // `digestEnabled` property.
         var digest = (yaml["digest"] as? [String: Any]) ?? [:]
-        digest["enabled"] = digestEnabled
         if let val = digestModel, !val.isEmpty { digest["model"] = val } else { digest.removeValue(forKey: "model") }
         if let val = digestMinMessages { digest["min_messages"] = val } else { digest.removeValue(forKey: "min_messages") }
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
@@ -185,9 +206,15 @@ final class ConfigService {
         gmailDict["enabled"] = gmailEnabled
         yaml["gmail"] = gmailDict
 
-        // Day Plan section
+        // Ideas section — `enabled` is deliberately not written, see the
+        // `ideasEnabled` property.
+        var ideas = (yaml["ideas"] as? [String: Any]) ?? [:]
+        ideas["mine_interval_hours"] = ideasMineIntervalHours
+        yaml["ideas"] = ideas
+
+        // Day Plan section — `enabled` is deliberately not written, see the
+        // `dayPlanEnabled` property.
         var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
-        dayPlan["enabled"] = dayPlanEnabled
         dayPlan["hour"] = dayPlanHour
         dayPlan["working_hours_start"] = workingHoursStart
         dayPlan["working_hours_end"] = workingHoursEnd

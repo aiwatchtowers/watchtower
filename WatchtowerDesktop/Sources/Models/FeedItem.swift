@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // MARK: - FeedItem
 
@@ -71,7 +72,7 @@ extension MeetingRecap: Equatable {
     // Swift can only auto-synthesize `==` for a struct within its declaring
     // file; MeetingRecap.swift doesn't declare Equatable, so it's spelled
     // out manually here (all stored properties are simple Strings).
-    static func == (lhs: MeetingRecap, rhs: MeetingRecap) -> Bool {
+    package static func == (lhs: MeetingRecap, rhs: MeetingRecap) -> Bool {
         lhs.eventID == rhs.eventID
             && lhs.sourceText == rhs.sourceText
             && lhs.recapJSON == rhs.recapJSON

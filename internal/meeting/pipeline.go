@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // MeetingPrepResult is the AI output for a single meeting.
@@ -389,7 +390,14 @@ func (p *Pipeline) gatherSharedContext(attendees []attendeeEntry) string {
 		for _, t := range tracks {
 			involves := false
 			for uid := range attendeeIDs {
-				if strings.Contains(t.Participants, uid) {
+				// tracks.participants is stored verbatim from AI-authored JSON —
+				// the extraction prompt schema instructs raw ids — so match the
+				// raw form of the attendee id (a scalar column, always
+				// namespaced). Searching for the raw form matches both a bare
+				// and a namespaced stored id, since the raw form is a substring
+				// of its own namespaced form.
+				_, rawUID, _ := watchtowerslack.SplitAccountID(uid)
+				if strings.Contains(t.Participants, rawUID) {
 					involves = true
 					break
 				}
@@ -493,7 +501,10 @@ func formatProfile(profile *db.UserProfile) string {
 		parts = append(parts, "Team: "+profile.Team)
 	}
 	if profile.Reports != "" {
-		parts = append(parts, "Direct reports: "+profile.Reports)
+		// Raw-id form (SplitAccountID via RawIDsJSON): the model matches this
+		// against message text, which carries raw Slack ids regardless of how
+		// the id blob itself is namespaced.
+		parts = append(parts, "Direct reports: "+watchtowerslack.RawIDsJSON(profile.Reports))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -508,11 +519,41 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// cleanJSON strips markdown fences from AI response if present.
+// cleanJSON extracts the JSON payload from a model response. A response that
+// already starts with a JSON value is taken as is; otherwise a ```json-tagged
+// fence wins wherever it sits (a model may fence a transcript excerpt in a
+// plain block before answering), and only if there is none does the first bare
+// ``` fence win — the tracks-package cleanJSON precedence. Every path ends at
+// firstJSONValue, which closes the value structurally, so a chatty preamble,
+// prose after the closing fence, a missing closing fence and a ``` inside a
+// string value are all handled. An undecodable payload is returned unchanged
+// so callers can report the raw response.
 func cleanJSON(s string) string {
 	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "```json")
-	s = strings.TrimPrefix(s, "```")
-	s = strings.TrimSuffix(s, "```")
-	return strings.TrimSpace(s)
+	// Bare JSON (chatter or a stray trailing fence may follow the value).
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		return firstJSONValue(s)
+	}
+	if idx := strings.Index(s, "```json"); idx >= 0 {
+		s = s[idx+len("```json"):]
+	} else if idx := strings.Index(s, "```"); idx >= 0 {
+		s = s[idx+len("```"):]
+	} else {
+		return s
+	}
+	return firstJSONValue(strings.TrimSpace(s))
+}
+
+// firstJSONValue cuts s at the end of the first complete JSON value it holds,
+// dropping whatever the model appended after it. Structural decoding (rather
+// than suffix trimming) means a ``` inside a string value survives. A payload
+// that does not start with a decodable value is returned unchanged — callers
+// report the raw response, so nothing is masked here.
+func firstJSONValue(s string) string {
+	dec := json.NewDecoder(strings.NewReader(s))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return s
+	}
+	return strings.TrimSpace(s[:dec.InputOffset()])
 }

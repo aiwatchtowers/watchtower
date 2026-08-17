@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 @MainActor
 @Observable
@@ -314,8 +315,7 @@ final class TracksViewModel {
     func refreshJiraStatus() {
         isJiraConnected = JiraQueries.isConnected()
         if isJiraConnected {
-            let auth = JiraAuthService()
-            jiraSiteURL = auth.siteURL
+            jiraSiteURL = JiraConfigHelper.readSiteURL()
         } else {
             jiraSiteURL = nil
             trackJiraIssues = [:]

@@ -219,10 +219,16 @@ claude \
   --output-format stream-json \
   --model claude-sonnet-4-6 \
   --system-prompt "You are Watchtower..." \
-  --allowedTools "mcp__sqlite__*,Bash(sqlite3*)" \
-  --disallowedTools "Edit,Write,NotebookEdit" \
-  --mcp-config '{"mcpServers":{"sqlite":{"command":"npx","args":["-y","@anthropic-ai/mcp-server-sqlite","/path/to/watchtower.db"]}}}'
+  --allowedTools "mcp__watchtower" \
+  --disallowedTools "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead" \
+  --setting-sources "project,local" \
+  --mcp-config '{"mcpServers":{"watchtower":{"command":"/path/to/watchtower","args":["mcp","--db-path","/path/to/watchtower.db"]}}}'
 ```
+
+The allowlist is the watchtower MCP server only — it is read-only by construction
+(`cmd/mcp.go` opens the connection query-only) and exposes curated tools rather than raw
+SQL. `Bash` is deliberately absent: synced Slack/Jira content reaches the prompt, so a
+prompt-injection payload must have no path to a shell.
 
 ### Session Resumption (Multi-turn)
 

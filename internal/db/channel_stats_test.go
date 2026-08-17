@@ -123,6 +123,31 @@ func TestGetChannelStats(t *testing.T) {
 	assert.Equal(t, 0, c2.UserMsgs)
 }
 
+// TestGetChannelStats_MentionCountNamespacedUserID pins the same
+// reduce-before-LIKE fix as FindPendingMentions: currentUserID is namespaced
+// ("1:U1") but messages.text carries Slack's raw mention markup ("<@U1>")
+// untouched, since it is source data no migration rewrites.
+func TestGetChannelStats_MentionCountNamespacedUserID(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', '1:U2', 'hey <@U1> check this')`)
+	require.NoError(t, err)
+
+	stats, err := db.GetChannelStats("1:U1")
+	require.NoError(t, err)
+
+	var c1 *ChannelStatRow
+	for i := range stats {
+		if stats[i].ChannelID == "C1" {
+			c1 = &stats[i]
+			break
+		}
+	}
+	require.NotNil(t, c1, "C1 should be in stats")
+	assert.Equal(t, 1, c1.Mentions)
+}
+
 func TestGetChannelStats_EmptyUserID(t *testing.T) {
 	db := openTestDB(t)
 	_, err := db.GetChannelStats("")
@@ -330,6 +355,42 @@ func TestGetChannelValueSignals_TrackMultiChannel(t *testing.T) {
 	require.Contains(t, signals, "C2")
 	assert.Equal(t, 1, signals["C1"].ActiveTrackCount)
 	assert.Equal(t, 1, signals["C2"].ActiveTrackCount)
+}
+
+// TestGetChannelValueSignals_TrackNamespacedIDMatches pins the track_channels
+// join (json_each(tracks.channel_ids) against channels.id): tracks.channel_ids
+// is a JSON blob backfilled to the "1:<rawID>" shape by migration 00054, while
+// channels.id is a scalar column that is always namespaced — the join only
+// succeeds when both sides carry the same prefix.
+func TestGetChannelValueSignals_TrackNamespacedIDMatches(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C100", Name: "general", Type: "public"}))
+
+	_, err := db.Exec(`INSERT INTO tracks (text, channel_ids) VALUES ('track1', '["1:C100"]')`)
+	require.NoError(t, err)
+
+	signals, err := db.GetChannelValueSignals()
+	require.NoError(t, err)
+	require.Contains(t, signals, "1:C100")
+	assert.Equal(t, 1, signals["1:C100"].ActiveTrackCount)
+}
+
+// TestGetChannelValueSignals_TrackBareIDNeverJoins is the negative twin: a
+// channel_ids blob that was never namespaced (still bare "C200") can never
+// join the namespaced channels.id, so the channel silently loses its track
+// count instead of erroring — the channel drops out of the signals map
+// entirely rather than surfacing with a wrong or zero count. This must fail
+// if the join ever becomes namespace-tolerant by accident.
+func TestGetChannelValueSignals_TrackBareIDNeverJoins(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C200", Name: "old-project", Type: "public"}))
+
+	_, err := db.Exec(`INSERT INTO tracks (text, channel_ids) VALUES ('track2', '["C200"]')`)
+	require.NoError(t, err)
+
+	signals, err := db.GetChannelValueSignals()
+	require.NoError(t, err)
+	assert.NotContains(t, signals, "1:C200")
 }
 
 func TestGetChannelValueSignals_TaskViaDigest(t *testing.T) {

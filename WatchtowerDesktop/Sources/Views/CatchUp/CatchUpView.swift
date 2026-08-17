@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 // MARK: - CatchUpView
 //
@@ -40,17 +41,47 @@ struct CatchUpView: View {
         VStack(alignment: .leading, spacing: 0) {
             progressHeader
             Divider()
-            List(selection: Binding(
-                get: { vm.selected?.id },
-                set: { id in vm.selected = vm.themes.first { $0.id == id } }
-            )) {
-                ForEach(vm.themes) { theme in
-                    CatchUpThemeRow(theme: theme)
-                        .tag(theme.id)
+            // Plain ScrollView of buttons, not a List: the sidebar list style
+            // rides an NSVisualEffectView that samples the desktop wallpaper
+            // behind the window, so its selection fill reads as a wallpaper
+            // tint no opaque SwiftUI background can cure (TargetsListView
+            // precedent).
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(vm.themes) { theme in
+                            themeRow(theme)
+                                .id(theme.id)
+                        }
+                    }
+                }
+                // Selection also advances programmatically (Done cascades to
+                // the next pending theme), so follow it into view.
+                .onChange(of: vm.selected?.id) { _, id in
+                    guard let id else { return }
+                    withAnimation { proxy.scrollTo(id, anchor: .center) }
                 }
             }
-            .listStyle(.sidebar)
         }
+    }
+
+    private func themeRow(_ theme: CatchUpTheme) -> some View {
+        let isSelected = vm.selected?.id == theme.id
+        return Button {
+            vm.selected = theme
+        } label: {
+            CatchUpThemeRow(theme: theme)
+                .padding(.horizontal, 12)
+                // CatchUpThemeRow already pads 4 vertically; 4 more matches the
+                // 8-point density of the Targets rows.
+                .padding(.vertical, 4)
+                .background(
+                    isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

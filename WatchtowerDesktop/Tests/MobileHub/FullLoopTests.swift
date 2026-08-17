@@ -2,6 +2,8 @@ import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 /// THE integration gate for the mobile feature (Plan 4 Task 10): the desktop
 /// half (SlicePublisher + RelayProcessor over the real fixture DB) and the

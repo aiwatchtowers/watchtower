@@ -1,0 +1,406 @@
+import SwiftUI
+import WatchtowerCore
+
+// MARK: - IdeasView
+//
+// The Ideas & Decisions registry screen: a master-detail split over a review
+// queue ("For review", `vm.reviewItems`) and a filterable browsable registry
+// (`vm.registryItems`) — an HSplitView whose master list follows the
+// `TargetsListView` scrolling-rows shape rather than a List.
+struct IdeasView: View {
+    @Bindable var vm: IdeasViewModel
+    @Environment(AppState.self) private var appState
+
+    @State private var showCreateSheet = false
+    @State private var showBackfillSheet = false
+    @State private var searchDebounceTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let errorMessage = vm.errorMessage {
+                errorBanner(errorMessage)
+            }
+            Group {
+                // Keyed off the whole registry, not the active segment: the
+                // segmented control lives in the filter bar this state
+                // replaces, so an empty Notes segment would strand the owner
+                // with no way back to their ideas.
+                if vm.totalCount == 0 && !vm.isLoading {
+                    emptyState
+                } else {
+                    HSplitView {
+                        listPanel
+                            .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+                        detailPanel
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Ideas")
+        .sheet(isPresented: $showCreateSheet) {
+            // Seeded from the visible segment: creating from the Notes segment
+            // and landing on "Idea" would file the new row out of sight.
+            IdeaCreateSheet(vm: vm, initialKind: Idea.Kind(rawValue: vm.kindMode))
+        }
+        .sheet(isPresented: $showBackfillSheet) {
+            IdeaBackfillSheet(vm: vm)
+        }
+        .onAppear {
+            // startObserving() already loads; the extra refresh() is the
+            // cross-process daemon-writes rule — the consolidator mines ideas
+            // in the Go daemon, which ValueObservation cannot see — and is
+            // what every RE-appear needs. startObserving is idempotent.
+            vm.startObserving()
+            vm.refresh()
+        }
+    }
+
+    /// Write failures otherwise vanish into `vm.errorMessage` with nothing
+    /// rendering it — the owner sees a button that silently did nothing
+    /// (DashboardView:31 precedent).
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    // MARK: - Left: list panel
+
+    private var listPanel: some View {
+        VStack(spacing: 0) {
+            filterBar
+            Divider()
+            // Not a List: `.listStyle(.sidebar)` renders selection through an
+            // NSVisualEffectView that samples the desktop wallpaper, so the
+            // highlight arrives tinted (owner: a brown selection pill) no
+            // matter what opaque background is layered under the rows. The
+            // Targets list (TargetsListView) is the reference look — plain
+            // scrolling rows with a self-drawn accent fill.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if !vm.reviewItems.isEmpty {
+                            sectionHeader("For review", count: vm.reviewItems.count)
+                            ForEach(vm.reviewItems) { idea in
+                                ideaRow(idea)
+                            }
+                        }
+                        sectionHeader("Registry", count: vm.registryItems.count)
+                        ForEach(vm.registryItems) { idea in
+                            ideaRow(idea)
+                        }
+                    }
+                }
+                .overlay {
+                    if vm.reviewItems.isEmpty && vm.registryItems.isEmpty && !vm.isLoading {
+                        Text(emptySegmentMessage)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                // The selection also moves without a click — reconcileSelection
+                // lands it on a neighbour after a delete, and a reload can drop
+                // the selected row far down the list — so follow it.
+                .onChange(of: vm.selectedID) { _, newValue in
+                    guard let id = newValue else { return }
+                    withAnimation { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func ideaRow(_ idea: Idea) -> some View {
+        let isSelected = vm.selectedID == idea.id
+        return Button {
+            vm.select(idea.id)
+        } label: {
+            IdeaRow(idea: idea)
+                .padding(.horizontal, 12)
+                // IdeaRow carries its own .padding(.vertical, 4); 4 more here
+                // matches the Targets rows' 8 without doubling it.
+                .padding(.vertical, 4)
+                .background(
+                    isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .id(idea.id)
+    }
+
+    private var filterBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Ideas")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                Spacer()
+                backfillStatusBadge
+                Button {
+                    showBackfillSheet = true
+                } label: {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.body)
+                }
+                .buttonStyle(.plain)
+                .help("Find ideas in a past date range")
+                Button {
+                    showCreateSheet = true
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.body)
+                }
+                .buttonStyle(.plain)
+                .help("Create an idea or note")
+            }
+
+            HStack(spacing: 8) {
+                Picker("Kind", selection: $vm.kindMode) {
+                    Text(segmentLabel("Ideas", kind: "idea")).tag("idea")
+                    Text(segmentLabel("Notes", kind: "note")).tag("note")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                Picker("Status", selection: $vm.statusFilter) {
+                    Text("All statuses").tag(String?.none)
+                    Text("Proposed").tag(String?.some("proposed"))
+                    Text("Active").tag(String?.some("active"))
+                    Text("Not now").tag(String?.some("not_now"))
+                    Text("Converted").tag(String?.some("converted"))
+                    Text("Dropped").tag(String?.some("dropped"))
+                    Text("Rejected").tag(String?.some("rejected"))
+                    Text("Merged").tag(String?.some("merged"))
+                }
+                .labelsHidden()
+                // Sized to its own content so the segments keep the rest of
+                // the row; without it the two pickers split the width evenly
+                // and "Ideas (3)" truncates on a narrow panel.
+                .fixedSize()
+                .help("Filter by status")
+            }
+            .controlSize(.small)
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Search ideas…", text: $vm.searchText)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .onChange(of: vm.kindMode) { vm.load() }
+        .onChange(of: vm.statusFilter) { vm.load() }
+        // Search runs a triple-LIKE query across ideas AND their mentions;
+        // firing it per keystroke reloads the whole screen on every letter.
+        .onChange(of: vm.searchText) { debounceSearch() }
+        .onDisappear { searchDebounceTask?.cancel() }
+    }
+
+    /// The backfill run's always-visible surface (the sheet dismisses on
+    /// Start so mining never blocks the app): an in-flight pill while mining,
+    /// then the terminal outcome — error or summary — since the dismissed
+    /// sheet is otherwise the only reader of those fields (including the
+    /// pre-flight "CLI not found" failure, which never sets isBackfilling at
+    /// all). Click = back into the sheet for details/Cancel.
+    @ViewBuilder
+    private var backfillStatusBadge: some View {
+        if vm.isBackfilling {
+            badgeCapsule(help: "Idea mining is running — click for details") {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                Text("Mining…")
+                    .font(.caption)
+                if let startedAt = vm.backfillStartedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(IdeaBackfillSheet.elapsedString(from: startedAt, to: context.date))
+                            .font(.caption)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        } else if let error = vm.backfillError {
+            badgeCapsule(help: error) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text("Mining failed")
+                    .font(.caption)
+            }
+        } else if let summary = vm.backfillSummary {
+            badgeCapsule(help: summary) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundStyle(.green)
+                Text(summary)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func badgeCapsule(help: String, @ViewBuilder content: () -> some View) -> some View {
+        Button {
+            showBackfillSheet = true
+        } label: {
+            HStack(spacing: 6, content: content)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    /// "Ideas (3)" while that segment has a review queue waiting, so a flagged
+    /// note isn't invisible from the Ideas side (and vice versa).
+    private func segmentLabel(_ title: String, kind: String) -> String {
+        guard let waiting = vm.reviewCounts[kind], waiting > 0 else { return title }
+        return "\(title) (\(waiting))"
+    }
+
+    /// "Nothing here yet" and "your filters match nothing" are different
+    /// problems with different fixes — saying the first when the owner has a
+    /// status filter or a search on sends them looking for missing data.
+    private var emptySegmentMessage: String {
+        let isNote = vm.kindMode == "note"
+        if vm.statusFilter != nil || !vm.searchText.isEmpty {
+            return isNote ? "No matching notes" : "No matching ideas"
+        }
+        return isNote ? "No notes yet" : "No ideas yet"
+    }
+
+    private func debounceSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            vm.load()
+        }
+    }
+
+    // MARK: - Right: detail panel
+
+    @ViewBuilder
+    private var detailPanel: some View {
+        if let idea = vm.selectedItem {
+            IdeaDetailPane(
+                idea: idea,
+                allIdeas: vm.reviewItems + vm.registryItems,
+                onApprove: { vm.approve(idea) },
+                onReject: { vm.reject(idea) },
+                onActivate: { vm.activate(idea) },
+                onNotNow: { date in vm.notNow(idea, until: date.map(Self.isoDateString) ?? "") },
+                onDrop: { vm.drop(idea) },
+                onMerge: { targetID in vm.merge(idea, into: targetID) },
+                onConvert: {
+                    if let targetID = vm.convertToTarget(idea) {
+                        appState.navigateToTarget(targetID)
+                    }
+                },
+                onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) },
+                onDelete: { vm.deleteIdea(idea) }
+            )
+            // Identity at the CALL SITE, so the pane's OWN @State (rating
+            // draft, merge-sheet selection) resets when the selection
+            // changes — an .id inside the pane's body only resets its
+            // children, which would let a previous idea's rating draft leak
+            // into the next one. Same id on a poll-driven re-render of the
+            // same idea → state survives (required).
+            .id(idea.id)
+        } else {
+            emptySelection
+        }
+    }
+
+    private var emptySelection: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "lightbulb")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("Select an idea")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lightbulb")
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text("No ideas yet")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("Ideas and proposals mined from Slack, meetings, email, and Jira will collect here for review.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            // The header buttons live in filterBar, which the empty state
+            // replaces wholesale — without these a fresh install (zero mined
+            // ideas) has no way to trigger a backfill or create an idea.
+            HStack(spacing: 12) {
+                Button {
+                    showBackfillSheet = true
+                } label: {
+                    Label("Find Ideas", systemImage: "sparkle.magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                Button {
+                    showCreateSheet = true
+                } label: {
+                    Label("Create", systemImage: "plus.circle")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 4)
+            // The empty state replaces filterBar wholesale, and a fresh
+            // install's very first backfill runs exactly here — without this
+            // the dismissed sheet leaves no trace of the run (or its failure).
+            backfillStatusBadge
+                .padding(.top, 8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private static func isoDateString(_ date: Date) -> String {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt.string(from: date)
+    }
+}

@@ -21,8 +21,10 @@ func TestBuildSecretaryBrief_AllSections(t *testing.T) {
 	}
 
 	// One open Jira issue assigned to U1.
+	db.SeedTestJiraAccount(t, d)
 	if err := d.UpsertJiraIssue(db.JiraIssue{
-		Key: "P-1", ProjectKey: "P", Summary: "Fix login bug", Status: "Open",
+		AccountID: 1,
+		Key:       "P-1", ProjectKey: "P", Summary: "Fix login bug", Status: "Open",
 		StatusCategory: "todo", AssigneeSlackID: "U1",
 		CreatedAt: "2026-07-01T00:00:00Z", UpdatedAt: "2026-07-01T00:00:00Z", SyncedAt: "2026-07-01T00:00:00Z",
 	}); err != nil {

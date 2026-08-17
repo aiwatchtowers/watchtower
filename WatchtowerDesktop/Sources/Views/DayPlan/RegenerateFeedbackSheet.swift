@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct RegenerateFeedbackSheet: View {
     @Bindable var vm: DayPlanViewModel

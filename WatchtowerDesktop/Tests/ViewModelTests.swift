@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerKit
 
 // MARK: - WorkspaceOverviewViewModel
@@ -125,26 +127,6 @@ final class DigestViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.digests.count, 1)
         XCTAssertEqual(vm.digests[0].type, "daily")
-    }
-
-    @MainActor
-    func testDecisionEntries() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                decisions: #"[{"text":"Use Go","by":"Alice","importance":"high"},{"text":"Deploy Friday"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.decisionEntries.count, 2)
-        XCTAssertEqual(vm.decisionEntries[0].decision.text, "Use Go")
-        XCTAssertEqual(vm.decisionEntries[0].channelName, "general")
-        XCTAssertEqual(vm.decisionEntries[0].digestType, "channel")
     }
 
     @MainActor
@@ -300,7 +282,7 @@ final class DigestViewModelTests: XCTestCase {
         vm.load()
 
         XCTAssertTrue(vm.digests.isEmpty)
-        XCTAssertTrue(vm.decisionEntries.isEmpty)
+        XCTAssertTrue(vm.ledgerDecisions.isEmpty)
         XCTAssertNil(vm.errorMessage)
     }
 }
@@ -1211,88 +1193,6 @@ final class DigestViewModelAdditionalTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkDecisionRead() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(db, channelID: "C001", decisions: #"[{"text":"Decision A"},{"text":"Decision B"}]"#)
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.decisionEntries.count, 2)
-        XCTAssertEqual(vm.unreadDecisionCount, 2)
-
-        let entry = vm.decisionEntries[0]
-        vm.markDecisionRead(digestID: entry.digestID, decisionIdx: entry.decisionIdx)
-
-        XCTAssertEqual(vm.unreadDecisionCount, 1)
-        let updated = vm.decisionEntries.first { $0.digestID == entry.digestID && $0.decisionIdx == entry.decisionIdx }
-        XCTAssertTrue(updated?.isRead ?? false)
-    }
-
-    @MainActor
-    func testDecisionDedup() throws {
-        // Two digests with similar decisions — channel and daily rollup
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "channel",
-                decisions: #"[{"text":"We decided to migrate the database to PostgreSQL immediately"}]"#
-            )
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "daily",
-                decisions: #"[{"text":"Team decided to migrate the database to PostgreSQL soon"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        // Daily/weekly decisions are preferred; the channel duplicate should be deduped
-        XCTAssertEqual(vm.decisionEntries.count, 1)
-        XCTAssertEqual(vm.decisionEntries[0].digestType, "daily")
-    }
-
-    @MainActor
-    func testDecisionsDailyPreferred() throws {
-        // Unique decisions from both channel and daily
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "C001",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "channel",
-                decisions: #"[{"text":"Use Redis for caching"}]"#
-            )
-            try TestDatabase.insertDigest(
-                db,
-                channelID: "",
-                periodFrom: 1700000000,
-                periodTo: 1700086400,
-                type: "daily",
-                decisions: #"[{"text":"Adopt TypeScript for frontend"}]"#
-            )
-        }
-
-        let vm = DigestViewModel(dbManager: dbManager)
-        vm.load()
-
-        // Both are unique, both should appear
-        XCTAssertEqual(vm.decisionEntries.count, 2)
-    }
-
-    @MainActor
     func testUnreadDigestCountMultiple() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 100, periodTo: 200, summary: "D1")
@@ -1372,6 +1272,21 @@ final class OnboardingChatViewModelTests: XCTestCase {
     override func tearDown() {
         TestDatabase.cleanup(path: dbPath)
         super.tearDown()
+    }
+
+    /// Deadline-based poll (the `MeetingRecorderTestSupport.waitUntil` shape,
+    /// local because this suite is not a subclass): yields the main actor
+    /// until `condition` holds, failing instead of hanging.
+    @MainActor
+    private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
+        let deadline: Duration = .seconds(5)
+        let start = ContinuousClock.now
+        repeat {
+            if condition() { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now - start < deadline
+        XCTFail("timed out waiting for \(what)")
     }
 
     @MainActor
@@ -1478,8 +1393,53 @@ final class OnboardingChatViewModelTests: XCTestCase {
         }
 
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        await vm.markOnboardingDone()
+        let done = await vm.markOnboardingDone()
 
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.errorMessage)
+        let profile = try await dbManager.dbPool.read { db in
+            try ProfileQueries.fetchProfile(db, slackUserID: "U001")
+        }
+        XCTAssertEqual(profile?.onboardingDone, true)
+    }
+
+    /// No connected Slack account: `getCurrentUserID()` finds nothing, so
+    /// there is no id to key the UPDATE on.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutCurrentUser() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    /// No database at all. Both early guards are separate code paths, but
+    /// only one outcome is observable from outside: `getCurrentUserID()`
+    /// already returns "" without a `dbManager`, so the empty-id guard is what
+    /// fires here.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutDatabase() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: nil)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    @MainActor
+    func testMarkOnboardingDoneCreatesRowWhenMissing() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            // Deliberately NO user_profile row — the upsert must create it.
+        }
+
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.errorMessage)
         let profile = try await dbManager.dbPool.read { db in
             try ProfileQueries.fetchProfile(db, slackUserID: "U001")
         }
@@ -1549,6 +1509,157 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages[0].text, "Let's understand your role. Do people report to you?")
         XCTAssertEqual(vm.quickReplies[0].label, "Yes")
     }
+
+    @MainActor
+    func testSkipChatCancelsInFlightStream() async throws {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        vm.startQuestionnaire()
+        XCTAssertFalse(vm.quickReplies.isEmpty)
+
+        vm.inputText = "Hello"
+        vm.send()
+        XCTAssertTrue(vm.isStreaming)
+
+        vm.skipChat()
+
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertTrue(vm.quickReplies.isEmpty)
+
+        // Let the cancelled stream task drain — it must not surface an error.
+        await waitUntil("cancelled stream drained") { vm.messages.last?.isStreaming == false }
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    @MainActor
+    func testRetryAfterErrorReattemptsSameRequest() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        await waitUntil("first attempt failed") { vm.errorMessage != nil && !vm.isStreaming }
+
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(vm.messages.count, 2) // user bubble + empty assistant bubble
+        let callsBeforeRetry = mock.prompts.count
+
+        vm.retryAfterError()
+        XCTAssertTrue(vm.isStreaming)
+        await waitUntil("retry failed") { vm.errorMessage != nil && !vm.isStreaming }
+
+        // Exactly one re-attempt of the same prompt; the mock errors again.
+        XCTAssertEqual(mock.prompts.count, callsBeforeRetry + 1)
+        XCTAssertEqual(mock.prompts.last, "Hello")
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertFalse(vm.isStreaming)
+        // The trailing empty assistant bubble was replaced, not accumulated.
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[0].role, .user)
+        XCTAssertEqual(vm.messages[1].role, .assistant)
+    }
+
+    @MainActor
+    func testRetryAfterErrorNoOpWithoutError() {
+        let mock = MockClaudeService()
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.retryAfterError()
+
+        XCTAssertFalse(vm.isStreaming)
+        XCTAssertTrue(vm.messages.isEmpty)
+        XCTAssertEqual(mock.prompts.count, 0)
+    }
+
+    @MainActor
+    func testSkipChatClearsStaleStreamError() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        await waitUntil("stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        vm.skipChat()
+
+        // A stale interview error must not survive the skip — it would
+        // permanently fail the teamForm completion gate downstream.
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertFalse(vm.isStreaming)
+    }
+
+    @MainActor
+    func testSendClearsStaleErrorBeforeStreaming() async throws {
+        let mock = MockClaudeService(error: WatchtowerAIError.cliNotFound)
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "First"
+        vm.send()
+        await waitUntil("first stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        vm.inputText = "Second"
+        vm.send()
+        // The new attempt invalidates the previous error synchronously,
+        // before any stream event arrives.
+        XCTAssertNil(vm.errorMessage)
+
+        await waitUntil("second attempt finished") { !vm.isStreaming }
+    }
+
+    @MainActor
+    func testRetryAfterErrorRemovesPartialAssistantBubble() async throws {
+        // Mid-stream failure: a session id and partial text arrive, then the
+        // stream throws.
+        let mock = MockClaudeService(
+            events: [.sessionID("sess-live"), .text("Partial answer")],
+            thenError: WatchtowerAIError.cliNotFound
+        )
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        vm.inputText = "Hello"
+        vm.send()
+        await waitUntil("mid-stream error surfaced") { vm.errorMessage != nil && !vm.isStreaming }
+
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[1].text, "Partial answer")
+
+        vm.retryAfterError()
+        await waitUntil("retry finished") { vm.errorMessage != nil && !vm.isStreaming }
+
+        // The partial trailing assistant bubble was removed, not duplicated:
+        // still exactly one user turn and one assistant bubble.
+        XCTAssertEqual(vm.messages.count, 2)
+        XCTAssertEqual(vm.messages[0].role, .user)
+        XCTAssertEqual(vm.messages[1].role, .assistant)
+        // The retry re-sent the same prompt with the freshest session id
+        // learned from the failed stream, not the call-start snapshot (nil).
+        XCTAssertEqual(mock.prompts, ["Hello", "Hello"])
+        XCTAssertEqual(mock.sessionIDs.count, 2)
+        XCTAssertNil(mock.sessionIDs[0])
+        XCTAssertEqual(mock.sessionIDs[1], "sess-live")
+    }
+
+    @MainActor
+    func testSaveProfileWithContextPreservesOnboardingDoneFlag() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            try TestDatabase.insertProfile(db, slackUserID: "U001", onboardingDone: true)
+        }
+        let mock = MockClaudeService(events: [.text("Context about the user."), .done])
+        let vm = OnboardingChatViewModel(aiService: mock, dbManager: dbManager)
+
+        // The context-saving path (now read + upsert in ONE transaction) must
+        // never clobber an already-set onboarding_done flag.
+        await vm.generatePromptContext()
+
+        XCTAssertNil(vm.errorMessage)
+        let profile = try await dbManager.dbPool.read { db in
+            try ProfileQueries.fetchProfile(db, slackUserID: "U001")
+        }
+        XCTAssertEqual(profile?.onboardingDone, true)
+        XCTAssertEqual(profile?.customPromptContext, "Context about the user.")
+    }
 }
 
 // MARK: - OnboardingStateMachine
@@ -1556,10 +1667,12 @@ final class OnboardingChatViewModelTests: XCTestCase {
 final class OnboardingStateMachineTests: XCTestCase {
     private let stepKey = "onboarding_current_step"
     private let syncKey = "onboarding_sync_completed"
+    private let chatKey = "onboarding_chat_finished"
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: stepKey)
         UserDefaults.standard.removeObject(forKey: syncKey)
+        UserDefaults.standard.removeObject(forKey: chatKey)
         super.tearDown()
     }
 
@@ -1586,7 +1699,25 @@ final class OnboardingStateMachineTests: XCTestCase {
         sm.advance()
         XCTAssertEqual(sm.currentStep, .generating)
         sm.advance()
+        XCTAssertEqual(sm.currentStep, .features)
+        sm.advance()
         XCTAssertEqual(sm.currentStep, .complete)
+    }
+
+    @MainActor
+    func testResumeFromStoredRawSixReportsFeatures() {
+        // Persisted-rawValue migration: `.features` was inserted at raw 6,
+        // shifting `.complete` to 7 (see the enum's migration comment), so a
+        // stored 6 now resumes at `.features`. Landing there is safe on its
+        // own terms: the `.features` step's `.task` constructs `onboardingVM`
+        // when it is nil, so the splash's exits can still finish onboarding.
+        // AppState.initialize()'s reconciliation against
+        // `user_profile.onboarding_done` short-circuits this only when the DB
+        // flag is already true — it cannot help an install whose flag is
+        // still false, which is exactly the case that needs the `.task`.
+        UserDefaults.standard.set(6, forKey: stepKey)
+        let sm = OnboardingStateMachine()
+        XCTAssertEqual(sm.currentStep, .features)
     }
 
     @MainActor
@@ -1652,15 +1783,21 @@ final class OnboardingStateMachineTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkCompleteRemovesUserDefaults() {
+    func testMarkCompletePersistsAcrossRelaunch() {
         UserDefaults.standard.removeObject(forKey: stepKey)
         let sm = OnboardingStateMachine()
         sm.goTo(.generating)
         sm.syncCompleted = true
+        sm.chatFinished = true
         sm.markComplete()
         XCTAssertEqual(sm.currentStep, .complete)
-        XCTAssertNil(UserDefaults.standard.object(forKey: stepKey))
-        XCTAssertNil(UserDefaults.standard.object(forKey: syncKey))
+
+        // A new instance (simulated relaunch) must read .complete, never fall back
+        // to .connect — completion survives even if the DB profile row is missing.
+        let sm2 = OnboardingStateMachine()
+        XCTAssertEqual(sm2.currentStep, .complete)
+        XCTAssertFalse(sm2.syncCompleted)
+        XCTAssertFalse(sm2.chatFinished)
     }
 
     @MainActor
@@ -1681,7 +1818,8 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertTrue(OnboardingStep.claude < .chat)
         XCTAssertTrue(OnboardingStep.chat < .teamForm)
         XCTAssertTrue(OnboardingStep.teamForm < .generating)
-        XCTAssertTrue(OnboardingStep.generating < .complete)
+        XCTAssertTrue(OnboardingStep.generating < .features)
+        XCTAssertTrue(OnboardingStep.features < .complete)
     }
 
     @MainActor
@@ -1698,6 +1836,7 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertEqual(OnboardingStep.chat.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.teamForm.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.generating.indicatorTitle, "Setup")
+        XCTAssertEqual(OnboardingStep.features.indicatorTitle, "Setup")
         XCTAssertNil(OnboardingStep.complete.indicatorTitle)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import os
+import WatchtowerCore
 
 /// The transport surface the hub needs beyond record I/O: lifecycle and
 /// availability probing. CloudKitTransport satisfies it natively; tests

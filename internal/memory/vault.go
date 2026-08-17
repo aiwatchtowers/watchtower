@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -117,6 +119,7 @@ func OpenVault(vaultPath string) (*Vault, error) {
 	if err := ensureSubdirs(vaultPath); err != nil {
 		return nil, err
 	}
+	tightenVaultPerms(vaultPath)
 	return &Vault{path: vaultPath, repo: repo}, nil
 }
 
@@ -138,17 +141,75 @@ func OpenExistingVault(vaultPath string) (*Vault, error) {
 	if err := ensureSubdirs(vaultPath); err != nil {
 		return nil, err
 	}
+	tightenVaultPerms(vaultPath)
 	return &Vault{path: vaultPath, repo: repo}, nil
 }
 
 // ensureSubdirs (re)creates the four node directories.
 func ensureSubdirs(vaultPath string) error {
 	for _, sub := range vaultSubdirs {
-		if err := os.MkdirAll(filepath.Join(vaultPath, sub), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(vaultPath, sub), vaultDirMode); err != nil {
 			return fmt.Errorf("memory: create vault dir %s: %w", sub, err)
 		}
 	}
 	return nil
+}
+
+// Vault files hold AI-synthesised statements about named people plus
+// Gmail- and calendar-derived episodes, so they follow the same owner-only
+// modes as the token stores and the database.
+const (
+	vaultDirMode  os.FileMode = 0o700
+	vaultFileMode os.FileMode = 0o600
+)
+
+// tightenVaultPerms brings a vault created before these modes existed up to
+// them: every node directory to 0700 and every file to 0600. Without it a
+// vault seeded under the old 0755/0644 modes would stay world-readable
+// forever, since only newly written files pick up the new mode.
+//
+// The .git directory is tightened to 0700 but not descended into. Its
+// contents are the same sensitive material — the node history — so the door
+// has to be shut, but the modes of the files behind it are go-git's business:
+// it recreates objects and refs at the process umask on every write, so
+// rewriting them here would be a fight that has to be re-fought every commit.
+// One mode on the directory ends the argument, since nobody can traverse into
+// what they cannot enter.
+//
+// Best-effort: a per-entry failure is logged and the walk carries on to the
+// rest of the vault, because a vault that cannot be fully tightened must
+// still open. An empty vault visits only its root, which is a clean no-op
+// rather than an error.
+func tightenVaultPerms(vaultPath string) {
+	err := filepath.WalkDir(vaultPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if p == vaultPath {
+				return err // the root itself is unreadable: nothing to walk
+			}
+			slog.Warn("skipping unreadable memory vault entry", "path", p, "error", err)
+			return nil
+		}
+		want := vaultFileMode
+		if d.IsDir() {
+			want = vaultDirMode
+		}
+		if info, ierr := d.Info(); ierr != nil || info.Mode().Perm() != want {
+			// #nosec G122 -- p comes from WalkDir over the vault under the
+			// user's own home directory; a symlink swap between the stat and
+			// this chmod requires write access to that directory already,
+			// which is equivalent to being the user.
+			if cerr := os.Chmod(p, want); cerr != nil { //nolint:gosec
+				slog.Warn("could not restrict memory vault permissions", "path", p, "error", cerr)
+			}
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Warn("could not walk memory vault to restrict permissions", "path", vaultPath, "error", err)
+	}
 }
 
 // vaultGitignore keeps editor/OS churn (Obsidian workspace state, Finder
@@ -159,7 +220,7 @@ const vaultGitignore = ".obsidian/\n.DS_Store\n*.tmp\n"
 // initVault creates the directory, git-inits it, and commits the initial
 // map.md and .gitignore.
 func initVault(vaultPath string) (*git.Repository, error) {
-	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+	if err := os.MkdirAll(vaultPath, vaultDirMode); err != nil {
 		return nil, fmt.Errorf("memory: create vault dir: %w", err)
 	}
 	repo, err := git.PlainInit(vaultPath, false)
@@ -174,7 +235,7 @@ func initVault(vaultPath string) (*git.Repository, error) {
 		mapFileName:  initialMapContent,
 		".gitignore": vaultGitignore,
 	} {
-		if err := os.WriteFile(filepath.Join(vaultPath, name), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(vaultPath, name), []byte(content), vaultFileMode); err != nil {
 			return nil, fmt.Errorf("memory: write initial %s: %w", name, err)
 		}
 		if _, err := wt.Add(name); err != nil {
@@ -435,7 +496,7 @@ func (v *Vault) WriteNodes(nodes []Node, msg CommitMsg) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(filepath.Join(v.path, filepath.FromSlash(rel)), n.Render(), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(v.path, filepath.FromSlash(rel)), n.Render(), vaultFileMode); err != nil {
 			return "", fmt.Errorf("memory: write node %s: %w", n.ID, err)
 		}
 		if _, err := wt.Add(rel); err != nil {
@@ -459,7 +520,7 @@ func (v *Vault) WriteFile(rel string, content []byte, msg CommitMsg) (bool, erro
 	if prev, err := os.ReadFile(abs); err == nil && bytes.Equal(prev, content) {
 		return false, nil
 	}
-	if err := os.WriteFile(abs, content, 0o644); err != nil {
+	if err := os.WriteFile(abs, content, vaultFileMode); err != nil {
 		return false, fmt.Errorf("memory: write %s: %w", rel, err)
 	}
 	wt, err := v.repo.Worktree()

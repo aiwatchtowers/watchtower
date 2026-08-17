@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // MARK: - Catch-Up v2 review-mode ViewModel
 //
@@ -251,6 +252,77 @@ final class CatchUpViewModel {
         try? dbPool.read { try TrackQueries.fetchByID($0, id: id) }
     }
 
+    // MARK: - Source metadata (dates + external links)
+
+    /// Resolves each ref's "when did this actually happen" date and an external
+    /// Slack link in one read, keyed by `CatchUpRef.compositeID` — a theme row's
+    /// own timestamps only say when the session was built, which loses the
+    /// operator's sense of time and urgency. A vanished source row is simply
+    /// absent from the map. Async so the pane's `.task` doesn't block the main
+    /// actor behind whatever the daemon is writing.
+    func sourceMeta(for refs: [CatchUpRef]) async -> [String: CatchUpSourceMeta] {
+        guard !refs.isEmpty else { return [:] }
+        return (try? await dbPool.read { db in
+            var meta: [String: CatchUpSourceMeta] = [:]
+            for ref in refs {
+                switch ref.area {
+                case "digests":
+                    if let digest = try DigestQueries.fetchByID(db, id: ref.id) {
+                        meta[ref.compositeID] = CatchUpSourceMeta(
+                            date: digest.periodTo > 0 ? Date(timeIntervalSince1970: digest.periodTo) : nil,
+                            url: Self.slackChannelURL(digest.channelID)
+                        )
+                    }
+                case "tracks":
+                    if let track = try TrackQueries.fetchByID(db, id: ref.id) {
+                        meta[ref.compositeID] = CatchUpSourceMeta(
+                            date: TimeFormatting.parseISO(track.updatedAt)
+                                ?? TimeFormatting.parseISO(track.createdAt),
+                            url: Self.slackChannelURL(track.decodedChannelIDs.first ?? "")
+                        )
+                    }
+                case "inbox":
+                    if let item = try InboxQueries.fetchByID(db, id: ref.id) {
+                        let ts = Double(item.messageTS) ?? 0
+                        meta[ref.compositeID] = CatchUpSourceMeta(
+                            date: ts > 0 ? Date(timeIntervalSince1970: ts) : nil,
+                            url: Self.slackMessageURL(for: item)
+                        )
+                    }
+                case "briefings":
+                    if let briefing = try BriefingQueries.fetchByID(db, id: ref.id) {
+                        meta[ref.compositeID] = CatchUpSourceMeta(
+                            date: TimeFormatting.parseISO(briefing.createdAt),
+                            url: nil
+                        )
+                    }
+                default:
+                    break
+                }
+            }
+            return meta
+        }) ?? [:]
+    }
+
+    /// Slack channel link via the generic slack.com/archives host — the
+    /// `IdeaDetailPane.mentionURL` precedent: no workspace domain or team id
+    /// needed. Channel ids are namespaced "<accountID>:C…" since migration
+    /// 00048; Slack wants the bare id. Static so the URL rules are testable
+    /// without a view or DB.
+    nonisolated static func slackChannelURL(_ channelID: String) -> URL? {
+        guard !channelID.isEmpty else { return nil }
+        return URL(string: "https://slack.com/archives/\(SlackAccountID.raw(channelID))")
+    }
+
+    /// Message deep link for an inbox source: the item's stored permalink when
+    /// present, else an archives link built from channel + message ts.
+    nonisolated static func slackMessageURL(for item: InboxItem) -> URL? {
+        if !item.permalink.isEmpty { return URL(string: item.permalink) }
+        guard !item.channelID.isEmpty, !item.messageTS.isEmpty else { return nil }
+        let ts = item.messageTS.replacingOccurrences(of: ".", with: "")
+        return URL(string: "https://slack.com/archives/\(SlackAccountID.raw(item.channelID))/p\(ts)")
+    }
+
     // MARK: - Selection
 
     /// Advances selection to the next pending theme after the given one (by
@@ -319,4 +391,12 @@ final class CatchUpViewModel {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus, stdout, stderr)
     }
+}
+
+/// When a theme's underlying source happened and where to open it outside the
+/// app — drives the review pane's per-source date captions, the header's
+/// activity span, and the external Slack links.
+struct CatchUpSourceMeta: Equatable {
+    let date: Date?
+    let url: URL?
 }

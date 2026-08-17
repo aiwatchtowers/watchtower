@@ -82,6 +82,25 @@ enum AppleLocaleCatalog {
         }
         return defaultLocale
     }
+
+    /// Dictation-lane locale resolution — the app's OWN language settings
+    /// decide (owner call, 2026-08-16, superseding the spec §2 "else
+    /// Locale.current" rule): a supported `forced` language
+    /// (`transcription.forceLang`) wins; otherwise the first Apple-supported
+    /// language of the configured langset (`transcription.langset`, the batch
+    /// `resolveLocale` rule); else the en-US default. The SYSTEM locale plays
+    /// no part — the machine's language/region says nothing about what the
+    /// owner dictates, and a region-mismatched locale (en_UA, ru_UA) isn't
+    /// even constructible for `SpeechTranscriber`, which supports only the
+    /// catalog's concrete locales. An unsupported forced language (e.g. "uk")
+    /// deliberately degrades to the langset rather than erroring — the same
+    /// degrade-to-a-working-engine shape as `DictationEngineChoice.resolve`.
+    static func resolveDictationLocale(forced: String?, langset: [String]) -> Locale {
+        if let forced, let id = localeByLanguage[forced] {
+            return Locale(identifier: id)
+        }
+        return resolveLocale(langset: langset)
+    }
 }
 
 /// Runs the real macOS 26 `SpeechAnalyzer` batch flow: build one `SpeechTranscriber`
@@ -144,7 +163,8 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
 
     /// 16 kHz mono Float32 buffer straight from the recorder's samples — the format
     /// every WhisperKit/Parakeet path already uses (`TranscriptionConfig.sampleRate`).
-    private static func makePCMBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
+    /// Internal (not private) so `AppleDictationSession` reuses it per mic chunk.
+    static func makePCMBuffer(samples: [Float]) throws -> AVAudioPCMBuffer {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: Double(TranscriptionConfig.sampleRate),
                                          channels: 1, interleaved: false) else {
@@ -170,9 +190,10 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
     /// the analyzer (design doc §7.4). Falls back to the original buffer if Apple reports
     /// no preferred format or conversion setup fails — the analyzer will then surface its
     /// own format error rather than us silently dropping audio.
+    /// Internal (not private) so `AppleDictationSession` reuses it per mic chunk.
     @available(macOS 26, *)
-    private static func converted(_ buffer: AVAudioPCMBuffer,
-                                  forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
+    static func converted(_ buffer: AVAudioPCMBuffer,
+                          forModules modules: [any SpeechModule]) async -> AVAudioPCMBuffer {
         guard let targetFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
                 compatibleWith: modules, considering: buffer.format)
         else { return buffer }

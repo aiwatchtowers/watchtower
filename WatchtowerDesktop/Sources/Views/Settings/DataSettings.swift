@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct DataSettings: View {
     @Environment(AppState.self) private var appState
@@ -18,13 +19,11 @@ struct DataSettings: View {
     private let cacheDir = NSString("~/Library/Caches/WatchtowerDesktop").expandingTildeInPath
 
     var body: some View {
-        Form {
+        Group {
             storageSection
             regenerateSection
             dangerZoneSection
         }
-        .formStyle(.grouped)
-        .padding()
         .onAppear { refreshSizes() }
         .alert("Reset All Data?", isPresented: $showResetConfirmation) {
             Button("Cancel", role: .cancel) {}

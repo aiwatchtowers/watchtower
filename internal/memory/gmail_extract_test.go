@@ -423,9 +423,32 @@ func TestListGmailThreadsForExtract_BoundaryDrain(t *testing.T) {
 	seedGmailMessage(t, d, "m2", "t2", "b@example.com", "B", "s", "b", iso)
 	seedGmailMessage(t, d, "m3", "t3", "c@example.com", "C", "s", "b", iso)
 
-	msgs, err := d.ListGmailThreadsForExtract(gmailTestAccountID, 0, 2) // limit cuts inside the second
+	msgs, err := d.ListGmailThreadsForExtract(gmailTestAccountID, 0, 0, 2) // limit cuts inside the second
 	require.NoError(t, err)
 	assert.Len(t, msgs, 3, "boundary second drained past the limit")
+}
+
+// TestListGmailThreadsForExtract_UpperBound: a non-zero beforeTS excludes
+// messages after it, and a zero beforeTS stays unbounded (parity with the
+// pre-bound behavior) — rows straddling the bound prove both directions.
+func TestListGmailThreadsForExtract_UpperBound(t *testing.T) {
+	d := newTestDB(t)
+	isoBefore, unixBefore := gmailMsgTime(0)
+	isoAt, unixAt := gmailMsgTime(10)
+	isoAfter, _ := gmailMsgTime(20)
+	seedGmailMessage(t, d, "m1", "t1", "a@example.com", "A", "s", "b", isoBefore)
+	seedGmailMessage(t, d, "m2", "t2", "b@example.com", "B", "s", "b", isoAt)
+	seedGmailMessage(t, d, "m3", "t3", "c@example.com", "C", "s", "b", isoAfter)
+
+	bounded, err := d.ListGmailThreadsForExtract(gmailTestAccountID, 0, float64(unixAt), 100)
+	require.NoError(t, err)
+	require.Len(t, bounded, 2, "only messages at or before the bound must return")
+	assert.Equal(t, float64(unixBefore), bounded[0].TSUnix)
+	assert.Equal(t, float64(unixAt), bounded[1].TSUnix)
+
+	unbounded, err := d.ListGmailThreadsForExtract(gmailTestAccountID, 0, 0, 100)
+	require.NoError(t, err)
+	assert.Len(t, unbounded, 3, "a zero bound must return everything, unchanged from the pre-bound behavior")
 }
 
 // TestBuildEmailEpisodesPromptNeverStartsWithDash: the email extractor's user

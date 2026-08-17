@@ -19,20 +19,20 @@
 
 ## CATCHUP-01 — Review once via catch-up, stay read everywhere
 
-**Status:** Enforced
+**Status:** Enforced (Go path); the Swift path's decisions half was retired 2026-08-12 — see changelog.
 
-**Observable:** When I mark a catch-up theme reviewed ("Done"), every source item the theme captured is marked read in its own surface — and I never see it resurface as unread there. Specifically the cascade covers **exactly the theme's snapshot refs** (digests, tracks, inbox, briefings) and, for each referenced digest, **its decisions too** (so the Decisions feed — which counts unread as `total − COUNT(decision_reads)` — does not strand decisions I already saw via catch-up). The cascade is best-effort and idempotent: re-acking never double-counts, never duplicates `decision_reads` rows, and items that arrived after the snapshot are left untouched. The session's `reviewed_count` increments only on the first transition into `reviewed`.
+**Observable:** When I mark a catch-up theme reviewed ("Done"), every source item the theme captured is marked read in its own surface — and I never see it resurface as unread there. The cascade covers **exactly the theme's snapshot refs** (digests, tracks, inbox, briefings). On the **Go path** (`Pipeline.Acknowledge`, CLI `catchup ack`), a referenced digest's decisions are additionally cascaded read via `MarkDigestRead`'s `decision_reads` insert — a leftover of the pre-ledger digest-scanned Decisions feed, now vestigial (nothing reads `decision_reads` for display) but harmless. The **Swift path** (`CatchUpQueries.acknowledge`, the Desktop "Done" button) does **not** cascade to `decision_reads` — decisions live in the consolidated ideas ledger (`ideas WHERE kind = 'decision'`) and are tracked via `seen_at`, not via a digest's raw JSON; the Decisions feed this cascade used to protect no longer exists on the Swift side. The cascade is best-effort and idempotent: re-acking never double-counts, and items that arrived after the snapshot are left untouched. The session's `reviewed_count` increments only on the first transition into `reviewed`.
 
-**Why locked:** Catch-up's entire promise is "see it once here, you're done." If acknowledging a theme left its digests/decisions/tracks/inbox unread in their own feeds, the operator would have to re-clear everything twice and the badges would lie — the surface stops being a catch-up and becomes extra work. The decisions half of the cascade is the easy one to forget because decisions are not a gathered source area; this contract pins it.
+**Why locked:** Catch-up's entire promise is "see it once here, you're done." If acknowledging a theme left its digests/tracks/inbox unread in their own feeds, the operator would have to re-clear everything twice and the badges would lie — the surface stops being a catch-up and becomes extra work.
 
 **Test guards:**
-- `internal/catchup/pipeline_test.go::TestCatchup14_AcknowledgeMarksDigestDecisionsRead`
+- `internal/catchup/pipeline_test.go::TestCatchup14_AcknowledgeMarksDigestDecisionsRead` (Go path only)
 - `internal/catchup/pipeline_test.go::TestCatchup24_AcknowledgeReviewedCountIsIdempotent`
-- `internal/db/digests_test.go::TestMarkDigestRead_CascadeDecisions`
+- `internal/db/digests_test.go::TestMarkDigestRead_CascadeDecisions` (Go path only)
 - `internal/db/digests_test.go::TestMarkDigestRead_NoDecisionsIsNoop`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeCascadesMarkReadAndFlipsReviewState`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeMarksDigestDecisionsRead`
-- `WatchtowerDesktop/Tests/CatchUpQueriesTests.swift::testAcknowledgeReviewedCountIsIdempotent`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeCascadesMarkReadAndFlipsReviewState`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeDoesNotCascadeToDecisionReads` (pins the Swift-path retirement, not a re-add of the old guard)
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeReviewedCountIsIdempotent`
 
 **Locked since:** 2026-06-22
 
@@ -64,5 +64,6 @@
 
 ## Changelog
 
+- 2026-08-12 ([OWNER] confirmed): decisions-split — the Desktop Decisions segment (`DigestListView`/`DecisionsListView`/`DecisionDetailView`) now reads the consolidated ideas ledger (`ideas WHERE kind = 'decision'`, tracked via `seen_at`) instead of scanning `digests.decisions` JSON. `CatchUpQueries.acknowledge`'s digest→`decision_reads` cascade is removed (nothing on the Swift side reads that table anymore); `decision_reads` stays in the schema, unused on that path, non-destructive. The Go path (`Pipeline.Acknowledge`/`MarkDigestRead`) is untouched and still cascades — CATCHUP-01 now applies fully to Go, partially to Swift (digests/tracks/inbox/briefings still cascade there too). Old Swift guard `testAcknowledgeMarksDigestDecisionsRead` replaced by `testAcknowledgeDoesNotCascadeToDecisionReads`, which pins the new (non-)behavior. See `docs/superpowers/specs/2026-08-12-decisions-split-cross-source-digests-design.md`.
 - 2026-06-25: outline pass replaced by a sequential peel-off loop (one theme per round until the model returns `{"done":true}`); removed the 3–8 theme ceiling and raised gather caps (150/80/120/20). New source tag `catchup.peel` routed to the light model tier on both providers. CATCHUP-02 guard extended to cover the new `peelSystemPrompt`. New behaviour: pool items the model judges noise on a clean/done exit are marked read (reusing the `MarkXRead` primitives, so the digest-decision cascade still holds); on an error/safety-cap exit the leftover stays unread. `Acknowledge` refactored to share a `markAreaRead` helper — behaviour unchanged. Contracts CATCHUP-01/03 unchanged.
 - 2026-06-22: file created with 3 contracts (CATCHUP-01..03), all Enforced. CATCHUP-01 added alongside the fix that made acknowledge cascade digest **decisions** read on both the Go (`MarkDigestRead`) and Swift (`CatchUpQueries.acknowledge`) paths — previously digests were marked read but their decisions stayed stuck in the Decisions feed's unread count. CATCHUP-02 records the language-directive invariant after the outline/expand prompts shipped without one and generated English on a Russian workspace.

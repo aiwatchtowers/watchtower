@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import GRDB
 import os
+import WatchtowerCore
 
 /// Pure slice diffing: compares local DB rows against known pushed hashes
 /// to produce a set of upserts, deletions, and skipped (un-encodable) records.

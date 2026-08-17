@@ -1,5 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The navigation-surviving speaker-guess center (the TranscriptNotesCenter
 /// sibling): in-flight dedupe, error/empty-result outcomes, and suggestion

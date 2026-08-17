@@ -6,6 +6,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case briefings
     case dayPlan
     case inbox
+    case ideas
     case calendar
     case targets
     case tracks
@@ -32,6 +33,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .briefings: "Briefings"
         case .dayPlan: "Day Plan"
         case .inbox: "Inbox"
+        case .ideas: "Ideas"
         case .calendar: "Calendar"
         case .targets: "Targets"
         case .tracks: "Tracks"
@@ -58,6 +60,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .briefings: "sun.max"
         case .dayPlan: "calendar.day.timeline.left"
         case .inbox: "tray"
+        case .ideas: "lightbulb"
         case .calendar: "calendar"
         case .targets: "scope"
         case .tracks: "binoculars"
@@ -91,5 +94,45 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     /// Tool items (shown below the separator). Search lives here too.
     static var toolItems: [Self] {
         [.search, .boards, .usage, .training, .mcpServer]
+    }
+}
+
+extension SidebarDestination {
+    /// Feature ids that keep this tab visible; visible iff ANY is enabled.
+    /// nil = always visible (core tabs, and tabs with no single owning
+    /// feature — e.g. `.inbox`, which stays reachable even with the
+    /// secretary-inbox feature off so its banner and existing situations
+    /// remain visible).
+    var requiredFeatures: [String]? {
+        switch self {
+        case .catchUp: ["slack-digests"]
+        case .digests: ["slack-digests", "stream-digests", "ideas"]
+        case .ideas: ["ideas"]
+        case .memory: ["memory"]
+        case .briefings: ["briefing"]
+        case .dayPlan: ["day-plan"]
+        case .tracks: ["tracks"]
+        case .people: ["people-cards"]
+        default: nil
+        }
+    }
+
+    /// Whether this tab should render given the current set of disabled
+    /// feature ids. A tab with no `requiredFeatures` is always visible; one
+    /// that declares features is visible as long as at least one of them is
+    /// still enabled.
+    func isVisible(disabledFeatures: Set<String>) -> Bool {
+        guard let required = requiredFeatures else { return true }
+        return required.contains { !disabledFeatures.contains($0) }
+    }
+
+    /// The destination navigation should fall back to when `current` is no
+    /// longer visible under `disabled` (its feature was just turned off, or
+    /// a persisted selection from a previous launch points at a now-hidden
+    /// tab), or nil when `current` is still visible and no fallback is
+    /// needed. Pure — no AppState dependency — so the selection owner can
+    /// call it both on a live feature-list change and once at appear.
+    static func fallbackDestination(current: SidebarDestination, disabled: Set<String>) -> SidebarDestination? {
+        current.isVisible(disabledFeatures: disabled) ? nil : .inbox
     }
 }

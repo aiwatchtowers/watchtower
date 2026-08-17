@@ -4,12 +4,44 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Source .env if present (for OAuth credentials etc.)
-if [ -f "$PROJECT_ROOT/.env" ]; then
+# BEGIN profile-selection (extracted verbatim by scripts/tests/test-build-app-profile.sh)
+# Source the build profile if present (OAuth credentials, BUILD_FLAVOR etc.).
+# ENV_FILE selects an alternative profile (e.g. ENV_FILE=.env.b2 make app);
+# relative paths resolve against the project root. An explicitly requested
+# profile that is missing is a hard error — silently building with default
+# credentials would produce an artifact indistinguishable from the right one.
+# The default/explicit split keys off the RESOLVED path, so an explicit
+# ENV_FILE=.env behaves exactly like not setting ENV_FILE at all (intended).
+# A non-default profile must set BUILD_FLAVOR: a flavorless profile build
+# would wear the default artifact name while carrying non-default credentials
+# — the same mislabeled-artifact failure, from the other direction.
+# Flavors deliberately share the bundle id, install path, and Application
+# Support directory — same product, different baked credentials. Co-installing
+# two flavors on one machine is out of scope.
+ENV_FILE="${ENV_FILE:-.env}"
+case "$ENV_FILE" in
+    /*) : ;;
+    *) ENV_FILE="$PROJECT_ROOT/$ENV_FILE" ;;
+esac
+if [ -f "$ENV_FILE" ]; then
     set -a
-    . "$PROJECT_ROOT/.env"
+    . "$ENV_FILE"
     set +a
+elif [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ]; then
+    echo "ERROR: build profile '$ENV_FILE' not found" >&2
+    exit 1
 fi
+FLAVOR="${BUILD_FLAVOR:-}"
+if [ "$ENV_FILE" != "$PROJECT_ROOT/.env" ] && [ -z "$FLAVOR" ]; then
+    echo "ERROR: build profile '$ENV_FILE' must set BUILD_FLAVOR — without it the artifact would be indistinguishable from the default build" >&2
+    exit 1
+fi
+if [ -n "$FLAVOR" ] && ! printf '%s' "$FLAVOR" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    echo "ERROR: BUILD_FLAVOR '$FLAVOR' must match [A-Za-z0-9._-]+ — it lands in ldflags and artifact file names" >&2
+    exit 1
+fi
+FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
+# END profile-selection
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
 BUILD_DIR="$PROJECT_ROOT/build"
 APP_NAME="Watchtower"
@@ -37,12 +69,46 @@ VERSION="${VERSION:-0.2.0}"
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+
+# Without create-dmg the DMG silently degrades to a bare hdiutil image (no
+# window layout, opens like a plain folder), so surface that up front.
+if ! $DEV_MODE && ! command -v create-dmg &>/dev/null; then
+    echo "WARNING: create-dmg not found — DMG will be a bare hdiutil image without installer window layout." >&2
+    echo "         Install it with: brew install create-dmg" >&2
+fi
+FLAVOR_NOTE="${FLAVOR:+ [flavor: $FLAVOR]}"
 if $DEV_MODE; then
-    echo "==> Building Watchtower v$VERSION (arm64) [DEV MODE — no DMG/ZIP/notarization]"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE [DEV MODE — no DMG/ZIP/notarization]"
 else
-    echo "==> Building Watchtower v$VERSION (arm64)"
+    echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE"
 fi
 echo ""
+
+# BEGIN live-process-guard (extracted verbatim by scripts/tests/test-build-app-guard.sh)
+# Refuse to rebuild while anything executes from build/: rm -rf replaces the
+# binary beneath the live process (app, bundled daemon, or standalone CLI),
+# breaking its Security.framework/TLS and desyncing LaunchServices.
+# ps snapshot is taken separately so set -e still aborts if ps itself fails
+# (the guard must fail closed).
+# awk matches the WHOLE LINE by literal prefix: `ps -axo command=` emits no
+# leading whitespace, so the executable path always starts at position 1 and an
+# argv that merely MENTIONS build/ in a later token can never match there. The
+# match is index()/literal rather than a regex because paths carry regex
+# metacharacters ('+' in worktree names); matching $0 rather than $1 also keeps
+# a BUILD_DIR containing a space from being truncated at the field split.
+# `awk -v` processes backslash escapes in p — irrelevant for macOS paths, which
+# do not realistically contain backslashes.
+# Accepted limitation: a process launched via a RELATIVE argv (./build/watchtower)
+# is not matched, since ps reports argv[0] as typed. Every primary consumer (the
+# app bundle, the make targets, the daemon spawn) launches from an absolute path.
+PS_SNAPSHOT=$(ps -axo command=)
+RUNNING_FROM_BUILD=$(printf '%s\n' "$PS_SNAPSHOT" | awk -v p="$BUILD_DIR/" 'index($0, p) == 1')
+if [ -n "$RUNNING_FROM_BUILD" ]; then
+    echo "ERROR: a Watchtower process (app or daemon) is still running from $BUILD_DIR — quit it before rebuilding:" >&2
+    printf '%s\n' "$RUNNING_FROM_BUILD" >&2
+    exit 1
+fi
+# END live-process-guard
 
 # Clean previous build
 rm -rf "$BUILD_DIR"
@@ -61,7 +127,7 @@ JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
 GOARCH=arm64 CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
+    -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
     -o "$BUILD_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
 
@@ -149,11 +215,15 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Watchtower records your side of meetings to transcribe them locally.</string>
+    <string>Watchtower uses the microphone to record your side of meetings and to take voice dictation, transcribed locally.</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>Watchtower records meeting audio (other participants) to transcribe it locally. Audio never leaves this Mac.</string>
     <key>LSUIElement</key>
     <false/>
+    <!-- Layered with SingleInstanceGuard.swift: keep LaunchServices from launching a second instance of this bundle.
+         Per-app-bundle, not per-bundle-id — it does not cover a second on-disk copy sharing the identifier. -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
@@ -190,6 +260,32 @@ PLIST
 if [ -f "$DESKTOP_DIR/Resources/AppIcon.icns" ]; then
     cp "$DESKTOP_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/"
     /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
+# Stamp the flavor into the bundle so the app itself knows which build it is.
+# UpdateService reads this key to keep flavored builds off the public release
+# feed (their updates are distributed out-of-band). Absent on default builds —
+# the default Info.plist stays byte-identical to the pre-flavor layout.
+if [ -n "$FLAVOR" ]; then
+    /usr/libexec/PlistBuddy -c "Add :WTBuildFlavor string $FLAVOR" "$APP_BUNDLE/Contents/Info.plist"
+    # Gated update channel keys (flavored builds only; dev never updates —
+    # UpdateService also enforces that, this just avoids shipping dead keys).
+    # All three or none: a partial set would be a build that can locate the
+    # feed but not authenticate, or vice versa. UpdateService fails closed on
+    # a partial set anyway; erroring here catches the profile typo at build
+    # time instead of shipping a silently non-updating artifact.
+    _upd_set=0
+    [ -n "${WATCHTOWER_UPDATE_FEED_URL:-}" ] && _upd_set=$((_upd_set+1))
+    [ -n "${WATCHTOWER_UPDATE_CLIENT_ID:-}" ] && _upd_set=$((_upd_set+1))
+    [ -n "${WATCHTOWER_UPDATE_CLIENT_SECRET:-}" ] && _upd_set=$((_upd_set+1))
+    if [ "$FLAVOR" != "dev" ] && [ "$_upd_set" -eq 3 ]; then
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateFeedURL string $WATCHTOWER_UPDATE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateClientID string $WATCHTOWER_UPDATE_CLIENT_ID" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateClientSecret string $WATCHTOWER_UPDATE_CLIENT_SECRET" "$APP_BUNDLE/Contents/Info.plist"
+    elif [ "$FLAVOR" != "dev" ] && [ "$_upd_set" -ne 0 ]; then
+        echo "ERROR: partial update-channel config — set all three WATCHTOWER_UPDATE_* vars or none" >&2
+        exit 1
+    fi
 fi
 
 # Code sign — one path for dev and release.
@@ -302,7 +398,7 @@ fi
 
 # Create DMG
 echo "==> Creating DMG..."
-DMG_NAME="Watchtower-arm64.dmg"
+DMG_NAME="Watchtower${FLAVOR_SUFFIX}-arm64.dmg"
 DMG_PATH="$BUILD_DIR/$DMG_NAME"
 DMG_STAGING="$BUILD_DIR/dmg-staging"
 
@@ -347,7 +443,7 @@ DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
 
 # Create ZIP (used by auto-update + install script)
 echo "==> Creating ZIP..."
-ZIP_NAME="Watchtower-${VERSION}-arm64.zip"
+ZIP_NAME="Watchtower-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
 cd "$BUILD_DIR"
 ditto -c -k --keepParent "$APP_NAME.app" "$ZIP_NAME"
 ZIP_SIZE=$(du -h "$ZIP_NAME" | cut -f1)
@@ -422,7 +518,9 @@ fi
 
 # Generate checksums
 echo "==> Generating checksums..."
-CHECKSUMS="$BUILD_DIR/checksums.txt"
+# Flavored builds get a flavored manifest so artifacts moved out of build/
+# stay self-describing; the default name is a contract with install.sh.
+CHECKSUMS="$BUILD_DIR/checksums${FLAVOR_SUFFIX}.txt"
 shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
 
 echo ""

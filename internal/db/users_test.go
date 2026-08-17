@@ -78,6 +78,93 @@ func TestGetUserByIDNotFound(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestGetUserByEmailFoldCaseInsensitive(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", Email: "alice@example.com"}))
+
+	got, err := db.GetUserByEmailFold("ALICE@Example.COM")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "U001", got.ID)
+}
+
+func TestGetUserByEmailFoldNotFound(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	got, err := db.GetUserByEmailFold("nobody@example.com")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// TestGetUserByEmailFoldExcludesDeletedAndIsStable pins the fix for a bug
+// that stopped being a hypothetical edge case once the Slack multi-account
+// migration shipped: the same human now legitimately has one users row per
+// connected workspace, so a duplicate email is the expected shape, not rare.
+// A deleted row for that email must never win over an active one, and among
+// several active rows the pick must be stable across repeated calls, not
+// whatever order SQLite happens to return.
+func TestGetUserByEmailFoldExcludesDeletedAndIsStable(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "2:U002", Name: "alice-old", Email: "alice@example.com", IsDeleted: true}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U001", Name: "alice", Email: "alice@example.com"}))
+
+	got, err := db.GetUserByEmailFold("alice@example.com")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "1:U001", got.ID, "the active row must win over a deleted one for the same email")
+
+	// A second active row for the same email — the expected multi-account
+	// shape. The winner must be stable across repeated calls.
+	require.NoError(t, db.UpsertUser(User{ID: "3:U003", Name: "alice-other-workspace", Email: "alice@example.com"}))
+
+	first, err := db.GetUserByEmailFold("alice@example.com")
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	for i := 0; i < 5; i++ {
+		again, err := db.GetUserByEmailFold("alice@example.com")
+		require.NoError(t, err)
+		require.NotNil(t, again)
+		assert.Equal(t, first.ID, again.ID, "the winner among active duplicates must be stable across calls")
+	}
+}
+
+// TestGetUserByEmailFoldAllDeletedIsNotFound pins the other half of the
+// deleted-exclusion: if every row for an email is deleted, that is a
+// not-found, not a fallback to a deactivated account.
+func TestGetUserByEmailFoldAllDeletedIsNotFound(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", Email: "alice@example.com", IsDeleted: true}))
+
+	got, err := db.GetUserByEmailFold("alice@example.com")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestGetUserByEmailFoldEmptyGuard(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// A user with no email must never match an empty lookup — the same guard
+	// GetUserByEmail has (email != '').
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "alice", Email: ""}))
+
+	got, err := db.GetUserByEmailFold("")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
 func TestGetUserByNameNotFound(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

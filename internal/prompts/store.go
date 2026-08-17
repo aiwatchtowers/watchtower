@@ -54,6 +54,10 @@ const (
 	MemoryRenderMap            = "memory.render_map"
 	MemoryReflect              = "memory.reflect"
 	MemoryRenderChannelDigest  = "memory.render_channel_digest"
+	IdeasDigestEmail           = "ideas.digest_email"
+	IdeasDigestJira            = "ideas.digest_jira"
+	IdeasConsolidate           = "ideas.consolidate"
+	DictationClean             = "dictation.clean"
 )
 
 // Store loads, caches, and persists prompt templates.

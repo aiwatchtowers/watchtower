@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// `TargetExtractCenter`'s lifecycle: starting/cancelling/retrying/dismissing
 /// an extraction. Split into its own file so `TargetExtractCenter.swift`

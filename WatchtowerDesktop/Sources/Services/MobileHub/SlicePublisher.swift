@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import os
+import WatchtowerCore
 
 /// Pushes the product slice (briefings, inbox, targets, …) from the local DB
 /// to the cloud transport. Runs a poll loop (not ValueObservation — the Go

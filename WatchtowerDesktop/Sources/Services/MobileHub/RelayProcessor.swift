@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import os
+import WatchtowerCore
 
 /// Applies mobile-originated relay actions to the local DB through the
 /// existing Queries, then writes an applied/failed status record back to

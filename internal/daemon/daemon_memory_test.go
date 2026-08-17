@@ -72,6 +72,10 @@ func TestDaemon_MemoryPhaseRunsBetweenInboxAndNextStep(t *testing.T) {
 		},
 		Sync:   config.SyncConfig{PollInterval: 10 * time.Second},
 		Memory: enabledMemoryConfig(),
+		// Inbox/next_step now each need their own Enabled flag (Task 3
+		// demoted digest.enabled from a master switch to a per-phase gate).
+		Inbox:   config.InboxConfig{Enabled: true},
+		Targets: config.TargetsConfig{NextStep: config.TargetsNextStepConfig{Enabled: true}},
 	}
 
 	gen := &mockGenerator{}

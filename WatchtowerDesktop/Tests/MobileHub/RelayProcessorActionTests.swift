@@ -2,6 +2,8 @@ import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 final class RelayProcessorActionTests: XCTestCase {
     private var dbPath: String!

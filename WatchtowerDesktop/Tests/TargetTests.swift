@@ -1,6 +1,8 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerKit
 
 // MARK: - Target Model Tests

@@ -3,6 +3,7 @@ import SwiftUI
 import GRDB
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class CalendarEventRowViewTests: XCTestCase {
@@ -15,6 +16,7 @@ final class CalendarEventRowViewTests: XCTestCase {
         title: String = "Sync",
         location: String = "",
         attendeesJSON: String = "[]",
+        organizerEmail: String = "",
         startTime: String = "2099-01-01T10:00:00Z",
         endTime: String = "2099-01-01T11:00:00Z"
     ) -> CalendarEvent {
@@ -26,7 +28,7 @@ final class CalendarEventRowViewTests: XCTestCase {
             "location": location,
             "start_time": startTime,
             "end_time": endTime,
-            "organizer_email": "",
+            "organizer_email": organizerEmail,
             "attendees": attendeesJSON,
             "is_recurring": 0,
             "is_all_day": 0,
@@ -38,6 +40,56 @@ final class CalendarEventRowViewTests: XCTestCase {
             "updated_at": ""
         ]
         return CalendarEvent(row: row)
+    }
+
+    // MARK: - attendeesIncludingOrganizer
+
+    /// The organizer lives in its own column, never in the attendees JSON —
+    /// the identity union must add them (with an empty display name).
+    func testAttendeesIncludingOrganizerAddsNonGuestOrganizer() {
+        let event = makeEvent(
+            attendeesJSON: #"[{"email":"alice@corp.com","display_name":"Alice","response_status":"accepted","slack_user_id":""}]"#,
+            organizerEmail: "boss@corp.com")
+        XCTAssertEqual(event.attendeesIncludingOrganizer.map(\.email),
+                       ["alice@corp.com", "boss@corp.com"])
+    }
+
+    /// An organizer already on the guest list must not be duplicated
+    /// (case-insensitive), and an empty organizer adds nothing.
+    func testAttendeesIncludingOrganizerSkipsDuplicateAndEmpty() {
+        let event = makeEvent(
+            attendeesJSON: #"[{"email":"boss@corp.com","display_name":"Boss","response_status":"accepted","slack_user_id":""}]"#,
+            organizerEmail: "Boss@Corp.com")
+        XCTAssertEqual(event.attendeesIncludingOrganizer.map(\.email), ["boss@corp.com"])
+        XCTAssertEqual(makeEvent(attendeesJSON: "[]").attendeesIncludingOrganizer, [])
+    }
+
+    /// A zero-guest event (focus block; also an undecodable attendees JSON)
+    /// must stay [] even with an organizer — [] is the "treat as ad-hoc →
+    /// global voice-print pool" sentinel, and an organizer-only set would
+    /// narrow the pool to the owner and strip every colleague's name.
+    func testAttendeesIncludingOrganizerStaysEmptyWithoutGuests() {
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[]", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [])
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "{broken", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [])
+    }
+
+    /// A room resource is an ordinary attendee row in Google's payload —
+    /// it is filtered out entirely (never offered as a speaker, never in
+    /// the print pool), so a room-only booking keeps the [] sentinel and a
+    /// mixed list yields humans + organizer only.
+    func testAttendeesIncludingOrganizerFiltersRoomResources() {
+        let room = #"{"email":"office-6@resource.calendar.google.com","display_name":"Room 6","response_status":"accepted","slack_user_id":""}"#
+        let human = #"{"email":"alice@corp.com","display_name":"Alice","response_status":"accepted","slack_user_id":""}"#
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[\(room)]", organizerEmail: "boss@corp.com").attendeesIncludingOrganizer, [],
+            "a room-only booking must degrade to the global pool, not to owner-only")
+        XCTAssertEqual(
+            makeEvent(attendeesJSON: "[\(room),\(human)]", organizerEmail: "boss@corp.com")
+                .attendeesIncludingOrganizer.map(\.email),
+            ["alice@corp.com", "boss@corp.com"],
+            "the room row must not reach the picker or the print pool")
     }
 
     // MARK: - Tests
@@ -110,5 +162,28 @@ final class CalendarEventRowViewTests: XCTestCase {
             endTime: fmt.string(from: pastStart.addingTimeInterval(1800))
         ))
         XCTAssertThrowsError(try past.inspect().find(text: "in"))
+    }
+
+    /// Recording-count badge (Meetings-screen rewiring, decision 2): "N rec"
+    /// renders only when the event has folded recordings.
+    func testRecordingBadgeShownWhenCountPositive() throws {
+        let view = CalendarEventRow(event: makeEvent(), recordingCount: 2)
+        XCTAssertNoThrow(try view.inspect().find(text: "2 rec"))
+    }
+
+    /// Default recordingCount is 0 — an event with no recordings renders no
+    /// badge at all, not a "0 rec" badge.
+    func testRecordingBadgeHiddenWhenCountZero() throws {
+        let view = CalendarEventRow(event: makeEvent())
+        XCTAssertThrowsError(try view.inspect().find(text: "0 rec"))
+    }
+
+    /// The row itself carries no Record affordance — Record moved to the
+    /// detail pane (`MeetingDetailView`/`MeetingRecordButton`) as part of the
+    /// unified Meetings screen; the row is tap-to-select only.
+    func testRowHasNoRecordAffordance() throws {
+        let view = CalendarEventRow(event: makeEvent(), recordingCount: 1)
+        XCTAssertThrowsError(try view.inspect().find(text: "Record"))
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Button.self))
     }
 }

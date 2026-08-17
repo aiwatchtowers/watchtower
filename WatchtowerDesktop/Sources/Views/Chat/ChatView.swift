@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct ChatView: View {
     @Environment(AppState.self) private var appState
@@ -194,7 +195,8 @@ private struct ChatSplitView: View {
                     }
                     chatVM.send()
                 },
-                onStop: { chatVM.cancelStream() }
+                onStop: { chatVM.cancelStream() },
+                dictationTargetID: "chat.workspace"
             )
         }
     }

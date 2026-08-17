@@ -59,11 +59,12 @@ func seedPeopleCard(t *testing.T, d *db.DB, userID, summary string) int64 {
 	return id
 }
 
-// seedJiraIssue inserts a minimal jira_issues row for a project key.
+// seedJiraIssue inserts a minimal jira_issues row (account 1) for a project key.
 func seedJiraIssue(t *testing.T, d *db.DB, key, projectKey string) {
 	t.Helper()
-	_, err := d.Exec(`INSERT INTO jira_issues (key, project_key, summary, status, status_category, created_at, updated_at, synced_at)
-		VALUES (?, ?, 'issue', 'Open', 'To Do', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	seedJiraAccount(t, d)
+	_, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at)
+		VALUES (1, ?, ?, 'issue', 'Open', 'To Do', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		key, projectKey)
 	require.NoError(t, err)
 }

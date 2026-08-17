@@ -11,7 +11,7 @@ struct NotificationSettings: View {
     @State private var permissionStatus: UNAuthorizationStatus?
 
     var body: some View {
-        Form {
+        Group {
             if permissionStatus == .denied {
                 Section {
                     HStack {
@@ -84,8 +84,6 @@ struct NotificationSettings: View {
                 }
             }
         }
-        .formStyle(.grouped)
-        .padding()
         .onAppear {
             Task { await checkPermission() }
         }

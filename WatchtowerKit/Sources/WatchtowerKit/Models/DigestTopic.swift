@@ -14,7 +14,7 @@ public struct DigestTopic: FetchableRecord, Decodable, Identifiable, Equatable {
     public let situations: String
     public let keyMessages: String
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id, idx, title, summary, decisions, situations
         case digestID = "digest_id"
         case actionItems = "action_items"

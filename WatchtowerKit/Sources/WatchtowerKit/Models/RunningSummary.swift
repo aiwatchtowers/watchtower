@@ -9,7 +9,7 @@ public struct RunningSummary: Codable, Equatable {
     public let openQuestions: [String]?
     public let meta: Meta?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case activeTopics = "active_topics"
         case recentDecisions = "recent_decisions"
         case channelDynamics = "channel_dynamics"
@@ -18,10 +18,10 @@ public struct RunningSummary: Codable, Equatable {
     }
 
     public struct Meta: Codable, Equatable {
-        let generatedAt: String?
-        let digestID: String?
-        let messageCount: Int?
-        let period: String?
+        public let generatedAt: String?
+        public let digestID: String?
+        public let messageCount: Int?
+        public let period: String?
 
         enum CodingKeys: String, CodingKey {
             case generatedAt = "generated_at"
@@ -42,7 +42,7 @@ public struct ActiveTopic: Codable, Equatable, Identifiable {
     public let keyParticipants: [String]?
     public let summary: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case topic, status, started, summary
         case lastUpdate = "last_update"
         case keyParticipants = "key_participants"

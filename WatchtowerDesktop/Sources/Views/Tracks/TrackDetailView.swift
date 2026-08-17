@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct TrackDetailView: View {
     let track: Track

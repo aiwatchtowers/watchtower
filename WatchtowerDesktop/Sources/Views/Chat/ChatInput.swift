@@ -7,6 +7,35 @@ struct ChatInput: View {
     let onSend: () -> Void
     var onStop: (() -> Void)?
     var placeholder: String = "Ask about your workspace..."
+    /// nil → no mic button (the defaulted-member precedent, so no call site breaks).
+    var dictationTargetID: String?
+    @Environment(\.dictationCenter) private var dictationCenter
+
+    var body: some View {
+        ChatInputContent(
+            text: $text,
+            isStreaming: isStreaming,
+            onSend: onSend,
+            onStop: onStop,
+            placeholder: placeholder,
+            dictationTargetID: dictationTargetID,
+            dictationCenter: dictationCenter
+        )
+    }
+}
+
+/// The input row's actual rendering, split from `ChatInput` so it reads no
+/// custom `@Environment` — ViewInspector cannot resolve those without a real
+/// render pass (the `TrayMenuView`/`TrayMenuContent` precedent); tests drive
+/// this view with an explicit center.
+struct ChatInputContent: View {
+    @Binding var text: String
+    let isStreaming: Bool
+    let onSend: () -> Void
+    var onStop: (() -> Void)?
+    var placeholder: String
+    var dictationTargetID: String?
+    var dictationCenter: DictationCenter?
     @State private var inputHeight: CGFloat = 22
 
     var body: some View {
@@ -39,6 +68,13 @@ struct ChatInput: View {
                 RoundedRectangle(cornerRadius: 18)
                     .strokeBorder(Color(.separatorColor).opacity(0.3), lineWidth: 0.5)
             )
+            // "" is a sentinel for a nil dictationTargetID: it never matches a
+            // real activeTargetID, so a mic-less input never lights up.
+            .dictationHighlight(targetID: dictationTargetID ?? "", center: dictationCenter, cornerRadius: 18)
+
+            if let id = dictationTargetID, let center = dictationCenter {
+                DictationButton(text: $text, mode: .chat, targetID: id, center: center)
+            }
 
             Button {
                 if isStreaming {

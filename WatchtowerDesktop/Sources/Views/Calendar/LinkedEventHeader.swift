@@ -1,8 +1,9 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Presentation-only "Linked to:" line in the recording-detail header, split
-/// from `RecordingDetailView` for testability (the `EventRecordingRows`
-/// pattern). Rendered only when the transcript carries an `event_id`:
+/// from `RecordingDetailView` for testability. Rendered only when the
+/// transcript carries an `event_id`:
 /// - resolvable event + navigation available → tappable deep-link button
 ///   (the host guarantees the tap lands: it pins the event's day into the
 ///   Events window before expanding);

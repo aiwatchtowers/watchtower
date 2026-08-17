@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Drives the multi-workspace Slack connections shown in Settings → Slack and
 /// the add-workspace sheet. Each row is a DB-backed `slack_accounts` record —

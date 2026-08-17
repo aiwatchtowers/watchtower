@@ -3,7 +3,9 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -63,7 +65,30 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	if dbPath != ":memory:" {
+		tightenDBFilePerms(dbPath)
+	}
+
 	return db, nil
+}
+
+// tightenDBFilePerms restricts the database file and its WAL/SHM sidecars to
+// 0600. SQLite creates all three itself, per the process umask (0644 in
+// practice), so the mode is fixed after the fact rather than at creation —
+// which also brings databases created before this code existed up to the
+// house standard on their next open, instead of leaving them world-readable
+// forever. The file holds every synced message, mail body and transcript.
+//
+// Best-effort by design: the parent directory is already 0700, so a chmod
+// failure leaves the database no more exposed than before and must never stop
+// the process from starting. It is logged, not swallowed. A sidecar that does
+// not exist is a normal no-op — SQLite removes both on a clean close.
+func tightenDBFilePerms(dbPath string) {
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("could not restrict database file permissions", "path", p, "error", err)
+		}
+	}
 }
 
 func (db *DB) setPragmas() error {

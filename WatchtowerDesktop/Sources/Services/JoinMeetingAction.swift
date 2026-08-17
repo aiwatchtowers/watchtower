@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import WatchtowerCore
 
 /// Shared Join-meeting action behind every "Join" button (event row, sidebar
 /// next-event block): opens the event's conference link and — when
@@ -9,10 +10,11 @@ import Foundation
 /// Joining the meeting must never be blocked by recorder problems: the URL
 /// opens first, unconditionally. Auto-record is skipped entirely when the
 /// open itself fails (there is no meeting to record if the user never
-/// joined), and a recording already in flight (this or another event) is
-/// never interrupted or double-started — `MeetingRecorderCenter.isBusy`
-/// latches synchronously at start (`isStarting`), so the single-slot guard
-/// holds even across rapid Joins on different surfaces.
+/// joined), and a recording already being captured (this or another event) is
+/// never interrupted or double-started — `MeetingRecorderCenter.isCapturing`
+/// latches synchronously at start (`isStarting`), so the single-capture guard
+/// holds even across rapid Joins on different surfaces. A previous recording
+/// still being transcribed is not a reason to skip: post-processing is queued.
 @MainActor
 enum JoinMeetingAction {
     /// `@AppStorage("calendar.autoRecordOnJoin")` in Settings; absent = true.
@@ -22,7 +24,7 @@ enum JoinMeetingAction {
     /// tests neither drive `NSWorkspace`, read the real preference, nor depend
     /// on the host's macOS version. `forceRecord` (the notification's
     /// "Join + Record" action) starts a recording regardless of the
-    /// auto-record setting — the OS-support gate and the single-slot recorder
+    /// auto-record setting — the OS-support gate and the single-capture
     /// guard still apply.
     static func join(
         event: CalendarEvent,
@@ -46,7 +48,7 @@ enum JoinMeetingAction {
         // Join opens the link only, instead of dropping the Center into a
         // failure banner for a recording the user never requested.
         let autoRecord = defaults.object(forKey: autoRecordKey) as? Bool ?? true
-        guard forceRecord || autoRecord, recordingSupported, !center.isBusy else { return }
+        guard forceRecord || autoRecord, recordingSupported, !center.isCapturing else { return }
         // A start failure surfaces through the Center's own error path
         // (RecordingIndicatorView) — the link has already opened above.
         await center.startRecording(eventID: event.id, title: event.title, config: .fromDefaults(defaults))

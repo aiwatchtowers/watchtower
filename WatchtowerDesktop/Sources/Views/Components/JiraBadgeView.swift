@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Reusable badge for displaying a Jira issue with status indicator.
 /// Supports compact mode (for list rows) and expanded mode (for detail views).

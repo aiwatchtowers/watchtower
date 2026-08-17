@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class SlackUserPickerViewTests: XCTestCase {
@@ -72,5 +73,40 @@ final class SlackUserPickerViewTests: XCTestCase {
         // bestName = name = "bob"
         XCTAssertNoThrow(try view.inspect().find(text: "bob"))
         XCTAssertNoThrow(try view.inspect().find(text: "@bob"))
+    }
+
+    /// Selection stores a bare pre-migration id ("U1") while the synced user list holds
+    /// namespaced ids ("1:U1", migration 00048) — the picker must still resolve the name
+    /// instead of falling back to showing the raw id.
+    func testSelectedUserResolvesBareIDAgainstNamespacedList() throws {
+        var ids: [String] = ["U1"]
+        let view = SlackUserPicker(
+            title: "Pick",
+            allUsers: [makeUser(id: "1:U1", name: "alice", displayName: "Alice Wonder")],
+            selectedIDs: Binding(get: { ids }, set: { ids = $0 })
+        )
+        XCTAssertNoThrow(try view.inspect().find(text: "Alice Wonder"))
+    }
+
+    /// Selection already stores a namespaced id matching the synced user list exactly.
+    func testSelectedUserResolvesNamespacedIDAgainstNamespacedList() throws {
+        var ids: [String] = ["1:U1"]
+        let view = SlackUserPicker(
+            title: "Pick",
+            allUsers: [makeUser(id: "1:U1", name: "alice", displayName: "Alice Wonder")],
+            selectedIDs: Binding(get: { ids }, set: { ids = $0 })
+        )
+        XCTAssertNoThrow(try view.inspect().find(text: "Alice Wonder"))
+    }
+
+    /// No matching user at all (namespaced or not) — falls back to showing the raw stored id.
+    func testSelectedUserWithNoMatchFallsBackToRawID() throws {
+        var ids: [String] = ["U-unknown"]
+        let view = SlackUserPicker(
+            title: "Pick",
+            allUsers: [makeUser(id: "1:U1", name: "alice", displayName: "Alice Wonder")],
+            selectedIDs: Binding(get: { ids }, set: { ids = $0 })
+        )
+        XCTAssertNoThrow(try view.inspect().find(text: "U-unknown"))
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct LogsSettings: View {
     @State private var selectedLog: LogFile = .sync

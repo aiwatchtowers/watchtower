@@ -20,7 +20,7 @@ public struct Digest: FetchableRecord, Decodable, Identifiable, Equatable {
     public let readAt: String?
     public let runningSummary: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id, type, summary, topics, decisions, model
         case channelID = "channel_id"
         case periodFrom = "period_from"

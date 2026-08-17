@@ -1,15 +1,44 @@
 import GRDB
 import os
 import SwiftUI
+import WatchtowerCore
 
 @MainActor
 @Observable
 final class AppState {
     private static let logger = Logger(subsystem: Constants.bundleID, category: "AppState")
 
+    /// The one app-wide instance. The App struct seeds its `@State` from it,
+    /// so "the SwiftUI-managed AppState" and "the one the app delegate
+    /// bootstraps before any window exists" are the same object by
+    /// construction — the stale-`@State`-copy trap the H5 note in
+    /// `WatchtowerApp` describes cannot arise. Tests still construct their own
+    /// `AppState()` instances.
+    static let shared = AppState()
+
     var selectedDestination: SidebarDestination = .inbox
+
+    /// Which feature ids are currently disabled — drives sidebar visibility,
+    /// navigation fallback, and the Dashboard banner. Populated by the
+    /// Feature Manager service (wired in separately); empty until then.
+    let featureVisibility = FeatureVisibilityStore()
+
     var databaseManager: DatabaseManager?
     var errorMessage: String?
+    /// Non-nil when the CLI binary store could not be synced this launch. The
+    /// path resolver rejects a store copy that does not match the bundled CLI,
+    /// so this launch runs the CLI (daemon included) straight from the app
+    /// bundle instead — correct, but a rebuild of the app while it runs can
+    /// then invalidate a live process's code signature.
+    var cliStoreError: String?
+
+    /// The app's one daemon handle: the tray status line, Settings' read-only
+    /// status section, and the launch-time `ensureDaemonRunning()` all read and
+    /// write this instance, so a start/stop failure is visible wherever the
+    /// daemon is shown (house rule: state behind surviving surfaces lives in
+    /// AppState). Its path lookup is deliberately deferred until after the CLI
+    /// binary store has been synced — see `initialize()`.
+    let daemonManager = DaemonManager()
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// True while initialize() is running (before DB and onboarding check complete).
@@ -39,6 +68,18 @@ final class AppState {
     /// an in-flight recording and its transcription survive navigating away from
     /// the calendar event that started it.
     let meetingRecorderCenter = MeetingRecorderCenter()
+
+    /// App-wide, single-slot registry for voice dictation. Shares one physical
+    /// engine slot with `meetingRecorderCenter` — wired to it below via
+    /// `meetingBusy`/`captureWillStart` (`initialize()`).
+    let dictationCenter = DictationCenter()
+
+    /// Opens the Quick Capture window. Set once, from `rootContent.onAppear`,
+    /// where `@Environment(\.openWindow)` is actually available — the tray
+    /// button and the global hotkey handler both call through this instead of
+    /// needing their own `openWindow` (the hotkey's C callback has no
+    /// SwiftUI environment to read one from at all).
+    var openQuickCapture: (() -> Void)?
 
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
@@ -97,6 +138,10 @@ final class AppState {
     /// selection survive navigating away from and back to the feed.
     private(set) var feedViewModel: FeedViewModel?
 
+    /// Ideas & Decisions registry ViewModel — persists across tab switches so
+    /// filters and selection survive navigating away from and back to the tab.
+    private(set) var ideasViewModel: IdeasViewModel?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -128,6 +173,11 @@ final class AppState {
     /// Settings window.
     private(set) var slackAccountsViewModel: SlackAccountsViewModel?
 
+    /// Jira Accounts ViewModel (multi-site) — persists across tab switches so
+    /// an in-flight OAuth connect survives navigating away from the Settings
+    /// window.
+    private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -136,6 +186,12 @@ final class AppState {
 
     /// Set to navigate to a specific digest from anywhere in the app.
     var pendingDigestID: Int?
+
+    /// Set to navigate to a specific decisions-ledger entry from anywhere in
+    /// the app. Lands on the same `.digests` destination as `pendingDigestID`
+    /// — the Decisions segment lives inside `DigestListView`, not its own
+    /// sidebar tab.
+    var pendingDecisionID: Int?
 
     /// Set to navigate to a specific target from anywhere in the app.
     var pendingTargetID: Int?
@@ -184,6 +240,13 @@ final class AppState {
 
     /// Manages app updates from GitHub Releases.
     let updateService = UpdateService()
+
+    /// Desktop-side manager for the Settings → Features panel. Unlike the
+    /// DB-gated ViewModels built in `initFeatureViewModels`, it has no DB
+    /// dependency at all (it is backed entirely by the `watchtower features`
+    /// CLI), so it can live as a plain, always-constructed `let` here and
+    /// load independently of the DB-open Task in `initialize()`.
+    let featureManager = FeatureManagerService()
 
     /// Manages background pipeline tasks (digests, people) started after onboarding sync.
     let backgroundTaskManager = BackgroundTaskManager()
@@ -237,6 +300,11 @@ final class AppState {
         selectedDestination = .digests
     }
 
+    func navigateToDecision(_ ideaID: Int) {
+        pendingDecisionID = ideaID
+        selectedDestination = .digests
+    }
+
     func navigateToTarget(_ targetID: Int) {
         pendingTargetID = targetID
         selectedDestination = .targets
@@ -264,6 +332,66 @@ final class AppState {
 
     private var isInitializing = false
 
+    /// Hands the MeetingRecorderCenter its DB read closures once the shared
+    /// pool opens (the Center is created before the DB). Every loader
+    /// degrades on failure instead of throwing — voice naming is a
+    /// progressive enhancement like roles themselves: no voice prints →
+    /// plain "Speaker N" labels; no attendees → global (unscoped) matching;
+    /// no owner emails → «Я» keeps its legacy absolute mic-dominance
+    /// priority. Failures are printed, never silent (the renderRoles
+    /// diagnostics convention). `func`, not `private func`, so @testable
+    /// tests can wire a test DB through it (the initDashboard precedent).
+    func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
+        meetingRecorderCenter.voicePrintsLoader = {
+            do {
+                return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+            } catch {
+                print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
+                return []
+            }
+        }
+        meetingRecorderCenter.attendeesLoader = { eventID in
+            do {
+                let event = try await dbPool.read { try CalendarQueries.fetchEvent($0, id: eventID) }
+                guard let event else {
+                    // Delayed jobs (FIFO backlog, crash recovery, sidecar
+                    // retry) can outlive the ~24h event retention — the
+                    // silent fall to the global pool must not be
+                    // indistinguishable from ad-hoc.
+                    print("[AppState] event \(eventID) not found, voice matching stays global")
+                    return []
+                }
+                let identities = event.attendeesIncludingOrganizer
+                if identities.isEmpty, event.parsedAttendees.isEmpty,
+                   !event.attendees.isEmpty, event.attendees != "[]" {
+                    // Absent-vs-undecodable: a corrupt attendees blob folds
+                    // into the same global fallback as "no guests" — safe,
+                    // but it must leave a trace.
+                    print("[AppState] event \(eventID) has an undecodable attendees JSON, voice matching stays global")
+                }
+                return identities
+            } catch {
+                print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
+                return []
+            }
+        }
+        meetingRecorderCenter.ownerEmailsLoader = {
+            do {
+                // Deliberately unfiltered by status: a revoked Google account
+                // does not change who owns the machine (a removed one is
+                // hard-deleted and never appears here). IMAP (email_accounts)
+                // identities are deliberately excluded — voice prints are
+                // keyed by attendee emails, which come from Google Calendar.
+                // Owner-reviewed 2026-08-08.
+                let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
+                return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
+            } catch {
+                print("[AppState] owner-email load failed, «Я» stays mic-only: \(error.localizedDescription)")
+                return []
+            }
+        }
+    }
+
     func initialize() {
         guard !isInitializing else { return }
         isInitializing = true
@@ -271,16 +399,25 @@ final class AppState {
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()
+        // Neither direction of this handshake needs the DB, so it is wired
+        // unconditionally rather than inside the DB-dependent Task below.
+        dictationCenter.meetingBusy = { [meetingRecorderCenter] in meetingRecorderCenter.isBusy }
+        meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
+        meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
+        dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.backgroundTaskManager.terminateProcessesSync()
-            DaemonManager.stopDaemonSync()
         }
         Task {
-            let splashStart = ContinuousClock.now
+            await syncCLIBinaryStore()
+            // Only now resolve the CLI path and start polling: before the sync
+            // the store copy may still be the stale one, and DaemonManager
+            // caches whatever path it first resolves.
+            daemonManager.startPolling()
             do {
                 let manager = try await Task.detached {
                     // Run Go CLI to apply any pending DB migrations before opening
@@ -290,20 +427,7 @@ final class AppState {
                 }.value
                 databaseManager = manager
                 errorMessage = nil
-                // Voice matching needs the DB at diarization time; the Center
-                // is created before the DB opens, so hand it a loader now. A
-                // read failure degrades to "no voice prints" (plain Speaker N
-                // labels), never a thrown error.
-                meetingRecorderCenter.voicePrintsLoader = { [dbPool = manager.dbPool] in
-                    do {
-                        return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
-                    } catch {
-                        // Documented degradation, but never a silent one
-                        // (the renderRoles diagnostics convention).
-                        print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
-                        return []
-                    }
-                }
+                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
@@ -320,11 +444,6 @@ final class AppState {
                 // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
                 if !needsOnboarding {
                     await initSidebarCounts(dbPool: manager.dbPool)
-                }
-                // Hold splash for at least 2 seconds
-                let elapsed = ContinuousClock.now - splashStart
-                if elapsed < .seconds(2) {
-                    try? await Task.sleep(for: .seconds(2) - elapsed)
                 }
                 isLoading = false
                 startServices(manager: manager)
@@ -348,8 +467,34 @@ final class AppState {
             }
         }
         // Check for updates in background (once per 24h)
-        Task {
-            await updateService.checkIfNeeded()
+        Task { await updateService.checkIfNeeded() }
+        // No DB dependency, so this does not wait on the DB-open Task above
+        // (Settings → Features may be reached before that Task resolves).
+        // Every successful service load (launch, post-apply, failure-path
+        // reload) pushes the fresh disabled set into the visibility store
+        // the sidebar/navigation/banner read.
+        featureManager.onDisabledChanged = { [featureVisibility] ids in
+            featureVisibility.disabledFeatureIDs = ids
+        }
+        Task { await featureManager.load() }
+    }
+
+    /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
+    /// migrations, the daemon, and OAuth logins all run from the store,
+    /// never from the (rebuild-overwritten) bundle binary.
+    private func syncCLIBinaryStore() async {
+        guard let bundled = Constants.bundledCLIPath() else { return }
+        // Bounded stop: this runs before the splash gives way to the UI, so an
+        // unresponsive `sync stop` must not hang the launch forever.
+        let outcome = await CLIBinaryStore.sync(bundleBinary: bundled) {
+            await DaemonManager.stopDaemonBounded()
+        }
+        if case .failed(let reason) = outcome {
+            cliStoreError = reason
+            // Honest about the consequence: the resolver rejects a store copy
+            // that does not match the bundle, so the CLI runs from the bundle
+            // for this launch — including the daemon.
+            NSLog("CLIBinaryStore: sync failed (%@); the CLI runs from the app bundle this launch", reason)
         }
     }
 
@@ -357,18 +502,7 @@ final class AppState {
     /// splash is dismissed — split out of initialize() to keep it readable.
     private func startServices(manager: DatabaseManager) {
         loadCustomEmoji(from: manager)
-        initCalendar(dbPool: manager.dbPool)
-        initDayPlan(dbPool: manager.dbPool)
-        initCatchUp(dbPool: manager.dbPool)
-        initMemory(dbPool: manager.dbPool)
-        initDashboard(dbManager: manager)
-        initSecretaryProfile(dbManager: manager)
-        initEmailAccounts(dbPool: manager.dbPool)
-        initCalendarAccounts(dbPool: manager.dbPool)
-        initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
-        startDigestWatcher(dbPool: manager.dbPool)
-        startMeetingReminders(dbPool: manager.dbPool)
+        initFeatureViewModels(manager: manager)
         if UserDefaults.standard.bool(forKey: Constants.mobileSyncEnabledKey) {
             startMobileHub()
         }
@@ -400,6 +534,20 @@ final class AppState {
         }
     }
 
+    /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
+    /// but only when the launch-time bootstrap left the app without a database —
+    /// the one case where the DB, feature view models, and daemon are still
+    /// unwired. When the app initialized normally (e.g. a Settings-triggered
+    /// onboarding redo), everything is already wired and a re-run would only
+    /// restart the daemon mid-cycle and stack a duplicate terminate observer.
+    /// `initialize()` latches on `isInitializing` to keep window-reopen
+    /// `onAppear` calls idempotent; this is the one legitimate re-entry point.
+    func reinitializeAfterOnboarding() {
+        guard databaseManager == nil else { return }
+        isInitializing = false
+        initialize()
+    }
+
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
     private func initSidebarCounts(dbPool: DatabasePool) async {
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
@@ -425,10 +573,9 @@ final class AppState {
         await backgroundTaskManager.stopAll()
 
         // 2. Stop daemon
-        let daemon = DaemonManager()
-        daemon.resolvePathIfNeeded()
+        daemonManager.resolvePathIfNeeded()
         if DaemonManager.checkDaemonRunning() {
-            await daemon.stopDaemon()
+            await daemonManager.stopDaemon()
             try? await Task.sleep(for: .milliseconds(500))
         }
 
@@ -443,18 +590,38 @@ final class AppState {
 
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
-    /// then start a fresh one. Paired with `DaemonManager.stopDaemonSync()` on app terminate
+    /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle.
     private func ensureDaemonRunning() {
         Task {
-            let daemon = DaemonManager()
-            daemon.resolvePathIfNeeded()
+            daemonManager.resolvePathIfNeeded()
             if DaemonManager.checkDaemonRunning() {
-                await daemon.stopDaemon()
+                await daemonManager.stopDaemon()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            await daemon.startDaemon()
+            await daemonManager.startDaemon()
         }
+    }
+
+    /// Builds every feature ViewModel and starts their sync-tolerant polling,
+    /// once the DB is open and splash has decided to hand off to the main UI.
+    /// Pulled out of `initialize()` to keep that function under the lint limit.
+    private func initFeatureViewModels(manager: DatabaseManager) {
+        initCalendar(dbPool: manager.dbPool)
+        initDayPlan(dbPool: manager.dbPool)
+        initCatchUp(dbPool: manager.dbPool)
+        initMemory(dbPool: manager.dbPool)
+        initDashboard(dbManager: manager)
+        initIdeas(dbManager: manager)
+        initSecretaryProfile(dbManager: manager)
+        initEmailAccounts(dbPool: manager.dbPool)
+        initCalendarAccounts(dbPool: manager.dbPool)
+        initGoogleAccounts(dbPool: manager.dbPool)
+        initSlackAccounts(dbPool: manager.dbPool)
+        initJiraAccounts(dbPool: manager.dbPool)
+        startDigestWatcher(dbPool: manager.dbPool)
+        startMeetingReminders(dbPool: manager.dbPool)
+        startWarmEnginePolicy(dbPool: manager.dbPool)
     }
 
     private func initCalendar(dbPool: DatabasePool) {
@@ -548,6 +715,15 @@ final class AppState {
     }
 
     /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
+    /// directly via `@testable import` to prove `ideasViewModel` identity
+    /// persists across accesses.
+    func initIdeas(dbManager: DatabaseManager) {
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.startObserving()
+        ideasViewModel = vm
+    }
+
+    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
     /// directly via `@testable import` to prove `secretaryProfileViewModel`
     /// identity persists across accesses.
     func initSecretaryProfile(dbManager: DatabaseManager) {
@@ -572,6 +748,16 @@ final class AppState {
         slackAccountsViewModel = vm
     }
 
+    func initJiraAccounts(dbPool: DatabasePool) {
+        let vm = JiraAccountsViewModel(dbPool: dbPool)
+        vm.refresh()
+        jiraAccountsViewModel = vm
+        // Browse-URL resolution reads jira_accounts.site_url — wire the pool
+        // here, the same point the sibling VM gets its pool, so per-issue
+        // links resolve from the DB instead of the frozen config keys.
+        JiraConfigHelper.configure(dbPool: dbPool)
+    }
+
     func initGoogleAccounts(dbPool: DatabasePool) {
         let vm = GoogleAccountsViewModel(dbPool: dbPool)
         vm.refresh()
@@ -588,6 +774,37 @@ final class AppState {
         let center = MeetingReminderCenter(dbPool: dbPool, recorderCenter: meetingRecorderCenter)
         meetingReminderCenter = center
         center.start()
+    }
+
+    /// Hands the recorder Center its real meetings provider (the Center is
+    /// created before the dbPool exists — the `wireMeetingRecorderLoaders`
+    /// precedent) and starts the warm-engine policy poll. A read failure is
+    /// treated as "no meetings" and logged (the MeetingReminder convention):
+    /// the worst outcome is a missed prewarm or a one-tick-late unload, both
+    /// self-correcting — never a crash, never an unload mid-recording (the
+    /// policy never touches a busy engine regardless of the window).
+    private func startWarmEnginePolicy(dbPool: DatabasePool) {
+        meetingRecorderCenter.configureWarmPolicy { now in
+            do {
+                // Candidate events overlapping the prewarm lookahead:
+                // fetchEvents matches start_time <= to AND end_time >= from,
+                // so this returns both ongoing meetings and ones starting
+                // within the lead; the pure logic sorts out which is which.
+                let events = try dbPool.read { db in
+                    try CalendarQueries.fetchEvents(
+                        db,
+                        from: now,
+                        to: now.addingTimeInterval(WarmEnginePolicy.prewarmLead)
+                    )
+                }
+                return WarmEnginePolicy.window(events: events, now: now)
+            } catch {
+                print("[AppState] warm-policy event read failed, treating as no meetings: "
+                      + error.localizedDescription)
+                return .noMeetings
+            }
+        }
+        meetingRecorderCenter.startWarmPolicy()
     }
 
     private func startDigestWatcher(dbPool: DatabasePool) {

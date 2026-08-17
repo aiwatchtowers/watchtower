@@ -9,7 +9,7 @@ public struct TrackParticipant: Codable, Identifiable, Equatable {
     public let userID: String?
     public let stance: String?
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case name
         case userID = "user_id"
         case stance
@@ -29,7 +29,7 @@ public struct TrackSourceRef: Codable, Identifiable, Equatable {
 
     public var id: String { "\(ts)-\(author)" }
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case ts
         case channelID = "channel_id"
         case threadTS = "thread_ts"
@@ -46,7 +46,7 @@ public struct TrackDecisionOption: Codable, Identifiable, Equatable {
 
     public var id: String { option }
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case option, supporters, pros, cons
     }
 
@@ -62,6 +62,11 @@ public struct TrackDecisionOption: Codable, Identifiable, Equatable {
 public struct TrackSubItem: Codable, Identifiable, Equatable {
     public let text: String
     public var status: String // "open" or "done"
+
+    public init(text: String, status: String) {
+        self.text = text
+        self.status = status
+    }
 
     public var id: String { text }
     public var isDone: Bool { status == "done" }

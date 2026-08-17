@@ -3,6 +3,8 @@ import os
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 /// Spy transport: forwards everything to InMemoryCloudTransport but ALSO
 /// conforms to CompactingTransport, flipping a flag if compact is ever

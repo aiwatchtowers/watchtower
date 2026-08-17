@@ -1,0 +1,195 @@
+import XCTest
+import GRDB
+@testable import WatchtowerDesktop
+import WatchtowerCore
+
+/// Logic-level tests for `MeetingDetailView`'s pure static helpers — the
+/// record-affordance gate and the transcript-id resolution formula — rather
+/// than mounting the view (house pattern, see `MeetingListBuilderTests`).
+final class MeetingDetailViewTests: XCTestCase {
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt
+    }()
+
+    // MARK: - Fixture helpers
+
+    private func makeEvent(id: String = "e1", start: Date, end: Date) -> CalendarEvent {
+        CalendarEvent(row: Row([
+            "id": id,
+            "calendar_id": "cal1",
+            "title": "Event \(id)",
+            "start_time": Self.iso8601Formatter.string(from: start),
+            "end_time": Self.iso8601Formatter.string(from: end)
+        ]))
+    }
+
+    private func makeRecording(
+        id: Int64, eventID: String? = nil, createdAt: Date, duration: Int = 300
+    ) -> RecordingListItem {
+        RecordingListItem(
+            id: id, eventID: eventID, eventTitle: nil, title: "Rec \(id)", durationSec: duration,
+            langStats: #"{"ru":3}"#, createdAt: Self.iso8601Formatter.string(from: createdAt),
+            hasRecap: false, hasNotes: false, snippet: "…")
+    }
+
+    // MARK: - showsRecordButton
+
+    /// Whole-second `now` for the window-boundary tests: `makeEvent` round-trips
+    /// times through `ISO8601DateFormatter`, which truncates sub-second — a
+    /// `Date()` seed would shift every offset by the fractional part and turn
+    /// the exact 600 s grace edge into ~599.x s, silently unpinning `>=`.
+    private static let boundaryNow = Date(timeIntervalSince1970: 1_754_920_800)
+
+    /// Ended event → no Record affordance.
+    func test_showsRecordButton_hiddenForEndedEvent() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(-7200), end: now.addingTimeInterval(-3600))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// Exactly 10 min before start — the inclusive edge of the pre-start
+    /// grace (`>=`) → still shown.
+    func test_showsRecordButton_visibleAtGraceEdge() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(600), end: now.addingTimeInterval(4200))
+        XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// Pressing Record a minute early is the intended flow — never gated.
+    func test_showsRecordButton_visibleJustBeforeStart() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(60), end: now.addingTimeInterval(3660))
+        XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// An event well before its start (47 min out — the real mislink incident:
+    /// Record pressed during the previous meeting silently linked that
+    /// meeting's audio to the future event) → no Record affordance.
+    func test_showsRecordButton_hiddenForFarFutureEvent() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(47 * 60), end: now.addingTimeInterval(92 * 60))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// Boundary: one second past the 10-minute grace → hidden.
+    func test_showsRecordButton_hiddenJustPastGrace() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(601), end: now.addingTimeInterval(4201))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    /// The button doubles as the Stop control: while THIS event's recording is
+    /// running, the affordance stays even if the event is rescheduled out of
+    /// the window mid-capture — Stop must never disappear.
+    func test_showsRecordButton_visibleWhileRecordingThisEventOutsideWindow() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(47 * 60), end: now.addingTimeInterval(92 * 60))
+        XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now, recordingEventID: event.id))
+    }
+
+    /// A DIFFERENT event being recorded does not open this event's window.
+    func test_showsRecordButton_recordingOtherEventDoesNotOverrideWindow() {
+        let now = Self.boundaryNow
+        let event = makeEvent(start: now.addingTimeInterval(47 * 60), end: now.addingTimeInterval(92 * 60))
+        XCTAssertFalse(MeetingDetailView.showsRecordButton(for: event, now: now, recordingEventID: "other-event"))
+    }
+
+    /// Meeting currently in progress (endDate still ahead) → still shown.
+    func test_showsRecordButton_visibleWhileOngoing() {
+        let now = Date()
+        let event = makeEvent(start: now.addingTimeInterval(-600), end: now.addingTimeInterval(600))
+        XCTAssertTrue(MeetingDetailView.showsRecordButton(for: event, now: now))
+    }
+
+    // MARK: - descriptionNeedsToggle
+
+    /// A short one-liner never grows a Show more affordance.
+    func test_descriptionNeedsToggle_falseForShortText() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Weekly sync"))
+    }
+
+    /// Three short lines still fit the collapsed preview — no toggle.
+    func test_descriptionNeedsToggle_falseForThreeShortLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees"))
+    }
+
+    /// A fourth line means the 3-line clamp hides content → toggle shown.
+    func test_descriptionNeedsToggle_trueBeyondThreeLines() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("Agenda\nDuration\nAttendees\nGoals"))
+    }
+
+    /// A long single paragraph wraps past three lines even without newlines.
+    func test_descriptionNeedsToggle_trueForLongSingleLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "status update ", count: 30)))
+    }
+
+    /// Two short lines plus one long paragraph: only 3 source lines and under
+    /// any flat length threshold per line, but the long line wraps past the
+    /// 3-line clamp — the wrap estimate composes the inputs instead of
+    /// OR-ing a source-line count with a total-length cutoff.
+    func test_descriptionNeedsToggle_trueForShortLinesPlusLongLine() {
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle("A\nB\n" + String(repeating: "x", count: 190)))
+    }
+
+    /// Pin the estimate boundary at the ~70-chars-per-line budget: 3 wrapped
+    /// lines (210 chars) still fit the clamp, one character past does not.
+    func test_descriptionNeedsToggle_boundaryAtEstimatedThreeLines() {
+        XCTAssertFalse(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 210)))
+        XCTAssertTrue(MeetingDetailView.descriptionNeedsToggle(String(repeating: "x", count: 211)))
+    }
+
+    // MARK: - embeddedTranscriptID
+
+    /// No explicit selection yet on an `.event` entry → falls back to
+    /// `MeetingListBuilder.defaultRecordingID` (longest recording wins) —
+    /// pins the initial `selectedRecordingID` seeded by `.onAppear`.
+    func test_embeddedTranscriptID_eventFallsBackToDefaultRecording() {
+        let now = Date()
+        let event = makeEvent(start: now, end: now.addingTimeInterval(1800))
+        let short = makeRecording(id: 1, eventID: event.id, createdAt: now.addingTimeInterval(-3600), duration: 60)
+        let long = makeRecording(id: 2, eventID: event.id, createdAt: now.addingTimeInterval(-7200), duration: 900)
+        let entry = MeetingListEntry(
+            kind: .event(event, recordings: [short, long]),
+            id: .event(event.id), sortDate: event.startDate, recordingCount: 2)
+
+        let resolved = MeetingDetailView.embeddedTranscriptID(entry: entry, selectedRecordingID: nil)
+
+        XCTAssertEqual(resolved, MeetingListBuilder.defaultRecordingID([short, long]))
+        XCTAssertEqual(resolved, 2)
+    }
+
+    /// An explicit chip selection wins over the default.
+    func test_embeddedTranscriptID_eventHonorsExplicitSelection() {
+        let now = Date()
+        let event = makeEvent(start: now, end: now.addingTimeInterval(1800))
+        let short = makeRecording(id: 1, eventID: event.id, createdAt: now.addingTimeInterval(-3600), duration: 60)
+        let long = makeRecording(id: 2, eventID: event.id, createdAt: now.addingTimeInterval(-7200), duration: 900)
+        let entry = MeetingListEntry(
+            kind: .event(event, recordings: [short, long]),
+            id: .event(event.id), sortDate: event.startDate, recordingCount: 2)
+
+        XCTAssertEqual(MeetingDetailView.embeddedTranscriptID(entry: entry, selectedRecordingID: 1), 1)
+    }
+
+    /// An `.event` entry with no recordings resolves to nil (renders `Spacer()`).
+    func test_embeddedTranscriptID_eventWithNoRecordingsIsNil() {
+        let now = Date()
+        let event = makeEvent(start: now, end: now.addingTimeInterval(1800))
+        let entry = MeetingListEntry(
+            kind: .event(event, recordings: []), id: .event(event.id), sortDate: event.startDate, recordingCount: 0)
+
+        XCTAssertNil(MeetingDetailView.embeddedTranscriptID(entry: entry, selectedRecordingID: nil))
+    }
+
+    /// A `.recording` entry always resolves to its own transcript id,
+    /// regardless of whatever `selectedRecordingID` state is passed in.
+    func test_embeddedTranscriptID_recordingEntryIgnoresSelection() {
+        let item = makeRecording(id: 42, eventID: nil, createdAt: Date())
+        let entry = MeetingListEntry(
+            kind: .recording(item), id: .recording(item.id), sortDate: Date(), recordingCount: 1)
+
+        XCTAssertEqual(MeetingDetailView.embeddedTranscriptID(entry: entry, selectedRecordingID: 999), 42)
+    }
+}

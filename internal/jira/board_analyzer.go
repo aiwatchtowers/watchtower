@@ -119,11 +119,12 @@ type UserOverrides struct {
 	PhaseOverrides  map[string]string `json:"phase_overrides,omitempty"` // status name → phase (backlog|active_work|review|testing|done|other)
 }
 
-// BoardAnalyzer performs LLM-based analysis of Jira boards.
+// BoardAnalyzer performs LLM-based analysis of one Jira account's boards.
 type BoardAnalyzer struct {
 	client     *Client
 	db         *db.DB
 	aiProvider ai.Provider
+	accountID  int64
 	language   string
 	logger     *log.Logger
 
@@ -133,12 +134,13 @@ type BoardAnalyzer struct {
 	totalAPITokens    int
 }
 
-// NewBoardAnalyzer creates a new BoardAnalyzer.
-func NewBoardAnalyzer(client *Client, database *db.DB, aiProvider ai.Provider) *BoardAnalyzer {
+// NewBoardAnalyzer creates a new BoardAnalyzer for one Jira account.
+func NewBoardAnalyzer(client *Client, database *db.DB, aiProvider ai.Provider, accountID int64) *BoardAnalyzer {
 	return &BoardAnalyzer{
 		client:     client,
 		db:         database,
 		aiProvider: aiProvider,
+		accountID:  accountID,
 		language:   "English",
 		logger:     log.New(os.Stderr, "[jira-analyzer] ", log.LstdFlags),
 	}
@@ -183,7 +185,7 @@ func (a *BoardAnalyzer) FetchBoardRawData(ctx context.Context, board db.JiraBoar
 	}
 
 	// Fetch sprints from local DB.
-	sprints, err := a.db.GetJiraActiveSprints(board.ID)
+	sprints, err := a.db.GetJiraActiveSprints(a.accountID, board.ID)
 	if err != nil {
 		a.logger.Printf("warning: could not fetch sprints for board %d: %v", board.ID, err)
 	}
@@ -222,13 +224,13 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 	}
 
 	// Enrich with custom field context (best-effort).
-	fd := NewFieldDiscovery(a.client, a.db, a.aiProvider)
+	fd := NewFieldDiscovery(a.client, a.db, a.aiProvider, a.accountID)
 	if fd.NeedsDiscovery() {
 		if discErr := fd.DiscoverAndClassify(ctx); discErr != nil {
 			a.logger.Printf("warning: field discovery failed: %v", discErr)
 		}
 	}
-	mappings, _ := a.db.GetJiraBoardFieldMap(board.ID)
+	mappings, _ := a.db.GetJiraBoardFieldMap(a.accountID, board.ID)
 	if len(mappings) == 0 {
 		if mapped, mapErr := fd.MapFieldsForBoard(ctx, board); mapErr != nil {
 			a.logger.Printf("warning: field mapping failed for board %d: %v", board.ID, mapErr)
@@ -242,7 +244,7 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 	a.totalOutputTokens += fdOut
 	a.totalAPITokens += fdAPI
 	if len(mappings) > 0 {
-		usefulFields, _ := a.db.GetUsefulJiraCustomFields()
+		usefulFields, _ := a.db.GetUsefulJiraCustomFields(a.accountID)
 		fieldIndex := make(map[string]db.JiraCustomField)
 		for _, f := range usefulFields {
 			fieldIndex[f.ID] = f
@@ -276,7 +278,7 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 	profileJSON, _ := json.Marshal(profile)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	if err := a.db.UpdateJiraBoardProfile(board.ID,
+	if err := a.db.UpdateJiraBoardProfile(a.accountID, board.ID,
 		string(rawJSON), string(configJSON), string(profileJSON),
 		profile.WorkflowSummary, hash, now); err != nil {
 		return nil, fmt.Errorf("storing profile: %w", err)
@@ -287,14 +289,14 @@ func (a *BoardAnalyzer) AnalyzeBoard(ctx context.Context, board db.JiraBoard) (*
 
 // AnalyzeAllSelected analyzes all selected boards. Returns count of analyzed boards.
 func (a *BoardAnalyzer) AnalyzeAllSelected(ctx context.Context) (int, error) {
-	boards, err := a.db.GetJiraSelectedBoards()
+	boards, err := a.db.GetJiraSelectedBoards(a.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("getting selected boards: %w", err)
 	}
 
 	count := 0
 	for _, board := range boards {
-		full, err := a.db.GetJiraBoardProfile(board.ID)
+		full, err := a.db.GetJiraBoardProfile(a.accountID, board.ID)
 		if err != nil || full == nil {
 			full = &board
 		}
@@ -310,14 +312,14 @@ func (a *BoardAnalyzer) AnalyzeAllSelected(ctx context.Context) (int, error) {
 
 // CheckConfigChanged returns board IDs whose config hash has changed since last analysis.
 func (a *BoardAnalyzer) CheckConfigChanged(ctx context.Context) ([]int, error) {
-	boards, err := a.db.GetJiraSelectedBoards()
+	boards, err := a.db.GetJiraSelectedBoards(a.accountID)
 	if err != nil {
 		return nil, err
 	}
 
 	var changed []int
 	for _, board := range boards {
-		full, err := a.db.GetJiraBoardProfile(board.ID)
+		full, err := a.db.GetJiraBoardProfile(a.accountID, board.ID)
 		if err != nil || full == nil {
 			changed = append(changed, board.ID)
 			continue
@@ -354,7 +356,7 @@ type RefreshResult struct {
 // generated, existing user_overrides_json stale_thresholds are merged on top.
 // If autoRefresh is false, only logs which boards need refresh without running LLM.
 func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh bool) ([]RefreshResult, error) {
-	boards, err := a.db.GetJiraSelectedBoards()
+	boards, err := a.db.GetJiraSelectedBoards(a.accountID)
 	if err != nil {
 		return nil, fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -362,7 +364,7 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 	var results []RefreshResult
 
 	for _, board := range boards {
-		full, err := a.db.GetJiraBoardProfile(board.ID)
+		full, err := a.db.GetJiraBoardProfile(a.accountID, board.ID)
 		if err != nil || full == nil {
 			// No profile yet — not a "changed config" case, skip.
 			continue
@@ -469,12 +471,12 @@ func (a *BoardAnalyzer) mergeUserOverrides(boardID int, profile *BoardProfile, o
 	}
 
 	// We only need to update llm_profile_json; other columns stay the same.
-	board, err := a.db.GetJiraBoardProfile(boardID)
+	board, err := a.db.GetJiraBoardProfile(a.accountID, boardID)
 	if err != nil || board == nil {
 		return fmt.Errorf("getting board for merge: %w", err)
 	}
 
-	return a.db.UpdateJiraBoardProfile(boardID,
+	return a.db.UpdateJiraBoardProfile(a.accountID, boardID,
 		board.RawColumnsJSON, board.RawConfigJSON, string(profileJSON),
 		board.WorkflowSummary, board.ConfigHash, board.ProfileGeneratedAt)
 }
@@ -657,7 +659,7 @@ func (a *BoardAnalyzer) buildIssueSample(boardID int) IssueSample {
 	}
 
 	rows, err := a.db.Query(`SELECT status, assignee_display_name, priority FROM jira_issues
-		WHERE board_id = ? AND is_deleted = 0`, boardID)
+		WHERE account_id = ? AND board_id = ? AND is_deleted = 0`, a.accountID, boardID)
 	if err != nil {
 		return sample
 	}

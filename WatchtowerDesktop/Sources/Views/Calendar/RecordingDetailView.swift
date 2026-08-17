@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 enum RecordingDetailTab: String, CaseIterable {
     case recap, notes, transcript, chat
@@ -27,6 +28,9 @@ struct RecordingDetailView: View {
     /// event's day into the rendered window first. nil = no navigation
     /// affordance available from this host.
     var onOpenEvent: ((CalendarQueries.EventLink) -> Void)?
+    /// Deselects the entry in the host list, dismissing this pane. nil when
+    /// embedded under an event header that already carries the close button.
+    var onClose: (() -> Void)?
 
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
@@ -34,6 +38,11 @@ struct RecordingDetailView: View {
     @State private var attendees: [EventAttendee] = []
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
+    /// True when `recapContent` came from the event's `meeting_recaps` row and
+    /// that row was generated from a different recording's transcript (or
+    /// another source) than this one — the Recap tab needs a provenance note
+    /// so it doesn't read like AI hallucination.
+    @State private var recapFromOtherSource = false
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -141,6 +150,7 @@ struct RecordingDetailView: View {
             RecordingRecapTab(
                 transcript: transcript,
                 recapContent: recapContent,
+                recapFromOtherSource: recapFromOtherSource,
                 chapters: chapters,
                 hasSegments: utterances != nil,
                 onRetryRecap: retryRecap,
@@ -214,6 +224,18 @@ struct RecordingDetailView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Delete recording with all its content")
+
+                if let onClose {
+                    // Close affordance (the GuideDetailView pattern) — without
+                    // it the pane can only be swapped, never dismissed.
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close")
+                }
             }
             HStack(spacing: 8) {
                 Text(TranscriptFormatting.formattedDate(transcript.createdAt))
@@ -264,9 +286,13 @@ struct RecordingDetailView: View {
                         // Lightweight (title + start_time); nil when the event
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)
-                        // Attendees feed the rename picker (attendees first,
-                        // free text after); ad-hoc recordings have none.
-                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?.parsedAttendees ?? []
+                        // Attendee identities (incl. the organizer — same set
+                        // the voice-print scoping uses, so a rename mints an
+                        // email-keyed print for an organizer-not-guest too)
+                        // feed the rename picker (attendees first, free text
+                        // after); ad-hoc recordings have none.
+                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?
+                            .attendeesIncludingOrganizer ?? []
                     }
                     return LoadedDetail(row: row, recap: recap, link: link,
                                         utterances: row?.utterances, attendees: eventAttendees,
@@ -284,6 +310,25 @@ struct RecordingDetailView: View {
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
             recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
+            // An exact source-text match means the event recap WAS generated
+            // from this recording's own transcript; anything else (including
+            // no event recap at all, or a recap row whose recap_json failed
+            // to decode so `parsed` is nil and the tab falls back to this
+            // recording's own summary) is either this recording's own
+            // summary or none, so no note is needed. Gating on `parsed` (not
+            // just `recap != nil`) keeps the note tied to what is actually
+            // displayed.
+            //
+            // Known limitation: this exact-match formula does not survive a
+            // later utterance soft-delete, which rewrites `transcript_text`
+            // (see `setUtteranceDeleted`) — a recording's own recap can then
+            // read as "from a different source" even though nothing else
+            // changed. The caption's "different recording or source" wording
+            // keeps this only mildly over-cautious; a robust fix would need
+            // the originating transcript id persisted on `meeting_recaps`
+            // (out of scope here).
+            recapFromOtherSource = loaded.recap?.parsed != nil
+                && loaded.recap?.sourceText != loaded.row?.transcriptText
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -415,7 +460,7 @@ struct RecordingDetailView: View {
     private func convertActionItem(chapterIdx: Int, itemIdx: Int) {
         guard let db = appState.databaseManager else { return }
         do {
-            try db.dbPool.write { conn in
+            _ = try db.dbPool.write { conn in
                 try MeetingTranscriptQueries.convertActionItemToTarget(
                     conn, transcriptID: transcriptID,
                     chapterIdx: chapterIdx, itemIdx: itemIdx)

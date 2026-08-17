@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Right pane of the memory browser: frontmatter header, rendered body with
 /// tappable wiki-links, backlinks, and vault git history for one node.

@@ -157,3 +157,25 @@ type SprintList struct {
 	IsLast     bool     `json:"isLast"`
 	Values     []Sprint `json:"values"`
 }
+
+// IssueComment is a single comment on a Jira issue. Body is left as
+// interface{} (string or ADF, same shape as IssueFields.Description) —
+// callers flatten it with extractDescriptionText.
+type IssueComment struct {
+	ID     string `json:"id"`
+	Author struct {
+		DisplayName string `json:"displayName"`
+		AccountID   string `json:"accountId"`
+	} `json:"author"`
+	Body    interface{} `json:"body"`
+	Created string      `json:"created"`
+	Updated string      `json:"updated"`
+}
+
+// CommentList is a paginated response from the Jira issue comments API.
+type CommentList struct {
+	StartAt    int            `json:"startAt"`
+	MaxResults int            `json:"maxResults"`
+	Total      int            `json:"total"`
+	Comments   []IssueComment `json:"comments"`
+}

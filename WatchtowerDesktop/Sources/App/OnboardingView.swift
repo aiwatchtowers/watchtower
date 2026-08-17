@@ -1,12 +1,22 @@
 import SwiftUI
+import WatchtowerCore
 
 struct OnboardingView: View {
+    /// Re-runs the app bootstrap once onboarding completes or is skipped
+    /// (`NavigationRoot` passes `AppState.reinitializeAfterOnboarding()`),
+    /// wiring the DB, feature view models, and daemon that a failed or
+    /// pre-onboarding launch bootstrap left uninitialized.
     let onRetry: () -> Void
 
     @Environment(AppState.self) private var appState
     @State private var isRunning = false
     @State private var output = ""
     @State private var cliError: String?
+    @State private var dbError: String?
+    // True only when runSync() actually ran a Slack sync (token present) —
+    // gates the "Sync complete!" banner so a user with no Slack connected
+    // never sees a false green checkmark.
+    @State private var syncRanWithSlack = false
     @State private var syncProgress: SyncProgressData?
     @State private var syncPhaseStartedAt: Date?
     @State private var syncLastPhase: String?
@@ -59,6 +69,8 @@ struct OnboardingView: View {
                 teamFormStep
             case .generating:
                 generatingStep
+            case .features:
+                featuresStep
             case .complete:
                 EmptyView()
             }
@@ -74,6 +86,17 @@ struct OnboardingView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            if appState.onboarding.currentStep != .complete {
+                Button("Skip setup") {
+                    skipOnboarding()
+                }
+                .buttonStyle(.plain)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(16)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if appState.onboarding.currentStep <= .claude {
                 onboardingStatusBar
@@ -344,6 +367,14 @@ struct OnboardingView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
+                Button("Skip for now") {
+                    claudeHealthError = nil
+                    appState.onboarding.goTo(.chat)
+                    runSync()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
                 Button {
                     runClaudeHealthCheck()
                 } label: {
@@ -500,6 +531,13 @@ struct OnboardingView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(isRunning)
+
+                // Slack can be connected later from Settings; runSync()'s
+                // no-token guard handles the unconnected case downstream.
+                Button("Skip for now") {
+                    appState.onboarding.goTo(.settings)
+                }
+                .buttonStyle(.bordered)
 
                 if isRunning, !oauthStatus.isEmpty {
                     Text(oauthStatus)
@@ -808,52 +846,61 @@ struct OnboardingView: View {
 
     private var chatStep: some View {
         VStack(spacing: 16) {
-            if !appState.onboarding.chatFinished {
-                chatActiveView
-            } else {
-                chatWaitingForSyncView
-            }
+            chatActiveView
         }
         .task {
-            guard onboardingVM == nil else { return }
-            let configSvc = ConfigService()
-            let language = configSvc.digestLanguage ?? settingsLanguage
-            let db = appState.databaseManager
-            onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+            if onboardingVM == nil {
+                let configSvc = ConfigService()
+                let language = configSvc.digestLanguage ?? settingsLanguage
+                let db = appState.databaseManager
+                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+            }
+            if appState.onboarding.chatFinished {
+                // Resume fast-path: the interview already finished (e.g. a restart
+                // mid-wait under the old sync-gated flow) — go straight to the team
+                // form instead of re-running the interview. A DB-open failure does
+                // not block navigation: the team form degrades gracefully.
+                ensureOnboardingDatabase()
+                appState.onboarding.goTo(.teamForm)
+                return
+            }
             if !isRunning && !appState.onboarding.syncCompleted {
                 runSync()
             }
-        }
-        .onChange(of: appState.onboarding.syncCompleted) {
-            // CASE B reactive fallback: chat finished before sync — auto-advance when sync completes.
-            // Primary path is in runSync() completion, but this ensures transition even if
-            // the imperative path fails (e.g. DB open throws, @State capture issue in Task).
-            guard appState.onboarding.chatFinished && appState.onboarding.syncCompleted
-                && appState.onboarding.currentStep == .chat else { return }
-            ensureOnboardingDatabase()
-            appState.onboarding.goTo(.teamForm)
         }
     }
 
     @ViewBuilder
     private var chatActiveView: some View {
         if let vm = onboardingVM {
-            OnboardingChatView(viewModel: vm) {
-                if appState.onboarding.syncCompleted {
-                    appState.onboarding.goTo(.teamForm)
-                } else {
-                    appState.onboarding.chatFinished = true
-                }
-            }
+            OnboardingChatView(
+                viewModel: vm,
+                onComplete: { advanceToTeamForm() },
+                // Same transition, minus the AI profile extraction (`finishChat`).
+                onSkip: { advanceToTeamForm() }
+            )
         } else {
             ProgressView("Preparing...")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
 
+        syncStatusStrip
+    }
+
+    /// Informational sync status strip shown under the chat and team-form steps.
+    /// Sync state never gates progression — this is status only.
+    @ViewBuilder
+    private var syncStatusStrip: some View {
         if isRunning {
             Divider()
             syncProgressCompactBanner
-        } else if appState.onboarding.syncCompleted {
+        } else if dbError != nil {
+            Divider()
+            dbFailedCompactBanner
+        } else if cliError != nil {
+            Divider()
+            syncFailedCompactBanner
+        } else if syncRanWithSlack && appState.onboarding.syncCompleted {
             Divider()
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
@@ -867,94 +914,64 @@ struct OnboardingView: View {
         }
     }
 
-    @ViewBuilder
-    private var chatWaitingForSyncView: some View {
-        VStack(spacing: 20) {
-            if let err = cliError {
-                chatSyncErrorView(err)
-            } else if !isRunning {
-                chatSyncCompleteView
-            } else {
-                chatSyncInProgressView
+    /// DB-open failures get their own line: they are not a Slack sync failure,
+    /// and the background daemon will not retry them — only the button does.
+    private var dbFailedCompactBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("Couldn't open the local database")
+                .font(.caption)
+                .fontWeight(.medium)
+            Button("Retry") {
+                dbError = nil
+                ensureOnboardingDatabase()
             }
+            .controlSize(.small)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
-    private func chatSyncErrorView(_ err: String) -> some View {
-        Group {
+    private var syncFailedCompactBanner: some View {
+        HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(.red)
-            Text("Sync failed")
-                .font(.title3)
-                .fontWeight(.medium)
-            Text(err)
+                .foregroundStyle(.orange)
+            Text("Slack sync failed")
                 .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 450)
-            Button("Retry Sync") {
+                .fontWeight(.medium)
+            Button("Retry") {
                 cliError = nil
                 runSync()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .controlSize(.small)
+            Text("You can keep going — sync will retry in the background later.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-    }
-
-    private var chatSyncCompleteView: some View {
-        Group {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(.green)
-            Text("Sync complete!")
-                .font(.title3)
-                .fontWeight(.medium)
-            Button {
-                guard ensureOnboardingDatabase() else { return }
-                appState.onboarding.syncCompleted = true
-                appState.onboarding.goTo(.teamForm)
-            } label: {
-                Label("Continue", systemImage: "arrow.right.circle.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .frame(maxWidth: 300)
-        }
-    }
-
-    @ViewBuilder
-    private var chatSyncInProgressView: some View {
-        Image(systemName: "arrow.triangle.2.circlepath")
-            .font(.system(size: 36))
-            .foregroundStyle(Color.accentColor)
-        Text("Syncing your workspace...")
-            .font(.title3)
-            .fontWeight(.medium)
-        if let progress = syncProgress {
-            syncProgressView(progress).frame(maxWidth: 450)
-        } else {
-            ProgressView()
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Team Form Step
 
     private var teamFormStep: some View {
-        Group {
+        VStack(spacing: 16) {
             if let vm = onboardingVM {
                 OnboardingTeamFormView(viewModel: vm) {
                     appState.onboarding.goTo(.generating)
                     Task {
                         await vm.generatePromptContext()
-                        await vm.markOnboardingDone()
                         if vm.errorMessage == nil {
-                            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
-                            appState.completeOnboarding()
-                            onRetry()
-                        } else {
+                            // Onboarding isn't done yet — the feature splash
+                            // is next; it (not this closure) now runs the
+                            // completion sequence on its own exit. See
+                            // finishOnboarding() below.
+                            appState.onboarding.goTo(.features)
+                        } else if appState.onboarding.currentStep == .generating {
+                            // Only bounce back while still on the generating step —
+                            // a late-failing generation must not yank a user who
+                            // already skipped setup back into onboarding.
                             appState.onboarding.goTo(.teamForm)
                         }
                     }
@@ -963,6 +980,8 @@ struct OnboardingView: View {
                 ProgressView("Loading...")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+
+            syncStatusStrip
         }
         .task {
             // Ensure VM exists when resuming from a restart at teamForm step
@@ -990,7 +1009,63 @@ struct OnboardingView: View {
                     .foregroundStyle(.red)
                     .font(.caption)
             }
+
+            // Escape hatch: this step can hang on an AI call.
+            Button("Skip and finish setup") {
+                skipOnboarding()
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Features Step
+
+    private var featuresStep: some View {
+        FeatureSplashView { await finishOnboarding() }
+            .task {
+                // Ensure VM exists when resuming from a restart at features step.
+                // finishOnboarding() marks onboarding done THROUGH this VM and
+                // counts a nil one as failure, so without this every exit the
+                // splash offers (Continue, "Keep everything on", the inline
+                // retry) would fail forever on a relaunch that lands here.
+                guard onboardingVM == nil else { return }
+                let configSvc = ConfigService()
+                let language = configSvc.digestLanguage ?? settingsLanguage
+                if let db = appState.databaseManager {
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                } else {
+                    // DB not available — need sync first, go back to chat
+                    appState.onboarding.goTo(.chat)
+                }
+            }
+    }
+
+    // MARK: - Onboarding Completion
+
+    /// Runs once, from either of the feature splash's exits (Continue,
+    /// "Keep everything on") — the former team-form completion closure's
+    /// job, moved here now that the splash sits between profile generation
+    /// and completion. The pinned ordering itself lives in
+    /// `OnboardingCompletion.finish`; this just binds it to the view's real
+    /// dependencies. Returns whether onboarding actually finished — the
+    /// splash shows an inline retry on `false` rather than silently moving
+    /// on (a missing `onboardingVM` counts as failure too: there is no VM to
+    /// verify the DB write against, so completing anyway would be the same
+    /// silent-success bug this return value exists to prevent).
+    private func finishOnboarding() async -> Bool {
+        await OnboardingCompletion.finish(
+            markOnboardingDone: {
+                guard let vm = onboardingVM else { return false }
+                return await vm.markOnboardingDone()
+            },
+            startPipelines: {
+                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+            },
+            completeOnboarding: { appState.completeOnboarding() },
+            onRetry: onRetry
+        )
     }
 
     private var syncProgressCompactBanner: some View {
@@ -1060,104 +1135,8 @@ struct OnboardingView: View {
         }
     }
 
-private func syncProgressView(_ progress: SyncProgressData) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Syncing workspace...").font(.subheadline).fontWeight(.medium)
-                Spacer()
-                if let eta = syncEtaSeconds, eta > 0 {
-                    Text("\(formatETA(eta)) left").font(.caption).foregroundStyle(.secondary)
-                    Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
-                }
-                Text(formatElapsed(progress.elapsedSec)).font(.caption).foregroundStyle(.secondary)
-            }
-            syncPhaseRow(
-                label: "Discovery",
-                icon: "magnifyingglass",
-                phase: "Discovery",
-                cur: progress.phase,
-                done: progress.discoveryPages,
-                total: progress.discoveryTotalPages,
-                detail: progress.discoveryChannels > 0
-                    ? "\(progress.discoveryChannels) ch, \(progress.discoveryUsers) users, \(fmtNum(progress.messagesFetched)) msgs"
-                    : nil
-            )
-            syncPhaseRow(
-                label: "Messages",
-                icon: "message",
-                phase: "Messages",
-                cur: progress.phase,
-                done: progress.msgChannelsDone,
-                total: progress.msgChannelsTotal,
-                detail: progress.messagesFetched > 0 ? "\(fmtNum(progress.messagesFetched)) messages" : nil
-            )
-            syncPhaseRow(
-                label: "Users",
-                icon: "person.2",
-                phase: "Users",
-                cur: progress.phase,
-                done: progress.userProfilesDone,
-                total: progress.userProfilesTotal,
-                detail: nil
-            )
-            syncPhaseRow(
-                label: "Threads",
-                icon: "bubble.left.and.bubble.right",
-                phase: "Threads",
-                cur: progress.phase,
-                done: progress.threadsDone ?? 0,
-                total: progress.threadsTotal ?? 0,
-                detail: (progress.threadsFetched ?? 0) > 0 ? "\(fmtNum(progress.threadsFetched ?? 0)) replies" : nil
-            )
-            if progress.phase == "Done" {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                    Text("Sync complete!").font(.caption).fontWeight(.medium)
-                }
-            }
-        }
-        .padding()
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func syncPhaseRow(label: String, icon: String, phase: String, cur: String, done: Int, total: Int, detail: String?) -> some View {
-        let order = ["Metadata": 0, "Discovery": 1, "Messages": 2, "Users": 3, "Threads": 4, "Done": 5]
-        let curIdx = order[cur] ?? 0, phaseIdx = order[phase] ?? 0
-        let isActive = curIdx == phaseIdx, isDone = curIdx > phaseIdx, isWaiting = curIdx < phaseIdx
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: isDone ? "checkmark.circle.fill" : icon)
-                    .foregroundStyle(isDone ? .green : isActive ? .accentColor : .secondary.opacity(0.4))
-                    .frame(width: 16)
-                Text(label)
-                    .font(.caption)
-                    .fontWeight(isActive ? .semibold : .regular)
-                    .foregroundStyle(isWaiting ? Color.secondary.opacity(0.4) : Color.primary)
-                Spacer()
-                if isActive && total > 0 {
-                    Text("\(done)/\(total)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else if isDone, let detail {
-                    Text(detail).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            if isActive && total > 0 {
-                ProgressView(value: Double(done), total: Double(max(total, 1))).tint(.accentColor)
-            } else if isActive && !isWaiting {
-                ProgressView().controlSize(.small).scaleEffect(0.7, anchor: .leading)
-            }
-        }
-    }
-
     private func formatElapsed(_ s: Double) -> String {
         let i = Int(s); return i < 60 ? "\(i)s" : "\(i / 60)m \(i % 60)s"
-    }
-
-    private func fmtNum(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
-        return "\(n)"
     }
 
     private func updateSyncETA(_ progress: SyncProgressData) {
@@ -1246,7 +1225,11 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
                 isRunning = false
                 oauthStatus = ""
                 if result.exitCode == 0 {
-                    appState.onboarding.goTo(.settings)
+                    // Guard against a late OAuth completion clobbering a step
+                    // the user (or persisted completion) has already moved past.
+                    if appState.onboarding.currentStep == .connect {
+                        appState.onboarding.goTo(.settings)
+                    }
                 } else {
                     cliError = result.stderr.isEmpty
                         ? "Authentication failed (exit code \(result.exitCode))"
@@ -1289,7 +1272,11 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
 
             await MainActor.run {
                 isRunning = false
-                appState.onboarding.goTo(.claude)
+                // Guard against a late settings save clobbering a step the
+                // user has already moved past (e.g. after skipping setup).
+                if appState.onboarding.currentStep == .settings {
+                    appState.onboarding.goTo(.claude)
+                }
             }
         }
     }
@@ -1298,17 +1285,67 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
     /// No-op if the VM already has users loaded.
     @discardableResult
     private func ensureOnboardingDatabase() -> Bool {
-        guard onboardingVM?.allUsers.isEmpty ?? true else { return true }
+        guard onboardingVM?.allUsers.isEmpty ?? true else {
+            dbError = nil
+            return true
+        }
         do {
             DatabaseManager.runCLIMigrations()
             let dbPath = try DatabaseManager.resolveDBPath()
             let manager = try DatabaseManager(path: dbPath)
             onboardingVM?.setDatabase(manager)
+            dbError = nil
             return true
         } catch {
-            cliError = "Failed to open database: \(error.localizedDescription)"
+            // Deliberately NOT cliError: the strip renders a DB-specific line
+            // for this, never the "Slack sync failed" banner.
+            dbError = "Failed to open database: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Global escape hatch: abandon the rest of onboarding and enter the app.
+    /// Best-effort DB creation + profile flag; completion itself is persisted
+    /// in UserDefaults by `OnboardingStateMachine.markComplete()`, so this
+    /// works even with no database or Slack account at all.
+    private func skipOnboarding() {
+        // Cancel any in-flight interview stream (and its claude subprocess)
+        // before tearing the flow down.
+        onboardingVM?.skipChat()
+        // The DB flag write must not depend on the user having reached the
+        // chat step — construct the VM exactly like chatStep's .task does.
+        if onboardingVM == nil {
+            let configSvc = ConfigService()
+            let language = configSvc.digestLanguage ?? settingsLanguage
+            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+        }
+        _ = ensureOnboardingDatabase()
+        Task {
+            // Best-effort by design — unlike the splash's gated
+            // OnboardingCompletion.finish, the skip escape hatch must never
+            // block on the DB flag (completion itself is persisted in
+            // UserDefaults by markComplete()); but a failed write must be
+            // diagnosable.
+            if let vm = onboardingVM, await vm.markOnboardingDone() == false {
+                NSLog("Onboarding skip: markOnboardingDone failed: %@",
+                      vm.errorMessage ?? "unknown error")
+            }
+            // Mirror the teamForm completion path — without this the skip
+            // path entered the app with no background processing or daemon.
+            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+            appState.completeOnboarding()
+            onRetry()
+        }
+    }
+
+    /// Shared chat → team-form transition, used by both the normal interview
+    /// completion and the "Skip interview" escape hatch.
+    private func advanceToTeamForm() {
+        appState.onboarding.chatFinished = true
+        // Continue even if the DB open fails — the team form degrades
+        // gracefully with no users and teamFormStep has its own DB fallback.
+        ensureOnboardingDatabase()
+        appState.onboarding.goTo(.teamForm)
     }
 
     private func runSync() {
@@ -1318,11 +1355,9 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
         guard SlackAuthService.tokenPresent() else {
             _ = ensureOnboardingDatabase()
             appState.onboarding.syncCompleted = true
-            if appState.onboarding.chatFinished {
-                appState.onboarding.goTo(.teamForm)
-            }
             return
         }
+        syncRanWithSlack = true
         isRunning = true
         cliError = nil
         syncProgress = nil
@@ -1386,16 +1421,10 @@ private func syncProgressView(_ progress: SyncProgressData) -> some View {
             if exitCode == 0 {
                 syncProgress = nil
 
-                // Open DB and pass to onboarding ViewModel for team form
+                // Open DB and pass to onboarding ViewModel (loads users for the team form).
+                // Sync completion is informational only — it never drives navigation.
                 ensureOnboardingDatabase()
-
-                // Mark sync done AFTER DB setup attempt — triggers .onChange for CASE B transition
                 appState.onboarding.syncCompleted = true
-
-                // If chat already finished, move to team form
-                if appState.onboarding.chatFinished {
-                    appState.onboarding.goTo(.teamForm)
-                }
             } else {
                 cliError = stderrText.isEmpty
                     ? "Sync failed (exit code \(exitCode))"

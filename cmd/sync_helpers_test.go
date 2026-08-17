@@ -11,6 +11,33 @@ import (
 	"watchtower/internal/config"
 )
 
+// TestJiraCommentSyncEnabled pins wireJiraSyncers' comment-sync gate (Task
+// 6): bounded Jira comment sync now rides streams.enabled — the stream
+// digests own the comment feed, not the ideas registry consolidator —
+// so ideas.enabled alone must no longer turn it on or off.
+func TestJiraCommentSyncEnabled(t *testing.T) {
+	tests := []struct {
+		name           string
+		ideasEnabled   bool
+		streamsEnabled bool
+		want           bool
+	}{
+		{"streams enabled, ideas disabled", false, true, true},
+		{"both enabled", true, true, true},
+		{"both disabled", false, false, false},
+		{"only ideas enabled is no longer sufficient", true, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Ideas:   config.IdeasConfig{Enabled: tt.ideasEnabled},
+				Streams: config.StreamsConfig{Enabled: tt.streamsEnabled},
+			}
+			assert.Equal(t, tt.want, jiraCommentSyncEnabled(cfg))
+		})
+	}
+}
+
 func TestPidFilePath(t *testing.T) {
 	cfg := &config.Config{ActiveWorkspace: "test"}
 	t.Setenv("HOME", "/tmp/test-home")
@@ -41,6 +68,110 @@ func TestSyncResultPath(t *testing.T) {
 	path := syncResultPath(cfg)
 	assert.Contains(t, path, "test")
 	assert.Contains(t, path, "last_sync.json")
+}
+
+func TestRotateLogIfOversized(t *testing.T) {
+	// makeOversized creates a file whose header identifies the generation,
+	// then extends it past maxLogSize sparsely (instant, no real disk on APFS).
+	makeOversized := func(t *testing.T, path, header string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(path, []byte(header), 0o600))
+		require.NoError(t, os.Truncate(path, maxLogSize+1))
+	}
+
+	t.Run("oversized file is renamed to .1 and fresh appends go to a new file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		makeOversized(t, path, "old generation")
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		_, err := os.Stat(path)
+		assert.True(t, os.IsNotExist(err), "original path should be gone after rotation")
+		rotated, err := os.Stat(path + ".1")
+		require.NoError(t, err)
+		assert.Equal(t, int64(maxLogSize+1), rotated.Size())
+
+		// The caller's O_CREATE|O_APPEND open starts a fresh file.
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		require.NoError(t, err)
+		_, err = f.WriteString("fresh line\n")
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "fresh line\n", string(content))
+	})
+
+	t.Run("existing .1 is replaced", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path+".1", []byte("older generation"), 0o600))
+		makeOversized(t, path, "newer generation")
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		content, err := os.ReadFile(path + ".1")
+		require.NoError(t, err)
+		assert.Equal(t, "newer generation", string(content[:len("newer generation")]))
+	})
+
+	t.Run("under-cap file is untouched", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path, []byte("small"), 0o600))
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		content, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, "small", string(content))
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err), "no .1 should appear for an under-cap file")
+	})
+
+	t.Run("missing file is a no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		_, err := os.Stat(path)
+		assert.True(t, os.IsNotExist(err))
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err))
+	})
+
+	t.Run("file at exactly maxLogSize is not rotated", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		require.NoError(t, os.WriteFile(path, []byte("boundary"), 0o600))
+		require.NoError(t, os.Truncate(path, maxLogSize))
+
+		require.NoError(t, rotateLogIfOversized(path))
+
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		assert.Equal(t, int64(maxLogSize), info.Size())
+		_, err = os.Stat(path + ".1")
+		assert.True(t, os.IsNotExist(err), "no .1 should appear at the exact cap")
+	})
+
+	t.Run("rename failure is reported and leaves the file in place", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "watchtower.log")
+		makeOversized(t, path, "stuck generation")
+		// A directory at the .1 path makes os.Rename fail (EISDIR/ENOTDIR).
+		require.NoError(t, os.Mkdir(path+".1", 0o755))
+
+		err := rotateLogIfOversized(path)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rename")
+		info, statErr := os.Stat(path)
+		require.NoError(t, statErr)
+		assert.Equal(t, int64(maxLogSize+1), info.Size(), "the caller keeps appending to the original file")
+	})
 }
 
 func TestSyncAdditionalFlags(t *testing.T) {

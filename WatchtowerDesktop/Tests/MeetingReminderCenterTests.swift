@@ -2,11 +2,16 @@ import Foundation
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Minimal scriptable `AudioRecording` that only needs to get the recorder
 /// Center into `.recording`; never touches real audio (JoinFakeRecorder shape).
 private final class ReminderFakeRecorder: AudioRecording, @unchecked Sendable {
     let liveSamples: AsyncStream<[Float]>
+    /// Levels are irrelevant here; an immediately-finished stream satisfies
+    /// the protocol without feeding the Center anything.
+    var liveLevels: AsyncStream<CaptureLevels> { AsyncStream { $0.finish() } }
     private var liveContinuation: AsyncStream<[Float]>.Continuation!
 
     init() {
@@ -56,6 +61,22 @@ private struct ReminderTestError: Error {}
 
 @MainActor
 final class MeetingReminderCenterTests: XCTestCase {
+
+    /// Stand-in for the user's real recordings directory — see the same
+    /// property in `MeetingRecorderCenterTests`.
+    private var recordingsDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        recordingsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reminder-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: recordingsDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: recordingsDir)
+        super.tearDown()
+    }
 
     // MARK: - Fixtures
 
@@ -312,7 +333,8 @@ final class MeetingReminderCenterTests: XCTestCase {
             decode: { _ in [] },
             runnerResolver: { nil },
             notifier: ReminderFakeTranscriptNotifier(),
-            defaults: defaults
+            defaults: defaults,
+            recordingsDirectory: recordingsDir
         )
     }
 

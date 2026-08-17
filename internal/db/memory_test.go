@@ -1972,6 +1972,8 @@ func TestMemoryRetrieveShadowRoundTrip(t *testing.T) {
 
 // jiraIssueSeed is the minimal jira_issues fixture for memory-source tests.
 type jiraIssueSeed struct {
+	// AccountID defaults to 1 when zero, so single-account cases stay terse.
+	AccountID                                   int64
 	Key, ProjectKey, Summary, DescriptionText   string
 	IssueType, Status, StatusCategory, Priority string
 	AssigneeDisplayName, AssigneeSlackID        string
@@ -1987,11 +1989,16 @@ func seedJiraIssueRow(t *testing.T, db *DB, s jiraIssueSeed) {
 	if s.IsDeleted {
 		deleted = 1
 	}
+	accountID := s.AccountID
+	if accountID == 0 {
+		accountID = 1
+	}
 	_, err := db.Exec(`INSERT INTO jira_issues
-		(key, project_key, summary, description_text, issue_type, status, status_category,
+		(account_id, key, project_key, summary, description_text, issue_type, status, status_category,
 		 priority, assignee_display_name, assignee_slack_id, reporter_display_name, reporter_slack_id,
 		 sprint_name, epic_key, due_date, resolved_at, created_at, updated_at, synced_at, is_deleted)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		accountID,
 		s.Key, s.ProjectKey, s.Summary, s.DescriptionText, s.IssueType, s.Status, s.StatusCategory,
 		s.Priority, s.AssigneeDisplayName, s.AssigneeSlackID, s.ReporterDisplayName, s.ReporterSlackID,
 		s.SprintName, s.EpicKey, s.DueDate, s.ResolvedAt, "2026-07-01T00:00:00.000+0000", s.UpdatedAt,
@@ -2002,18 +2009,26 @@ func seedJiraIssueRow(t *testing.T, db *DB, s jiraIssueSeed) {
 }
 
 // TestMemoryJiraWatermark: the fifth extraction watermark round-trips on the
-// workspace singleton and reads 0 on a fresh workspace.
+// jira_accounts row, reads 0 for a missing account, and Set fails without a
+// parent row.
 func TestMemoryJiraWatermark(t *testing.T) {
 	db := openTestDB(t)
-	seedWorkspace(t, db)
-	wm, err := db.MemoryJiraWatermark()
+	wm, err := db.MemoryJiraWatermark(1)
+	if err != nil || wm != 0 {
+		t.Fatalf("missing-account watermark = %v, %v; want 0, nil", wm, err)
+	}
+	if err := db.SetMemoryJiraWatermark(1, 1784500000); err == nil {
+		t.Fatal("set without jira_accounts row: want error, got nil")
+	}
+	SeedTestJiraAccount(t, db)
+	wm, err = db.MemoryJiraWatermark(1)
 	if err != nil || wm != 0 {
 		t.Fatalf("fresh watermark = %v, %v; want 0, nil", wm, err)
 	}
-	if err := db.SetMemoryJiraWatermark(1784500000); err != nil {
+	if err := db.SetMemoryJiraWatermark(1, 1784500000); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	wm, err = db.MemoryJiraWatermark()
+	wm, err = db.MemoryJiraWatermark(1)
 	if err != nil || wm != 1784500000 {
 		t.Fatalf("watermark = %v, %v; want 1784500000, nil", wm, err)
 	}
@@ -2023,6 +2038,7 @@ func TestMemoryJiraWatermark(t *testing.T) {
 // tombstoned-message reasoning); an absent key is a clean false.
 func TestJiraIssueExists(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-1", ProjectKey: "CEX", Summary: "s", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-2", ProjectKey: "CEX", Summary: "s", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000", IsDeleted: true})
 
@@ -2085,6 +2101,12 @@ func assertKeySet(t *testing.T, issues []JiraExtractIssue, want ...string) {
 // is_deleted filter, the unparseable-updated_at skip, and the limit cap.
 func TestListJiraIssuesForExtract(t *testing.T) {
 	db := openTestDB(t)
+	SeedTestJiraAccount(t, db)
+	second := SeedTestJiraAccount(t, db)
+	// A second connected site with the SAME issue keys and fresh timestamps:
+	// account #1's extraction window must never pick these up.
+	seedJiraIssueRow(t, db, jiraIssueSeed{AccountID: second, Key: "CEX-2", ProjectKey: "CEX", Summary: "other site", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-23T10:00:00.000+0000"})
+	seedJiraIssueRow(t, db, jiraIssueSeed{AccountID: second, Key: "OPS-9", ProjectKey: "OPS", Summary: "other site only", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-24T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-1", ProjectKey: "CEX", Summary: "old", Status: "Done", StatusCategory: "done", UpdatedAt: "2026-07-20T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-2", ProjectKey: "CEX", Summary: "new", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db, jiraIssueSeed{Key: "CEX-3", ProjectKey: "CEX", Summary: "newer", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T11:00:00.000+0000"})
@@ -2095,7 +2117,7 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 	if !ok {
 		t.Fatal("test time failed to parse")
 	}
-	issues, err := db.ListJiraIssuesForExtract(since, 10)
+	issues, err := db.ListJiraIssuesForExtract(1, since, 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -2103,23 +2125,34 @@ func TestListJiraIssuesForExtract(t *testing.T) {
 		t.Errorf("keys = %v, want [CEX-2 CEX-3] (old filtered, deleted filtered, unparseable skipped, ascending)", keys)
 	}
 	// Limit caps from the oldest pending side.
-	issues, err = db.ListJiraIssuesForExtract(since, 1)
+	issues, err = db.ListJiraIssuesForExtract(1, since, 1)
 	assertSingleJiraIssue(t, issues, err, "CEX-2")
-	// Max helper sees the newest parseable non-deleted row (CEX-3).
-	maxU, err := db.MaxJiraUpdatedUnix()
+	// Max helper sees the newest parseable non-deleted row (CEX-3) — the other
+	// site's newer rows must not drag account #1's watermark forward.
+	maxU, err := db.MaxJiraUpdatedUnix(1)
 	want, _ := ParseJiraTime("2026-07-22T11:00:00.000+0000")
 	assertMaxJiraUpdated(t, maxU, want, err)
+
+	// The second site extracts only its own rows.
+	otherIssues, err := db.ListJiraIssuesForExtract(second, since, 10)
+	if err != nil {
+		t.Fatalf("list for second account: %v", err)
+	}
+	if keys := jiraIssueKeys(otherIssues); strings.Join(keys, ",") != "CEX-2,OPS-9" {
+		t.Errorf("second account keys = %v, want [CEX-2 OPS-9] (account #1's rows excluded)", keys)
+	}
 
 	// Boundary-drain (Finding 2, final-review fix wave): a same-second tie at
 	// the cap boundary must never be split. Two issues share one updated_at
 	// second, a third is strictly later; limit=1 must still return BOTH
 	// same-second issues (the later one stays excluded).
 	db2 := openTestDB(t)
+	SeedTestJiraAccount(t, db2)
 	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-1", ProjectKey: "TIE", Summary: "a", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-2", ProjectKey: "TIE", Summary: "b", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T10:00:00.000+0000"})
 	seedJiraIssueRow(t, db2, jiraIssueSeed{Key: "TIE-3", ProjectKey: "TIE", Summary: "later", Status: "To Do", StatusCategory: "todo", UpdatedAt: "2026-07-22T11:00:00.000+0000"})
 
-	tieIssues, err := db2.ListJiraIssuesForExtract(0, 1)
+	tieIssues, err := db2.ListJiraIssuesForExtract(1, 0, 1)
 	if err != nil {
 		t.Fatalf("boundary-drain list: %v", err)
 	}

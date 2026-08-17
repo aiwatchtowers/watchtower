@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import GRDB
 import ViewInspector
+import WatchtowerCore
 @testable import WatchtowerDesktop
 
 @MainActor

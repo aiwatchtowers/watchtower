@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Quick reply option with associated action.
 struct QuickReply: Identifiable {
@@ -85,6 +86,12 @@ final class OnboardingChatViewModel {
     private var dbManager: DatabaseManager?
     private var streamTask: Task<Void, Never>?
     private var chatCompleted = false
+
+    // Last stream request, remembered so a failed AI call can be retried.
+    private var lastPrompt: String?
+    private var lastSystemPrompt: String?
+    private var lastSessionID: String?
+    private var lastOnComplete: (() -> Void)?
 
     /// The UI language selected during onboarding settings step.
     let language: String
@@ -237,6 +244,15 @@ final class OnboardingChatViewModel {
         sessionID: String?,
         onComplete: (() -> Void)? = nil
     ) {
+        // A new attempt invalidates any previous stream error — a stale
+        // errorMessage would otherwise permanently fail the teamForm
+        // completion gate in OnboardingView even when generation succeeds.
+        errorMessage = nil
+        lastPrompt = prompt
+        lastSystemPrompt = systemPrompt
+        lastSessionID = sessionID
+        lastOnComplete = onComplete
+
         let assistantMsg = ChatMessage(
             id: UUID(),
             role: .assistant,
@@ -304,6 +320,41 @@ final class OnboardingChatViewModel {
         }
     }
 
+    /// Skip the interview entirely: cancel any in-flight stream and clear
+    /// the quick-reply questionnaire so the user is never stuck on a broken
+    /// or missing AI provider.
+    func skipChat() {
+        // Skipping abandons the interview — a stream error from it must not
+        // stick around to fail the downstream completion gate.
+        errorMessage = nil
+        streamTask?.cancel()
+        streamTask = nil
+        isStreaming = false
+        quickReplies = []
+    }
+
+    /// Retry the last stream request after an AI error. Replays the exact
+    /// prompt/system-prompt/session captured by `beginStreaming`, including
+    /// the original completion behavior (e.g. [READY]-marker stripping).
+    func retryAfterError() {
+        guard errorMessage != nil, !isStreaming, let prompt = lastPrompt else { return }
+        errorMessage = nil
+        // Drop the trailing assistant bubble even when it holds partial text —
+        // a mid-stream failure leaves a partial bubble that would otherwise
+        // duplicate the turn and pollute the extraction transcript.
+        if let last = messages.last, last.role == .assistant {
+            messages.removeLast()
+        }
+        beginStreaming(
+            prompt: prompt,
+            systemPrompt: lastSystemPrompt,
+            // Prefer the freshest session id learned from a `.sessionID`
+            // stream event over the call-start snapshot.
+            sessionID: sessionID ?? lastSessionID,
+            onComplete: lastOnComplete
+        )
+    }
+
     /// Finish the chat phase and extract profile data from the conversation via LLM.
     func finishChat() async {
         streamTask?.cancel()
@@ -362,6 +413,10 @@ final class OnboardingChatViewModel {
 
     /// Generate custom_prompt_context via LLM based on the full onboarding conversation.
     func generatePromptContext() async {
+        // A fresh generation attempt invalidates any stale error from a prior
+        // run — otherwise the teamForm completion gate re-fails forever even
+        // when this run succeeds.
+        errorMessage = nil
         let contextText = await extractContextFromConversation()
         await saveProfileWithContext(contextText)
     }
@@ -439,25 +494,33 @@ final class OnboardingChatViewModel {
             return
         }
 
-        let existingProfile: UserProfile? = try? await dbManager.dbPool.read { db in
-            try ProfileQueries.fetchProfile(db, slackUserID: currentUserID)
-        }
-
-        let profile = UserProfile(
-            slackUserID: currentUserID,
-            role: role,
-            team: team,
-            reports: encodeJSON(reportIDs),
-            peers: encodeJSON(peerIDs),
-            manager: managerID,
-            painPoints: encodeJSON(painPoints),
-            trackFocus: encodeJSON(trackFocus),
-            onboardingDone: existingProfile?.onboardingDone ?? false,
-            customPromptContext: contextText.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
+        let role = self.role
+        let team = self.team
+        let managerID = self.managerID
+        let reportsJSON = encodeJSON(reportIDs)
+        let peersJSON = encodeJSON(peerIDs)
+        let painPointsJSON = encodeJSON(painPoints)
+        let trackFocusJSON = encodeJSON(trackFocus)
+        let trimmedContext = contextText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         do {
+            // Read + upsert in ONE transaction: a separate read would let a
+            // concurrent markOnboardingDone() land between read and write and
+            // get clobbered back to onboarding_done = 0 by the stale snapshot.
             try await dbManager.dbPool.write { db in
+                let existingProfile = try? ProfileQueries.fetchProfile(db, slackUserID: currentUserID)
+                let profile = UserProfile(
+                    slackUserID: currentUserID,
+                    role: role,
+                    team: team,
+                    reports: reportsJSON,
+                    peers: peersJSON,
+                    manager: managerID,
+                    painPoints: painPointsJSON,
+                    trackFocus: trackFocusJSON,
+                    onboardingDone: existingProfile?.onboardingDone ?? false,
+                    customPromptContext: trimmedContext
+                )
                 try ProfileQueries.upsertProfile(db, profile: profile)
             }
         } catch {
@@ -465,22 +528,46 @@ final class OnboardingChatViewModel {
         }
     }
 
-    /// Mark onboarding as complete in the profile.
-    func markOnboardingDone() async {
+    /// Mark onboarding as complete in the profile, creating the row if it
+    /// does not exist yet. Returns whether the flag actually landed — an
+    /// affirmative signal, not the absence of an error: both guards below
+    /// write nothing, so a caller keying completion off `errorMessage == nil`
+    /// would treat them as success and finish onboarding over a still-false
+    /// DB flag. `errorMessage` is still set on every failure path — that one
+    /// is what the UI renders; this return value is what the caller decides
+    /// on.
+    func markOnboardingDone() async -> Bool {
+        // Cleared up front (the FeatureManagerService.load() precedent) so a
+        // retry after a transient write failure isn't left showing the
+        // previous attempt's message.
+        errorMessage = nil
         let currentUserID = getCurrentUserID()
-        guard !currentUserID.isEmpty else { return }
-        guard let dbManager else { return }
+        guard !currentUserID.isEmpty else {
+            errorMessage = "Failed to complete onboarding: no connected Slack account to record it against."
+            return false
+        }
+        guard let dbManager else {
+            errorMessage = "Failed to complete onboarding: the database is not open."
+            return false
+        }
 
         do {
+            // Upsert, not a bare UPDATE: a user who skips onboarding before the
+            // profile-saving steps ran has no row yet — the flag write creates
+            // it, so a missing row can never mean a silently-unset flag.
             try await dbManager.dbPool.write { db in
                 try db.execute(sql: """
-                    UPDATE user_profile SET onboarding_done = 1,
+                    INSERT INTO user_profile (slack_user_id, onboarding_done, updated_at)
+                    VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                    ON CONFLICT(slack_user_id) DO UPDATE SET
+                        onboarding_done = 1,
                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE slack_user_id = ?
                     """, arguments: [currentUserID])
             }
+            return true
         } catch {
             errorMessage = "Failed to complete onboarding: \(error.localizedDescription)"
+            return false
         }
     }
 

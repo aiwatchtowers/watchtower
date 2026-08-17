@@ -101,7 +101,7 @@ final class Qwen3Transcriber: Transcriber, @unchecked Sendable {
             // recording (measured: 3.9→8.2 GB over 32 windows of a 10-min
             // clip). Clearing per window keeps the whole run near the
             // single-window peak; the realloc cost is noise next to decode.
-            defer { GPU.clearCache() }
+            defer { MLX.Memory.clearCache() }
             return model.transcribe(audio: window, sampleRate: 16_000, language: forced)
         }
     }

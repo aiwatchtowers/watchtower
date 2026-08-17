@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Paste-and-process sheet for AI-generated meeting recap. The user pastes
 /// raw notes (transcript fragment, hand-written summary, scratchpad), Watchtower's

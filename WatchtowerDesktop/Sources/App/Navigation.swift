@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct NavigationRoot: View {
     @Environment(AppState.self) private var appState
@@ -8,7 +9,7 @@ struct NavigationRoot: View {
             SplashView()
         } else if appState.needsOnboarding {
             OnboardingView {
-                appState.initialize()
+                appState.reinitializeAfterOnboarding()
             }
         } else {
             MainNavigationView()
@@ -136,6 +137,22 @@ struct MainNavigationView: View {
         } message: {
             Text("Your Google authorization expired or was revoked. Reconnect to resume calendar sync.")
         }
+        .onAppear { applyFeatureFallback() }
+        .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
+    }
+
+    /// Redirects away from the current tab when it becomes hidden — a
+    /// feature was just disabled, or a persisted selection from a previous
+    /// launch points at a tab that's now gated off. Runs once at appear
+    /// (stale persisted selection) and again on every live feature-list
+    /// change, sharing the same pure `fallbackDestination` rule.
+    private func applyFeatureFallback() {
+        if let fallback = SidebarDestination.fallbackDestination(
+            current: appState.selectedDestination,
+            disabled: appState.featureVisibility.disabledFeatureIDs
+        ) {
+            appState.selectedDestination = fallback
+        }
     }
 
     /// Runs the OAuth flow and, on success, restarts the daemon so the in-memory
@@ -185,6 +202,14 @@ struct MainNavigationView: View {
             }
         case .inbox:
             InboxFeedView()
+        case .ideas:
+            if let vm = appState.ideasViewModel {
+                IdeasView(vm: vm)
+            } else {
+                Text("Ideas unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .calendar:
             CalendarEventsView()
         case .targets:

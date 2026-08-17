@@ -1,5 +1,26 @@
--include .env
-export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET
+# ENV_FILE selects the build profile (default .env). Alternative profiles
+# (e.g. ENV_FILE=.env.b2 make app) carry their own credentials and must set
+# BUILD_FLAVOR, which is baked into the binary and artifact names.
+# Mirror of the build-app.sh profile-selection guards: `-include` is silent on
+# a missing file, which would bake empty credentials with exit 0 on the
+# `make build`/`make install` paths that never reach the script.
+# app-dev defaults to the dev profile; an explicit ENV_FILE=... on the
+# command line or environment still wins (?= never overrides those).
+ifneq ($(filter app-dev,$(MAKECMDGOALS)),)
+ENV_FILE ?= .env.dev
+endif
+ENV_FILE ?= .env
+-include $(ENV_FILE)
+ifneq ($(ENV_FILE),.env)
+ifeq ($(wildcard $(ENV_FILE)),)
+$(error build profile '$(ENV_FILE)' not found)
+endif
+ifeq ($(strip $(BUILD_FLAVOR)),)
+$(error build profile '$(ENV_FILE)' must set BUILD_FLAVOR)
+endif
+endif
+export ENV_FILE
+export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET BUILD_FLAVOR
 
 BINARY_NAME := watchtower
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -11,9 +32,9 @@ GOOGLE_ID   ?= $(WATCHTOWER_GOOGLE_CLIENT_ID)
 GOOGLE_SECRET?= $(WATCHTOWER_GOOGLE_CLIENT_SECRET)
 JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
-LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
+LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-cover lint lint-swift lint-all install clean app app-dev dmg test-swift sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check mobile-gen mobile-build mobile-test mobile-run mobile-archive smoke-live
+.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg test-swift test-scripts sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check mobile-gen mobile-build mobile-test mobile-run mobile-archive smoke-live
 
 # Simulator device for the mobile targets; override: make mobile-run SIM="iPhone 17e"
 SIM ?= iPhone 17 Pro
@@ -88,6 +109,9 @@ smoke-live:
 	cd WatchtowerKit && swift test --filter LiveAPISmokeTests
 
 test:
+	go test ./...
+
+test-verbose:
 	go test ./... -v
 
 # Coverage gate — fails when any package in coverage.thresholds
@@ -96,11 +120,26 @@ test:
 test-cover:
 	./scripts/coverage-gate.sh
 
+# Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
+# class; without FILTER the full suite runs as before.
 test-swift:
-	cd WatchtowerDesktop && swift test
+	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter $(FILTER),)
+
+# Shell-level tests for build-app.sh. Each extracts a marked block from the
+# script and runs it against stubbed binaries — no real build, no codesign.
+test-scripts:
+	@rc=0; for t in scripts/tests/test-*.sh; do \
+	  echo "==> $$t"; \
+	  bash "$$t" || rc=1; \
+	done; exit $$rc
 
 lint:
 	golangci-lint run ./...
+
+# Inner-loop lint: only issues introduced relative to origin/main.
+# The full `lint` target remains the pre-PR gate.
+lint-diff:
+	golangci-lint run --new-from-rev origin/main ./...
 
 lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
@@ -160,5 +199,5 @@ periphery-baseline:
 # periphery dead-code check (vs baseline), Go tests, and Swift tests. Failing
 # any of these halts the release. Used by .claude/commands/release.md before
 # `make app`.
-release-check: quality periphery-check test test-swift
+release-check: quality periphery-check test test-swift test-scripts
 	@echo "✓ release-check passed"

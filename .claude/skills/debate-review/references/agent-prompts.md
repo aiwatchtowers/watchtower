@@ -1,9 +1,9 @@
 # debate-review agent prompts and schemas
 
-Every agent receives: the diff under review, the contents of `docs/review/review-rules.md`
-(binding rules), the contents of `docs/review/review-lessons.md` (soft calibration — past
-lessons, not binding), and the nine dimension definitions below. Agents are READ-ONLY —
-they inspect the diff and repo, never edit or run git/network mutations.
+Every panel agent receives: the diff under review, the contents of `docs/review/review-rules.md`
+(binding rules), and the nine dimension definitions below. The lessons log
+(`docs/review/review-lessons.md`) is **judge-only**, tail-only (last ~10 blocks). Agents are
+READ-ONLY — they inspect the diff and repo, never edit or run git/network mutations.
 
 Watchtower is a Go 1.25 CLI (`watchtower`, module `watchtower`, SQLite via
 `modernc.org/sqlite`) plus a SwiftUI macOS Desktop app (`WatchtowerDesktop/`, GRDB.swift).
@@ -44,45 +44,18 @@ that reads the same SQLite DB.
   "location": "internal/inbox/pipeline.go:42", "claim": "one sentence", "rule_ref": "review-rules §7 bullet, or none" }
 ```
 
-## Debate ledger (orchestrator-maintained)
-
-A list of findings; after round 2 each carries `disposition` + both sides' last word:
-
-```json
-{ "...finding...": "...", "advocate": "rebuttal or concession", "prosecutor": "press or drop",
-  "disposition": "agreed-issue|dismissed|unresolved" }
-```
-
-## Advocate prompt
-
-```
-You are the ADVOCATE in an adversarial code review. Defend this change on its merits.
-Diff:
-<diff>
-Project rules:
-<contents of docs/review/review-rules.md>
-Dimensions: <the nine above>
-
-Round 1: For each dimension, state why the change is correct/appropriate. Honestly flag any
-REAL weakness you see (a credible advocate concedes obvious problems). Output your defense.
-Round 2 (if given a ledger): for each prosecutor finding, either REBUT (with concrete reason
-+ rule/code reference) or CONCEDE. Be specific; do not hand-wave. You are read-only.
-```
-
 ## Prosecutor prompt
 
 ```
 You are the PROSECUTOR in an adversarial code review. Find everything wrong with this change.
 Diff / rules / dimensions: <as above>
 
-Round 1: produce findings (Finding schema), one per real issue, tagged by dimension + severity,
+Produce findings (Finding schema), one per real issue, tagged by dimension + severity,
 with file:line and a rule_ref when a rule applies. Be ruthless but precise — no vague or invented
-issues; each must be checkable.
-Round 2 (if given a ledger): for each of your findings, respond to the advocate's rebuttal —
-PRESS (strengthen with evidence) or DROP (concede it was weak). You are read-only.
+issues; each must be checkable. You are read-only.
 ```
 
-## Codex (independent, parallel — not part of the debate)
+## Codex (independent, parallel)
 
 ```bash
 timeout 300 codex review --base "$BASE" -c sandbox_mode="read-only" -c approval_policy="never"
@@ -93,25 +66,30 @@ timeout 300 codex review --base "$BASE" -c sandbox_mode="read-only" -c approval_
 `-c approval_policy="never"` stops it blocking on approval prompts — together they replace
 the old `--dangerously-bypass-approvals-and-sandbox` flag, which the Claude Code auto-mode
 permission classifier REJECTS as an unsandboxed autonomous loop. Run against the same base
-as the debate (default `main`). Capture stdout as an independent findings list. For a PR
+as the panel (default `main`). Capture stdout as an independent findings list. For a PR
 target, review the PR branch's diff against its base.
 
+codex runs on a separate billing pool — it consumes no Claude tokens and cannot trigger a
+session-limit pause — which is why it is also the sole reviewer on `verify` rounds.
+
 **codex can hang, time out, or drop into a reconnect loop.** Wrap it in `timeout` and treat it
-as best-effort: if it yields no verdict within the limit, proceed with the advocate / prosecutor
-outputs alone and mark the codex lane `unavailable` in the judge inputs — never let a stuck codex
-stall the debate.
+as best-effort: if it yields no verdict within the limit, proceed with the prosecutor /
+specialist outputs alone and mark the codex lane `unavailable` in the judge inputs — never let
+a stuck codex stall the review. (On a `verify` round, an unavailable codex is substituted by
+the prosecutor instead.)
 
 ## Judge prompt
 
 ```
-You are the JUDGE. You did not participate in the debate. Inputs:
-- The final debate ledger (findings + dispositions + both sides' last word)
+You are the JUDGE. You did not participate in the review. Inputs:
+- The prosecutor's findings list
 - The codex findings list
-- The four pr-review-toolkit specialist outputs (or `unavailable` per lane)
+- The pr-review-toolkit specialist outputs (or `unavailable` per lane)
 - Project rules + the nine dimensions
-Produce the FINAL verdict and report (schema below). Resolve `unresolved` items yourself where
-you can; if you genuinely cannot, keep them under "Needs human" — never silently drop them.
-Merge/de-duplicate codex findings with the debate findings. Prioritise by severity.
+Produce the FINAL verdict and report (schema below). Dismiss findings that do not hold up
+(check them against the code); merge/de-duplicate across lanes ("raised by N lanes" is
+signal). Items you genuinely cannot settle go under "Needs human" — never silently drop
+them. Prioritise by severity.
 ```
 
 ## Report format (judge output)
@@ -121,7 +99,7 @@ Merge/de-duplicate codex findings with the debate findings. Prioritise by severi
 
 ### Blockers
 
-- [dimension] location — claim _(advocate: …; prosecutor: …; rule: …)_
+- [dimension] location — claim _(prosecutor: …; codex: …; rule: …)_
 
 ### Major / Minor / Nits
 
@@ -129,14 +107,14 @@ Merge/de-duplicate codex findings with the debate findings. Prioritise by severi
 
 ### Needs human (unresolved)
 
-- ... items the debate could not settle ...
+- ... items the judge could not settle ...
 
 ### Summary
 
 One paragraph: the decisive points and why the verdict.
 ```
 
-## Reflection (Step 4 — judge appends to `docs/review/review-lessons.md`)
+## Reflection (judge appends to `docs/review/review-lessons.md`, full runs only)
 
 After the verdict, the judge writes ONE dated block to `docs/review/review-lessons.md` so the
 system calibrates over time. Capture only what is worth remembering — not a re-statement of
@@ -145,7 +123,7 @@ the report:
 ```markdown
 ## <date> — <branch or PR#> — verdict: <approve|changes-needed>
 
-- contested: <unresolved point the judge had to settle> [dimension]
+- contested: <point the judge had to settle> [dimension]
 - false-positive: <finding raised then dismissed, and why> [dimension]
 - miss: <issue caught only by codex / late / by a human> [dimension]
 - weak-dimension: <dimension that underperformed>

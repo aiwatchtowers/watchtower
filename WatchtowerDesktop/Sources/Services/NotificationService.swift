@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import WatchtowerCore
 
 /// FNV-1a hash for stable, collision-resistant notification identifiers.
 private func fnv1aHash(_ string: String) -> UInt64 {
@@ -52,17 +53,19 @@ final class NotificationService: Sendable {
         }
     }
 
-    func sendDecisionNotification(decision: Decision, channelName: String, digestID: Int) {
+    /// A new decision landed in the ledger (`ideas.kind = 'decision'`) —
+    /// cross-source: Slack digest, Gmail, Jira, or meeting recap, wherever
+    /// the consolidator mined it from. `ideaID` is already a stable, unique
+    /// per-decision id, so no text hash is needed for a stable identifier.
+    func sendDecisionNotification(ideaID: Int, title: String) {
         let content = UNMutableNotificationContent()
-        content.title = "New decision in #\(channelName)"
-        content.body = decision.text
+        content.title = "New decision"
+        content.body = title
         content.sound = .default
-        content.userInfo = ["digestId": digestID, "type": "decision"]
+        content.userInfo = ["ideaId": ideaID, "type": "decision"]
 
-        // Stable identifier using digestID + FNV-1a hash of text (collision-resistant).
-        let stableHash = fnv1aHash(decision.text)
         let request = UNNotificationRequest(
-            identifier: "decision-\(digestID)-\(stableHash)",
+            identifier: "decision-\(ideaID)",
             content: content,
             trigger: nil
         )

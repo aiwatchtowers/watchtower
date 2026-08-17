@@ -1,6 +1,8 @@
 import XCTest
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 final class HubSyncStateTests: XCTestCase {
     func testWipeSyncStateClearsHashesTokenAndProcessedSet() throws {

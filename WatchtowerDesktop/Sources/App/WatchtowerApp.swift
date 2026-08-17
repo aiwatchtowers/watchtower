@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import GRDB
 import UserNotifications
+import WatchtowerCore
 
 /// Allows notifications to display as banners even when the app is in the foreground,
 /// and handles notification click actions to navigate within the running app.
@@ -10,6 +11,16 @@ import UserNotifications
 class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// Set from the SwiftUI body once the real managed AppState is live.
     static var sharedAppState: AppState?
+
+    /// True on a duplicate instance that lost the single-instance race: it routes
+    /// nothing itself, it hands the response to the survivor and exits. Fixed at
+    /// construction by the guard's verdict, never flipped afterwards.
+    let forwardMode: Bool
+
+    init(forwardMode: Bool) {
+        self.forwardMode = forwardMode
+        super.init()
+    }
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -25,47 +36,128 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        let type = userInfo["type"] as? String
         let actionID = response.actionIdentifier
+
+        if forwardMode {
+            let posted = NotificationForwarding.post(actionID: actionID, userInfo: userInfo)
+            completionHandler()
+            if posted {
+                // "posted", not "delivered": the distributed-notification transport
+                // gives no acknowledgement, so a survivor that never observes it is
+                // indistinguishable from here.
+                NSLog("NotificationDelegate: posted response for action %@ to the running instance; exiting", actionID)
+            } else {
+                NSLog("NotificationDelegate: could not forward response for action %@; exiting", actionID)
+            }
+            // The response is what this process was waiting for — no reason to sit
+            // out the rest of the grace window, and no reason to stay on a failed
+            // hand-off either: the survivor is already running.
+            exit(0)
+        }
 
         // Bring the running app to front
         NSApplication.shared.activate(ignoringOtherApps: true)
 
         Task { @MainActor in
-            let appState = Self.sharedAppState
-            switch type {
-            case "decision":
-                if let digestID = userInfo["digestId"] as? Int {
-                    appState?.navigateToDigest(digestID)
-                } else {
-                    appState?.selectedDestination = .digests
-                }
-            case "track", "track_update":
-                appState?.selectedDestination = .tracks
-            case "task_overdue", "target_extract":
-                appState?.selectedDestination = .targets
-            case "daily_summary":
-                appState?.selectedDestination = .digests
-            case "meeting_reminder":
-                await Self.handleMeetingReminderAction(actionID: actionID, userInfo: userInfo, appState: appState)
-            case "meeting_stop_recording":
-                if actionID == NotificationService.stopRecordingActionID {
-                    if let appState {
-                        await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
-                    } else {
-                        // appState not wired yet (tap raced app launch): never
-                        // drop an explicit Stop-recording intent silently.
-                        print("[MeetingReminder] stop-recording action dropped: appState unavailable")
-                    }
-                } else {
-                    appState?.selectedDestination = .calendar
-                }
-            default:
-                break
-            }
+            await Self.route(actionID: actionID, userInfo: userInfo, appState: Self.sharedAppState, forwarded: false)
         }
 
         completionHandler()
+    }
+
+    /// Survivor side of the forwarding bus: routes a response handed over by a
+    /// duplicate that deferred to this instance. The sole caller of `route` with
+    /// `forwarded: true` in the app, so the navigation-only policy is applied by
+    /// construction rather than by each call site remembering the flag.
+    @MainActor
+    static func routeForwarded(_ response: ForwardedNotificationResponse, appState: AppState?) async {
+        // Mirror the self-received path: the click was meant to surface the app.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        await route(
+            actionID: response.actionID,
+            userInfo: response.userInfo,
+            appState: appState,
+            forwarded: true
+        )
+    }
+
+    /// The notification-response routing table. Shared by a response this instance
+    /// received itself and one forwarded from a duplicate that deferred to it.
+    ///
+    /// `forwarded` marks the second case, and downgrades routing to navigation only:
+    /// the forwarding bus is unauthenticated, so a response arriving on it may move the
+    /// UI but must never arm an action (start or stop a recording, open a link) —
+    /// navigation itself may still carry idempotent UI side effects, e.g.
+    /// `navigateToDigest` marking the digest read. The gate is read here, in each
+    /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
+    /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
+    ///
+    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`) must stay in
+    /// sync with `NotificationForwarding.routedKeys`, the allowlist of what crosses the
+    /// boundary.
+    /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
+    /// those keys are absent by design from the forwarded payload and must stay so.
+    /// `openURL` is an injectable seam threaded through to the meeting handler (the
+    /// `JoinMeetingAction` convention), so tests can prove the forwarded path never opens.
+    @MainActor
+    static func route(
+        actionID: String,
+        userInfo: [AnyHashable: Any],
+        appState: AppState?,
+        forwarded: Bool,
+        openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    ) async {
+        switch userInfo["type"] as? String {
+        case "decision":
+            // Decisions are ledger-sourced (see DigestWatcher) — the push
+            // carries an ideaId, not a digestId.
+            if let ideaID = userInfo["ideaId"] as? Int {
+                appState?.navigateToDecision(ideaID)
+            } else {
+                appState?.selectedDestination = .digests
+            }
+        case "track", "track_update":
+            appState?.selectedDestination = .tracks
+        case "task_overdue", "target_extract":
+            appState?.selectedDestination = .targets
+        case "daily_summary":
+            appState?.selectedDestination = .digests
+        case "meeting_reminder":
+            if forwarded {
+                // Say it out loud rather than degrading in silence — the same
+                // principle as the dropped-Stop-intent log below.
+                NSLog(
+                    "NotificationDelegate: forwarded action %@ downgraded to navigation (unauthenticated bus)",
+                    actionID
+                )
+                appState?.selectedDestination = .calendar
+            } else {
+                await handleMeetingReminderAction(
+                    actionID: actionID,
+                    userInfo: userInfo,
+                    appState: appState,
+                    openURL: openURL
+                )
+            }
+        case "meeting_stop_recording":
+            if forwarded || actionID != NotificationService.stopRecordingActionID {
+                if forwarded {
+                    NSLog(
+                        "NotificationDelegate: forwarded action %@ downgraded to navigation (unauthenticated bus)",
+                        actionID
+                    )
+                }
+                appState?.selectedDestination = .calendar
+            } else if let appState {
+                await appState.meetingRecorderCenter.stopAndProcess(config: .fromDefaults())
+            } else {
+                // appState not wired yet (tap raced app launch): never
+                // drop an explicit Stop-recording intent silently.
+                print("[MeetingReminder] stop-recording action dropped: appState unavailable")
+            }
+        default:
+            break
+        }
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared
@@ -73,12 +165,13 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// auto-record setting); a plain tap navigates to the Calendar tab.
     /// `openURL` is an injectable seam (the `JoinMeetingAction` convention);
     /// internal rather than private so tests can drive the fallback branches.
+    /// It carries no default — `route` is the seam's entry point and owns the one.
     @MainActor
     static func handleMeetingReminderAction(
         actionID: String,
         userInfo: [AnyHashable: Any],
         appState: AppState?,
-        openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+        openURL: (URL) -> Bool
     ) async {
         guard actionID == NotificationService.joinActionID
             || actionID == NotificationService.joinRecordActionID else {
@@ -120,64 +213,201 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 
 @main
 struct WatchtowerApp: App {
-    @State private var appState = AppState()
-    private let notificationDelegate = NotificationDelegate()
+    /// How long a deferring duplicate stays alive headless, waiting for the
+    /// notification response that launched it.
+    private static let duplicateGraceWindow: TimeInterval = 5
+
+    @NSApplicationDelegateAdaptor(TrayAppDelegate.self) private var trayDelegate
+    /// Seeded from `AppState.shared`, not a fresh instance: the app delegate
+    /// bootstraps the same object before any window exists (a login launch
+    /// never mounts one), and a singleton is what makes "the SwiftUI-managed
+    /// state" and "the state the delegate initialized" provably identical.
+    @State private var appState = AppState.shared
+    /// Read here — not inside `TrayMenuView`, which has its own copy for the
+    /// tray button — so the global hotkey's plain C callback (no SwiftUI
+    /// environment of its own) has something to call through `AppState`.
+    @Environment(\.openWindow) private var openWindow
+    private let notificationDelegate: NotificationDelegate
+    private let isDuplicate: Bool
 
     init() {
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        // `appState`'s stored-property initializer runs BEFORE this guard, so it must
+        // stay side-effect-free — a duplicate instance constructs it and then exits.
+        // Heavy work belongs in `AppState.initialize()`.
+        let survivor = SingleInstanceGuard.runningInstanceToDeferTo()
+        isDuplicate = survivor != nil
+        notificationDelegate = NotificationDelegate(forwardMode: isDuplicate)
         UNUserNotificationCenter.current().delegate = notificationDelegate
+
+        if let survivor {
+            // Duplicate: stay alive, headless, only long enough for the notification
+            // response that launched this process to arrive and be forwarded. With no
+            // response the grace window elapses and this degrades to activate-and-exit.
+            //
+            // Activate the survivor BEFORE dropping out of the activation model: a
+            // `.prohibited` process may not donate activation.
+            let activated = survivor.activate()
+            NSApplication.shared.setActivationPolicy(.prohibited)
+            // The duplicate deliberately does NOT call
+            // `NotificationService.registerMeetingCategories()`: categories are
+            // per-bundle-id state in the notification daemon, so registering here would
+            // race the survivor's set — and `actionIdentifier` is delivered regardless.
+            NSLog(
+                "SingleInstanceGuard: duplicate instance, deferring to pid %d (activate: %@); exiting",
+                survivor.processIdentifier,
+                activated ? "ok" : "denied"
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.duplicateGraceWindow) { exit(0) }
+            return
+        }
+
+        NSApplication.shared.setActivationPolicy(.regular)
+        trayDelegate.managesLifecycle = true
+        NSApplication.shared.activate(ignoringOtherApps: true)
         NotificationService.registerMeetingCategories()
+        // Only the survivor listens: a duplicate must never route what it forwards.
+        NotificationForwarding.observe { response in
+            NSLog("NotificationForwarding: received forwarded response for action %@", response.actionID)
+            Task { @MainActor in
+                await NotificationDelegate.routeForwarded(
+                    response,
+                    appState: NotificationDelegate.sharedAppState
+                )
+            }
+        }
     }
 
+    private var rootContent: some View {
+        NavigationRoot()
+            .frame(minWidth: 800, minHeight: 600)
+            .overlay(alignment: .bottomTrailing) {
+                RecordingIndicatorView()
+            }
+            .overlay(alignment: .bottomTrailing) {
+                ExtractIndicatorView()
+            }
+            // Separate alignment from the recording/extract indicators'
+            // corner, so the banner and the pills never overlap.
+            .overlay(alignment: .top) {
+                UpcomingMeetingBannerView()
+            }
+            .background(OpaqueWindowBackground())
+            // `.environment` must wrap the overlay too: the overlay attaches as a
+            // sibling outside any environment applied deeper on NavigationRoot, so
+            // injecting here (outermost) is what lets RecordingIndicatorView's
+            // @Environment(AppState.self) resolve instead of trapping on launch.
+            .environment(appState)
+            // Same outermost placement, same reason: link surfaces live
+            // inside the overlays too (the recording indicator's panel,
+            // the meeting banner), so the scheme gate has to wrap them.
+            .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            .environment(\.dictationCenter, appState.dictationCenter)
+            .onAppear {
+                // Both lines are duplicates of the delegate's launch bootstrap
+                // (same singleton, `initialize()` latched by `isInitializing`).
+                // Kept so a window mounting is enough on its own — the app is
+                // never left uninitialized because a delegate callback moved.
+                NotificationDelegate.sharedAppState = appState
+                appState.initialize()
+                appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+            }
+            .onOpenURL { url in
+                // Handle watchtower-auth:// callback — just bring app to front
+                if url.scheme == "watchtower-auth" {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            }
+            // Claim external URL events for the EXISTING window — without
+            // this, WindowGroup spawns a brand-new window per open-URL.
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+    }
+
+    /// Template (auto-tinted) tray icon — the app-icon tower glyph, rendered
+    /// monochrome by scripts/generate-menubar-icon.swift. Falls back to the
+    /// old SF Symbol when the processed resource is missing.
+    private static let trayIcon: NSImage = {
+        if let url = AppBundle.resources.url(forResource: "menubar-icon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            return img
+        }
+        return NSImage(systemSymbolName: "binoculars", accessibilityDescription: "Watchtower") ?? NSImage()
+    }()
+
     var body: some Scene {
-        WindowGroup {
-            NavigationRoot()
-                .frame(minWidth: 800, minHeight: 600)
-                .overlay(alignment: .bottomTrailing) {
-                    RecordingIndicatorView()
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    ExtractIndicatorView()
-                }
-                // Separate alignment from the recording/extract indicators'
-                // corner, so the banner and the pills never overlap.
-                .overlay(alignment: .top) {
-                    UpcomingMeetingBannerView()
-                }
-                .background(OpaqueWindowBackground())
-                // `.environment` must wrap the overlay too: the overlay attaches as a
-                // sibling outside any environment applied deeper on NavigationRoot, so
-                // injecting here (outermost) is what lets RecordingIndicatorView's
-                // @Environment(AppState.self) resolve instead of trapping on launch.
-                .environment(appState)
-                .onAppear {
-                    // H5 fix: connect the live SwiftUI-managed appState to the notification delegate
-                    NotificationDelegate.sharedAppState = appState
-                    appState.initialize()
-                }
-                .onOpenURL { url in
-                    // Handle watchtower-auth:// callback — just bring app to front
-                    if url.scheme == "watchtower-auth" {
-                        NSApplication.shared.activate(ignoringOtherApps: true)
-                    }
-                }
-                // Claim external URL events for the EXISTING window — without
-                // this, WindowGroup spawns a brand-new window per open-URL.
-                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        WindowGroup(id: TrayAppDelegate.mainWindowSceneID) {
+            // A duplicate is headless for its grace window: no UI to flash, and no
+            // `AppState.initialize()` running a second time against the shared database.
+            if isDuplicate {
+                EmptyView()
+            } else {
+                rootContent
+            }
         }
         .defaultSize(width: 1200, height: 800)
+        // Cmd+Q routes through requestQuit: with a sheet presented anywhere,
+        // the stock termination is vetoed by SwiftUI's scene layer before the
+        // app delegate is consulted, leaving the app unquittable until the
+        // popup is dismissed by hand (see TrayAppDelegate.requestQuit).
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Watchtower") {
+                    TrayAppDelegate.requestQuit()
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            }
+        }
 
         Window("Pipeline Progress", id: "progress-detail") {
             ProgressDetailView()
                 .environment(appState)
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
         }
         .defaultSize(width: 600, height: 500)
+
+        Window("Logs", id: "logs") {
+            LogsSettings()
+                .environment(appState)
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        }
+        .defaultSize(width: 900, height: 600)
+
+        // Self-injects both environments — the per-scene trap: a scene's
+        // content tree gets none of `rootContent`'s environment for free, so
+        // every auxiliary scene in this file repeats the same two lines.
+        Window("Quick Capture", id: QuickCaptureView.sceneID) {
+            QuickCaptureView()
+                .environment(appState)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.topTrailing)
 
         Settings {
             SettingsView()
                 .environment(appState)
                 .background(SettingsWindowAccessor())
+                .environment(\.openURL, AllowedURLSchemes.openURLAction)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        }
+
+        MenuBarExtra(isInserted: .constant(!isDuplicate)) {
+            TrayMenuView()
+                .environment(appState)
+                .environment(\.dictationCenter, appState.dictationCenter)
+        } label: {
+            Image(nsImage: Self.trayIcon)
+                .accessibilityLabel("Watchtower")
+                // The tray label is always mounted — window-independent — so
+                // a login launch that never mounts `rootContent` still wires
+                // the ⌃⌥D hotkey / tray "New Voice Idea" opener. Idempotent
+                // with rootContent's own assignment.
+                .onAppear {
+                    appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                }
         }
     }
 }
@@ -218,8 +448,23 @@ class OpaqueBackgroundView: NSView {
         super.viewDidMoveToWindow()
         guard let window else { return }
 
-        // Persist window frame (position + size) across launches
-        window.setFrameAutosaveName("WatchtowerMainWindow")
+        // Persist window frame (position + size) across launches. The name is
+        // also the mount-time half of `TrayAppDelegate.isMainWindow`.
+        //
+        // This synchronous stamp alone is NOT enough: SwiftUI's scene bridge
+        // sets its own autosave name derived from the content view's MANGLED
+        // TYPE NAME ("NSWindow Frame SwiftUI.(unknown context at $…).
+        // SceneBridgeReader<…>-1-AppWindow-1"), overriding ours after mount —
+        // and that key changes with every code change, so after a rebuild the
+        // saved frame is orphaned and the window opens at defaultSize. The
+        // deferred re-stamp lands after the bridge's: restore whatever was
+        // saved under the STABLE name, then keep saving under it.
+        window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            window.setFrameUsingName(TrayAppDelegate.mainWindowAutosaveName)
+            window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        }
 
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor

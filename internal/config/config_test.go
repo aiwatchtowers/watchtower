@@ -98,6 +98,15 @@ workspaces:
 	assert.Equal(t, "xoxp-from-env", cfg.Workspaces["test-ws"].SlackToken)
 }
 
+func TestLoad_StreamsDefaults(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, DefaultStreamsEnabled, cfg.Streams.Enabled)
+	assert.Equal(t, DefaultStreamsIntervalHours, cfg.Streams.IntervalHours)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",
@@ -563,4 +572,20 @@ func TestConfigRecordingsDir(t *testing.T) {
 		assert.True(t, strings.HasSuffix(got, suffix),
 			"default must match the Swift MeetingRecorderCenter path, got %q", got)
 	})
+}
+
+func TestFeatureGateDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Tracks.Enabled {
+		t.Error("tracks.enabled should default true")
+	}
+	if !cfg.People.Enabled {
+		t.Error("people.enabled should default true")
+	}
+	if !cfg.Targets.NextStep.Enabled {
+		t.Error("targets.next_step.enabled should default true")
+	}
 }

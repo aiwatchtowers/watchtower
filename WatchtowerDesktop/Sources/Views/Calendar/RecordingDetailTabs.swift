@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WatchtowerCore
 
 // MARK: - Recap tab
 
@@ -12,6 +13,11 @@ import AppKit
 struct RecordingRecapTab: View {
     let transcript: MeetingTranscript
     let recapContent: MeetingRecap.Content?
+    /// True when `recapContent` is the event's recap and it was generated
+    /// from a different recording's transcript (or another source) than this
+    /// one. Only the legacy flat-recap path renders the note — chapters are
+    /// always generated from this transcript's own segments.
+    let recapFromOtherSource: Bool
     let chapters: MeetingChapters?
     let hasSegments: Bool
     let onRetryRecap: () -> Void
@@ -205,6 +211,13 @@ struct RecordingRecapTab: View {
     @ViewBuilder
     private var legacyRecap: some View {
         if let content = recapContent {
+            if recapFromOtherSource {
+                Label(
+                    "Event recap — generated from a different recording or source of this meeting, not from this recording.",
+                    systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if !content.summary.isEmpty {
                 Text(content.summary)
                     .font(.callout)
@@ -354,7 +367,9 @@ struct FollowupDraftSheet: View {
 // MARK: - Notes tab
 
 /// Publishable meeting notes: generate (AI, via TranscriptNotesCenter) →
-/// edit in a TextEditor (debounced autosave) → Copy to clipboard.
+/// rendered markdown by default (pencil toggles the raw TextEditor with its
+/// debounced autosave) → Copy puts HTML + raw markdown on the pasteboard so
+/// pasting into Slack/Mail keeps the formatting.
 struct RecordingNotesTab: View {
     let transcript: MeetingTranscript
     let notesMD: String?
@@ -364,8 +379,10 @@ struct RecordingNotesTab: View {
     let onSave: (String) -> Void
 
     @State private var draft: String = ""
+    @State private var isEditing = false
     @State private var copied = false
     @State private var saveTask: Task<Void, Never>?
+    @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -381,6 +398,11 @@ struct RecordingNotesTab: View {
                 .controlSize(.small)
                 .disabled(isGenerating)
 
+                // Appending into `draft` rides the existing debounced autosave for
+                // free; isDisabled honors the same lock as the editor below so
+                // dictation can't route around the generation adoption guard.
+                DictationButton(text: $draft, mode: .note, targetID: "notes.\(transcript.id ?? 0)", isDisabled: isGenerating)
+
                 if isGenerating {
                     ProgressView().controlSize(.small)
                     Text("Generating notes…")
@@ -392,8 +414,24 @@ struct RecordingNotesTab: View {
 
                 if !draft.isEmpty {
                     Button {
+                        isEditing.toggle()
+                    } label: {
+                        Label(isEditing ? "Done" : "Edit", systemImage: isEditing ? "checkmark" : "pencil")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isGenerating)
+
+                    Button {
+                        // HTML + raw markdown together: rich-text targets
+                        // (Slack, Mail, Notes) take the HTML, plain-text
+                        // editors get the markdown.
+                        let item = NSPasteboardItem()
+                        item.setString(MarkdownToHTML.convert(draft), forType: .html)
+                        item.setString(draft, forType: .string)
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(draft, forType: .string)
+                        NSPasteboard.general.writeObjects([item])
                         copied = true
                         Task { try? await Task.sleep(for: .seconds(2)); copied = false }
                     } label: {
@@ -417,19 +455,36 @@ struct RecordingNotesTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            TextEditor(text: $draft)
-                .font(.callout)
-                // Editing is locked during generation so the finished AI output
-                // can never clobber text typed mid-run (adoption guard below).
-                .disabled(isGenerating)
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-                .onChange(of: draft) { _, newValue in
-                    scheduleSave(newValue)
+            // Highlight rides the whole editor slot (both modes): dictation
+            // appends into `draft` in the rendered view too, not just the
+            // TextEditor (see the autosave comment below).
+            Group {
+                if isEditing {
+                    TextEditor(text: $draft)
+                        .font(.callout)
+                        // Editing is locked during generation so the finished AI output
+                        // can never clobber text typed mid-run (adoption guard below).
+                        .disabled(isGenerating)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ScrollView {
+                        MarkdownText(text: draft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                 }
+            }
+            .dictationHighlight(targetID: "notes.\(transcript.id ?? 0)", center: dictationCenter)
         }
         .padding(12)
+        // On the VStack, not the TextEditor, so dictation appending into the
+        // rendered (non-editing) view still rides the debounced autosave.
+        .onChange(of: draft) { _, newValue in
+            scheduleSave(newValue)
+        }
         .onAppear { draft = notesMD ?? "" }
         .onChange(of: notesMD) { _, newValue in
             // Generation finished (or another window edited) — adopt the DB
@@ -875,7 +930,8 @@ struct RecordingChatTab: View {
                 isStreaming: chatVM.isStreaming,
                 onSend: { chatVM.send() },
                 onStop: { chatVM.cancelStream() },
-                placeholder: "Ask about this meeting…"
+                placeholder: "Ask about this meeting…",
+                dictationTargetID: "chat.meeting.\(chatVM.transcriptID)"
             )
         }
     }

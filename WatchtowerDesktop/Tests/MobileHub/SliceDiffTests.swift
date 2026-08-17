@@ -2,6 +2,8 @@ import XCTest
 import GRDB
 @testable import WatchtowerDesktop
 @testable import WatchtowerKit
+import WatchtowerTestSupport
+import WatchtowerCore
 
 final class SliceDiffTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)

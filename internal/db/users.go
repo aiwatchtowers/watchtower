@@ -106,6 +106,26 @@ func (db *DB) GetUserByEmail(email string) (*User, error) {
 	return scanUser(row)
 }
 
+// GetUserByEmailFold matches an email case-insensitively. GetUserByEmail's
+// exact match is right for synced Slack data (which is consistently cased),
+// but wrong for anything a human typed or a tool authored, such as git commit
+// author emails, where case varies freely.
+//
+// Since the Slack multi-account migration, one email legitimately maps to
+// several rows — the same human has one users row per connected workspace
+// (namespaced ids), so a duplicate email is the EXPECTED shape, not an edge
+// case. Deleted rows are excluded (a deactivated account is never the right
+// attribution target), and among the remaining candidates the lowest id wins
+// — an arbitrary but STABLE tiebreak, so the same email always resolves to
+// the same row rather than whatever order SQLite happens to return.
+func (db *DB) GetUserByEmailFold(email string) (*User, error) {
+	row := db.QueryRow(`
+		SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at
+		FROM users WHERE LOWER(email) = LOWER(?) AND email != '' AND is_deleted = 0
+		ORDER BY id ASC LIMIT 1`, email)
+	return scanUser(row)
+}
+
 // EnsureUser inserts a minimal stub user record if not already present.
 // Stubs are marked with is_stub=1 so syncUserProfiles can backfill them.
 // Does NOT update existing records (INSERT ON CONFLICT DO NOTHING).
@@ -159,6 +179,25 @@ func (db *DB) UserNameByID(userID string) (string, error) {
 	err := db.QueryRow(`SELECT name, display_name FROM users WHERE id = ?`, userID).Scan(&name, &displayName)
 	if err != nil {
 		return userID, err // fallback to ID
+	}
+	if displayName != "" {
+		return displayName, nil
+	}
+	return name, nil
+}
+
+// UserNameByRawID returns a display name for a user by a raw (non-namespaced)
+// Slack id — one parsed directly out of "<@U123>" markup in message text,
+// which keeps the bare id forever regardless of how users.id is stored.
+// Since migration 00048, users.id may be namespaced ("<accountID>:U123"), so
+// this matches either form. A raw id parsed from text carries no account, so
+// if the same raw id exists under two connected workspaces this resolves to
+// an arbitrary one of them — acceptable for a display name.
+func (db *DB) UserNameByRawID(rawID string) (string, error) {
+	var name, displayName string
+	err := db.QueryRow(`SELECT name, display_name FROM users WHERE id = ? OR id LIKE '%:' || ?`, rawID, rawID).Scan(&name, &displayName)
+	if err != nil {
+		return rawID, err // fallback to ID
 	}
 	if displayName != "" {
 		return displayName, nil

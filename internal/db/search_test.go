@@ -255,3 +255,56 @@ func TestSearchMessagesDefaultLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 50, len(results))
 }
+
+func TestSearchTranscriptsFindsAndSnippets(t *testing.T) {
+	database := openTestDB(t)
+
+	// Insert two transcripts that match the search term, with different created_at timestamps.
+	// The newer one should come back first (ordering test).
+	olderID, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Payments sync (older)",
+		TranscriptText: "[Я] the decision is to keep tokens in a file, not the keychain",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE meeting_transcripts SET created_at = ? WHERE id = ?`, "2026-07-01T10:00:00Z", olderID)
+	require.NoError(t, err)
+
+	newerID, err := database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Token storage discussion",
+		TranscriptText: "[Я] we decided the keychain approach is unsafe for a daemon",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE meeting_transcripts SET created_at = ? WHERE id = ?`, "2026-07-10T15:00:00Z", newerID)
+	require.NoError(t, err)
+
+	// Insert an unrelated transcript to ensure filtering works.
+	_, err = database.InsertMeetingTranscript(MeetingTranscript{
+		Title:          "Unrelated",
+		TranscriptText: "[Я] discussed hiring",
+	})
+	require.NoError(t, err)
+
+	// Search for "keychain" — should find both matching transcripts, newest first.
+	got, err := database.SearchTranscripts("keychain", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	// Verify ordering: newest first (2026-07-10 before 2026-07-01).
+	assert.Equal(t, newerID, got[0].ID)
+	assert.Equal(t, olderID, got[1].ID)
+	// Verify snippets contain the search term.
+	assert.Contains(t, got[0].Snippet, "keychain")
+	assert.Contains(t, got[1].Snippet, "keychain")
+	// Verify event_id path: both have NULL event_id, should resolve to empty string.
+	assert.Equal(t, "", got[0].EventID)
+	assert.Equal(t, "", got[1].EventID)
+
+	// Empty query is a no-op, not an error — mirrors SearchMessages.
+	empty, err := database.SearchTranscripts("", 10)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+
+	// FTS5 operators are sanitized away rather than erroring.
+	safe, err := database.SearchTranscripts(`keychain OR "`, 10)
+	require.NoError(t, err)
+	assert.NotEmpty(t, safe)
+}

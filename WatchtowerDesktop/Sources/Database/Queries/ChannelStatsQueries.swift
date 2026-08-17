@@ -1,12 +1,16 @@
 import GRDB
 import Foundation
+import WatchtowerCore
 
 enum ChannelStatsQueries {
 
     /// Fetch channel statistics for the current user.
     /// Matches Go `GetChannelStats` — userMessages/mentionCount are relative to currentUserID.
     static func fetchAll(_ db: Database, currentUserID: String) throws -> [ChannelStat] {
-        let mentionPattern = "%<@\(currentUserID)>%"
+        // Message text keeps raw Slack mention markup ("<@U123>") forever, while
+        // currentUserID may be namespaced ("1:U123", migration 00048) — reduce
+        // before embedding in the LIKE pattern, or the match never fires.
+        let mentionPattern = "%<@\(SlackAccountID.raw(currentUserID))>%"
 
         let sql = """
             SELECT

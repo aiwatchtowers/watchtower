@@ -102,15 +102,16 @@ func TestSyncBoard_LeavesBacklogForDaemonBackfill(t *testing.T) {
 	database, err := db.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
+	db.SeedTestJiraAccount(t, database)
 
 	require.NoError(t, database.UpsertJiraBoard(db.JiraBoard{
-		ID: 42, Name: "Test Board", ProjectKey: "TEST", BoardType: "scrum", IsSelected: true,
+		AccountID: 1, ID: 42, Name: "Test Board", ProjectKey: "TEST", BoardType: "scrum", IsSelected: true,
 	}))
 
 	srv := httptest.NewServer(jiraSearchMux())
 	t.Cleanup(srv.Close)
 	client := makeTestClient(t, srv.URL)
-	syncer := NewSyncer(client, database, nil, []int{42})
+	syncer := NewSyncer(client, database, nil, []int{42}, 1)
 
 	// Fast initial load: active issues only, no closed backfill yet.
 	n, err := syncer.SyncBoard(context.Background(), 42)
@@ -119,7 +120,7 @@ func TestSyncBoard_LeavesBacklogForDaemonBackfill(t *testing.T) {
 
 	// SyncBoard must NOT write a watermark, otherwise the daemon's incremental
 	// Sync() would skip the historical closed issue forever.
-	state, err := database.GetJiraSyncState("TEST")
+	state, err := database.GetJiraSyncState(1, "TEST")
 	require.NoError(t, err)
 	if state != nil {
 		assert.Empty(t, state.LastSyncedAt,
@@ -136,7 +137,7 @@ func TestSyncBoard_LeavesBacklogForDaemonBackfill(t *testing.T) {
 	assert.Equal(t, "done", statusCat)
 
 	// After a full Sync(), the watermark is now set correctly.
-	state, err = database.GetJiraSyncState("TEST")
+	state, err = database.GetJiraSyncState(1, "TEST")
 	require.NoError(t, err)
 	require.NotNil(t, state)
 	assert.NotEmpty(t, state.LastSyncedAt, "Sync() should record a watermark after the full pass")

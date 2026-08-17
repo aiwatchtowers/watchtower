@@ -32,7 +32,7 @@ public struct PeopleCard: FetchableRecord, Decodable, Identifiable, Equatable {
     public var createdAt: String
 
     // Column mapping
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id, userID = "user_id", periodFrom = "period_from", periodTo = "period_to"
         case messageCount = "message_count", channelsActive = "channels_active"
         case threadsInitiated = "threads_initiated", threadsReplied = "threads_replied"
@@ -99,7 +99,35 @@ public struct PeopleCardSummary: FetchableRecord, Decodable, Identifiable, Equat
     public var promptVersion: Int
     public var createdAt: String
 
-    enum CodingKeys: String, CodingKey {
+    public init(
+        id: Int64,
+        periodFrom: Double,
+        periodTo: Double,
+        summary: String,
+        attention: String,
+        tips: String,
+        model: String,
+        inputTokens: Int,
+        outputTokens: Int,
+        costUSD: Double,
+        promptVersion: Int,
+        createdAt: String
+    ) {
+        self.id = id
+        self.periodFrom = periodFrom
+        self.periodTo = periodTo
+        self.summary = summary
+        self.attention = attention
+        self.tips = tips
+        self.model = model
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.costUSD = costUSD
+        self.promptVersion = promptVersion
+        self.createdAt = createdAt
+    }
+
+    public enum CodingKeys: String, CodingKey {
         case id, periodFrom = "period_from", periodTo = "period_to"
         case summary, attention, tips
         case model, inputTokens = "input_tokens", outputTokens = "output_tokens"

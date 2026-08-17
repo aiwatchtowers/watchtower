@@ -12,6 +12,7 @@ import (
 )
 
 type listTranscriptsArgs struct {
+	Query   string `json:"query,omitempty" jsonschema:"full-text search over transcript content; when set, returns ranked matches with a snippet instead of a plain listing (cannot be combined with event_id/from/to)"`
 	EventID string `json:"event_id,omitempty" jsonschema:"filter to one calendar event id"`
 	From    string `json:"from,omitempty" jsonschema:"only transcripts recorded on/after this date (YYYY-MM-DD)"`
 	To      string `json:"to,omitempty" jsonschema:"only transcripts recorded on/before this date (YYYY-MM-DD)"`
@@ -35,6 +36,8 @@ type transcriptRecap struct {
 
 // transcriptRow is the LLM-facing list shape: metadata plus a one-line recap
 // summary, never the full transcript text (that is get_transcript's job).
+// Snippet is populated only by the query path (renderSearchHit); a plain
+// listing never sets it.
 type transcriptRow struct {
 	ID          int64  `json:"id"`
 	Title       string `json:"title"`
@@ -43,6 +46,7 @@ type transcriptRow struct {
 	DurationSec int    `json:"duration_sec"`
 	CreatedAt   string `json:"created_at"`
 	Summary     string `json:"summary,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
 }
 
 // transcriptDetail is the get_transcript shape: the list row plus the full
@@ -62,6 +66,21 @@ func registerTranscripts(s *mcpsdk.Server, database *db.DB) {
 			"recap summary). Use to find what was discussed/decided in a meeting; fetch full " +
 			"text with get_transcript.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listTranscriptsArgs) (*mcpsdk.CallToolResult, any, error) {
+		if args.Query != "" {
+			if args.EventID != "" || args.From != "" || args.To != "" {
+				return errResult("query cannot be combined with event_id/from/to"), nil, nil
+			}
+			hits, err := database.SearchTranscripts(args.Query, listLimit(args.Limit))
+			if err != nil {
+				return errResult("searching transcripts: " + err.Error()), nil, nil
+			}
+			rows := make([]transcriptRow, 0, len(hits))
+			for i := range hits {
+				rows = append(rows, renderSearchHit(database, &hits[i]))
+			}
+			return jsonListResult(rows)
+		}
+
 		from, fromMsg := dateBound(args.From, "from", "T00:00:00Z")
 		to, toMsg := dateBound(args.To, "to", "T23:59:59Z")
 		if msg := firstError(fromMsg, toMsg); msg != "" {
@@ -134,6 +153,29 @@ func renderTranscriptRow(database *db.DB, tr *db.MeetingTranscript, recap transc
 	if tr.EventID.Valid {
 		row.EventID = tr.EventID.String
 		if ev, err := database.GetCalendarEventByID(tr.EventID.String); err == nil && ev != nil {
+			row.EventTitle = ev.Title
+		}
+	}
+	return row
+}
+
+// renderSearchHit builds the list shape from a full-text hit. Unlike
+// renderTranscriptRow it never loads the transcript row itself — that would
+// mean fetching transcript_text for every hit just to render a snippet, the
+// same perf guard the Desktop list projection follows for meeting_transcripts
+// (see fetchRecordingList). The event title is still resolved, since that is
+// a cheap calendar_events lookup; DurationSec and Summary are left at their
+// zero value for search hits.
+func renderSearchHit(database *db.DB, h *db.TranscriptHit) transcriptRow {
+	row := transcriptRow{
+		ID:        h.ID,
+		Title:     h.Title,
+		CreatedAt: h.CreatedAt,
+		Snippet:   h.Snippet,
+	}
+	if h.EventID != "" {
+		row.EventID = h.EventID
+		if ev, err := database.GetCalendarEventByID(h.EventID); err == nil && ev != nil {
 			row.EventTitle = ev.Title
 		}
 	}

@@ -162,9 +162,9 @@ When the AI re-extracts a track I've already read and there's actually new conte
 - `internal/db/tracks_test.go::TestTracks06_GetTrackStatesOrdersDescByCreatedAt`
 - `internal/db/tracks_test.go::TestTracks06_HistoryCascadesOnTrackDelete`
 - `internal/db/schema_contracts_test.go::TestTracks06_TrackStatesTableExists`
-- `WatchtowerDesktop/Tests/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_returnsDescendingOrder`
-- `WatchtowerDesktop/Tests/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_emptyForNewTrack`
-- `WatchtowerDesktop/Tests/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_decodesAllFields`
+- `WatchtowerDesktop/Tests/Core/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_returnsDescendingOrder`
+- `WatchtowerDesktop/Tests/Core/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_emptyForNewTrack`
+- `WatchtowerDesktop/Tests/Core/TrackStateQueriesTests.swift::test_TRACKS_06_fetchByTrackID_decodesAllFields`
 
 **Locked since:** 2026-04-28
 

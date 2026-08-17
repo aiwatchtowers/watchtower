@@ -7,7 +7,7 @@ public struct DigestTrack: Codable, Identifiable, Equatable {
     public let assignee: String?
     public let status: String?  // "open", "done", etc.
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case text, assignee, status
     }
 

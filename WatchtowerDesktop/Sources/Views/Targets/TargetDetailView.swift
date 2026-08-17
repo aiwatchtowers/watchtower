@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct TargetDetailView: View {
     let target: Target
@@ -751,7 +752,8 @@ struct TargetDetailView: View {
                 text: $assistantInput,
                 isStreaming: false,
                 onSend: { submitAssistantInput() },
-                placeholder: "Ask the assistant about this target…"
+                placeholder: "Ask the assistant about this target…",
+                dictationTargetID: "chat.target-assistant.\(target.id)"
             )
         }
     }

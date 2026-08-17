@@ -83,3 +83,41 @@ func TestMemoryRenderPromptRegistered(t *testing.T) {
 		"%q must carry the language directive placeholder", id)
 	assert.False(t, strings.HasPrefix(rendered, "-"), "%q must not begin with a dash", id)
 }
+
+// TestDictationCleanPromptRegistered pins the dictation.clean light-tier prompt
+// into all four registration surfaces (Defaults, AllIDs, DefaultVersions v1,
+// Descriptions), carrying mode instructions and language directive placeholders
+// and never beginning with a dash.
+func TestDictationCleanPromptRegistered(t *testing.T) {
+	id := DictationClean
+	tmpl, ok := Defaults[id]
+	if !ok {
+		t.Fatalf("Defaults is missing %q", id)
+	}
+	if !contains(AllIDs, id) {
+		t.Fatalf("AllIDs is missing %q", id)
+	}
+	if DefaultVersions[id] != 1 {
+		t.Fatalf("DefaultVersions[%q] = %d, want 1", id, DefaultVersions[id])
+	}
+	if _, ok := Descriptions[id]; !ok {
+		t.Fatalf("Descriptions is missing %q", id)
+	}
+	rendered := fmt.Sprintf(tmpl, "MODE INSTRUCTIONS", Directive("Russian"))
+	if !HasDirective(rendered) {
+		t.Fatalf("rendered template must carry the language directive")
+	}
+	if strings.HasPrefix(rendered, "-") {
+		t.Fatalf("template must not begin with '-' (claude CLI argv gotcha)")
+	}
+}
+
+// contains checks if a slice contains a string value.
+func contains(slice []string, val string) bool {
+	for _, v := range slice {
+		if v == val {
+			return true
+		}
+	}
+	return false
+}

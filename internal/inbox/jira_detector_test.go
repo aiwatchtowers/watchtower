@@ -9,15 +9,27 @@ import (
 )
 
 // seedJiraIssue inserts a jira_issues row assigned to the given account ID.
-// updated is used as both updated_at and synced_at.
+// updated is used as both updated_at and synced_at, in Jira Cloud's own
+// dotted-millisecond format (db.FormatJiraTime) exactly as the real sync
+// writes it — the detector's window bound is a plain SQL string compare
+// against updated_at, so a differently-formatted fixture would not exercise
+// the production comparison.
 func seedJiraIssue(t *testing.T, d *db.DB, key, assigneeAccountID string, updated time.Time) {
 	t.Helper()
-	ts := updated.UTC().Format(time.RFC3339)
+	// jira_issues.account_id references jira_accounts(id); make sure account 1 exists.
+	var accounts int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM jira_accounts`).Scan(&accounts); err != nil {
+		t.Fatalf("seedJiraIssue: counting jira_accounts: %v", err)
+	}
+	if accounts == 0 {
+		db.SeedTestJiraAccount(t, d)
+	}
+	ts := db.FormatJiraTime(updated.UTC())
 	_, err := d.Exec(`INSERT INTO jira_issues
-		(key, id, project_key, summary, status, status_category,
+		(account_id, key, id, project_key, summary, status, status_category,
 		 assignee_account_id, created_at, updated_at, synced_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		key, key, "WT", "test issue", "In Progress", "in_progress",
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		1, key, key, "WT", "test issue", "In Progress", "in_progress",
 		assigneeAccountID, ts, ts, ts)
 	if err != nil {
 		t.Fatalf("seedJiraIssue: %v", err)
@@ -48,24 +60,51 @@ func TestJiraDetector_AssignedToMe(t *testing.T) {
 	}
 }
 
-func TestJiraDetector_CommentMention(t *testing.T) {
+func TestJiraDetector_CommentMention_SkippedWithoutMappedAtlassianID(t *testing.T) {
 	d := testDB(t)
-	// No jira_comments table in schema — jira_comment_mention is a no-op (TODO v2).
-	// This test verifies DetectJira returns 0 for comment mentions gracefully.
+	// jira_comments is real (migration 00050), but alice has no jira_user_map
+	// row — DetectJira cannot resolve her Atlassian account id, so comment
+	// mentions stay a graceful no-op (the pre-reconciliation "no schema"
+	// no-op is now "no mapped identity").
 	seedJiraIssue(t, d, "WT-200", "bob", time.Now().Add(-1*time.Hour))
+	seedJiraComment(t, d, "WT-200", "acc-bob", "hey [~acc-alice] please look", time.Now().Add(-30*time.Minute))
 
 	n, err := DetectJira(context.Background(), d, "alice", time.Now().Add(-2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// alice is not the assignee, so no jira_assigned item.
-	// jira_comment_mention is a no-op (schema not available).
+	// jira_comment_mention is a no-op (alice has no mapped Atlassian id).
 	if n != 0 {
-		t.Errorf("expected 0 items for non-assignee with no comment schema, got %d", n)
+		t.Errorf("expected 0 items for non-assignee with unmapped identity, got %d", n)
 	}
 	got := queryInboxByTrigger(t, d, "jira_comment_mention")
 	if len(got) != 0 {
 		t.Errorf("expected no comment mention items, got %d", len(got))
+	}
+}
+
+func TestJiraDetector_CommentMention_Detected(t *testing.T) {
+	d := testDB(t)
+	seedJiraIssue(t, d, "WT-201", "bob", time.Now().Add(-1*time.Hour))
+	if err := d.UpsertJiraUserMap(db.JiraUserMap{JiraAccountID: "acc-alice", SlackUserID: "alice", DisplayName: "Alice"}); err != nil {
+		t.Fatalf("UpsertJiraUserMap: %v", err)
+	}
+	seedJiraComment(t, d, "WT-201", "acc-bob", "hey [~acc-alice] please look", time.Now().Add(-30*time.Minute))
+
+	n, err := DetectJira(context.Background(), d, "alice", time.Now().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 comment mention item, got %d", n)
+	}
+	got := queryInboxByTrigger(t, d, "jira_comment_mention")
+	if len(got) != 1 {
+		t.Fatalf("want 1 jira_comment_mention item, got %d", len(got))
+	}
+	if got[0].SenderUserID != "WT-201" {
+		t.Errorf("expected SenderUserID=WT-201, got %q", got[0].SenderUserID)
 	}
 }
 

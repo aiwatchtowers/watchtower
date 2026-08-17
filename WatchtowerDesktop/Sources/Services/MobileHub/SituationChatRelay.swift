@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Resolves a mobile chat turn that carries a `situation` context into the
 /// DESKTOP's own Discuss conversation for that situation, so both surfaces

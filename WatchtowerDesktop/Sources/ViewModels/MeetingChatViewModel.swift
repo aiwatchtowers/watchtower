@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 /// Secretary chat about ONE meeting recording. Persisted conversation per
 /// transcript (`chat_conversations.context_type = "meeting"`), streaming via
@@ -15,6 +16,11 @@ final class MeetingChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
+    /// Stable identity for a dictation targetID — the transcript is always
+    /// persisted by the time this VM exists (`loadOrCreateConversation` below
+    /// requires it too).
+    var transcriptID: Int64 { transcript.id ?? 0 }
+
     private var conversationID: Int64?
     private var sessionID: String?
     private let aiService: any AIServiceProtocol
@@ -26,7 +32,7 @@ final class MeetingChatViewModel {
 
     /// Characters of transcript inlined into the system prompt; the rest is
     /// fetched by the model on demand via get_transcript.
-    static let transcriptExcerptLimit = 12_000
+    nonisolated static let transcriptExcerptLimit = 12_000
 
     init(
         transcript: MeetingTranscript,

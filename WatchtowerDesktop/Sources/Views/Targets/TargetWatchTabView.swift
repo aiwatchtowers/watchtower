@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// The target's "Watch" tab: manage the watches linked to this goal and read
 /// their merged activity feed. Applying an event's proposed action mutates the

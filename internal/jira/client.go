@@ -74,8 +74,15 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 			return nil, fmt.Errorf("request %s %s: %w", method, path, err)
 		}
 
-		if resp.StatusCode == http.StatusUnauthorized && attempt < 3 {
+		if resp.StatusCode == http.StatusUnauthorized {
 			resp.Body.Close()
+			if attempt == 3 {
+				// Still unauthorized after a successful refresh — the grant
+				// itself is gone, not a stale access token. Surfacing this
+				// distinctly is what lets Sync abort and the daemon mark the
+				// account for re-login instead of silently syncing nothing.
+				return nil, fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, path)
+			}
 			if refreshErr := c.refreshAccessToken(ctx); refreshErr != nil {
 				return nil, fmt.Errorf("refreshing token after 401: %w", refreshErr)
 			}
@@ -201,6 +208,34 @@ var searchFields = []string{
 	"summary", "description", "issuetype", "status", "assignee", "reporter",
 	"priority", "created", "updated", "duedate", "labels", "components",
 	"issuelinks", "sprint", "epic", "parent", "resolutiondate", "fixVersions",
+}
+
+// GetIssueComments fetches every comment on an issue, paginating with
+// startAt/maxResults=50 (the FetchAllBoards shape) until startAt+len(page) >=
+// total. An empty page always stops the loop, guarding against an infinite
+// loop if the API ever reports a total larger than it actually returns.
+func (c *Client) GetIssueComments(ctx context.Context, key string) ([]IssueComment, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s/comment", url.PathEscape(key))
+	var all []IssueComment
+	startAt := 0
+	for {
+		params := url.Values{
+			"startAt":    {fmt.Sprintf("%d", startAt)},
+			"maxResults": {"50"},
+		}
+		var page CommentList
+		if err := c.getWithQuery(ctx, path, params, &page); err != nil {
+			return nil, fmt.Errorf("fetching comments for %s (startAt=%d): %w", key, startAt, err)
+		}
+
+		all = append(all, page.Comments...)
+		startAt += len(page.Comments)
+
+		if len(page.Comments) == 0 || startAt >= page.Total {
+			break
+		}
+	}
+	return all, nil
 }
 
 // GetProjectVersions fetches all fix versions (releases) for a project.

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct MobileSettings: View {
     @Environment(AppState.self) private var appState

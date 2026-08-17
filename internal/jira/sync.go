@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -25,28 +26,37 @@ type SyncProgress struct {
 	Phase string // "issues", "sprints", "releases", "done"
 }
 
-// Syncer performs incremental and full syncs of Jira issues into the local database.
+// Syncer performs incremental and full syncs of one Jira account's issues
+// into the local database. Every row it writes carries its accountID.
 type Syncer struct {
-	client        *Client
-	db            *db.DB
-	mapper        *UserMapper
-	logger        *log.Logger
-	boardIDs      []int
-	boardAnalyzer *BoardAnalyzer                 // optional, for config change detection
-	autoRefresh   bool                           // when true, auto re-analyze boards with changed config
-	fieldMapCache map[int][]db.JiraBoardFieldMap // boardID -> field mappings
-	OnProgress    func(SyncProgress)             // optional progress callback
+	client           *Client
+	db               *db.DB
+	mapper           *UserMapper
+	logger           *log.Logger
+	boardIDs         []int
+	accountID        int64
+	boardAnalyzer    *BoardAnalyzer                 // optional, for config change detection
+	autoRefresh      bool                           // when true, auto re-analyze boards with changed config
+	fieldMapCache    map[int][]db.JiraBoardFieldMap // boardID -> field mappings
+	commentSyncLimit int                            // max changed issues fetched for comments per project sync pass (0 = disabled)
+	OnProgress       func(SyncProgress)             // optional progress callback
 }
 
-// NewSyncer creates a Syncer.
-func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []int) *Syncer {
+// NewSyncer creates a Syncer for one Jira account.
+func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []int, accountID int64) *Syncer {
 	return &Syncer{
-		client:   client,
-		db:       database,
-		mapper:   mapper,
-		logger:   log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
-		boardIDs: boardIDs,
+		client:    client,
+		db:        database,
+		mapper:    mapper,
+		logger:    log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
+		boardIDs:  boardIDs,
+		accountID: accountID,
 	}
+}
+
+// AccountID returns the Jira account this syncer writes for.
+func (s *Syncer) AccountID() int64 {
+	return s.accountID
 }
 
 // SetLogger replaces the syncer's logger.
@@ -72,11 +82,18 @@ func (s *Syncer) SetAutoRefresh(auto bool) {
 	s.autoRefresh = auto
 }
 
+// SetCommentSyncLimit bounds how many of a project's changed issues get a
+// comment fetch per sync pass (0 disables comment sync entirely — the
+// default until Ideas registry wiring turns it on).
+func (s *Syncer) SetCommentSyncLimit(n int) {
+	s.commentSyncLimit = n
+}
+
 // Sync performs an incremental sync: fetches issues updated since last sync minus 2 minutes overlap.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	total := 0
 
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -97,22 +114,30 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			continue
 		}
 
-		syncState, _ := s.db.GetJiraSyncState(projectKey)
+		syncState, _ := s.db.GetJiraSyncState(s.accountID, projectKey)
 		lastSyncedAt := ""
 		if syncState != nil {
 			lastSyncedAt = syncState.LastSyncedAt
 		}
 		jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
 
-		n, err := s.syncWithJQL(ctx, jql, board.ID)
+		n, changedKeys, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				// The account's grant is gone — every remaining project would
+				// fail the same way. Abort so the caller records it on the
+				// account row rather than swallowing it per project (the
+				// gmail/calendar precedent).
+				s.logger.Printf("auth revoked, aborting sync: %v", err)
+				return total, err
+			}
 			s.logger.Printf("sync error for project %s: %v", projectKey, err)
 			if syncState == nil {
-				syncState = &db.JiraSyncState{ProjectKey: projectKey}
+				syncState = &db.JiraSyncState{AccountID: s.accountID, ProjectKey: projectKey}
 			}
 			syncState.LastError = err.Error()
 			syncState.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
-			_ = s.db.UpdateJiraSyncState(syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
+			_ = s.db.UpdateJiraSyncState(s.accountID, syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
 			continue
 		}
 
@@ -122,17 +147,39 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		if syncState != nil {
 			issuesSynced += syncState.IssuesSynced
 		}
-		_ = s.db.UpdateJiraSyncState(projectKey, now, issuesSynced)
-		_ = s.db.UpdateJiraBoardIssueCount(board.ID)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, board.ID)
+
+		if err := s.syncComments(ctx, changedKeys); err != nil {
+			// syncComments only ever returns a non-nil error for a revoked
+			// grant (everything else is logged internally and swallowed) —
+			// every remaining project would fail the same way, so it travels
+			// up like the issue/sprint/release paths above.
+			s.logger.Printf("auth revoked during comment sync, aborting sync: %v", err)
+			return total, err
+		}
 	}
 
-	// Sync sprints for selected boards.
+	// Sync sprints for selected boards. A revoked grant is not a sprint problem:
+	// it is the account's problem, and only the caller can record it — so it
+	// travels up instead of being logged like an ordinary sprint failure. Same
+	// for releases below. (A board whose project key is empty or invalid is
+	// skipped by the loop above, so these two calls are the only place a
+	// revoked grant surfaces for such an account.)
 	if err := s.SyncSprints(ctx); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during sprint sync, aborting sync: %v", err)
+			return total, err
+		}
 		s.logger.Printf("sprint sync error: %v", err)
 	}
 
 	// Sync releases (fix versions) for selected boards.
 	if err := s.syncReleases(ctx, boards); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during releases sync, aborting sync: %v", err)
+			return total, err
+		}
 		s.logger.Printf("releases sync error: %v", err)
 	}
 
@@ -188,7 +235,7 @@ func buildIncrementalJQL(projectKey, lastSyncedAt string, now time.Time) string 
 // Writing a watermark here would pin every later Sync() to an incremental window
 // that never reaches those closed issues, so they would never be loaded.
 func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
-	board, err := s.db.GetJiraBoardProfile(boardID)
+	board, err := s.db.GetJiraBoardProfile(s.accountID, boardID)
 	if err != nil {
 		return 0, fmt.Errorf("getting board %d: %w", boardID, err)
 	}
@@ -202,14 +249,16 @@ func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
 	// Build JQL: exclude done issues for fast initial load.
 	// statusCategory != Done covers all terminal statuses regardless of name.
 	jql := fmt.Sprintf("project = %s AND statusCategory != Done ORDER BY updated ASC", board.ProjectKey)
-	n, err := s.syncWithJQL(ctx, jql, boardID)
+	// Comments are not backfilled on this fast path — see the doc comment
+	// above on why no watermark is recorded either.
+	n, _, err := s.syncWithJQL(ctx, jql, boardID)
 	if err != nil {
 		return n, fmt.Errorf("syncing active issues for %s: %w", board.ProjectKey, err)
 	}
 
 	// Intentionally no UpdateJiraSyncState here — see the doc comment above:
 	// leaving the watermark unset lets the daemon's first Sync() backfill closed issues.
-	_ = s.db.UpdateJiraBoardIssueCount(boardID)
+	_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
 
 	if s.OnProgress != nil {
 		s.OnProgress(SyncProgress{Done: n, Total: n, Phase: "done"})
@@ -269,7 +318,7 @@ func buildStatusNotIn(statuses []string) string {
 func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	total := 0
 
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return 0, fmt.Errorf("getting selected boards: %w", err)
 	}
@@ -286,7 +335,10 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		}
 
 		jql := fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
-		n, err := s.syncWithJQL(ctx, jql, board.ID)
+		// Comments are not backfilled during the initial load — only the
+		// daemon's regular incremental Sync fetches comments, keeping the
+		// backlog import from blowing the per-issue API budget.
+		n, _, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
 			s.logger.Printf("initial load error for project %s: %v", projectKey, err)
 			continue
@@ -294,7 +346,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		total += n
 
 		now := time.Now().UTC().Format(time.RFC3339)
-		_ = s.db.UpdateJiraSyncState(projectKey, now, n)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, n)
 	}
 
 	if err := s.SyncSprints(ctx); err != nil {
@@ -314,7 +366,11 @@ type fetchedPage struct {
 // Uses a pipeline: reader goroutine fetches pages from Jira API and buffers them,
 // writer loop converts and writes batches to DB. DB access stays on the writer side
 // to avoid deadlock with MaxOpenConns=1.
-func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int, error) {
+//
+// It also returns the keys of every issue it upserted, in the JQL's
+// `ORDER BY updated ASC` order (oldest first) — the caller's comment sync
+// takes the tail of this slice to fetch the newest issues first.
+func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int, []string, error) {
 	maxResults := 100
 	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
 	fetchErr := make(chan error, 1)
@@ -343,14 +399,18 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 
 	// Writer: convert and write batches to DB.
 	written := 0
+	var changedKeys []string
 	for page := range pageCh {
 		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID)
 
 		if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
 			s.logger.Printf("batch upsert error: %v", err)
 		}
+		for i := range dbIssues {
+			changedKeys = append(changedKeys, dbIssues[i].Key)
+		}
 		written += len(dbIssues)
-		_ = s.db.UpdateJiraBoardIssueCount(boardID)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
 
 		if s.OnProgress != nil {
 			s.OnProgress(SyncProgress{Done: written, Total: 0, Phase: "issues"})
@@ -360,10 +420,63 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	// Check if reader exited with error.
 	select {
 	case err := <-fetchErr:
-		return written, err
+		return written, changedKeys, err
 	default:
-		return written, nil
+		return written, changedKeys, nil
 	}
+}
+
+// syncComments fetches and stores comments for at most commentSyncLimit of
+// the given changed issue keys — the newest ones, since changedKeys arrives
+// oldest-first per syncWithJQL's `ORDER BY updated ASC`. A limit of 0 (the
+// default) disables comment sync entirely. A per-issue fetch error is logged
+// and skipped, except a revoked grant: every remaining key in this project
+// would fail identically, so it is returned for the caller to abort on (the
+// issue/sprint/release precedent). All DB writes happen after each issue's
+// page loop, one UpsertJiraComments call per issue.
+func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
+	if s.commentSyncLimit <= 0 || len(changedKeys) == 0 {
+		return nil
+	}
+
+	keys := changedKeys
+	if len(keys) > s.commentSyncLimit {
+		dropped := len(keys) - s.commentSyncLimit
+		keys = keys[len(keys)-s.commentSyncLimit:]
+		s.logger.Printf("comment sync: capped to %d of %d changed issues, dropped %d oldest", s.commentSyncLimit, len(changedKeys), dropped)
+	}
+
+	for _, key := range keys {
+		comments, err := s.client.GetIssueComments(ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				return err
+			}
+			s.logger.Printf("comment sync: fetching comments for %s: %v", key, err)
+			continue
+		}
+		if len(comments) == 0 {
+			continue
+		}
+
+		dbComments := make([]db.JiraComment, 0, len(comments))
+		for _, c := range comments {
+			dbComments = append(dbComments, db.JiraComment{
+				AccountID:       s.accountID,
+				IssueKey:        key,
+				ID:              c.ID,
+				Author:          c.Author.DisplayName,
+				AuthorAccountID: c.Author.AccountID,
+				BodyText:        extractDescriptionText(c.Body),
+				CreatedAt:       c.Created,
+				UpdatedAt:       c.Updated,
+			})
+		}
+		if err := s.db.UpsertJiraComments(dbComments); err != nil {
+			s.logger.Printf("comment sync: storing comments for %s: %v", key, err)
+		}
+	}
+	return nil
 }
 
 // prepareIssueBatch converts API issues to DB records without writing to the database.
@@ -523,6 +636,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 	statusCatChanged := "" // Jira API doesn't expose this directly in basic search
 
 	dbIssue := db.JiraIssue{
+		AccountID:               s.accountID,
 		Key:                     issue.Key,
 		ID:                      issue.ID,
 		ProjectKey:              projectKey,
@@ -573,6 +687,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		}
 		if targetKey != "" {
 			links = append(links, db.JiraIssueLink{
+				AccountID: s.accountID,
 				ID:        link.ID,
 				SourceKey: sourceKey,
 				TargetKey: targetKey,
@@ -602,8 +717,11 @@ func (s *Syncer) ensureUserMap(u *User) {
 }
 
 // SyncSprints syncs active and recent closed sprints for all selected boards.
+// A per-board fetch failure is logged and skipped, except a revoked grant:
+// every remaining board would fail the same way, so it is returned for the
+// caller to record on the account row.
 func (s *Syncer) SyncSprints(ctx context.Context) error {
-	boards, err := s.db.GetJiraSelectedBoards()
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
 		return err
 	}
@@ -617,6 +735,9 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 			path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", board.ID)
 			var resp SprintList
 			if err := s.client.getWithQuery(ctx, path, params, &resp); err != nil {
+				if errors.Is(err, ErrAuthRevoked) {
+					return err
+				}
 				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
 				continue
 			}
@@ -624,6 +745,7 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 			now := time.Now().UTC().Format(time.RFC3339)
 			for _, sprint := range resp.Values {
 				dbSprint := db.JiraSprint{
+					AccountID:    s.accountID,
 					ID:           sprint.ID,
 					BoardID:      board.ID,
 					Name:         sprint.Name,
@@ -645,7 +767,9 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 }
 
 // syncReleases fetches fix versions for each unique project key and upserts them.
-// Errors are logged but do not block the main sync.
+// Errors are logged and do not block the main sync, except a revoked grant:
+// every remaining project would fail the same way, so it is returned for the
+// caller to record on the account row.
 func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error {
 	// Collect unique project keys.
 	seen := make(map[string]bool)
@@ -665,6 +789,9 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 	for _, projectKey := range projectKeys {
 		versions, err := s.client.GetProjectVersions(ctx, projectKey)
 		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				return err
+			}
 			s.logger.Printf("failed to fetch versions for project %s: %v", projectKey, err)
 			continue
 		}
@@ -680,6 +807,7 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 				continue
 			}
 			release := db.JiraRelease{
+				AccountID:   s.accountID,
 				ID:          id,
 				ProjectKey:  projectKey,
 				Name:        v.Name,
@@ -697,7 +825,8 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 		s.logger.Printf("synced %d releases for project %s", len(versions), projectKey)
 	}
 
-	// Always returns nil — individual version errors are logged but non-blocking by design.
+	// Individual version errors are logged but non-blocking by design; only a
+	// revoked grant (returned above) reaches the caller.
 	return nil
 }
 
@@ -709,7 +838,7 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 	if cached, ok := s.fieldMapCache[boardID]; ok {
 		return cached
 	}
-	mappings, err := s.db.GetJiraBoardFieldMap(boardID)
+	mappings, err := s.db.GetJiraBoardFieldMap(s.accountID, boardID)
 	if err != nil {
 		return nil
 	}

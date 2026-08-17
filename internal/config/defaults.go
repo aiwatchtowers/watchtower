@@ -26,7 +26,22 @@ const (
 	DefaultInboxMaxTriageMessages = 600
 	DefaultInboxMaxAwarenessCards = 3
 	DefaultFeedMeetingLeadMinutes = 30
+
+	// Ideas & decisions registry defaults
+	DefaultIdeasEnabled                 = true
+	DefaultIdeasMineIntervalHours       = 6
+	DefaultIdeasMaxCommentIssuesPerSync = 50
+	DefaultIdeasMaxPromptChars          = 60000
+
+	// Streams config defaults (stage-1 Gmail/Jira stream pre-digests)
+	DefaultStreamsEnabled       = true
+	DefaultStreamsIntervalHours = 6
+
+	// Tracks and people pipelines
+	DefaultTracksEnabled          = true
 	DefaultTracksMinMsgs          = 3
+	DefaultPeopleEnabled          = true
+	DefaultTargetsNextStepEnabled = true
 	DefaultBatchMaxChannels       = 20
 	DefaultBatchMaxMessages       = 1500
 	DefaultMaxBatchesPerRun       = 25  // max AI calls per digest run (budget cap)

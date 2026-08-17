@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerCore
 
 // MARK: - Action card
 
@@ -33,6 +34,10 @@ final class TargetChatViewModel {
     /// codex model to a claude session (the model is the only real lever; the
     /// provider itself is config-driven in WatchtowerAIService).
     let provider: AIProvider
+
+    /// Stable identity for a dictation targetID — the target is always
+    /// persisted by the time this VM exists.
+    var targetID: Int { target.id }
 
     private var conversationID: Int64?
     private var sessionID: String?
