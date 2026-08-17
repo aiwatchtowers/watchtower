@@ -65,12 +65,12 @@ func isClosingSignal(text string) bool {
 // truncateRunes truncates s to at most max runes, appending "..." — a
 // rune-safe alternative to byte-slicing (s[:n]), which can split a multibyte
 // UTF-8 rune in half and write an invalid string. A no-op when s already fits.
-func truncateRunes(s string, max int) string {
+func truncateRunes(s string, maxLen int) string {
 	runes := []rune(s)
-	if len(runes) <= max {
+	if len(runes) <= maxLen {
 		return s
 	}
-	return string(runes[:max]) + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // toWaitingJSON converts a list of user IDs to a JSON array string.
