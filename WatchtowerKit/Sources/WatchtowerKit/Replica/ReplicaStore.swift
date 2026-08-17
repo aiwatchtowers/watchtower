@@ -130,6 +130,18 @@ public final class ReplicaStore: Sendable {
                     last_seq INTEGER NOT NULL DEFAULT -1
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+                CREATE TABLE IF NOT EXISTS phone_recordings (
+                    recording_id TEXT PRIMARY KEY,
+                    file_path TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    ended_at REAL NOT NULL,
+                    duration_sec INTEGER NOT NULL,
+                    title_hint TEXT,
+                    sample_format TEXT NOT NULL,
+                    state TEXT NOT NULL
+                        CHECK(state IN ('waiting','uploading','delivered','failed')),
+                    error_message TEXT
+                );
                 """)
             // Migration for replicas created before Plan 5 Task 7:
             // CREATE TABLE IF NOT EXISTS leaves an existing chat_sessions

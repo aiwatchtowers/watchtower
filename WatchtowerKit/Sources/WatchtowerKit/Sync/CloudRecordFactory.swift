@@ -19,6 +19,24 @@ public enum CloudRecordFactory {
         try relayRecord(name: HeartbeatPayload.recordName, kind: .heartbeat, payload: heartbeat, modifiedAt: modifiedAt)
     }
 
+    /// `assetFileURL` carries the audio as a `CKAsset`: the phone passes its
+    /// local `.m4a`; the desktop's status write-back passes nil, which
+    /// REMOVES the asset from the record (frees the iCloud storage).
+    public static func record(
+        for upload: RecordingUploadPayload,
+        modifiedAt: Date,
+        assetFileURL: URL?
+    ) throws -> CloudRecord {
+        CloudRecord(
+            recordName: upload.recordName,
+            zone: .relay,
+            kind: RelayRecordKind.recordingUpload.rawValue,
+            modifiedAt: modifiedAt,
+            payload: try RelayCoder.makeEncoder().encode(upload),
+            assetFileURL: assetFileURL
+        )
+    }
+
     public static func record(for slice: SliceRecord) -> CloudRecord {
         CloudRecord(
             recordName: slice.recordName,

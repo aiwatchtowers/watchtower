@@ -19,6 +19,13 @@ public struct CloudRecord: Equatable {
     /// ABSENT field, never a null — pre-Plan-6 records decode to nil and nil
     /// encodes to nothing. Always nil for relay-zone records.
     public let notifyLevel: String?
+    /// Local path of a file riding along as a `CKAsset` (phone
+    /// `recording_upload` records) — the escape hatch past the ~1 MB payload
+    /// cap. On save the CloudKit adapter attaches the file; on fetch it
+    /// points at a durable stashed copy (`TransportStore.stashAsset`). nil —
+    /// every record kind except recording uploads — means no asset field,
+    /// and a rewrite with nil REMOVES a previously attached asset.
+    public let assetFileURL: URL?
 
     public init(
         recordName: String,
@@ -26,7 +33,8 @@ public struct CloudRecord: Equatable {
         kind: String,
         modifiedAt: Date,
         payload: Data,
-        notifyLevel: String? = nil
+        notifyLevel: String? = nil,
+        assetFileURL: URL? = nil
     ) {
         self.recordName = recordName
         self.zone = zone
@@ -34,6 +42,7 @@ public struct CloudRecord: Equatable {
         self.modifiedAt = modifiedAt
         self.payload = payload
         self.notifyLevel = notifyLevel
+        self.assetFileURL = assetFileURL
     }
 }
 

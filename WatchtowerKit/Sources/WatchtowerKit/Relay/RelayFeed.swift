@@ -46,6 +46,13 @@ public actor RelayFeed {
     /// chunks addressed to it cannot occur); the Chat tab (Task 7) must not
     /// ship without the assembler wired.
     private let assembler: (any ChatChunkAssembling)?
+    /// `RecordingUploader` in the app (wired by AppEnvironment); nil in
+    /// environments without phone recording. Unlike the assembler's drop,
+    /// missing-uploader echoes are harmless to skip: the ledger row simply
+    /// stays `uploading` until a build with the uploader wired polls again
+    /// (hub echoes are re-read from scratch only via token reset) — so the
+    /// uploader must ship wired wherever the Record UI ships.
+    private let uploads: (any RecordingUploadAcking)?
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
@@ -73,6 +80,7 @@ public actor RelayFeed {
         store: ReplicaStore,
         outbox: ActionOutbox,
         assembler: (any ChatChunkAssembling)? = nil,
+        uploads: (any RecordingUploadAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil
     ) {
@@ -80,6 +88,7 @@ public actor RelayFeed {
         self.store = store
         self.outbox = outbox
         self.assembler = assembler
+        self.uploads = uploads
         self.pull = pull
         self.onActionApplied = onActionApplied
     }
@@ -149,6 +158,17 @@ public actor RelayFeed {
             case .heartbeat:
                 guard let heartbeat = decode(HeartbeatPayload.self, from: record) else { continue }
                 try store.setHeartbeat(updatedAt: heartbeat.updatedAt)
+            case .recordingUpload:
+                guard let upload = decode(RecordingUploadPayload.self, from: record) else { continue }
+                // A still-pending record is our OWN upload reflecting back —
+                // the hub's verdict is what flips the ledger. Skip.
+                guard upload.status != .pending else { continue }
+                guard let uploads else {
+                    logger.warning("recording upload echo skipped, no uploader wired: \(record.recordName, privacy: .public)")
+                    continue
+                }
+                try await uploads.applyEcho(upload)
+                echoes += 1
             case nil:
                 if loggedUnknownKinds.insert(record.kind).inserted {
                     logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")

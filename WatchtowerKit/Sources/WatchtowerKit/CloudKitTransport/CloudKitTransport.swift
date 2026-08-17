@@ -283,7 +283,27 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     private func bufferFetchedChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
-        let changed = event.modifications.compactMap { Self.cloudRecord(from: $0.record) }
+        let changed = event.modifications.compactMap { modification -> CloudRecord? in
+            guard let record = Self.cloudRecord(from: modification.record) else { return nil }
+            // CKAsset downloads land in a temporary staging area that may be
+            // purged after this callback; the buffered event outlives it, so
+            // stash a durable copy and point the event at that. A failed
+            // stash keeps the temporary URL — best-effort, the consumer's
+            // validation surfaces a vanished file as a failed ingest.
+            guard let assetURL = record.assetFileURL,
+                  let stashed = store.stashAsset(from: assetURL, recordName: record.recordName) else {
+                return record
+            }
+            return CloudRecord(
+                recordName: record.recordName,
+                zone: record.zone,
+                kind: record.kind,
+                modifiedAt: record.modifiedAt,
+                payload: record.payload,
+                notifyLevel: record.notifyLevel,
+                assetFileURL: stashed
+            )
+        }
         var deletedByZone: [CloudZoneID: [String]] = [:]
         for deletion in event.deletions {
             guard let zone = CloudZoneID(rawValue: deletion.recordID.zoneID.zoneName) else { continue }
@@ -492,6 +512,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         ck.encryptedValues["payload"] = record.payload
         ck["kind"] = record.kind
         ck["modifiedAt"] = record.modifiedAt
+        // The audio of a phone recording upload. A PLAIN field on purpose:
+        // encryptedValues does not accept CKAsset, and CloudKit encrypts
+        // asset content on its own. nil REMOVES the field — the desktop's
+        // status write-back is what frees the iCloud storage.
+        ck["asset"] = record.assetFileURL.map { CKAsset(fileURL: $0) }
         // nil REMOVES the field (isError discipline: absent, never null) —
         // an untagged save is byte-identical to a pre-Plan-6 one, and a
         // system-fields-seeded re-save cannot carry a stale tag.
@@ -519,7 +544,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             kind: (ck["kind"] as? String) ?? "",
             modifiedAt: (ck["modifiedAt"] as? Date) ?? Date(timeIntervalSince1970: 0),
             payload: payload,
-            notifyLevel: ck.encryptedValues["notifyLevel"] as? String
+            notifyLevel: ck.encryptedValues["notifyLevel"] as? String,
+            // CloudKit's staged download location — temporary; the buffering
+            // path stashes a durable copy before persisting the event.
+            assetFileURL: (ck["asset"] as? CKAsset)?.fileURL
         )
     }
 }
