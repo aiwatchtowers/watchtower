@@ -1,5 +1,12 @@
 # Mobile Reanimation Plan — 2026-08-17
 
+> **Status 2026-08-17 (same day):** Workstreams 1–4 and item 14 SHIPPED —
+> PRs #121 (recording), #123 (accounts), #122 (feature satellite),
+> #120 (digests + stream_digest), #119 (payload guard), all merged into
+> `mobile-app`. Remaining: item 15 (TestFlight/device gate) and the
+> deferred list below. Per-workstream residual notes live in the PR bodies
+> and specs.
+
 Branch `mobile-app` is caught up with main as of 2026-08-17 (merge `70b4d3b2`;
 the WatchtowerKit-vs-WatchtowerCore model split is resolved — shared models
 live in WatchtowerKit, Core depends on Kit). This plan covers the remaining
