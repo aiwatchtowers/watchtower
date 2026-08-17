@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"strconv"
 	"time"
 
 	watchtowerslack "watchtower/internal/slack"
@@ -50,16 +49,10 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 	// forms must be counted, not just the strict one.
 	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
 
-	// A raw mention is account-blind, so counting it against every channel
-	// regardless of account would attribute another connected account's
-	// mention of an unrelated person sharing the same raw Slack id to this
-	// owner. Scope the mention count to channels belonging to currentUserID's
-	// own account; a bare, non-namespaced currentUserID (accountPrefix "")
-	// falls back to matching any channel, unchanged from before.
-	accountPrefix := ""
-	if acctID, _, ok := watchtowerslack.SplitAccountID(currentUserID); ok {
-		accountPrefix = strconv.FormatInt(acctID, 10) + ":"
-	}
+	// A raw mention is account-blind, so scope the mention count to channels in
+	// currentUserID's own account (accountPrefixOf, "" → unscoped as before) —
+	// otherwise another account's mention of a colliding raw id counts here.
+	accountPrefix := accountPrefixOf(currentUserID)
 
 	rows, err := db.Query(`
 		SELECT

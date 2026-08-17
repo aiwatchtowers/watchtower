@@ -522,6 +522,17 @@ func classifyConnection(scoreTo, scoreFrom float64) string {
 	return "depends_on_me"
 }
 
+// accountPrefixOf returns the "<accountID>:" namespace prefix of a Slack id for
+// a LIKE-scoping match (`LIKE prefix || '%'`), or "" for a bare, non-namespaced
+// id (which then falls back to an unscoped match). The trailing colon keeps the
+// match on an account boundary, so "1:" never matches "10:".
+func accountPrefixOf(currentUserID string) string {
+	if acctID, _, ok := watchtowerslack.SplitAccountID(currentUserID); ok {
+		return strconv.FormatInt(acctID, 10) + ":"
+	}
+	return ""
+}
+
 // ComputeUserInteractions calculates interaction metrics between currentUser and
 // all other active users in the time window. Pure SQL, no AI.
 // Signals: shared channels, DMs, @-mentions, thread replies, reactions.
@@ -744,24 +755,15 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 		return nil, err
 	}
 
-	// 5. @-mentions: parse <@USERID> patterns from message text
-	// A mentioned B: currentUser's messages containing <@otherUID>
-	// message text keeps Slack's raw mention markup forever, while u2.id may
-	// be namespaced (migration 00048: "<accountID>:U123") — reduce it to the
-	// raw form before the LIKE match; substr/instr is a no-op for an id with
-	// no colon, so a non-namespaced id still works.
-	//
-	// A raw mention is account-blind by construction, so a bare LIKE join
-	// against u2.id would resolve to EVERY account's user sharing that raw
-	// Slack id (e.g. "1:U1" and "2:U1" are different people who both match
-	// "<@U1>"). Scope u2 to currentUserID's own account — the account these
-	// messages actually belong to (m.user_id = currentUserID already fixes
-	// it) — via accountPrefix; empty accountPrefix (a bare, non-namespaced
-	// currentUserID) falls back to the old unscoped match.
-	accountPrefix := ""
-	if acctID, _, ok := watchtowerslack.SplitAccountID(currentUserID); ok {
-		accountPrefix = strconv.FormatInt(acctID, 10) + ":"
-	}
+	// 5. @-mentions: parse <@USERID> patterns from message text.
+	// A raw mention is account-blind (message text keeps Slack's raw markup,
+	// and "1:U1"/"2:U1" are different people who both match "<@U1>"), so both
+	// queries below scope to currentUserID's own account via accountPrefix
+	// (empty for a bare id → the old unscoped match). substr/instr reduces a
+	// namespaced id to its raw form for the LIKE.
+	accountPrefix := accountPrefixOf(currentUserID)
+	// A mentioned B: currentUser's messages containing <@otherUID>. Scope u2 to
+	// the owner's account.
 	mentToRows, err := db.Query(`
 		SELECT mentioned_uid, COUNT(*) as cnt
 		FROM (
@@ -793,19 +795,11 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 		return nil, err
 	}
 
-	// B mentioned A: other users' messages containing <@currentUserID>
-	// The LIKE match needs the raw form (message text carries Slack's raw
-	// markup forever), while the != exclusion compares directly against the
-	// namespaced m.user_id column, so the two placeholders below bind
-	// different reductions of currentUserID.
-	//
-	// A raw mention is account-blind, so an unscoped match against
-	// "<@rawCurrentUserID>" would also pick up a DIFFERENT person in another
-	// connected account whose raw Slack id happens to collide with
-	// currentUserID's raw id. Scope to messages that actually belong to
-	// currentUserID's own account via m.channel_id's namespace prefix (the
-	// same accountPrefix fallback as above: empty for a bare, non-namespaced
-	// currentUserID).
+	// B mentioned A: other users' messages containing <@currentUserID>. The
+	// LIKE needs the raw form while the != exclusion compares the namespaced
+	// m.user_id, so the two placeholders bind different reductions; scope to
+	// the owner's account via m.channel_id's prefix so a colliding raw id in
+	// another connected account is not counted.
 	_, rawCurrentUserID, _ := watchtowerslack.SplitAccountID(currentUserID)
 	mentFromRows, err := db.Query(`
 		SELECT m.user_id, COUNT(*) as cnt
