@@ -9,8 +9,20 @@ enum ChannelStatsQueries {
     static func fetchAll(_ db: Database, currentUserID: String) throws -> [ChannelStat] {
         // Message text keeps raw Slack mention markup ("<@U123>") forever, while
         // currentUserID may be namespaced ("1:U123", migration 00048) — reduce
-        // before embedding in the LIKE pattern, or the match never fires.
-        let mentionPattern = "%<@\(SlackAccountID.raw(currentUserID))>%"
+        // before embedding in the LIKE pattern, or the match never fires. Both
+        // the strict `<@U123>` and resolved `<@U123|Display Name>` forms must
+        // be counted (mirrors Go's watchtowerslack.MentionPatterns).
+        let rawUserID = SlackAccountID.raw(currentUserID)
+        let strictPattern = "%<@\(rawUserID)>%"
+        let pipePattern = "%<@\(rawUserID)|%"
+
+        // A raw mention is account-blind, so counting it against every channel
+        // regardless of account would attribute another connected account's
+        // mention of an unrelated person sharing the same raw Slack id to this
+        // owner (audit F2). Scope to channels belonging to currentUserID's own
+        // account; a bare, non-namespaced currentUserID falls back to matching
+        // any channel, unchanged from before.
+        let accountPrefix = SlackAccountID.split(currentUserID).map { "\($0.accountID):" } ?? ""
 
         let sql = """
             SELECT
@@ -43,7 +55,7 @@ enum ChannelStatsQueries {
                     COUNT(*) AS total_msgs,
                     SUM(CASE WHEN m.user_id = ? THEN 1 ELSE 0 END) AS user_msgs,
                     SUM(CASE WHEN m.user_id = '' OR COALESCE(u.is_bot_override, u.is_bot) = 1 THEN 1 ELSE 0 END) AS bot_msgs,
-                    SUM(CASE WHEN m.text LIKE ? THEN 1 ELSE 0 END) AS mention_count,
+                    SUM(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN 1 ELSE 0 END) AS mention_count,
                     MAX(m.ts_unix) AS last_activity,
                     MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity
                 FROM messages m
@@ -77,7 +89,7 @@ enum ChannelStatsQueries {
             ) pending ON pending.channel_id = c.id
             ORDER BY COALESCE(ms.total_msgs, 0) DESC, c.name
             """
-        return try ChannelStat.fetchAll(db, sql: sql, arguments: [currentUserID, mentionPattern, currentUserID])
+        return try ChannelStat.fetchAll(db, sql: sql, arguments: [currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID])
     }
 
     /// Compute recommendations matching Go `ComputeRecommendations` thresholds exactly.

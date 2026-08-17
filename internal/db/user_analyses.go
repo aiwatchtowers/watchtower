@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	watchtowerslack "watchtower/internal/slack"
@@ -749,6 +750,18 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 	// be namespaced (migration 00048: "<accountID>:U123") — reduce it to the
 	// raw form before the LIKE match; substr/instr is a no-op for an id with
 	// no colon, so a non-namespaced id still works.
+	//
+	// A raw mention is account-blind by construction, so a bare LIKE join
+	// against u2.id would resolve to EVERY account's user sharing that raw
+	// Slack id (e.g. "1:U1" and "2:U1" are different people who both match
+	// "<@U1>"). Scope u2 to currentUserID's own account — the account these
+	// messages actually belong to (m.user_id = currentUserID already fixes
+	// it) — via accountPrefix; empty accountPrefix (a bare, non-namespaced
+	// currentUserID) falls back to the old unscoped match.
+	accountPrefix := ""
+	if acctID, _, ok := watchtowerslack.SplitAccountID(currentUserID); ok {
+		accountPrefix = strconv.FormatInt(acctID, 10) + ":"
+	}
 	mentToRows, err := db.Query(`
 		SELECT mentioned_uid, COUNT(*) as cnt
 		FROM (
@@ -756,12 +769,13 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 			FROM messages m
 			JOIN channels c ON c.id = m.channel_id
 			JOIN users u2 ON m.text LIKE '%<@' || substr(u2.id, instr(u2.id, ':') + 1) || '>%'
+				AND u2.id LIKE ? || '%'
 			WHERE m.user_id = ? AND m.ts_unix >= ? AND m.ts_unix <= ?
 				AND m.is_deleted = 0 AND m.text LIKE '%<@%>%'
 				AND u2.id != ? AND u2.is_bot = 0 AND u2.is_deleted = 0
 		)
 		GROUP BY mentioned_uid`,
-		currentUserID, from, to, currentUserID)
+		accountPrefix, currentUserID, from, to, currentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("computing mentions_to: %w", err)
 	}
@@ -784,6 +798,14 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 	// markup forever), while the != exclusion compares directly against the
 	// namespaced m.user_id column, so the two placeholders below bind
 	// different reductions of currentUserID.
+	//
+	// A raw mention is account-blind, so an unscoped match against
+	// "<@rawCurrentUserID>" would also pick up a DIFFERENT person in another
+	// connected account whose raw Slack id happens to collide with
+	// currentUserID's raw id. Scope to messages that actually belong to
+	// currentUserID's own account via m.channel_id's namespace prefix (the
+	// same accountPrefix fallback as above: empty for a bare, non-namespaced
+	// currentUserID).
 	_, rawCurrentUserID, _ := watchtowerslack.SplitAccountID(currentUserID)
 	mentFromRows, err := db.Query(`
 		SELECT m.user_id, COUNT(*) as cnt
@@ -791,11 +813,12 @@ func (db *DB) ComputeUserInteractions(currentUserID string, from, to float64) ([
 		JOIN users u ON u.id = m.user_id
 		WHERE m.text LIKE '%<@' || ? || '>%'
 			AND m.user_id != ?
+			AND m.channel_id LIKE ? || '%'
 			AND m.ts_unix >= ? AND m.ts_unix <= ?
 			AND m.is_deleted = 0
 			AND u.is_bot = 0 AND u.is_deleted = 0
 		GROUP BY m.user_id`,
-		rawCurrentUserID, currentUserID, from, to)
+		rawCurrentUserID, currentUserID, accountPrefix, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("computing mentions_from: %w", err)
 	}
