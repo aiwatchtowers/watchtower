@@ -19,10 +19,16 @@ public struct Digest: FetchableRecord, Decodable, Identifiable, Equatable {
     public let createdAt: String
     public let readAt: String?
     public let runningSummary: String?
+    /// Resolved by the publisher's `digest` slice projection (the
+    /// `event_title` precedent) — the phone has no `channels` table. nil for
+    /// cross-channel (daily/weekly) digests, unsynced channels, and records
+    /// published before the column was added.
+    public let channelName: String?
 
     public enum CodingKeys: String, CodingKey {
         case id, type, summary, topics, decisions, model
         case channelID = "channel_id"
+        case channelName = "channel_name"
         case periodFrom = "period_from"
         case periodTo = "period_to"
         case tracksJSON = "action_items"
