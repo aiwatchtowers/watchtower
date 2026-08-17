@@ -27,6 +27,7 @@
 		8AD90C1BCCC80D111A2E59E9 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EEE394524E80319F081C9E /* TodayView.swift */; };
 		A7C17359424ABE62A6071D90 /* ActionsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */; };
 		AC491EE585F1CB3A9F911402 /* QuickActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211E805C97CFC4405C7263AB /* QuickActions.swift */; };
+		BC20C17FEBC302EFDE447317 /* PhoneRecorderController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67A930B4536E628CCD946FCF /* PhoneRecorderController.swift */; };
 		C68C3B81124062F591CDCEDF /* Badge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D5566BA2797C739FDA9FDC4 /* Badge.swift */; };
 		CD65311F247770AEA6BC4E1B /* ChatWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3AB9E96D10F42DCACBEC6E6 /* ChatWiringTests.swift */; };
 		D403FD362502AA5DC04AEDCE /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3240E546D853A416356E32D1 /* SettingsView.swift */; };
@@ -64,6 +65,7 @@
 		53EEE394524E80319F081C9E /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		5DF609973C6F27C56B9BD9A9 /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
 		649E02AF149E7AB38609A747 /* BadgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BadgeTests.swift; sourceTree = "<group>"; };
+		67A930B4536E628CCD946FCF /* PhoneRecorderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecorderController.swift; sourceTree = "<group>"; };
 		6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateTargetSheet.swift; sourceTree = "<group>"; };
 		80F2DDF7DA595335A8946DA2 /* ActionsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionsWiringTests.swift; sourceTree = "<group>"; };
 		89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsWiringTests.swift; sourceTree = "<group>"; };
@@ -200,6 +202,7 @@
 				6D958CDB6305DBED7B623772 /* CreateTargetSheet.swift */,
 				E3F00F256559A237BEABEB3D /* DayPlanView.swift */,
 				916C33BA22DB5ABF55F50EBC /* InboxView.swift */,
+				67A930B4536E628CCD946FCF /* PhoneRecorderController.swift */,
 				211E805C97CFC4405C7263AB /* QuickActions.swift */,
 				B7C826A435973DBF359BE581 /* RecordingDetailView.swift */,
 				BBB8A174EE607338A87C82C4 /* RecordingsView.swift */,
@@ -316,6 +319,7 @@
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
 				305F80730964D0127D3B9BD1 /* InboxView.swift in Sources */,
 				39268E1C0E17AC680F74C1A8 /* NotificationCoordinator.swift in Sources */,
+				BC20C17FEBC302EFDE447317 /* PhoneRecorderController.swift in Sources */,
 				AC491EE585F1CB3A9F911402 /* QuickActions.swift in Sources */,
 				1CF8C51201A91A5F39CF0A4D /* RecordingDetailView.swift in Sources */,
 				26B0C3BAC81DD216E0083DD3 /* RecordingsView.swift in Sources */,
