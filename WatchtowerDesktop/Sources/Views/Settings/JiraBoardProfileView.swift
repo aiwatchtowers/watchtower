@@ -22,10 +22,15 @@ struct JiraBoardProfileView: View {
     @State private var overrides: [String: Int] = [:]
     @State private var terminalOverrides: [String: Bool] = [:]
     @State private var phaseOverrides: [String: String] = [:]
-    @State private var isAnalyzing = false
-    /// Shared error slot for every CLI action this screen fires — re-analyze
-    /// and the three override flags — rendered next to the Re-analyze button.
+    /// Shared error slot for the three override flags this screen fires,
+    /// rendered next to the Re-analyze button. Re-analyze itself reports through
+    /// `JiraBoardAnalysisCenter`, whose error outlives this view.
     @State private var actionError: String?
+
+    /// Analysis runs are owned app-wide so leaving the screen mid-run does not
+    /// discard the spinner, the failure, or the post-run refresh.
+    private var analysisCenter: JiraBoardAnalysisCenter { .shared }
+    private var isAnalyzing: Bool { analysisCenter.isAnalyzing(board) }
 
     var body: some View {
         ScrollView {
@@ -70,6 +75,13 @@ struct JiraBoardProfileView: View {
             .padding(.vertical)
         }
         .onAppear { parseProfile() }
+        // The snapshot handed in at navigation time can be stale — a run that
+        // finished while this screen was gone wrote its profile from the CLI
+        // subprocess, which GRDB's ValueObservation cannot see.
+        .task { await reloadBoard() }
+        .onChange(of: analysisCenter.completedRuns) {
+            Task { await reloadBoard() }
+        }
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -513,7 +525,7 @@ struct JiraBoardProfileView: View {
             }
             .disabled(isAnalyzing)
 
-            if let err = actionError {
+            if let err = actionError ?? analysisCenter.error(for: board) {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -581,29 +593,8 @@ struct JiraBoardProfileView: View {
     }
 
     private func runAnalyze() {
-        guard let cliPath = Constants.findCLIPath() else {
-            actionError = "Watchtower CLI not found"
-            return
-        }
-
-        isAnalyzing = true
         actionError = nil
-        let arguments = boardCommand("analyze", "--force", String(board.id))
-
-        Task.detached {
-            let failure = JiraBoardsCLI.run(
-                cliPath: cliPath,
-                arguments: arguments,
-                fallbackMessage: "Analysis failed"
-            )
-            await MainActor.run {
-                isAnalyzing = false
-                actionError = failure
-                if failure == nil {
-                    Task { await reloadBoard() }
-                }
-            }
-        }
+        analysisCenter.start(board: board)
     }
 
     /// Persists one `jira boards override` flag for this board. A failure
