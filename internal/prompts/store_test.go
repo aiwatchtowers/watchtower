@@ -64,7 +64,7 @@ func TestSeedIdempotentWithExisting(t *testing.T) {
 	require.NoError(t, store1.Seed())
 
 	// Modify one prompt
-	require.NoError(t, database.UpdatePrompt(DigestChannel, "custom text", "manual"))
+	require.NoError(t, database.UpdatePrompt(DigestChannel, "custom text", "manual", true))
 
 	// Seed with a NEW store (seeded=false, so it actually checks DB)
 	store2 := New(database, nil)
@@ -75,6 +75,39 @@ func TestSeedIdempotentWithExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "custom text", tmpl)
 	assert.Equal(t, DefaultVersions[DigestChannel]+1, version)
+}
+
+// TestSeedPreservesCustomizedAcrossDefaultVersionBump is the regression pin
+// for C3: a tuned/manually-edited prompt used to survive exactly one later
+// default-version bump before Seed's auto-upgrade silently overwrote it
+// (Seed only compared existing.Version < defaultVer, with no check for a
+// customized row). digest.channel went 3->4->5 across releases this way.
+func TestSeedPreservesCustomizedAcrossDefaultVersionBump(t *testing.T) {
+	database := openTestDB(t)
+
+	// Seed once, then customize digest.channel via the tuner-apply path
+	// (Store.Update marks the row customized).
+	store1 := New(database, nil)
+	require.NoError(t, store1.Seed())
+	require.NoError(t, store1.Update(DigestChannel, "my customized prompt", "tuned"))
+
+	seededVer := DefaultVersions[DigestChannel]
+	customizedVer := seededVer + 1
+
+	// Simulate a later release bumping the shipped default version, the
+	// way an ordinary prompt-template edit does across releases.
+	original := DefaultVersions[DigestChannel]
+	DefaultVersions[DigestChannel] = customizedVer + 5
+	t.Cleanup(func() { DefaultVersions[DigestChannel] = original })
+
+	// Re-seed with a fresh store (seeded=false, so it actually checks DB).
+	store2 := New(database, nil)
+	require.NoError(t, store2.Seed())
+
+	tmpl, version, err := store2.Get(DigestChannel)
+	require.NoError(t, err)
+	assert.Equal(t, "my customized prompt", tmpl, "customized template must survive a default-version bump")
+	assert.Equal(t, customizedVer, version, "version must not advance past the customized edit")
 }
 
 func TestGetFromDB(t *testing.T) {

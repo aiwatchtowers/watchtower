@@ -575,7 +575,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     template   TEXT NOT NULL,
     version    INTEGER NOT NULL DEFAULT 1,
     language   TEXT NOT NULL DEFAULT '',  -- '' = auto-detect, 'en', 'ru', etc.
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    customized INTEGER NOT NULL DEFAULT 0  -- 1 = a tuner/user edit moved this off the default lineage; Seed's auto-upgrade skips it
 );
 
 -- Prompt version history for rollback and audit

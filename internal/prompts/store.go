@@ -103,9 +103,11 @@ func (s *Store) Seed() error {
 			continue
 		}
 		// Auto-upgrade: if the default version is higher and the user hasn't
-		// customized the template (i.e., it still matches a previous default),
-		// update it to the new default.
-		if existing.Version < defaultVer {
+		// customized the template (a tuner apply or a manual edit — see
+		// UpdatePrompt), update it to the new default. A customized row is
+		// left alone even if the shipped default has moved on; the user
+		// resyncs explicitly via Reset.
+		if existing.Version < defaultVer && !existing.Customized {
 			if err := s.db.UpsertPrompt(db.Prompt{
 				ID:       id,
 				Template: tmpl,
@@ -187,9 +189,11 @@ func (s *Store) GetAll() ([]db.Prompt, error) {
 	return dbPrompts, nil
 }
 
-// Update modifies a prompt's template and records the change reason.
+// Update modifies a prompt's template and records the change reason. This is
+// always a deliberate edit (tuner apply or manual), so the row is marked
+// customized and Seed's auto-upgrade will leave it alone from now on.
 func (s *Store) Update(id, template, reason string) error {
-	return s.db.UpdatePrompt(id, template, reason)
+	return s.db.UpdatePrompt(id, template, reason, true)
 }
 
 // Rollback reverts a prompt to a specific version.
@@ -197,13 +201,15 @@ func (s *Store) Rollback(id string, version int) error {
 	return s.db.RollbackPrompt(id, version)
 }
 
-// Reset restores a prompt to its built-in default.
+// Reset restores a prompt to its built-in default. This clears the
+// customized flag, putting the row back on the default lineage so a later
+// default-version bump auto-upgrades it again.
 func (s *Store) Reset(id string) error {
 	tmpl, ok := Defaults[id]
 	if !ok {
 		return fmt.Errorf("unknown prompt %q — no default available", id)
 	}
-	return s.db.UpdatePrompt(id, tmpl, "reset to default")
+	return s.db.UpdatePrompt(id, tmpl, "reset to default", false)
 }
 
 // History returns the version history for a prompt.
