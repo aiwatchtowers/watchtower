@@ -978,6 +978,39 @@ func TestDeduplicateThreadInboxItems_PreservesDifferentTriggerTypes(t *testing.T
 	assert.Equal(t, "pending", dmItem.Status)
 }
 
+// TestDeduplicateThreadInboxItems_NonThreadItemsNeverCollapse pins audit
+// #112: every non-threaded item shares thread_ts = '', so without a
+// thread_ts guard the dedup query's GROUP BY (channel_id, thread_ts,
+// trigger_type) treats every plain-channel mention in the same channel as a
+// duplicate of the others and collapses them all down to one. Non-thread
+// items must never be touched by this dedup pass.
+func TestDeduplicateThreadInboxItems_NonThreadItemsNeverCollapse(t *testing.T) {
+	db := openTestDB(t)
+
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		id, err := db.CreateInboxItem(InboxItem{
+			ChannelID:    "C1",
+			MessageTS:    fmt.Sprintf("1.%d", i),
+			ThreadTS:     "",
+			SenderUserID: "U1",
+			TriggerType:  "mention",
+		})
+		require.NoError(t, err)
+		ids = append(ids, id)
+	}
+
+	deduped, err := db.DeduplicateThreadInboxItems()
+	require.NoError(t, err)
+	assert.Equal(t, 0, deduped, "non-thread items must never be deduplicated by this pass")
+
+	for _, id := range ids {
+		item, err := db.GetInboxItemByID(int(id))
+		require.NoError(t, err)
+		assert.Equal(t, "pending", item.Status, "item %d must survive", id)
+	}
+}
+
 // Same trigger type in the same thread is still a genuine duplicate and must
 // keep collapsing to the most recent item.
 func TestDeduplicateThreadInboxItems_MergesSameTriggerType(t *testing.T) {
