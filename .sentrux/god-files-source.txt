@@ -1,7 +1,9 @@
 WatchtowerDesktop/Sources/App/Navigation.swift
 WatchtowerDesktop/Sources/Services/MobileHub/RelayProcessor.swift
+WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
-WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
-WatchtowerDesktop/Sources/Views/Settings/SettingsView.swift
+WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
+WatchtowerDesktop/Sources/Views/Targets/CreateTargetSheet.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
+WatchtowerKit/Sources/WatchtowerKit/Agent/ReplicaToolbox.swift

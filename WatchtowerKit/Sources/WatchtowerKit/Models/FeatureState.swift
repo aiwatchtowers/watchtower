@@ -34,7 +34,7 @@ public struct FeatureVisibility: Equatable, Sendable {
     private let disabledFeatureIDs: Set<String>
 
     /// The absent-slice default: everything visible.
-    public static let allVisible = FeatureVisibility(states: [])
+    public static let allVisible = Self(states: [])
 
     public init(states: [FeatureState]) {
         disabledFeatureIDs = Set(states.filter { !$0.enabled }.map(\.id))
