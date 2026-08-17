@@ -14,6 +14,18 @@ final class SlicePublisher: Sendable {
     private let transport: any CloudSyncTransport & Sendable
     private let logger = Logger(subsystem: Constants.bundleID, category: "SlicePublisher")
     private let pollTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// Feature Manager satellite state (feature id → effective enabled) —
+    /// the one slice kind not backed by `sliceSQL`; the source of truth is
+    /// the `features` CLI via FeatureManagerService, not the DB. nil until
+    /// the first successful feature load: the kind is then skipped entirely
+    /// (no upserts AND no deletions), so a fresh launch can never wipe the
+    /// phone's last known state before the CLI has answered once.
+    private let featureStates = OSAllocatedUnfairLock<[String: Bool]?>(initialState: nil)
+    /// The current inter-cycle sleep (nudge cancels it) + a flag for a nudge
+    /// that lands while a cycle is already running (the loop then re-runs
+    /// immediately instead of sleeping on a stale snapshot).
+    private let sleepTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    private let nudged = OSAllocatedUnfairLock(initialState: false)
 
     /// CloudKit's per-record cap is 1 MB. The 100 KB headroom covers system
     /// fields, `kind`/`modifiedAt`/`notifyLevel` and record-name overhead, so
@@ -34,7 +46,11 @@ final class SlicePublisher: Sendable {
         self.transport = transport
     }
 
-    /// The v1 slice window per kind — single source of truth for what syncs.
+    /// The v1 slice window per kind — single source of truth for what syncs
+    /// FROM THE DB. Exactly one kind is not here: `.featureState` publishes
+    /// from the in-memory `featureStates` snapshot (see `updateFeatureStates`),
+    /// because feature toggles live in the Go config behind the `features`
+    /// CLI, not in a table.
     /// Column names verified against internal/db/schema.sql:
     /// - inbox_items has no 'archived' status; archived-ness is `archived_at`.
     /// - targets' terminal state is 'dismissed' (no 'archived' in its CHECK).
@@ -150,9 +166,15 @@ final class SlicePublisher: Sendable {
         let startGen = try state.generation()
 
         for kind in SliceKind.allCases {
-            guard let sql = Self.sliceSQL[kind] else { continue }
-            let fetched = try fetchSliceRows(sql: sql)
-            let rows: [(id: String, row: Row)] = fetched.map { (id: Self.rowID($0), row: $0) }
+            let rows: [(id: String, row: Row)]
+            if kind == .featureState {
+                guard let states = featureStates.withLock({ $0 }) else { continue }
+                rows = Self.featureStateRows(states)
+            } else {
+                guard let sql = Self.sliceSQL[kind] else { continue }
+                let fetched = try fetchSliceRows(sql: sql)
+                rows = fetched.map { (id: Self.rowID($0), row: $0) }
+            }
             let result = SliceDiff.compute(
                 kind: kind,
                 rows: rows,
@@ -245,18 +267,47 @@ final class SlicePublisher: Sendable {
         }
     }
 
+    // MARK: - Feature state
+
+    /// Replaces the feature-state snapshot and nudges the poll loop so the
+    /// change publishes now, not up to a full interval later ("published on
+    /// change"; the diff still dedups an unchanged map). With no loop
+    /// running (hub off/unavailable) the snapshot just waits for start().
+    func updateFeatureStates(_ states: [String: Bool]) {
+        featureStates.withLock { $0 = states }
+        nudged.withLock { $0 = true }
+        sleepTask.withLock { $0?.cancel() }
+    }
+
+    /// Sorted for a deterministic publish order; the payload is the frozen
+    /// `{id, enabled}` row-dict (SQLite booleans are integers on the wire,
+    /// like every SQL-backed slice).
+    private static func featureStateRows(_ states: [String: Bool]) -> [(id: String, row: Row)] {
+        states.sorted { $0.key < $1.key }.map { id, enabled in
+            (id: id, row: Row(["id": id, "enabled": enabled]))
+        }
+    }
+
     // MARK: - Poll loop
 
     func start(interval: Duration = .seconds(60)) {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
+                self.nudged.withLock { $0 = false }
                 do {
                     _ = try await self.publishOnce()
                 } catch {
                     self.logger.error("publish cycle failed: \(error.localizedDescription, privacy: .public)")
                 }
-                try? await Task.sleep(for: interval)
+                // A nudge that landed mid-cycle re-runs immediately —
+                // publishOnce may have already diffed feature_state against
+                // the pre-nudge snapshot. Otherwise sleep on a cancellable
+                // sub-task so a nudge wakes the loop without killing it.
+                if self.nudged.withLock({ $0 }) { continue }
+                let sleep = Task { _ = try? await Task.sleep(for: interval) }
+                self.sleepTask.withLock { $0 = sleep }
+                await sleep.value
             }
         }
         pollTask.withLock { current in
@@ -267,6 +318,13 @@ final class SlicePublisher: Sendable {
 
     func stop() {
         pollTask.withLock { current in
+            current?.cancel()
+            current = nil
+        }
+        // The loop awaits the sleep sub-task, which does not observe the
+        // parent's cancellation — cancel it too so stop() stays prompt
+        // (matching the pre-nudge `Task.sleep` behavior).
+        sleepTask.withLock { current in
             current?.cancel()
             current = nil
         }

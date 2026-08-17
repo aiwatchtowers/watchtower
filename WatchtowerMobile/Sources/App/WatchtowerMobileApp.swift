@@ -118,12 +118,21 @@ extension EnvironmentValues {
 /// Inbox, Tasks) and folds Tracks + Settings under the automatic "More"
 /// item — Settings stays reachable there (and iPad shows all six). Tracks
 /// is the least-touched read-only tab, so it pays the More cost, not Chat.
+/// Feature-gated tabs (Chat, Inbox, Tasks, Tracks) render only while their
+/// desktop Feature Manager feature is enabled — the `FeatureGate` mirrors
+/// the synced `feature_state` slice (absent slice = everything visible).
+/// Today and Settings are never hideable; a hidden selection falls back to
+/// Today, mirroring the desktop's navigation fallback.
 struct RootTabView: View {
     enum Tab: String {
         case today, chat, inbox, tasks, tracks, settings
     }
 
+    @Environment(AppEnvironment.self) private var env
     @State private var selection: Tab = .today
+    /// Owned here — the root view never leaves the hierarchy, so the gate's
+    /// replica observation survives all tab navigation.
+    @State private var gate = FeatureGate()
 
     init() {
         #if DEBUG
@@ -142,18 +151,26 @@ struct RootTabView: View {
             TodayView()
                 .tabItem { Label("Today", systemImage: "sun.max") }
                 .tag(Tab.today)
-            ChatView()
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-                .tag(Tab.chat)
-            InboxView()
-                .tabItem { Label("Inbox", systemImage: "tray") }
-                .tag(Tab.inbox)
-            TasksView()
-                .tabItem { Label("Tasks", systemImage: "checklist") }
-                .tag(Tab.tasks)
-            TracksView()
-                .tabItem { Label("Tracks", systemImage: "list.bullet.rectangle") }
-                .tag(Tab.tracks)
+            if gate.isVisible(.tab(.chat)) {
+                ChatView()
+                    .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                    .tag(Tab.chat)
+            }
+            if gate.isVisible(.tab(.inbox)) {
+                InboxView()
+                    .tabItem { Label("Inbox", systemImage: "tray") }
+                    .tag(Tab.inbox)
+            }
+            if gate.isVisible(.tab(.tasks)) {
+                TasksView()
+                    .tabItem { Label("Tasks", systemImage: "checklist") }
+                    .tag(Tab.tasks)
+            }
+            if gate.isVisible(.tab(.tracks)) {
+                TracksView()
+                    .tabItem { Label("Tracks", systemImage: "list.bullet.rectangle") }
+                    .tag(Tab.tracks)
+            }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(Tab.settings)
@@ -161,5 +178,13 @@ struct RootTabView: View {
         // Settings folds under "More" on iPhone (six tabs) — this jump keeps
         // "Set up offline agent…" a one-tap path regardless.
         .environment(\.openSettingsTab) { selection = .settings }
+        .environment(gate)
+        .onAppear { gate.start(store: env.store) }
+        // Desktop navigation-fallback semantics: the selected tab
+        // disappearing (feature disabled on the Mac) lands the user on
+        // Today, never on an empty selection.
+        .onChange(of: gate.visibility) {
+            selection = gate.resolvedSelection(selection)
+        }
     }
 }

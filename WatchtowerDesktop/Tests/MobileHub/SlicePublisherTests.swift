@@ -31,8 +31,13 @@ final class SlicePublisherTests: XCTestCase {
 
     func testPublishOncePushesFixtureRows() async throws {
         // Guard: every SliceKind must have a window — a kind missing from
-        // sliceSQL would silently never sync.
-        XCTAssertEqual(Set(SlicePublisher.sliceSQL.keys), Set(SliceKind.allCases))
+        // sliceSQL would silently never sync. `.featureState` is the ONE
+        // deliberate exception: it publishes from the in-memory Feature
+        // Manager snapshot, not from a table.
+        XCTAssertEqual(
+            Set(SlicePublisher.sliceSQL.keys),
+            Set(SliceKind.allCases).subtracting([.featureState])
+        )
 
         try await dbPool.write { db in
             try TestDatabase.insertTarget(db, text: "Ship slice publisher")
@@ -620,5 +625,93 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertFalse(SlicePublisher.isOversized(Data(count: SlicePublisher.maxPayloadBytes)))
         XCTAssertTrue(SlicePublisher.isOversized(Data(count: SlicePublisher.maxPayloadBytes + 1)))
         XCTAssertFalse(SlicePublisher.isOversized(Data()), "empty payload is degenerate but fine")
+    }
+
+    // MARK: - Feature-state satellite (the one non-SQL slice)
+
+    /// The wire format is FROZEN: `{"enabled":0|1,"id":"<feature-id>"}`,
+    /// sorted keys, boolean as SQLite integer. The Kit pins the same literal
+    /// on the decode side (FeatureStateTests).
+    func testFeatureStatePublishesFrozenPayloadPerFeature() async throws {
+        publisher.updateFeatureStates(["targets": true, "chat": false])
+
+        let result = try await publisher.publishOnce()
+
+        XCTAssertEqual(result.pushed, 2)
+        XCTAssertEqual(result.deleted, 0)
+        let batch = try await transport.changes(in: .data, since: nil)
+        let byName = Dictionary(uniqueKeysWithValues: batch.changed.map { ($0.recordName, $0) })
+        XCTAssertEqual(
+            String(data: byName["feature_state-chat"]?.payload ?? Data(), encoding: .utf8),
+            #"{"enabled":0,"id":"chat"}"#
+        )
+        XCTAssertEqual(
+            String(data: byName["feature_state-targets"]?.payload ?? Data(), encoding: .utf8),
+            #"{"enabled":1,"id":"targets"}"#
+        )
+        XCTAssertEqual(byName["feature_state-chat"]?.kind, "feature_state")
+        // Feature flips never page the phone.
+        XCTAssertNil(byName["feature_state-chat"]?.notifyLevel)
+    }
+
+    /// Diff semantics over cycles: unchanged map is a no-op, a flip pushes
+    /// only the flipped record, an id leaving the snapshot (feature removed
+    /// from the registry) deletes its record.
+    func testFeatureStateDiffAcrossCycles() async throws {
+        publisher.updateFeatureStates(["targets": true, "tracks": true])
+        _ = try await publisher.publishOnce()
+        let token = try await transport.changes(in: .data, since: nil).newToken
+
+        // Same map again — nothing moves.
+        publisher.updateFeatureStates(["targets": true, "tracks": true])
+        let unchanged = try await publisher.publishOnce()
+        XCTAssertEqual(unchanged.pushed, 0)
+        XCTAssertEqual(unchanged.deleted, 0)
+
+        // Flip one, drop the other.
+        publisher.updateFeatureStates(["targets": false])
+        let changed = try await publisher.publishOnce()
+        XCTAssertEqual(changed.pushed, 1)
+        XCTAssertEqual(changed.deleted, 1)
+        let delta = try await transport.changes(in: .data, since: token)
+        XCTAssertEqual(delta.changed.map(\.recordName), ["feature_state-targets"])
+        XCTAssertEqual(
+            String(data: delta.changed[0].payload, encoding: .utf8),
+            #"{"enabled":0,"id":"targets"}"#
+        )
+        XCTAssertEqual(delta.deletedRecordNames, ["feature_state-tracks"])
+        XCTAssertNil(try state.hashes(forKind: .featureState)["feature_state-tracks"])
+    }
+
+    /// Degenerate: no snapshot yet (feature load never succeeded). The kind
+    /// is skipped ENTIRELY — even a stale hash from a previous launch is not
+    /// deleted, so the phone keeps the last known state (fail-open there,
+    /// but never a spurious wipe from a desktop that has not asked the CLI).
+    func testFeatureStateNilSnapshotPublishesAndDeletesNothing() async throws {
+        try state.setHash("stale", for: "feature_state-targets")
+
+        let result = try await publisher.publishOnce()
+
+        XCTAssertEqual(result.pushed, 0)
+        XCTAssertEqual(result.deleted, 0)
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+        XCTAssertTrue(batch.deletedRecordNames.isEmpty)
+        XCTAssertEqual(try state.hashes(forKind: .featureState)["feature_state-targets"], "stale")
+    }
+
+    /// Degenerate: an EMPTY map is a real snapshot (a registry with no
+    /// features would mean every previously published record must go).
+    func testFeatureStateEmptySnapshotDeletesEverything() async throws {
+        publisher.updateFeatureStates(["targets": true])
+        _ = try await publisher.publishOnce()
+
+        publisher.updateFeatureStates([:])
+        let result = try await publisher.publishOnce()
+
+        XCTAssertEqual(result.pushed, 0)
+        XCTAssertEqual(result.deleted, 1)
+        let batch = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(batch.deletedRecordNames.contains("feature_state-targets"))
     }
 }

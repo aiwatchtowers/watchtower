@@ -135,6 +135,13 @@ final class MobileHubService {
         status = .running
     }
 
+    /// Feature Manager satellite: hands the effective feature map to the
+    /// publisher (which nudges its loop so the change syncs now). Safe in
+    /// every status — before start() the snapshot simply waits for the loop.
+    func updateFeatureStates(_ states: [String: Bool]) {
+        publisher.updateFeatureStates(states)
+    }
+
     func stop() {
         publisher.stop()
         relayTask?.cancel()

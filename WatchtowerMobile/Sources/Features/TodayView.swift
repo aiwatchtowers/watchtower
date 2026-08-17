@@ -27,6 +27,9 @@ final class TodayViewModel {
 
 struct TodayView: View {
     @Environment(AppEnvironment.self) private var env
+    /// Feature-gated sections (briefing, day plan) follow the desktop
+    /// Feature Manager via the synced `feature_state` slice.
+    @Environment(FeatureGate.self) private var gate
     @State private var model = TodayViewModel()
     /// Owns the plan's observations and its action overlay; shared with the
     /// full-plan screen so an in-flight done/skip survives navigating there
@@ -37,7 +40,7 @@ struct TodayView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 List {
-                    if let briefing = model.briefing {
+                    if let briefing = model.briefing, gate.isVisible(.todayBriefing) {
                         Section("Briefing · \(briefing.dateLabel)") {
                             Text(briefing.role).font(.headline)
                             ForEach(briefing.parsedYourDay) { item in
@@ -49,17 +52,21 @@ struct TodayView: View {
                     // Above the calendar: the plan is what the user is meant
                     // to DO today; the calendar below is what is already
                     // fixed in it.
-                    if let message = planModel.actionErrorMessage {
-                        ActionErrorRow(message: message) { planModel.clearActionError() }
+                    // The error/failed banners belong to the plan's actions,
+                    // so they hide with the section when day-plan is off.
+                    if gate.isVisible(.todayDayPlan) {
+                        if let message = planModel.actionErrorMessage {
+                            ActionErrorRow(message: message) { planModel.clearActionError() }
+                        }
+                        ForEach(planModel.failedActions) { failed in
+                            FailedActionBanner(
+                                failed: failed,
+                                onRetry: { Task { await planModel.retry(failed) } },
+                                onDismiss: { planModel.dismissFailure(failed) }
+                            )
+                        }
+                        DayPlanSection(model: planModel)
                     }
-                    ForEach(planModel.failedActions) { failed in
-                        FailedActionBanner(
-                            failed: failed,
-                            onRetry: { Task { await planModel.retry(failed) } },
-                            onDismiss: { planModel.dismissFailure(failed) }
-                        )
-                    }
-                    DayPlanSection(model: planModel)
                     Section("Today's Calendar") {
                         if model.events.isEmpty {
                             Text("No events today").foregroundStyle(.secondary)
