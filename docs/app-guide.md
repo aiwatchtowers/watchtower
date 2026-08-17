@@ -326,6 +326,10 @@ Watchtower is a menu-bar app first: it keeps syncing in the background even when
 
 The Watchtower iOS app mirrors your data from this Mac (see the Mobile setting above) and normally relays chat questions back here for the desktop AI to answer.
 
+### Feature visibility (phone)
+
+The phone follows this Mac's Settings → Features choices — it is a satellite of the desktop Feature Manager, with no toggles of its own. Disabling a feature on the Mac hides its phone surface: **Targets** hides the Tasks tab, **Tracks** the Tracks tab, **Secretary inbox** the Inbox tab, **Chat** the Chat tab, and **Briefing** / **Day plan** hide their sections on the Today screen. Today and Settings are always shown, and the recordings entry under Today's calendar is not feature-gated. If the tab you are on disappears, the phone falls back to Today — the same fallback the desktop sidebar uses. Until the first feature state arrives from the Mac (e.g. an older desktop build), everything is visible.
+
 ### Inbox (phone)
 
 The phone's Inbox tab is the same secretary dashboard as the desktop's: a ranked feed of **situations** (not raw signals), each opening into a review screen with the secretary card (why it matters / summary / chronology) and the member-signal bubbles behind it. Swipe a situation for **Done** / **Dismiss**, or swipe the other way to **Snooze**; when the secretary has marked a situation "looks resolved", the review screen offers **Done / Keep open** (DASH-07). Actions are queued through the mobile relay and applied by this Mac — rows show a "pending" chip until the desktop confirms. Only open situations sync; closing one on either device removes it from the phone.
