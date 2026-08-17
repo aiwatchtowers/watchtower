@@ -1072,7 +1072,10 @@ struct OnboardingView: View {
                 return await vm.markOnboardingDone()
             },
             startPipelines: {
-                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode, disabledFeatures: appState.featureManager.disabledFeatureIDs)
+                appState.backgroundTaskManager.startPipelines(
+                    legacyPeople: appState.analysisLegacyMode,
+                    disabledFeatures: appState.featureManager.disabledFeatureIDs
+                )
             },
             completeOnboarding: { appState.completeOnboarding() },
             onRetry: onRetry
@@ -1349,7 +1352,10 @@ struct OnboardingView: View {
             }
             // Mirror the teamForm completion path — without this the skip
             // path entered the app with no background processing or daemon.
-            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode, disabledFeatures: appState.featureManager.disabledFeatureIDs)
+            appState.backgroundTaskManager.startPipelines(
+                legacyPeople: appState.analysisLegacyMode,
+                disabledFeatures: appState.featureManager.disabledFeatureIDs
+            )
             appState.completeOnboarding()
             onRetry()
         }
