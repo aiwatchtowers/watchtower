@@ -111,8 +111,16 @@ package final class DaemonManager {
     /// the next poll.
     package nonisolated static func restart() async {
         guard let path = Constants.findCLIPath() else { return }
-        _ = try? await runProcess(path: path, arguments: ["sync", "stop"])
-        _ = try? await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
+        do {
+            _ = try await runProcess(path: path, arguments: ["sync", "stop"])
+        } catch {
+            NSLog("DaemonManager: restart: `sync stop` failed: %@", error.localizedDescription)
+        }
+        do {
+            _ = try await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
+        } catch {
+            NSLog("DaemonManager: restart: `sync --daemon --detach` failed: %@", error.localizedDescription)
+        }
     }
 
     /// How long a terminated `sync stop` gets to actually die before the wait
