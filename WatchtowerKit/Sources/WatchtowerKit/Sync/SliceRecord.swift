@@ -15,6 +15,11 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case meetingTranscript = "meeting_transcript"
     case dayPlan = "day_plan"
     case dayPlanItem = "day_plan_item"
+    /// Desktop Feature Manager satellite state: one record per registry
+    /// feature id, payload `{id, enabled}`. The phone only READS it —
+    /// features are never toggled from the phone (owner decision,
+    /// 2026-08-17 reanimation plan Workstream 3).
+    case featureState = "feature_state"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"
