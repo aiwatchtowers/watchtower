@@ -168,6 +168,47 @@ enum DemoSeed {
             "created_at": Self.iso.string(from: now),
         ]))
 
+        // MARK: Connected accounts (Settings, read-only)
+        // One row per state the section renders: green ok, gray disabled,
+        // orange error (with text), red revoked — the payload keys are each
+        // kind's frozen projection column set, nothing more.
+        records.append(try record(.slackAccount, "1", now, [
+            "id": 1,
+            "team_name": "Acme Corp",
+            "team_domain": "acme",
+            "label": "",
+            "status": "ok",
+            "error": "",
+            "enabled": true,
+        ]))
+        records.append(try record(.slackAccount, "2", now, [
+            "id": 2,
+            "team_name": "Side Project",
+            "team_domain": "sideproj",
+            "label": "",
+            "status": "ok",
+            "error": "",
+            "enabled": false,
+        ]))
+        records.append(try record(.googleAccount, "1", now, [
+            "id": 1,
+            "email": "me@example.com",
+            "label": "",
+            "status": "error",
+            "error": "Gmail token expired — re-login on your Mac",
+            "calendar_enabled": true,
+            "gmail_enabled": true,
+        ]))
+        records.append(try record(.jiraAccount, "1", now, [
+            "id": 1,
+            "site_name": "Acme Jira",
+            "site_url": "https://acme.atlassian.net",
+            "label": "",
+            "status": "revoked",
+            "error": "",
+            "enabled": true,
+        ]))
+
         // MARK: Meeting recordings (Recordings screen, reached from Today)
         // Event-linked, fully processed: recap + notes + chapters + a diarized
         // roster — what a recording looks like once every Mac-side pass ran.
