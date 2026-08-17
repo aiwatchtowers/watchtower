@@ -383,7 +383,8 @@ DMG_STAGING="$BUILD_DIR/dmg-staging"
 rm -rf "$DMG_STAGING"
 mkdir -p "$DMG_STAGING"
 cp -R "$APP_BUNDLE" "$DMG_STAGING/"
-ln -s /Applications "$DMG_STAGING/Applications"
+# No manual Applications symlink here: create-dmg's --app-drop-link creates it
+# inside the image itself and errors ("File exists") on a pre-existing one.
 
 if command -v create-dmg &>/dev/null; then
     # Pretty DMG with window layout (brew install create-dmg)
@@ -406,7 +407,9 @@ if command -v create-dmg &>/dev/null; then
         exit 1
     fi
 else
-    # Fallback: hdiutil (always available on macOS)
+    # Fallback: hdiutil (always available on macOS) — needs the Applications
+    # symlink staged manually since hdiutil won't create one.
+    ln -s /Applications "$DMG_STAGING/Applications"
     hdiutil create \
         -volname "Watchtower" \
         -srcfolder "$DMG_STAGING" \
@@ -443,7 +446,7 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
     rm -rf "$DMG_STAGING"
     mkdir -p "$DMG_STAGING"
     cp -R "$APP_BUNDLE" "$DMG_STAGING/"
-    ln -s /Applications "$DMG_STAGING/Applications"
+    # No manual Applications symlink — see the first DMG block.
 
     if command -v create-dmg &>/dev/null; then
         create-dmg \
@@ -462,6 +465,7 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
                 [ $? -eq 2 ] || exit 1
             }
     else
+        ln -s /Applications "$DMG_STAGING/Applications"
         hdiutil create \
             -volname "Watchtower" \
             -srcfolder "$DMG_STAGING" \
