@@ -1,5 +1,6 @@
 import GRDB
 import Observation
+import os
 import SwiftUI
 import WatchtowerKit
 
@@ -24,11 +25,28 @@ final class RecordingsViewModel {
     /// `MeetingTranscript.recap` re-decodes JSON on every access — the rows
     /// carry booleans, and only the open detail decodes.
     private(set) var rows: [RecordingRow] = []
+    /// Local captures on their way to the Mac (the `phone_recordings`
+    /// ledger), newest first — the "On this phone" section.
+    private(set) var phoneRows: [PhoneRecording] = []
     private var transcriptsByID: [Int: MeetingTranscript] = [:]
     private var cancellable: AnyDatabaseCancellable?
+    private var phoneCancellable: AnyDatabaseCancellable?
+    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RecordingsViewModel")
 
     func start(store: ReplicaStore) {
         guard cancellable == nil else { return }
+        phoneCancellable = ValueObservation
+            .tracking { db in try store.phoneRecordings(from: db) }
+            .start(
+                in: store.reader,
+                scheduling: .async(onQueue: .main),
+                onError: { error in
+                    Self.logger.error("phone recordings observation error: \(error.localizedDescription, privacy: .public)")
+                },
+                onChange: { [weak self] value in
+                    MainActor.assumeIsolated { self?.phoneRows = value }
+                }
+            )
         cancellable = ReplicaObserver.observe(
             MeetingTranscript.self, kind: .meetingTranscript, in: store
         ) { [weak self] items in
@@ -288,24 +306,150 @@ struct RecordingsView: View {
     @State private var model = RecordingsViewModel()
 
     var body: some View {
-        List(model.rows) { row in
-            NavigationLink {
-                RecordingDetailView(recordingID: row.id, model: model)
-            } label: {
-                RecordingRowView(row: row)
+        List {
+            Section("On this phone") {
+                RecordButtonView(recorder: env.phoneRecorder)
+                ForEach(model.phoneRows) { row in
+                    PhoneRecordingRowView(row: row)
+                }
             }
-        }
-        .overlay {
-            if model.rows.isEmpty {
-                ContentUnavailableView(
-                    "No recordings",
-                    systemImage: "waveform.slash",
-                    description: Text("Meetings you record on your Mac show up here.")
-                )
+            Section("Transcripts") {
+                if model.rows.isEmpty {
+                    ContentUnavailableView(
+                        "No recordings",
+                        systemImage: "waveform.slash",
+                        description: Text("Meetings you record on your Mac — and transcripts of phone recordings — show up here.")
+                    )
+                }
+                ForEach(model.rows) { row in
+                    NavigationLink {
+                        RecordingDetailView(recordingID: row.id, model: model)
+                    } label: {
+                        RecordingRowView(row: row)
+                    }
+                }
             }
         }
         .navigationTitle("Recordings")
         .onAppear { model.start(store: env.store) }
+    }
+}
+
+// MARK: - Phone capture
+
+/// The voice-memo-style Record toggle (owner default: this tab only, no
+/// Today quick action). Elapsed time ticks while recording; a denied mic
+/// permission or a start failure reads inline instead of failing silently.
+struct RecordButtonView: View {
+    let recorder: PhoneRecorderController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                Task { await recorder.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: recorder.isRecording ? "stop.circle.fill" : "record.circle")
+                        .font(.title2)
+                        .foregroundStyle(.red)
+                    if case .recording(let startedAt) = recorder.state {
+                        Text("Recording")
+                            .font(.subheadline.weight(.semibold))
+                        ElapsedLabel(since: startedAt)
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Record")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            if case .denied = recorder.state {
+                Text("Microphone access is off. Enable it in Settings → Privacy → Microphone.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let error = recorder.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Elapsed-time ticker for the active capture.
+private struct ElapsedLabel: View {
+    let since: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: since, by: 1)) { context in
+            let seconds = max(0, Int(context.date.timeIntervalSince(since)))
+            Text(RecordingFormatting.duration(seconds))
+        }
+    }
+}
+
+/// One local capture with its upload state: recorded (waiting) → uploading →
+/// sent to Mac (delivered) / failed (+ retry). Delivered rows disappear into
+/// the Transcripts section once the Mac finishes transcribing.
+struct PhoneRecordingRowView: View {
+    @Environment(AppEnvironment.self) private var env
+    let row: PhoneRecording
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "iphone")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(row.titleHint ?? "Phone recording")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+            }
+            HStack(spacing: 6) {
+                Text(RecordingFormatting.duration(row.durationSec))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                stateBadge
+            }
+            if row.state == .failed, let message = row.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 2)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                Task { try? await env.recordingUploader.discard(id: row.id) }
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
+            if row.state == .failed {
+                Button {
+                    Task { try? await env.recordingUploader.retryFailed(id: row.id) }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var stateBadge: some View {
+        switch row.state {
+        case .waiting:
+            Badge(text: "waiting to upload", color: .gray)
+        case .uploading:
+            Badge(text: "uploading", color: .blue)
+        case .delivered:
+            Badge(text: "sent to Mac", color: .green)
+        case .failed:
+            Badge(text: "failed", color: .red)
+        }
     }
 }
 

@@ -5,10 +5,15 @@
 	<!-- Merged into the generated Info.plist (GENERATE_INFOPLIST_FILE=YES + INFOPLIST_FILE):
 	     keys here win, everything else stays generated. Kept as a file because array
 	     keys like UIBackgroundModes have no INFOPLIST_KEY_ build-setting equivalent. -->
-	<!-- Silent CloudKit pushes (content-available) may wake the app in the background to run the hydrator. -->
+	<!-- Silent CloudKit pushes (content-available) may wake the app in the background to run the hydrator.
+	     "audio" keeps an active AVAudioSession capture (phone recording) alive through lock/background. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<string>audio</string>
 	</array>
+	<!-- Phone recording (Recordings tab) captures meeting/voice audio locally. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Watchtower records audio so your Mac can transcribe it.</string>
 </dict>
 </plist>

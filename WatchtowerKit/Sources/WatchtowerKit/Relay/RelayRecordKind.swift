@@ -7,6 +7,7 @@ public enum RelayRecordKind: String, CaseIterable {
     case chatMessage = "chat_message"
     case chatChunk = "chat_chunk"
     case heartbeat
+    case recordingUpload = "recording_upload"
 }
 
 /// Cross-platform CloudKit constants.

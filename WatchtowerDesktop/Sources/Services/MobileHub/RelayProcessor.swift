@@ -18,6 +18,16 @@ final class RelayProcessor: Sendable {
     private let aiService: any AIServiceProtocol
     /// Main DB path handed to the AI CLI so chat can query it; nil in tests.
     private let dbPath: String?
+    /// Where phone recording uploads land as `rec_*.m4a` + `.meta` —
+    /// MeetingRecorderCenter's own recordings directory in production,
+    /// a temp directory in tests.
+    private let recordingsDirectory: URL
+    /// Fired after a phone recording was ingested (file + sidecar on disk,
+    /// `received` acked): `(audioURL, titleHint)`. AppState wires it to
+    /// `MeetingRecorderCenter.ingestPhoneRecording` so the existing job
+    /// queue picks the file up immediately; nil (tests, headless) leaves the
+    /// recording to the recovered-recordings flow on next launch.
+    private let onRecordingIngested: (@Sendable (URL, String?) -> Void)?
     /// Minimum spacing between non-final chat chunks (pseudo-streaming cadence).
     private let chunkInterval: Duration
     /// Watchdog window: max silence between stream events before the chat
@@ -48,6 +58,8 @@ final class RelayProcessor: Sendable {
         sidecar: HubSyncState,
         aiService: any AIServiceProtocol,
         dbPath: String? = nil,
+        recordingsDirectory: URL = MeetingRecorderCenter.defaultRecordingsDirectory(),
+        onRecordingIngested: (@Sendable (URL, String?) -> Void)? = nil,
         chunkInterval: Duration = .milliseconds(1500),
         streamTimeout: Duration = .seconds(300),
         now: @escaping @Sendable () -> Date = { Date() }
@@ -57,6 +69,8 @@ final class RelayProcessor: Sendable {
         self.sidecar = sidecar
         self.aiService = aiService
         self.dbPath = dbPath
+        self.recordingsDirectory = recordingsDirectory
+        self.onRecordingIngested = onRecordingIngested
         self.chunkInterval = chunkInterval
         self.streamTimeout = streamTimeout
         self.now = now
@@ -80,6 +94,8 @@ final class RelayProcessor: Sendable {
                 if try await processAction(record) { applied += 1 }
             case RelayRecordKind.chatMessage.rawValue:
                 try await processChatMessage(record)
+            case RelayRecordKind.recordingUpload.rawValue:
+                try await processRecordingUpload(record)
             default:
                 // Our own write-backs (chat chunks) and future kinds pass through.
                 continue
@@ -135,6 +151,81 @@ final class RelayProcessor: Sendable {
         return applied
     }
 
+    // MARK: - Phone recording ingest
+
+    /// Ingests one phone `recording_upload`: validates the CKAsset file,
+    /// drops `rec_*.m4a` + `.meta` into the recordings directory via
+    /// `MeetingRecorderCenter.ingestExternalRecording` (the crash-recovery
+    /// family — never a second transcription path), writes back `received`
+    /// (or `failed` + message), marks the record processed, and fires
+    /// `onRecordingIngested` so the running app enqueues transcription.
+    ///
+    /// Ordering mirrors `processAction`: ack save FIRST, processed-set mark
+    /// second. A crash between the file copy and the mark replays the batch
+    /// and re-copies under a fresh unique name — a rare duplicate recording,
+    /// accepted over the inverse (marking first): a processed-but-unacked
+    /// record would leave the phone re-uploading forever with every retry
+    /// silently swallowed.
+    private func processRecordingUpload(_ record: CloudRecord) async throws {
+        let upload: RecordingUploadPayload
+        do {
+            upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
+        } catch {
+            logger.warning("""
+                undecodable recording upload record \(record.recordName, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return
+        }
+        // Echo of our own status write-back (same recordName, received/failed).
+        guard upload.status == .pending else { return }
+        guard try !sidecar.isRelayProcessed(record.recordName) else { return }
+
+        var result = upload
+        var ingested: URL?
+        do {
+            let audioURL = try ingestAsset(of: record, titleHint: upload.titleHint)
+            ingested = audioURL
+            result.status = .received
+        } catch {
+            result.status = .failed
+            result.errorMessage = error.localizedDescription
+            logger.warning("""
+                recording upload \(record.recordName, privacy: .public) failed: \
+                \(error.localizedDescription, privacy: .public)
+                """)
+        }
+        // The write-back carries NO asset — rewriting the record is what
+        // drops the audio from iCloud once the file is safe on this Mac.
+        try await transport.save([
+            try CloudRecordFactory.record(for: result, modifiedAt: now(), assetFileURL: nil)
+        ])
+        try sidecar.markRelayProcessed(record.recordName, at: now())
+        lastActivity.withLock { $0 = now() }
+        if let ingested {
+            // The transport's stashed asset copy is consumed; best-effort.
+            if let asset = record.assetFileURL {
+                try? FileManager.default.removeItem(at: asset)
+            }
+            onRecordingIngested?(ingested, upload.titleHint)
+        }
+    }
+
+    /// Validates the record's asset file and lands it in the recordings
+    /// directory. Throws `RelayRecordingError` — whose description becomes
+    /// the `failed` echo's message — for a missing or empty asset.
+    private func ingestAsset(of record: CloudRecord, titleHint: String?) throws -> URL {
+        guard let assetURL = record.assetFileURL,
+              FileManager.default.fileExists(atPath: assetURL.path) else {
+            throw RelayRecordingError.assetMissing
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: assetURL.path)[.size] as? Int64) ?? 0
+        guard size > 0 else { throw RelayRecordingError.assetEmpty }
+        return try MeetingRecorderCenter.ingestExternalRecording(
+            from: assetURL, title: titleHint, in: recordingsDirectory, date: now()
+        )
+    }
+
     // MARK: - Hygiene (relay retention)
 
     /// Daily retention pass over the relay zone: action records older than
@@ -169,6 +260,18 @@ final class RelayProcessor: Sendable {
                 if let action = try? RelayCoder.makeDecoder().decode(
                     ActionRequestPayload.self, from: record.payload
                 ), action.status == .pending,
+                   !(try sidecar.isRelayProcessed(record.recordName)) {
+                    break
+                }
+                stale.append(record.recordName)
+            case RelayRecordKind.recordingUpload.rawValue where age > Self.actionMaxAge:
+                // Same guard as actions: a still-pending upload that was never
+                // processed must survive for processOnce to ingest — mobile
+                // would otherwise wait on an ack that can never come. Our own
+                // received/failed write-backs purge by age alone.
+                if let upload = try? RelayCoder.makeDecoder().decode(
+                    RecordingUploadPayload.self, from: record.payload
+                ), upload.status == .pending,
                    !(try sidecar.isRelayProcessed(record.recordName)) {
                     break
                 }
@@ -588,6 +691,23 @@ enum RelayChatError: Error, LocalizedError, Equatable {
         switch self {
         case .streamTimeout:
             return "chat stream timed out"
+        }
+    }
+}
+
+/// Why a phone recording upload could not be ingested. `errorDescription`
+/// becomes the `errorMessage` echoed back to mobile in the failed status
+/// record — the phone keeps its local copy and may retry.
+enum RelayRecordingError: Error, LocalizedError, Equatable {
+    case assetMissing
+    case assetEmpty
+
+    var errorDescription: String? {
+        switch self {
+        case .assetMissing:
+            return "recording asset is missing"
+        case .assetEmpty:
+            return "recording asset is empty"
         }
     }
 }

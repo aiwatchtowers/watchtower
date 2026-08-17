@@ -8,15 +8,24 @@ import os
 /// Pure GRDB — fully unit-testable without CloudKit.
 public final class TransportStore: Sendable {
     private let queue: DatabaseQueue
+    /// Durable copies of fetched CKAsset files live here (next to the DB) —
+    /// CloudKit's own staged asset files are temporary and may vanish before
+    /// the buffered event is consumed. nil for in-memory stores (tests),
+    /// which have no fetched assets to stash.
+    private let assetsDirectory: URL?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "TransportStore")
 
     public init(path: String) throws {
         queue = try DatabaseQueue(path: path)
+        assetsDirectory = URL(fileURLWithPath: path)
+            .deletingLastPathComponent()
+            .appendingPathComponent("transport-assets", isDirectory: true)
         try createSchema()
     }
 
     private init(queue: DatabaseQueue) throws {
         self.queue = queue
+        assetsDirectory = nil
         try createSchema()
     }
 
@@ -42,7 +51,8 @@ public final class TransportStore: Sendable {
                     modified_at REAL NOT NULL DEFAULT 0,
                     payload BLOB,
                     deleted INTEGER NOT NULL DEFAULT 0,
-                    notify_level TEXT
+                    notify_level TEXT,
+                    asset_path TEXT
                 );
                 CREATE TABLE IF NOT EXISTS pending (
                     record_name TEXT NOT NULL,
@@ -52,6 +62,7 @@ public final class TransportStore: Sendable {
                     payload BLOB,
                     deleted INTEGER NOT NULL DEFAULT 0,
                     notify_level TEXT,
+                    asset_path TEXT,
                     PRIMARY KEY (record_name, zone)
                 );
                 CREATE TABLE IF NOT EXISTS engine_state (
@@ -65,13 +76,14 @@ public final class TransportStore: Sendable {
                     PRIMARY KEY (record_name, zone)
                 );
                 """)
-            // Plan 6: notify_level arrived after store files could already
-            // exist on disk. CREATE TABLE IF NOT EXISTS cannot add a column,
-            // so patch pre-Plan-6 tables in place.
+            // notify_level (Plan 6) and asset_path (phone recording uploads)
+            // arrived after store files could already exist on disk.
+            // CREATE TABLE IF NOT EXISTS cannot add a column, so patch older
+            // tables in place.
             for table in ["events", "pending"] {
-                let hasColumn = try db.columns(in: table).contains { $0.name == "notify_level" }
-                if !hasColumn {
-                    try db.execute(sql: "ALTER TABLE \(table) ADD COLUMN notify_level TEXT")
+                let columns = try db.columns(in: table).map(\.name)
+                for column in ["notify_level", "asset_path"] where !columns.contains(column) {
+                    try db.execute(sql: "ALTER TABLE \(table) ADD COLUMN \(column) TEXT")
                 }
             }
         }
@@ -84,19 +96,21 @@ public final class TransportStore: Sendable {
             for record in records {
                 try db.execute(
                     sql: """
-                        INSERT INTO pending (record_name, zone, kind, modified_at, payload, deleted, notify_level)
-                        VALUES (?, ?, ?, ?, ?, 0, ?)
+                        INSERT INTO pending
+                            (record_name, zone, kind, modified_at, payload, deleted, notify_level, asset_path)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                         ON CONFLICT(record_name, zone) DO UPDATE SET
                             kind = excluded.kind,
                             modified_at = excluded.modified_at,
                             payload = excluded.payload,
                             deleted = 0,
-                            notify_level = excluded.notify_level
+                            notify_level = excluded.notify_level,
+                            asset_path = excluded.asset_path
                         """,
                     arguments: [
                         record.recordName, record.zone.rawValue, record.kind,
                         record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel
+                        record.notifyLevel, record.assetFileURL?.path
                     ]
                 )
             }
@@ -149,7 +163,8 @@ public final class TransportStore: Sendable {
                     kind: row["kind"],
                     modifiedAt: Date(timeIntervalSince1970: row["modified_at"] ?? 0),
                     payload: row["payload"] ?? Data(),
-                    notifyLevel: row["notify_level"]
+                    notifyLevel: row["notify_level"],
+                    assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:))
                 ))
             }
         }
@@ -199,13 +214,14 @@ public final class TransportStore: Sendable {
             for record in records {
                 try db.execute(
                     sql: """
-                        INSERT INTO events (zone, record_name, kind, modified_at, payload, deleted, notify_level)
-                        VALUES (?, ?, ?, ?, ?, 0, ?)
+                        INSERT INTO events
+                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                         """,
                     arguments: [
                         record.zone.rawValue, record.recordName, record.kind,
                         record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel
+                        record.notifyLevel, record.assetFileURL?.path
                     ]
                 )
             }
@@ -257,11 +273,42 @@ public final class TransportStore: Sendable {
                         kind: row["kind"],
                         modifiedAt: Date(timeIntervalSince1970: row["modified_at"] ?? 0),
                         payload: row["payload"] ?? Data(),
-                        notifyLevel: row["notify_level"]
+                        notifyLevel: row["notify_level"],
+                        assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:))
                     ))
                 }
             }
             return CloudChangeBatch(changed: changed, deletedRecordNames: deleted, newToken: CloudChangeToken(value: maxSeq))
+        }
+    }
+
+    // MARK: - Fetched-asset stash
+
+    /// Copies a fetched CKAsset file into the store's durable asset
+    /// directory, named after the record so a re-fetch overwrites rather
+    /// than accumulates. Returns the stashed URL, or nil when there is
+    /// nowhere to stash (in-memory store) or the copy failed — callers keep
+    /// the original (temporary) URL in that case, best-effort. The consumer
+    /// (the desktop hub) deletes the stashed file once ingested.
+    func stashAsset(from url: URL, recordName: String) -> URL? {
+        guard let assetsDirectory else { return nil }
+        // Record names are `recupload-<uuid>` shaped, but sanitize anyway:
+        // a path separator in a name must not escape the stash directory.
+        let safeName = recordName.replacingOccurrences(of: "/", with: "_")
+        let destination = assetsDirectory.appendingPathComponent(safeName)
+        do {
+            try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: url, to: destination)
+            return destination
+        } catch {
+            logger.warning("""
+                failed to stash fetched asset for \(recordName, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+            return nil
         }
     }
 

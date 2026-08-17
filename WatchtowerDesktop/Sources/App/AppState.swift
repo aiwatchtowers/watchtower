@@ -706,12 +706,24 @@ final class AppState {
         if let states = latestFeatureStates {
             publisher.updateFeatureStates(states)
         }
+        // A phone recording landed in the recordings directory (file +
+        // sidecar already on disk): hand it to the existing transcription
+        // queue. If the app quits before the job runs, the sidecar
+        // resurfaces it through the recovered-recordings flow on launch.
+        let onRecordingIngested: @Sendable (URL, String?) -> Void = { [weak self] audioURL, titleHint in
+            Task { @MainActor in
+                await self?.meetingRecorderCenter.ingestPhoneRecording(
+                    audioURL: audioURL, title: titleHint, config: .fromDefaults()
+                )
+            }
+        }
         let processor = RelayProcessor(
             dbPool: dbPool,
             transport: transport,
             sidecar: sidecar,
             aiService: WatchtowerAIService(),
-            dbPath: dbPool.path
+            dbPath: dbPool.path,
+            onRecordingIngested: onRecordingIngested
         )
         return MobileHubService(
             transport: transport,

@@ -47,6 +47,16 @@ public final class AppEnvironment {
     /// the pending overlay rows it writes drive the optimistic UI.
     public let outbox: ActionOutbox
 
+    /// The recording upload state machine (Workstream 1): the recorder
+    /// controller registers finalized captures here; the feed routes hub
+    /// acks back; the local file is deleted only on a `received` ack.
+    public let recordingUploader: RecordingUploader
+
+    /// Phone audio capture (Recordings tab). Owned HERE for the app's
+    /// lifetime (async-ops-survive-navigation rule): an in-flight recording
+    /// must survive navigating away from the Recordings screen.
+    let phoneRecorder: PhoneRecorderController
+
     /// The phone's chat endpoint (Plan 4 Tasks 5+7): the Chat composer sends
     /// THROUGH this — the assembler is the ONLY chat-table writer, no view
     /// model touches `chat_sessions`/`chat_messages` directly — and the feed
@@ -195,6 +205,9 @@ public final class AppEnvironment {
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: transport, store: store)
         self.outbox = outbox
+        let uploader = RecordingUploader(transport: transport, store: store)
+        recordingUploader = uploader
+        phoneRecorder = PhoneRecorderController(uploader: uploader)
         let chat = ChatAssembler(transport: transport, store: store)
         self.chat = chat
         directAgent = DirectAPIAgent(
@@ -212,6 +225,7 @@ public final class AppEnvironment {
             store: store,
             outbox: outbox,
             assembler: chat,
+            uploads: uploader,
             pull: pull,
             // The flicker-window mitigation: an `applied` echo clears the
             // optimistic overlay, and without a nudge the row would show its
@@ -261,6 +275,14 @@ public final class AppEnvironment {
             }
         }
         await refresh()
+        // Relaunch retry (Workstream 1): re-send every recording the hub has
+        // not acknowledged yet. Errors only log — the row stays for the next
+        // pass, and a stop-triggered upload retries within the session.
+        do {
+            _ = try await recordingUploader.uploadPending()
+        } catch {
+            Self.logger.warning("recording upload retry failed: \(error.localizedDescription, privacy: .public)")
+        }
         await hydrator.start()
         await feed.start()
         scheduleSilentPendingSweep()

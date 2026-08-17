@@ -338,6 +338,13 @@ The phone's Inbox tab is the same secretary dashboard as the desktop's: a ranked
 
 From the Today tab, the "Catch up" section's **Digests** row opens a read-only digest feed (no seventh tab): Slack digests (per-channel plus daily/weekly rollups) and Gmail/Jira stream digests, merged newest first. A blue dot marks unread digests. A Slack digest opens into its summary and topics, each with its decisions; a stream digest opens into its topics with decision and idea candidates. Opening a digest marks it read — the mark is relayed to this Mac (the same relay actions use), so read state stays in sync on both devices; generation, editing, and deletion stay on the Mac.
 
+### Recordings (phone)
+
+The Recordings screen (reached from Today's calendar section) has two parts:
+
+- **On this phone** — a voice-memo-style **Record** button (this screen only; there is no Today quick action). Recording continues through lock/background, and a phone call stops and saves the segment instead of losing it. Each finished capture is stored locally first and uploaded to your Mac through iCloud, with a per-recording state: **waiting to upload → uploading → sent to Mac**, or **failed** with the Mac's reason and a swipe **Retry**. The local audio is deleted only after the Mac confirms it received the file — killing the app or losing network never loses a recording (uploads resume on next launch). Swipe **Remove** discards a local recording. A tap on Record followed by an immediate stop (under a second) is discarded as a misfire. Microphone permission is asked on first use.
+- **Transcripts** — the read-only list of transcribed meetings mirrored from the Mac, unchanged. A phone recording lands here once the Mac transcribes it: the file joins the Mac's normal recordings pipeline (same queue as local recordings; if the desktop app is closed when the file arrives, it is offered through the recovered-recordings flow on next launch) and the finished transcript syncs back like any other.
+
 ### Sync transport
 
 The phone picks its data source automatically at launch — there is nothing to configure. The app probes its own code signature for the iCloud entitlement: signed builds (TestFlight / device) connect to your private iCloud (CloudKit) and hydrate their local replica from the data this Mac publishes; unsigned development builds (simulator, CI) fall back to built-in demo data. The iOS Settings tab shows which path won in the "Sync" row: **iCloud** or **Demo**. Real sync requires the phone and the Mac to be signed in to the same Apple ID; all data stays in your private CloudKit zone — nothing goes through third-party servers.
