@@ -17,11 +17,12 @@ enum OnboardingCompletion {
     /// `completeOnboarding`, and `onRetry` never run, and the overall result
     /// is `false` — instead of the state machine silently believing
     /// onboarding is done while `user_profile.onboarding_done` never
-    /// actually flipped: `completeOnboarding()` clears the persisted step,
-    /// so the NEXT launch would otherwise reconcile against a still-false DB
-    /// flag and force the user through nearly the whole flow again via
-    /// `skipCompleted()`. The caller (the splash) is expected to show an
-    /// inline retry instead of silently swallowing the failure.
+    /// actually flipped (`markComplete()` persists `.complete` locally, so
+    /// the divergence would otherwise be invisible on this machine and only
+    /// resurface after a defaults wipe or on another install). The caller
+    /// (the splash) is expected to show an inline retry instead of silently
+    /// swallowing the failure; the global "Skip setup" escape hatch remains
+    /// the deliberate best-effort bypass.
     @MainActor
     @discardableResult
     static func finish(

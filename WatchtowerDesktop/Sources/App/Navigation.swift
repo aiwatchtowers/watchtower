@@ -9,7 +9,7 @@ struct NavigationRoot: View {
             SplashView()
         } else if appState.needsOnboarding {
             OnboardingView {
-                appState.initialize()
+                appState.reinitializeAfterOnboarding()
             }
         } else {
             MainNavigationView()

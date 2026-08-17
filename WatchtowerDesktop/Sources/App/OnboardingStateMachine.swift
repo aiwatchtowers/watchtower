@@ -15,12 +15,13 @@ enum OnboardingStep: Int, CaseIterable, Comparable, Codable {
 
     // Persisted-rawValue note: `onboarding_current_step` stores the raw Int,
     // and inserting `.features` at 6 shifted `.complete` to 7. No install can
-    // actually be carrying the old 6 — `.complete` is only ever reached
-    // through `markComplete()`, which REMOVES the key instead of storing it,
-    // and nothing in production calls `advance()` or `goTo(.complete)`. This
-    // is a defensive note, not a live upgrade path: a stored 6 would resume
-    // at `.features`, whose own `.task` builds the view model that step needs.
-    // No migration code needed.
+    // actually be carrying the old 6 as "complete" — every RELEASED build's
+    // `markComplete()` removed the key instead of storing it (the key now
+    // persists `.complete` = 7, but that shipped together with this
+    // renumbering), and nothing in production calls `advance()` or
+    // `goTo(.complete)`. This is a defensive note, not a live upgrade path:
+    // a stored 6 would resume at `.features`, whose own `.task` builds the
+    // view model that step needs. No migration code needed.
 
     static func < (lhs: Self, rhs: Self) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -97,12 +98,15 @@ final class OnboardingStateMachine {
         persist()
     }
 
-    /// Mark onboarding as fully complete and clean up UserDefaults.
+    /// Mark onboarding as fully complete. Completion is PERSISTED (the step key keeps
+    /// `.complete`) so a relaunch never re-enters onboarding, even if the DB profile
+    /// row is missing (e.g. Slack was never connected). Only the transient sync/chat
+    /// flags are cleared.
     func markComplete() {
         currentStep = .complete
         syncCompleted = false
         chatFinished = false
-        UserDefaults.standard.removeObject(forKey: Self.stepKey)
+        UserDefaults.standard.set(OnboardingStep.complete.rawValue, forKey: Self.stepKey)
         UserDefaults.standard.removeObject(forKey: Self.syncCompletedKey)
         UserDefaults.standard.removeObject(forKey: Self.chatFinishedKey)
     }

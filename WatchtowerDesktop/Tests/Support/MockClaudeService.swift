@@ -17,11 +17,22 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private var _providers: [String?] = []
     /// Every provider passed to `stream`, in call order.
     package var providers: [String?] { lock.withLock { _providers } }
+    private var _sessionIDs: [String?] = []
+    /// Every sessionID passed to `stream`, in call order.
+    package var sessionIDs: [String?] { lock.withLock { _sessionIDs } }
 
     package init(events: [StreamEvent] = [.text("Hello from Claude"), .done]) {
         self.events = events
         self.eventSequence = []
         self.error = nil
+    }
+
+    /// Create a mock that yields `events` first, then fails the stream —
+    /// simulates a mid-stream error after partial output.
+    package init(events: [StreamEvent], thenError: any Error) {
+        self.events = events
+        self.eventSequence = []
+        self.error = thenError
     }
 
     /// Create a mock that returns different events for each successive call.
@@ -49,6 +60,7 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         lock.withLock {
             _prompts.append(prompt)
             _providers.append(provider)
+            _sessionIDs.append(sessionID)
         }
         let eventsToUse: [StreamEvent]
         if !eventSequence.isEmpty {
@@ -61,14 +73,14 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         let error = self.error
         return AsyncThrowingStream { continuation in
             Task {
-                if let error {
-                    continuation.finish(throwing: error)
-                    return
-                }
                 for event in eventsToUse {
                     continuation.yield(event)
                 }
-                continuation.finish()
+                if let error {
+                    continuation.finish(throwing: error)
+                } else {
+                    continuation.finish()
+                }
             }
         }
     }

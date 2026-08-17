@@ -501,6 +501,20 @@ final class AppState {
         }
     }
 
+    /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
+    /// but only when the launch-time bootstrap left the app without a database —
+    /// the one case where the DB, feature view models, and daemon are still
+    /// unwired. When the app initialized normally (e.g. a Settings-triggered
+    /// onboarding redo), everything is already wired and a re-run would only
+    /// restart the daemon mid-cycle and stack a duplicate terminate observer.
+    /// `initialize()` latches on `isInitializing` to keep window-reopen
+    /// `onAppear` calls idempotent; this is the one legitimate re-entry point.
+    func reinitializeAfterOnboarding() {
+        guard databaseManager == nil else { return }
+        isInitializing = false
+        initialize()
+    }
+
     /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
     private func initSidebarCounts(dbPool: DatabasePool) async {
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
