@@ -15,6 +15,12 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case meetingTranscript = "meeting_transcript"
     case dayPlan = "day_plan"
     case dayPlanItem = "day_plan_item"
+    // Connected-accounts status (read-only on the phone by owner decision,
+    // 2026-08-17): one record per desktop account row, published as a
+    // PROJECTION — identity/label, status, error, enablement; never tokens.
+    case slackAccount = "slack_account"
+    case googleAccount = "google_account"
+    case jiraAccount = "jira_account"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"
