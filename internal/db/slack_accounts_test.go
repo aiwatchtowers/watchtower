@@ -150,7 +150,7 @@ func TestSlackAccount_SearchWatermark_RoundTrip(t *testing.T) {
 func TestSlackAccount_ListOwnerSlackUserIDs(t *testing.T) {
 	d := openTestDB(t)
 
-	enabledID, err := d.CreateSlackAccount(SlackAccount{Label: "Enabled", CurrentUserID: "1:U1"})
+	_, err := d.CreateSlackAccount(SlackAccount{Label: "Enabled", CurrentUserID: "1:U1"})
 	require.NoError(t, err)
 
 	disabledID, err := d.CreateSlackAccount(SlackAccount{Label: "Disabled", CurrentUserID: "2:U2"})
@@ -159,8 +159,29 @@ func TestSlackAccount_ListOwnerSlackUserIDs(t *testing.T) {
 
 	ids, err := d.ListOwnerSlackUserIDs()
 	require.NoError(t, err)
-	assert.Equal(t, []string{"1:U1"}, ids)
-	_ = enabledID
+	assert.ElementsMatch(t, []string{"1:U1", "2:U2"}, ids)
+}
+
+// TestSlackAccount_ListOwnerSlackUserIDs_IncludesDisabledAndRemoved pins the
+// audit-medium fix: messages synced before an account was disabled or
+// removed stay in the DB (the non-destructive `slack remove` contract), so
+// excluding a disabled/removed account's own identity here would let the
+// owner's own already-synced messages in that account re-enter
+// stream-candidate triage after disable/remove.
+func TestSlackAccount_ListOwnerSlackUserIDs_IncludesDisabledAndRemoved(t *testing.T) {
+	d := openTestDB(t)
+
+	disabledID, err := d.CreateSlackAccount(SlackAccount{Label: "Disabled", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetSlackAccountEnabled(disabledID, false))
+
+	removedID, err := d.CreateSlackAccount(SlackAccount{Label: "Removed", CurrentUserID: "2:U2"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetSlackAccountRemoved(removedID))
+
+	ids, err := d.ListOwnerSlackUserIDs()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"1:U1", "2:U2"}, ids)
 }
 
 // TestSlackAccount_ListOwnerSlackUserIDs_EmptyCurrentUserExcluded covers the
