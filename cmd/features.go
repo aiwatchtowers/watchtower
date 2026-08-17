@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -377,8 +379,19 @@ func toggleableFeatureIDs() []string {
 func setConfigKey(configPath, key string, value any) error {
 	v := viper.New()
 	v.SetConfigFile(configPath)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("reading config: %w", err)
+	// A Desktop-only install (no Slack OAuth flow yet) has no config.yaml, so
+	// the very first `features enable/disable` — including the onboarding
+	// feature splash's apply() — would fail here with nothing to write against.
+	// Tolerate a missing file: skip the read and create it (dir included) so a
+	// feature toggle is never blocked on the config not existing yet.
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("reading config: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("checking config: %w", statErr)
+	} else if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
 	}
 	v.Set(key, value)
 	return writeConfigAtomic(v, configPath)
