@@ -125,6 +125,7 @@ final class DigestViewModel {
     private(set) var currentUserID: String?
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
+    private var streamsObservationTask: Task<Void, Never>?
     private var decisionsObservationTask: Task<Void, Never>?
     private var decisionsPollTask: Task<Void, Never>?
     /// GRDB ValueObservation cannot see writes from the Go daemon (separate
@@ -153,6 +154,22 @@ final class DigestViewModel {
                 }
             } catch {}
         }
+        // D9: new stream digests (Gmail/Jira, mined by the Go daemon's
+        // ideas.digest_email/ideas.digest_jira passes) must surface in an
+        // already-open Digests tab the same way a new Slack digest does —
+        // mirrors the `digests` observation above, wired to reloadStreams()
+        // instead of the full load().
+        streamsObservationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests") ?? 0
+            }
+            do {
+                for try await _ in observation.values(in: dbPool).dropFirst() {
+                    guard !Task.isCancelled else { break }
+                    self?.reloadStreams()
+                }
+            } catch {}
+        }
         decisionsObservationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind = 'decision'") ?? 0
@@ -167,7 +184,7 @@ final class DigestViewModel {
         startDecisionsPolling()
     }
 
-    /// Drops the two observations and the ledger poll — called when the
+    /// Drops the observations and the ledger poll — called when the
     /// Digests screen goes away, so a backgrounded tab stops waking up every
     /// 30 s to re-read the ledger. Safe to pair with `startObserving()` in
     /// any order: both are idempotent and `startObserving` reloads on the way
@@ -176,6 +193,8 @@ final class DigestViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+        streamsObservationTask?.cancel()
+        streamsObservationTask = nil
         decisionsObservationTask?.cancel()
         decisionsObservationTask = nil
         decisionsPollTask?.cancel()
