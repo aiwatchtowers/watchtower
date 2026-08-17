@@ -186,6 +186,7 @@ var registry = []Feature{
 		Icon:      "person.2",
 		ConfigKey: "people.enabled",
 		Cost:      CostMedium,
+		FeedsInto: []string{"briefing", "day-plan"},
 		Enabled:   func(cfg *config.Config) bool { return cfg.People.Enabled },
 	},
 	{
@@ -233,6 +234,7 @@ var registry = []Feature{
 		Icon:      "sun.max",
 		ConfigKey: "briefing.enabled",
 		Cost:      CostLight,
+		FeedsInto: []string{"day-plan"},
 		Enabled:   func(cfg *config.Config) bool { return cfg.Briefing.Enabled },
 	},
 	{
