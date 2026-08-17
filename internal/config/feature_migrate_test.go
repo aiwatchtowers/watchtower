@@ -146,6 +146,42 @@ func TestMigrateFeatureGates_ProductDisableAfterMarkerIsNotLegacy(t *testing.T) 
 	assertNoFeatureKeysWritten(t, v, "a product disable must not cascade")
 }
 
+// TestMigrateFeatureGates_PreservesWorkspaceKeyCasing pins the actual
+// corruption the destructive WriteConfigAs rewrite caused on disk: viper
+// lowercases every key when it re-serializes its internal map, including
+// user-supplied ones like `workspaces.<Team>`, while leaving
+// `active_workspace`'s own value cased — so a config that read
+// `workspaces:\n  MyTeam:` before a first-contact marker stamp came back
+// `workspaces:\n  myteam:` after it (confirmed against the old WriteConfigAs
+// path). The marker write must not touch that casing at all — only the
+// `features` node it adds and the `digest`/legacy keys it sets when actually
+// migrating a legacy install.
+//
+// (Separately: viper's own read path lowercases nested map keys too, so
+// `Config.GetActiveWorkspace()` could not resolve a genuinely mixed-case
+// workspace name via `Load()` even from a hand-written, never-migrated
+// file — a pre-existing viper limitation independent of this write-side
+// fix, closed on the read side by GetActiveWorkspace's lowercase fallback;
+// see TestGetActiveWorkspace_CaseInsensitiveLookup_EndToEnd in
+// config_test.go.)
+func TestMigrateFeatureGates_PreservesWorkspaceKeyCasing(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	original := "active_workspace: MyTeam\n" +
+		"workspaces:\n" +
+		"  MyTeam:\n" +
+		"    slack_token: xoxb-test\n"
+	require.NoError(t, os.WriteFile(p, []byte(original), 0o600))
+
+	migrated, err := MigrateFeatureGates(p)
+	require.NoError(t, err)
+	assert.False(t, migrated, "digest.enabled absent is not a legacy install")
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "MyTeam:", "the workspace key's original casing must survive the marker write")
+	assert.NotContains(t, string(after), "myteam:", "the write must not introduce a lowercased duplicate key")
+}
+
 func TestMigrateFeatureGates_NoFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "absent.yaml")
 	migrated, err := MigrateFeatureGates(p)

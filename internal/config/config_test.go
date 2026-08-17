@@ -165,6 +165,52 @@ func TestGetActiveWorkspace_NoActive(t *testing.T) {
 	assert.Contains(t, err.Error(), "no active workspace")
 }
 
+// TestGetActiveWorkspace_CaseInsensitiveLookup pins the fallback lookup: an
+// exact-case match is preferred, but a lowercased match resolves too — the
+// shape viper's Unmarshal always produces for a mixed-case workspaces key
+// (insensitiviseMap lowercases nested map keys on read, unconditionally).
+func TestGetActiveWorkspace_CaseInsensitiveLookup(t *testing.T) {
+	cfg := &Config{
+		ActiveWorkspace: "MyTeam",
+		Workspaces: map[string]*WorkspaceConfig{
+			"myteam": {SlackToken: "xoxp-lowercased"},
+		},
+	}
+	ws, err := cfg.GetActiveWorkspace()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-lowercased", ws.SlackToken)
+
+	// Exact case still wins when both keys happen to exist.
+	cfg.Workspaces["MyTeam"] = &WorkspaceConfig{SlackToken: "xoxp-exact"}
+	ws, err = cfg.GetActiveWorkspace()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-exact", ws.SlackToken)
+}
+
+// TestGetActiveWorkspace_CaseInsensitiveLookup_EndToEnd goes through the
+// real Load() path (not a hand-built Config) for a mixed-case
+// active_workspace/workspaces pair: viper lowercases the nested workspaces
+// key on read regardless of any prior write, so before the fallback this
+// case failed with "workspace not found" even on a config file MigrateFeature
+// Gates never touched. WorkspaceDir must still use ActiveWorkspace's
+// original casing — the lookup fallback must not leak into it.
+func TestGetActiveWorkspace_CaseInsensitiveLookup_EndToEnd(t *testing.T) {
+	path := writeTestConfig(t, "active_workspace: MyTeam\n"+
+		"workspaces:\n"+
+		"  MyTeam:\n"+
+		"    slack_token: xoxb-test\n")
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	ws, err := cfg.GetActiveWorkspace()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxb-test", ws.SlackToken)
+
+	assert.True(t, strings.HasSuffix(cfg.WorkspaceDir(), "/MyTeam"),
+		"WorkspaceDir must keep ActiveWorkspace's original casing, not the lowercased lookup key")
+}
+
 func TestDBPath(t *testing.T) {
 	cfg := &Config{ActiveWorkspace: "my-company"}
 	path := cfg.DBPath()
