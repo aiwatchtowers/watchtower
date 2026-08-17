@@ -353,8 +353,8 @@ func (db *DB) BulkUpdateInboxPriorities(updates map[int]struct {
 // the dedup key alongside channel_id/thread_ts.
 // Keeps the most recently updated item and resolves the rest.
 //
-// Restricted to genuine threads (thread_ts <> '') — non-threaded items all
-// share thread_ts = '', so grouping them by (channel_id, thread_ts,
+// Restricted to genuine threads (thread_ts <> ”) — non-threaded items all
+// share thread_ts = ”, so grouping them by (channel_id, thread_ts,
 // trigger_type) with no guard would collapse every unrelated plain-channel
 // mention in a channel into a single surviving item (audit #112).
 func (db *DB) DeduplicateThreadInboxItems() (int, error) {

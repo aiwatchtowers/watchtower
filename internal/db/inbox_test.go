@@ -979,7 +979,7 @@ func TestDeduplicateThreadInboxItems_PreservesDifferentTriggerTypes(t *testing.T
 }
 
 // TestDeduplicateThreadInboxItems_NonThreadItemsNeverCollapse pins audit
-// #112: every non-threaded item shares thread_ts = '', so without a
+// #112: every non-threaded item shares thread_ts = ”, so without a
 // thread_ts guard the dedup query's GROUP BY (channel_id, thread_ts,
 // trigger_type) treats every plain-channel mention in the same channel as a
 // duplicate of the others and collapses them all down to one. Non-thread
