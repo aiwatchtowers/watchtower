@@ -84,6 +84,9 @@ type featureJSON struct {
 	ID          string          `json:"id"`
 	Title       string          `json:"title"`
 	Description string          `json:"description"`
+	Tagline     string          `json:"tagline"`
+	Benefits    []string        `json:"benefits"`
+	Icon        string          `json:"icon"`
 	State       string          `json:"state"` // enabled | disabled | core
 	Core        bool            `json:"core"`
 	Parent      string          `json:"parent"`
@@ -282,6 +285,9 @@ func toFeatureJSON(f features.Feature, cfg *config.Config) featureJSON {
 		ID:          f.ID,
 		Title:       f.Title,
 		Description: f.Description,
+		Tagline:     f.Tagline,
+		Benefits:    append([]string{}, f.Benefits...),
+		Icon:        f.Icon,
 		State:       featureState(f, cfg),
 		Core:        f.Core,
 		Parent:      f.Parent,

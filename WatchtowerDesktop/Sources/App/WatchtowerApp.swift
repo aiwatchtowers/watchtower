@@ -346,6 +346,18 @@ struct WatchtowerApp: App {
             }
         }
         .defaultSize(width: 1200, height: 800)
+        // Cmd+Q routes through requestQuit: with a sheet presented anywhere,
+        // the stock termination is vetoed by SwiftUI's scene layer before the
+        // app delegate is consulted, leaving the app unquittable until the
+        // popup is dismissed by hand (see TrayAppDelegate.requestQuit).
+        .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Watchtower") {
+                    TrayAppDelegate.requestQuit()
+                }
+                .keyboardShortcut("q", modifiers: .command)
+            }
+        }
 
         Window("Pipeline Progress", id: "progress-detail") {
             ProgressDetailView()
@@ -438,7 +450,21 @@ class OpaqueBackgroundView: NSView {
 
         // Persist window frame (position + size) across launches. The name is
         // also the mount-time half of `TrayAppDelegate.isMainWindow`.
+        //
+        // This synchronous stamp alone is NOT enough: SwiftUI's scene bridge
+        // sets its own autosave name derived from the content view's MANGLED
+        // TYPE NAME ("NSWindow Frame SwiftUI.(unknown context at $…).
+        // SceneBridgeReader<…>-1-AppWindow-1"), overriding ours after mount —
+        // and that key changes with every code change, so after a rebuild the
+        // saved frame is orphaned and the window opens at defaultSize. The
+        // deferred re-stamp lands after the bridge's: restore whatever was
+        // saved under the STABLE name, then keep saving under it.
         window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            window.setFrameUsingName(TrayAppDelegate.mainWindowAutosaveName)
+            window.setFrameAutosaveName(TrayAppDelegate.mainWindowAutosaveName)
+        }
 
         window.isOpaque = true
         window.backgroundColor = .windowBackgroundColor

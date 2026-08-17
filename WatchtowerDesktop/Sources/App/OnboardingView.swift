@@ -69,6 +69,8 @@ struct OnboardingView: View {
                 teamFormStep
             case .generating:
                 generatingStep
+            case .features:
+                featuresStep
             case .complete:
                 EmptyView()
             }
@@ -960,11 +962,12 @@ struct OnboardingView: View {
                     appState.onboarding.goTo(.generating)
                     Task {
                         await vm.generatePromptContext()
-                        await vm.markOnboardingDone()
                         if vm.errorMessage == nil {
-                            appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
-                            appState.completeOnboarding()
-                            onRetry()
+                            // Onboarding isn't done yet — the feature splash
+                            // is next; it (not this closure) now runs the
+                            // completion sequence on its own exit. See
+                            // finishOnboarding() below.
+                            appState.onboarding.goTo(.features)
                         } else if appState.onboarding.currentStep == .generating {
                             // Only bounce back while still on the generating step —
                             // a late-failing generation must not yank a user who
@@ -1015,6 +1018,54 @@ struct OnboardingView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Features Step
+
+    private var featuresStep: some View {
+        FeatureSplashView { await finishOnboarding() }
+            .task {
+                // Ensure VM exists when resuming from a restart at features step.
+                // finishOnboarding() marks onboarding done THROUGH this VM and
+                // counts a nil one as failure, so without this every exit the
+                // splash offers (Continue, "Keep everything on", the inline
+                // retry) would fail forever on a relaunch that lands here.
+                guard onboardingVM == nil else { return }
+                let configSvc = ConfigService()
+                let language = configSvc.digestLanguage ?? settingsLanguage
+                if let db = appState.databaseManager {
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                } else {
+                    // DB not available — need sync first, go back to chat
+                    appState.onboarding.goTo(.chat)
+                }
+            }
+    }
+
+    // MARK: - Onboarding Completion
+
+    /// Runs once, from either of the feature splash's exits (Continue,
+    /// "Keep everything on") — the former team-form completion closure's
+    /// job, moved here now that the splash sits between profile generation
+    /// and completion. The pinned ordering itself lives in
+    /// `OnboardingCompletion.finish`; this just binds it to the view's real
+    /// dependencies. Returns whether onboarding actually finished — the
+    /// splash shows an inline retry on `false` rather than silently moving
+    /// on (a missing `onboardingVM` counts as failure too: there is no VM to
+    /// verify the DB write against, so completing anyway would be the same
+    /// silent-success bug this return value exists to prevent).
+    private func finishOnboarding() async -> Bool {
+        await OnboardingCompletion.finish(
+            markOnboardingDone: {
+                guard let vm = onboardingVM else { return false }
+                return await vm.markOnboardingDone()
+            },
+            startPipelines: {
+                appState.backgroundTaskManager.startPipelines(legacyPeople: appState.analysisLegacyMode)
+            },
+            completeOnboarding: { appState.completeOnboarding() },
+            onRetry: onRetry
+        )
     }
 
     private var syncProgressCompactBanner: some View {
@@ -1270,11 +1321,14 @@ struct OnboardingView: View {
         }
         _ = ensureOnboardingDatabase()
         Task {
-            await onboardingVM?.markOnboardingDone()
-            if let flagError = onboardingVM?.errorMessage {
-                // Best-effort by design (the view is being torn down), but it
-                // must be diagnosable.
-                NSLog("Onboarding skip: markOnboardingDone failed: %@", flagError)
+            // Best-effort by design — unlike the splash's gated
+            // OnboardingCompletion.finish, the skip escape hatch must never
+            // block on the DB flag (completion itself is persisted in
+            // UserDefaults by markComplete()); but a failed write must be
+            // diagnosable.
+            if let vm = onboardingVM, await vm.markOnboardingDone() == false {
+                NSLog("Onboarding skip: markOnboardingDone failed: %@",
+                      vm.errorMessage ?? "unknown error")
             }
             // Mirror the teamForm completion path — without this the skip
             // path entered the app with no background processing or daemon.

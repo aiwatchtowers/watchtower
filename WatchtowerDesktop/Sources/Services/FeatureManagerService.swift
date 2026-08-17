@@ -11,6 +11,9 @@ struct FeatureInfo: Codable, Identifiable, Equatable {
     let id: String
     let title: String
     let description: String
+    let tagline: String
+    let benefits: [String]
+    let icon: String
     let state: String // enabled | disabled | core
     let core: Bool
     let parent: String
@@ -20,7 +23,7 @@ struct FeatureInfo: Codable, Identifiable, Equatable {
     let subToggles: [FeatureSubToggle]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, state, core, parent
+        case id, title, description, tagline, benefits, icon, state, core, parent
         case configKey = "config_key", cost
         case feedsInto = "feeds_into", subToggles = "sub_toggles"
     }
@@ -139,8 +142,51 @@ final class FeatureManagerService {
         }
     }
 
+    /// Stages a change, or drops the entry when `enabled` is already the
+    /// loaded state — so toggling a row off and back on stages nothing rather
+    /// than a round trip through the CLI. That round trip is not free:
+    /// `features enable <id>` runs the feature's fast-forward hook (FEAT-03)
+    /// and resets its watermarks to now, skipping past history synced in the
+    /// meantime, for a feature that was never actually off. It would also
+    /// restart the daemon for no change at all.
+    ///
+    /// A key nothing loaded knows about is staged as-is: with no current
+    /// state to compare against (`features` still empty before the first
+    /// `load()`, say) dropping it would silently lose the owner's choice.
     func setPending(_ id: String, enabled: Bool) {
+        if matchesLoadedState(id, enabled: enabled) {
+            pending.removeValue(forKey: id)
+            return
+        }
         pending[id] = enabled
+    }
+
+    /// Throws away every staged change, including any cascade consent
+    /// collected for them (the splash's "Keep everything on" exit). Clearing
+    /// `pending` alone would leave an `applyWithDependents` entry standing for
+    /// a disable that is no longer staged, ready to append `--with-dependents`
+    /// to some later disable of the same id (FEAT-04 spirit: consent must not
+    /// outlive the decision it was given for).
+    func discardPending() {
+        pending.removeAll()
+        applyWithDependents.removeAll()
+    }
+
+    /// Whether `enabled` is already the last-loaded state behind a `pending`
+    /// key — a top-level feature id, or a sub-toggle's full config key.
+    ///
+    /// `state` is tri-state (enabled | disabled | core), read exactly the way
+    /// `disabledFeatureIDs` reads it: only "disabled" is off, so an always-on
+    /// core feature counts as enabled. A key nothing loaded knows about
+    /// matches nothing and therefore stays staged.
+    private func matchesLoadedState(_ id: String, enabled: Bool) -> Bool {
+        if let feature = features.first(where: { $0.id == id }) {
+            return (feature.state != "disabled") == enabled
+        }
+        if let sub = features.flatMap(\.subToggles).first(where: { $0.key == id }) {
+            return sub.enabled == enabled
+        }
+        return false
     }
 
     /// Replays every staged `pending` change through the CLI, sequentially

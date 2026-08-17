@@ -52,39 +52,42 @@ final class DictationSessionTests: XCTestCase {
                        "each chunk must fire the FULL accumulated string, not the delta")
     }
 
-    // MARK: - Apple dictation locale (spec §2: forceLang when set, else Locale.current)
+    // MARK: - Apple dictation locale (owner call 2026-08-16: the app's own
+    // language settings decide — forceLang, else langset; never Locale.current)
 
     /// The resolver consumed by the dictation session factory
     /// (`DictationCenter.defaultSessionFactory`); the batch `AppleTranscriber`
     /// path keeps its langset resolution and is deliberately untouched.
-    func testForcedLanguageWinsOverCurrentLocale() {
+    func testForcedLanguageWinsOverLangset() {
         XCTAssertEqual(
-            AppleLocaleCatalog.resolveDictationLocale(forced: "en", current: Locale(identifier: "ru-RU")),
+            AppleLocaleCatalog.resolveDictationLocale(forced: "en", langset: ["ru", "uk", "en"]),
             Locale(identifier: "en-US"))
     }
 
-    func testNilForcedFallsBackToSupportedCurrentLocale() {
+    /// The default langset "ru,uk,en": "ru" is the first Apple-supported entry,
+    /// so dictation follows what the owner actually speaks — regardless of the
+    /// machine's system locale (the 2026-08-16 live-repro bug: en_UA system
+    /// locale reached SpeechTranscriber verbatim and killed the analyzer).
+    func testNilForcedTakesFirstSupportedLangsetLanguage() {
         XCTAssertEqual(
-            AppleLocaleCatalog.resolveDictationLocale(forced: nil, current: Locale(identifier: "ru-RU")),
+            AppleLocaleCatalog.resolveDictationLocale(forced: nil, langset: ["ru", "uk", "en"]),
+            Locale(identifier: "ru-RU"))
+        // Apple ships no Ukrainian model — "uk" is skipped, not defaulted.
+        XCTAssertEqual(
+            AppleLocaleCatalog.resolveDictationLocale(forced: nil, langset: ["uk", "en"]),
+            Locale(identifier: "en-US"))
+    }
+
+    func testUnsupportedForcedLanguageDegradesToLangset() {
+        XCTAssertEqual(
+            AppleLocaleCatalog.resolveDictationLocale(forced: "uk", langset: ["ru", "en"]),
             Locale(identifier: "ru-RU"))
     }
 
-    func testNilForcedWithUnsupportedCurrentLocaleFallsToDefault() {
-        // Apple ships no Ukrainian SpeechTranscriber model.
+    func testNothingSupportedFallsToDefault() {
         XCTAssertEqual(
-            AppleLocaleCatalog.resolveDictationLocale(forced: nil, current: Locale(identifier: "uk-UA")),
+            AppleLocaleCatalog.resolveDictationLocale(forced: "uk", langset: ["uk"]),
             AppleLocaleCatalog.defaultLocale)
-    }
-
-    func testUnsupportedForcedLanguageFallsThroughToCurrentOrDefault() {
-        XCTAssertEqual(
-            AppleLocaleCatalog.resolveDictationLocale(forced: "uk", current: Locale(identifier: "ru-RU")),
-            Locale(identifier: "ru-RU"),
-            "an unsupported forced language degrades to the (supported) current locale")
-        XCTAssertEqual(
-            AppleLocaleCatalog.resolveDictationLocale(forced: "uk", current: Locale(identifier: "uk-UA")),
-            AppleLocaleCatalog.defaultLocale,
-            "an unsupported forced language over an unsupported current locale degrades to the default")
     }
 
     func testBatchOnlyTranscriberThrowsLiveUnsupported() async {

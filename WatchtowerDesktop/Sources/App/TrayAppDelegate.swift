@@ -189,6 +189,29 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// The one quit entry point for the surfaces we own (Cmd+Q via the
+    /// replaced `.appTermination` command, tray "Quit Watchtower"). SwiftUI's
+    /// scene layer vetoes app termination while any scene has a presented
+    /// sheet — an AEQuit comes back "User cancelled" (-128) before
+    /// `applicationShouldTerminate` is ever consulted, so with a popup open
+    /// the app was simply unquittable (live-repro, 2026-08-16). Closing the
+    /// sheet-carrying windows first removes the veto; termination then runs
+    /// the normal daemon-stop flow below. Closing (not `endSheet`) is
+    /// deliberate: Quit tears the window down anyway, and `close()` drops the
+    /// scene synchronously.
+    static func requestQuit() {
+        for window in windowsBlockingTermination(NSApp.windows) {
+            window.close()
+        }
+        NSApp.terminate(nil)
+    }
+
+    /// Filter half of `requestQuit`, split out for tests: the windows whose
+    /// presented sheets make SwiftUI cancel termination.
+    static func windowsBlockingTermination(_ windows: [NSWindow]) -> [NSWindow] {
+        windows.filter { $0.attachedSheet != nil }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Self.terminateDecision(
             managesLifecycle: managesLifecycle,

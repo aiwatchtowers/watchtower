@@ -528,13 +528,33 @@ final class OnboardingChatViewModel {
         }
     }
 
-    /// Mark onboarding as complete in the profile, creating the row if it does not exist yet.
-    func markOnboardingDone() async {
+    /// Mark onboarding as complete in the profile, creating the row if it
+    /// does not exist yet. Returns whether the flag actually landed — an
+    /// affirmative signal, not the absence of an error: both guards below
+    /// write nothing, so a caller keying completion off `errorMessage == nil`
+    /// would treat them as success and finish onboarding over a still-false
+    /// DB flag. `errorMessage` is still set on every failure path — that one
+    /// is what the UI renders; this return value is what the caller decides
+    /// on.
+    func markOnboardingDone() async -> Bool {
+        // Cleared up front (the FeatureManagerService.load() precedent) so a
+        // retry after a transient write failure isn't left showing the
+        // previous attempt's message.
+        errorMessage = nil
         let currentUserID = getCurrentUserID()
-        guard !currentUserID.isEmpty else { return }
-        guard let dbManager else { return }
+        guard !currentUserID.isEmpty else {
+            errorMessage = "Failed to complete onboarding: no connected Slack account to record it against."
+            return false
+        }
+        guard let dbManager else {
+            errorMessage = "Failed to complete onboarding: the database is not open."
+            return false
+        }
 
         do {
+            // Upsert, not a bare UPDATE: a user who skips onboarding before the
+            // profile-saving steps ran has no row yet — the flag write creates
+            // it, so a missing row can never mean a silently-unset flag.
             try await dbManager.dbPool.write { db in
                 try db.execute(sql: """
                     INSERT INTO user_profile (slack_user_id, onboarding_done, updated_at)
@@ -544,8 +564,10 @@ final class OnboardingChatViewModel {
                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                     """, arguments: [currentUserID])
             }
+            return true
         } catch {
             errorMessage = "Failed to complete onboarding: \(error.localizedDescription)"
+            return false
         }
     }
 

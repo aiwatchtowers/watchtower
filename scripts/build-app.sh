@@ -62,6 +62,13 @@ VERSION="${VERSION:-0.2.0}"
 # NOTARIZE_PROFILE is only read on the release path (dev mode exits before
 # notarization), so one unconditional default suffices.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-}"
+
+# Without create-dmg the DMG silently degrades to a bare hdiutil image (no
+# window layout, opens like a plain folder), so surface that up front.
+if ! $DEV_MODE && ! command -v create-dmg &>/dev/null; then
+    echo "WARNING: create-dmg not found — DMG will be a bare hdiutil image without installer window layout." >&2
+    echo "         Install it with: brew install create-dmg" >&2
+fi
 FLAVOR_NOTE="${FLAVOR:+ [flavor: $FLAVOR]}"
 if $DEV_MODE; then
     echo "==> Building Watchtower v$VERSION (arm64)$FLAVOR_NOTE [DEV MODE — no DMG/ZIP/notarization]"
@@ -254,6 +261,24 @@ fi
 # the default Info.plist stays byte-identical to the pre-flavor layout.
 if [ -n "$FLAVOR" ]; then
     /usr/libexec/PlistBuddy -c "Add :WTBuildFlavor string $FLAVOR" "$APP_BUNDLE/Contents/Info.plist"
+    # Gated update channel keys (flavored builds only; dev never updates —
+    # UpdateService also enforces that, this just avoids shipping dead keys).
+    # All three or none: a partial set would be a build that can locate the
+    # feed but not authenticate, or vice versa. UpdateService fails closed on
+    # a partial set anyway; erroring here catches the profile typo at build
+    # time instead of shipping a silently non-updating artifact.
+    _upd_set=0
+    [ -n "${WATCHTOWER_UPDATE_FEED_URL:-}" ] && _upd_set=$((_upd_set+1))
+    [ -n "${WATCHTOWER_UPDATE_CLIENT_ID:-}" ] && _upd_set=$((_upd_set+1))
+    [ -n "${WATCHTOWER_UPDATE_CLIENT_SECRET:-}" ] && _upd_set=$((_upd_set+1))
+    if [ "$FLAVOR" != "dev" ] && [ "$_upd_set" -eq 3 ]; then
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateFeedURL string $WATCHTOWER_UPDATE_FEED_URL" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateClientID string $WATCHTOWER_UPDATE_CLIENT_ID" "$APP_BUNDLE/Contents/Info.plist"
+        /usr/libexec/PlistBuddy -c "Add :WTUpdateClientSecret string $WATCHTOWER_UPDATE_CLIENT_SECRET" "$APP_BUNDLE/Contents/Info.plist"
+    elif [ "$FLAVOR" != "dev" ] && [ "$_upd_set" -ne 0 ]; then
+        echo "ERROR: partial update-channel config — set all three WATCHTOWER_UPDATE_* vars or none" >&2
+        exit 1
+    fi
 fi
 
 # Code sign — one path for dev and release.

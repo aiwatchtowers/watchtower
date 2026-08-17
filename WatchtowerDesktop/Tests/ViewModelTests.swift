@@ -1392,12 +1392,38 @@ final class OnboardingChatViewModelTests: XCTestCase {
         }
 
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        await vm.markOnboardingDone()
+        let done = await vm.markOnboardingDone()
 
+        XCTAssertTrue(done)
+        XCTAssertNil(vm.errorMessage)
         let profile = try await dbManager.dbPool.read { db in
             try ProfileQueries.fetchProfile(db, slackUserID: "U001")
         }
         XCTAssertEqual(profile?.onboardingDone, true)
+    }
+
+    /// No connected Slack account: `getCurrentUserID()` finds nothing, so
+    /// there is no id to key the UPDATE on.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutCurrentUser() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
+    /// No database at all. Both early guards are separate code paths, but
+    /// only one outcome is observable from outside: `getCurrentUserID()`
+    /// already returns "" without a `dbManager`, so the empty-id guard is what
+    /// fires here.
+    @MainActor
+    func testMarkOnboardingDoneReturnsFalseWithoutDatabase() async {
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: nil)
+        let done = await vm.markOnboardingDone()
+
+        XCTAssertFalse(done)
+        XCTAssertNotNil(vm.errorMessage)
     }
 
     @MainActor
@@ -1409,8 +1435,9 @@ final class OnboardingChatViewModelTests: XCTestCase {
         }
 
         let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        await vm.markOnboardingDone()
+        let done = await vm.markOnboardingDone()
 
+        XCTAssertTrue(done)
         XCTAssertNil(vm.errorMessage)
         let profile = try await dbManager.dbPool.read { db in
             try ProfileQueries.fetchProfile(db, slackUserID: "U001")
@@ -1671,7 +1698,25 @@ final class OnboardingStateMachineTests: XCTestCase {
         sm.advance()
         XCTAssertEqual(sm.currentStep, .generating)
         sm.advance()
+        XCTAssertEqual(sm.currentStep, .features)
+        sm.advance()
         XCTAssertEqual(sm.currentStep, .complete)
+    }
+
+    @MainActor
+    func testResumeFromStoredRawSixReportsFeatures() {
+        // Persisted-rawValue migration: `.features` was inserted at raw 6,
+        // shifting `.complete` to 7 (see the enum's migration comment), so a
+        // stored 6 now resumes at `.features`. Landing there is safe on its
+        // own terms: the `.features` step's `.task` constructs `onboardingVM`
+        // when it is nil, so the splash's exits can still finish onboarding.
+        // AppState.initialize()'s reconciliation against
+        // `user_profile.onboarding_done` short-circuits this only when the DB
+        // flag is already true — it cannot help an install whose flag is
+        // still false, which is exactly the case that needs the `.task`.
+        UserDefaults.standard.set(6, forKey: stepKey)
+        let sm = OnboardingStateMachine()
+        XCTAssertEqual(sm.currentStep, .features)
     }
 
     @MainActor
@@ -1772,7 +1817,8 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertTrue(OnboardingStep.claude < .chat)
         XCTAssertTrue(OnboardingStep.chat < .teamForm)
         XCTAssertTrue(OnboardingStep.teamForm < .generating)
-        XCTAssertTrue(OnboardingStep.generating < .complete)
+        XCTAssertTrue(OnboardingStep.generating < .features)
+        XCTAssertTrue(OnboardingStep.features < .complete)
     }
 
     @MainActor
@@ -1789,6 +1835,7 @@ final class OnboardingStateMachineTests: XCTestCase {
         XCTAssertEqual(OnboardingStep.chat.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.teamForm.indicatorTitle, "Setup")
         XCTAssertEqual(OnboardingStep.generating.indicatorTitle, "Setup")
+        XCTAssertEqual(OnboardingStep.features.indicatorTitle, "Setup")
         XCTAssertNil(OnboardingStep.complete.indicatorTitle)
     }
 }

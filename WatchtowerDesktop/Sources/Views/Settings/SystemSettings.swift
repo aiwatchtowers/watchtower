@@ -240,14 +240,7 @@ struct SystemSettings: View {
 
             switch service.state {
             case .idle:
-                HStack {
-                    Text("No updates available")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check for Updates") {
-                        Task { await service.checkForUpdates() }
-                    }
-                }
+                idleUpdateRow(service: service)
 
             case .checking:
                 HStack {
@@ -315,6 +308,23 @@ struct SystemSettings: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func idleUpdateRow(service: UpdateService) -> some View {
+        if service.updatesSupported {
+            HStack {
+                Text("No updates available")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Check for Updates") {
+                    Task { await service.checkForUpdates() }
+                }
+            }
+        } else {
+            Text("Updates for this build are distributed out of band")
+                .foregroundStyle(.secondary)
         }
     }
 

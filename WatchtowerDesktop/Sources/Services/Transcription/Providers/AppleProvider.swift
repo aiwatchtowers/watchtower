@@ -83,23 +83,23 @@ enum AppleLocaleCatalog {
         return defaultLocale
     }
 
-    /// Dictation-lane locale resolution (realtime-dictation spec §2:
-    /// "forceLang when set, else Locale.current") — used ONLY by the
-    /// dictation session factory; the batch `AppleTranscriber` path keeps its
-    /// langset resolution above. A supported `forced` language (mapped
-    /// through `localeByLanguage`) wins; otherwise the user's `current`
-    /// locale when Apple supports its language; else the en-US default.
-    /// A forced language Apple does not support (e.g. "uk") deliberately
-    /// falls through to current-or-default rather than erroring — the same
+    /// Dictation-lane locale resolution — the app's OWN language settings
+    /// decide (owner call, 2026-08-16, superseding the spec §2 "else
+    /// Locale.current" rule): a supported `forced` language
+    /// (`transcription.forceLang`) wins; otherwise the first Apple-supported
+    /// language of the configured langset (`transcription.langset`, the batch
+    /// `resolveLocale` rule); else the en-US default. The SYSTEM locale plays
+    /// no part — the machine's language/region says nothing about what the
+    /// owner dictates, and a region-mismatched locale (en_UA, ru_UA) isn't
+    /// even constructible for `SpeechTranscriber`, which supports only the
+    /// catalog's concrete locales. An unsupported forced language (e.g. "uk")
+    /// deliberately degrades to the langset rather than erroring — the same
     /// degrade-to-a-working-engine shape as `DictationEngineChoice.resolve`.
-    static func resolveDictationLocale(forced: String?, current: Locale = .current) -> Locale {
+    static func resolveDictationLocale(forced: String?, langset: [String]) -> Locale {
         if let forced, let id = localeByLanguage[forced] {
             return Locale(identifier: id)
         }
-        if let code = current.language.languageCode?.identifier, localeByLanguage[code] != nil {
-            return current
-        }
-        return defaultLocale
+        return resolveLocale(langset: langset)
     }
 }
 
