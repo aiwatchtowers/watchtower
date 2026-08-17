@@ -72,7 +72,7 @@ final class RowPayloadCoderTests: XCTestCase {
             SliceKind.allCases.map(\.rawValue),
             ["briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event",
              "person_card", "situation", "meeting_transcript", "day_plan", "day_plan_item",
-             "feature_state", "stream_digest"]
+             "feature_state", "stream_digest", "slack_account", "google_account", "jira_account"]
         )
     }
 

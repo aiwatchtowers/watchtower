@@ -25,6 +25,9 @@ final class ReplicaWiringTests: XCTestCase {
         .digest: 1,
         .digestTopic: 1,
         .streamDigest: 1,
+        .slackAccount: 2,
+        .googleAccount: 1,
+        .jiraAccount: 1,
     ]
 
     // MARK: - Helpers

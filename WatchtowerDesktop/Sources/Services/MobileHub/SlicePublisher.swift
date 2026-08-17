@@ -57,8 +57,8 @@ final class SlicePublisher: Sendable {
     /// - tracks has `dismissed_at` ('' = active), not a `dismissed` flag.
     /// - calendar_events.start_time is ISO8601 with 'T'/'Z'; wrap in datetime()
     ///   so comparison against datetime('now', …) output is well-defined.
-    /// - meeting_transcripts is the one kind published as a PROJECTION rather
-    ///   than SELECT * — see the note on its entry.
+    /// - meeting_transcripts and the three account tables are published as
+    ///   PROJECTIONS rather than SELECT * — see the notes on their entries.
     static let sliceSQL: [SliceKind: String] = [
         .briefing: "SELECT * FROM briefings ORDER BY id DESC LIMIT 30",
         .inboxItem: "SELECT * FROM inbox_items WHERE archived_at IS NULL ORDER BY id DESC LIMIT 200",
@@ -156,7 +156,37 @@ final class SlicePublisher: Sendable {
         // only content column is topics_json, which IS the digest body — a
         // stream digest tops out at a few KB of topic candidates, so there
         // is no transcript_text-class column to project away.
-        .streamDigest: "SELECT * FROM stream_digests ORDER BY id DESC LIMIT 50"
+        .streamDigest: "SELECT * FROM stream_digests ORDER BY id DESC LIMIT 50",
+        // Connected-accounts status (read-only on the phone by owner decision,
+        // 2026-08-17). PROJECTIONS, never SELECT * — the account tables also
+        // carry sync watermarks (search_last_date, gmail_last_internal_date,
+        // memory_*_extracted_ts, ideas_* floors) and credential-adjacent
+        // state (google_accounts.client_id) that must never reach the wire.
+        // The exact column sets are frozen by SlicePublisherTests and the
+        // Kit's ConnectedAccount fixtures.
+        //
+        // Slack/Jira `status = 'removed'` rows are tombstones (`slack remove`/
+        // `jira remove` keep the row so historical data stays attributable —
+        // see JiraAccountQueries.fetchAll): they leave the window, so the
+        // diff deletes the account from the phone. google_accounts has no
+        // 'removed' status — removal deletes the row, same effect.
+        .slackAccount: """
+            SELECT id, team_name, team_domain, label, status, error, enabled
+            FROM slack_accounts
+            WHERE status != 'removed'
+            ORDER BY id ASC
+            """,
+        .googleAccount: """
+            SELECT id, email, label, status, error, calendar_enabled, gmail_enabled
+            FROM google_accounts
+            ORDER BY id ASC
+            """,
+        .jiraAccount: """
+            SELECT id, site_name, site_url, label, status, error, enabled
+            FROM jira_accounts
+            WHERE status != 'removed'
+            ORDER BY id ASC
+            """
     ]
 
     // MARK: - Publishing

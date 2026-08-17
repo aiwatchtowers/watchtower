@@ -349,6 +349,10 @@ The Recordings screen (reached from Today's calendar section) has two parts:
 
 The phone picks its data source automatically at launch — there is nothing to configure. The app probes its own code signature for the iCloud entitlement: signed builds (TestFlight / device) connect to your private iCloud (CloudKit) and hydrate their local replica from the data this Mac publishes; unsigned development builds (simulator, CI) fall back to built-in demo data. The iOS Settings tab shows which path won in the "Sync" row: **iCloud** or **Demo**. Real sync requires the phone and the Mac to be signed in to the same Apple ID; all data stays in your private CloudKit zone — nothing goes through third-party servers.
 
+### Connected accounts (phone)
+
+The iOS Settings tab shows a read-only **"Connected accounts"** section mirroring the desktop's Settings › Connections tab: your Slack workspaces, Google accounts, and Jira sites, each with a status dot — green (connected), orange (needs attention, with the error text inline), red (access revoked), gray (disabled on the Mac). Accounts cannot be connected or managed from the phone — OAuth flows only run on the Mac, so the section is purely status; a footer says where to go. Removing an account on the Mac removes its row from the phone on the next sync. The section is hidden entirely when the Mac's app version doesn't publish account status yet.
+
 ### Notifications (phone)
 
 The desktop decides what deserves an alert; the phone never re-derives importance. When this Mac publishes data it tags two kinds of rows: **urgent** (a pending high-priority inbox item) and **briefing** (the first publish of today's briefing). When a tagged row newly arrives on the phone — typically woken by a silent iCloud push — the phone raises a local notification: "Urgent inbox item" with the message snippet, or "Your briefing is ready". A re-publish of the same row never re-alerts.

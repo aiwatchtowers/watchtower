@@ -766,4 +766,92 @@ final class SlicePublisherTests: XCTestCase {
         let batch = try await transport.changes(in: .data, since: nil)
         XCTAssertTrue(batch.deletedRecordNames.contains("feature_state-targets"))
     }
+
+    // MARK: - Connected-account slices (PROJECTIONS)
+
+    /// The published column set per account kind, EXACTLY — not a subset
+    /// check: a column that sneaks into the projection must fail here, because
+    /// the account tables sit next to credential-adjacent state (client_id,
+    /// current_user_id) and sync watermarks that must never reach the wire.
+    /// Those columns are seeded non-empty so the pointed negative assertions
+    /// below check real values, not vacuous defaults.
+    func testAccountSlicesPublishExactProjectionColumnSets() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertSlackAccount(
+                db, teamName: "Acme Corp", teamDomain: "acme", label: "Work",
+                currentUserID: "1:U_TEST", searchLastDate: "2026-01-01")
+            try TestDatabase.insertGoogleAccount(
+                db, email: "me@example.com", clientID: "client-123.apps.example",
+                calendarEnabled: true, status: "error", error: "token expired")
+            try TestDatabase.insertJiraAccount(
+                db, cloudID: "cloud-1", siteURL: "https://acme.atlassian.net",
+                siteName: "Acme Jira", status: "revoked", enabled: false)
+        }
+
+        _ = try await publisher.publishOnce()
+
+        let slack = try await publishedRow(named: "slack_account-1")
+        XCTAssertEqual(
+            Set(slack.columnNames),
+            ["id", "team_name", "team_domain", "label", "status", "error", "enabled"]
+        )
+        XCTAssertEqual(slack["team_name"] as String?, "Acme Corp")
+        XCTAssertEqual(slack["team_domain"] as String?, "acme")
+        XCTAssertEqual(slack["label"] as String?, "Work")
+        XCTAssertEqual(slack["status"] as String?, "ok")
+        XCTAssertEqual(slack["enabled"] as Int?, 1)
+        XCTAssertFalse(slack.hasColumn("current_user_id"), "identity watermarking stays on the Mac")
+        XCTAssertFalse(slack.hasColumn("search_last_date"), "sync watermarks must not be published")
+
+        let google = try await publishedRow(named: "google_account-1")
+        XCTAssertEqual(
+            Set(google.columnNames),
+            ["id", "email", "label", "status", "error", "calendar_enabled", "gmail_enabled"]
+        )
+        XCTAssertEqual(google["email"] as String?, "me@example.com")
+        XCTAssertEqual(google["status"] as String?, "error")
+        XCTAssertEqual(google["error"] as String?, "token expired")
+        XCTAssertEqual(google["calendar_enabled"] as Int?, 1)
+        XCTAssertEqual(google["gmail_enabled"] as Int?, 0)
+        XCTAssertFalse(google.hasColumn("client_id"), "nothing credential-shaped goes on the wire")
+        XCTAssertFalse(google.hasColumn("gmail_last_internal_date"), "sync watermarks must not be published")
+
+        let jira = try await publishedRow(named: "jira_account-1")
+        XCTAssertEqual(
+            Set(jira.columnNames),
+            ["id", "site_name", "site_url", "label", "status", "error", "enabled"]
+        )
+        XCTAssertEqual(jira["site_name"] as String?, "Acme Jira")
+        XCTAssertEqual(jira["site_url"] as String?, "https://acme.atlassian.net")
+        XCTAssertEqual(jira["status"] as String?, "revoked")
+        XCTAssertEqual(jira["enabled"] as Int?, 0, "a disabled account still publishes — the phone renders it gray")
+        XCTAssertFalse(jira.hasColumn("cloud_id"), "the API-routing id has no phone consumer")
+    }
+
+    /// Slack/Jira `removed` rows are tombstones (`slack remove` keeps the row
+    /// for historical attribution): they never publish, and an account that
+    /// BECOMES removed leaves the window, so the diff deletes its record from
+    /// the phone.
+    func testRemovedAccountsAreExcludedAndDeletedFromSlice() async throws {
+        try await dbPool.write { db in
+            try TestDatabase.insertSlackAccount(db, teamName: "Acme Corp")
+            try TestDatabase.insertSlackAccount(db, teamName: "Old Corp", status: "removed", enabled: false)
+            try TestDatabase.insertJiraAccount(db, siteName: "Old Jira", status: "removed", enabled: false)
+        }
+
+        _ = try await publisher.publishOnce()
+        let batch = try await transport.changes(in: .data, since: nil)
+        let accountNames = batch.changed.map(\.recordName).filter { $0.contains("_account-") }
+        XCTAssertEqual(accountNames, ["slack_account-1"], "removed rows must never publish")
+
+        // The live account is removed on the desktop → its record is deleted.
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'removed', enabled = 0 WHERE id = 1")
+        }
+        let second = try await publisher.publishOnce()
+
+        XCTAssertEqual(second.deleted, 1)
+        let after = try await transport.changes(in: .data, since: nil)
+        XCTAssertTrue(after.deletedRecordNames.contains("slack_account-1"))
+    }
 }

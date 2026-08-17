@@ -21,6 +21,12 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     /// 2026-08-17 reanimation plan Workstream 3).
     case featureState = "feature_state"
     case streamDigest = "stream_digest"
+    // Connected-accounts status (read-only on the phone by owner decision,
+    // 2026-08-17): one record per desktop account row, published as a
+    // PROJECTION — identity/label, status, error, enablement; never tokens.
+    case slackAccount = "slack_account"
+    case googleAccount = "google_account"
+    case jiraAccount = "jira_account"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"
