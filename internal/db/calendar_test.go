@@ -300,7 +300,7 @@ func TestUpsertCalendarEvent_PreservesFKChildren(t *testing.T) {
 		TranscriptText: "hello world",
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.UpsertMeetingRecap("evt-fk", "hello world", `{"summary":"ok"}`))
+	require.NoError(t, db.UpsertMeetingRecap("evt-fk", "hello world", `{"summary":"ok"}`, 0))
 
 	// Per-path assertions so a REPLACE regression in either call site fails on
 	// its own step, not only via the combined end state.

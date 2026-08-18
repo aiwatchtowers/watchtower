@@ -126,6 +126,41 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    /// The durable link: a recap whose event was deleted (event_id NULL,
+    /// migration 00056 SET NULL) still resolves via its transcript_id, so an
+    /// event-deleted recording keeps showing its recap.
+    func test_fetchByTranscriptIDResolvesRecapWithDeletedEvent() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 5, title: "Rec")
+            try TestDatabase.insertMeetingRecap(
+                db, eventID: nil, transcriptID: 5, recapJSON: summaryJSON)
+        }
+        try db.read { db in
+            let recap = try XCTUnwrap(MeetingRecapQueries.fetch(db, transcriptID: 5))
+            XCTAssertNil(recap.eventID)
+            XCTAssertEqual(recap.recapJSON, self.summaryJSON)
+            XCTAssertNil(try MeetingRecapQueries.fetch(db, transcriptID: 999))
+        }
+    }
+
+    /// The Swift dual-path writer stamps `transcript_id`, so a recap it creates
+    /// resolves by the durable link too (not only by event_id).
+    func test_linkToEventStampsTranscriptIDOnRecap() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try TestDatabase.insertMeetingTranscript(
+                db, id: 8, transcriptText: "spoken words", summaryJSON: summaryJSON)
+            try MeetingTranscriptQueries.linkToEvent(db, id: 8, eventID: "evt-1")
+        }
+        try db.read { db in
+            let recap = try XCTUnwrap(MeetingRecapQueries.fetch(db, transcriptID: 8))
+            XCTAssertEqual(recap.eventID, "evt-1")
+            XCTAssertEqual(recap.recapJSON, self.summaryJSON)
+        }
+    }
+
     func test_recordingListReturnsAllNewestFirstWithLightFields() throws {
         let db = try TestDatabase.create()
         try db.write { db in

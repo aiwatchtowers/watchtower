@@ -4,7 +4,9 @@ import GRDB
 package struct MeetingRecap: Codable, FetchableRecord, PersistableRecord {
     package static let databaseTableName = "meeting_recaps"
 
-    package let eventID: String
+    // Nullable since migration 00056: a recap outlives its event (event_id →
+    // NULL on deletion, the durable link is transcript_id).
+    package let eventID: String?
     package let sourceText: String
     package let recapJSON: String
     package let createdAt: String

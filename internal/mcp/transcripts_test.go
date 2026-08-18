@@ -34,7 +34,7 @@ func seedTranscriptsDB(t *testing.T) (*db.DB, [3]int64) {
 		EventStatus: "confirmed", RawJSON: "{}",
 	}))
 	must(database.UpsertMeetingRecap("EV1", "source",
-		`{"summary":"Agreed to ship the roadmap Friday","key_decisions":["Ship Friday"],"action_items":["Vadym: draft announcement"],"open_questions":[]}`))
+		`{"summary":"Agreed to ship the roadmap Friday","key_decisions":["Ship Friday"],"action_items":["Vadym: draft announcement"],"open_questions":[]}`, 0))
 
 	var ids [3]int64
 	insert := func(idx int, tr db.MeetingTranscript, createdAt string) {

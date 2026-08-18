@@ -421,7 +421,7 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 		}
 	}
 	if writeToRecaps {
-		err = database.UpsertMeetingRecap(eventID, tr.TranscriptText, string(recapJSON))
+		err = database.UpsertMeetingRecap(eventID, tr.TranscriptText, string(recapJSON), id)
 	} else {
 		err = database.SetMeetingTranscriptSummary(id, string(recapJSON))
 	}

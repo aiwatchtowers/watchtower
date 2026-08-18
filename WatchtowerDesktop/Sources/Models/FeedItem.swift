@@ -71,7 +71,7 @@ enum FeedContent: Equatable {
 extension MeetingRecap: Equatable {
     // Swift can only auto-synthesize `==` for a struct within its declaring
     // file; MeetingRecap.swift doesn't declare Equatable, so it's spelled
-    // out manually here (all stored properties are simple Strings).
+    // out manually here (all stored properties are simple String/String?).
     package static func == (lhs: MeetingRecap, rhs: MeetingRecap) -> Bool {
         lhs.eventID == rhs.eventID
             && lhs.sourceText == rhs.sourceText

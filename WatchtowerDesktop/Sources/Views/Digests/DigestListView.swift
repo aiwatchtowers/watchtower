@@ -924,8 +924,8 @@ struct DigestListView: View {
         case .digests:
             // Slack digests + Gmail/Jira stream digests; meeting recordings
             // have no unread concept (DigestFeedEntry.isRead) so they never
-            // contribute here. Sidebar digests badge stays Slack-only —
-            // deliberately not touched (see the Task 11 brief).
+            // contribute here. The sidebar `.digests` badge sums this plus the
+            // Decisions tab's unread (SidebarCountsViewModel.digestsBadgeCount).
             let n = vm.unreadDigestCount + vm.unreadStreamCount
             return n > 0 ? "\(tab.rawValue) (\(n))" : tab.rawValue
         case .decisions:
@@ -1053,6 +1053,12 @@ private struct MeetingFeedDetailView: View {
         do {
             recapContent = try await db.dbPool.read { conn -> MeetingRecap.Content? in
                 let row = try MeetingTranscriptQueries.fetch(conn, id: id)
+                // Durable transcript_id link first (survives event deletion),
+                // then the event's recap, then the transcript's summary_json.
+                if let recap = try MeetingRecapQueries.fetch(conn, transcriptID: id),
+                   let parsed = recap.parsed {
+                    return parsed
+                }
                 if let eventID = row?.eventID,
                    let recap = try MeetingRecapQueries.fetch(conn, eventID: eventID),
                    let parsed = recap.parsed {
