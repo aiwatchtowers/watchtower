@@ -97,6 +97,50 @@ struct ConfigServiceTests {
         #expect(svc.ideasMineIntervalHours == 12)
     }
 
+    @Test("AI tier models and ollama URL round-trip")
+    func aiModelsRoundTrip() throws {
+        let path = makeTempConfig("""
+        ai:
+          provider: ollama
+          model: legacy-model
+          ollama_url: http://box:11434
+          models:
+            light: qwen3:8b
+            strong: llama4:70b
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.aiProvider == "ollama")
+        #expect(svc.aiModel == "legacy-model")
+        #expect(svc.aiOllamaURL == "http://box:11434")
+        #expect(svc.aiModelLight == "qwen3:8b")
+        #expect(svc.aiModelStrong == "llama4:70b")
+
+        svc.aiModelLight = "gemma4:31b"
+        svc.aiModelStrong = nil
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.aiModelLight == "gemma4:31b")
+        #expect(svc2.aiModelStrong == nil, "cleared tier override must be removed from yaml")
+        #expect(svc2.aiOllamaURL == "http://box:11434", "untouched keys survive the save merge")
+        #expect(svc2.aiModel == "legacy-model", "legacy ai.model is preserved, not rewritten")
+    }
+
+    @Test("Save does not invent ai.models on a config that has none")
+    func saveNoEmptyAIModels() throws {
+        let path = makeTempConfig("""
+        ai:
+          provider: claude
+        """)
+        let svc = ConfigService(configPath: path)
+        try svc.save()
+
+        let yaml = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        let ai = yaml?["ai"] as? [String: Any]
+        #expect(ai?["models"] == nil, "no empty models: block may appear")
+        #expect(ai?["ollama_url"] == nil)
+    }
+
     @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""

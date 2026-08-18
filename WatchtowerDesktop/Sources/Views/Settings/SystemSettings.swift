@@ -76,13 +76,91 @@ struct SystemSettings: View {
     private var aiSection: some View {
         Section(header: Text("AI")) {
             aiProviderPicker
-            aiModelField
+            modelField(
+                "Light Model",
+                value: $config.aiModelLight,
+                resolved: catalogProvider?.resolvedLight,
+                help: "Cheap/fast tier: triage, rollups, dictation cleanup"
+            )
+            modelField(
+                "Strong Model",
+                value: $config.aiModelStrong,
+                resolved: catalogProvider?.resolvedStrong,
+                help: "Quality tier: situation cards, briefings, chat"
+            )
+            if selectedProviderID == "ollama" {
+                ollamaURLRow
+            }
             aiWorkersField
             claudeCLIPathRow
-            if config.aiProvider == "codex" {
+            if selectedProviderID == "codex" {
                 codexCLIPathRow
             }
             testConnectionRow
+        }
+        .task { await appState.aiModelCatalog.load() }
+    }
+
+    private var selectedProviderID: String {
+        config.aiProvider ?? "claude"
+    }
+
+    private var catalogProvider: AIModelCatalog.Provider? {
+        appState.aiModelCatalog.provider(selectedProviderID)
+    }
+
+    /// Free-text model field with a suggestions menu fed by
+    /// `watchtower ai models --json`. Empty = the provider default (an alias
+    /// for Claude, so new model releases arrive without an app release).
+    private func modelField(
+        _ title: String,
+        value: Binding<String?>,
+        resolved: String?,
+        help: String
+    ) -> some View {
+        HStack {
+            TextField(
+                title,
+                text: Binding(
+                    get: { value.wrappedValue ?? "" },
+                    set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
+                ),
+                prompt: Text(resolved ?? "provider default")
+            )
+            .help(help)
+            let suggestions = appState.aiModelCatalog.suggestions(for: selectedProviderID)
+            if !suggestions.isEmpty {
+                Menu {
+                    Button("Default") { value.wrappedValue = nil }
+                    Divider()
+                    ForEach(suggestions, id: \.self) { model in
+                        Button(model) { value.wrappedValue = model }
+                    }
+                } label: {
+                    Image(systemName: "chevron.up.chevron.down")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+        }
+    }
+
+    private var ollamaURLRow: some View {
+        HStack {
+            TextField(
+                "Server URL",
+                text: Binding(
+                    get: { config.aiOllamaURL ?? "" },
+                    set: { config.aiOllamaURL = $0.isEmpty ? nil : $0 }
+                ),
+                prompt: Text("http://localhost:11434")
+            )
+            .help("Any OpenAI-compatible server: Ollama, LM Studio, vLLM, ...")
+            if let error = appState.aiModelCatalog.provider("ollama")?.error, !error.isEmpty {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .help(error)
+            }
         }
     }
 
@@ -94,9 +172,11 @@ struct SystemSettings: View {
                 set: { newProvider in
                     let oldProvider = config.aiProvider ?? "claude"
                     config.aiProvider = newProvider
-                    // Reset model when switching providers so it doesn't carry over
+                    // Reset models when switching providers so they don't carry over
                     if newProvider != oldProvider {
                         config.aiModel = nil
+                        config.aiModelLight = nil
+                        config.aiModelStrong = nil
                         connectionTestResult = nil
                     }
                 }
@@ -104,18 +184,8 @@ struct SystemSettings: View {
         ) {
             Text("Claude").tag("claude")
             Text("Codex").tag("codex")
+            Text("Ollama / Local").tag("ollama")
         }
-    }
-
-    private var aiModelField: some View {
-        TextField(
-            "Model",
-            text: Binding(
-                get: { config.aiModel ?? "" },
-                set: { config.aiModel = $0.isEmpty ? nil : $0 }
-            ),
-            prompt: Text(config.aiProvider == "codex" ? "gpt-5.4" : "claude-sonnet-4-6")
-        )
     }
 
     private var aiWorkersField: some View {
@@ -330,11 +400,22 @@ struct SystemSettings: View {
 
     // MARK: - Helpers
 
+    /// The strong-tier model the test should exercise: the form value, else
+    /// the catalog's resolved value, else the legacy ai.model field.
+    private var testModel: String {
+        if let strong = config.aiModelStrong, !strong.isEmpty { return strong }
+        if let resolved = catalogProvider?.resolvedStrong, !resolved.isEmpty { return resolved }
+        return config.aiModel ?? ""
+    }
+
     private func testConnection() {
-        let isCodex = (config.aiProvider ?? "claude") == "codex"
+        if selectedProviderID == "ollama" {
+            testOllamaConnection()
+            return
+        }
+        let isCodex = selectedProviderID == "codex"
         let cliPath: String? = isCodex ? Constants.findInPath("codex") : Constants.findInPath("claude")
         let providerName = isCodex ? "Codex" : "Claude"
-        let defaultModel = isCodex ? "gpt-5.4" : "claude-sonnet-4-6"
 
         guard let path = cliPath else {
             connectionTestResult = "\(providerName) CLI not found"
@@ -345,7 +426,8 @@ struct SystemSettings: View {
         connectionTestRunning = true
         connectionTestResult = nil
 
-        let model = (config.aiModel ?? "").isEmpty ? defaultModel : (config.aiModel ?? defaultModel)
+        var model = testModel
+        if model.isEmpty { model = isCodex ? "gpt-5.4" : "sonnet" }
 
         Task.detached {
             let process = Process()
@@ -392,6 +474,54 @@ struct SystemSettings: View {
                     connectionTestResult = Self.diagnoseError(stderr: stderr, exitCode: process.terminationStatus)
                 }
             }
+        }
+    }
+
+    /// Test an OpenAI-compatible server with a direct chat-completions call,
+    /// so the button exercises the exact URL and model in the form (saved or
+    /// not) rather than whatever config is on disk.
+    private func testOllamaConnection() {
+        connectionTestRunning = true
+        connectionTestResult = nil
+
+        let base = (config.aiOllamaURL ?? "").isEmpty ? "http://localhost:11434" : (config.aiOllamaURL ?? "")
+        let model = testModel
+        let endpoint = base.hasSuffix("/") ? base + "v1/chat/completions" : base + "/v1/chat/completions"
+        guard let url = URL(string: endpoint) else {
+            connectionTestRunning = false
+            connectionTestSuccess = false
+            connectionTestResult = "Invalid server URL"
+            return
+        }
+
+        Task {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 30
+            let body: [String: Any] = [
+                "model": model,
+                "messages": [["role": "user", "content": "respond with: OK"]],
+                "stream": false,
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 200 {
+                    connectionTestSuccess = true
+                    connectionTestResult = "Connected (\(model))"
+                } else {
+                    let text = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                    connectionTestSuccess = false
+                    connectionTestResult = "HTTP \(status): \(text)"
+                }
+            } catch {
+                connectionTestSuccess = false
+                connectionTestResult = "Server unreachable: \(error.localizedDescription)"
+            }
+            connectionTestRunning = false
         }
     }
 

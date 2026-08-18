@@ -111,6 +111,10 @@ final class AppState {
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
+
+    /// Provider/model registry from `watchtower ai models --json`, shared by
+    /// the chat model picker and Settings suggestions. Loaded lazily.
+    let aiModelCatalog = AIModelCatalog()
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
 
     /// Calendar ViewModel — persists across tab switches.

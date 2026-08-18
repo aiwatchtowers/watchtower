@@ -25,6 +25,9 @@ final class ConfigService {
     var digestMinMessages: Int?
     var digestLanguage: String?
     var aiModel: String?
+    var aiModelLight: String?
+    var aiModelStrong: String?
+    var aiOllamaURL: String?
     var aiWorkers: Int?
     var analysisLegacyMode: Bool = false
     var briefingHour: Int = 8
@@ -108,6 +111,11 @@ final class ConfigService {
                 aiModel = ai["model"] as? String
                 aiWorkers = ai["workers"] as? Int
                 aiProvider = ai["provider"] as? String
+                aiOllamaURL = ai["ollama_url"] as? String
+                if let models = ai["models"] as? [String: Any] {
+                    aiModelLight = models["light"] as? String
+                    aiModelStrong = models["strong"] as? String
+                }
             }
 
             claudePath = yaml["claude_path"] as? String
@@ -193,6 +201,11 @@ final class ConfigService {
         if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
         if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
         if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
+        if let val = aiOllamaURL, !val.isEmpty { ai["ollama_url"] = val } else { ai.removeValue(forKey: "ollama_url") }
+        var aiModels = (ai["models"] as? [String: Any]) ?? [:]
+        if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
+        if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
+        if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
         if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
 
         // Calendar section

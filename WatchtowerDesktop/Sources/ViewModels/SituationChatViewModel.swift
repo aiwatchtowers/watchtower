@@ -29,23 +29,18 @@ final class SituationChatViewModel {
     private let dbManager: DatabaseManager
     private let situation: Situation
     private let memberSignals: [InboxItem]
-    private let selectedModel: ChatModel
     private var streamTask: Task<Void, Never>?
 
     init(
         situation: Situation,
         memberSignals: [InboxItem],
         dbManager: DatabaseManager,
-        aiService: (any AIServiceProtocol)? = nil,
-        provider: AIProvider? = nil
+        aiService: (any AIServiceProtocol)? = nil
     ) {
         self.situation = situation
         self.memberSignals = memberSignals
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
-        let resolvedProvider = provider
-            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
-        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
         loadOrCreateConversation()
     }
@@ -156,7 +151,7 @@ final class SituationChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPool.path,
-                model: selectedModel.rawValue
+                model: nil  // nil = the provider's resolved strong-tier model
             )
             var sawTurnComplete = false
             for try await event in stream {
