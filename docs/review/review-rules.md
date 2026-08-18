@@ -108,6 +108,24 @@ tags in brackets.
 - A ViewModel read-modify-write of a whole JSON column must reload the row immediately before writing (the TargetChatViewModel pattern). (2026-07-04) [9]
 - A scan/validation site where "file missing" is a meaningful contract state must treat "file present but undecodable" as a THIRD state, never fold it into the missing branch; a `compactMap` over two chained `try?` where only one of them means "absent" is the tell. (2026-08-03, 5th recurrence of the absent-vs-error class) [9]
 
+### Personas & chat contracts
+
+Owner decision 2026-08-18. The app has two AI personas sharing one engine, and the words encode
+different trust contracts — they are not interchangeable labels:
+
+- **Secretary** (Inbox/situations, meeting & memory surfaces): speaks FOR the owner and never
+  acts on the world. Intent-draft contract — the owner states WHAT to say, the secretary renders
+  it in the owner's voice, adds nothing unstated, never posts anywhere (Copy only). Its only
+  writes are learning side-effects (belief evidence, learned rules), never actions.
+- **Assistant** (target/task chat, setup panels): acts on local state, but ONLY through the
+  proposal→Approve gate — nothing is written until the owner approves.
+
+Rules: a new chat surface must consciously pick ONE of the two contracts and use its word
+consistently in UI strings and `docs/app-guide.md` — never inherit a persona name by copying a
+sibling VM. A change that gives the secretary any action capability must route it through the
+assistant's proposal/approval mechanism, not grant direct writes — flag it for owner review.
+Mixing the words across one surface, or a "secretary" surface that mutates data, is the tell. [5/6]
+
 ### Tests
 
 - Every new `@Observable` ViewModel/center ships with its own test suite in the same change — the recurring failure shape is bimodal coverage: a thorough library-layer suite beside a zero-test VM or CLI entry point, where green-overall masks the untested core. (weak-dimension 7 in ≥5 consecutive lesson entries) [7]
