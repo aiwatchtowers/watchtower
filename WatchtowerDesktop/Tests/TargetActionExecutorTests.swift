@@ -117,6 +117,77 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
     }
 
+    func testApplyUpdateTitle() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updateTitle, reason: "clean title", text: "Ship the registry")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.text, "Ship the registry")
+        XCTAssertTrue(summary.contains("Ship the registry"))
+    }
+
+    func testApplyUpdatePriority() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updatePriority, reason: "deadline", priority: "high")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.priority, "high")
+        XCTAssertEqual(summary, "set priority to high")
+    }
+
+    func testApplyUpdateDue() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updateDue, reason: "friday", text: "2026-09-01")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.dueDate, "2026-09-01")
+        XCTAssertEqual(summary, "set due date to 2026-09-01")
+    }
+
+    func testApplyUpdateIntent() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updateIntent, reason: "directive", text: "Unblock the API team first")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.intent, "Unblock the API team first")
+        XCTAssertEqual(summary, "updated context")
+    }
+
+    func testApplyUpdateTitleRejectsBlankText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        // A whitespace-only title would silently no-op in the ViewModel; the
+        // executor must throw instead of reporting a false rename.
+        let action = ProposedAction(type: .updateTitle, reason: "x", text: "   ")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.text, "parent") // unchanged
+    }
+
     func testApplyThrowsOnMissingRequiredField() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

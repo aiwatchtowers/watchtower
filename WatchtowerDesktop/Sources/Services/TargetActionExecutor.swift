@@ -69,6 +69,31 @@ enum TargetActionExecutor {
             viewModel.createLink(from: target.id, to: targetID, relation: relation)
             try checkWrite()
             return "linked to target #\(targetID) (\(relation))"
+        case .updateTitle:
+            // updateText silently no-ops on a whitespace-only title, which would
+            // read as a false "renamed" success — reject it here instead.
+            guard let text = action.text,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw TargetActionError.writeFailed("missing text")
+            }
+            viewModel.updateText(target, to: text)
+            try checkWrite()
+            return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
+        case .updatePriority:
+            guard let priority = action.priority else { throw TargetActionError.writeFailed("missing priority") }
+            viewModel.updatePriority(target, to: priority)
+            try checkWrite()
+            return "set priority to \(priority)"
+        case .updateDue:
+            guard let due = action.text else { throw TargetActionError.writeFailed("missing text") }
+            viewModel.updateDueDate(target, to: due)
+            try checkWrite()
+            return "set due date to \(due)"
+        case .updateIntent:
+            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            viewModel.updateIntent(target, to: text)
+            try checkWrite()
+            return "updated context"
         }
     }
 }

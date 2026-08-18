@@ -259,10 +259,33 @@ final class TargetChatViewModel {
         updateLastMessage(displayText)
 
         let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
+        var appliedSummaries: [String] = []
+        var failedSummaries: [String] = []
         for action in parsed.actions {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
+            // Execute-mode actions (an explicit owner directive) are applied
+            // immediately through the same apply core the Approve button uses —
+            // no per-action follow-up AI turn; one summary system message below.
+            // Propose-mode actions stay pending and await Approve.
+            guard action.isExecute else { continue }
+            switch applyAction(action, cardIndex: actionCards.count - 1) {
+            case .success(let summary):
+                appliedSummaries.append(summary)
+            case .failure(let error):
+                failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
+            }
+        }
+        if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
+            var parts: [String] = []
+            if !appliedSummaries.isEmpty {
+                parts.append("Applied: " + appliedSummaries.joined(separator: "; "))
+            }
+            if !failedSummaries.isEmpty {
+                parts.append("Failed: " + failedSummaries.joined(separator: "; "))
+            }
+            appendSystemMessage(parts.joined(separator: ". "))
         }
         for err in parsed.errors {
             appendSystemMessage("⚠️ Invalid action proposal: \(err)")
@@ -314,16 +337,30 @@ final class TargetChatViewModel {
         guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
               actionCards[idx].state == .pending else { return }
         let action = Self.resolved(card.action, overrideKind: kind)
+        switch applyAction(action, cardIndex: idx) {
+        case .success(let summary):
+            sendFollowUp("Action applied: \(summary). Continue with the task.")
+        case .failure(let error):
+            sendFollowUp("Action FAILED: \(error.localizedDescription). " +
+                         "Do NOT assume it was applied; suggest how to proceed.")
+        }
+    }
+
+    /// Shared apply core for the Approve button and execute-mode auto-apply:
+    /// reload the target (so the executor sees fresh state), apply through
+    /// TargetActionExecutor, transition the card at `idx` to .applied/.failed,
+    /// and reload again so the chat context stays current. The caller decides
+    /// what (if anything) is fed back into the conversation.
+    private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
         reloadTarget()
         do {
             let summary = try TargetActionExecutor.apply(action, target: target, viewModel: viewModel)
             actionCards[idx].state = .applied(summary)
             reloadTarget()
-            sendFollowUp("Action applied: \(summary). Continue with the task.")
+            return .success(summary)
         } catch {
             actionCards[idx].state = .failed(error.localizedDescription)
-            sendFollowUp("Action FAILED: \(error.localizedDescription). " +
-                         "Do NOT assume it was applied; suggest how to proceed.")
+            return .failure(error)
         }
     }
 
@@ -342,7 +379,8 @@ final class TargetChatViewModel {
         return ProposedAction(
             type: kind, reason: action.reason, status: action.status, note: action.note,
             progress: action.progress, text: action.text, intent: action.intent,
-            priority: action.priority, targetId: action.targetId, relation: action.relation
+            priority: action.priority, targetId: action.targetId, relation: action.relation,
+            mode: action.mode
         )
     }
 
@@ -434,15 +472,13 @@ final class TargetChatViewModel {
 
     === TASK ACTIONS ===
     Creating or changing tasks works ONLY through the blocks below. You have NO
-    todo list and NO task tool — never use any built-in to-do/task/sub-agent tool,
-    and never claim a task or sub-task "was created": it exists only after the user
-    approves the card. To create or change anything, output a fenced block exactly like:
+    todo list and NO task tool — never use any built-in to-do/task/sub-agent tool.
+    To create or change anything, output a fenced block exactly like:
     ```watchtower-action
     { "type": "<action>", ...fields, "reason": "<why>" }
     ```
     One JSON object per block, and ONE block PER item — to create 8 sub-tasks emit
     8 create_child_target blocks. Do NOT write to the database directly.
-    After emitting block(s), STOP and wait — do NOT assume anything was applied.
     Supported actions and required fields:
     - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
     - update_notes       { "note": "<text to append>" }
@@ -450,9 +486,36 @@ final class TargetChatViewModel {
     - add_sub_item       { "text": "<sub-item text>" }
     - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
+    - update_title       { "text": "<new task title>" }
+    - update_priority    { "priority": "high|medium|low" }
+    - update_due         { "text": "<due date, YYYY-MM-DD>" }
+    - update_intent      { "text": "<the task's goal/context, replaces the current intent>" }
     Every block must also include "reason".
     For link_target, first look up the other target's id by querying the `targets`
     table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
+
+    MODE — propose vs execute:
+    Every action block may carry an optional "mode" field: "propose" (the default
+    when absent) or "execute".
+    - "mode":"execute" — use it when the owner's message is an explicit
+      instruction (imperative: "break this down", "set the deadline", "gather
+      the Jira data"). Execute-mode actions are applied immediately, and your
+      reply MUST report what was done (e.g. "Done: created 4 sub-tasks and set
+      the due date").
+    - "mode":"propose" (or no mode) — use it when the owner is discussing or
+      thinking aloud. Propose-mode actions become cards awaiting the owner's
+      approval. In propose mode never claim a task or change "was made" — it
+      exists only after the owner approves the card; after emitting the
+      block(s), STOP and wait, and do NOT assume anything was applied.
+    - When the message is ambiguous, propose.
+
+    MANDATE — broad powers, narrow mandate:
+    Within a directive you may modify this task and its subtree (title, intent,
+    priority, due date, status, notes, sub-items, child targets) — but only what
+    the directive implies. Findings beyond the mandate (adjacent tasks, other
+    people's blockers) go into your prose reply, NEVER into actions. Never emit
+    actions the owner did not ask for, and never create targets outside this
+    task's subtree.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every

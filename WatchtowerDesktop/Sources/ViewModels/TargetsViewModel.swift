@@ -128,10 +128,7 @@ final class TargetsViewModel {
         guard !trimmed.isEmpty else { return }
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET text = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [trimmed, target.id]
-                )
+                try TargetQueries.updateText(db, id: target.id, text: trimmed)
             }
             load()
         } catch {
@@ -142,9 +139,9 @@ final class TargetsViewModel {
     func updateIntent(_ target: Target, to intent: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET intent = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [intent.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateIntent(
+                    db, id: target.id,
+                    intent: intent.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
@@ -156,10 +153,7 @@ final class TargetsViewModel {
     func updateDueDate(_ target: Target, to dueDate: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET due_date = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [dueDate, target.id]
-                )
+                try TargetQueries.updateDueDate(db, id: target.id, dueDate: dueDate)
             }
             load()
         } catch {

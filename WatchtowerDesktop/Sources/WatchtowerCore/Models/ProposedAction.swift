@@ -7,6 +7,10 @@ package enum TargetActionKind: String, Codable {
     case addSubItem = "add_sub_item"
     case createChildTarget = "create_child_target"
     case linkTarget = "link_target"
+    case updateTitle = "update_title"
+    case updatePriority = "update_priority"
+    case updateDue = "update_due"
+    case updateIntent = "update_intent"
 }
 
 package enum ProposedActionError: Error, Equatable {
@@ -28,11 +32,18 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     package var priority: String?
     package var targetId: Int?
     package var relation: String?
+    /// "propose" | "execute". Absent or any other value ⇒ propose (backward
+    /// compatible with old model output and persisted track_events rows).
+    package var mode: String?
+
+    /// True only for an explicit `"mode":"execute"` — everything else is a
+    /// proposal awaiting the Approve gate.
+    package var isExecute: Bool { mode == "execute" }
 
     package enum CodingKeys: String, CodingKey {
         case type, reason, status, note, progress, text, intent, priority
         case targetId = "target_id"
-        case relation
+        case relation, mode
     }
 
     package init(
@@ -45,7 +56,8 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         intent: String? = nil,
         priority: String? = nil,
         targetId: Int? = nil,
-        relation: String? = nil
+        relation: String? = nil,
+        mode: String? = nil
     ) {
         self.type = type
         self.reason = reason
@@ -57,6 +69,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         self.priority = priority
         self.targetId = targetId
         self.relation = relation
+        self.mode = mode
     }
 
     package init(from decoder: Decoder) throws {
@@ -69,6 +82,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         intent = try? c.decodeIfPresent(String.self, forKey: .intent)
         priority = try? c.decodeIfPresent(String.self, forKey: .priority)
         relation = try? c.decodeIfPresent(String.self, forKey: .relation)
+        mode = try? c.decodeIfPresent(String.self, forKey: .mode)
         // LLMs frequently emit numeric fields as quoted strings — accept both.
         progress = Self.lenientInt(c, .progress)
         targetId = Self.lenientInt(c, .targetId)
@@ -125,8 +139,38 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             guard let relation, Self.allowedRelations.contains(relation) else {
                 throw ProposedActionError.invalid("relation must be one of \(Self.allowedRelations.sorted())")
             }
+        case .updateTitle, .updateIntent:
+            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ProposedActionError.invalid("text is required")
+            }
+        case .updatePriority:
+            guard let priority, Self.allowedPriorities.contains(priority) else {
+                throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
+            }
+        case .updateDue:
+            guard let text, Self.isValidDueDate(text) else {
+                throw ProposedActionError.invalid("text must be a valid YYYY-MM-DD date")
+            }
         }
     }
+
+    /// Strict `YYYY-MM-DD` check: shape via regex, then a non-lenient calendar
+    /// parse so an impossible date ("2026-02-30") is rejected too.
+    package static func isValidDueDate(_ s: String) -> Bool {
+        guard s.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
+            return false
+        }
+        return dueDateFormatter.date(from: s) != nil
+    }
+
+    private static let dueDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        f.isLenient = false
+        return f
+    }()
 
     package var cardDescription: String {
         switch type {
@@ -142,6 +186,14 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             return "Create child target: \(text ?? "")\n\(reason)"
         case .linkTarget:
             return "Link → target #\(targetId ?? 0) as \"\(relation ?? "?")\"\n\(reason)"
+        case .updateTitle:
+            return "Rename to \"\(text ?? "")\"\n\(reason)"
+        case .updatePriority:
+            return "Set priority to \(priority ?? "?")\n\(reason)"
+        case .updateDue:
+            return "Set due date to \(text ?? "?")\n\(reason)"
+        case .updateIntent:
+            return "Update context\n\(reason)"
         }
     }
 }
