@@ -18,7 +18,7 @@ struct FeedRow: View {
                            badge: "Briefing", date: entry.item.eventDate, isSeen: entry.item.isSeen)
         case let .meetingRecap(recap, event):
             GenericFeedRow(icon: "text.badge.checkmark", tint: .green,
-                           title: event?.title ?? recap.eventID,
+                           title: event?.title ?? recap.eventID ?? "Recap",
                            badge: "Recap", date: entry.item.eventDate, isSeen: entry.item.isSeen)
         case .dayPlan(let plan):
             GenericFeedRow(icon: "list.bullet.rectangle", tint: .purple,

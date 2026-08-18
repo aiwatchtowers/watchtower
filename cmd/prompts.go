@@ -251,8 +251,8 @@ func runTune(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		targetIDs = []string{args[0]}
 	} else {
-		// Tune the 3 main prompts
-		targetIDs = []string{prompts.DigestChannel, prompts.TracksExtract, prompts.PeopleReduce}
+		// Tune the main prompts
+		targetIDs = []string{prompts.DigestChannel, prompts.PeopleReduce}
 	}
 
 	for _, id := range targetIDs {

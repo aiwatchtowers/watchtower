@@ -200,4 +200,27 @@ final class CLIBinaryStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: store), "precondition")
         XCTAssertNil(CLIBinaryStore.installedPath(storeBinary: store, bundleBinary: nil))
     }
+
+    // MARK: signature gate (resolvedInstalledPath's TOCTOU guard)
+
+    /// No running Team ID (ad-hoc/unsigned build) → refuse to validate,
+    /// falling back to bundle/PATH instead of exec'ing an unverified binary.
+    func testSignatureIsValidRejectsMissingTeamID() throws {
+        let file = try write("some-binary", "v1")
+        XCTAssertFalse(CLIBinaryStore.signatureIsValid(path: file, teamID: nil))
+        XCTAssertFalse(CLIBinaryStore.signatureIsValid(path: file, teamID: ""))
+    }
+
+    /// A byte-blob that happens to sit in the store is not code-signed by our
+    /// team, so it never satisfies the Team-ID designated requirement — the
+    /// whole point of the check beyond the hash match.
+    func testSignatureIsValidRejectsUnsignedFile() throws {
+        let file = try write("unsigned-binary", "not a signed mach-o")
+        XCTAssertFalse(CLIBinaryStore.signatureIsValid(path: file, teamID: "ABCDE12345"))
+    }
+
+    func testSignatureIsValidRejectsMissingFile() {
+        let missing = dir.appendingPathComponent("does-not-exist").path
+        XCTAssertFalse(CLIBinaryStore.signatureIsValid(path: missing, teamID: "ABCDE12345"))
+    }
 }

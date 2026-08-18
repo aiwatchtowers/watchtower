@@ -54,6 +54,9 @@ struct SidebarView: View {
     private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
     private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
     private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
+    /// The Digests badge: Slack + stream + decision unread, matching the
+    /// Digests tab header (see `SidebarCountsViewModel.digestsBadgeCount`).
+    private var digestsBadgeCount: Int { counts?.digestsBadgeCount ?? 0 }
     private var unreadBriefingCount: Int { counts?.unreadBriefingCount ?? 0 }
     private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
     private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
@@ -241,7 +244,7 @@ struct SidebarView: View {
         case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
-        case .digests: unreadDigestCount
+        case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount
         default: 0
@@ -289,7 +292,7 @@ struct SidebarView: View {
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
         let visible = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
         if visible.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
-        if visible.contains(.digests), unreadDigestCount > 0 { return .red }
+        if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
         if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
         if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }

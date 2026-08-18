@@ -134,7 +134,7 @@ func TestRunCalendarIngestRecapEnrichment(t *testing.T) {
 		"open_questions": []string{"Who owns QA?"},
 	})
 	require.NoError(t, err)
-	require.NoError(t, d.UpsertMeetingRecap("evt-1", "raw notes", string(recapJSON)))
+	require.NoError(t, d.UpsertMeetingRecap("evt-1", "raw notes", string(recapJSON), 0))
 
 	p := NewPipeline(d, v, noCallGen(t), calendarPipelineConfig(), t.Logf)
 	var stats RunStats
@@ -216,7 +216,7 @@ func TestRunCalendarIngestLateRecapRefresh(t *testing.T) {
 
 	// Recap lands after the first build.
 	recapJSON, _ := json.Marshal(map[string]any{"summary": "Wrapped up.", "key_decisions": []string{"Ship it"}})
-	require.NoError(t, d.UpsertMeetingRecap("evt-1", "notes", string(recapJSON)))
+	require.NoError(t, d.UpsertMeetingRecap("evt-1", "notes", string(recapJSON), 0))
 
 	var stats2 RunStats
 	_, err = p.runCalendarIngest(2, 0, &stats2)

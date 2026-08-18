@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestMeetingRecapUpsertAndGet(t *testing.T) {
 		t.Fatalf("seeding event: %v", err)
 	}
 
-	if err := database.UpsertMeetingRecap("evt-1", "raw notes here", `{"summary":"x"}`); err != nil {
+	if err := database.UpsertMeetingRecap("evt-1", "raw notes here", `{"summary":"x"}`, 0); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 
@@ -40,7 +41,7 @@ func TestMeetingRecapUpsertAndGet(t *testing.T) {
 	}
 
 	// Idempotent re-upsert overrides
-	if err := database.UpsertMeetingRecap("evt-1", "edited", `{"summary":"y"}`); err != nil {
+	if err := database.UpsertMeetingRecap("evt-1", "edited", `{"summary":"y"}`, 0); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
 	got2, _ := database.GetMeetingRecap("evt-1")
@@ -61,7 +62,11 @@ func TestMeetingRecapGetMissing(t *testing.T) {
 	}
 }
 
-func TestMeetingRecapCascadeDelete(t *testing.T) {
+// TestMeetingRecapSurvivesEventDelete pins the 00056 behavior: meeting_recaps.event_id
+// is ON DELETE SET NULL (not CASCADE), so the daemon's stale-event cleanup no longer
+// wipes a meeting's AI recap when its event ages out. The recap survives with event_id
+// nulled AND stays reachable via its durable transcript_id link.
+func TestMeetingRecapSurvivesEventDelete(t *testing.T) {
 	database := openTestDB(t)
 
 	if _, err := database.Exec(`INSERT INTO calendar_calendars (id, name) VALUES ('cal-1', 'Test Calendar')`); err != nil {
@@ -71,16 +76,42 @@ func TestMeetingRecapCascadeDelete(t *testing.T) {
 		VALUES ('evt-2', 'cal-1', 't', '2026-04-27T10:00:00Z', '2026-04-27T11:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.UpsertMeetingRecap("evt-2", "x", "{}"); err != nil {
+	transcriptID, err := database.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-2", Valid: true}, Title: "t", TranscriptText: "hello",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := database.UpsertMeetingRecap("evt-2", "x", "{}", transcriptID); err != nil {
+		t.Fatal(err)
+	}
+
+	// While the event exists the recap is addressable by event_id.
+	if got, err := database.GetMeetingRecap("evt-2"); err != nil || got == nil {
+		t.Fatalf("expected recap before event delete, got %+v err %v", got, err)
+	}
+
 	if _, err := database.Exec(`DELETE FROM calendar_events WHERE id='evt-2'`); err != nil {
 		t.Fatal(err)
 	}
 
-	got, _ := database.GetMeetingRecap("evt-2")
-	if got != nil {
-		t.Errorf("expected recap to be cascade-deleted, got %+v", got)
+	// event_id is nulled (not cascade-deleted), so the by-event lookup no longer
+	// finds it — but the durable transcript_id link still resolves the survivor.
+	if got, _ := database.GetMeetingRecap("evt-2"); got != nil {
+		t.Errorf("expected by-event lookup to miss after event delete, got %+v", got)
+	}
+	got, err := database.GetMeetingRecapByTranscript(transcriptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected the orphaned recap to be reachable via GetMeetingRecapByTranscript")
+	}
+	if got.EventID != "" {
+		t.Errorf("expected event_id nulled after event delete, got %q", got.EventID)
+	}
+	if got.RecapJSON != "{}" || got.SourceText != "x" {
+		t.Errorf("recap content not preserved: %+v", got)
 	}
 }
 

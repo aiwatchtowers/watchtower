@@ -244,8 +244,6 @@ struct MainNavigationView: View {
             BoardsView()
         case .usage:
             UsageView()
-        case .training:
-            TrainingView()
         case .mcpServer:
             MCPServerView()
         }

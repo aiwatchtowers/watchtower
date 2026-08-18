@@ -252,8 +252,11 @@ func TestChannelNameCacheMiss(t *testing.T) {
 
 func TestGetPromptFallback(t *testing.T) {
 	pipe := &Pipeline{cfg: testConfig()}
-	// No prompt store — should return default
-	tmpl, version := pipe.getPrompt("tracks.extract")
+	// No prompt store — should return default. Uses the live prompt the tracks
+	// pipeline actually resolves (tracks.extract_batch); the old tracks.extract
+	// default was removed with the dead communication-guide/prompt-training
+	// cleanup.
+	tmpl, version := pipe.getPrompt("tracks.extract_batch")
 	assert.NotEmpty(t, tmpl)
 	assert.Equal(t, 0, version)
 }

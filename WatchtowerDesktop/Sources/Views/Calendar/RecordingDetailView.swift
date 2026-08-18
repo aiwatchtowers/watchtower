@@ -226,8 +226,8 @@ struct RecordingDetailView: View {
                 .help("Delete recording with all its content")
 
                 if let onClose {
-                    // Close affordance (the GuideDetailView pattern) — without
-                    // it the pane can only be swapped, never dismissed.
+                    // Close affordance for a detail pane — without it the pane
+                    // can only be swapped, never dismissed.
                     Button(action: onClose) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title3)
@@ -278,11 +278,17 @@ struct RecordingDetailView: View {
             let loaded = try await Task.detached(priority: .userInitiated) { [transcriptID] in
                 try db.dbPool.read { conn -> LoadedDetail in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
-                    var recap: MeetingRecap?
+                    // Durable transcript_id link first: a recap relinked to this
+                    // recording survives its event's deletion (event_id → NULL on
+                    // both rows), so it still resolves here. Falls back to the
+                    // event_id lookup, then (below) the transcript's summary_json.
+                    var recap = try MeetingRecapQueries.fetch(conn, transcriptID: transcriptID)
                     var link: CalendarQueries.EventLink?
                     var eventAttendees: [EventAttendee] = []
                     if let eventID = row?.eventID {
-                        recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        if recap == nil {
+                            recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
+                        }
                         // Lightweight (title + start_time); nil when the event
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)

@@ -1608,6 +1608,23 @@ func (p *Pipeline) isFirstRun() bool {
 }
 
 func (p *Pipeline) lastDigestTime() float64 {
+	derived := p.derivedLastDigestTime()
+	// A persisted fast-forward floor (stamped when the slack-digests feature is
+	// re-enabled) wins when it is later than the derived window start, so a
+	// re-enable resumes from "now" instead of re-digesting the backlog (FEAT-03).
+	ff, err := p.db.GetDigestFastForwardTS()
+	if err != nil {
+		p.logger.Printf("digest: reading fast-forward ts: %v", err)
+		return derived
+	}
+	if ff > derived {
+		p.logger.Printf("digest: fast-forward floor %.0f overrides derived %.0f", ff, derived)
+		return ff
+	}
+	return derived
+}
+
+func (p *Pipeline) derivedLastDigestTime() float64 {
 	// Find the latest channel digest period_to
 	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
 	if err == nil && len(digests) > 0 {

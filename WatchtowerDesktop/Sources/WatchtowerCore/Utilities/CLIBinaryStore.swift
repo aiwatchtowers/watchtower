@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 /// Owns the out-of-bundle CLI copy the daemon and all Desktop-spawned CLI
 /// processes run from. Rebuilding or updating the app overwrites the bundle
@@ -48,27 +49,72 @@ package enum CLIBinaryStore {
         return storeBinary
     }
 
-    /// `installedPath()` for the real store and bundle, computed once per
-    /// launch. `Constants.findCLIPath()` has ~50 call sites and must not hash a
-    /// ~100 MB binary on each; the cache is dropped whenever `sync` changes the
-    /// store, so a launch that replaces the copy still resolves it afterwards.
+    /// The store path handed to callers that will EXEC it (`Constants.
+    /// findCLIPath`'s ~50 sites). Byte-identity to the bundle is necessary but
+    /// not sufficient: the store lives in a user-writable directory, so a
+    /// same-uid attacker could overwrite `.../bin/watchtower` AFTER launch and,
+    /// with a cached verdict, hijack every subsequent CLI spawn in the app's
+    /// TCC context (a check≠use TOCTOU). So there is deliberately **no
+    /// launch-long cache** — the code-signature check re-runs on every
+    /// resolution, keeping check and use close: a binary swapped after launch
+    /// is rejected at the next spawn.
+    ///
+    /// The gate is the on-disk file's own code signature, validated against a
+    /// Team-ID designated requirement pinned to the *running* app's Team ID
+    /// (the `UpdateService` mechanism, in-process here). Fail safe: a store
+    /// binary that is unsigned, ad-hoc, or signed by another team — or a dev
+    /// build that can't establish its own Team ID — resolves to nil, so the
+    /// caller falls back to the signed bundle / PATH and never execs an
+    /// unverified store binary. With no bundled CLI (`swift run`/`swift test`)
+    /// `installedPath()` already returns nil, so resolution falls through to
+    /// PATH exactly as before.
     package nonisolated static func resolvedInstalledPath() -> String? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        if let cached = cachedInstalledPath { return cached }
-        let resolved = installedPath()
-        cachedInstalledPath = .some(resolved)
-        return resolved
+        guard let path = installedPath() else { return nil }
+        guard signatureIsValid(path: path, teamID: runningTeamIdentifier()) else { return nil }
+        return path
     }
 
-    private static let cacheLock = NSLock()
-    /// Outer nil: not computed yet. Inner nil: computed, no usable store copy.
-    nonisolated(unsafe) private static var cachedInstalledPath: String??
+    /// Retained as a no-op: there is no longer a cached verdict to drop.
+    /// `sync()` still calls it at its mutation points; keeping the call sites
+    /// documents "the store just changed" without reintroducing a cache.
+    package nonisolated static func invalidateResolvedPath() {}
 
-    package nonisolated static func invalidateResolvedPath() {
-        cacheLock.lock()
-        cachedInstalledPath = nil
-        cacheLock.unlock()
+    // MARK: - Code-signature validation
+
+    /// True iff the file at `path` carries a valid code signature satisfying a
+    /// Team-ID designated requirement for `teamID`. Pure over its inputs so it
+    /// is unit-testable; `resolvedInstalledPath()` passes the running app's
+    /// Team ID. A nil/empty `teamID`, an unsigned/ad-hoc/foreign binary, or a
+    /// missing file all yield false (fail safe).
+    package nonisolated static func signatureIsValid(path: String, teamID: String?) -> Bool {
+        guard let teamID, !teamID.isEmpty else { return false }
+        // Same requirement string as UpdateService.designatedRequirement.
+        let text = "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\"" as CFString
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(text, [], &requirement) == errSecSuccess,
+              let requirement else { return false }
+        var staticCode: SecStaticCode?
+        let url = URL(fileURLWithPath: path) as CFURL
+        guard SecStaticCodeCreateWithPath(url, [], &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+        return SecStaticCodeCheckValidity(staticCode, [], requirement) == errSecSuccess
+    }
+
+    /// Team Identifier of the currently running code, read in-process from its
+    /// own signature (no `codesign` subprocess — this sits on a hot path). Nil
+    /// for ad-hoc/unsigned builds, which fail the signature gate safely.
+    nonisolated static func runningTeamIdentifier() -> String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any],
+              let team = dict[kSecCodeInfoTeamIdentifier as String] as? String,
+              !team.isEmpty else { return nil }
+        return team
     }
 
     /// Bring the store copy in sync with the bundled CLI. `stopDaemon` runs

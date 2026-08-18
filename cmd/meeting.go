@@ -232,7 +232,8 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
-	if err := database.UpsertMeetingRecap(meetingRecapFlagEventID, meetingRecapFlagText, string(recapBytes)); err != nil {
+	// The event-notes recap path has no associated transcript (0 = none).
+	if err := database.UpsertMeetingRecap(meetingRecapFlagEventID, meetingRecapFlagText, string(recapBytes), 0); err != nil {
 		return fmt.Errorf("persisting recap: %w", err)
 	}
 
