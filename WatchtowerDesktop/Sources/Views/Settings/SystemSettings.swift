@@ -502,7 +502,7 @@ struct SystemSettings: View {
             let body: [String: Any] = [
                 "model": model,
                 "messages": [["role": "user", "content": "respond with: OK"]],
-                "stream": false,
+                "stream": false
             ]
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 

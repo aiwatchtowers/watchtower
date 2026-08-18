@@ -163,6 +163,22 @@ final class ConfigService {
         }
     }
 
+    /// Writes the ai: block (provider, legacy model, per-tier models, ollama
+    /// URL, workers), removing empty values so cleared overrides disappear
+    /// from the yaml instead of lingering as empty strings.
+    private func applyAISection(to yaml: inout [String: Any]) {
+        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
+        if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
+        if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
+        if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
+        if let val = aiOllamaURL, !val.isEmpty { ai["ollama_url"] = val } else { ai.removeValue(forKey: "ollama_url") }
+        var aiModels = (ai["models"] as? [String: Any]) ?? [:]
+        if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
+        if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
+        if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
+        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+    }
+
     func save() throws {
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between
@@ -197,16 +213,7 @@ final class ConfigService {
         yaml["briefing"] = briefing
 
         // AI section
-        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
-        if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
-        if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
-        if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
-        if let val = aiOllamaURL, !val.isEmpty { ai["ollama_url"] = val } else { ai.removeValue(forKey: "ollama_url") }
-        var aiModels = (ai["models"] as? [String: Any]) ?? [:]
-        if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
-        if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
-        if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
-        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+        applyAISection(to: &yaml)
 
         // Calendar section
         var calendarDict = (yaml["calendar"] as? [String: Any]) ?? [:]
