@@ -281,7 +281,10 @@ struct DictationButton: View {
                 if let title = result.title {
                     onTitleCallback?(title)
                 }
-                if let raw = center.lastRaw, !raw.isEmpty {
+                // The "Raw" affordance only makes sense where the result
+                // differs from what was said — a mode with no cleanup pass
+                // delivers the raw transcript itself.
+                if mode.cleanupMode != nil, let raw = center.lastRaw, !raw.isEmpty {
                     armRevert(base: base, raw: raw)
                 }
             },

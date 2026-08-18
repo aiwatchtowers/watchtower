@@ -3,8 +3,33 @@ import WatchtowerCore
 
 // MARK: - DictationMode
 
+/// Where a dictation is headed. Decides the span separator and — via
+/// `cleanupMode` — whether the transcript goes through the AI cleanup pass
+/// at all.
 enum DictationMode: String, Sendable {
     case idea, note, chat
+
+    /// The `watchtower dictate clean --mode` this destination runs, or nil
+    /// when the raw transcript IS the deliverable. A chat field feeds the
+    /// user's own assistant, which reads speech-shaped text perfectly well —
+    /// an extra LLM round trip there only adds latency and rewrites the
+    /// user's wording (owner call 2026-08-18). Idea and note keep it: those
+    /// destinations need a title/markdown shape the raw transcript hasn't got.
+    var cleanupMode: DictationCleanMode? {
+        switch self {
+        case .idea: return .idea
+        case .note: return .note
+        case .chat: return nil
+        }
+    }
+}
+
+// MARK: - DictationCleanMode
+
+/// The subset of destinations the `dictate clean` CLI actually serves — the
+/// modes it accepts on `--mode`.
+enum DictationCleanMode: String, Sendable {
+    case idea, note
 }
 
 // MARK: - DictationCleanResult
@@ -19,8 +44,8 @@ struct DictationCleanResult: Equatable, Sendable {
 
 enum DictationCleanError: LocalizedError, Equatable {
     /// The envelope was missing (or had empty) the content key for the
-    /// requested mode — `body` for idea, `markdown` for note, `text` for chat.
-    case badEnvelope(mode: DictationMode)
+    /// requested mode — `body` for idea, `markdown` for note.
+    case badEnvelope(mode: DictationCleanMode)
 
     var errorDescription: String? {
         switch self {
@@ -36,8 +61,8 @@ enum DictationCleanError: LocalizedError, Equatable {
 /// --transcript-file <path>`. The transcript travels via a temp file (the
 /// `TranscriptSaveService.save` precedent), removed whether the run succeeds
 /// or throws. The CLI's stdout envelope shape is mode-dependent
-/// (idea → title/body, note → markdown, chat → text); this service decodes
-/// all fields as optional and maps the mode's own key into one result shape.
+/// (idea → title/body, note → markdown); this service decodes all fields as
+/// optional and maps the mode's own key into one result shape.
 struct DictationCleanService {
     let runner: CLIRunnerProtocol
 
@@ -45,10 +70,9 @@ struct DictationCleanService {
         let title: String?
         let body: String?
         let markdown: String?
-        let text: String?
     }
 
-    func clean(transcript: String, mode: DictationMode) async throws -> DictationCleanResult {
+    func clean(transcript: String, mode: DictationCleanMode) async throws -> DictationCleanResult {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("dictation-\(UUID().uuidString).txt")
         try transcript.write(to: url, atomically: true, encoding: .utf8)
@@ -69,11 +93,6 @@ struct DictationCleanService {
                 throw DictationCleanError.badEnvelope(mode: mode)
             }
             return DictationCleanResult(title: nil, text: markdown)
-        case .chat:
-            guard let text = envelope.text, !text.isEmpty else {
-                throw DictationCleanError.badEnvelope(mode: mode)
-            }
-            return DictationCleanResult(title: nil, text: text)
         }
     }
 }
