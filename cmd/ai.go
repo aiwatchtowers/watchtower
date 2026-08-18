@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
 	"watchtower/internal/config"
+	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
 )
@@ -33,6 +36,15 @@ var aiQueryCmd = &cobra.Command{
 	RunE:  runAIQuery,
 }
 
+var aiModelsFlagJSON bool
+
+var aiModelsCmd = &cobra.Command{
+	Use:   "models",
+	Short: "List AI providers and their models",
+	Long:  "Prints the provider registry: default per-tier models, the resolved light/strong models per provider under the current config, and — for OpenAI-compatible providers — the live model list. The Desktop app consumes this via --json.",
+	RunE:  runAIModels,
+}
+
 var aiTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Test AI provider connectivity",
@@ -53,6 +65,10 @@ func init() {
 	rootCmd.AddCommand(aiCmd)
 	aiCmd.AddCommand(aiQueryCmd)
 	aiCmd.AddCommand(aiTestCmd)
+	aiCmd.AddCommand(aiModelsCmd)
+
+	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
+	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "resume session (Claude only)")
@@ -83,15 +99,7 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		dbPath = cfg.DBPath()
 	}
 
-	// Determine model
-	model := cfg.AI.Model
-	if aiFlagModel != "" {
-		model = aiFlagModel
-	}
-	origModel := cfg.AI.Model
-	cfg.AI.Model = model
-	aiClient := newAIClient(cfg, dbPath)
-	cfg.AI.Model = origModel
+	aiClient := newAIClientWithModel(cfg, dbPath, aiFlagModel)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -137,16 +145,13 @@ func runAITest(_ *cobra.Command, _ []string) error {
 	}
 	applyProviderOverride(cfg)
 
-	model := cfg.AI.Model
+	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	if aiFlagModel != "" {
 		model = aiFlagModel
 	}
 
 	// Quick connectivity check — ask for a minimal response
-	origModel := cfg.AI.Model
-	cfg.AI.Model = model
-	aiClient := newAIClient(cfg, "")
-	cfg.AI.Model = origModel
+	aiClient := newAIClientWithModel(cfg, "", model)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -166,6 +171,80 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		"provider": cfg.AI.Provider,
 		"model":    model,
 	})
+}
+
+// aiModelsProvider is one provider entry in the `ai models` output.
+type aiModelsProvider struct {
+	providers.Provider
+	ResolvedLight  string   `json:"resolved_light"`
+	ResolvedStrong string   `json:"resolved_strong"`
+	Models         []string `json:"models,omitempty"`
+	Error          string   `json:"error,omitempty"`
+}
+
+// aiModelsOutput is the JSON envelope of `ai models --json`.
+type aiModelsOutput struct {
+	ActiveProvider string             `json:"active_provider"`
+	Providers      []aiModelsProvider `json:"providers"`
+}
+
+func runAIModels(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	out := aiModelsOutput{ActiveProvider: providers.ByID(cfg.AI.Provider).ID}
+	for _, p := range providers.All() {
+		entry := aiModelsProvider{Provider: p}
+		entry.ResolvedLight, entry.ResolvedStrong = providers.ResolveModelsFor(cfg, p.ID)
+		if p.LiveModels {
+			// Best-effort: an unreachable server yields an empty list plus an
+			// error string, never a failing command.
+			models, err := ollama.ListModels(ctx, cfg.AI.OllamaURL)
+			if err != nil {
+				entry.Error = err.Error()
+			} else {
+				entry.Models = models
+			}
+		}
+		out.Providers = append(out.Providers, entry)
+	}
+
+	w := cmd.OutOrStdout()
+	if aiModelsFlagJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	for _, p := range out.Providers {
+		active := " "
+		if p.ID == out.ActiveProvider {
+			active = "*"
+		}
+		fmt.Fprintf(w, "%s %s (%s)\n", active, p.DisplayName, p.ID)
+		fmt.Fprintf(w, "    light:  %s\n", p.ResolvedLight)
+		fmt.Fprintf(w, "    strong: %s\n", p.ResolvedStrong)
+		if p.LiveModels {
+			switch {
+			case p.Error != "":
+				fmt.Fprintf(w, "    models: unavailable (%s)\n", p.Error)
+			case len(p.Models) == 0:
+				fmt.Fprintf(w, "    models: none installed\n")
+			default:
+				fmt.Fprintf(w, "    models: %s\n", strings.Join(p.Models, ", "))
+			}
+		}
+	}
+	return nil
 }
 
 func emitError(enc *json.Encoder, msg string) error {
