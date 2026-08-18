@@ -28,6 +28,8 @@ func FastForward(id string, database *db.DB, now time.Time) error {
 		return fastForwardIdeas(database, now)
 	case "stream-digests":
 		return fastForwardStreamFloors(database, now)
+	case "slack-digests":
+		return fastForwardSlackDigests(database, now)
 	case "memory":
 		return fastForwardMemory(database, now)
 	default:
@@ -120,6 +122,19 @@ func fastForwardStreamFloors(database *db.DB, now time.Time) error {
 		if err := database.SetIdeasJiraFloor(acct.ID, nowJira); err != nil {
 			return fmt.Errorf("fast-forwarding jira floor for account %d: %w", acct.ID, err)
 		}
+	}
+	return nil
+}
+
+// fastForwardSlackDigests stamps workspace.digest_fastforward_ts to now. Slack
+// digests have no advancing watermark of their own — the pipeline derives the
+// next window's start from MAX(digests.period_to) — so this persisted floor is
+// what lets a re-enable resume from "now" instead of re-digesting the backlog
+// that accrued while the feature was off. lastDigestTime returns
+// max(derived, this floor).
+func fastForwardSlackDigests(database *db.DB, now time.Time) error {
+	if err := database.SetDigestFastForwardTS(float64(now.Unix())); err != nil {
+		return fmt.Errorf("fast-forwarding slack digest watermark: %w", err)
 	}
 	return nil
 }
