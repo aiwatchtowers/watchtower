@@ -26,15 +26,15 @@
 
 1. **Intent origin** — every action the secretary takes derives from an explicit owner message. The secretary never originates goals; even the clean title it derives at creation time is a materialization of the owner's own composer text, not initiative.
 2. **Timing** — the secretary acts only in direct response to an owner message. It never initiates chat turns, never mutates the target between owner messages, and there are no scheduled or daemon-driven re-runs — the instruction is one-shot (no stored instruction column exists).
-3. **Artifact mandate ("broad powers, narrow mandate")** — within a directive the secretary may modify the target and its subtree in any way the directive implies (title, intent, priority, due, status, notes, sub-items, child targets). Findings beyond the mandate — adjacent tasks discovered in transcripts, other teams' blockers — go into the chat reply as prose, never into actions. Creating work items outside the target's subtree is forbidden: the secretary reports the finding, and the owner's follow-up message is a new directive. Out-of-subtree writes are rejected at apply time and reported in the chat UI.
+3. **Artifact mandate ("broad powers, narrow mandate")** — within a directive the secretary may modify the target and its subtree in any way the directive implies (title, intent, priority, due, status, notes, sub-items, child targets). Findings beyond the mandate — adjacent tasks discovered in transcripts, other teams' blockers — go into the chat reply as prose, never into actions. Creating work items outside the target's subtree is forbidden: the secretary reports the finding, and the owner's follow-up message is a new directive.
 
-The mandate rule is stated verbatim in the chat system prompt (`TargetChatViewModel.taskActionsContract`), and the apply path (`TargetActionExecutor`) enforces the subtree boundary mechanically.
+The mandate rule is stated in the chat system prompt (`TargetChatViewModel.taskActionsContract`). Mechanically, the subtree boundary holds **by construction of the action grammar**: no action carries a foreign write-target — every `update_*`/`add_sub_item` writes the current chat's own target, and `create_child_target` always parents to it. The one cross-target action, `link_target`, adds a link row owned by the current target (it never mutates the other target) and is validated at apply: the linked target must exist and must not be the target itself; an invalid link is rejected and reported in the chat UI. Extending the grammar with any action that carries an arbitrary write-target id would break this contract and needs owner approval.
 
 **Why locked:** This is the philosophical line of the whole product (spec §2): pipelines write the secretary's own notebook (situations, digests, ideas), but the owner's artifacts (targets) are written only under an explicit directive and only within its mandate. Weakening any axis — background re-runs, unsolicited mutations, out-of-mandate writes — silently turns the secretary into an autonomous assistant the owner never agreed to.
 
 **Test guards:**
 - `WatchtowerDesktop/Tests/TargetChatViewModelTests.swift` (contract prompt contains the mode field + mandate wording; no follow-up AI turns after auto-apply)
-- `WatchtowerDesktop/Tests/TargetActionExecutorTests.swift` (out-of-subtree / unknown-target writes rejected at apply)
+- `WatchtowerDesktop/Tests/TargetActionExecutorTests.swift` (`testApplyLinkTargetRejectsSelfLink`, `testApplyLinkTargetRejectsUnknownTarget` — the only cross-target action is validated at apply)
 
 **Locked since:** 2026-08-19
 
@@ -47,8 +47,10 @@ The mandate rule is stated verbatim in the chat system prompt (`TargetChatViewMo
 **Why locked:** Target creation is the owner capturing their own intent; making it depend on a model call would turn an offline-safe local write into a network/CLI-availability gamble. The row-first ordering is also what makes every failure mode in spec §7 recoverable — the instruction survives as a persisted chat message on a target that already exists.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/TargetComposerLogicTests.swift` (title derivation, submit routing: both paths create mechanically)
+- `WatchtowerDesktop/Tests/TargetComposerLogicTests.swift` (provisional-title derivation — the mechanical-create input)
 - `WatchtowerDesktop/Tests/TargetBriefCenterTests.swift` (failure phase leaves the created row; run survives navigation)
+
+The Enter/⌘Enter → `TargetQueries.create` routing itself lives in the view layer (`CreateTargetSheet.submit`) and has no direct unit test (house convention: views are not unit-tested); the row-first ordering is code-review-guarded — keep the `TargetQueries.create` call ahead of any `TargetBriefCenter` hand-off.
 
 **Locked since:** 2026-08-19
 
