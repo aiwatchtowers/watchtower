@@ -458,7 +458,9 @@ final class TargetChatViewModel {
         return ProposedAction(
             type: kind, reason: action.reason, status: action.status, note: action.note,
             progress: action.progress, text: action.text, intent: action.intent,
-            priority: action.priority, targetId: action.targetId, relation: action.relation
+            priority: action.priority, targetId: action.targetId, relation: action.relation,
+            index: action.index, match: action.match, done: action.done,
+            dueDate: action.dueDate, ballOn: action.ballOn
         )
     }
 
@@ -565,10 +567,22 @@ final class TargetChatViewModel {
     - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
     - update_notes       { "note": "<text to append>" }
     - update_progress    { "progress": <0-100 integer> }
+    - update_priority    { "priority": "high|medium|low" }
+    - update_due_date    { "due_date": "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM", "" clears }
+    - update_ball_on     { "ball_on": "<who the ball is on>", "" clears }
     - add_sub_item       { "text": "<sub-item text>" }
+    - toggle_sub_item    { "index": <N>, "match": "<current text>", "done": true|false }
+    - edit_sub_item      { "index": <N>, "match": "<current text>", "text": "<new text>" }
+    - delete_sub_item    { "index": <N>, "match": "<current text>" }
+    - set_sub_item_due   { "index": <N>, "match": "<current text>", "due_date": "YYYY-MM-DD", "" clears }
     - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     Every block must also include "reason".
+    For the *_sub_item actions, "index" is the #N shown next to the item in the
+    CURRENT TASK sub-items list and "match" is that item's EXACT current text —
+    both are required and are re-checked at apply time, so never guess either.
+    To PROMOTE an existing sub-item into a real sub-task, emit create_child_target
+    with the item's text, then delete_sub_item for that item.
     For link_target, first look up the other target's id by querying the `targets`
     table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
 
@@ -586,8 +600,12 @@ final class TargetChatViewModel {
     nonisolated private static func taskContextBlock(_ target: Target) -> String {
         let notesList = target.decodedNotes.map { "- \($0.text)" }.joined(separator: "\n")
         let notesText = notesList.isEmpty ? "(none)" : notesList
-        let subItemsList = target.decodedSubItems
-            .map { "- [\($0.done ? "x" : " ")] \($0.text)" }
+        let subItemsList = target.decodedSubItems.enumerated()
+            .map { i, item in
+                var due = ""
+                if let d = item.dueDate, !d.isEmpty { due = " (due \(d))" }
+                return "- [\(item.done ? "x" : " ")] #\(i) \(item.text)\(due)"
+            }
             .joined(separator: "\n")
         let subItemsText = subItemsList.isEmpty ? "(none)" : subItemsList
         return """

@@ -416,6 +416,13 @@ struct TargetActionCardView: View {
         case .addSubItem: "checklist"
         case .createChildTarget: "plus.square.on.square"
         case .linkTarget: "link"
+        case .toggleSubItem: "checkmark.circle"
+        case .editSubItem: "pencil"
+        case .deleteSubItem: "trash"
+        case .setSubItemDue: "calendar.badge.clock"
+        case .updateDueDate: "calendar"
+        case .updatePriority: "exclamationmark.circle"
+        case .updateBallOn: "person.circle"
         }
     }
 }
