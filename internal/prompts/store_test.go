@@ -359,17 +359,17 @@ func TestGetForRole_RoleVariantInDB(t *testing.T) {
 	_ = store.Seed()
 
 	// Insert a role-specific variant
-	roleVariantID := TracksExtract + "_direction_owner"
+	roleVariantID := DigestChannel + "_direction_owner"
 	require.NoError(t, database.UpsertPrompt(db.Prompt{
 		ID:       roleVariantID,
-		Template: "role-specific tracks prompt for direction owner",
+		Template: "role-specific digest prompt for direction owner",
 		Version:  1,
 	}))
 
-	tmpl, version, err := store.GetForRole(TracksExtract, "direction_owner")
+	tmpl, version, err := store.GetForRole(DigestChannel, "direction_owner")
 	require.NoError(t, err)
 	assert.Equal(t, 1, version)
-	assert.Equal(t, "role-specific tracks prompt for direction owner", tmpl)
+	assert.Equal(t, "role-specific digest prompt for direction owner", tmpl)
 }
 
 func TestGetForRole_FallsBackToStandard(t *testing.T) {
@@ -672,19 +672,6 @@ func TestSuggest_MixedFeedback(t *testing.T) {
 	assert.Equal(t, "tuned prompt", result.Suggestion)
 }
 
-func TestSuggest_TracksPrompt(t *testing.T) {
-	database, store := seedStoreWithFeedback(t)
-	addFeedback(t, database, "track", "1", 1, "good track")
-
-	response := `{"improved_prompt": "improved tracks", "explanation": "better", "changes": []}`
-	gen := &mockGenerator{response: response}
-	tuner := NewTuner(store, database, gen)
-
-	result, err := tuner.Suggest(context.Background(), TracksExtract)
-	require.NoError(t, err)
-	assert.Equal(t, TracksExtract, result.PromptID)
-}
-
 func TestSuggest_PeopleReducePrompt(t *testing.T) {
 	database, store := seedStoreWithFeedback(t)
 	addFeedback(t, database, "user_analysis", "1", -1, "bad analysis")
@@ -978,8 +965,6 @@ func TestSuggest_AllPromptTypes(t *testing.T) {
 		{DigestDaily, "digest"},
 		{DigestWeekly, "digest"},
 		{DigestPeriod, "digest"},
-		{TracksExtract, "track"},
-		{TracksUpdate, "track"},
 		{PeopleReduce, "user_analysis"},
 		{PeopleTeam, "user_analysis"},
 	}

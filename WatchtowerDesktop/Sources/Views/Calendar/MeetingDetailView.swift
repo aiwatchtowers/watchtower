@@ -126,8 +126,8 @@ struct MeetingDetailView: View {
                     .fontWeight(.semibold)
                     .lineLimit(2)
                 Spacer()
-                // Close affordance (the GuideDetailView pattern) — without it
-                // the pane can only be swapped, never dismissed.
+                // Close affordance for a detail pane — without it the pane can
+                // only be swapped, never dismissed.
                 Button(action: onClose) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)

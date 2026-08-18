@@ -279,17 +279,6 @@ type Feedback struct {
 	CreatedAt  string
 }
 
-// ImportanceCorrection records a user's override of AI-assigned decision importance.
-type ImportanceCorrection struct {
-	ID                 int
-	DigestID           int
-	DecisionIdx        int
-	DecisionText       string
-	OriginalImportance string
-	NewImportance      string
-	CreatedAt          string
-}
-
 // UserProfile stores the current user's role, team, relationships, and personalization data.
 type UserProfile struct {
 	ID                  int
@@ -330,50 +319,6 @@ type UserInteraction struct {
 	ReactionsFrom     int     // B reacted to A's messages
 	InteractionScore  float64 // weighted composite score
 	ConnectionType    string  // peer, i_depend, depends_on_me, weak
-}
-
-// CommunicationGuide represents an AI-generated communication coaching guide for a user.
-type CommunicationGuide struct {
-	ID                       int
-	UserID                   string
-	PeriodFrom               float64
-	PeriodTo                 float64
-	MessageCount             int
-	ChannelsActive           int
-	ThreadsInitiated         int
-	ThreadsReplied           int
-	AvgMessageLength         float64
-	ActiveHoursJSON          string // JSON: {"9":12,"10":8,...}
-	VolumeChangePct          float64
-	Summary                  string // how to communicate effectively with this person
-	CommunicationPreferences string // preferred style, format, timing
-	AvailabilityPatterns     string // when they are most responsive
-	DecisionProcess          string // how they make/participate in decisions
-	SituationalTactics       string // JSON array: if X happens, do Y
-	EffectiveApproaches      string // JSON array: what works well
-	Recommendations          string // JSON array: actionable tips
-	RelationshipContext      string // peer/report/manager dynamics
-	Model                    string
-	InputTokens              int
-	OutputTokens             int
-	CostUSD                  float64
-	PromptVersion            int
-	CreatedAt                string
-}
-
-// GuideSummary is a cross-user team communication health summary.
-type GuideSummary struct {
-	ID            int
-	PeriodFrom    float64
-	PeriodTo      float64
-	Summary       string // team communication health overview
-	Tips          string // JSON array: team-level tips
-	Model         string
-	InputTokens   int
-	OutputTokens  int
-	CostUSD       float64
-	PromptVersion int
-	CreatedAt     string
 }
 
 // PeopleCard is a unified per-user card combining analysis + guide data.

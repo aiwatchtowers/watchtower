@@ -53,14 +53,11 @@ func (db *DB) ClearSlackData() error {
 		`DELETE FROM track_events`,
 		`DELETE FROM track_states`,
 		`DELETE FROM tracks`,
-		`DELETE FROM guide_summaries`,
-		`DELETE FROM communication_guides`,
 		`DELETE FROM people_card_summaries`,
 		`DELETE FROM people_cards`,
 		`DELETE FROM briefings`,
 		`DELETE FROM catchup_themes`,
 		`DELETE FROM catchup_sessions`,
-		`DELETE FROM decision_importance_corrections`,
 		`DELETE FROM user_interactions`,
 
 		// Raw Slack sync data. Deleting messages also clears the FTS index
