@@ -730,10 +730,12 @@ struct TargetDetailView: View {
                 .foregroundStyle(.tertiary)
                 .tracking(0.5)
 
+            // One full-width column: real checklist items are long enough that
+            // two columns wrapped every row onto 2-3 ragged lines, which costs
+            // the same vertical space as one column of single-line rows and
+            // reads worse.
             if !items.isEmpty {
-                let columns = [GridItem(.flexible(), alignment: .leading),
-                               GridItem(.flexible(), alignment: .leading)]
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         checklistRow(index: index, item: item)
                     }
@@ -757,7 +759,10 @@ struct TargetDetailView: View {
 
     @ViewBuilder
     private func checklistRow(index: Int, item: TargetSubItem) -> some View {
-        HStack(spacing: 8) {
+        // The label wraps instead of clipping — real items ("[Maintenance] Deploy
+        // Trade 8.7.0 …") do not fit one line on a narrow window. Top-aligned so
+        // the checkbox and the "stuck" badge stay on the first line.
+        HStack(alignment: .top, spacing: 8) {
             Button {
                 viewModel.toggleSubItem(target, index: index)
             } label: {
@@ -767,9 +772,10 @@ struct TargetDetailView: View {
             .buttonStyle(.plain)
 
             if editingSubItemIndex == index {
-                TextField("Sub-item", text: $editingSubItemText)
+                TextField("Sub-item", text: $editingSubItemText, axis: .vertical)
                     .font(.callout)
                     .textFieldStyle(.plain)
+                    .lineLimit(1...6)
                     .onSubmit {
                         viewModel.editSubItem(target, index: index, newText: editingSubItemText)
                         editingSubItemIndex = nil
@@ -780,7 +786,10 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .strikethrough(item.done)
                     .foregroundStyle(item.done ? .secondary : .primary)
-                    .lineLimit(1)
+                    .lineLimit(4)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(item.text)
                     .onTapGesture {
                         editingSubItemIndex = index
                         editingSubItemText = item.text
