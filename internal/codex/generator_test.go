@@ -12,22 +12,15 @@ import (
 )
 
 func TestNewCodexGenerator(t *testing.T) {
-	gen := NewCodexGenerator("gpt-5.4", "/usr/local/bin/codex")
-	if gen.model != "gpt-5.4" {
-		t.Errorf("model = %q, want %q", gen.model, "gpt-5.4")
+	gen := NewCodexGenerator("gpt-5.4-mini", "gpt-5.4", "/usr/local/bin/codex")
+	if gen.modelLight != "gpt-5.4-mini" {
+		t.Errorf("modelLight = %q, want %q", gen.modelLight, "gpt-5.4-mini")
+	}
+	if gen.modelStrong != "gpt-5.4" {
+		t.Errorf("modelStrong = %q, want %q", gen.modelStrong, "gpt-5.4")
 	}
 	if gen.codexPath != "/usr/local/bin/codex" {
 		t.Errorf("codexPath = %q, want %q", gen.codexPath, "/usr/local/bin/codex")
-	}
-}
-
-func TestNewCodexGenerator_EmptyPath(t *testing.T) {
-	gen := NewCodexGenerator(ModelDefault, "")
-	if gen.model != ModelDefault {
-		t.Errorf("model = %q, want %q", gen.model, ModelDefault)
-	}
-	if gen.codexPath != "" {
-		t.Errorf("codexPath = %q, want empty", gen.codexPath)
 	}
 }
 
@@ -84,7 +77,7 @@ esac
 		t.Fatalf("writing fake codex binary: %v", err)
 	}
 
-	gen := NewCodexGenerator("test-model", script)
+	gen := NewCodexGenerator("test-model-light", "test-model", script)
 	big := strings.Repeat("x", digest.StdinThreshold) + marker // > StdinThreshold → stdin path
 
 	got, _, _, err := gen.Generate(context.Background(), "sys", big, "")
@@ -165,5 +158,49 @@ func TestLimitedWriter(t *testing.T) {
 	}
 	if buf.String() != "hello" {
 		t.Errorf("buf = %q, want %q", buf.String(), "hello")
+	}
+}
+
+// TestGenerate_TierRoutingHearsDigestSource pins the fix for the context-key
+// mismatch: codex used to declare its own sessionSourceKey type, which never
+// matched digest.WithSource, so tier routing silently never fired.
+func TestGenerate_TierRoutingHearsDigestSource(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "codex")
+	// Echo the value following --model back as the agent message text.
+	scriptBody := `#!/bin/sh
+model=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$a"; fi
+  prev="$a"
+done
+echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"model:$model\"}}"
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake codex binary: %v", err)
+	}
+
+	gen := NewCodexGenerator("mini-model", "big-model", script)
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"untagged uses strong", context.Background(), "model:big-model"},
+		{"light source uses light", digest.WithSource(context.Background(), "inbox.triage"), "model:mini-model"},
+		{"strong source uses strong", digest.WithSource(context.Background(), "digest.channel"), "model:big-model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, _, err := gen.Generate(tt.ctx, "sys", "msg", "")
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Generate = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

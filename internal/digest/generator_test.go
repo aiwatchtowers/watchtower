@@ -84,7 +84,7 @@ esac
 		t.Fatalf("writing fake claude binary: %v", err)
 	}
 
-	gen := NewClaudeGenerator("test-model", script)
+	gen := NewClaudeGenerator("test-model-light", "test-model", script)
 	big := strings.Repeat("x", StdinThreshold) + marker // > StdinThreshold → stdin path
 
 	got, _, _, err := gen.Generate(context.Background(), "sys", big, "")

@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -49,7 +50,8 @@ func (r *REPL) aiProvider() ai.Provider {
 		return r.deps.AIProvider
 	}
 	cfg := r.deps.Config
-	return ai.NewClient(cfg.AI.Model, r.deps.DBPath, cfg.ClaudePath)
+	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	return ai.NewClient(strong, r.deps.DBPath, cfg.ClaudePath)
 }
 
 // setStreamCancel atomically sets the stream cancel function.

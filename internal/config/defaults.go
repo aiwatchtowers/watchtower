@@ -3,9 +3,13 @@ package config
 import "time"
 
 const (
-	DefaultActiveWorkspace        = ""
-	DefaultAIProvider             = "claude"
+	DefaultActiveWorkspace = ""
+	DefaultAIProvider      = "claude"
+	// DefaultAIModel is retired as a live default: setup used to seed this
+	// literal into config.yaml, so resolution treats a legacy ai.model equal to
+	// it as "unset" (see internal/providers.ResolveModelsFor). Do not repoint it.
 	DefaultAIModel                = "claude-sonnet-4-6"
+	DefaultOllamaURL              = "http://localhost:11434"
 	DefaultAIContextBudget        = 150000
 	DefaultAIWorkers              = 5
 	DefaultSyncWorkers            = 1

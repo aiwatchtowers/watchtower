@@ -7,8 +7,8 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
 )
@@ -231,7 +231,7 @@ func runTune(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	model := digest.ModelSonnet
+	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	runID, _ := database.CreatePipelineRun("tune", "cli", model)
 	var tuneErr error
 	itemsFound := 0

@@ -18,11 +18,24 @@ type WorkspaceConfig struct {
 	SlackToken string `mapstructure:"slack_token"`
 }
 
+// AIModels holds the per-tier model overrides. Empty values fall back to the
+// provider registry defaults (internal/providers).
+type AIModels struct {
+	Light  string `mapstructure:"light"`
+	Strong string `mapstructure:"strong"`
+}
+
 type AIConfig struct {
-	Model         string `mapstructure:"model"`
-	ContextBudget int    `mapstructure:"context_budget"`
-	Workers       int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
-	Provider      string `mapstructure:"provider"` // "claude" (default) | "codex"
+	// Model is the legacy single-model key. When Models.Strong is unset it is
+	// read as the strong-tier override, except when it equals the retired
+	// DefaultAIModel constant (setup used to seed that literal into config.yaml,
+	// so it means "never chose a model", not a pin).
+	Model         string   `mapstructure:"model"`
+	Models        AIModels `mapstructure:"models"`
+	OllamaURL     string   `mapstructure:"ollama_url"` // OpenAI-compatible server base URL
+	ContextBudget int      `mapstructure:"context_budget"`
+	Workers       int      `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
+	Provider      string   `mapstructure:"provider"` // "claude" (default) | "codex" | "ollama"
 }
 
 type SyncConfig struct {
@@ -372,7 +385,10 @@ func Load(configPath string) (*Config, error) {
 	// Defaults
 	v.SetDefault("active_workspace", DefaultActiveWorkspace)
 	v.SetDefault("ai.provider", DefaultAIProvider)
-	v.SetDefault("ai.model", DefaultAIModel)
+	v.SetDefault("ai.model", "")
+	v.SetDefault("ai.models.light", "")
+	v.SetDefault("ai.models.strong", "")
+	v.SetDefault("ai.ollama_url", DefaultOllamaURL)
 	v.SetDefault("ai.context_budget", DefaultAIContextBudget)
 	v.SetDefault("ai.workers", DefaultAIWorkers)
 	v.SetDefault("sync.workers", DefaultSyncWorkers)

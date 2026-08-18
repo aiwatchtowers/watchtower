@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
 )
@@ -104,17 +105,11 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	timeHints := ai.FormatTimeHints(pq)
 	userMessage := ai.AssembleUserMessage(question, timeHints)
 
-	// Determine model
-	model := cfg.AI.Model
+	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	if askFlagModel != "" {
 		model = askFlagModel
 	}
-
-	// Create AI client — temporarily apply model override
-	origModel := cfg.AI.Model
-	cfg.AI.Model = model
-	aiClient := newAIClient(cfg, dbPath)
-	cfg.AI.Model = origModel
+	aiClient := newAIClientWithModel(cfg, dbPath, model)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
