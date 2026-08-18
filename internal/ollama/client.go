@@ -121,47 +121,46 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			// SSE format: "data: {...}" or "data: [DONE]"
-			data, ok := strings.CutPrefix(line, "data: ")
-			if !ok {
-				continue
-			}
-			if data == "[DONE]" {
-				return
-			}
-
-			var chunk chatResponse
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-			if len(chunk.Choices) > 0 {
-				text := chunk.Choices[0].Delta.Content
-				if text == "" {
-					continue
-				}
-				select {
-				case textCh <- text:
-				case <-ctx.Done():
-					errCh <- ctx.Err()
-					return
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			errCh <- fmt.Errorf("reading ollama stream: %w", err)
-		}
+		streamSSE(ctx, resp.Body, textCh, errCh)
 	}()
 
 	return textCh, errCh, sidCh
+}
+
+// streamSSE reads an SSE chat-completions stream and forwards each delta's
+// text to textCh until "[DONE]", the stream ends, or ctx is cancelled.
+func streamSSE(ctx context.Context, body io.Reader, textCh chan<- string, errCh chan<- error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		// SSE format: "data: {...}" or "data: [DONE]"
+		data, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		if data == "[DONE]" {
+			return
+		}
+
+		var chunk chatResponse
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 || chunk.Choices[0].Delta.Content == "" {
+			continue
+		}
+		select {
+		case textCh <- chunk.Choices[0].Delta.Content:
+		case <-ctx.Done():
+			errCh <- ctx.Err()
+			return
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		errCh <- fmt.Errorf("reading ollama stream: %w", err)
+	}
 }
 
 // QuerySync sends a non-streaming request and returns the full response.
