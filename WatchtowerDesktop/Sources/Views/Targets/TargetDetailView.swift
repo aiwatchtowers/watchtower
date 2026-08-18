@@ -244,7 +244,16 @@ struct TargetDetailView: View {
     private var tabContent: some View {
         switch selectedTab {
         case .details:
-            scrollableTab { detailsTab }
+            VStack(spacing: 0) {
+                scrollableTab { detailsTab }
+                Divider()
+                // Docked below the scroll, never inside it: ChatInput wraps an
+                // NSScrollView, which misbehaves nested in a SwiftUI ScrollView
+                // (the `SituationDiscussInputBar` placement, same reason).
+                assistantInlineInput
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            }
         case .watch:
             scrollableTab { watchTab }
         case .links:
@@ -299,7 +308,6 @@ struct TargetDetailView: View {
             hierarchySection
             notesSection
             jiraIssueSection
-            assistantInlineInput
             aboutSection
             footerActions
         }
