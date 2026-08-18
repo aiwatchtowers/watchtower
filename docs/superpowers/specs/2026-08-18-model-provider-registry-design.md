@@ -34,7 +34,7 @@ Mixing providers across tiers; per-pipeline model overrides (`targets.extract.mo
 ### 2. Config
 
 - New keys: `ai.models.light`, `ai.models.strong` (empty → registry default for the active provider), `ai.ollama_url` (default `http://localhost:11434`).
-- Legacy `ai.model` is read as `ai.models.strong` when the new key is unset — existing installs keep their pinned model. The existing quirk stays: a carried-over Claude default is ignored when the provider is `codex` (`configuredAIModel`).
+- Legacy `ai.model` is read as `ai.models.strong` when the new key is unset — an install that deliberately pinned a model keeps it. Exception: a legacy value equal to the retired `claude-sonnet-4-6` default is treated as unset for every provider — setup used to seed that literal into each config.yaml, so it means "never chose a model"; honoring it would pin every existing install to an aging model and defeat the aliases. Setup stops seeding `ai.model`.
 - `ai.provider` accepts `ollama` alongside `claude`/`codex`.
 
 ### 3. Ollama provider (port of `b9d06d1d`)
