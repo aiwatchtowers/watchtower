@@ -2,7 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// State machine driving one voice dictation: mic capture → live (or batch)
-/// transcription → `DictationCleanService` cleanup → the caller's callbacks.
+/// transcription → `DictationCleanService` cleanup (only where the
+/// destination has a `cleanupMode` — a chat field takes the raw transcript)
+/// → the caller's callbacks.
 enum DictationPhase: Equatable {
     case idle, recording, paused, stopping, cleaning
     case failed(String)
@@ -438,12 +440,7 @@ final class DictationCenter {
                 finish(failed: "microphone capture failed")
                 return
             }
-            phase = .idle
-            isEngineLoading = false
-            micLevel = 0
-            activeTargetID = nil
-            engineBecameIdle()
-            onResult(DictationCleanResult(title: nil, text: ""))
+            deliver(DictationCleanResult(title: nil, text: ""), onResult: onResult)
             return
         }
 
@@ -456,8 +453,16 @@ final class DictationCenter {
             dropEngineImmediately()
         }
 
+        // A destination with no cleanup mode (chat) takes the transcript
+        // verbatim: no CLI call, no `.cleaning` phase, nothing that could
+        // fail between the engine and the field.
+        guard let cleanupMode = mode.cleanupMode else {
+            deliver(DictationCleanResult(title: nil, text: rawText), onResult: onResult)
+            return
+        }
+
         phase = .cleaning
-        await runCleanup(rawText: rawText, mode: mode,
+        await runCleanup(rawText: rawText, mode: cleanupMode,
                          onResult: onResult, onCleanupFailure: onCleanupFailure)
     }
 
@@ -516,6 +521,22 @@ final class DictationCenter {
         return (transcriber, config)
     }
 
+    /// Successful end of a dictation: reset the run's state, arm the engine
+    /// idle countdown, and hand the result to the caller. The one exit every
+    /// non-failing path takes — empty transcript, raw delivery, cleaned
+    /// result — so none of them can drift apart on what "back to idle" means.
+    private func deliver(
+        _ result: DictationCleanResult,
+        onResult: @MainActor (DictationCleanResult) -> Void
+    ) {
+        phase = .idle
+        isEngineLoading = false
+        micLevel = 0
+        activeTargetID = nil
+        engineBecameIdle()
+        onResult(result)
+    }
+
     /// The cleanup step, split from `runDictation` (complexity): resolves the
     /// CLI runner and delivers either the cleaned result or — on any failure —
     /// the raw transcript through `onCleanupFailure`. "Raw text kept" must be
@@ -523,7 +544,7 @@ final class DictationCenter {
     /// the field: the surface gets the transcript itself, not just the error.
     private func runCleanup(
         rawText: String,
-        mode: DictationMode,
+        mode: DictationCleanMode,
         onResult: @escaping @MainActor (DictationCleanResult) -> Void,
         onCleanupFailure: (@MainActor (String) -> Void)?
     ) async {
@@ -536,12 +557,7 @@ final class DictationCenter {
         do {
             let result = try await DictationCleanService(runner: runner).clean(transcript: rawText, mode: mode)
             guard !Task.isCancelled else { return }
-            phase = .idle
-            isEngineLoading = false
-            micLevel = 0
-            activeTargetID = nil
-            engineBecameIdle()
-            onResult(result)
+            deliver(result, onResult: onResult)
         } catch {
             // D2: never log the error's full description here — a cleanup
             // failure's error can carry fragments of the dictated speech (the

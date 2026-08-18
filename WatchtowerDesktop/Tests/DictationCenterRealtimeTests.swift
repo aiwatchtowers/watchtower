@@ -10,8 +10,10 @@ import WatchtowerTestSupport
 /// "the transcriber/session itself failed".
 private struct StubTranscribeError: Error {}
 
-/// Canned `watchtower dictate clean --mode chat` stdout envelope.
-private let chatCleanedEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
+/// Canned `watchtower dictate clean --mode idea` stdout envelope. Idea is
+/// the cleanup-mode stand-in throughout these tests: chat fields deliver the
+/// raw transcript and never reach the CLI at all.
+private let ideaCleanedEnvelope = Data(#"{"mode":"idea","body":"cleaned"}"#.utf8)
 
 /// Split from `DictationCenterTests` (file_length): the dictation-model
 /// seam and the Feature Manager ML-residency toggle — the config-only half
@@ -33,7 +35,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
 
         var capturedConfig: TranscriptionConfig?
         let recorder = FakeMicRecorder()
-        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let runner = FakeCLIRunner(stdout: ideaCleanedEnvelope)
         let center = DictationCenter(
             recorderFactory: { recorder },
             engineFactory: { config in
@@ -45,7 +47,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
             engineIdleTTL: .seconds(900)
         )
 
-        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t1", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
 
         let config = try XCTUnwrap(capturedConfig)
@@ -70,7 +72,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
         defaults.set("en", forKey: "transcription.forceLang")
         defaults.set(false, forKey: DictationCenter.keepEnginesWarmKey)
         let recorder = FakeMicRecorder()
-        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let runner = FakeCLIRunner(stdout: ideaCleanedEnvelope)
         let center = DictationCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
@@ -82,7 +84,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
         center.engineReleased = { releaseFires += 1 }
 
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        center.start(targetID: "t1", mode: .idea, onLiveText: { _ in }, onResult: { result = $0 })
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
@@ -100,7 +102,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
-        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let runner = FakeCLIRunner(stdout: ideaCleanedEnvelope)
         let center = DictationCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["said something"]), supportsLive: true) },
@@ -110,7 +112,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
         )
 
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        center.start(targetID: "t1", mode: .idea, onLiveText: { _ in }, onResult: { result = $0 })
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()

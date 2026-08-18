@@ -100,7 +100,7 @@ final class DictationButtonViewTests: XCTestCase {
     }
 
     private func makeButton(targetID: String = "t", center: DictationCenter) -> DictationButton {
-        DictationButton(text: .constant(""), mode: .chat, targetID: targetID, center: center)
+        DictationButton(text: .constant(""), mode: .idea, targetID: targetID, center: center)
     }
 
     private func hasControl(_ sut: DictationButton, _ identifier: String) -> Bool {
@@ -124,7 +124,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testRecordingShowsPauseAndStopButtons() throws {
         let center = try makeCenter()
         defer { center.cancel() }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         XCTAssertEqual(center.phase, .recording)
 
         let sut = makeButton(center: center)
@@ -136,7 +136,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testPausedShowsResumeAndStop() throws {
         let center = try makeCenter()
         defer { center.cancel() }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         center.pause()
         XCTAssertEqual(center.phase, .paused)
 
@@ -151,7 +151,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testEscCancelsOwnedDictation() throws {
         let center = try makeCenter()
         var resultFired = 0
-        center.start(targetID: "t", mode: .chat,
+        center.start(targetID: "t", mode: .idea,
                      onLiveText: { _ in }, onResult: { _ in resultFired += 1 })
         XCTAssertEqual(center.phase, .recording)
 
@@ -166,7 +166,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testEscOnForeignTargetDoesNotCancel() throws {
         let center = try makeCenter()
         defer { center.cancel() }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
 
         let sut = makeButton(targetID: "other", center: center)
         try sut.inspect().find(ViewType.HStack.self).callOnExitCommand()
@@ -187,7 +187,7 @@ final class DictationButtonViewTests: XCTestCase {
             gate.release()
             center.cancel()
         }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         center.stop() // during the (gated) engine load — `.stopping` holds
         XCTAssertEqual(center.phase, .stopping)
 
@@ -199,7 +199,7 @@ final class DictationButtonViewTests: XCTestCase {
     func testCleaningShowsCleaningLabel() async throws {
         let recorder = FakeMicRecorder()
         let gate = AsyncGate()
-        let runner = GatedCLIRunner(gate: gate, stdout: Data(#"{"mode":"chat","text":"cleaned"}"#.utf8))
+        let runner = GatedCLIRunner(gate: gate, stdout: Data(#"{"mode":"idea","body":"cleaned"}"#.utf8))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "DictationButtonViewTests-\(UUID().uuidString)"))
         defaults.set("en", forKey: "transcription.forceLang")
         defaults.set("small", forKey: DictationEngineChoice.defaultsKey) // pin the whisper lane
@@ -211,7 +211,7 @@ final class DictationButtonViewTests: XCTestCase {
             engineIdleTTL: .seconds(900)
         )
         var result: DictationCleanResult?
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { result = $0 })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { result = $0 })
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))
         center.stop()
@@ -227,7 +227,7 @@ final class DictationButtonViewTests: XCTestCase {
 
     func testFailedShowsRetryAffordance() async throws {
         let center = try makeCenter { _ in throw ButtonStubError() }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         await waitUntil("failed") {
             if case .failed = center.phase { return true }
             return false
@@ -245,7 +245,7 @@ final class DictationButtonViewTests: XCTestCase {
             return TestTranscriber(ScriptedEngine(texts: []), supportsLive: true)
         }
         defer { center.cancel() }
-        center.start(targetID: "t", mode: .chat, onLiveText: { _ in }, onResult: { _ in })
+        center.start(targetID: "t", mode: .idea, onLiveText: { _ in }, onResult: { _ in })
         XCTAssertTrue(center.isEngineLoading)
 
         let sut = makeButton(center: center)
