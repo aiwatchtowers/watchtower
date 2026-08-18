@@ -457,6 +457,54 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         return Self.iso8601Standard.date(from: updatedAt) ?? Date()
     }
 
+    /// Strict parse of a stored ISO-8601 timestamp: nil for an empty or
+    /// unreadable value. Unlike `updatedDate`/`createdDate` it never falls back
+    /// to "now" — the staleness rule needs "unknown" to stay unknown.
+    package static func parseTimestamp(_ value: String) -> Date? {
+        guard !value.isEmpty else { return nil }
+        if let date = iso8601WithFractional.date(from: value) { return date }
+        return iso8601Standard.date(from: value)
+    }
+
+    /// When the stored `next_step` suggestion was generated, or nil when it was
+    /// never generated (or the stamp is unreadable).
+    package var nextStepDate: Date? {
+        Self.parseTimestamp(nextStepAt)
+    }
+
+    /// Last activity on this target: the newer of `updated_at` and the latest
+    /// assistant chat turn the caller passes in (from
+    /// `ChatConversationQueries.latestTurnActivity`). Nil when neither is known —
+    /// an unparseable stamp counts as "no activity", never as "just now".
+    package func lastActivityDate(latestAssistantActivity: Date? = nil) -> Date? {
+        let stamps = [Self.parseTimestamp(updatedAt), latestAssistantActivity].compactMap { $0 }
+        return stamps.max()
+    }
+
+    /// True when the next-step suggestion no longer reflects the target's latest
+    /// activity — the Go daemon's `next_step_at = '' OR next_step_at < updated_at`
+    /// rule, widened with assistant-chat activity so a chat session that mutated
+    /// nothing still ages the suggestion.
+    ///
+    /// Deliberately WIDER than the Go daemon's rule, which sees only
+    /// `targets.updated_at` (`db.GetTargetsNeedingNextStep`): the badge is free,
+    /// a daemon regeneration is a strong-model call, so chat-only aging asks the
+    /// operator for one click instead of spending on every chatted target. Keep
+    /// the two in step if that trade is ever revisited.
+    ///
+    /// A never-generated suggestion is always stale. Otherwise staleness needs a
+    /// known activity instant to compare against: with no readable activity the
+    /// suggestion stays fresh, and with readable activity an unreadable
+    /// `next_step_at` cannot be shown fresh, so it is stale.
+    package func isNextStepStale(latestAssistantActivity: Date? = nil) -> Bool {
+        if nextStepAt.isEmpty { return true }
+        guard let activity = lastActivityDate(latestAssistantActivity: latestAssistantActivity) else {
+            return false
+        }
+        guard let generated = nextStepDate else { return true }
+        return generated < activity
+    }
+
     package var dueDateFormatted: String? {
         guard !dueDate.isEmpty,
               let date = Self.parseDueDate(dueDate) else { return nil }
