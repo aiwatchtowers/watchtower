@@ -50,6 +50,25 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("create_child_target"))
     }
 
+    /// The prompt must brief the model on its real toolset: MCP tools over the
+    /// local database, nothing else. SQL recipes and the database path sent the
+    /// model looking for shell/SQL tools it does not have — it then wasted the
+    /// turn asking the user to "approve tool permissions".
+    func testSystemPromptBriefsToolsAndBansLiveSources() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let target = try makeTarget(manager, intent: "x")
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
+        XCTAssertTrue(prompt.contains("list_messages"))
+        XCTAssertTrue(prompt.contains("list_targets"))
+        XCTAssertTrue(prompt.contains("never ask the user to approve tool permissions"))
+        XCTAssertTrue(prompt.contains("NO live access to Slack, Jira"))
+        XCTAssertFalse(prompt.contains("SELECT "), "SQL recipes imply a SQL tool that does not exist")
+        XCTAssertFalse(prompt.contains(manager.dbPool.path), "the database path must stay out of the prompt")
+    }
+
     func testDefaultModelMatchesProvider() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

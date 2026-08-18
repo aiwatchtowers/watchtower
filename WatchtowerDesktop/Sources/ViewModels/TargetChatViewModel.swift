@@ -681,8 +681,8 @@ final class TargetChatViewModel {
     apply time, so never guess either.
     To PROMOTE an existing sub-item into a real sub-task, emit create_child_target
     with the item's text, then delete_sub_item for that item.
-    For link_target, first look up the other target's id by querying the `targets`
-    table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
+    For link_target, first resolve the other target's id with the list_targets /
+    get_target tools; never guess an id.
 
     ADDRESSING OTHER TASKS IN THIS TASK'S TREE (optional "target_id"):
     Every action except link_target also accepts "target_id": <id> — the task
@@ -855,11 +855,6 @@ final class TargetChatViewModel {
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
-        let schema = (try? dbPool.read { db in
-            try ChatViewModel.fetchSchema(db)
-        }) ?? ""
-        let dbPath = dbPool.path
-
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
         }
@@ -887,24 +882,19 @@ final class TargetChatViewModel {
 
         \(memoryBlock)\(Self.taskActionsContract)
 
-        === CAPABILITIES ===
-        You can query the database to find related messages, threads, and people involved.
-
-        === DATABASE ===
-        Database: \(dbPath)
-        \(schema)
+        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        You have read-only tools over the user's OWN local Watchtower database. \
+        Use them to look things up instead of asking the user:
+        - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \
+        newest first. This is how you check what happened in Slack (it is already synced locally).
+        - list_targets / get_target — other targets and their links (resolve ids for link_target here).
+        - get_person / list_people — people cards; list_tracks / list_digests / list_jira_issues — work context.
+        - list_transcripts / get_transcript — recorded meeting transcripts.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === WORKSPACE ===
         Slack team ID: \(teamID)
         Slack web domain: \(domain).slack.com
-
-        === QUERY TIPS ===
-        - Always SELECT m.thread_ts alongside m.ts so you can build correct links for threaded messages.
-        - Find messages by text or people involved:
-          SELECT m.text, u.display_name, m.ts, m.thread_ts, m.channel_id FROM messages m
-          JOIN users u ON m.user_id = u.id
-          WHERE m.text LIKE '%keyword%'
-          ORDER BY m.ts_unix DESC LIMIT 20
 
         === LINKING RULES ===
         ALWAYS use markdown links with descriptive text in the user's language. Never output bare URLs.
@@ -926,7 +916,7 @@ final class TargetChatViewModel {
         Rules:
         - Every referenced message MUST have a link
         - Link text describes WHAT is linked, not "link" or "click here"
-        - Always SELECT channel_id, ts, AND thread_ts when fetching messages so you can build correct links
+        - list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links
         - NEVER link to a channel when the user asked for a specific message — resolve the actual ts first
 
         === RESPONSE STYLE ===
