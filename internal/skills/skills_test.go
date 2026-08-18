@@ -248,25 +248,63 @@ func TestListSortedAndSkips(t *testing.T) {
 	}
 }
 
-// TestListFixtures pins the shared fixture set — the same four files the Swift
+// wantListed is every testdata fixture that must parse, in the sorted order
+// ListWithSkips returns. wantSkipped is every fixture that must not.
+//
+// These two lists ARE the dual-path contract: SkillsCatalogTests reads the same
+// directory (via a #filePath-relative path) and asserts the same verdicts, so a
+// parser change that makes one side stricter than the other fails here or
+// there. Add a fixture for every shape whose verdict is worth pinning.
+var (
+	wantListed = []struct {
+		name        string
+		description string
+		persona     string
+		enabled     bool
+	}{
+		{"enabled-comment", "Switched off with the reason written as an inline comment.", PersonaBoth, false},
+		{"enabled-no", "Switched off with YAML 1.1's `no` rather than `false`.", PersonaAssistant, false},
+		{"valid-basic", "Use when the owner asks for the shape of a valid skill file.", PersonaSecretary, true},
+		{"valid-disabled", "A skill both personas could use, switched off by its own frontmatter.", PersonaBoth, false},
+	}
+	wantSkipped = []string{
+		"bad-enabled",
+		"bad-persona",
+		"bare-line",
+		"blank-description",
+		"duplicate-key",
+		"indented-fence",
+		"no-frontmatter",
+		"unterminated-quote",
+	}
+)
+
+// TestListFixtures pins the shared fixture set — the same files the Swift
 // catalog parses, so both sides agree on what is listable.
 func TestListFixtures(t *testing.T) {
 	list, skipped, err := ListWithSkips("testdata")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("expected 2 listable fixtures, got %d: %+v", len(list), list)
+	if len(list) != len(wantListed) {
+		t.Fatalf("expected %d listable fixtures, got %d: %+v", len(wantListed), len(list), list)
 	}
-	if list[0].Name != "valid-basic" || list[0].Persona != PersonaSecretary || !list[0].Enabled {
-		t.Errorf("valid-basic parsed wrong: %+v", list[0])
+	for i, want := range wantListed {
+		got := list[i]
+		if got.Name != want.name || got.Persona != want.persona ||
+			got.Enabled != want.enabled || got.Description != want.description {
+			t.Errorf("fixture %d = {%s %q %s enabled=%v}, want {%s %q %s enabled=%v}",
+				i, got.Name, got.Description, got.Persona, got.Enabled,
+				want.name, want.description, want.persona, want.enabled)
+		}
 	}
-	if list[1].Name != "valid-disabled" || list[1].Persona != PersonaBoth || list[1].Enabled {
-		t.Errorf("valid-disabled parsed wrong: %+v", list[1])
+	if len(skipped) != len(wantSkipped) {
+		t.Fatalf("expected %d skipped fixtures, got %d: %+v", len(wantSkipped), len(skipped), skipped)
 	}
-	names := []string{skipped[0].Name, skipped[1].Name}
-	if len(skipped) != 2 || names[0] != "bad-persona" || names[1] != "no-frontmatter" {
-		t.Fatalf("expected bad-persona and no-frontmatter skipped, got %+v", skipped)
+	for i, want := range wantSkipped {
+		if skipped[i].Name != want {
+			t.Errorf("skipped[%d] = %q, want %q", i, skipped[i].Name, want)
+		}
 	}
 }
 
