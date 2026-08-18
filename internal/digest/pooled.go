@@ -50,7 +50,7 @@ func (pg *PooledGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 	// Log generation event.
 	if pg.sessionLog != nil && sessionID != "" {
 		source := "unknown"
-		if s, ok := ctx.Value(sessionSourceKey{}).(string); ok && s != "" {
+		if s, ok := SourceFromContext(ctx); ok {
 			source = s
 		}
 		pg.sessionLog.Log(sessions.SessionEvent{
@@ -71,6 +71,14 @@ type sessionSourceKey struct{}
 // WithSource returns a context that carries a source label for session logging.
 func WithSource(ctx context.Context, source string) context.Context {
 	return context.WithValue(ctx, sessionSourceKey{}, source)
+}
+
+// SourceFromContext returns the source label attached by WithSource.
+// Generator implementations in other packages must use this helper rather
+// than declaring their own key type: context keys are compared by concrete type.
+func SourceFromContext(ctx context.Context) (string, bool) {
+	source, ok := ctx.Value(sessionSourceKey{}).(string)
+	return source, ok && source != ""
 }
 
 // Source tags passed via WithSource select the model tier a Generator should

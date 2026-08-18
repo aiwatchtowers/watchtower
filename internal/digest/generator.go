@@ -199,7 +199,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 // but ignored — session reuse via --resume is not supported by the current CLI.
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.model // fallback
-	if s, ok := ctx.Value(sessionSourceKey{}).(string); ok && s != "" {
+	if s, ok := SourceFromContext(ctx); ok {
 		model = ModelForSource(s)
 	}
 

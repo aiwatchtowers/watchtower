@@ -96,6 +96,34 @@ esac
 	}
 }
 
+func TestCodexGeneratorHonorsDigestSource(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	scriptBody := `#!/bin/sh
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake codex binary: %v", err)
+	}
+
+	gen := NewCodexGenerator("custom-model", script)
+
+	_, usage, _, err := gen.Generate(context.Background(), "", "hello", "")
+	if err != nil {
+		t.Fatalf("Generate without source error: %v", err)
+	}
+	if usage == nil || usage.Model != "custom-model" {
+		t.Fatalf("usage model without source = %#v, want custom-model", usage)
+	}
+
+	_, usage, _, err = gen.Generate(digest.WithSource(context.Background(), digest.SourceLight), "", "hello", "")
+	if err != nil {
+		t.Fatalf("Generate with source error: %v", err)
+	}
+	if usage == nil || usage.Model != ModelLightweight {
+		t.Fatalf("usage model with light source = %#v, want %q", usage, ModelLightweight)
+	}
+}
+
 func TestCodexArgsThresholdBoundary(t *testing.T) {
 	exact := strings.Repeat("x", digest.StdinThreshold)
 	args, stdin := buildArgs("gpt-5.4", "sys", exact)

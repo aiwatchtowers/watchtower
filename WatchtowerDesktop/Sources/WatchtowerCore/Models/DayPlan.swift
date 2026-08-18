@@ -79,15 +79,8 @@ package struct DayPlan: FetchableRecord, Identifiable, Equatable {
         return nil
     }
 
-    // MARK: - Equatable
-
-    package static func == (lhs: DayPlan, rhs: DayPlan) -> Bool {
-        lhs.id == rhs.id &&
-        lhs.userId == rhs.userId &&
-        lhs.planDate == rhs.planDate &&
-        lhs.status == rhs.status &&
-        lhs.hasConflicts == rhs.hasConflicts
-    }
+    // Equatable synthesized — see the note on `Target`: a partial `==` hides
+    // later field changes from SwiftUI's view-input diffing.
 
 #if DEBUG
     package static func stub(

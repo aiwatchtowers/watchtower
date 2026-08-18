@@ -401,8 +401,12 @@ final class TargetChatViewModel {
     /// proposals is applied here as 20 writes and reported in a single follow-up.
     /// The AI's proposed kind is kept for each card — the per-card checkpoint /
     /// sub-task override stays a per-card decision.
-    func approveAll() {
-        let pendingIDs = actionCards.filter { $0.state == .pending }.map(\.id)
+    /// `messageID` scopes the pass to one turn's batch (the inline "Approve all"
+    /// row above a batch of cards); nil approves every pending card in the chat.
+    func approveAll(messageID: UUID? = nil) {
+        let pendingIDs = actionCards
+            .filter { $0.state == .pending && (messageID == nil || $0.messageID == messageID) }
+            .map(\.id)
         guard !pendingIDs.isEmpty else { return }
         reloadTarget()
 

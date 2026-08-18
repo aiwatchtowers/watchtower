@@ -141,8 +141,6 @@ struct TargetChatPane: View {
 
             Divider()
 
-            pendingActionsBar
-
             ChatInput(
                 text: $chatVM.inputText,
                 isStreaming: chatVM.isStreaming,
@@ -166,34 +164,26 @@ struct TargetChatPane: View {
 
     // MARK: Pending proposals
 
-    /// Docked directly above the composer, not in the pane header: a batch of
-    /// proposals lands at the BOTTOM of the transcript, which is where the eye
-    /// (and the scroll position) is — an affordance parked in the top header is
-    /// invisible after a turn that emitted thirty cards.
+    /// Rendered in the transcript itself, directly above a message's batch of
+    /// proposal cards — the affordance sits where the cards are, not in a
+    /// header or a docked bar the eye never visits.
     @ViewBuilder
-    private var pendingActionsBar: some View {
-        if chatVM.pendingActionCount > 1 {
+    private func batchApproveRow(for msg: ChatMessage, cards: [TargetActionCard]) -> some View {
+        let pending = cards.filter { $0.state == .pending }.count
+        if pending > 1 {
             HStack(spacing: 8) {
-                Image(systemName: "tray.full")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-                Text("\(chatVM.pendingActionCount) proposals awaiting a decision")
+                Text("\(pending) proposals")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
-                Button { chatVM.approveAll() } label: {
+                Button { chatVM.approveAll(messageID: msg.id) } label: {
                     Label("Approve all", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .help("Apply every pending proposal and tell the assistant once")
+                .help("Apply every pending proposal in this batch and tell the assistant once")
                 .accessibilityIdentifier("chat.approveAll")
+                Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(Color.accentColor.opacity(0.08))
-
-            Divider()
         }
     }
 
@@ -234,7 +224,9 @@ struct TargetChatPane: View {
                     }
                     ForEach(chatVM.messages) { msg in
                         chatBubble(msg)
-                        ForEach(chatVM.actionCards.filter { $0.messageID == msg.id }) { card in
+                        let cards = chatVM.actionCards.filter { $0.messageID == msg.id }
+                        batchApproveRow(for: msg, cards: cards)
+                        ForEach(cards) { card in
                             TargetActionCardView(
                                 card: card,
                                 onApprove: { kind in chatVM.approve(card, as: kind) },

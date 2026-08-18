@@ -21,10 +21,11 @@ func validateModel(_ *config.Config) error {
 // cliGenerator creates a bare Generator for one-off CLI commands.
 // Selects Claude or Codex based on cfg.AI.Provider.
 func cliGenerator(cfg *config.Config) digest.Generator {
+	model := configuredAIModel(cfg)
 	if cfg.AI.Provider == "codex" {
-		return codex.NewCodexGenerator(codex.ModelDefault, cfg.CodexPath)
+		return codex.NewCodexGenerator(model, cfg.CodexPath)
 	}
-	return digest.NewClaudeGenerator(digest.ModelSonnet, cfg.ClaudePath)
+	return digest.NewClaudeGenerator(model, cfg.ClaudePath)
 }
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
@@ -50,13 +51,23 @@ func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generato
 // Selects Claude or Codex based on cfg.AI.Provider.
 func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
 	if cfg.AI.Provider == "codex" {
-		model := cfg.AI.Model
-		if model == "" || model == config.DefaultAIModel {
-			model = codex.ModelDefault
-		}
-		return codex.NewClient(model, dbPath, cfg.CodexPath)
+		return codex.NewClient(configuredAIModel(cfg), dbPath, cfg.CodexPath)
 	}
-	return ai.NewClient(cfg.AI.Model, dbPath, cfg.ClaudePath)
+	return ai.NewClient(configuredAIModel(cfg), dbPath, cfg.ClaudePath)
+}
+
+func configuredAIModel(cfg *config.Config) string {
+	model := cfg.AI.Model
+	if cfg.AI.Provider == "codex" {
+		if model == "" || model == config.DefaultAIModel {
+			return codex.ModelDefault
+		}
+		return model
+	}
+	if model == "" {
+		return config.DefaultAIModel
+	}
+	return model
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.

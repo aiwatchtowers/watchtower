@@ -197,15 +197,11 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         nextStepAt       = row["next_step_at"] ?? ""
     }
 
-    // MARK: - Hashable (id-based)
-
-    package func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-
-    package static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.id == rhs.id
-    }
+    // Equatable/Hashable are synthesized on purpose: a `Target` is a stored
+    // input of `TargetDetailView`, and SwiftUI skips re-evaluating a view whose
+    // inputs compare equal. An id-based `==` would report two revisions of the
+    // same row as equal and freeze the open screen on stale values — identity
+    // for lists already comes from `Identifiable`.
 
     // MARK: - Status Predicates
 

@@ -113,11 +113,8 @@ package struct DayPlanItem: FetchableRecord, Identifiable, Equatable {
         return nil
     }
 
-    // MARK: - Equatable
-
-    package static func == (lhs: DayPlanItem, rhs: DayPlanItem) -> Bool {
-        lhs.id == rhs.id && lhs.dayPlanId == rhs.dayPlanId && lhs.title == rhs.title
-    }
+    // Equatable synthesized — see the note on `Target`: comparing only id/title
+    // made a status change invisible to `DayPlanItemRow`.
 
 #if DEBUG
     package static func stub(

@@ -14,11 +14,6 @@ import (
 	"watchtower/internal/digest"
 )
 
-// sessionSourceKey is the context key used by digest.WithSource.
-// We re-declare it here so we can read the source label from context
-// for model routing, matching the pattern in digest/generator.go.
-type sessionSourceKey struct{}
-
 // CodexGenerator implements digest.Generator by calling the Codex CLI.
 type CodexGenerator struct {
 	model     string
@@ -35,7 +30,7 @@ func NewCodexGenerator(model, codexPath string) *CodexGenerator {
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *digest.Usage, string, error) {
 	model := g.model
-	if s, ok := ctx.Value(sessionSourceKey{}).(string); ok && s != "" {
+	if s, ok := digest.SourceFromContext(ctx); ok {
 		model = ModelForSource(s)
 	}
 

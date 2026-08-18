@@ -37,15 +37,8 @@ package struct TargetLink: FetchableRecord, TableRecord, Codable, Identifiable, 
         createdAt      = row["created_at"] ?? ""
     }
 
-    // MARK: - Hashable
-
-    package func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-
-    package static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.id == rhs.id
-    }
+    // Equatable/Hashable synthesized — see the note on `Target`: view inputs
+    // must compare by value or SwiftUI will not redraw an edited row.
 
     // MARK: - Helpers
 
