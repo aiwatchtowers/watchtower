@@ -27,7 +27,6 @@ final class MeetingChatViewModel {
     private let dbManager: DatabaseManager
     private let transcript: MeetingTranscript
     private let recapContent: MeetingRecap.Content?
-    private let selectedModel: ChatModel
     private var streamTask: Task<Void, Never>?
 
     /// Characters of transcript inlined into the system prompt; the rest is
@@ -38,16 +37,12 @@ final class MeetingChatViewModel {
         transcript: MeetingTranscript,
         recapContent: MeetingRecap.Content?,
         dbManager: DatabaseManager,
-        aiService: (any AIServiceProtocol)? = nil,
-        provider: AIProvider? = nil
+        aiService: (any AIServiceProtocol)? = nil
     ) {
         self.transcript = transcript
         self.recapContent = recapContent
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
-        let resolvedProvider = provider
-            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
-        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
         loadOrCreateConversation()
     }
@@ -157,7 +152,7 @@ final class MeetingChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPool.path,
-                model: selectedModel.rawValue
+                model: nil  // nil = the provider's resolved strong-tier model
             )
             var sawTurnComplete = false
             for try await event in stream {

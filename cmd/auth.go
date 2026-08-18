@@ -281,7 +281,6 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 	v.Set("active_workspace", workspace)
 
 	defaults := map[string]any{
-		"ai.model":                  config.DefaultAIModel,
 		"ai.context_budget":         config.DefaultAIContextBudget,
 		"sync.workers":              config.DefaultSyncWorkers,
 		"sync.initial_history_days": config.DefaultInitialHistDays,

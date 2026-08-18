@@ -60,7 +60,10 @@ func TestLoad_DefaultValues(t *testing.T) {
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	assert.Equal(t, DefaultAIModel, cfg.AI.Model)
+	assert.Equal(t, "", cfg.AI.Model) // legacy key: no live default since the provider registry
+	assert.Equal(t, "", cfg.AI.Models.Light)
+	assert.Equal(t, "", cfg.AI.Models.Strong)
+	assert.Equal(t, DefaultOllamaURL, cfg.AI.OllamaURL)
 	assert.Equal(t, DefaultAIContextBudget, cfg.AI.ContextBudget)
 	assert.Equal(t, DefaultAIWorkers, cfg.AI.Workers)
 	assert.Equal(t, DefaultSyncWorkers, cfg.Sync.Workers)
@@ -78,7 +81,10 @@ func TestLoad_DefaultValues(t *testing.T) {
 func TestLoad_MissingFile(t *testing.T) {
 	cfg, err := Load("/nonexistent/path/config.yaml")
 	require.NoError(t, err)
-	assert.Equal(t, DefaultAIModel, cfg.AI.Model)
+	assert.Equal(t, "", cfg.AI.Model) // legacy key: no live default since the provider registry
+	assert.Equal(t, "", cfg.AI.Models.Light)
+	assert.Equal(t, "", cfg.AI.Models.Strong)
+	assert.Equal(t, DefaultOllamaURL, cfg.AI.OllamaURL)
 }
 
 func TestLoad_EnvVarOverride(t *testing.T) {
@@ -232,7 +238,10 @@ workspaces:
 	assert.Equal(t, "xoxp-partial", cfg.Workspaces["test"].SlackToken)
 
 	// Unspecified values should use defaults
-	assert.Equal(t, DefaultAIModel, cfg.AI.Model)
+	assert.Equal(t, "", cfg.AI.Model) // legacy key: no live default since the provider registry
+	assert.Equal(t, "", cfg.AI.Models.Light)
+	assert.Equal(t, "", cfg.AI.Models.Strong)
+	assert.Equal(t, DefaultOllamaURL, cfg.AI.OllamaURL)
 	assert.Equal(t, DefaultSyncWorkers, cfg.Sync.Workers)
 	assert.Equal(t, DefaultSyncThreads, cfg.Sync.SyncThreads)
 }

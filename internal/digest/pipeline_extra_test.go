@@ -7,8 +7,9 @@ import (
 )
 
 func TestNewClaudeGenerator_Initialization(t *testing.T) {
-	g := NewClaudeGenerator("claude-opus", "/opt/claude")
-	assert.Equal(t, "claude-opus", g.model)
+	g := NewClaudeGenerator("claude-haiku", "claude-opus", "/opt/claude")
+	assert.Equal(t, "claude-haiku", g.modelLight)
+	assert.Equal(t, "claude-opus", g.modelStrong)
 	assert.Equal(t, "/opt/claude", g.claudePath)
 }
 

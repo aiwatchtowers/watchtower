@@ -84,7 +84,7 @@ esac
 		t.Fatalf("writing fake claude binary: %v", err)
 	}
 
-	gen := NewClaudeGenerator("test-model", script)
+	gen := NewClaudeGenerator("test-model-light", "test-model", script)
 	big := strings.Repeat("x", StdinThreshold) + marker // > StdinThreshold → stdin path
 
 	got, _, _, err := gen.Generate(context.Background(), "sys", big, "")
@@ -104,5 +104,48 @@ func TestGenerateArgsThresholdBoundary(t *testing.T) {
 	}
 	if !containsPair(args, "-p", exact) {
 		t.Error("args must carry the exactly-threshold message inline after -p")
+	}
+}
+
+// TestGenerate_TierRoutingSelectsModel is ClaudeGenerator's sibling of the
+// codex TestGenerate_TierRoutingHearsDigestSource pin: the source tag must
+// route to the light/strong model end-to-end through Generate (a fake claude
+// binary echoes back the --model value it received).
+func TestGenerate_TierRoutingSelectsModel(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "claude")
+	scriptBody := `#!/bin/sh
+model=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$a"; fi
+  prev="$a"
+done
+echo "{\"type\":\"result\",\"result\":\"model:$model\",\"is_error\":false}"
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake claude binary: %v", err)
+	}
+
+	gen := NewClaudeGenerator("light-model", "strong-model", script)
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"untagged uses strong", context.Background(), "model:strong-model"},
+		{"light source uses light", WithSource(context.Background(), "inbox.triage"), "model:light-model"},
+		{"strong source uses strong", WithSource(context.Background(), "digest.channel"), "model:strong-model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, _, err := gen.Generate(tt.ctx, "sys", "msg", "")
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Generate = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

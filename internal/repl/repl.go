@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -49,7 +50,11 @@ func (r *REPL) aiProvider() ai.Provider {
 		return r.deps.AIProvider
 	}
 	cfg := r.deps.Config
-	return ai.NewClient(cfg.AI.Model, r.deps.DBPath, cfg.ClaudePath)
+	// This fallback always builds the Claude client, so resolve the models
+	// claude-scoped regardless of cfg.AI.Provider (in practice cmd/root.go
+	// always injects deps.AIProvider, making this a safety net only).
+	_, strong := providers.ResolveModelsFor(cfg, "claude")
+	return ai.NewClient(strong, r.deps.DBPath, cfg.ClaudePath)
 }
 
 // setStreamCancel atomically sets the stream cancel function.

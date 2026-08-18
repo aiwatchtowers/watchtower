@@ -19,6 +19,7 @@ struct ChatMessage: Identifiable, Equatable {
 enum AIProvider: String, CaseIterable, Identifiable {
     case claude
     case codex
+    case ollama
 
     var id: String { rawValue }
 
@@ -26,48 +27,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .claude: "Claude"
         case .codex: "Codex"
-        }
-    }
-}
-
-enum ChatModel: String, CaseIterable, Identifiable {
-    // Claude
-    case sonnet = "claude-sonnet-4-6"
-    case haiku = "claude-haiku-4-5-20251001"
-    case opus = "claude-opus-4-6"
-    // Codex
-    case gpt54 = "gpt-5.4"
-    case gpt54mini = "gpt-5.4-mini"
-    case gpt53codex = "gpt-5.3-codex"
-
-    var id: String { rawValue }
-
-    var provider: AIProvider {
-        switch self {
-        case .sonnet, .haiku, .opus: .claude
-        case .gpt54, .gpt54mini, .gpt53codex: .codex
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .sonnet: "Sonnet 4.6"
-        case .haiku: "Haiku 4.5"
-        case .opus: "Opus 4.6"
-        case .gpt54: "GPT-5.4"
-        case .gpt54mini: "GPT-5.4 Mini"
-        case .gpt53codex: "GPT-5.3 Codex"
-        }
-    }
-
-    static func models(for provider: AIProvider) -> [Self] {
-        allCases.filter { $0.provider == provider }
-    }
-
-    static func defaultModel(for provider: AIProvider) -> Self {
-        switch provider {
-        case .claude: .sonnet
-        case .codex: .gpt54
+        case .ollama: "Ollama"
         }
     }
 }
@@ -80,7 +40,9 @@ final class ChatViewModel {
     var inputText = ""
     var errorMessage: String?
     var selectedProvider: AIProvider = .claude
-    var selectedModel: ChatModel = .sonnet
+    /// Model override for this chat; empty = the provider's resolved
+    /// strong-tier model (the CLI resolves it — see `watchtower ai models`).
+    var selectedModel: String = ""
 
     private(set) var conversationID: Int64?
     private var sessionID: String?
@@ -102,14 +64,13 @@ final class ChatViewModel {
         self.aiService = aiService
         self.dbManager = dbManager
         self.selectedProvider = provider
-        self.selectedModel = ChatModel.defaultModel(for: provider)
     }
 
     func switchProvider(_ provider: AIProvider) {
         guard provider != selectedProvider else { return }
         cancelStream()
         selectedProvider = provider
-        selectedModel = ChatModel.defaultModel(for: provider)
+        selectedModel = ""
         aiService = Self.createService(for: provider)
     }
 
@@ -159,7 +120,7 @@ final class ChatViewModel {
         let currentSessionID = sessionID
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
-        let model = selectedModel.rawValue
+        let model: String? = selectedModel.isEmpty ? nil : selectedModel
         let provider = selectedProvider.rawValue
         let capturedConvID = conversationID
         let capturedDBManager = dbManager
@@ -519,7 +480,7 @@ final class ChatViewModel {
 
         let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
-        let model = selectedModel.rawValue
+        let model: String? = selectedModel.isEmpty ? nil : selectedModel
         let provider = selectedProvider.rawValue
         let capturedConvID = conversationID
         let capturedDBManager = dbManager

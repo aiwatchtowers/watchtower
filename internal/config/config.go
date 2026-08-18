@@ -18,11 +18,41 @@ type WorkspaceConfig struct {
 	SlackToken string `mapstructure:"slack_token"`
 }
 
+// AIModels holds the per-tier model overrides. Empty values fall back to the
+// provider registry defaults (internal/providers).
+type AIModels struct {
+	Light  string `mapstructure:"light"`
+	Strong string `mapstructure:"strong"`
+}
+
 type AIConfig struct {
-	Model         string `mapstructure:"model"`
-	ContextBudget int    `mapstructure:"context_budget"`
-	Workers       int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
-	Provider      string `mapstructure:"provider"` // "claude" (default) | "codex"
+	// Model is the legacy single-model key. When Models.Strong is unset it is
+	// read as the strong-tier override, except when it equals the retired
+	// DefaultAIModel constant (setup used to seed that literal into config.yaml,
+	// so it means "never chose a model", not a pin).
+	Model  string   `mapstructure:"model"`
+	Models AIModels `mapstructure:"models"`
+	// ConfiguredProvider is the provider as read from config.yaml, captured at
+	// Load time and NEVER mutated by the --provider flag (which rewrites
+	// Provider via applyProviderOverride). Model resolution keys off this
+	// field, so a per-command provider override cannot inherit the yaml
+	// provider's configured models. Empty (a hand-built Config in tests)
+	// falls back to Provider — see ConfiguredProviderID.
+	ConfiguredProvider string `mapstructure:"-"`
+	OllamaURL          string `mapstructure:"ollama_url"` // OpenAI-compatible server base URL
+	ContextBudget      int    `mapstructure:"context_budget"`
+	Workers            int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
+	Provider           string `mapstructure:"provider"` // "claude" (default) | "codex" | "ollama"
+}
+
+// ConfiguredProviderID returns the provider the config file (not a
+// per-command override) selects: ConfiguredProvider when Load captured it,
+// else Provider (hand-built configs).
+func (a AIConfig) ConfiguredProviderID() string {
+	if a.ConfiguredProvider != "" {
+		return a.ConfiguredProvider
+	}
+	return a.Provider
 }
 
 type SyncConfig struct {
@@ -372,7 +402,10 @@ func Load(configPath string) (*Config, error) {
 	// Defaults
 	v.SetDefault("active_workspace", DefaultActiveWorkspace)
 	v.SetDefault("ai.provider", DefaultAIProvider)
-	v.SetDefault("ai.model", DefaultAIModel)
+	v.SetDefault("ai.model", "")
+	v.SetDefault("ai.models.light", "")
+	v.SetDefault("ai.models.strong", "")
+	v.SetDefault("ai.ollama_url", DefaultOllamaURL)
 	v.SetDefault("ai.context_budget", DefaultAIContextBudget)
 	v.SetDefault("ai.workers", DefaultAIWorkers)
 	v.SetDefault("sync.workers", DefaultSyncWorkers)
@@ -506,6 +539,8 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
 	}
+	// Snapshot the yaml provider before any --provider flag mutation.
+	cfg.AI.ConfiguredProvider = cfg.AI.Provider
 
 	// Backward compat: migrate digest.workers → ai.workers.
 	// If user has digest.workers in config but hasn't set ai.workers explicitly,

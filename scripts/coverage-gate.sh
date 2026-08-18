@@ -25,8 +25,16 @@ fi
 
 cd "$ROOT"
 
-OUTPUT="$(go test ./... -cover 2>&1)"
+# Capture without letting `set -e` abort before the output is printed: a
+# failing test used to kill the script right here, leaving CI with a bare
+# "Error 1" and no indication of WHICH test failed.
+TEST_STATUS=0
+OUTPUT="$(go test ./... -cover 2>&1)" || TEST_STATUS=$?
 echo "$OUTPUT"
+if [[ $TEST_STATUS -ne 0 ]]; then
+    echo "coverage-gate: go test failed (exit $TEST_STATUS) — see output above" >&2
+    exit "$TEST_STATUS"
+fi
 
 # Distil per-package coverage into a "pkg pct" stream.
 ACTUAL=$(echo "$OUTPUT" | awk '

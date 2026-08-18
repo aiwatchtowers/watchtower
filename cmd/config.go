@@ -167,7 +167,8 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	v.Set("active_workspace", workspace)
 	v.Set("workspaces."+workspace+".slack_token", slackToken)
 	// OAuth credentials are sourced from env vars at runtime — never persisted to config.
-	v.Set("ai.model", config.DefaultAIModel)
+	// ai.model is deliberately not seeded: empty means "use the provider
+	// registry's tier defaults" (aliases that track new model releases).
 	v.Set("ai.context_budget", config.DefaultAIContextBudget)
 	v.Set("sync.workers", config.DefaultSyncWorkers)
 	v.Set("sync.initial_history_days", config.DefaultInitialHistDays)
@@ -205,6 +206,10 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 var knownConfigKeys = map[string]bool{
 	"active_workspace":                     true,
 	"ai.model":                             true,
+	"ai.models.light":                      true,
+	"ai.models.strong":                     true,
+	"ai.provider":                          true,
+	"ai.ollama_url":                        true,
 	"ai.context_budget":                    true,
 	"sync.workers":                         true,
 	"sync.initial_history_days":            true,
@@ -212,7 +217,6 @@ var knownConfigKeys = map[string]bool{
 	"sync.sync_threads":                    true,
 	"sync.sync_on_wake":                    true,
 	"digest.enabled":                       true,
-	"digest.model":                         true,
 	"digest.min_messages":                  true,
 	"digest.language":                      true,
 	"digest.workers":                       true,
@@ -316,7 +320,11 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "active_workspace: %s\n", cfg.ActiveWorkspace)
+	fmt.Fprintf(out, "ai.provider: %s\n", cfg.AI.Provider)
 	fmt.Fprintf(out, "ai.model: %s\n", cfg.AI.Model)
+	fmt.Fprintf(out, "ai.models.light: %s\n", cfg.AI.Models.Light)
+	fmt.Fprintf(out, "ai.models.strong: %s\n", cfg.AI.Models.Strong)
+	fmt.Fprintf(out, "ai.ollama_url: %s\n", cfg.AI.OllamaURL)
 	fmt.Fprintf(out, "ai.context_budget: %d\n", cfg.AI.ContextBudget)
 	fmt.Fprintf(out, "sync.workers: %d\n", cfg.Sync.Workers)
 	fmt.Fprintf(out, "sync.initial_history_days: %d\n", cfg.Sync.InitialHistoryDays)

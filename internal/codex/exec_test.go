@@ -151,7 +151,7 @@ func TestGenerate_ParsesJSONL(t *testing.T) {
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
-	g := NewCodexGenerator("gpt-5.4", bin)
+	g := NewCodexGenerator("gpt-5.4-mini", "gpt-5.4", bin)
 	out, usage, sid, err := g.Generate(context.Background(), "sys", "msg", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -175,7 +175,7 @@ func TestGenerate_EmptyResultIsError(t *testing.T) {
 	stdout := `{"type":"item.completed","item":{"type":"agent_message","text":""}}`
 	bin := fakeCodexScript(t, stdout, "", 0)
 
-	g := NewCodexGenerator("gpt-5.4", bin)
+	g := NewCodexGenerator("gpt-5.4-mini", "gpt-5.4", bin)
 	_, _, _, err := g.Generate(context.Background(), "", "msg", "")
 	if err == nil {
 		t.Fatal("expected error for empty result")
