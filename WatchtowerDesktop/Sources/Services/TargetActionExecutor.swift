@@ -19,14 +19,17 @@ enum TargetActionError: LocalizedError {
 ///
 /// The shared TargetsViewModel mutators swallow DB errors into `errorMessage`
 /// (the established house idiom for the list UI), so we detect failure by
-/// snapshotting `errorMessage` around the call rather than changing those
-/// signatures and rippling into every existing caller.
+/// clearing `errorMessage` before the call and checking it after, rather than
+/// changing those signatures and rippling into every existing caller. Clearing
+/// first (instead of snapshotting the prior value) means a write that fails
+/// with the same message as a previous action's failure is still detected —
+/// a stale identical error can never mask a new one as a false success.
 enum TargetActionExecutor {
     @MainActor
     static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String {
-        let priorError = viewModel.errorMessage
+        viewModel.errorMessage = nil
         func checkWrite() throws {
-            if let err = viewModel.errorMessage, err != priorError {
+            if let err = viewModel.errorMessage {
                 throw TargetActionError.writeFailed(err)
             }
         }
@@ -65,6 +68,11 @@ enum TargetActionExecutor {
         case .linkTarget:
             let targetID = try require(action.targetId, "target_id")
             guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
+            // The AI may hallucinate an id; verify the linked target exists
+            // before writing so a bad link fails loudly instead of dangling.
+            guard viewModel.itemByID(targetID) != nil else {
+                throw TargetActionError.writeFailed("target #\(targetID) does not exist")
+            }
             let relation = try require(action.relation, "relation")
             viewModel.createLink(from: target.id, to: targetID, relation: relation)
             try checkWrite()

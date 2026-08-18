@@ -106,6 +106,44 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertEqual(links.first?.relation, "blocks")
     }
 
+    func testApplyLinkTargetRejectsUnknownTarget() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        // The AI hallucinated an id — no such row. The executor must throw at
+        // apply time, and no dangling link row may be written.
+        let action = ProposedAction(type: .linkTarget, reason: "x",
+                                    targetId: 999_999, relation: "blocks")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("does not exist"))
+        }
+
+        let links = try manager.dbPool.read { db in
+            try TargetLink.fetchAll(
+                db, sql: "SELECT * FROM target_links WHERE source_target_id = ?", arguments: [target.id]
+            )
+        }
+        XCTAssertTrue(links.isEmpty)
+    }
+
+    func testApplyWriteFailureDetectedEvenWhenIdenticalToPriorError() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+        // Close the pool so every mutator write fails with the SAME error text
+        // each time — the shape a prior-error snapshot used to mask: the second
+        // failure looked identical to the stale snapshot and read as success.
+        try manager.dbPool.close()
+
+        let action = ProposedAction(type: .updateStatus, reason: "x", status: "done")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+        // The second identical failure must ALSO throw — never a false "Applied".
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+    }
+
     func testApplyLinkTargetRejectsSelfLink() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

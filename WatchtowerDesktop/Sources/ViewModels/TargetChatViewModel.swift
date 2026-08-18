@@ -40,7 +40,9 @@ final class TargetChatViewModel {
     private var target: Target
     private let viewModel: TargetsViewModel
     private var streamTask: Task<Void, Never>?
-    private var observationTask: Task<Void, Never>?
+    // nonisolated(unsafe) so deinit (nonisolated) can cancel it; written only
+    // on the main actor, and deinit has exclusive access to self.
+    nonisolated(unsafe) private var observationTask: Task<Void, Never>?
 
     init(
         target: Target,
@@ -55,6 +57,10 @@ final class TargetChatViewModel {
 
         loadOrCreateConversation()
         startMessageObservation()
+    }
+
+    deinit {
+        observationTask?.cancel()
     }
 
     private func loadOrCreateConversation() {
@@ -100,8 +106,14 @@ final class TargetChatViewModel {
             do {
                 for try await records in observation.values(in: dbPool).dropFirst() {
                     guard !Task.isCancelled else { break }
-                    guard let self, !self.isStreaming else { continue }
-                    if records.count != self.messages.count {
+                    guard let self else { break }
+                    guard !self.isStreaming else { continue }
+                    // Only adopt a snapshot that has MORE messages than we hold:
+                    // observation events are delivered asynchronously, so right
+                    // after a stream ends a stale snapshot (written mid-run) can
+                    // arrive and must not clobber the fresher in-memory tail
+                    // (e.g. the just-appended run summary).
+                    if records.count > self.messages.count {
                         self.messages = records.map { $0.toChatMessage() }
                     }
                 }
@@ -237,8 +249,12 @@ final class TargetChatViewModel {
             }
         } catch {
             streamFailed = true
+            // A user-cancelled stream is not a failure — persist nothing for it.
+            // A real failure lands in the transcript as a system message so a
+            // reloaded conversation still shows that the run died (spec §7).
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
+                appendSystemMessage("⚠️ The secretary run failed: \(error.localizedDescription)")
             }
         }
 
@@ -249,23 +265,30 @@ final class TargetChatViewModel {
             return
         }
 
-        let displayText = surfaceActions(from: fullText)
+        let surfaced = surfaceActions(from: fullText)
 
-        if !displayText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: displayText)
+        // Persist the assistant turn BEFORE the run summary / warnings, so the
+        // reloaded transcript reads in the same order the run happened.
+        if !surfaced.displayText.isEmpty, let convID = conversationID {
+            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: surfaced.displayText)
+        }
+        for text in surfaced.systemMessages {
+            appendSystemMessage(text)
         }
 
         finishStream()
     }
 
     /// Parses watchtower-action blocks out of the assistant's final text,
-    /// surfaces a card per action, auto-applies execute-mode actions (an
+    /// surfaces a card per action, and auto-applies execute-mode actions (an
     /// explicit owner directive) through the same apply core the Approve
-    /// button uses — no per-action follow-up AI turn, one summary system
-    /// message instead — and appends warnings for malformed blocks.
+    /// button uses — no per-action follow-up AI turn.
     /// Propose-mode actions stay pending and await Approve.
-    /// Returns the visible prose for the assistant turn.
-    private func surfaceActions(from fullText: String) -> String {
+    /// Returns the visible prose for the assistant turn plus the system-message
+    /// texts (one apply-run summary + a warning per malformed block) that the
+    /// caller appends AFTER persisting the assistant turn, keeping the
+    /// transcript in assistant-then-system order.
+    private func surfaceActions(from fullText: String) -> (displayText: String, systemMessages: [String]) {
         let parsed = TargetActionParser.parse(fullText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
@@ -289,6 +312,7 @@ final class TargetChatViewModel {
                 failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
             }
         }
+        var systemMessages: [String] = []
         if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
             var parts: [String] = []
             if !appliedSummaries.isEmpty {
@@ -297,12 +321,12 @@ final class TargetChatViewModel {
             if !failedSummaries.isEmpty {
                 parts.append("Failed: " + failedSummaries.joined(separator: "; "))
             }
-            appendSystemMessage(parts.joined(separator: ". "))
+            systemMessages.append(parts.joined(separator: ". "))
         }
         for err in parsed.errors {
-            appendSystemMessage("⚠️ Invalid action proposal: \(err)")
+            systemMessages.append("⚠️ Invalid action proposal: \(err)")
         }
-        return displayText
+        return (displayText, systemMessages)
     }
 
     // MARK: - Persistence helpers
