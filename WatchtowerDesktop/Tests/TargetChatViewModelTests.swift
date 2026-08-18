@@ -312,6 +312,96 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(followUp.text.contains("Do NOT assume"))
     }
 
+    /// A big batch's follow-up is rendered in the transcript and sent to the AI
+    /// verbatim — it must be a count, not a wall of 39 full item summaries.
+    func testApproveAllBigBatchSendsCompactFollowUp() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+
+        let msgID = UUID()
+        chat.actionCards = (0..<10).map { i in
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "Ping colleague number \(i)"),
+                             state: .pending)
+        }
+
+        chat.approveAll()
+
+        let followUp = try XCTUnwrap(chat.messages.last { $0.role == .system })
+        XCTAssertTrue(followUp.text.contains("Actions applied (10 of 10)"),
+                      "big batch must report a count, got: \(followUp.text)")
+        XCTAssertFalse(followUp.text.contains("Ping colleague number"),
+                       "big batch must not echo per-item texts, got: \(followUp.text)")
+    }
+
+    /// Even when the big batch goes compact, failures stay itemized — the user
+    /// and the AI both need to know exactly what did not land.
+    func testApproveAllBigBatchStillItemizesFailures() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+
+        let msgID = UUID()
+        var cards = (0..<9).map { i in
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "item \(i)"),
+                             state: .pending)
+        }
+        // missing `status` — cannot be applied
+        cards.append(TargetActionCard(messageID: msgID,
+                                      action: ProposedAction(type: .updateStatus, reason: "r", status: nil),
+                                      state: .pending))
+        chat.actionCards = cards
+
+        chat.approveAll()
+
+        let followUp = try XCTUnwrap(chat.messages.last { $0.role == .system })
+        XCTAssertTrue(followUp.text.contains("Actions applied (9 of 10)"), "got: \(followUp.text)")
+        XCTAssertTrue(followUp.text.contains("FAILED (1)"))
+        XCTAssertTrue(followUp.text.contains("missing status"))
+        XCTAssertTrue(followUp.text.contains("Do NOT assume"))
+    }
+
+    // MARK: - Batch summary helpers
+
+    func testBatchBreakdownGroupsByKindInFirstAppearanceOrder() {
+        let msgID = UUID()
+        let cards = [
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .toggleSubItem, reason: "r", index: 0, match: "a", done: true),
+                             state: .pending),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .editSubItem, reason: "r", text: "b", index: 1, match: "b"),
+                             state: .pending),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .toggleSubItem, reason: "r", index: 2, match: "c", done: true),
+                             state: .pending)
+        ]
+        XCTAssertEqual(cards.batchBreakdown, "2× check off · 1× edit")
+    }
+
+    func testBatchStateSummaryShowsOnlyNonZeroStates() {
+        let msgID = UUID()
+        let action = ProposedAction(type: .addSubItem, reason: "r", text: "x")
+        let cards = [
+            TargetActionCard(messageID: msgID, action: action, state: .applied("ok")),
+            TargetActionCard(messageID: msgID, action: action, state: .applied("ok")),
+            TargetActionCard(messageID: msgID, action: action, state: .failed("boom")),
+            TargetActionCard(messageID: msgID, action: action, state: .pending)
+        ]
+        XCTAssertEqual(cards.batchStateSummary, "1 pending · 2 applied · 1 failed")
+        // All-pending is the default state of a fresh batch — no summary line.
+        let fresh = [TargetActionCard(messageID: msgID, action: action, state: .pending)]
+        XCTAssertNil(fresh.batchStateSummary)
+    }
+
     // MARK: - Deciding mid-stream
 
     /// A decision taken while a turn is streaming used to be impossible (the cards

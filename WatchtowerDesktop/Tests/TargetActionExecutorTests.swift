@@ -251,6 +251,41 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertNil(after.decodedSubItems[0].dueDate)
     }
 
+    /// Summaries quote item texts capped with an ellipsis — a batch follow-up
+    /// must not echo whole checklists into the transcript.
+    func testApplySummariesTruncateLongItemText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTarget(manager)
+        let longText = String(repeating: "release checklist item ", count: 8) // ~180 chars
+        vm.addSubItem(target, text: longText)
+        let fresh = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+
+        let action = ProposedAction(type: .toggleSubItem, reason: "r",
+                                    index: 0, match: longText, done: true)
+        let summary = try TargetActionExecutor.apply(action, target: fresh, viewModel: vm)
+
+        XCTAssertTrue(summary.contains("…"), "long text must be truncated, got: \(summary)")
+        XCTAssertFalse(summary.contains(longText), "full text must not be echoed, got: \(summary)")
+    }
+
+    /// The edit summary names only the new text — the old text is redundant
+    /// (the card's match already identified the item) and doubles the noise.
+    func testApplyEditSubItemSummaryOmitsOldText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .editSubItem, reason: "reword",
+                                    text: "ship to staging", index: 2, match: "ship it")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        XCTAssertTrue(summary.contains("ship to staging"))
+        XCTAssertFalse(summary.contains("\"ship it\""), "old text must not be echoed, got: \(summary)")
+    }
+
     // MARK: - Target field mutations
 
     func testApplyUpdateDueDate() throws {

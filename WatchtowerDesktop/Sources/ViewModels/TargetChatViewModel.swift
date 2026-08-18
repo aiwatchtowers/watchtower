@@ -18,6 +18,62 @@ struct TargetActionCard: Identifiable, Equatable {
     }
 }
 
+extension Array where Element == TargetActionCard {
+    /// One-line composition summary for the collapsed batch block, grouped by
+    /// action kind in first-appearance order: "9× check off · 21× edit".
+    var batchBreakdown: String {
+        var order: [TargetActionKind] = []
+        var counts: [TargetActionKind: Int] = [:]
+        for card in self {
+            if counts[card.action.type] == nil { order.append(card.action.type) }
+            counts[card.action.type, default: 0] += 1
+        }
+        return order.map { "\(counts[$0] ?? 0)× \($0.batchLabel)" }.joined(separator: " · ")
+    }
+
+    /// "1 pending · 2 applied · 1 failed" once any card is decided; nil while
+    /// the whole batch is still pending (a fresh batch's default state).
+    var batchStateSummary: String? {
+        var pending = 0, applied = 0, failed = 0, rejected = 0
+        for card in self {
+            switch card.state {
+            case .pending: pending += 1
+            case .applied: applied += 1
+            case .failed: failed += 1
+            case .rejected: rejected += 1
+            }
+        }
+        guard pending != count else { return nil }
+        var parts: [String] = []
+        if pending > 0 { parts.append("\(pending) pending") }
+        if applied > 0 { parts.append("\(applied) applied") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if rejected > 0 { parts.append("\(rejected) rejected") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+extension TargetActionKind {
+    /// Short noun for the batch breakdown line.
+    var batchLabel: String {
+        switch self {
+        case .updateStatus: "status change"
+        case .updateNotes: "note"
+        case .updateProgress: "progress update"
+        case .addSubItem: "new checkpoint"
+        case .createChildTarget: "new sub-task"
+        case .linkTarget: "link"
+        case .toggleSubItem: "check off"
+        case .editSubItem: "edit"
+        case .deleteSubItem: "deletion"
+        case .setSubItemDue: "item due date"
+        case .updateDueDate: "due date"
+        case .updatePriority: "priority"
+        case .updateBallOn: "ball-on"
+        }
+    }
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -403,6 +459,10 @@ final class TargetChatViewModel {
     /// sub-task override stays a per-card decision.
     /// `messageID` scopes the pass to one turn's batch (the inline "Approve all"
     /// row above a batch of cards); nil approves every pending card in the chat.
+    /// Above this many cards, the batch follow-up switches from an itemized
+    /// list to a bare count (failures stay itemized).
+    nonisolated static let compactBatchThreshold = 8
+
     func approveAll(messageID: UUID? = nil) {
         let pendingIDs = actionCards
             .filter { $0.state == .pending && (messageID == nil || $0.messageID == messageID) }
@@ -432,7 +492,12 @@ final class TargetChatViewModel {
 
         var parts: [String] = []
         if !applied.isEmpty {
-            parts.append("Actions applied (\(applied.count)): \(applied.joined(separator: "; ")).")
+            // A big batch's follow-up lands in the transcript and in the AI's
+            // context verbatim — report a count, not dozens of item summaries.
+            // Failures below stay itemized whatever the batch size.
+            parts.append(pendingIDs.count > Self.compactBatchThreshold
+                ? "Actions applied (\(applied.count) of \(pendingIDs.count))."
+                : "Actions applied (\(applied.count)): \(applied.joined(separator: "; ")).")
         }
         if !failed.isEmpty {
             parts.append("Actions FAILED (\(failed.count)): \(failed.joined(separator: "; ")). " +

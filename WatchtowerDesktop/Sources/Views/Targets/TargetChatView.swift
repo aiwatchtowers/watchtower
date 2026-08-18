@@ -164,6 +164,83 @@ struct TargetChatPane: View {
 
     // MARK: Pending proposals
 
+    /// From this many cards on, a turn's proposals render as one collapsed
+    /// block instead of a screenful of individual cards.
+    private static let batchCollapseThreshold = 4
+
+    /// Message ids whose batch block the user expanded to review one by one.
+    @State private var expandedBatches: Set<UUID> = []
+
+    /// A big batch as one compact block: what it is (count + composition), one
+    /// Approve all button, and a Review toggle that expands to the per-card
+    /// list for deciding individually. Card states keep updating the block's
+    /// summary line after decisions land.
+    @ViewBuilder
+    private func collapsedBatch(for msg: ChatMessage, cards: [TargetActionCard]) -> some View {
+        let pending = cards.filter { $0.state == .pending }.count
+        let expanded = expandedBatches.contains(msg.id)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(cards.count) proposed changes")
+                        .font(.subheadline.weight(.medium))
+                    Text(cards.batchBreakdown)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if let states = cards.batchStateSummary {
+                        Text(states)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if pending > 0 {
+                    Button { chatVM.approveAll(messageID: msg.id) } label: {
+                        Label("Approve all", systemImage: "checkmark.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("Apply every pending proposal in this batch and tell the assistant once")
+                    .accessibilityIdentifier("chat.approveAll")
+                }
+                Button {
+                    if expanded {
+                        expandedBatches.remove(msg.id)
+                    } else {
+                        expandedBatches.insert(msg.id)
+                    }
+                } label: {
+                    Label(expanded ? "Collapse" : "Review",
+                          systemImage: expanded ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(expanded ? "Hide the individual proposals"
+                               : "Review and decide each proposal individually")
+                .accessibilityIdentifier("chat.batchReview")
+            }
+            if expanded {
+                ForEach(cards) { card in
+                    TargetActionCardView(
+                        card: card,
+                        onApprove: { kind in chatVM.approve(card, as: kind) },
+                        onReject: { chatVM.reject(card) }
+                    )
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.accentColor.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+
     /// Rendered in the transcript itself, directly above a message's batch of
     /// proposal cards — the affordance sits where the cards are, not in a
     /// header or a docked bar the eye never visits.
@@ -225,13 +302,17 @@ struct TargetChatPane: View {
                     ForEach(chatVM.messages) { msg in
                         chatBubble(msg)
                         let cards = chatVM.actionCards.filter { $0.messageID == msg.id }
-                        batchApproveRow(for: msg, cards: cards)
-                        ForEach(cards) { card in
-                            TargetActionCardView(
-                                card: card,
-                                onApprove: { kind in chatVM.approve(card, as: kind) },
-                                onReject: { chatVM.reject(card) }
-                            )
+                        if cards.count >= Self.batchCollapseThreshold {
+                            collapsedBatch(for: msg, cards: cards)
+                        } else {
+                            batchApproveRow(for: msg, cards: cards)
+                            ForEach(cards) { card in
+                                TargetActionCardView(
+                                    card: card,
+                                    onApprove: { kind in chatVM.approve(card, as: kind) },
+                                    onReject: { chatVM.reject(card) }
+                                )
+                            }
                         }
                     }
                     Color.clear.frame(height: 1).id(bottomAnchor)

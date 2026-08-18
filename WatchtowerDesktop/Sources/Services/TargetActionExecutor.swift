@@ -68,7 +68,7 @@ enum TargetActionExecutor {
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.addSubItem(target, text: text)
             try checkWrite(viewModel, prior: priorError)
-            return "added sub-item \"\(text)\""
+            return "added sub-item \"\(shorten(text))\""
         case .createChildTarget:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             guard viewModel.createChild(
@@ -78,7 +78,7 @@ enum TargetActionExecutor {
             ) != nil else {
                 throw TargetActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
             }
-            return "created child target \"\(text)\""
+            return "created child target \"\(shorten(text))\""
         case .linkTarget:
             return try applyLink(action, target: target, viewModel: viewModel, priorError: priorError)
         default:
@@ -105,7 +105,7 @@ enum TargetActionExecutor {
         let priorError = viewModel.errorMessage
         let items = target.decodedSubItems
         let idx = try resolveSubItem(action, in: items)
-        let current = items[idx].text
+        let current = shorten(items[idx].text)
         switch action.type {
         case .toggleSubItem:
             guard let done = action.done else { throw TargetActionError.writeFailed("missing done") }
@@ -119,7 +119,9 @@ enum TargetActionExecutor {
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.editSubItem(target, index: idx, newText: text)
             try checkWrite(viewModel, prior: priorError)
-            return "edited sub-item \"\(current)\" → \"\(text)\""
+            // The new text alone: the old one is redundant (the address already
+            // identified the item) and doubles the follow-up's size.
+            return "edited sub-item → \"\(shorten(text))\""
         case .deleteSubItem:
             viewModel.removeSubItem(target, index: idx)
             try checkWrite(viewModel, prior: priorError)
@@ -160,6 +162,14 @@ enum TargetActionExecutor {
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")
         }
+    }
+
+    /// Caps quoted item texts in summaries — they are echoed into the chat
+    /// transcript (and a batch follow-up joins dozens of them), so a summary
+    /// identifies the item, never reproduces it.
+    private static func shorten(_ text: String, limit: Int = 60) -> String {
+        guard text.count > limit else { return text }
+        return text.prefix(limit).trimmingCharacters(in: .whitespaces) + "…"
     }
 
     /// Re-resolves the action's sub-item address against the live list,
