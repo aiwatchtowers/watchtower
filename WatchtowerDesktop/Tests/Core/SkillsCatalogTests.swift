@@ -317,4 +317,225 @@ final class SkillsCatalogTests: XCTestCase {
             "idea": .assistant
         ])
     }
+
+    /// The overload every chat VM goes through: the context type it stores on
+    /// its conversation picks the persona, and a context type nobody mapped
+    /// gets no block rather than a default persona's skills.
+    func testPromptBlockByContextTypeResolvesThroughTheTable() throws {
+        seedMixedCatalog()
+
+        let secretary = try XCTUnwrap(SkillsCatalog.promptBlock(contextType: "situation", dir: dir))
+        XCTAssertTrue(secretary.contains("sec-on"))
+        XCTAssertFalse(secretary.contains("asst-on"))
+
+        let assistant = try XCTUnwrap(SkillsCatalog.promptBlock(contextType: "idea", dir: dir))
+        XCTAssertTrue(assistant.contains("asst-on"))
+        XCTAssertFalse(assistant.contains("sec-on"))
+
+        XCTAssertNil(SkillsCatalog.promptBlock(contextType: "onboarding", dir: dir),
+                     "an unmapped surface must not inherit a persona by accident")
+    }
+
+    // MARK: - yaml.v3 equivalence
+
+    /// The `enabled` values yaml.v3 accepts for a typed `*bool` — a closed,
+    /// case-sensitive set pinned against `internal/skills.Parse`. The 1.1 words
+    /// (`yes`/`no`/`on`/`off`/`y`/`n`) are accepted even quoted, because Go
+    /// applies them while decoding a string into a bool; the core-schema words
+    /// are not, so `enabled: "false"` is a rejected file, not a disabled skill.
+    func testEnabledAcceptsExactlyWhatYamlDoes() {
+        let disabling = ["false", "False", "FALSE", "no", "No", "NO", "n", "N",
+                         "off", "Off", "OFF", "'no'", "\"off\"", "false # too noisy"]
+        for value in disabling {
+            XCTAssertEqual(parseEnabled(value)?.enabled, false,
+                           "`enabled: \(value)` must disable the skill")
+        }
+        let enabling = ["true", "True", "TRUE", "yes", "Yes", "YES", "y", "Y",
+                        "on", "On", "ON", "'yes'", "true # back on", "", "~", "null", "NULL"]
+        for value in enabling {
+            XCTAssertEqual(parseEnabled(value)?.enabled, true,
+                           "`enabled: \(value)` must leave the skill enabled")
+        }
+        let rejected = ["maybe", "1", "0", "\"false\"", "'true'", "yEs", "oFF", "no#comment"]
+        for value in rejected {
+            XCTAssertNil(parseEnabled(value),
+                         "`enabled: \(value)` is not a YAML bool — Go rejects the file, so must we")
+        }
+    }
+
+    /// The parsed skill, or nil when that `enabled` value gets the whole file
+    /// rejected.
+    private func parseEnabled(_ value: String) -> SkillSummary? {
+        SkillsCatalog.parse(name: "probe", content: """
+            ---
+            description: A description.
+            persona: both
+            enabled: \(value)
+            ---
+            Body.
+            """)
+    }
+
+    func testRejectsShapesYamlWouldRefuse() {
+        // A frontmatter line that is not a `key: value` pair.
+        XCTAssertNil(SkillsCatalog.parse(name: "bare", content: """
+            ---
+            description: A description.
+            persona: secretary
+            this line has no colon
+            ---
+            Body.
+            """))
+        // An indented opening fence opens nothing (Go matches the literal
+        // prefix "---\\n"), so the file has no frontmatter at all.
+        XCTAssertNil(SkillsCatalog.parse(name: "indented", content: """
+             ---
+            description: A description.
+            persona: secretary
+            ---
+            Body.
+            """))
+        // An unterminated quoted scalar breaks the whole YAML document.
+        XCTAssertNil(SkillsCatalog.parse(name: "unclosed", content: """
+            ---
+            description: "never closed
+            persona: secretary
+            ---
+            Body.
+            """))
+        // …on any key, not just the ones we read.
+        XCTAssertNil(SkillsCatalog.parse(name: "unclosed-extra", content: """
+            ---
+            description: A description.
+            persona: secretary
+            author: "never closed
+            ---
+            Body.
+            """))
+        // Junk after a closing quote is a syntax error, not a longer value.
+        XCTAssertNil(SkillsCatalog.parse(name: "junk", content: """
+            ---
+            description: 'quoted' junk
+            persona: secretary
+            ---
+            Body.
+            """))
+        // A repeated key, even one neither parser reads.
+        XCTAssertNil(SkillsCatalog.parse(name: "dup", content: """
+            ---
+            description: A description.
+            persona: secretary
+            author: first
+            author: second
+            ---
+            Body.
+            """))
+    }
+
+    func testDescriptionMustSurviveUnquotingAndTrimming() {
+        XCTAssertNil(SkillsCatalog.parse(name: "blank", content: """
+            ---
+            description: "   "
+            persona: secretary
+            ---
+            Body.
+            """), "quoted whitespace is an empty description once unquoted")
+        XCTAssertNil(SkillsCatalog.parse(name: "empty-quoted", content: """
+            ---
+            description: ''
+            persona: secretary
+            ---
+            Body.
+            """))
+    }
+
+    /// The shape `SkillFileEditor.yamlScalar` writes: single-quoted, with an
+    /// embedded quote doubled. Every YAML indicator inside it is inert.
+    func testReadsSingleQuotedScalarsBack() {
+        let parsed = SkillsCatalog.parse(name: "quoted", content: """
+            ---
+            description: 'it''s a fix: x # y'
+            persona: secretary
+            ---
+            Body.
+            """)
+        XCTAssertEqual(parsed?.description, "it's a fix: x # y")
+    }
+
+    /// `#` opens a comment only at the start of a value or after whitespace —
+    /// `a#b` is the literal text, as it is on the Go side.
+    func testHashWithoutLeadingSpaceIsNotAComment() {
+        let parsed = SkillsCatalog.parse(name: "hash", content: """
+            ---
+            description: rollback#2 plan
+            persona: secretary
+            ---
+            Body.
+            """)
+        XCTAssertEqual(parsed?.description, "rollback#2 plan")
+    }
+
+    func testShippedMarkerIsReadFromTheFile() {
+        let content = """
+            ---
+            description: A shipped skill.
+            persona: secretary
+            x-watchtower-shipped: v1
+            ---
+            Body.
+            """
+        XCTAssertEqual(SkillsCatalog.parse(name: "shipped", content: content)?.shipped, true)
+        XCTAssertEqual(
+            SkillsCatalog.parse(name: "owned", content: content.replacingOccurrences(
+                of: "x-watchtower-shipped: v1\n", with: ""))?.shipped,
+            false,
+            "a file without the marker is the owner's")
+    }
+
+    // MARK: - Shared Go fixtures
+
+    /// `internal/skills/testdata` — the fixture set `internal/skills`'
+    /// `TestListFixtures` pins. Both parsers read the SAME files here, so a
+    /// change that makes one side stricter than the other fails on one of the
+    /// two sides instead of drifting silently.
+    private static func goFixturesDir() -> String {
+        URL(fileURLWithPath: #filePath)          // …/WatchtowerDesktop/Tests/Core/<this file>
+            .deletingLastPathComponent()          // …/Tests/Core
+            .deletingLastPathComponent()          // …/Tests
+            .deletingLastPathComponent()          // …/WatchtowerDesktop
+            .deletingLastPathComponent()          // repo root
+            .appendingPathComponent("internal/skills/testdata")
+            .path
+    }
+
+    func testSharedGoFixturesGetTheSameVerdict() throws {
+        let fixtures = Self.goFixturesDir()
+        let stems = try FileManager.default.contentsOfDirectory(atPath: fixtures)
+            .filter { $0.hasSuffix(".md") }
+            .map { String($0.dropLast(3)) }
+            .sorted()
+        XCTAssertFalse(stems.isEmpty, "shared fixtures must be reachable at \(fixtures)")
+
+        let listed = SkillsCatalog.list(dir: fixtures)
+        XCTAssertEqual(listed, [
+            SkillSummary(name: "enabled-comment",
+                         description: "Switched off with the reason written as an inline comment.",
+                         persona: .both, enabled: false),
+            SkillSummary(name: "enabled-no",
+                         description: "Switched off with YAML 1.1's `no` rather than `false`.",
+                         persona: .assistant, enabled: false),
+            SkillSummary(name: "valid-basic",
+                         description: "Use when the owner asks for the shape of a valid skill file.",
+                         persona: .secretary, enabled: true),
+            SkillSummary(name: "valid-disabled",
+                         description: "A skill both personas could use, switched off by its own frontmatter.",
+                         persona: .both, enabled: false)
+        ], "must match internal/skills/skills_test.go's wantListed, in the same order")
+
+        let skipped = stems.filter { stem in !listed.contains { $0.name == stem } }
+        XCTAssertEqual(skipped, [
+            "bad-enabled", "bad-persona", "bare-line", "blank-description",
+            "duplicate-key", "indented-fence", "no-frontmatter", "unterminated-quote"
+        ], "must match internal/skills/skills_test.go's wantSkipped")
+    }
 }

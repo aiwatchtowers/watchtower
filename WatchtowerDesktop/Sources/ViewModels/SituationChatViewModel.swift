@@ -356,9 +356,11 @@ final class SituationChatViewModel {
         - Be concise; this is a working discussion, not a report.
         """
 
-        // Persona skills (secretary surface): nil when no enabled skill
-        // matches, so a workspace with no skills keeps a byte-identical prompt.
-        let skillsSuffix = SkillsCatalog.promptBlock(persona: .secretary, dir: skillsDir)
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (secretary here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "situation", dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
         return base + skillsSuffix
     }

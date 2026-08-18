@@ -280,9 +280,11 @@ final class IdeaChatViewModel {
         let style = (try? dbPool.read { db in try SecretaryProfileQueries.fetchStyle(db).text }) ?? ""
         let styleBlock = style.isEmpty ? "" : "\n\n=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
 
-        // Persona skills (assistant surface): nil when no enabled skill
-        // matches, so a workspace with no skills keeps a byte-identical prompt.
-        let skillsSuffix = SkillsCatalog.promptBlock(persona: .assistant, dir: skillsDir)
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "idea", dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
         return """

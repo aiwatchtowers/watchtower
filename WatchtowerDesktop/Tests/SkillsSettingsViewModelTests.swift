@@ -334,6 +334,82 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         XCTAssertEqual(row.description, "Untangle a thread, carefully.")
     }
 
+    /// The editor and the catalog must read `enabled` through the same
+    /// interpreter. Before they did, both catalogs saw these files as disabled
+    /// while the editor saw them as enabled, so any Save silently switched the
+    /// skill back on — the owner's off switch undone by an unrelated edit.
+    func testSaveKeepsEveryDisabledSpellingOff() throws {
+        let spellings = [
+            "commented": "enabled: false # too noisy in review threads",
+            "yaml11": "enabled: no",
+            "uppercase": "enabled: FALSE"
+        ]
+        for (name, line) in spellings {
+            try write("\(name).md", """
+                ---
+                description: A disabled skill.
+                persona: assistant
+                \(line)
+                ---
+
+                Body.
+                """)
+
+            let viewModel = SkillsSettingsViewModel(dir: dir)
+            var draft = try XCTUnwrap(viewModel.draft(for: name), "\(name) must be parsable")
+            draft.body = "New body."
+            XCTAssertTrue(viewModel.save(draft, isNew: false))
+
+            let row = try XCTUnwrap(viewModel.rows.first { $0.name == name })
+            XCTAssertFalse(row.enabled, "`\(line)` must survive a Save as disabled")
+        }
+    }
+
+    /// Round-trip guard: a composed file the catalog cannot read is never
+    /// written, because a skill the parsers skip is a skill that silently
+    /// vanishes from every persona's prompt.
+    func testSaveRefusesToWriteAFileTheCatalogCannotRead() throws {
+        // An unterminated quote on an unknown key — carried through verbatim by
+        // compose, and fatal to yaml.v3 on the Go side.
+        let broken = """
+            ---
+            description: Break a target down.
+            persona: assistant
+            author: "unclosed
+            ---
+
+            Body.
+            """
+        try write("break-down.md", broken)
+
+        let viewModel = SkillsSettingsViewModel(dir: dir)
+        XCTAssertFalse(viewModel.save(
+            SkillDraft(name: "break-down", description: "New.", persona: .assistant, body: "B."),
+            isNew: false
+        ))
+        XCTAssertNotNil(viewModel.error)
+        XCTAssertEqual(try read("break-down.md"), broken, "the file on disk must be untouched")
+    }
+
+    /// Descriptions are written as single-quoted scalars, so a quote inside one
+    /// is doubled rather than dropped — and comes back intact.
+    func testSaveRoundTripsAQuoteInsideTheDescription() throws {
+        let viewModel = SkillsSettingsViewModel(dir: dir)
+        XCTAssertTrue(viewModel.save(
+            SkillDraft(
+                name: "quoted",
+                description: "Use when it's a fix: x # y",
+                persona: .secretary,
+                body: "Body."
+            ),
+            isNew: true
+        ))
+
+        XCTAssertTrue(try read("quoted.md").contains("description: 'Use when it''s a fix: x # y'"))
+        let parsed = try XCTUnwrap(SkillsCatalog.parse(name: "quoted", content: try read("quoted.md")))
+        XCTAssertEqual(parsed.description, "Use when it's a fix: x # y")
+    }
+
     func testSaveOnAnExistingFileKeepsUnknownFrontmatterKeys() throws {
         try write("break-down.md", """
             ---

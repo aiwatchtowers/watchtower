@@ -564,9 +564,11 @@ final class TargetChatViewModel {
               ) + "\n\n"
             : ""
 
-        // Persona skills (assistant surface): nil when no enabled skill
-        // matches, so a workspace with no skills keeps a byte-identical prompt.
-        let skillsSuffix = SkillsCatalog.promptBlock(persona: .assistant, dir: skillsDir)
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "target", dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
         return """

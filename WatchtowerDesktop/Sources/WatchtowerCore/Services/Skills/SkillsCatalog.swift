@@ -10,8 +10,18 @@ import Foundation
 // frontmatter between `---` lines carries `description` (required non-empty),
 // `persona` (secretary | assistant | both), and `enabled` (optional, default
 // true). Invalid files are skipped, never fatal; unknown frontmatter keys are
-// ignored. Equivalence is pinned by matching fixtures in the `internal/skills`
-// tests and `SkillsCatalogTests`.
+// ignored. Equivalence is pinned by the SHARED fixtures in
+// `internal/skills/testdata`, which `internal/skills.TestListFixtures` and
+// `SkillsCatalogTests.testSharedGoFixturesGetTheSameVerdict` both read.
+//
+// Go feeds the frontmatter to `gopkg.in/yaml.v3`; this is a hand parser, so
+// every shape yaml.v3 refuses has to be refused here by hand. Where the two
+// still differ they differ in ONE safe direction — Swift may skip a file Go
+// lists (the prompt then never advertises it), never the reverse (which would
+// advertise a skill `load_skill` cannot read). Three known cases of that, all
+// legal YAML the flat line parser below cannot represent: a bare indented
+// continuation line, a sequence under an unknown key, and a nested key that
+// repeats an outer one.
 
 /// Persona a skill targets. Raw values are the literal frontmatter tokens.
 package enum SkillPersona: String, Sendable, Equatable {
@@ -27,19 +37,160 @@ package struct SkillSummary: Sendable, Equatable {
     package let description: String
     package let persona: SkillPersona
     package let enabled: Bool
+    /// True when the file carries the `x-watchtower-shipped` frontmatter
+    /// marker `internal/skills` stamps on the pack it deploys — the origin
+    /// badge the Settings card renders, read here so no caller needs a second
+    /// pass over the same file.
+    package let shipped: Bool
 
-    package init(name: String, description: String, persona: SkillPersona, enabled: Bool) {
+    package init(
+        name: String,
+        description: String,
+        persona: SkillPersona,
+        enabled: Bool,
+        shipped: Bool = false
+    ) {
         self.name = name
         self.description = description
         self.persona = persona
         self.enabled = enabled
+        self.shipped = shipped
+    }
+}
+
+// MARK: - Frontmatter scalars
+
+/// The YAML-scalar semantics the two parsers must agree on, in one place: the
+/// catalog below reads frontmatter with it, and the Settings editor
+/// (`SkillFileEditor`) reads the `enabled` key with it, so a value one of them
+/// honours can never be a value the other silently rewrites.
+///
+/// The rules are yaml.v3's, pinned empirically against `internal/skills.Parse`
+/// rather than guessed from the YAML spec.
+package enum SkillFrontmatter {
+    /// A frontmatter value as YAML reads it: the scalar's text, plus whether
+    /// it was written quoted. Quoting is not cosmetic — it decides the node's
+    /// type, which is why `enabled: false` is a bool and `enabled: "false"` is
+    /// a string yaml.v3 refuses to unmarshal into one.
+    package struct Value: Equatable, Sendable {
+        package let text: String
+        package let quoted: Bool
+    }
+
+    /// How yaml.v3 reads a value into the `*bool` `enabled` field.
+    package enum BoolValue: Equatable, Sendable {
+        case on
+        case off
+        /// An explicit YAML null (`~`, `null`) or an empty value: the key is
+        /// present but carries no bool, so the format's default applies.
+        case unset
+        /// Anything yaml.v3 would refuse to unmarshal into a bool — a quoted
+        /// `"true"`, a number, an unknown word. Go rejects the whole file.
+        case invalid
+    }
+
+    /// Read the value half of a `key: value` frontmatter line. Returns nil for
+    /// the shapes that break the whole YAML document on the Go side: an
+    /// unterminated quoted scalar, or junk after a closing quote.
+    package static func value(_ raw: some StringProtocol) -> Value? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard let first = trimmed.first else { return Value(text: "", quoted: false) }
+        if first == "'" || first == "\"" {
+            return quoted(trimmed, quote: first)
+        }
+        return Value(text: strippingComment(trimmed), quoted: false)
+    }
+
+    /// `value` plus the bool reading, for callers holding the raw line.
+    package static func bool(_ raw: some StringProtocol) -> BoolValue {
+        guard let value = value(raw) else { return .invalid }
+        return bool(value)
+    }
+
+    package static func bool(_ value: Value) -> BoolValue {
+        // The YAML-1.1 words are accepted even when quoted, because yaml.v3
+        // applies them while decoding a STRING into a typed bool; the
+        // core-schema words are not, so `enabled: "false"` stays a string and
+        // is refused. Both lists are closed and case-sensitive — `yEs` is a
+        // plain string and rejected.
+        if yaml11True.contains(value.text) { return .on }
+        if yaml11False.contains(value.text) { return .off }
+        if value.quoted { return .invalid }
+        if coreTrue.contains(value.text) { return .on }
+        if coreFalse.contains(value.text) { return .off }
+        if nullTokens.contains(value.text) { return .unset }
+        return .invalid
+    }
+
+    private static let yaml11True: Set<String> = ["y", "Y", "yes", "Yes", "YES", "on", "On", "ON"]
+    private static let yaml11False: Set<String> = ["n", "N", "no", "No", "NO", "off", "Off", "OFF"]
+    private static let coreTrue: Set<String> = ["true", "True", "TRUE"]
+    private static let coreFalse: Set<String> = ["false", "False", "FALSE"]
+    private static let nullTokens: Set<String> = ["", "~", "null", "Null", "NULL"]
+
+    /// Unwrap a quoted scalar: `''` is an escaped quote inside single quotes, a
+    /// backslash escapes the next character inside double ones. Only a comment
+    /// may follow the closing quote.
+    private static func quoted(_ trimmed: String, quote: Character) -> Value? {
+        var text = ""
+        var index = trimmed.index(after: trimmed.startIndex)
+        var closed = false
+        while index < trimmed.endIndex {
+            let char = trimmed[index]
+            index = trimmed.index(after: index)
+            if quote == "\"", char == "\\", index < trimmed.endIndex {
+                let escaped = trimmed[index]
+                index = trimmed.index(after: index)
+                switch escaped {
+                case "n": text.append("\n")
+                case "t": text.append("\t")
+                case "\"", "\\", "/": text.append(escaped)
+                default: text.append(char); text.append(escaped)
+                }
+                continue
+            }
+            if char == quote {
+                if quote == "'", index < trimmed.endIndex, trimmed[index] == "'" {
+                    text.append("'")
+                    index = trimmed.index(after: index)
+                    continue
+                }
+                closed = true
+                break
+            }
+            text.append(char)
+        }
+        guard closed else { return nil }
+        let rest = trimmed[index...].trimmingCharacters(in: .whitespaces)
+        guard rest.isEmpty || rest.hasPrefix("#") else { return nil }
+        return Value(text: text, quoted: true)
+    }
+
+    /// Cut an inline comment off a plain scalar. `#` only opens one at the
+    /// start of the value or after whitespace — `a#b` is the literal `a#b`.
+    private static func strippingComment(_ trimmed: String) -> String {
+        var index = trimmed.startIndex
+        var afterSpace = true
+        while index < trimmed.endIndex {
+            let char = trimmed[index]
+            if char == "#", afterSpace {
+                return String(trimmed[..<index]).trimmingCharacters(in: .whitespaces)
+            }
+            afterSpace = char == " " || char == "\t"
+            index = trimmed.index(after: index)
+        }
+        return trimmed
     }
 }
 
 package enum SkillsCatalog {
-    /// Chat `context_type` → persona. One mapping table per side (the Go twin
-    /// lives in `internal/skills`); mirrors the pinned persona contract in
+    /// Chat `context_type` → persona, mirroring the pinned persona contract in
     /// `docs/review/review-rules.md` ("Personas & chat contracts").
+    ///
+    /// Swift-side only, with no Go twin: every chat prompt is built in Swift,
+    /// so Go never has to answer "which persona is this surface". A chat
+    /// surface joins the table by adding its `context_type` here — see
+    /// `promptBlock(contextType:dir:)`, which every chat VM goes through.
     package static let personaByContextType: [String: SkillPersona] = [
         "situation": .secretary,
         "meeting": .secretary,
@@ -89,54 +240,88 @@ package enum SkillsCatalog {
         return skills.sorted { $0.name < $1.name }
     }
 
+    /// The frontmatter key `internal/skills` stamps on every file it ships.
+    /// An ordinary unknown key to both parsers; only the origin badge reads it.
+    package static let shippedMarkerKey = "x-watchtower-shipped"
+
     /// Parse one skill file's frontmatter. Strict on what matters, lenient
     /// elsewhere: nil (skip) on an illegal name, a missing/unterminated
-    /// frontmatter block, an empty `description`, or a missing/unknown
-    /// `persona`; unknown keys are ignored; `enabled` defaults to true and
-    /// only a literal `false` turns it off. Line-based `key: value` parsing —
-    /// same semantics as the Go parser (see the dual-path note at the top of
-    /// this file).
+    /// frontmatter block, a line yaml.v3 would refuse, a `description` that is
+    /// empty once unquoted and trimmed, a missing/unknown `persona`, or an
+    /// `enabled` value that is not a YAML bool; unknown keys are ignored and
+    /// `enabled` defaults to true when absent.
     package nonisolated static func parse(name: String, content: String) -> SkillSummary? {
-        guard isValidSkillName(name) else { return nil }
+        guard isValidSkillName(name), let fields = frontmatterFields(content) else { return nil }
+
+        let description = (fields["description"]?.text ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !description.isEmpty else { return nil }
+
+        guard let personaRaw = fields["persona"]?.text
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let persona = SkillPersona(rawValue: personaRaw)
+        else { return nil }
+
+        var enabled = true
+        if let value = fields["enabled"] {
+            switch SkillFrontmatter.bool(value) {
+            case .on, .unset: enabled = true
+            case .off: enabled = false
+            case .invalid: return nil
+            }
+        }
+
+        let shipped = !(fields[shippedMarkerKey]?.text
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return SkillSummary(
+            name: name, description: description, persona: persona,
+            enabled: enabled, shipped: shipped
+        )
+    }
+
+    /// The frontmatter block's `key: value` pairs, or nil when the file has no
+    /// terminated block or carries a line the Go parser would choke on: a
+    /// non-`key: value` line, a broken scalar, or a repeated key (yaml.v3
+    /// refuses a duplicate mapping key even on a field it does not read).
+    nonisolated private static func frontmatterFields(
+        _ content: String
+    ) -> [String: SkillFrontmatter.Value]? {
         // CRLF is normalised first, matching the Go parser: a Swift Character
         // is a grapheme cluster and "\r\n" is ONE of them, so splitting on
         // "\n" would never match inside a CRLF file and the whole file would
         // parse as a single line with no frontmatter fence.
-        let content = content.replacingOccurrences(of: "\r\n", with: "\n")
-        var lines = content.split(separator: "\n", omittingEmptySubsequences: false)[...]
-        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
-        lines = lines.dropFirst()
+        let normalized = content.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+        // The opening fence is matched exactly, not trimmed: Go tests the
+        // literal prefix "---\n", so " ---" and "--- " open nothing.
+        guard lines.first == "---" else { return nil }
 
-        var fields: [String: String] = [:]
-        var terminated = false
-        for line in lines {
+        var fields: [String: SkillFrontmatter.Value] = [:]
+        for line in lines.dropFirst() {
+            if isClosingFence(line) { return fields }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed == "---" {
-                terminated = true
-                break
-            }
-            guard let colon = trimmed.firstIndex(of: ":") else { continue }
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let colon = trimmed.firstIndex(of: ":"),
+                  let value = SkillFrontmatter.value(trimmed[trimmed.index(after: colon)...])
+            else { return nil }
             let key = trimmed[..<colon].trimmingCharacters(in: .whitespaces)
-            var value = trimmed[trimmed.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            // Strip an inline YAML comment, then surrounding matching quotes.
-            if let hash = value.firstIndex(of: "#"), value.first != "\"", value.first != "'" {
-                value = value[..<hash].trimmingCharacters(in: .whitespaces)
-            }
-            if value.count >= 2,
-               let first = value.first, first == "\"" || first == "'",
-               value.last == first {
-                value = String(value.dropFirst().dropLast())
-            }
-            fields[key] = String(value)
+            guard fields[key] == nil else { return nil }
+            fields[key] = value
         }
-        guard terminated else { return nil }
+        return nil
+    }
 
-        guard let description = fields["description"], !description.isEmpty else { return nil }
-        guard let personaRaw = fields["persona"],
-              let persona = SkillPersona(rawValue: personaRaw)
-        else { return nil }
-        let enabled = fields["enabled"]?.lowercased() != "false"
-        return SkillSummary(name: name, description: description, persona: persona, enabled: enabled)
+    /// The closing fence, matched the way Go's `splitFrontmatter` does: the
+    /// line is right-trimmed of spaces and tabs, so `---  ` closes the block
+    /// but `  ---` is an ordinary (and therefore rejected) content line.
+    nonisolated private static func isClosingFence(_ line: Substring) -> Bool {
+        var end = line.endIndex
+        while end > line.startIndex {
+            let previous = line.index(before: end)
+            guard line[previous] == " " || line[previous] == "\t" else { break }
+            end = previous
+        }
+        return line[line.startIndex..<end] == "---"
     }
 
     /// The AVAILABLE SKILLS system-prompt block for one persona, or nil when
@@ -158,5 +343,18 @@ package enum SkillsCatalog {
         If a skill above is relevant to the user's request, FIRST call the `load_skill` MCP tool \
         with that skill's name and follow the returned instructions.
         """
+    }
+
+    /// `promptBlock` addressed the way a chat VM knows itself — by the
+    /// `context_type` it stores on its conversation — so the persona contract
+    /// is read from `personaByContextType` instead of being hardcoded five
+    /// times. An unmapped context type gets no block at all: a surface nobody
+    /// assigned a persona must not inherit one by accident.
+    package nonisolated static func promptBlock(
+        contextType: String,
+        dir: String? = defaultDir()
+    ) -> String? {
+        guard let persona = personaByContextType[contextType] else { return nil }
+        return promptBlock(persona: persona, dir: dir)
     }
 }

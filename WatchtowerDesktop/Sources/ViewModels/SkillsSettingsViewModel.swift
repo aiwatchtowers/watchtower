@@ -66,7 +66,7 @@ final class SkillsSettingsViewModel {
                 description: summary.description,
                 persona: summary.persona,
                 enabled: summary.enabled,
-                shipped: isShipped(name: summary.name, dir: dir)
+                shipped: summary.shipped
             )
         }
     }
@@ -167,6 +167,16 @@ final class SkillsSettingsViewModel {
             extraFrontmatterLines: extras,
             body: draft.body
         )
+        // Round-trip guard: the composed file goes through the same parser the
+        // chat prompts (and, equivalently, the Go side) use before it is
+        // written. A file that cannot be read back is a skill that would
+        // silently vanish from every persona, so it is an error the sheet keeps
+        // open, never a write.
+        guard SkillsCatalog.parse(name: name, content: content) != nil else {
+            error = "This skill could not be saved in a readable form — check the description "
+                + "and any custom frontmatter lines."
+            return false
+        }
         guard write(content, to: path) else { return false }
         error = nil
         load()
@@ -268,9 +278,20 @@ enum SkillFileEditor {
             case "description", "persona":
                 continue
             case "enabled":
-                let value = trimmed[trimmed.index(after: colon)...]
-                    .trimmingCharacters(in: .whitespaces).lowercased()
-                enabled = value != "false"
+                // Read through the shared interpreter, not a local string
+                // compare: the catalog and this editor must agree on what
+                // "off" looks like, or a Save would silently re-enable a skill
+                // the owner switched off (e.g. `enabled: false # too noisy`,
+                // or `enabled: no`).
+                switch SkillFrontmatter.bool(trimmed[trimmed.index(after: colon)...]) {
+                case .off:
+                    enabled = false
+                case .on, .unset, .invalid:
+                    // `invalid` is a value neither parser can read, so the file
+                    // is unlistable anyway; composing it back with the format's
+                    // default repairs it rather than guessing an intent.
+                    enabled = true
+                }
             case "x-watchtower-shipped":
                 shipped = true
                 extras.append(String(text))
@@ -335,20 +356,19 @@ enum SkillFileEditor {
         return out
     }
 
-    /// Quote a frontmatter value only when a plain YAML scalar would change
-    /// meaning: `#` starts a comment and `:` ends a key. Embedded double quotes
-    /// are folded to single ones rather than escaped — the Swift-side parser is
-    /// line-based and does not unescape, so an escape would round-trip
-    /// differently on the two sides of the dual-path.
+    /// Render a frontmatter value as a single-quoted YAML scalar, always.
+    ///
+    /// Single quoting has exactly one escape — a literal `'` is doubled — and
+    /// it suspends every indicator (`#`, `:`, `-`, `[`, `{`, `&`, `*`, …) at
+    /// once, so no blacklist of "characters that would need quoting" has to be
+    /// kept correct on two sides of the dual-path. Newlines are still folded to
+    /// spaces: the description is one line by construction.
     static func yamlScalar(_ value: String) -> String {
         let flat = value
             .replacingOccurrences(of: "\r\n", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespaces)
-        let needsQuotes = flat.contains(":") || flat.contains("#")
-            || flat.hasPrefix("\"") || flat.hasPrefix("'") || flat.hasPrefix("-")
-        guard needsQuotes else { return flat }
-        return "\"\(flat.replacingOccurrences(of: "\"", with: "'"))\""
+        return "'\(flat.replacingOccurrences(of: "'", with: "''"))'"
     }
 
     // MARK: - Line plumbing
