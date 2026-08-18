@@ -6,15 +6,15 @@ import (
 	"watchtower/internal/prompts"
 )
 
-func TestModelForSource(t *testing.T) {
-	haiku := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean}
-	for _, src := range haiku {
-		if got := ModelForSource(src); got != ModelHaiku {
-			t.Errorf("ModelForSource(%q) = %q, want %q", src, got, ModelHaiku)
+func TestTierForSource(t *testing.T) {
+	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean}
+	for _, src := range light {
+		if got := TierForSource(src); got != TierLight {
+			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)
 		}
 	}
 
-	sonnet := []string{
+	strong := []string{
 		"digest.channel", "digest.daily", "digest.weekly",
 		"tracks.extract_batch", "people.reduce", "people.team",
 		"briefing.daily", "", "unknown.source",
@@ -27,9 +27,9 @@ func TestModelForSource(t *testing.T) {
 		// switch (only the followup drafts are light).
 		prompts.MeetingChapters,
 	}
-	for _, src := range sonnet {
-		if got := ModelForSource(src); got != ModelSonnet {
-			t.Errorf("ModelForSource(%q) = %q, want %q", src, got, ModelSonnet)
+	for _, src := range strong {
+		if got := TierForSource(src); got != TierStrong {
+			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierStrong)
 		}
 	}
 }

@@ -28,23 +28,18 @@ final class IdeaChatViewModel {
     private let dbManager: DatabaseManager
     private let idea: Idea
     private let mentions: [IdeaMention]
-    private let selectedModel: ChatModel
     private var streamTask: Task<Void, Never>?
 
     init(
         idea: Idea,
         mentions: [IdeaMention],
         dbManager: DatabaseManager,
-        aiService: (any AIServiceProtocol)? = nil,
-        provider: AIProvider? = nil
+        aiService: (any AIServiceProtocol)? = nil
     ) {
         self.idea = idea
         self.mentions = mentions
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
-        let resolvedProvider = provider
-            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
-        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
         loadOrCreateConversation()
     }
@@ -155,7 +150,7 @@ final class IdeaChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPool.path,
-                model: selectedModel.rawValue
+                model: nil  // nil = the provider's resolved strong-tier model
             )
             var sawTurnComplete = false
             for try await event in stream {

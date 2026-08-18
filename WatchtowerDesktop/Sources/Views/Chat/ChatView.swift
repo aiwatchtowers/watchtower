@@ -13,6 +13,7 @@ struct ChatView: View {
             }
         }
         .onAppear { appState.ensureChatViewModels() }
+        .task { await appState.aiModelCatalog.load() }
     }
 }
 
@@ -95,8 +96,9 @@ private struct ChatSplitView: View {
             .disabled(chatVM.isStreaming)
 
             Picker("Model", selection: $chatVM.selectedModel) {
-                ForEach(ChatModel.models(for: chatVM.selectedProvider)) { model in
-                    Text(model.displayName).tag(model)
+                Text("Auto").tag("")
+                ForEach(appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue), id: \.self) { model in
+                    Text(model).tag(model)
                 }
             }
             .pickerStyle(.menu)

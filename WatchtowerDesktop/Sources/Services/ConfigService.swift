@@ -21,10 +21,12 @@ final class ConfigService {
     /// `digest.enabled: false`, which is exactly the legacy "all AI off"
     /// signature `config.MigrateFeatureGates` looks for.
     var digestEnabled: Bool = false
-    var digestModel: String?
     var digestMinMessages: Int?
     var digestLanguage: String?
     var aiModel: String?
+    var aiModelLight: String?
+    var aiModelStrong: String?
+    var aiOllamaURL: String?
     var aiWorkers: Int?
     var analysisLegacyMode: Bool = false
     var briefingHour: Int = 8
@@ -91,7 +93,6 @@ final class ConfigService {
 
             if let digest = yaml["digest"] as? [String: Any] {
                 digestEnabled = (digest["enabled"] as? Bool) ?? false
-                digestModel = digest["model"] as? String
                 digestMinMessages = digest["min_messages"] as? Int
                 digestLanguage = digest["language"] as? String
             }
@@ -108,6 +109,11 @@ final class ConfigService {
                 aiModel = ai["model"] as? String
                 aiWorkers = ai["workers"] as? Int
                 aiProvider = ai["provider"] as? String
+                aiOllamaURL = ai["ollama_url"] as? String
+                if let models = ai["models"] as? [String: Any] {
+                    aiModelLight = models["light"] as? String
+                    aiModelStrong = models["strong"] as? String
+                }
             }
 
             claudePath = yaml["claude_path"] as? String
@@ -155,6 +161,22 @@ final class ConfigService {
         }
     }
 
+    /// Writes the ai: block (provider, legacy model, per-tier models, ollama
+    /// URL, workers), removing empty values so cleared overrides disappear
+    /// from the yaml instead of lingering as empty strings.
+    private func applyAISection(to yaml: inout [String: Any]) {
+        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
+        if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
+        if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
+        if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
+        if let val = aiOllamaURL, !val.isEmpty { ai["ollama_url"] = val } else { ai.removeValue(forKey: "ollama_url") }
+        var aiModels = (ai["models"] as? [String: Any]) ?? [:]
+        if let val = aiModelLight, !val.isEmpty { aiModels["light"] = val } else { aiModels.removeValue(forKey: "light") }
+        if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
+        if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
+        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+    }
+
     func save() throws {
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between
@@ -178,7 +200,6 @@ final class ConfigService {
         // Digest section — `enabled` is deliberately not written, see the
         // `digestEnabled` property.
         var digest = (yaml["digest"] as? [String: Any]) ?? [:]
-        if let val = digestModel, !val.isEmpty { digest["model"] = val } else { digest.removeValue(forKey: "model") }
         if let val = digestMinMessages { digest["min_messages"] = val } else { digest.removeValue(forKey: "min_messages") }
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
         if !digest.isEmpty { yaml["digest"] = digest } else { yaml.removeValue(forKey: "digest") }
@@ -189,11 +210,7 @@ final class ConfigService {
         yaml["briefing"] = briefing
 
         // AI section
-        var ai = (yaml["ai"] as? [String: Any]) ?? [:]
-        if let val = aiModel, !val.isEmpty { ai["model"] = val } else { ai.removeValue(forKey: "model") }
-        if let val = aiWorkers { ai["workers"] = val } else { ai.removeValue(forKey: "workers") }
-        if let val = aiProvider, !val.isEmpty { ai["provider"] = val } else { ai.removeValue(forKey: "provider") }
-        if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+        applyAISection(to: &yaml)
 
         // Calendar section
         var calendarDict = (yaml["calendar"] as? [String: Any]) ?? [:]

@@ -1349,8 +1349,8 @@ Rules:
 
 // defaultMemoryEntityRewrite is the strong-tier entity-page rewrite for the
 // secretary memory vault (memory.entity_rewrite — routed to the default/strong
-// model by being ABSENT from the light-tier switch in internal/digest/models.go
-// and internal/codex/models.go). Arg: the language directive. The model
+// model by being ABSENT from the light-tier switch in the TierForSource table
+// in internal/digest/models.go). Arg: the language directive. The model
 // proposes new What/Current/Facts prose plus the provenance markers it cites;
 // code disposes — every marker is re-validated against the supplied episodes
 // (MEM-01 discipline), and ## Links / ## Open loops are maintained mechanically,
@@ -1416,8 +1416,8 @@ Rules:
 
 // defaultMemoryReflect is the strong-tier WEEKLY reflection pass over the
 // memory vault's own git history (memory.reflect — strong route by absence
-// from the light-tier switch in internal/digest/models.go and
-// internal/codex/models.go). The model reads a churn digest (how often each
+// from the light-tier switch in the TierForSource table in
+// internal/digest/models.go). The model reads a churn digest (how often each
 // belief/entity was revised in the last week, plus per-belief ## History
 // churn) and proposes at most three meta-observations naming the UNSTABLE
 // areas; code disposes — a dispute observation sets a dispute_pending flag on
@@ -1482,7 +1482,7 @@ Rules:
 
 // defaultIdeasConsolidate is the strong-tier stage-2 consolidator
 // (ideas.consolidate — strong route by absence from the light-tier switch in
-// internal/digest/models.go and internal/codex/models.go). It folds newly
+// the TierForSource table in internal/digest/models.go). It folds newly
 // mined stage-1 material (Slack digest topics, stream_digests rows, meeting
 // recap arrays) into the durable ideas/decisions registry, preferring to
 // attach to an existing item over minting a duplicate. The model only

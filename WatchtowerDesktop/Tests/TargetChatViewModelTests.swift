@@ -22,8 +22,7 @@ final class TargetChatViewModelTests: XCTestCase {
         target: Target,
         vm: TargetsViewModel,
         manager: DatabaseManager,
-        aiService: any AIServiceProtocol = MockClaudeService(),
-        provider: AIProvider? = nil
+        aiService: any AIServiceProtocol = MockClaudeService()
     ) throws -> TargetChatViewModel {
         let conversationID = try manager.dbPool.write { db -> Int64 in
             try ChatConversationQueries.ensureTable(db)
@@ -34,7 +33,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
         return TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
                                    conversationID: conversationID,
-                                   aiService: aiService, provider: provider)
+                                   aiService: aiService)
     }
 
     func testSystemPromptIncludesIntentAndContract() throws {
@@ -67,23 +66,6 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("NO live access to Slack, Jira"))
         XCTAssertFalse(prompt.contains("SELECT "), "SQL recipes imply a SQL tool that does not exist")
         XCTAssertFalse(prompt.contains(manager.dbPool.path), "the database path must stay out of the prompt")
-    }
-
-    func testDefaultModelMatchesProvider() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
-
-        let claude = try makeChat(target: target, vm: vm, manager: manager,
-                                  aiService: MockClaudeService(), provider: .claude)
-        XCTAssertEqual(claude.provider, .claude)
-        XCTAssertEqual(claude.selectedModel, ChatModel.defaultModel(for: .claude))
-        XCTAssertTrue(ChatModel.models(for: .claude).contains(claude.selectedModel))
-
-        let codex = try makeChat(target: target, vm: vm, manager: manager,
-                                 aiService: MockClaudeService(), provider: .codex)
-        XCTAssertEqual(codex.selectedModel, ChatModel.defaultModel(for: .codex))
     }
 
     func testApproveAppliesActionAndAppendsFollowUp() throws {
@@ -173,7 +155,7 @@ final class TargetChatViewModelTests: XCTestCase {
             [.text("second reply"), .done]
         ])
         let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: mock, provider: .claude)
+                                aiService: mock)
 
         chat.inputText = "hello"
         chat.send()

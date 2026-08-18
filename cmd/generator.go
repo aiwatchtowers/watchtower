@@ -8,6 +8,8 @@ import (
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/ollama"
+	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
 )
 
@@ -19,13 +21,19 @@ func validateModel(_ *config.Config) error {
 }
 
 // cliGenerator creates a bare Generator for one-off CLI commands.
-// Selects Claude or Codex based on cfg.AI.Provider.
+// The provider comes from cfg.AI.Provider; the per-tier models resolve
+// through the provider registry (config overrides win, registry defaults
+// otherwise — see providers.ResolveModelsFor).
 func cliGenerator(cfg *config.Config) digest.Generator {
-	model := configuredAIModel(cfg)
-	if cfg.AI.Provider == "codex" {
-		return codex.NewCodexGenerator(model, cfg.CodexPath)
+	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	switch cfg.AI.Provider {
+	case "codex":
+		return codex.NewCodexGenerator(light, strong, cfg.CodexPath)
+	case "ollama":
+		return ollama.NewGenerator(light, strong, cfg.AI.OllamaURL)
+	default:
+		return digest.NewClaudeGenerator(light, strong, cfg.ClaudePath)
 	}
-	return digest.NewClaudeGenerator(model, cfg.ClaudePath)
 }
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
@@ -47,27 +55,28 @@ func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generato
 	return gen, cleanup
 }
 
-// newAIClient creates an ai.Provider for ask/chat commands.
-// Selects Claude or Codex based on cfg.AI.Provider.
+// newAIClient creates an ai.Provider for ask/chat commands, using the
+// resolved strong-tier model.
 func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
-	if cfg.AI.Provider == "codex" {
-		return codex.NewClient(configuredAIModel(cfg), dbPath, cfg.CodexPath)
-	}
-	return ai.NewClient(configuredAIModel(cfg), dbPath, cfg.ClaudePath)
+	return newAIClientWithModel(cfg, dbPath, "")
 }
 
-func configuredAIModel(cfg *config.Config) string {
-	model := cfg.AI.Model
-	if cfg.AI.Provider == "codex" {
-		if model == "" || model == config.DefaultAIModel {
-			return codex.ModelDefault
-		}
-		return model
-	}
+// newAIClientWithModel is newAIClient with an explicit model override
+// (e.g. the --model flag of `watchtower ai query`); empty means the
+// resolved strong-tier model.
+func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
+	model := modelOverride
 	if model == "" {
-		return config.DefaultAIModel
+		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	}
-	return model
+	switch cfg.AI.Provider {
+	case "codex":
+		return codex.NewClient(model, dbPath, cfg.CodexPath)
+	case "ollama":
+		return ollama.NewClient(model, cfg.AI.OllamaURL)
+	default:
+		return ai.NewClient(model, dbPath, cfg.ClaudePath)
+	}
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.

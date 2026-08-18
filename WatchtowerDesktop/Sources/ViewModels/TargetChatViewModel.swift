@@ -84,12 +84,6 @@ final class TargetChatViewModel {
     var isStreaming = false
     var inputText = ""
     var errorMessage: String?
-    var selectedModel: ChatModel
-
-    /// Configured AI provider — scopes the model picker so we never hand a
-    /// codex model to a claude session (the model is the only real lever; the
-    /// provider itself is config-driven in WatchtowerAIService).
-    let provider: AIProvider
 
     /// Stable identity for a dictation targetID — the target is always
     /// persisted by the time this VM exists.
@@ -134,17 +128,12 @@ final class TargetChatViewModel {
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
         conversationID: Int64,
-        aiService: (any AIServiceProtocol)? = nil,
-        provider: AIProvider? = nil
+        aiService: (any AIServiceProtocol)? = nil
     ) {
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
-        let resolvedProvider = provider
-            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
-        self.provider = resolvedProvider
-        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
         loadConversation(id: conversationID)
         startMessageObservation()
@@ -337,7 +326,7 @@ final class TargetChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPath,
-                model: selectedModel.rawValue
+                model: nil  // nil = the provider's resolved strong-tier model
             )
             var sawTurnComplete = false
             for try await event in stream {

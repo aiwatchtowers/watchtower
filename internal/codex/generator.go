@@ -16,22 +16,24 @@ import (
 
 // CodexGenerator implements digest.Generator by calling the Codex CLI.
 type CodexGenerator struct {
-	model     string
-	codexPath string
+	modelLight  string
+	modelStrong string
+	codexPath   string
 }
 
 // NewCodexGenerator creates a generator that uses the Codex CLI.
+// modelLight/modelStrong are the per-tier models (see digest.TierForSource);
 // codexPath is an optional explicit path to the codex binary; pass "" for auto-detection.
-func NewCodexGenerator(model, codexPath string) *CodexGenerator {
-	return &CodexGenerator{model: model, codexPath: codexPath}
+func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerator {
+	return &CodexGenerator{modelLight: modelLight, modelStrong: modelStrong, codexPath: codexPath}
 }
 
 // Generate calls Codex CLI with the given prompt and returns the response text,
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *digest.Usage, string, error) {
-	model := g.model
-	if s, ok := digest.SourceFromContext(ctx); ok {
-		model = ModelForSource(s)
+	model := g.modelStrong
+	if s, ok := digest.SourceFromContext(ctx); ok && digest.TierForSource(s) == digest.TierLight {
+		model = g.modelLight
 	}
 
 	codexBin := FindBinary(g.codexPath)

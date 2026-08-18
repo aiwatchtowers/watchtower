@@ -313,7 +313,7 @@ struct OnboardingView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Sending a test request to Claude (**\(settingsModelPreset.aiModel)**)...")
+            Text("Sending a test request to Claude (**\(settingsModelPreset.title)**)...")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -609,19 +609,15 @@ struct OnboardingView: View {
             }
         }
 
-        var digestModel: String {
+        /// Strong-tier override seeded into ai.models.strong. Aliases only —
+        /// they track new model releases; dated IDs would pin an aging model
+        /// forever. Balanced writes nothing: empty config = registry default
+        /// (see internal/providers), so "never chose" stays detectable.
+        var strongModelOverride: String? {
             switch self {
-            case .fast: "claude-haiku-4-5-20251001"
-            case .balanced: "claude-sonnet-4-6"
-            case .quality: "claude-opus-4-6"
-            }
-        }
-
-        var aiModel: String {
-            switch self {
-            case .fast: "claude-haiku-4-5-20251001"
-            case .balanced: "claude-sonnet-4-6"
-            case .quality: "claude-opus-4-6"
+            case .fast: "haiku"
+            case .balanced: nil
+            case .quality: "opus"
             }
         }
     }
@@ -1266,13 +1262,14 @@ struct OnboardingView: View {
 
         Task.detached {
             // Apply settings via `watchtower config set`
-            let settings: [(String, String)] = [
+            var settings: [(String, String)] = [
                 ("digest.language", lang),
                 ("sync.initial_history_days", "\(days)"),
-                ("digest.model", model.digestModel),
-                ("ai.model", model.aiModel),
                 ("sync.poll_interval", poll.interval)
             ]
+            if let strong = model.strongModelOverride {
+                settings.append(("ai.models.strong", strong))
+            }
             for (key, value) in settings {
                 let result = await Self.runCLI(path: path, arguments: ["config", "set", key, value])
                 if result.exitCode != 0 {

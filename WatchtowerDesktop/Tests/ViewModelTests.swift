@@ -668,50 +668,17 @@ final class ChatViewModelTests: XCTestCase {
     }
 }
 
-// MARK: - AIProvider & ChatModel Tests
+// MARK: - AIProvider Tests
 
 final class AIProviderTests: XCTestCase {
     func testProviderDisplayNames() {
         XCTAssertEqual(AIProvider.claude.displayName, "Claude")
         XCTAssertEqual(AIProvider.codex.displayName, "Codex")
+        XCTAssertEqual(AIProvider.ollama.displayName, "Ollama")
     }
 
     func testProviderAllCases() {
-        XCTAssertEqual(AIProvider.allCases.count, 2)
-    }
-
-    func testClaudeModelsProvider() {
-        XCTAssertEqual(ChatModel.sonnet.provider, .claude)
-        XCTAssertEqual(ChatModel.haiku.provider, .claude)
-        XCTAssertEqual(ChatModel.opus.provider, .claude)
-    }
-
-    func testCodexModelsProvider() {
-        XCTAssertEqual(ChatModel.gpt54.provider, .codex)
-        XCTAssertEqual(ChatModel.gpt54mini.provider, .codex)
-        XCTAssertEqual(ChatModel.gpt53codex.provider, .codex)
-    }
-
-    func testModelsForProvider() {
-        let claudeModels = ChatModel.models(for: .claude)
-        XCTAssertEqual(claudeModels.count, 3)
-        XCTAssertTrue(claudeModels.allSatisfy { $0.provider == .claude })
-
-        let codexModels = ChatModel.models(for: .codex)
-        XCTAssertEqual(codexModels.count, 3)
-        XCTAssertTrue(codexModels.allSatisfy { $0.provider == .codex })
-    }
-
-    func testModelDisplayNames() {
-        XCTAssertEqual(ChatModel.gpt54.displayName, "GPT-5.4")
-        XCTAssertEqual(ChatModel.gpt54mini.displayName, "GPT-5.4 Mini")
-        XCTAssertEqual(ChatModel.gpt53codex.displayName, "GPT-5.3 Codex")
-    }
-
-    func testModelRawValues() {
-        XCTAssertEqual(ChatModel.gpt54.rawValue, "gpt-5.4")
-        XCTAssertEqual(ChatModel.gpt54mini.rawValue, "gpt-5.4-mini")
-        XCTAssertEqual(ChatModel.gpt53codex.rawValue, "gpt-5.3-codex")
+        XCTAssertEqual(AIProvider.allCases.count, 3)
     }
 }
 
@@ -739,7 +706,7 @@ final class ChatViewModelProviderTests: XCTestCase {
     func testDefaultProviderIsClaude() {
         let vm = ChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
         XCTAssertEqual(vm.selectedProvider, .claude)
-        XCTAssertEqual(vm.selectedModel.provider, .claude)
+        XCTAssertEqual(vm.selectedModel, "", "empty = the provider's resolved default")
     }
 
     @MainActor
@@ -750,18 +717,19 @@ final class ChatViewModelProviderTests: XCTestCase {
             provider: .codex
         )
         XCTAssertEqual(vm.selectedProvider, .codex)
-        XCTAssertEqual(vm.selectedModel.provider, .codex)
+        XCTAssertEqual(vm.selectedModel, "")
     }
 
     @MainActor
-    func testSwitchProviderChangesModel() {
+    func testSwitchProviderResetsModel() {
         let vm = ChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
         XCTAssertEqual(vm.selectedProvider, .claude)
+        vm.selectedModel = "claude-opus-4-6"
 
         vm.switchProvider(.codex)
 
         XCTAssertEqual(vm.selectedProvider, .codex)
-        XCTAssertEqual(vm.selectedModel.provider, .codex)
+        XCTAssertEqual(vm.selectedModel, "", "a model pick must not carry across providers")
     }
 
     @MainActor
@@ -783,21 +751,26 @@ final class ChatViewModelProviderTests: XCTestCase {
 
         vm.switchProvider(.claude)
         XCTAssertEqual(vm.selectedProvider, .claude)
-        XCTAssertEqual(vm.selectedModel.provider, .claude)
+        XCTAssertEqual(vm.selectedModel, "")
     }
 
     /// Locks in the invariant `switchProvider` must maintain: whatever provider
-    /// is active, `selectedModel` always belongs to it — a stale model from the
-    /// previous provider (e.g. a Claude model string sent while Codex is
-    /// selected) would produce an incompatible model/provider pair downstream.
+    /// is active, `selectedModel` never carries over from the previous provider
+    /// (e.g. a Claude model string sent while Codex is selected would produce
+    /// an incompatible model/provider pair downstream). Empty = provider default.
     @MainActor
-    func testSwitchProviderAlwaysKeepsModelConsistentWithActiveProvider() {
+    func testSwitchProviderAlwaysResetsModel() {
         let vm = ChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
         for provider in AIProvider.allCases {
+            vm.selectedModel = "stale-model"
             vm.switchProvider(provider)
             XCTAssertEqual(vm.selectedProvider, provider)
-            XCTAssertEqual(vm.selectedModel.provider, provider,
-                           "selectedModel must belong to the just-activated provider")
+            if provider == .claude {
+                // First iteration switches claude→claude: a no-op keeps state.
+                continue
+            }
+            XCTAssertEqual(vm.selectedModel, "",
+                           "selectedModel must reset when the provider changes")
         }
     }
 

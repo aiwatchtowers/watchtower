@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providers"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -115,6 +116,13 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// lightModel returns the resolved light-tier model name, used only as the
+// bookkeeping label on people cards (people.batch is a light-tier source).
+func (p *Pipeline) lightModel() string {
+	light, _ := providers.ResolveModelsFor(p.cfg, p.cfg.AI.Provider)
+	return light
 }
 
 // SetPromptStore sets an optional prompt store for loading customized prompts.
@@ -561,7 +569,7 @@ func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, f
 		DecisionStyle:      result.DecisionStyle,
 		Tactics:            string(tactics),
 		Status:             "active",
-		Model:              digest.ModelForSource("people.batch"),
+		Model:              p.lightModel(),
 		PromptVersion:      pv,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,

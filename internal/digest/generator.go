@@ -42,14 +42,25 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 
 // ClaudeGenerator implements Generator by calling the Claude Code CLI.
 type ClaudeGenerator struct {
-	model      string
-	claudePath string // optional override from config (claude_path)
+	modelLight  string
+	modelStrong string
+	claudePath  string // optional override from config (claude_path)
 }
 
 // NewClaudeGenerator creates a generator that uses the Claude CLI.
+// modelLight/modelStrong are the per-tier models (see TierForSource);
 // claudePath is an optional explicit path to the claude binary; pass "" for auto-detection.
-func NewClaudeGenerator(model, claudePath string) *ClaudeGenerator {
-	return &ClaudeGenerator{model: model, claudePath: claudePath}
+func NewClaudeGenerator(modelLight, modelStrong, claudePath string) *ClaudeGenerator {
+	return &ClaudeGenerator{modelLight: modelLight, modelStrong: modelStrong, claudePath: claudePath}
+}
+
+// modelForContext picks the tier model for a call: the source tag routes to
+// light or strong; an untagged call uses the strong model.
+func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
+	if s, ok := SourceFromContext(ctx); ok && TierForSource(s) == TierLight {
+		return g.modelLight
+	}
+	return g.modelStrong
 }
 
 // validateModelArgs builds the CLI args for a minimal model-validation request.
@@ -106,7 +117,7 @@ func (g *ClaudeGenerator) ValidateModel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, claudeBin, validateModelArgs(g.model)...)
+	cmd := exec.CommandContext(ctx, claudeBin, validateModelArgs(g.modelStrong)...)
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = os.TempDir()
@@ -116,15 +127,15 @@ func (g *ClaudeGenerator) ValidateModel() error {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("model validation failed for %q: %w", g.model, err)
+		return fmt.Errorf("model validation failed for %q: %w", g.modelStrong, err)
 	}
 
 	resp, err := parseCLIOutput(output)
 	if err != nil {
-		return fmt.Errorf("model validation: unexpected response for %q: %w", g.model, err)
+		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
 	if resp.IsError {
-		return fmt.Errorf("model %q is not available: %s", g.model, resp.Result)
+		return fmt.Errorf("model %q is not available: %s", g.modelStrong, resp.Result)
 	}
 	return nil
 }
@@ -198,10 +209,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 // disk clutter. The sessionID parameter is accepted for interface compatibility
 // but ignored — session reuse via --resume is not supported by the current CLI.
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
-	model := g.model // fallback
-	if s, ok := SourceFromContext(ctx); ok {
-		model = ModelForSource(s)
-	}
+	model := g.modelForContext(ctx)
 
 	args, stdin := generateArgs(model, systemPrompt, userMessage)
 

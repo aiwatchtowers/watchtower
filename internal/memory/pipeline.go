@@ -15,7 +15,7 @@ import (
 )
 
 // extractSource is the WithSource tag that routes extractor calls to the
-// cheap model tier (see internal/digest/models.go and internal/codex/models.go).
+// cheap model tier (see the TierForSource table in internal/digest/models.go).
 const extractSource = "memory.extract_episodes"
 
 // extractBatchSource is the WithSource tag for the multi-channel batched

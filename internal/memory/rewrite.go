@@ -17,7 +17,7 @@ import (
 
 // rewriteSource is the WithSource routing tag for the strong-tier entity page
 // rewrite. It is deliberately ABSENT from the light-tier switch in
-// internal/digest/models.go / internal/codex/models.go, so it routes to the
+// the TierForSource table in internal/digest/models.go, so it routes to the
 // default (strong) model.
 const rewriteSource = prompts.MemoryEntityRewrite
 

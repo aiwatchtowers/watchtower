@@ -115,6 +115,10 @@ final class AppState {
     /// independent of whether a recording is in progress.
     let transcriptionModelProvisioner = TranscriptionModelProvisioner(prefetchExtras: AppState.prefetchDiarizerModels)
 
+    /// Provider/model registry from `watchtower ai models --json`, shared by
+    /// the chat model picker and Settings suggestions. Loaded lazily.
+    let aiModelCatalog = AIModelCatalog()
+
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?

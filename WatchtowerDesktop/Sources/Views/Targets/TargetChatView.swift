@@ -276,16 +276,6 @@ struct TargetChatPane: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer()
-            Picker("Model", selection: $chatVM.selectedModel) {
-                ForEach(ChatModel.models(for: chatVM.provider)) { model in
-                    Text(model.displayName).tag(model)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .controlSize(.small)
-            .fixedSize()
-            .disabled(chatVM.isStreaming)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

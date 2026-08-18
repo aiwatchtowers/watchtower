@@ -114,14 +114,10 @@ final class CalendarSetupChatViewModel {
 
     private var sessionID: String?
     private let aiService: any AIServiceProtocol
-    private let selectedModel: ChatModel
     private var streamTask: Task<Void, Never>?
 
-    init(aiService: (any AIServiceProtocol)? = nil, provider: AIProvider? = nil) {
+    init(aiService: (any AIServiceProtocol)? = nil) {
         self.aiService = aiService ?? WatchtowerAIService()
-        let resolvedProvider = provider
-            ?? (ConfigService().aiProvider == "codex" ? .codex : .claude)
-        self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
     }
 
     /// Local greeting shown when the panel opens — no AI call.
@@ -194,7 +190,7 @@ final class CalendarSetupChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: nil,
-                model: selectedModel.rawValue
+                model: nil  // nil = the provider's resolved strong-tier model
             )
             var sawTurnComplete = false
             for try await event in stream {
