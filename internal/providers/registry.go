@@ -40,12 +40,13 @@ var registry = []Provider{
 		DefaultStrong: "gpt-5.4",
 	},
 	{
-		ID:            "ollama",
-		DisplayName:   "Ollama / Local",
-		Kind:          "http",
-		DefaultLight:  "gemma4:31b",
-		DefaultStrong: "gemma4:31b",
-		LiveModels:    true,
+		ID:          "ollama",
+		DisplayName: "Ollama / Local",
+		Kind:        "http",
+		// No default model on purpose: local installs vary too much for any
+		// literal to be likely installed. Unconfigured resolves to "" and the
+		// UI/CLI surfaces prompt the user to pick from the live list.
+		LiveModels: true,
 	},
 }
 
@@ -72,26 +73,39 @@ func ByID(id string) Provider {
 //
 //	ai.models.<tier> → legacy ai.model (strong only) → registry default.
 //
+// The config overrides describe the ACTIVE provider (cfg.AI.Provider) only:
+// resolving any other provider — e.g. a per-command --provider override, or
+// the `ai models` listing for a non-active provider — yields that provider's
+// registry defaults, never the active provider's configured models. Without
+// this scoping, chat switched to Codex with "Auto" would hand it a Claude
+// model and fail every message.
+//
 // The legacy ai.model value is ignored when it equals the retired
 // config.DefaultAIModel constant: setup used to seed that literal into every
 // config.yaml, so it means "never chose a model", not a deliberate pin.
 // For single-model backends (ollama), an unset light tier follows the
-// resolved strong model instead of the registry default, so configuring one
-// model configures both tiers.
+// resolved strong model, so configuring one model configures both tiers.
+// Ollama ships no default model — an unconfigured ollama resolves to empty
+// strings, and the surfaces (`ai models`, Settings) tell the user to pick one.
 func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong string) {
 	p := ByID(providerID)
+	configured := p.ID == ByID(cfg.AI.Provider).ID
 
-	strong = cfg.AI.Models.Strong
-	if strong == "" {
-		if legacy := cfg.AI.Model; legacy != "" && legacy != config.DefaultAIModel {
-			strong = legacy
+	if configured {
+		strong = cfg.AI.Models.Strong
+		if strong == "" {
+			if legacy := cfg.AI.Model; legacy != "" && legacy != config.DefaultAIModel {
+				strong = legacy
+			}
 		}
 	}
 	if strong == "" {
 		strong = p.DefaultStrong
 	}
 
-	light = cfg.AI.Models.Light
+	if configured {
+		light = cfg.AI.Models.Light
+	}
 	if light == "" {
 		if p.ID == "ollama" {
 			light = strong

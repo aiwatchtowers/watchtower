@@ -85,7 +85,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagWorkspace, "workspace", "", "workspace name to use")
 	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", defaultConfigPath(), "path to config file")
 	rootCmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "enable verbose output")
-	rootCmd.PersistentFlags().StringVar(&flagProvider, "provider", "", "AI provider to use (claude|codex)")
+	rootCmd.PersistentFlags().StringVar(&flagProvider, "provider", "", "AI provider to use (claude|codex|ollama)")
 }
 
 // defaultConfigPath honors WATCHTOWER_CONFIG_PATH when set, so a dev/verification

@@ -254,7 +254,6 @@ struct ConfigServiceTests {
         #expect(svc.aiProvider == "claude")
         #expect(svc.aiWorkers == 2)
         #expect(svc.digestEnabled == true)
-        #expect(svc.digestModel == "haiku")
         #expect(svc.digestMinMessages == 3)
         #expect(svc.digestLanguage == "English")
         #expect(svc.briefingHour == 9)

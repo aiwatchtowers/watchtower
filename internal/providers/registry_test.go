@@ -62,6 +62,21 @@ func TestResolveModelsFor(t *testing.T) {
 			provider: "ollama", wantLight: "llama4:70b", wantStrong: "llama4:70b",
 		},
 		{
+			name:     "ollama unconfigured resolves to empty, never an invented literal",
+			cfg:      cfgWith("ollama", "", "", ""),
+			provider: "ollama", wantLight: "", wantStrong: "",
+		},
+		{
+			name:     "config overrides never leak into a non-active provider",
+			cfg:      cfgWith("claude", "", "claude-haiku-4-5-20251001", "claude-opus-4-6"),
+			provider: "codex", wantLight: "gpt-5.4-mini", wantStrong: "gpt-5.4",
+		},
+		{
+			name:     "legacy ai.model never leaks into a non-active provider",
+			cfg:      cfgWith("claude", "claude-opus-4-6", "", ""),
+			provider: "ollama", wantLight: "", wantStrong: "",
+		},
+		{
 			name:     "ollama explicit light stays",
 			cfg:      cfgWith("ollama", "", "qwen3:8b", "llama4:70b"),
 			provider: "ollama", wantLight: "qwen3:8b", wantStrong: "llama4:70b",

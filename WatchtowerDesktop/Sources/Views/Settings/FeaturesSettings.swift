@@ -106,15 +106,6 @@ struct FeaturesSettings: View {
     private var digestSection: some View {
         Section("Digest") {
             TextField(
-                "Model",
-                text: Binding(
-                    get: { config.digestModel ?? "" },
-                    set: { config.digestModel = $0.isEmpty ? nil : $0 }
-                ),
-                prompt: Text("claude-haiku-4-5-20251001")
-            )
-
-            TextField(
                 "Min Messages",
                 value: Binding(
                     get: { config.digestMinMessages },

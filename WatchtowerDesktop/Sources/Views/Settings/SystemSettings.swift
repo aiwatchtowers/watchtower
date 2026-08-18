@@ -91,6 +91,11 @@ struct SystemSettings: View {
             if selectedProviderID == "ollama" {
                 ollamaURLRow
             }
+            if let catalogError = appState.aiModelCatalog.lastError {
+                Label("Model list unavailable: \(catalogError)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             aiWorkersField
             claudeCLIPathRow
             if selectedProviderID == "codex" {
@@ -100,6 +105,10 @@ struct SystemSettings: View {
         }
         .task { await appState.aiModelCatalog.load() }
     }
+
+    /// One Swift copy of the default server URL (mirrors config.DefaultOllamaURL
+    /// on the Go side — the placeholder and the test fallback share it).
+    private static let defaultOllamaURL = "http://localhost:11434"
 
     private var selectedProviderID: String {
         config.aiProvider ?? "claude"
@@ -125,7 +134,10 @@ struct SystemSettings: View {
                     get: { value.wrappedValue ?? "" },
                     set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
                 ),
-                prompt: Text(resolved ?? "provider default")
+                prompt: Text({
+                    if let resolved, !resolved.isEmpty { return resolved }
+                    return selectedProviderID == "ollama" ? "choose a model" : "provider default"
+                }())
             )
             .help(help)
             let suggestions = appState.aiModelCatalog.suggestions(for: selectedProviderID)
@@ -153,7 +165,7 @@ struct SystemSettings: View {
                     get: { config.aiOllamaURL ?? "" },
                     set: { config.aiOllamaURL = $0.isEmpty ? nil : $0 }
                 ),
-                prompt: Text("http://localhost:11434")
+                prompt: Text(Self.defaultOllamaURL)
             )
             .help("Any OpenAI-compatible server: Ollama, LM Studio, vLLM, ...")
             if let error = appState.aiModelCatalog.provider("ollama")?.error, !error.isEmpty {
@@ -401,11 +413,14 @@ struct SystemSettings: View {
     // MARK: - Helpers
 
     /// The strong-tier model the test should exercise: the form value, else
-    /// the catalog's resolved value, else the legacy ai.model field.
+    /// the catalog's resolved value, else the legacy ai.model field. The
+    /// retired seeded literal is filtered like Go's ResolveModelsFor does —
+    /// it means "never chose", and the pipelines will not use it.
     private var testModel: String {
         if let strong = config.aiModelStrong, !strong.isEmpty { return strong }
         if let resolved = catalogProvider?.resolvedStrong, !resolved.isEmpty { return resolved }
-        return config.aiModel ?? ""
+        let legacy = config.aiModel ?? ""
+        return legacy == "claude-sonnet-4-6" ? "" : legacy
     }
 
     private func testConnection() {
@@ -426,8 +441,16 @@ struct SystemSettings: View {
         connectionTestRunning = true
         connectionTestResult = nil
 
-        var model = testModel
-        if model.isEmpty { model = isCodex ? "gpt-5.4" : "sonnet" }
+        let model = testModel
+        guard !model.isEmpty else {
+            // No form value and the catalog has not loaded: without a model
+            // there is nothing meaningful to test (and hardcoding one here
+            // would violate the no-model-names-in-Swift rule).
+            connectionTestRunning = false
+            connectionTestSuccess = false
+            connectionTestResult = "Model list unavailable — enter a model first"
+            return
+        }
 
         Task.detached {
             let process = Process()
@@ -484,8 +507,14 @@ struct SystemSettings: View {
         connectionTestRunning = true
         connectionTestResult = nil
 
-        let base = (config.aiOllamaURL ?? "").isEmpty ? "http://localhost:11434" : (config.aiOllamaURL ?? "")
+        let base = (config.aiOllamaURL ?? "").isEmpty ? Self.defaultOllamaURL : (config.aiOllamaURL ?? "")
         let model = testModel
+        guard !model.isEmpty else {
+            connectionTestRunning = false
+            connectionTestSuccess = false
+            connectionTestResult = "Pick a model first (Strong Model field)"
+            return
+        }
         let endpoint = base.hasSuffix("/") ? base + "v1/chat/completions" : base + "/v1/chat/completions"
         guard let url = URL(string: endpoint) else {
             connectionTestRunning = false

@@ -21,7 +21,6 @@ final class ConfigService {
     /// `digest.enabled: false`, which is exactly the legacy "all AI off"
     /// signature `config.MigrateFeatureGates` looks for.
     var digestEnabled: Bool = false
-    var digestModel: String?
     var digestMinMessages: Int?
     var digestLanguage: String?
     var aiModel: String?
@@ -94,7 +93,6 @@ final class ConfigService {
 
             if let digest = yaml["digest"] as? [String: Any] {
                 digestEnabled = (digest["enabled"] as? Bool) ?? false
-                digestModel = digest["model"] as? String
                 digestMinMessages = digest["min_messages"] as? Int
                 digestLanguage = digest["language"] as? String
             }
@@ -202,7 +200,6 @@ final class ConfigService {
         // Digest section — `enabled` is deliberately not written, see the
         // `digestEnabled` property.
         var digest = (yaml["digest"] as? [String: Any]) ?? [:]
-        if let val = digestModel, !val.isEmpty { digest["model"] = val } else { digest.removeValue(forKey: "model") }
         if let val = digestMinMessages { digest["min_messages"] = val } else { digest.removeValue(forKey: "min_messages") }
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
         if !digest.isEmpty { yaml["digest"] = digest } else { yaml.removeValue(forKey: "digest") }

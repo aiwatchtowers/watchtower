@@ -231,8 +231,8 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 			active = "*"
 		}
 		fmt.Fprintf(w, "%s %s (%s)\n", active, p.DisplayName, p.ID)
-		fmt.Fprintf(w, "    light:  %s\n", p.ResolvedLight)
-		fmt.Fprintf(w, "    strong: %s\n", p.ResolvedStrong)
+		fmt.Fprintf(w, "    light:  %s\n", orPickHint(p.ResolvedLight))
+		fmt.Fprintf(w, "    strong: %s\n", orPickHint(p.ResolvedStrong))
 		if p.LiveModels {
 			switch {
 			case p.Error != "":
@@ -245,6 +245,15 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	return nil
+}
+
+// orPickHint renders an unresolved (empty) model as an instruction instead
+// of a blank — only ollama can resolve empty, since it ships no default.
+func orPickHint(model string) string {
+	if model == "" {
+		return "(not set — pick a model, e.g. via ai.models.strong)"
+	}
+	return model
 }
 
 func emitError(enc *json.Encoder, msg string) error {

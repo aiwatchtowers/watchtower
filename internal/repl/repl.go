@@ -50,7 +50,10 @@ func (r *REPL) aiProvider() ai.Provider {
 		return r.deps.AIProvider
 	}
 	cfg := r.deps.Config
-	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	// This fallback always builds the Claude client, so resolve the models
+	// claude-scoped regardless of cfg.AI.Provider (in practice cmd/root.go
+	// always injects deps.AIProvider, making this a safety net only).
+	_, strong := providers.ResolveModelsFor(cfg, "claude")
 	return ai.NewClient(strong, r.deps.DBPath, cfg.ClaudePath)
 }
 

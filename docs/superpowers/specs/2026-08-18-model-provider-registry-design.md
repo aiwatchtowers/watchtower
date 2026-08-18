@@ -27,14 +27,15 @@ Mixing providers across tiers; per-pipeline model overrides (`targets.extract.mo
 
 ### 1. Go: registry + tier unification
 
-- New package `internal/providers`: a static registry of provider metadata — `ID` (`claude`/`codex`/`ollama`), display name, kind (`cli`/`http`), default model per tier, whether live model listing is supported. Claude defaults: light=`haiku`, strong=`sonnet` (aliases). Codex: light=`gpt-5.4-mini`, strong=`gpt-5.4`. Ollama: both tiers default to the single configured Ollama model.
+- New package `internal/providers`: a static registry of provider metadata — `ID` (`claude`/`codex`/`ollama`), display name, kind (`cli`/`http`), default model per tier, whether live model listing is supported. Claude defaults: light=`haiku`, strong=`sonnet` (aliases). Codex: light=`gpt-5.4-mini`, strong=`gpt-5.4`. Ollama ships **no default model** (local installs vary too much for any literal to be likely installed): unconfigured resolves to empty and every surface (`ai models`, Settings placeholders, Test Connection) prompts the user to pick one; a single configured model fills both tiers.
+- **Provider scoping:** the `ai.models.*` and legacy `ai.model` overrides describe the *active* provider only. Resolving any other provider — a per-command `--provider` override, the chat provider switch with "Auto", the `ai models` listing — yields that provider's registry defaults. Without this, a Claude model configured as `ai.models.strong` would be handed verbatim to a Codex/Ollama session and fail every call.
 - The duplicated source switch collapses into one `digest.TierForSource(source) Tier` (`TierLight`/`TierStrong`); `digest` already owns the source-tag contract (`SourceLight`, `WithSource`).
 - Generators (`digest.ClaudeGenerator`, `codex.Generator`, new `ollama.Generator`) carry `modelLight`/`modelStrong` fields resolved at construction (config value if set, else registry default). `Generate` maps source→tier→field. Constructors keep a single-model signature variant for compatibility where needed, but `cmd` wiring passes both tiers.
 
 ### 2. Config
 
 - New keys: `ai.models.light`, `ai.models.strong` (empty → registry default for the active provider), `ai.ollama_url` (default `http://localhost:11434`).
-- Legacy `ai.model` is read as `ai.models.strong` when the new key is unset — an install that deliberately pinned a model keeps it. Exception: a legacy value equal to the retired `claude-sonnet-4-6` default is treated as unset for every provider — setup used to seed that literal into each config.yaml, so it means "never chose a model"; honoring it would pin every existing install to an aging model and defeat the aliases. Setup stops seeding `ai.model`.
+- Legacy `ai.model` is read as `ai.models.strong` when the new key is unset — an install that deliberately pinned a model keeps it. Exception: a legacy value equal to the retired `claude-sonnet-4-6` default is treated as unset for every provider — setup used to seed that literal into each config.yaml, so it means "never chose a model"; honoring it would pin every existing install to an aging model and defeat the aliases. Setup stops seeding `ai.model` — that covers `config init`, `auth login`, **and Desktop onboarding**, whose model presets now write only `ai.models.strong` with an alias (`haiku`/`opus`) or nothing at all for Balanced; the dead `digest.model` seeding is gone with it.
 - `ai.provider` accepts `ollama` alongside `claude`/`codex`.
 
 ### 3. Ollama provider (port of `b9d06d1d`)
