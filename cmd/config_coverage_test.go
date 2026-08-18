@@ -253,7 +253,6 @@ func TestKnownConfigKeys(t *testing.T) {
 		"sync.sync_threads",
 		"sync.sync_on_wake",
 		"digest.enabled",
-		"digest.model",
 		"digest.min_messages",
 		"digest.language",
 		"digest.workers",
@@ -270,4 +269,7 @@ func TestKnownConfigKeys(t *testing.T) {
 
 	// Verify unknown key is NOT in the map
 	assert.False(t, knownConfigKeys["nonexistent.key"])
+	// digest.model was retired (no Go reader, Swift writer removed) —
+	// `config set digest.model` must reject it as unknown again.
+	assert.False(t, knownConfigKeys["digest.model"])
 }

@@ -73,12 +73,15 @@ func ByID(id string) Provider {
 //
 //	ai.models.<tier> → legacy ai.model (strong only) → registry default.
 //
-// The config overrides describe the ACTIVE provider (cfg.AI.Provider) only:
-// resolving any other provider — e.g. a per-command --provider override, or
-// the `ai models` listing for a non-active provider — yields that provider's
-// registry defaults, never the active provider's configured models. Without
-// this scoping, chat switched to Codex with "Auto" would hand it a Claude
-// model and fail every message.
+// The config overrides describe the provider CONFIGURED IN THE FILE
+// (cfg.AI.ConfiguredProviderID(), which the --provider flag never mutates):
+// resolving any other provider — a per-command --provider override, or the
+// `ai models` listing for a non-active provider — yields that provider's
+// registry defaults, never the configured provider's models. Without this
+// scoping, chat switched to Codex with "Auto" would hand it a Claude model
+// and fail every message. (Comparing against cfg.AI.Provider would be
+// useless on override paths: applyProviderOverride rewrites it before
+// resolution.)
 //
 // The legacy ai.model value is ignored when it equals the retired
 // config.DefaultAIModel constant: setup used to seed that literal into every
@@ -89,7 +92,7 @@ func ByID(id string) Provider {
 // strings, and the surfaces (`ai models`, Settings) tell the user to pick one.
 func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong string) {
 	p := ByID(providerID)
-	configured := p.ID == ByID(cfg.AI.Provider).ID
+	configured := p.ID == ByID(cfg.AI.ConfiguredProviderID()).ID
 
 	if configured {
 		strong = cfg.AI.Models.Strong

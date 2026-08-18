@@ -217,7 +217,6 @@ var knownConfigKeys = map[string]bool{
 	"sync.sync_threads":                    true,
 	"sync.sync_on_wake":                    true,
 	"digest.enabled":                       true,
-	"digest.model":                         true,
 	"digest.min_messages":                  true,
 	"digest.language":                      true,
 	"digest.workers":                       true,
