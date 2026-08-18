@@ -273,11 +273,17 @@ final class IdeaChatViewModel {
     nonisolated static func buildSystemPrompt(
         idea: Idea,
         mentions: [IdeaMention],
-        dbPool: DatabasePool
+        dbPool: DatabasePool,
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         let brief = (try? dbPool.read { db in try SecretaryProfileQueries.fetch(db) }) ?? ""
         let style = (try? dbPool.read { db in try SecretaryProfileQueries.fetchStyle(db).text }) ?? ""
         let styleBlock = style.isEmpty ? "" : "\n\n=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
+
+        // Persona skills (assistant surface): nil when no enabled skill
+        // matches, so a workspace with no skills keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(persona: .assistant, dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
 
         return """
         You are the user's AI secretary, discussing ONE entry from their Ideas & Decisions registry \
@@ -302,6 +308,6 @@ final class IdeaChatViewModel {
         === RESPONSE STYLE ===
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
-        """
+        """ + skillsSuffix
     }
 }

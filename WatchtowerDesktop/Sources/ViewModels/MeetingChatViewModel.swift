@@ -295,7 +295,8 @@ final class MeetingChatViewModel {
         recapContent: MeetingRecap.Content?,
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
-        memoryVaultDir: String? = Constants.memoryVaultDir()
+        memoryVaultDir: String? = Constants.memoryVaultDir(),
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         let excerpt = String(transcript.transcriptText.prefix(transcriptExcerptLimit))
         let truncated = transcript.transcriptText.count > transcriptExcerptLimit
@@ -309,6 +310,11 @@ final class MeetingChatViewModel {
                 context: relevantMemoryContext(subjects: meetingMemorySubjects(transcript: transcript, dbPool: dbPool), dbPool: dbPool)
               ) + "\n\n"
             : ""
+
+        // Persona skills (secretary surface): nil when no enabled skill
+        // matches, so a workspace with no skills keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(persona: .secretary, dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
 
         return """
         You are the user's AI secretary, discussing ONE recorded meeting. \
@@ -329,6 +335,6 @@ final class MeetingChatViewModel {
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
         - Quote the transcript verbatim when the user asks "what exactly was said".
-        """
+        """ + skillsSuffix
     }
 }

@@ -164,4 +164,62 @@ final class TargetChatViewModelTests: XCTestCase {
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged
     }
+
+    // MARK: - Persona skills (assistant surface)
+
+    /// Writes the given skill files into a fresh temp dir and returns the dir.
+    private func makeSkillsDir(_ files: [String: String]) throws -> String {
+        let dir = NSTemporaryDirectory() + "skills_\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for (name, content) in files {
+            try Data(content.utf8).write(to: URL(fileURLWithPath: dir + "/" + name))
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: dir) }
+        return dir
+    }
+
+    func testSkillsBlockListsAssistantSkillsOnly() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "ship it")
+        let dir = try makeSkillsDir([
+            "target-breakdown.md": """
+                ---
+                description: Decompose a target into sub-targets.
+                persona: assistant
+                ---
+                Body.
+                """,
+            "thread-untangle.md": """
+                ---
+                description: Reconstruct who asked what in a tangled thread.
+                persona: secretary
+                ---
+                Body.
+                """
+        ])
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: dir)
+
+        XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
+        XCTAssertTrue(prompt.contains("target-breakdown — Decompose a target into sub-targets."))
+        XCTAssertTrue(prompt.contains("load_skill"))
+        XCTAssertFalse(prompt.contains("thread-untangle"), "secretary skills must not reach the assistant")
+    }
+
+    func testSkillsBlockAbsentWhenNoSkillsExist() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "ship it")
+        let empty = try makeSkillsDir([:])
+
+        let withEmptyDir = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: empty)
+        let withNoDir = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: nil)
+
+        XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
+        XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
+    }
 }
