@@ -83,6 +83,7 @@ func TestToolsList(t *testing.T) {
 		"get_task_context",
 		"find_experts",
 		"memory_map", "memory_open", "memory_recall",
+		"load_skill",
 	}
 	for _, name := range want {
 		if !got[name] {
@@ -107,10 +108,11 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 	// additionally bumps memory_node_stats — best-effort usage telemetry, not
 	// domain data — the one deliberate exception to "no writes". find_experts
 	// is a pure read (mechanical SQL + arithmetic over existing tables) that
-	// just doesn't fit the list_/get_ naming.
+	// just doesn't fit the list_/get_ naming, and load_skill is a plain file
+	// read of one markdown file in the workspace skills directory.
 	readVerbs := map[string]bool{
 		"memory_map": true, "memory_open": true, "memory_recall": true,
-		"find_experts": true,
+		"find_experts": true, "load_skill": true,
 	}
 	for _, tool := range res.Tools {
 		if !strings.HasPrefix(tool.Name, "list_") &&
