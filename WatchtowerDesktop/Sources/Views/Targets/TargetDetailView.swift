@@ -107,31 +107,7 @@ struct TargetDetailView: View {
             .padding(.horizontal, 4)
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    switch selectedTab {
-                    case .details:
-                        detailsTab
-                    case .watch:
-                        if let vm = watchesVM {
-                            TargetWatchTabView(viewModel: vm) { seed in
-                                selectedTab = .assistant
-                                ensureAssistant()?.activeChat?.inputText = seed
-                            }
-                        }
-                    case .links:
-                        linksTab
-                    case .assistant:
-                        if let assistant {
-                            TargetChatSection(assistant: assistant)
-                                .frame(minHeight: 320)
-                        } else {
-                            Color.clear.onAppear { _ = ensureAssistant() }
-                        }
-                    }
-                }
-                .padding()
-            }
+            tabContent
         }
         .onAppear {
             jiraConnected = JiraQueries.isConnected()
@@ -255,6 +231,61 @@ struct TargetDetailView: View {
     }
 
     // MARK: - Details Tab
+
+    // MARK: - Tab content
+
+    /// Every tab owns its own scrolling. The Assistant tab is deliberately NOT
+    /// wrapped in a ScrollView here: it already nests one (the message list)
+    /// plus the ChatInput's NSScrollView, and a scroll view inside a scroll
+    /// view leaves the outer one stuck — neither end of the conversation is
+    /// reachable (the `SituationDiscussInputBar` house gotcha; the same reason
+    /// `RecordingDetailView` scrolls per tab rather than around them).
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .details:
+            scrollableTab { detailsTab }
+        case .watch:
+            scrollableTab { watchTab }
+        case .links:
+            scrollableTab { linksTab }
+        case .assistant:
+            assistantTab
+        }
+    }
+
+    private func scrollableTab<Content: View>(
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                content()
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private var watchTab: some View {
+        if let vm = watchesVM {
+            TargetWatchTabView(viewModel: vm) { seed in
+                selectedTab = .assistant
+                ensureAssistant()?.activeChat?.inputText = seed
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var assistantTab: some View {
+        if let assistant {
+            TargetChatSection(assistant: assistant)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear { _ = ensureAssistant() }
+        }
+    }
 
     private var detailsTab: some View {
         VStack(alignment: .leading, spacing: 20) {
