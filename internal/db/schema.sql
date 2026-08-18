@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     memory_focus_fingerprint TEXT NOT NULL DEFAULT '',  -- Hash of the last APPLIED parsed focus.md directive set — runtime state (see 00041)
     ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digest_topics.id already consolidated (see 00050)
     ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest stream_digests.id already consolidated (see 00050)
-    ideas_transcript_floor INTEGER NOT NULL DEFAULT 0  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
+    ideas_transcript_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
+    digest_fastforward_ts REAL NOT NULL DEFAULT 0  -- Slack-digest fast-forward floor: lastDigestTime returns max(MAX(digests.period_to), this); stamped to now on a slack-digests re-enable (FEAT-03, see 00057)
 );
 
 -- Users
@@ -591,20 +592,6 @@ CREATE TABLE IF NOT EXISTS prompt_history (
 CREATE INDEX IF NOT EXISTS idx_prompt_history_prompt ON prompt_history(prompt_id);
 CREATE INDEX IF NOT EXISTS idx_prompt_history_version ON prompt_history(prompt_id, version);
 
--- Decision importance corrections (training signal for prompt tuning)
-CREATE TABLE IF NOT EXISTS decision_importance_corrections (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    digest_id            INTEGER NOT NULL,
-    decision_idx         INTEGER NOT NULL,
-    topic_id             INTEGER NOT NULL DEFAULT 0,  -- 0 = legacy (pre-v39), >0 = digest_topics.id
-    decision_text        TEXT NOT NULL DEFAULT '',
-    original_importance  TEXT NOT NULL CHECK(original_importance IN ('high', 'medium', 'low')),
-    new_importance       TEXT NOT NULL CHECK(new_importance IN ('high', 'medium', 'low')),
-    created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dic_dedup ON decision_importance_corrections(digest_id, decision_idx);
-CREATE INDEX IF NOT EXISTS idx_dic_created ON decision_importance_corrections(created_at);
-
 -- User profile for personalization (role, team, reports, starred items)
 CREATE TABLE IF NOT EXISTS user_profile (
     id                    INTEGER PRIMARY KEY,
@@ -648,57 +635,6 @@ CREATE TABLE IF NOT EXISTS user_interactions (
     PRIMARY KEY (user_a, user_b, period_from, period_to)
 );
 CREATE INDEX IF NOT EXISTS idx_user_interactions_a ON user_interactions(user_a, period_from, period_to);
-
--- Communication guides (per-user, per-window coach-style insights)
-CREATE TABLE IF NOT EXISTS communication_guides (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id                 TEXT NOT NULL,
-    period_from             REAL NOT NULL,             -- Unix timestamp (window start)
-    period_to               REAL NOT NULL,             -- Unix timestamp (window end)
-    -- Computed stats (pure SQL, no AI)
-    message_count           INTEGER NOT NULL DEFAULT 0,
-    channels_active         INTEGER NOT NULL DEFAULT 0,
-    threads_initiated       INTEGER NOT NULL DEFAULT 0,
-    threads_replied         INTEGER NOT NULL DEFAULT 0,
-    avg_message_length      REAL NOT NULL DEFAULT 0,
-    active_hours_json       TEXT NOT NULL DEFAULT '{}',
-    volume_change_pct       REAL NOT NULL DEFAULT 0,
-    -- AI-generated guide (coach framing)
-    summary                 TEXT NOT NULL DEFAULT '',     -- how to communicate effectively with this person
-    communication_preferences TEXT NOT NULL DEFAULT '',   -- preferred style, format, timing
-    availability_patterns   TEXT NOT NULL DEFAULT '',     -- when they are most responsive
-    decision_process        TEXT NOT NULL DEFAULT '',     -- how they make/participate in decisions
-    situational_tactics     TEXT NOT NULL DEFAULT '[]',   -- JSON array: if X happens, do Y
-    effective_approaches    TEXT NOT NULL DEFAULT '[]',   -- JSON array: what works well
-    recommendations         TEXT NOT NULL DEFAULT '[]',   -- JSON array: actionable tips
-    relationship_context    TEXT NOT NULL DEFAULT '',     -- peer/report/manager/cross-team dynamics
-    -- Metadata
-    model                   TEXT NOT NULL DEFAULT '',
-    input_tokens            INTEGER NOT NULL DEFAULT 0,
-    output_tokens           INTEGER NOT NULL DEFAULT 0,
-    cost_usd                REAL NOT NULL DEFAULT 0,
-    prompt_version          INTEGER NOT NULL DEFAULT 0,
-    created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    UNIQUE(user_id, period_from, period_to)
-);
-CREATE INDEX IF NOT EXISTS idx_communication_guides_user ON communication_guides(user_id);
-CREATE INDEX IF NOT EXISTS idx_communication_guides_period ON communication_guides(period_from, period_to);
-
--- Guide summaries (cross-user team communication health for a time window)
-CREATE TABLE IF NOT EXISTS guide_summaries (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    period_from   REAL NOT NULL,
-    period_to     REAL NOT NULL,
-    summary       TEXT NOT NULL DEFAULT '',     -- team communication health overview
-    tips          TEXT NOT NULL DEFAULT '[]',   -- JSON array: team-level communication tips
-    model         TEXT NOT NULL DEFAULT '',
-    input_tokens  INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    cost_usd      REAL NOT NULL DEFAULT 0,
-    prompt_version INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    UNIQUE(period_from, period_to)
-);
 
 -- Unified people cards (per-user, per-window — combines analysis + guide)
 CREATE TABLE IF NOT EXISTS people_cards (
@@ -1050,13 +986,21 @@ CREATE TABLE IF NOT EXISTS meeting_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_notes_event ON meeting_notes(event_id);
 
--- Meeting recaps (AI-generated post-meeting summary; one row per event)
+-- Meeting recaps (AI-generated post-meeting summary; one row per event). A
+-- surrogate id PK + nullable UNIQUE event_id ON DELETE SET NULL (see 00056) —
+-- the meeting_transcripts shape — so a recap outlives its calendar event when
+-- the daemon's stale-event cleanup ages the event out (event_id nulled)
+-- instead of being cascade-deleted. transcript_id is the durable link back to
+-- the meeting_transcripts row (also ON DELETE SET NULL) so an orphaned recap
+-- (event deleted) stays reachable via GetMeetingRecapByTranscript.
 CREATE TABLE IF NOT EXISTS meeting_recaps (
-    event_id    TEXT PRIMARY KEY REFERENCES calendar_events(id) ON DELETE CASCADE,
-    source_text TEXT NOT NULL,
-    recap_json  TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id      TEXT UNIQUE REFERENCES calendar_events(id) ON DELETE SET NULL,
+    transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
+    source_text   TEXT NOT NULL,
+    recap_json    TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 -- Meeting transcripts: locally-transcribed meeting audio (WhisperKit in the

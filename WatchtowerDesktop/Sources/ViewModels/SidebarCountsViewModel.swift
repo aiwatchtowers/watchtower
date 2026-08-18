@@ -8,6 +8,10 @@ final class SidebarCountsViewModel {
     var updatedTrackCount: Int = 0
     var totalTrackCount: Int = 0
     var unreadDigestCount: Int = 0
+    /// Unread Gmail/Jira stream digests — the Digests tab's second feed source.
+    var unreadStreamCount: Int = 0
+    /// Unread decisions in the ledger (Digests → Decisions tab).
+    var unreadDecisionCount: Int = 0
     var unreadBriefingCount: Int = 0
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
@@ -36,6 +40,15 @@ final class SidebarCountsViewModel {
         return unreadDigestCount + updatedTrackCount + inboxPendingCount + unreadBriefingCount
     }
 
+    /// The Digests sidebar badge — matches the Digests screen's own tab-header
+    /// sum (`DigestListView.tabLabel`): Slack digests + Gmail/Jira stream
+    /// digests + unread ledger decisions. Deliberately distinct from
+    /// `catchUpTotalCount`, which keeps its own digests+tracks+inbox+briefings
+    /// meaning.
+    var digestsBadgeCount: Int {
+        unreadDigestCount + unreadStreamCount + unreadDecisionCount
+    }
+
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
 
@@ -60,8 +73,8 @@ final class SidebarCountsViewModel {
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
                 let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
-                              "catchup_sessions", "catchup_themes", "situations",
-                              "memory_dispute_flags", "ideas"]
+                              "stream_digests", "catchup_sessions", "catchup_themes",
+                              "situations", "memory_dispute_flags", "ideas"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -87,6 +100,10 @@ final class SidebarCountsViewModel {
         let updatedTrackCount: Int
         let totalTrackCount: Int
         let unreadDigestCount: Int
+        // var (not let): user-independent, so the zero path (no workspace user
+        // yet) still surfaces them, like situationsCount/ideasCount below.
+        var unreadStreamCount: Int
+        var unreadDecisionCount: Int
         let unreadBriefingCount: Int
         let recommendationCount: Int
         let activeTaskCount: Int
@@ -102,6 +119,8 @@ final class SidebarCountsViewModel {
             updatedTrackCount: 0,
             totalTrackCount: 0,
             unreadDigestCount: 0,
+            unreadStreamCount: 0,
+            unreadDecisionCount: 0,
             unreadBriefingCount: 0,
             recommendationCount: 0,
             activeTaskCount: 0,
@@ -139,6 +158,10 @@ final class SidebarCountsViewModel {
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Ideas awaiting review, tolerant of a pre-ideas-registry schema.
                 let ideasForReview = (try? IdeaQueries.countForReview(db)) ?? 0
+                // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.
+                // User-independent, so surfaced even before a workspace user.
+                let unreadStream = (try? StreamDigestQueries.unreadCount(db)) ?? 0
+                let unreadDecision = (try? IdeaQueries.unreadDecisionCount(db)) ?? 0
 
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
                     var zero = Counts.zero
@@ -146,6 +169,8 @@ final class SidebarCountsViewModel {
                     zero.situationsCount = openSituations
                     zero.memoryDisputedCount = disputed
                     zero.ideasCount = ideasForReview
+                    zero.unreadStreamCount = unreadStream
+                    zero.unreadDecisionCount = unreadDecision
                     return zero
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
@@ -172,6 +197,8 @@ final class SidebarCountsViewModel {
                     updatedTrackCount: trackCounts.updated,
                     totalTrackCount: trackCounts.total,
                     unreadDigestCount: try DigestQueries.unreadDigestCount(db),
+                    unreadStreamCount: unreadStream,
+                    unreadDecisionCount: unreadDecision,
                     unreadBriefingCount: try BriefingQueries.unreadCount(db),
                     recommendationCount: recCount,
                     activeTaskCount: taskCounts.active,
@@ -194,6 +221,8 @@ final class SidebarCountsViewModel {
         updatedTrackCount = c.updatedTrackCount
         totalTrackCount = c.totalTrackCount
         unreadDigestCount = c.unreadDigestCount
+        unreadStreamCount = c.unreadStreamCount
+        unreadDecisionCount = c.unreadDecisionCount
         unreadBriefingCount = c.unreadBriefingCount
         recommendationCount = c.recommendationCount
         activeTaskCount = c.activeTaskCount

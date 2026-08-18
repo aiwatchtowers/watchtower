@@ -50,10 +50,10 @@ enum MeetingTranscriptQueries {
         guard try MeetingRecapQueries.fetch(db, eventID: eventID) == nil else { return }
         try db.execute(
             sql: """
-                INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at, updated_at)
-                VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                 """,
-            arguments: [eventID, transcript.transcriptText, summaryJSON])
+            arguments: [eventID, id, transcript.transcriptText, summaryJSON])
     }
 
     /// Recordings master list (ad-hoc + event-linked), newest first. A recap

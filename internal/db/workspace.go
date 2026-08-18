@@ -89,6 +89,32 @@ func setComposeLastRunTSOn(q situationsExecer, ts float64) error {
 	return nil
 }
 
+// GetDigestFastForwardTS returns the persisted Slack-digest fast-forward floor.
+// Slack digests have no advancing watermark of their own — the pipeline derives
+// the next window from MAX(digests.period_to) — so this floor is what lets a
+// slack-digests re-enable (FEAT-03) resume from "now" instead of re-digesting
+// the backlog. lastDigestTime returns max(derived, this). 0 = never set.
+func (db *DB) GetDigestFastForwardTS() (float64, error) {
+	var ts float64
+	err := db.QueryRow(`SELECT COALESCE(digest_fastforward_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("getting digest fast-forward ts: %w", err)
+	}
+	return ts, nil
+}
+
+// SetDigestFastForwardTS stamps the Slack-digest fast-forward floor.
+func (db *DB) SetDigestFastForwardTS(ts float64) error {
+	_, err := db.Exec(`UPDATE workspace SET digest_fastforward_ts = ?`, ts)
+	if err != nil {
+		return fmt.Errorf("setting digest fast-forward ts: %w", err)
+	}
+	return nil
+}
+
 // GetSecretaryProfile returns the user-written secretary brief text.
 func (db *DB) GetSecretaryProfile() (string, error) {
 	var s string

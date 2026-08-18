@@ -103,11 +103,9 @@ final class DatabaseManager: Sendable {
             try db.execute(sql: "DELETE FROM user_analyses")
             try db.execute(sql: "DELETE FROM period_summaries")
             try db.execute(sql: "DELETE FROM tracks")
-            try db.execute(sql: "DELETE FROM communication_guides")
             try db.execute(sql: "DELETE FROM people_cards")
 
             // AI-generated summary tables
-            try db.execute(sql: "DELETE FROM guide_summaries")
             try db.execute(sql: "DELETE FROM people_card_summaries")
 
             // Briefings
@@ -127,7 +125,6 @@ final class DatabaseManager: Sendable {
 
             // Feedback & training signal (tied to wiped content)
             try db.execute(sql: "DELETE FROM feedback")
-            try db.execute(sql: "DELETE FROM decision_importance_corrections")
             try db.execute(sql: "DELETE FROM decision_reads")
             try db.execute(sql: "DELETE FROM user_interactions")
         }

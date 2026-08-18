@@ -1737,6 +1737,35 @@ func TestLastDigestTime_WithDigests(t *testing.T) {
 	assert.InDelta(t, periodTo, since, 1.0)
 }
 
+// TestLastDigestTime_FastForwardOverridesOldDigests pins FEAT-03 for Slack
+// digests: after the slack-digests fast-forward floor is stamped to "now", the
+// next digest window starts at ~now even though an old channel digest exists —
+// the backlog between the old digest and the re-enable is not re-digested.
+func TestLastDigestTime_FastForwardOverridesOldDigests(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	// An old channel digest — its period_to is a week ago.
+	oldPeriodTo := float64(time.Now().AddDate(0, 0, -7).Unix())
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: oldPeriodTo - 3600, PeriodTo: oldPeriodTo,
+		Summary: "old", MessageCount: 5, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	// The feature is re-enabled now → fast-forward floor stamped to now.
+	now := float64(time.Now().Unix())
+	require.NoError(t, database.SetDigestFastForwardTS(now))
+
+	p := New(database, cfg, gen, testLogger())
+	since := p.lastDigestTime()
+
+	assert.InDelta(t, now, since, 5.0, "fast-forward floor must win over the stale digest's period_to")
+}
+
 func TestOnProgress_Callback(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()

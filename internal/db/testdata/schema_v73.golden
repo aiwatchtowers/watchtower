@@ -26,12 +26,6 @@ CREATE INDEX idx_channels_name ON channels(name)
 index	idx_channels_type
 CREATE INDEX idx_channels_type ON channels(type)
 
-index	idx_communication_guides_period
-CREATE INDEX idx_communication_guides_period ON communication_guides(period_from, period_to)
-
-index	idx_communication_guides_user
-CREATE INDEX idx_communication_guides_user ON communication_guides(user_id)
-
 index	idx_day_plan_items_plan
 CREATE INDEX idx_day_plan_items_plan ON day_plan_items(day_plan_id)
 
@@ -43,12 +37,6 @@ CREATE INDEX idx_day_plans_date ON day_plans(plan_date DESC)
 
 index	idx_day_plans_user_date
 CREATE INDEX idx_day_plans_user_date ON day_plans(user_id, plan_date DESC)
-
-index	idx_dic_created
-CREATE INDEX idx_dic_created ON decision_importance_corrections(created_at)
-
-index	idx_dic_dedup
-CREATE UNIQUE INDEX idx_dic_dedup ON decision_importance_corrections(digest_id, decision_idx)
 
 index	idx_digest_participants_user
 CREATE INDEX idx_digest_participants_user ON digest_participants(user_id)
@@ -449,39 +437,6 @@ last_read TEXT NOT NULL DEFAULT '', -- Slack conversations.mark cursor (message 
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
-table	communication_guides
-CREATE TABLE communication_guides (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-user_id TEXT NOT NULL,
-period_from REAL NOT NULL, -- Unix timestamp (window start)
-period_to REAL NOT NULL, -- Unix timestamp (window end)
--- Computed stats (pure SQL, no AI)
-message_count INTEGER NOT NULL DEFAULT 0,
-channels_active INTEGER NOT NULL DEFAULT 0,
-threads_initiated INTEGER NOT NULL DEFAULT 0,
-threads_replied INTEGER NOT NULL DEFAULT 0,
-avg_message_length REAL NOT NULL DEFAULT 0,
-active_hours_json TEXT NOT NULL DEFAULT '{}',
-volume_change_pct REAL NOT NULL DEFAULT 0,
--- AI-generated guide (coach framing)
-summary TEXT NOT NULL DEFAULT '', -- how to communicate effectively with this person
-communication_preferences TEXT NOT NULL DEFAULT '', -- preferred style, format, timing
-availability_patterns TEXT NOT NULL DEFAULT '', -- when they are most responsive
-decision_process TEXT NOT NULL DEFAULT '', -- how they make/participate in decisions
-situational_tactics TEXT NOT NULL DEFAULT '[]', -- JSON array: if X happens, do Y
-effective_approaches TEXT NOT NULL DEFAULT '[]', -- JSON array: what works well
-recommendations TEXT NOT NULL DEFAULT '[]', -- JSON array: actionable tips
-relationship_context TEXT NOT NULL DEFAULT '', -- peer/report/manager/cross-team dynamics
--- Metadata
-model TEXT NOT NULL DEFAULT '',
-input_tokens INTEGER NOT NULL DEFAULT 0,
-output_tokens INTEGER NOT NULL DEFAULT 0,
-cost_usd REAL NOT NULL DEFAULT 0,
-prompt_version INTEGER NOT NULL DEFAULT 0,
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-UNIQUE(user_id, period_from, period_to)
-)
-
 table	custom_emojis
 CREATE TABLE custom_emojis (
 name TEXT PRIMARY KEY, -- Emoji shortcode (without colons)
@@ -531,18 +486,6 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 UNIQUE (user_id, plan_date),
 FOREIGN KEY (briefing_id) REFERENCES briefings(id) ON DELETE SET NULL
-)
-
-table	decision_importance_corrections
-CREATE TABLE decision_importance_corrections (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-digest_id INTEGER NOT NULL,
-decision_idx INTEGER NOT NULL,
-topic_id INTEGER NOT NULL DEFAULT 0, -- 0 = legacy (pre-v39), >0 = digest_topics.id
-decision_text TEXT NOT NULL DEFAULT '',
-original_importance TEXT NOT NULL CHECK(original_importance IN ('high', 'medium', 'low')),
-new_importance TEXT NOT NULL CHECK(new_importance IN ('high', 'medium', 'low')),
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	decision_reads
@@ -698,22 +641,6 @@ memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory ex
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , ideas_email_floor REAL NOT NULL DEFAULT 0)
-
-table	guide_summaries
-CREATE TABLE guide_summaries (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-period_from REAL NOT NULL,
-period_to REAL NOT NULL,
-summary TEXT NOT NULL DEFAULT '', -- team communication health overview
-tips TEXT NOT NULL DEFAULT '[]', -- JSON array: team-level communication tips
-model TEXT NOT NULL DEFAULT '',
-input_tokens INTEGER NOT NULL DEFAULT 0,
-output_tokens INTEGER NOT NULL DEFAULT 0,
-cost_usd REAL NOT NULL DEFAULT 0,
-prompt_version INTEGER NOT NULL DEFAULT 0,
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-UNIQUE(period_from, period_to)
-)
 
 table	idea_mentions
 CREATE TABLE idea_mentions (
@@ -1010,8 +937,10 @@ generated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	meeting_recaps
-CREATE TABLE meeting_recaps (
-event_id TEXT PRIMARY KEY REFERENCES calendar_events(id) ON DELETE CASCADE,
+CREATE TABLE "meeting_recaps" (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+event_id TEXT UNIQUE REFERENCES calendar_events(id) ON DELETE SET NULL,
+transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
 source_text TEXT NOT NULL,
 recap_json TEXT NOT NULL,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -1677,7 +1606,7 @@ name TEXT NOT NULL,
 domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0)
 
 trigger	meeting_transcripts_ad
 CREATE TRIGGER meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
@@ -1838,33 +1767,6 @@ END
 9	last_read	TEXT	notnull=1	dflt=''	pk=0
 10	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
-## communication_guides
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	user_id	TEXT	notnull=1	dflt=NULL	pk=0
-2	period_from	REAL	notnull=1	dflt=NULL	pk=0
-3	period_to	REAL	notnull=1	dflt=NULL	pk=0
-4	message_count	INTEGER	notnull=1	dflt=0	pk=0
-5	channels_active	INTEGER	notnull=1	dflt=0	pk=0
-6	threads_initiated	INTEGER	notnull=1	dflt=0	pk=0
-7	threads_replied	INTEGER	notnull=1	dflt=0	pk=0
-8	avg_message_length	REAL	notnull=1	dflt=0	pk=0
-9	active_hours_json	TEXT	notnull=1	dflt='{}'	pk=0
-10	volume_change_pct	REAL	notnull=1	dflt=0	pk=0
-11	summary	TEXT	notnull=1	dflt=''	pk=0
-12	communication_preferences	TEXT	notnull=1	dflt=''	pk=0
-13	availability_patterns	TEXT	notnull=1	dflt=''	pk=0
-14	decision_process	TEXT	notnull=1	dflt=''	pk=0
-15	situational_tactics	TEXT	notnull=1	dflt='[]'	pk=0
-16	effective_approaches	TEXT	notnull=1	dflt='[]'	pk=0
-17	recommendations	TEXT	notnull=1	dflt='[]'	pk=0
-18	relationship_context	TEXT	notnull=1	dflt=''	pk=0
-19	model	TEXT	notnull=1	dflt=''	pk=0
-20	input_tokens	INTEGER	notnull=1	dflt=0	pk=0
-21	output_tokens	INTEGER	notnull=1	dflt=0	pk=0
-22	cost_usd	REAL	notnull=1	dflt=0	pk=0
-23	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
-24	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
-
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -1906,16 +1808,6 @@ END
 12	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 14	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-
-## decision_importance_corrections
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	digest_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	decision_idx	INTEGER	notnull=1	dflt=NULL	pk=0
-3	topic_id	INTEGER	notnull=1	dflt=0	pk=0
-4	decision_text	TEXT	notnull=1	dflt=''	pk=0
-5	original_importance	TEXT	notnull=1	dflt=NULL	pk=0
-6	new_importance	TEXT	notnull=1	dflt=NULL	pk=0
-7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## decision_reads
 0	digest_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -2044,19 +1936,6 @@ END
 10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 11	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 12	ideas_email_floor	REAL	notnull=1	dflt=0	pk=0
-
-## guide_summaries
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	period_from	REAL	notnull=1	dflt=NULL	pk=0
-2	period_to	REAL	notnull=1	dflt=NULL	pk=0
-3	summary	TEXT	notnull=1	dflt=''	pk=0
-4	tips	TEXT	notnull=1	dflt='[]'	pk=0
-5	model	TEXT	notnull=1	dflt=''	pk=0
-6	input_tokens	INTEGER	notnull=1	dflt=0	pk=0
-7	output_tokens	INTEGER	notnull=1	dflt=0	pk=0
-8	cost_usd	REAL	notnull=1	dflt=0	pk=0
-9	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
-10	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## idea_mentions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -2326,11 +2205,13 @@ END
 3	generated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## meeting_recaps
-0	event_id	TEXT	notnull=0	dflt=NULL	pk=1
-1	source_text	TEXT	notnull=1	dflt=NULL	pk=0
-2	recap_json	TEXT	notnull=1	dflt=NULL	pk=0
-3	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
-4	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	event_id	TEXT	notnull=0	dflt=NULL	pk=0
+2	transcript_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	source_text	TEXT	notnull=1	dflt=NULL	pk=0
+4	recap_json	TEXT	notnull=1	dflt=NULL	pk=0
+5	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+6	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## meeting_transcripts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -2933,4 +2814,5 @@ END
 16	ideas_digest_floor	INTEGER	notnull=1	dflt=0	pk=0
 17	ideas_stream_digest_floor	INTEGER	notnull=1	dflt=0	pk=0
 18	ideas_transcript_floor	INTEGER	notnull=1	dflt=0	pk=0
+19	digest_fastforward_ts	REAL	notnull=1	dflt=0	pk=0
 

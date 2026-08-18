@@ -21,7 +21,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case search
     case boards
     case usage
-    case training
     case mcpServer
 
     var id: String { rawValue }
@@ -48,7 +47,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .search: "Search"
         case .boards: "Boards"
         case .usage: "Usage"
-        case .training: "Training"
         case .mcpServer: "MCP Server"
         }
     }
@@ -75,7 +73,6 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .search: "magnifyingglass"
         case .boards: "rectangle.on.rectangle.angled"
         case .usage: "chart.bar"
-        case .training: "brain.head.profile"
         case .mcpServer: "terminal"
         }
     }
@@ -93,7 +90,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Tool items (shown below the separator). Search lives here too.
     static var toolItems: [Self] {
-        [.search, .boards, .usage, .training, .mcpServer]
+        [.search, .boards, .usage, .mcpServer]
     }
 }
 

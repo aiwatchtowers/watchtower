@@ -1068,11 +1068,13 @@ package enum TestDatabase {
         generated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
     CREATE TABLE IF NOT EXISTS meeting_recaps (
-        event_id    TEXT PRIMARY KEY REFERENCES calendar_events(id) ON DELETE CASCADE,
-        source_text TEXT NOT NULL,
-        recap_json  TEXT NOT NULL,
-        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id      TEXT UNIQUE REFERENCES calendar_events(id) ON DELETE SET NULL,
+        transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
+        source_text   TEXT NOT NULL,
+        recap_json    TEXT NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
     -- Meeting transcripts: locally-transcribed meeting audio (WhisperKit in the
     -- Desktop app). One row per recording. event_id is NULL for ad-hoc recordings
@@ -1714,13 +1716,18 @@ package enum TestDatabase {
 
     package static func insertMeetingRecap(
         _ db: Database,
-        eventID: String,
+        eventID: String? = nil,
+        transcriptID: Int64? = nil,
+        sourceText: String = "",
         recapJSON: String = #"{"summary":"Recap","key_decisions":[],"action_items":["ship it"],"open_questions":[]}"#,
         createdAt: String = "2026-07-09T10:00:00Z"
     ) throws {
         try db.execute(
-            sql: "INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at, updated_at) VALUES (?, '', ?, ?, ?)",
-            arguments: [eventID, recapJSON, createdAt, createdAt])
+            sql: """
+                INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [eventID, transcriptID, sourceText, recapJSON, createdAt, createdAt])
     }
 
     package static func insertMeetingTranscript(

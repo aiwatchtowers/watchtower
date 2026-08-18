@@ -10,10 +10,6 @@ var Defaults = map[string]string{
 	DigestDaily:                defaultDigestDaily,
 	DigestWeekly:               defaultDigestWeekly,
 	DigestPeriod:               defaultDigestPeriod,
-	TracksExtract:              defaultTracksExtract,
-	TracksUpdate:               defaultTracksUpdate,
-	GuideUser:                  defaultGuideUser,
-	GuidePeriod:                defaultGuidePeriod,
 	PeopleReduce:               defaultPeopleReduce,
 	PeopleTeam:                 defaultPeopleTeam,
 	BriefingDaily:              defaultBriefingDaily,
@@ -59,11 +55,7 @@ var AllIDs = []string{
 	DigestDaily,
 	DigestWeekly,
 	DigestPeriod,
-	TracksExtract,
-	TracksUpdate,
 	TracksExtractBatch,
-	GuideUser,
-	GuidePeriod,
 	PeopleReduce,
 	PeopleTeam,
 	PeopleBatch,
@@ -109,11 +101,7 @@ var DefaultVersions = map[string]int{
 	DigestDaily:                1,
 	DigestWeekly:               1,
 	DigestPeriod:               1,
-	TracksExtract:              1, // v1: per-channel extraction with cross-channel merge
-	TracksUpdate:               1, // v1: check tracks for updates from new messages
 	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
-	GuideUser:                  1,
-	GuidePeriod:                1,
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
 	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
@@ -160,11 +148,7 @@ var Descriptions = map[string]string{
 	DigestDaily:                "Daily rollup — cross-channel daily summary",
 	DigestWeekly:               "Weekly trends — week-over-week analysis",
 	DigestPeriod:               "Period summary — comprehensive period overview",
-	TracksExtract:              "Track extraction — per-channel action item extraction with cross-channel merge",
-	TracksUpdate:               "Track update check — detect meaningful updates for existing tracks",
 	TracksExtractBatch:         "Batch track extraction — multi-channel extraction for low-activity channels",
-	GuideUser:                  "Communication guide — personal coaching per user",
-	GuidePeriod:                "Team guide — cross-user communication tips",
 	PeopleReduce:               "People card — unified profile from signals",
 	PeopleTeam:                 "Team summary — cross-user attention & tips",
 	BriefingDaily:              "Daily briefing — personalized morning summary",
@@ -380,218 +364,6 @@ Rules:
 - Return valid JSON only
 
 === DIGESTS ===
-%s`
-
-const defaultTracksExtract = `You are analyzing Slack messages from channel #%[3]s (%[4]s) to find tracks directed at user @%[1]s (user_id: %[2]s) for the period %[5]s to %[6]s.
-
-Your task: identify actions, requests, tasks, and expectations directed at this specific user in this channel.
-
-CRITICAL: Group related requests into a SINGLE track. If multiple messages discuss the same topic/task, combine them into ONE comprehensive track — do NOT create separate items for each message about the same topic.
-
-DEDUPLICATION: Review the EXISTING TRACKS section below. If a message is clearly about the same initiative as an existing track (from ANY channel), UPDATE it (set "existing_id") instead of creating a new one.
-
-TOPIC SEPARATION (equally important): Each track MUST be about ONE coherent initiative. Do NOT merge unrelated topics into a single track — different processes, different projects, different bugs = separate tracks. When unsure if topics are related, keep them separate.
-
-COMPLETION DETECTION: If you see messages confirming that an existing track has been COMPLETED, return the track with "existing_id" and "status_hint": "done". Do NOT ignore completion signals.
-
-%[12]s
-
-Return ONLY a JSON object (no markdown fences, no explanation):
-
-{
-  "items": [
-    {
-      "existing_id": null,
-      "status_hint": "",
-      "text": "clear, actionable description of what needs to be done",
-      "context": "detailed context (3-5 sentences): what was discussed, what decisions were made, what is the background, why this matters",
-      "source_message_ts": "1234567890.123456",
-      "priority": "high",
-      "due_date": "2025-01-15",
-      "requester": {"name": "@username", "user_id": "U123"},
-      "category": "task",
-      "blocking": "who or what is blocked if this isn't done",
-      "tags": ["project-name", "topic"],
-      "decision_summary": "how the group arrived at the current state",
-      "decision_options": [
-        {"option": "description of option A", "supporters": ["@user1"], "pros": "advantages", "cons": "disadvantages"}
-      ],
-      "participants": [
-        {"name": "@username", "user_id": "U123", "stance": "brief summary of this person's position"}
-      ],
-      "source_refs": [
-        {"ts": "1234567890.123456", "channel_id": "C123ABC", "thread_ts": "1234567890.000000", "author": "@username", "text": "key quote (1 sentence)"}
-      ],
-      "sub_items": [
-        {"text": "specific sub-task", "status": "open"}
-      ],
-      "ownership": "mine",
-      "ball_on": "U123",
-      "owner_user_id": "U456"
-    }
-  ]
-}
-
-%[7]s
-
-Rules:
-- GROUPING: Multiple messages about the same topic = ONE track. Aim for 0-5 tracks per channel.
-- CROSS-CHANNEL MERGE: If the topic clearly matches an existing track from another channel (same initiative), set existing_id.
-- Only extract tracks with a CLEAR actionable request. Skip vague mentions.
-- Look for BOTH explicit and implicit tracks:
-  * Direct requests, assignments, questions expecting action, commitments, review requests, follow-ups
-- DO NOT EXTRACT:
-  * Status updates from user without action, general mentions, already completed actions
-  * Bot notifications (unless requiring human action), FYI with no next step
-  * Individual alerts (aggregate systemic patterns into ONE track)
-  * Discussions with no action expected from user
-- priority: "high" (blocking/deadline/production), "medium" (normal work), "low" (nice-to-have, background)
-- category: MUST be one of: code_review, decision_needed, info_request, task, approval, follow_up, bug_fix, discussion
-- ownership: "mine" (task is on user), "delegated" (user's report owns it), "watching" (user monitors, HIGH priority only)
-- ball_on: user_id of who acts next
-- source_refs: 2-5 most important messages as footnotes. MUST copy ts, channel_id, and thread_ts exactly from key_messages data — do NOT invent timestamps
-- sub_items: break into sub-tasks with "open"/"done" status, 2-5 per track
-- existing_id: match against EXISTING TRACKS from ALL channels. Only set when the topic is clearly the SAME initiative — if unsure, create a new track.
-- status_hint: "done" if confirmed complete, "" otherwise. Only with existing_id.
-- If no tracks are found, return {"items": []}
-%[13]s
-- Return valid JSON only
-%[8]s
-
-%[9]s
-
-%[10]s
-
-=== MESSAGES ===
-%[11]s`
-
-const defaultTracksUpdate = `You are checking whether new Slack messages contain a meaningful update for existing tracks.
-
-Channel: #%[1]s
-%[6]s
-
-%[4]s
-
-=== TRACKS TO CHECK ===
-%[3]s
-
-=== NEW MESSAGES ===
-%[5]s
-
-For EACH track, determine if any new messages contain a meaningful update.
-
-Return ONLY a JSON object:
-
-{
-  "results": [
-    {
-      "track_id": 123,
-      "has_update": true,
-      "updated_context": "brief summary of what changed",
-      "status_hint": "done",
-      "ball_on": "U123"
-    }
-  ]
-}
-
-Rules:
-- Include an entry for EVERY track
-- has_update: true only for genuine progress/completion/blocker change
-- updated_context: 1-2 sentences when has_update is true
-- status_hint: "done"/"active"/"unchanged"
-- ball_on: user_id of next actor, "" if unchanged
-- Return valid JSON only`
-
-const defaultGuideUser = `You are a personal communication coach helping the user work more effectively with @%s over a 7-day window (%s to %s).
-
-%s
-
-Below are computed statistics and messages for this person. Your goal is NOT to evaluate or judge them — instead, generate actionable advice for the user on how to communicate, collaborate, and get things done with this person most effectively.
-
-Return ONLY a JSON object (no markdown fences, no explanation):
-
-{
-  "summary": "2-3 sentence overview of how to work effectively with this person — what makes them tick, what they respond to, what to keep in mind",
-  "communication_preferences": "Detailed paragraph: preferred communication format (long vs short messages, structured vs informal), response patterns (quick/slow, thorough/brief), preferred channels, threading habits. Frame as actionable: 'Send structured messages with clear asks — they respond best to bullet points'",
-  "availability_patterns": "When this person is most active and responsive. Peak hours, timezone patterns, response lag. Frame as: 'Best time to reach them is...'",
-  "decision_process": "How they participate in decisions: do they decide quickly or need time? Do they want data or prefer discussion? Do they defer or take charge? Frame as: 'When you need a decision from them...'",
-  "situational_tactics": ["If X situation arises, here's the best approach..."],
-  "effective_approaches": ["What works well when communicating with this person — based on observed patterns"],
-  "recommendations": ["Specific actionable tips for improving collaboration with this person"]
-}
-
-Communication preferences to analyze:
-- Message format: long-form vs concise, structured vs stream-of-consciousness
-- Response speed: how quickly they typically reply, any patterns
-- Channel preference: which channels they are most active in
-- Threading: do they use threads or reply in channel?
-- Tone: formal vs casual, direct vs diplomatic
-
-Availability patterns to identify:
-- Peak activity hours (from active_hours data)
-- Response latency patterns
-- Days/times when they are most engaged
-
-Decision process to assess:
-- Do they make decisions independently or seek consensus?
-- Do they need data/evidence or go with intuition?
-- Are they decisive or deliberative?
-- How do they handle disagreements?
-
-Situational tactics — identify communication patterns that may lead to friction, delays, or misalignment, and suggest specific tactics the user can apply to prevent or navigate these situations:
-- If they tend to not respond to messages → suggest escalation path or better timing
-- If they get overloaded → suggest batching requests
-- If they prefer written over verbal → adapt approach
-- Frame as "If [situation], then [tactic]" — specific and actionable
-
-%s
-
-Rules:
-- This is a PERSONAL COACHING tool — frame everything as advice FOR THE USER, not judgments ABOUT the person
-- Be specific: cite patterns from actual messages, reference channels, mention timing
-- Do NOT use evaluative language ("good communicator", "poor performance", "red flag")
-- Instead use actionable language ("responds best to...", "when you need X, try...")
-- If the relationship is manager→report: advice should be more directive ("set clear deadlines", "check in at standup")
-- If peer: advice should be collaborative ("mention in shared channel", "align on approach first")
-- If report→manager: advice should be tactical ("batch questions for 1:1", "send follow-up summary")
-- If too few messages for meaningful analysis, say so in summary
-- situational_tactics, effective_approaches, recommendations: use empty arrays [] if nothing notable
-- %s
-- Return valid JSON only
-
-=== USER ===
-%s`
-
-const defaultGuidePeriod = `You are a communication coach creating a team-level guide for the period %s to %s.
-
-%s
-
-Below are individual communication guides for team members. Create a high-level summary of team communication health and practical tips.
-
-Return ONLY a JSON object (no markdown fences, no explanation):
-
-{
-  "summary": "3-5 sentence overview of team communication dynamics. Focus on collaboration quality, response patterns, decision-making flow, and areas where communication could be smoother.",
-  "tips": [
-    "Specific, actionable team-level communication tips. Examples: 'Consider async updates for cross-timezone discussions — @alice and @bob have 6h timezone gap', 'Decisions in #product are taking 3+ days — try setting explicit deadlines', 'Thread usage is low — encouraging threads could reduce noise in busy channels'"
-  ]
-}
-
-Focus on:
-1. COLLABORATION PATTERNS — who works well together, where are communication gaps?
-2. RESPONSE DYNAMICS — are there bottlenecks? Who is hard to reach?
-3. DECISION FLOW — are decisions happening efficiently or getting stuck?
-4. PRACTICAL TIPS — actionable advice for improving team communication
-
-Rules:
-- Frame as coaching advice, not performance evaluation
-- Reference specific people by @username when relevant
-- Each tip should be concrete and actionable
-- Avoid evaluative/judgmental language — use "consider", "try", "you might find"
-- %s
-- Return valid JSON only
-
-=== TEAM GUIDES ===
 %s`
 
 const defaultPeopleReduce = `You are creating a unified profile card for @%s based on behavioral signals observed across Slack channels over %s to %s.

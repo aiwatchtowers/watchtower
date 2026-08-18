@@ -266,7 +266,7 @@ func TestTranscriptSaveEventWithExistingRecapKeepsIt(t *testing.T) {
 		StartTime:  "2026-07-13T11:00:00Z",
 		EndTime:    "2026-07-13T11:30:00Z",
 	}))
-	require.NoError(t, database.UpsertMeetingRecap("evt-recap", existingSourceText, existingRecapJSON))
+	require.NoError(t, database.UpsertMeetingRecap("evt-recap", existingSourceText, existingRecapJSON, 0))
 	database.Close()
 
 	transcriptSaveFlagFile = writeTranscriptFile(t, "transcript recorded after the pasted recap, covering the planning discussion in full so the automatic recap generator has enough material to work with this time instead of falling back to the calendar event's description")

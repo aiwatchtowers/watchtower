@@ -161,6 +161,31 @@ func TestFastForward_StreamDigests(t *testing.T) {
 	assert.Zero(t, transcriptFloor, "stream-digests must not touch the workspace ideas floors")
 }
 
+// TestFastForward_SlackDigests pins that "slack-digests" stamps the workspace
+// fast-forward floor to now — the persisted watermark Slack digests otherwise
+// lack — and touches nothing else.
+func TestFastForward_SlackDigests(t *testing.T) {
+	database := testDB(t)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, FastForward("slack-digests", database, now))
+
+	ffTS, err := database.GetDigestFastForwardTS()
+	require.NoError(t, err)
+	assert.Equal(t, float64(now.Unix()), ffTS)
+
+	// The four watermarks owned by the other hooks stay untouched.
+	inboxTS, err := database.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Zero(t, inboxTS)
+
+	digestFloor, streamFloor, transcriptFloor, err := database.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Zero(t, digestFloor)
+	assert.Zero(t, streamFloor)
+	assert.Zero(t, transcriptFloor)
+}
+
 func TestFastForward_Memory(t *testing.T) {
 	database := testDB(t)
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
@@ -225,6 +250,10 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		calTS, err := database.MemoryCalendarWatermark()
 		require.NoError(t, err)
 		assert.Zero(t, calTS)
+
+		ffTS, err := database.GetDigestFastForwardTS()
+		require.NoError(t, err)
+		assert.Zero(t, ffTS)
 	}
 
 	require.NoError(t, FastForward("briefing", database, now))
@@ -236,6 +265,7 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		"secretary-inbox": true,
 		"ideas":           true,
 		"stream-digests":  true,
+		"slack-digests":   true,
 		"memory":          true,
 	}
 	for _, f := range All() {
