@@ -141,6 +141,8 @@ struct TargetChatPane: View {
 
             Divider()
 
+            pendingActionsBar
+
             ChatInput(
                 text: $chatVM.inputText,
                 isStreaming: chatVM.isStreaming,
@@ -162,6 +164,39 @@ struct TargetChatPane: View {
         .background(Color(.controlBackgroundColor).opacity(0.4))
     }
 
+    // MARK: Pending proposals
+
+    /// Docked directly above the composer, not in the pane header: a batch of
+    /// proposals lands at the BOTTOM of the transcript, which is where the eye
+    /// (and the scroll position) is — an affordance parked in the top header is
+    /// invisible after a turn that emitted thirty cards.
+    @ViewBuilder
+    private var pendingActionsBar: some View {
+        if chatVM.pendingActionCount > 1 {
+            HStack(spacing: 8) {
+                Image(systemName: "tray.full")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+                Text("\(chatVM.pendingActionCount) proposals awaiting a decision")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { chatVM.approveAll() } label: {
+                    Label("Approve all", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("Apply every pending proposal and tell the assistant once")
+                .accessibilityIdentifier("chat.approveAll")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(Color.accentColor.opacity(0.08))
+
+            Divider()
+        }
+    }
+
     // MARK: Header
 
     private var header: some View {
@@ -173,15 +208,6 @@ struct TargetChatPane: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer()
-            if chatVM.pendingActionCount > 1 {
-                Button { chatVM.approveAll() } label: {
-                    Label("Approve all (\(chatVM.pendingActionCount))", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Apply every pending proposal and tell the assistant once")
-                .accessibilityIdentifier("chat.approveAll")
-            }
             Picker("Model", selection: $chatVM.selectedModel) {
                 ForEach(ChatModel.models(for: chatVM.provider)) { model in
                     Text(model.displayName).tag(model)
