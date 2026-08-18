@@ -49,8 +49,14 @@ func TestBuildArgs(t *testing.T) {
 	allowed := allowedToolsValue(t, args)
 	assert.NotContains(t, allowed, "Bash(")
 	assert.Equal(t, "mcp__watchtower", allowed)
-	assert.Contains(t, args, "--disallowedTools")
-	assert.Contains(t, args, "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead")
+	// Built-ins are hidden outright (not merely denied) so the model never
+	// wastes a turn calling them and asking the user for approvals: file
+	// editing and Claude Code task tooling, shell and web (live sources +
+	// exfiltration channel), and filesystem reads (TCC prompt risk).
+	assertFlagValue(t, args, "--disallowedTools",
+		"Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,"+
+			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS,"+
+			"ExitPlanMode,SlashCommand,Skill")
 	// TCC isolation: every spawn must skip user-level ~/.claude/settings.json
 	// via --setting-sources project,local. Dropping this re-opens the P0 where
 	// plugin/hook auto-discovery probes ~/Desktop and triggers a Watchtower.app

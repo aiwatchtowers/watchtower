@@ -323,11 +323,6 @@ final class TrackChatViewModel {
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir()
     ) -> String {
-        let schema = (try? dbPool.read { db in
-            try ChatViewModel.fetchSchema(db)
-        }) ?? ""
-        let dbPath = dbPool.path
-
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
         }
@@ -337,7 +332,6 @@ final class TrackChatViewModel {
 
         let channelIDs = track.decodedChannelIDs
         let channelList = channelIDs.isEmpty ? "none" : channelIDs.joined(separator: ", ")
-        let channelInClause = channelIDs.joined(separator: "','")
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — the same pattern
@@ -368,40 +362,31 @@ final class TrackChatViewModel {
         Created: \(track.createdAt)
         Updated: \(track.updatedAt)
 
-        \(memoryBlock)=== CAPABILITIES ===
-        You can query the database to find related messages, threads, and people involved.
-
-        === DATABASE ===
-        Database: \(dbPath)
-        \(schema)
+        \(memoryBlock)=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        You have read-only tools over the user's OWN local Watchtower database. \
+        Use them to look things up instead of asking the user:
+        - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \
+        newest first. Pass this track's channel ids (listed above) as `channel` to scan its traffic.
+        - get_person / list_people — people cards; list_targets / get_target, list_tracks, \
+        list_digests, list_jira_issues — work context.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === WORKSPACE ===
         Slack team ID: \(teamID)
         Slack web domain: \(domain).slack.com
 
-        \(Self.queryAndLinkingGuidance(teamID: teamID, domain: domain, channelInClause: channelInClause))
+        \(Self.linkingGuidance(teamID: teamID, domain: domain))
         """
     }
 
-    /// QUERY TIPS / LINKING RULES / RESPONSE STYLE guidance shared by
-    /// buildSystemPrompt's returned prompt. Extracted purely to keep
-    /// buildSystemPrompt under the function-body-length limit — no behavior
-    /// change, the interpolated result is byte-identical to the inline text
-    /// it replaced.
-    nonisolated private static func queryAndLinkingGuidance(
+    /// LINKING RULES / RESPONSE STYLE guidance shared by buildSystemPrompt's
+    /// returned prompt. Extracted purely to keep buildSystemPrompt under the
+    /// function-body-length limit.
+    nonisolated private static func linkingGuidance(
         teamID: String,
-        domain: String,
-        channelInClause: String
+        domain: String
     ) -> String {
         """
-        === QUERY TIPS ===
-        - Always SELECT m.thread_ts alongside m.ts so you can build correct links for threaded messages.
-        - Find messages in track channels:
-          SELECT m.text, u.display_name, m.ts, m.thread_ts FROM messages m
-          JOIN users u ON m.user_id = u.id
-          WHERE m.channel_id IN ('\(channelInClause)')
-          ORDER BY m.ts_unix DESC LIMIT 20
-
         === LINKING RULES ===
         ALWAYS use markdown links with descriptive text in the user's language. Never output bare URLs.
 
@@ -422,7 +407,7 @@ final class TrackChatViewModel {
         Rules:
         - Every referenced message MUST have a link
         - Link text describes WHAT is linked, not "link" or "click here"
-        - Always SELECT channel_id, ts, AND thread_ts when fetching messages so you can build correct links
+        - list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links
         - NEVER link to a channel when the user asked for a specific message — resolve the actual ts first
 
         === RESPONSE STYLE ===

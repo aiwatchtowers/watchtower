@@ -329,6 +329,7 @@ final class MeetingChatViewModel {
         - get_transcript / list_transcripts — the full transcript text of this and other recordings.
         - list_messages, get_person / list_people, get_target / list_tracks — surrounding work context.
         Never ask for a database path; the data is already local and the tools are already connected.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === RESPONSE STYLE ===
         - Match the user's language in conversation.

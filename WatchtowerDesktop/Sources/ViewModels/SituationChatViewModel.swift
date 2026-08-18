@@ -354,6 +354,7 @@ final class SituationChatViewModel {
         Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
         (the Slack connector or any other) — the data is already local and these tools are already connected. \
         If a lookup returns nothing, say so plainly rather than blaming access.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === RESPONSE STYLE ===
         - Match the user's language in conversation.

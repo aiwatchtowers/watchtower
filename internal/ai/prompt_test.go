@@ -34,6 +34,10 @@ func TestBuildSystemPrompt_NoShellFallback(t *testing.T) {
 
 	assert.NotContains(t, prompt, "sqlite3")
 	assert.Contains(t, prompt, "no SQL tool and no shell")
+	// The no-live-sources ground rule: the assistant must never claim it will
+	// check Slack/Jira/Calendar/the web directly, nor beg for tool approvals.
+	assert.Contains(t, prompt, "NO internet access and NO live access to Slack, Jira, or Calendar")
+	assert.Contains(t, prompt, "never ask the user to approve tool permissions")
 }
 
 func TestBuildSystemPrompt_ContainsGuidelines(t *testing.T) {
