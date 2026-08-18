@@ -18,7 +18,7 @@ import (
 
 // reflectSource is the WithSource routing tag for the strong-tier weekly
 // reflection pass. It is deliberately ABSENT from the light-tier switch in
-// internal/digest/models.go / internal/codex/models.go, so it routes to the
+// the TierForSource table in internal/digest/models.go, so it routes to the
 // default (strong) model — a models test pins this (mirror of the Phase-3
 // rewrite/beliefs routing).
 const reflectSource = prompts.MemoryReflect

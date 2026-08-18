@@ -24,7 +24,7 @@ import (
 // never written. The hallucinated key_messages class dies by construction.
 
 // renderChannelDigestSource is the WithSource tag that routes the render to the
-// cheap model tier (see internal/digest/models.go and internal/codex/models.go),
+// cheap model tier (see the TierForSource table in internal/digest/models.go),
 // matching the legacy channel digest.
 const renderChannelDigestSource = prompts.MemoryRenderChannelDigest
 
