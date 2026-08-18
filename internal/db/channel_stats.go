@@ -44,8 +44,15 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 	}
 
 	// currentUserID may be namespaced (e.g. "1:U123"); reduce to the raw form
-	// for the LIKE pattern since messages.text carries Slack's markup untouched.
-	mentionPattern, _ := watchtowerslack.MentionPatterns(currentUserID)
+	// for the LIKE patterns since messages.text carries Slack's markup
+	// untouched — both the strict `<@U123>` and resolved `<@U123|Display>`
+	// forms must be counted, not just the strict one.
+	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
+
+	// A raw mention is account-blind, so scope the mention count to channels in
+	// currentUserID's own account (accountPrefixOf, "" → unscoped as before) —
+	// otherwise another account's mention of a colliding raw id counts here.
+	accountPrefix := accountPrefixOf(currentUserID)
 
 	rows, err := db.Query(`
 		SELECT
@@ -71,7 +78,7 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 				COUNT(*) AS total_msgs,
 				SUM(CASE WHEN m.user_id = ? THEN 1 ELSE 0 END) AS user_msgs,
 				SUM(CASE WHEN m.user_id = '' OR COALESCE(u.is_bot_override, u.is_bot) = 1 THEN 1 ELSE 0 END) AS bot_msgs,
-				SUM(CASE WHEN m.text LIKE ? THEN 1 ELSE 0 END) AS mention_count,
+				SUM(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN 1 ELSE 0 END) AS mention_count,
 				MAX(m.ts_unix) AS last_activity,
 				MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity
 			FROM messages m
@@ -82,7 +89,7 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 		LEFT JOIN channel_settings cs ON cs.channel_id = c.id
 		LEFT JOIN watch_list w ON w.entity_type = 'channel' AND w.entity_id = c.id
 		ORDER BY COALESCE(ms.total_msgs, 0) DESC, c.name`,
-		currentUserID, mentionPattern, currentUserID)
+		currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("querying channel stats: %w", err)
 	}

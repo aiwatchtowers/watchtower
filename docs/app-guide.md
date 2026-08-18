@@ -205,6 +205,8 @@ Each task created from a source retains a link back to it. Click the source link
 
 **Task detail** shows: text, intent (why it matters), status switcher, priority badge, ownership badge, due date, sub-items checklist, tags, blocking info, source link, and feedback buttons (thumbs up/down).
 
+**Assistant (task chat)** — ask the assistant to work on the task, and it proposes changes instead of making them: each proposal shows up as a **Proposed change** card with **Approve** / **Reject** (and, for a "create something" proposal, a picker for whether it becomes a checkpoint or a sub-task). Nothing is written until you approve. When the assistant proposes a whole batch at once, an **Approve all (N)** button appears in the chat header: it applies every still-undecided proposal and tells the assistant about the batch in one go, instead of one round-trip per card. Approving or rejecting never has to wait for the assistant to stop typing — the change is applied straight away, and the assistant is told as soon as its current reply finishes (or with your next message, if you stopped it).
+
 **Quick actions** — right-click any task for: Mark Done, Dismiss, change Status, change Priority, Delete.
 
 **Filters** — filter by priority (high/medium/low), ownership (mine/delegated/watching), or toggle to show completed tasks.

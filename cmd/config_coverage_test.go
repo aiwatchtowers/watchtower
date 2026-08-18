@@ -150,13 +150,25 @@ func TestConfigSet_MemorySurfaces(t *testing.T) {
 }
 
 func TestConfigSet_NoConfigFile(t *testing.T) {
+	// A `config set` (and the feature manager's `features enable/disable`,
+	// which shares setConfigKey) against a writable location with no
+	// config.yaml yet must CREATE it, dir included — a Desktop-only install has
+	// no config until first use, and the onboarding feature splash's apply()
+	// would otherwise be permanently blocked (audit onboarding fn #3).
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "sub", "config.yaml")
 	oldFlagConfig := flagConfig
-	flagConfig = "/nonexistent/config.yaml"
+	flagConfig = configPath
 	defer func() { flagConfig = oldFlagConfig }()
 
 	err := configSetCmd.RunE(configSetCmd, []string{"ai.model", "test"})
+	require.NoError(t, err)
+	require.FileExists(t, configPath)
+
+	// An unwritable path still fails rather than silently succeeding.
+	flagConfig = "/nonexistent/config.yaml"
+	err = configSetCmd.RunE(configSetCmd, []string{"ai.model", "test"})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "reading config")
 }
 
 func TestConfigInit_ManualEmptyWorkspace(t *testing.T) {

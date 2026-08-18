@@ -50,6 +50,15 @@ var backfillMaxCycles = 50
 // bounded to the daemon re-mining [reached, now] once, which IDEA-05 makes
 // harmless (spec §3).
 func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress func(cycle int)) (result BackfillResult, err error) {
+	// A bounded backfill's stream listing is capped on the row's OWN content
+	// window (period_to <= to), so it can skip going-forward rows the
+	// consolidator then advances the stream floor past — capture the bound now,
+	// before `to` defaults to now, so restore can keep the floor honest (D10).
+	// The unbounded/default path leaves this "" and restores exactly as before.
+	streamCapISO := ""
+	if !to.IsZero() {
+		streamCapISO = to.UTC().Format(time.RFC3339)
+	}
 	if to.IsZero() {
 		to = time.Now()
 	}
@@ -70,7 +79,7 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 	savedEmailFloor := map[int64]float64{}
 	savedJiraFloor := map[int64]string{}
 	defer func() {
-		p.restoreBackfillFloors(savedDigest, savedStream, savedTranscript, savedEmailFloor, savedJiraFloor)
+		p.restoreBackfillFloors(savedDigest, savedStream, savedTranscript, savedEmailFloor, savedJiraFloor, streamCapISO)
 	}()
 
 	if err := p.lowerBackfillFloors(from, to, savedStream, googleAccounts, jiraAccounts, savedEmailFloor, savedJiraFloor); err != nil {
@@ -361,22 +370,38 @@ func (p *Pipeline) lowerJiraFloors(from time.Time, fromISO, toISO string, jiraAc
 // a defer, after Backfill has already decided its own return value, and a
 // restore failure must not mask whatever real error (or success) the run
 // produced; it is surfaced instead as a log line an operator can act on.
-func (p *Pipeline) restoreBackfillFloors(savedDigest, savedStream, savedTranscript int64, savedEmailFloor map[int64]float64, savedJiraFloor map[int64]string) {
-	p.restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript)
+func (p *Pipeline) restoreBackfillFloors(savedDigest, savedStream, savedTranscript int64, savedEmailFloor map[int64]float64, savedJiraFloor map[int64]string, streamCapISO string) {
+	p.restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript, streamCapISO)
 	p.restoreEmailFloors(savedEmailFloor)
 	p.restoreJiraFloors(savedJiraFloor)
 }
 
-// restoreWorkspaceFloors is restoreBackfillFloors' workspace-floor step.
-func (p *Pipeline) restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript int64) {
+// restoreWorkspaceFloors is restoreBackfillFloors' workspace-floor step. For a
+// bounded backfill (streamCapISO non-empty) the restored stream floor is capped
+// below the lowest still-unconsolidated going-forward row (D10): the
+// consolidator advances the floor to the highest in-window row it consumed, but
+// a lower-id row whose period_to fell after `to` was never in that pass and must
+// not be stranded below the floor — capping it back keeps it minable on the next
+// incremental pass. Re-mining the already-consolidated rows above the cap is
+// harmless (IDEA-05). The unbounded/default path (streamCapISO == "") restores
+// exactly max(saved, reached), byte-identical to before.
+func (p *Pipeline) restoreWorkspaceFloors(savedDigest, savedStream, savedTranscript int64, streamCapISO string) {
 	reachedDigest, reachedStream, reachedTranscript, err := p.db.GetIdeasFloors()
 	if err != nil {
 		p.logf("ideas: backfill: reading ideas floors for restore: %v", err)
 		return
 	}
+	streamFloor := max(savedStream, reachedStream)
+	if streamCapISO != "" {
+		if pending, perr := p.db.LowestPendingStreamDigestID(savedStream, streamCapISO); perr != nil {
+			p.logf("ideas: backfill: finding lowest pending stream digest for restore: %v", perr)
+		} else if pending > 0 && pending-1 < streamFloor {
+			streamFloor = pending - 1
+		}
+	}
 	if err := p.db.SetIdeasFloors(
 		max(savedDigest, reachedDigest),
-		max(savedStream, reachedStream),
+		streamFloor,
 		max(savedTranscript, reachedTranscript),
 	); err != nil {
 		p.logf("ideas: backfill: restoring ideas floors: %v", err)

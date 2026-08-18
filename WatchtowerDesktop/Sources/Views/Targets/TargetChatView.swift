@@ -48,6 +48,15 @@ struct TargetChatSection: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             Spacer()
+            if chatVM.pendingActionCount > 1 {
+                Button { chatVM.approveAll() } label: {
+                    Label("Approve all (\(chatVM.pendingActionCount))", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Apply every pending proposal and tell the assistant once")
+                .accessibilityIdentifier("chat.approveAll")
+            }
             Picker("Model", selection: $chatVM.selectedModel) {
                 ForEach(ChatModel.models(for: chatVM.provider)) { model in
                     Text(model.displayName).tag(model)
@@ -77,7 +86,6 @@ struct TargetChatSection: View {
                         ForEach(chatVM.actionCards.filter { $0.messageID == msg.id }) { card in
                             TargetActionCardView(
                                 card: card,
-                                isStreaming: chatVM.isStreaming,
                                 onApprove: { kind in chatVM.approve(card, as: kind) },
                                 onReject: { chatVM.reject(card) }
                             )
@@ -175,9 +183,6 @@ struct TargetChatSection: View {
 
 struct TargetActionCardView: View {
     let card: TargetActionCard
-    /// Disable Approve/Reject while a turn is streaming: a decision taken mid-stream
-    /// would apply the write but its follow-up is dropped (sendFollowUp guards on isStreaming).
-    let isStreaming: Bool
     /// `kind` is the user's chosen create-kind for checkpoint/sub-task proposals (nil otherwise).
     let onApprove: (TargetActionKind?) -> Void
     let onReject: () -> Void
@@ -187,12 +192,10 @@ struct TargetActionCardView: View {
 
     init(
         card: TargetActionCard,
-        isStreaming: Bool,
         onApprove: @escaping (TargetActionKind?) -> Void,
         onReject: @escaping () -> Void
     ) {
         self.card = card
-        self.isStreaming = isStreaming
         self.onApprove = onApprove
         self.onReject = onReject
         _createKind = State(initialValue: card.action.type)
@@ -229,7 +232,6 @@ struct TargetActionCardView: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .fixedSize()
-                    .disabled(isStreaming)
                 }
                 HStack(spacing: 8) {
                     Button { onApprove(isCreatable ? createKind : nil) } label: {
@@ -243,7 +245,6 @@ struct TargetActionCardView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
-                .disabled(isStreaming)
             case .applied(let summary):
                 Label(summary, systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)

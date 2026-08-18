@@ -38,6 +38,19 @@ package final class BackgroundTaskManager {
             case .people: ["people", "generate", "--progress-json"]
             }
         }
+
+        /// The feature-registry id (internal/features/registry.go) this pipeline
+        /// belongs to, so the post-onboarding burst can skip a pipeline the
+        /// owner just disabled instead of force-running it regardless of the
+        /// feature gate.
+        package var featureID: String {
+            switch self {
+            case .inbox: "secretary-inbox"
+            case .digests: "slack-digests"
+            case .tracks: "tracks"
+            case .people: "people-cards"
+            }
+        }
     }
 
     package enum TaskStatus: Equatable {
@@ -200,12 +213,22 @@ package final class BackgroundTaskManager {
     }
 
     /// Start all background pipelines: digests first, then tracks + people in parallel, then daemon.
-    package func startPipelines(legacyPeople: Bool = false) {
+    /// - Parameter disabledFeatures: feature-registry ids currently disabled
+    ///   (`FeatureManagerService.disabledFeatureIDs`). A pipeline whose
+    ///   `featureID` is in this set is skipped — the post-onboarding burst runs
+    ///   one-shot CLI pipelines that force-enable themselves regardless of
+    ///   config (e.g. `digest generate`), so without this it would run exactly
+    ///   the features the owner just switched off on the splash (audit H5). The
+    ///   daemon started at the end already honors the per-feature gates itself.
+    package func startPipelines(legacyPeople: Bool = false, disabledFeatures: Set<String> = []) {
         // Guard against duplicate calls — only start if no pipeline is active
         guard pipelineTask == nil else { return }
 
-        // Initialize task states for active pipelines
-        for kind in TaskKind.allCases {
+        let isEnabled: (TaskKind) -> Bool = { !disabledFeatures.contains($0.featureID) }
+
+        // Initialize task states for active, enabled pipelines only — a disabled
+        // pipeline never shows as pending in the sidebar.
+        for kind in TaskKind.allCases where isEnabled(kind) {
             tasks[kind] = TaskState()
         }
 
@@ -221,22 +244,30 @@ package final class BackgroundTaskManager {
             }
 
             // Inbox runs independently — fire and forget, never blocks other pipelines.
-            Task { @MainActor in
-                await self.runTask(.inbox)
+            if isEnabled(.inbox) {
+                Task { @MainActor in
+                    await self.runTask(.inbox)
+                }
             }
 
             // Phase 1: channel digests (tracks + people prefer digest data, but
             // a digests failure must not block the rest of the chain).
-            await runTask(.digests)
+            if isEnabled(.digests) {
+                await runTask(.digests)
+            }
             guard !Task.isCancelled else { return }
 
             // Phase 2: tracks + people in parallel, regardless of Phase 1 outcome.
             await withTaskGroup(of: Void.self) { group in
-                group.addTask { @MainActor in
-                    await self.runTask(.tracks)
+                if isEnabled(.tracks) {
+                    group.addTask { @MainActor in
+                        await self.runTask(.tracks)
+                    }
                 }
-                group.addTask { @MainActor in
-                    await self.runTask(.people)
+                if isEnabled(.people) {
+                    group.addTask { @MainActor in
+                        await self.runTask(.people)
+                    }
                 }
             }
             guard !Task.isCancelled else { return }

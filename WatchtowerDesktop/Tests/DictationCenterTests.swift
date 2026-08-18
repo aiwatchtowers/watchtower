@@ -302,9 +302,9 @@ final class DictationCenterTests: MeetingRecorderTestCase {
         var field = ""
         let base = DictationSpan.base(existing: field, mode: .chat)
         center.start(targetID: "t1", mode: .chat,
-                     onLiveText: { field = DictationSpan.compose(base: base, dictated: $0) },
-                     onResult: { field = DictationSpan.compose(base: base, dictated: $0.text) },
-                     onCleanupFailure: { field = DictationSpan.compose(base: base, dictated: $0) })
+                     onLiveText: { field = DictationSpan.compose(base: base, dictated: $0, mode: .chat) },
+                     onResult: { field = DictationSpan.compose(base: base, dictated: $0.text, mode: .chat) },
+                     onCleanupFailure: { field = DictationSpan.compose(base: base, dictated: $0, mode: .chat) })
 
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
         recorder.emit([Float](repeating: 0.1, count: 1_600))

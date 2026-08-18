@@ -352,13 +352,19 @@ func (db *DB) BulkUpdateInboxPriorities(updates map[int]struct {
 // distinct signals, not duplicates of each other, so trigger_type is part of
 // the dedup key alongside channel_id/thread_ts.
 // Keeps the most recently updated item and resolves the rest.
+//
+// Restricted to genuine threads (thread_ts <> ”) — non-threaded items all
+// share thread_ts = ”, so grouping them by (channel_id, thread_ts,
+// trigger_type) with no guard would collapse every unrelated plain-channel
+// mention in a channel into a single surviving item (audit #112).
 func (db *DB) DeduplicateThreadInboxItems() (int, error) {
-	// Find threads (and non-threaded channel groups) with multiple pending items.
+	// Find threads with multiple pending items.
 	res, err := db.Exec(`UPDATE inbox_items SET status = 'resolved', resolved_reason = 'Merged duplicate'
 		WHERE status = 'pending'
+		AND thread_ts <> ''
 		AND id NOT IN (
 			SELECT MAX(id) FROM inbox_items
-			WHERE status = 'pending'
+			WHERE status = 'pending' AND thread_ts <> ''
 			GROUP BY channel_id, thread_ts, trigger_type
 		)
 		AND EXISTS (

@@ -448,11 +448,12 @@ type Briefing struct {
 
 // Prompt represents an editable AI prompt template.
 type Prompt struct {
-	ID        string // "digest.channel", "tracks.extract", "analysis.user", etc.
-	Template  string
-	Version   int
-	Language  string // "" = auto-detect, "en", "ru", etc.
-	UpdatedAt string
+	ID         string // "digest.channel", "tracks.extract", "analysis.user", etc.
+	Template   string
+	Version    int
+	Language   string // "" = auto-detect, "en", "ru", etc.
+	UpdatedAt  string
+	Customized bool // true once a tuner/user edit moved this off the default lineage
 }
 
 // ChannelSettings stores per-channel user preferences (mute for AI, favorite).

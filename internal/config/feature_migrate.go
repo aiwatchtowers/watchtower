@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // legacyDigestOffFeatureKeys lists every non-core feature key that a legacy
@@ -78,17 +80,17 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 	}
 
 	legacy := v.IsSet("digest.enabled") && !v.GetBool("digest.enabled")
+	sets := map[string]bool{"features.migrated": true}
 	if legacy {
 		for _, key := range legacyDigestOffFeatureKeys {
-			v.Set(key, false)
+			sets[key] = false
 		}
 	}
-	v.Set("features.migrated", 1)
 
 	// legacy is returned even when the write fails: "this install needs the
 	// mapping and did not get it" is exactly the signal the daemon's
 	// fail-closed path (ApplyLegacyDigestOff) keys on.
-	return legacy, writeFeatureMigrationConfig(v, configPath)
+	return legacy, patchConfigYAML(configPath, sets)
 }
 
 // ApplyLegacyDigestOff applies the legacy digest.enabled=false mapping to an
@@ -116,12 +118,104 @@ func ApplyLegacyDigestOff(cfg *Config) {
 	cfg.Targets.NextStep.Enabled = false
 }
 
-// writeFeatureMigrationConfig writes viper config to a temp file with 0o600
-// permissions, then atomically renames it into place. Unexported copy of
-// cmd/config.go's writeConfigAtomic — internal/config cannot import cmd, so
-// this small helper is duplicated here rather than shared; cmd's version is
-// left as-is.
-func writeFeatureMigrationConfig(v *viper.Viper, configPath string) error {
+// patchConfigYAML sets each dotted key in sets to its bool value by editing
+// the parsed YAML document node-by-node, rather than round-tripping through
+// viper's WriteConfigAs (the previous approach). WriteConfigAs re-serializes
+// the ENTIRE file from viper's internal map, which lowercases every key —
+// including user-supplied ones like `workspaces.<Team>` — dropping comments
+// and reordering keys along the way. GetActiveWorkspace's read-side
+// lowercase fallback (config.go) independently covers the specific
+// "workspace not found" symptom either way — viper lowercases nested map
+// keys on every read regardless of what the file's bytes say — but this
+// patch still matters on its own: no unforced rewrite of a file the owner
+// may hand-edit or keep under version control. Only the mapping nodes on
+// the path to each target key are touched or created here — every sibling
+// (the workspaces block, comments, key order, casing) is left exactly as
+// parsed.
+func patchConfigYAML(configPath string, sets map[string]bool) error {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("config root at %s is not a mapping", configPath)
+	}
+
+	for key, value := range sets {
+		setYAMLPath(root, strings.Split(key, "."), value)
+	}
+
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return fmt.Errorf("encoding config: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("encoding config: %w", err)
+	}
+
+	return writeFeatureMigrationConfigBytes([]byte(buf.String()), configPath)
+}
+
+// setYAMLPath finds or creates the mapping node at path within root and sets
+// its final segment to a bool scalar, preserving the casing of every key
+// already present and leaving every node off the path untouched.
+func setYAMLPath(root *yaml.Node, path []string, value bool) {
+	node := root
+	for i, seg := range path {
+		last := i == len(path)-1
+
+		var valNode *yaml.Node
+		for j := 0; j+1 < len(node.Content); j += 2 {
+			if node.Content[j].Value == seg {
+				valNode = node.Content[j+1]
+				break
+			}
+		}
+
+		if valNode == nil {
+			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: seg}
+			if last {
+				valNode = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: boolYAML(value)}
+			} else {
+				valNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			}
+			node.Content = append(node.Content, keyNode, valNode)
+		} else if last {
+			valNode.Kind = yaml.ScalarNode
+			valNode.Tag = "!!bool"
+			valNode.Value = boolYAML(value)
+			valNode.Content = nil
+		}
+
+		node = valNode
+	}
+}
+
+func boolYAML(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// writeFeatureMigrationConfigBytes writes raw config bytes to a temp file
+// with 0o600 permissions, then atomically renames it into place. Unexported
+// copy of cmd/config.go's writeConfigAtomic — internal/config cannot import
+// cmd, so this small helper is duplicated here rather than shared; cmd's
+// version is left as-is.
+func writeFeatureMigrationConfigBytes(data []byte, configPath string) error {
 	dir := filepath.Dir(configPath)
 
 	oldMask := syscall.Umask(0o077)
@@ -131,12 +225,13 @@ func writeFeatureMigrationConfig(v *viper.Viper, configPath string) error {
 		return fmt.Errorf("creating temp config file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()
 
-	if err := v.WriteConfigAs(tmpPath); err != nil {
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		os.Remove(tmpPath)
 		return fmt.Errorf("writing config: %w", err)
 	}
+	tmp.Close()
 
 	if err := os.Chmod(tmpPath, 0o600); err != nil {
 		os.Remove(tmpPath)

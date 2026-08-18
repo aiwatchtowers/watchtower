@@ -520,6 +520,81 @@ func TestBackfill_ProgressCallback_ReportsEachCycle(t *testing.T) {
 	assert.Equal(t, seen[len(seen)-1], result.Cycles)
 }
 
+// TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows pins IDEA-01
+// floor honesty for the STREAM floor across a bounded backfill. A going-forward
+// daemon stream_digests row (period_to ≈ now, above the window's `to`) can sit
+// at a LOWER id than the in-window rows a bounded backfill consolidates: the
+// consolidator's `period_to <= to` bound skips it, then advances the stream
+// floor onto the higher-id in-window rows — stranding the skipped row below the
+// floor forever. The restore must cap the stream floor below the lowest such
+// row so it stays minable on the next incremental pass.
+func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	unit := `[{"title":"t","summary":"s","ideas":[{"text":"x","author":"a","ref":"gmail:1:thr"}],"decisions":[]}]`
+
+	// Going-forward rows: period_to AFTER `to` (≈ now), inserted FIRST so they
+	// take the LOWER ids — the ordinary daemon produced them but has not yet
+	// consolidated them.
+	var pendingIDs []int64
+	for i := 0; i < 5; i++ {
+		id, err := d.InsertStreamDigest(db.StreamDigest{
+			Source: "gmail", AccountID: 1, Scope: "acct",
+			PeriodFrom: now.Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+			PeriodTo:   now.UTC().Format(time.RFC3339),
+			TopicsJSON: unit,
+		})
+		require.NoError(t, err)
+		pendingIDs = append(pendingIDs, id)
+	}
+	// In-window rows: period_to INSIDE [from, to], inserted SECOND so they take
+	// the HIGHER ids — the material the bounded backfill actually consolidates.
+	var inWindowIDs []int64
+	for i := 0; i < 5; i++ {
+		id, err := d.InsertStreamDigest(db.StreamDigest{
+			Source: "gmail", AccountID: 1, Scope: "acct",
+			PeriodFrom: from.UTC().Format(time.RFC3339),
+			PeriodTo:   to.Add(-time.Hour).UTC().Format(time.RFC3339),
+			TopicsJSON: unit,
+		})
+		require.NoError(t, err)
+		inWindowIDs = append(inWindowIDs, id)
+	}
+	require.Greater(t, inWindowIDs[0], pendingIDs[len(pendingIDs)-1])
+
+	// Nothing consolidated yet — the stream floor sits below every row.
+	require.NoError(t, d.SetIdeasFloors(0, 0, 0))
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		return `{"ops":[]}`, nil // clean no-op: advance floors, mint nothing
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	_, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+
+	_, streamFloor, _, err := d.GetIdeasFloors()
+	require.NoError(t, err)
+	assert.Less(t, streamFloor, pendingIDs[0],
+		"the bounded backfill must not advance the stream floor onto or past the lowest still-unconsolidated going-forward row")
+
+	// Every going-forward row remains visible to the next incremental pass.
+	remaining, err := d.ListStreamDigestsAfter(streamFloor, "")
+	require.NoError(t, err)
+	seen := map[int64]bool{}
+	for _, s := range remaining {
+		seen[s.ID] = true
+	}
+	for _, id := range pendingIDs {
+		assert.True(t, seen[id], "going-forward row %d must remain minable after the backfill", id)
+	}
+}
+
 // --- lock.go -----------------------------------------------------------
 
 func TestBackfillLock_AcquireThenFresh(t *testing.T) {
@@ -649,4 +724,36 @@ func TestBackfillLock_ReleaseDoesNotRemoveAReclaimedLock(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err, "the second owner's lock must still be there")
 	assert.Equal(t, reclaimed, string(data), "a release must never remove a lock it no longer owns")
+}
+
+// TestBackfillLock_HeartbeatKeepsLockFresh pins F7/D4: started= is written once
+// at acquire and freshness is judged on it, so a run longer than
+// backfillLockFreshWindow would read as stale and be reclaimable mid-run — two
+// live miners. The heartbeat must periodically re-stamp started= so a held lock
+// stays fresh for as long as its holder runs.
+func TestBackfillLock_HeartbeatKeepsLockFresh(t *testing.T) {
+	restore := SetBackfillLockHeartbeatIntervalForTest(5 * time.Millisecond)
+	defer restore()
+
+	dir := t.TempDir()
+	release, err := AcquireBackfillLock(dir, "daemon")
+	require.NoError(t, err)
+	defer release()
+
+	path := filepath.Join(dir, backfillLockFilename)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	first, ok := parseLockStarted(string(data))
+	require.True(t, ok)
+
+	require.Eventually(t, func() bool {
+		d, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return false
+		}
+		s, ok := parseLockStarted(string(d))
+		return ok && s.After(first)
+	}, 2*time.Second, 5*time.Millisecond, "the heartbeat must re-stamp started= while the lock is held")
+
+	assert.True(t, BackfillLockFresh(dir), "a heartbeated lock stays fresh")
 }

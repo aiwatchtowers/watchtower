@@ -125,10 +125,13 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 
 // dictateCleanEnvelope parses the AI reply and builds the per-mode stdout
 // envelope, rejecting a reply whose mode-required field is missing or empty.
+// Errors deliberately never embed the reply text itself — it is the user's
+// dictated speech, and an error message is the kind of thing that ends up in
+// logs (see the Swift side's NSLog on cleanup failure).
 func dictateCleanEnvelope(mode, reply string) (map[string]any, error) {
 	obj, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return nil, fmt.Errorf("extracting cleanup JSON: %w (raw: %.300s)", err, reply)
+		return nil, fmt.Errorf("extracting cleanup JSON: %w", err)
 	}
 	var parsed struct {
 		Title    string `json:"title"`
@@ -137,24 +140,24 @@ func dictateCleanEnvelope(mode, reply string) (map[string]any, error) {
 		Text     string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(obj), &parsed); err != nil {
-		return nil, fmt.Errorf("parsing cleanup JSON: %w (raw: %.300s)", err, reply)
+		return nil, fmt.Errorf("parsing cleanup JSON: %w", err)
 	}
 
 	envelope := map[string]any{"mode": mode}
 	switch mode {
 	case "idea":
 		if strings.TrimSpace(parsed.Title) == "" || strings.TrimSpace(parsed.Body) == "" {
-			return nil, fmt.Errorf("cleanup reply missing title/body (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing title/body")
 		}
 		envelope["title"], envelope["body"] = parsed.Title, parsed.Body
 	case "note":
 		if strings.TrimSpace(parsed.Markdown) == "" {
-			return nil, fmt.Errorf("cleanup reply missing markdown (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing markdown")
 		}
 		envelope["markdown"] = parsed.Markdown
 	case "chat":
 		if strings.TrimSpace(parsed.Text) == "" {
-			return nil, fmt.Errorf("cleanup reply missing text (raw: %.300s)", reply)
+			return nil, fmt.Errorf("cleanup reply missing text")
 		}
 		envelope["text"] = parsed.Text
 	}

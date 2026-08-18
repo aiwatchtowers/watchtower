@@ -580,15 +580,29 @@ func isValidSlackToken(token string) bool {
 }
 
 // GetActiveWorkspace returns the config for the active workspace.
+//
+// The lookup tries the exact ActiveWorkspace casing first, then falls back
+// to its lowercased form: viper's Unmarshal always lowercases nested map
+// keys on read (insensitiviseMap), so a `workspaces.<Team>` block with any
+// uppercase letter in its key only ever lands in c.Workspaces under its
+// lowercased form, even though ActiveWorkspace itself preserves whatever
+// casing was written to active_workspace (a plain string value, not a
+// map key). Without this fallback a mixed-case workspace name never
+// resolves — see TestGetActiveWorkspace_CaseInsensitiveLookup. Only the
+// lookup is normalized; ActiveWorkspace's own casing is never touched here
+// (WorkspaceDir keys the on-disk data directory off it — lowercasing it
+// would repoint an existing install's data).
 func (c *Config) GetActiveWorkspace() (*WorkspaceConfig, error) {
 	if c.ActiveWorkspace == "" {
 		return nil, fmt.Errorf("no active workspace set")
 	}
-	ws, ok := c.Workspaces[c.ActiveWorkspace]
-	if !ok {
-		return nil, fmt.Errorf("workspace %q not found in config", c.ActiveWorkspace)
+	if ws, ok := c.Workspaces[c.ActiveWorkspace]; ok {
+		return ws, nil
 	}
-	return ws, nil
+	if ws, ok := c.Workspaces[strings.ToLower(c.ActiveWorkspace)]; ok {
+		return ws, nil
+	}
+	return nil, fmt.Errorf("workspace %q not found in config", c.ActiveWorkspace)
 }
 
 // WorkspaceDir returns the data directory for the active workspace

@@ -221,4 +221,51 @@ final class DigestFeedTests: XCTestCase {
 
         XCTAssertEqual(vm.feedEntries.count, 1, "startObserving should reload after a stop")
     }
+
+    /// D9: a stream digest inserted while the Digests tab is already open
+    /// (e.g. the daemon's ideas.digest_email/ideas.digest_jira pass landing
+    /// mid-session) must surface in the feed without the view needing to
+    /// disappear/reappear — the `digests` table observation's live-update
+    /// behavior, now mirrored for `stream_digests`.
+    @MainActor
+    func testNewStreamDigestSurfacesInAnAlreadyOpenFeed() async throws {
+        let vm = DigestViewModel(dbManager: dbManager)
+        vm.startObserving()
+        XCTAssertTrue(vm.feedEntries.isEmpty)
+
+        // Give the observation's async baseline fetch a moment to complete
+        // before writing — `.dropFirst()` only skips the FIRST delivered
+        // value, so a write landing before that baseline fetch would fold
+        // into it instead of arriving as a distinct, deliverable change (a
+        // race real usage never hits: the daemon writes long after a view
+        // has been open, never in the same instant it subscribes).
+        try? await Task.sleep(for: .milliseconds(200))
+
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertStreamDigest(db)
+        }
+
+        await waitUntil("stream digest to appear in the open feed") {
+            vm.feedEntries.count == 1
+        }
+        guard case .stream = vm.feedEntries[0] else {
+            return XCTFail("expected a stream entry, got \(vm.feedEntries[0])")
+        }
+    }
+
+    /// Deadline-based poll (the `ViewModelTests`/`MeetingRecorderTestSupport`
+    /// shape): yields the main actor until `condition` holds, failing instead
+    /// of hanging — a ValueObservation fire is async and not otherwise
+    /// awaitable from the test.
+    @MainActor
+    private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
+        let deadline: Duration = .seconds(5)
+        let start = ContinuousClock.now
+        repeat {
+            if condition() { return }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now - start < deadline
+        XCTFail("timed out waiting for \(what)")
+    }
 }

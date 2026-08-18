@@ -560,6 +560,29 @@ func (db *DB) ListStreamDigestsAfter(floor int64, toISO string) ([]StreamDigest,
 	return out, rows.Err()
 }
 
+// LowestPendingStreamDigestID returns the lowest stream_digests id above the
+// floor whose content window (period_to) falls strictly AFTER toISO — a row a
+// bounded backfill's `period_to <= toISO` listing bound (ListStreamDigestsAfter)
+// skips, so it is never consolidated in that pass. A bounded backfill uses it
+// so it can keep from advancing the stream floor past such a still-unconsolidated
+// row (IDEA-01, D10): a going-forward daemon row (period_to ≈ now) written
+// between the window's `to` and the backfill can sit at a LOWER id than the
+// in-window rows the backfill just consolidated, and would otherwise be
+// stranded below the advanced floor forever. Returns 0 when no such row exists;
+// toISO must be non-empty (the unbounded default path never calls this).
+func (db *DB) LowestPendingStreamDigestID(floor int64, toISO string) (int64, error) {
+	var id sql.NullInt64
+	err := db.QueryRow(`SELECT MIN(id) FROM stream_digests WHERE id > ? AND period_to > ?`,
+		floor, toISO).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("finding lowest pending stream digest: %w", err)
+	}
+	if !id.Valid {
+		return 0, nil
+	}
+	return id.Int64, nil
+}
+
 // JiraComment is a bounded, locally-cached Jira comment feeding the Jira
 // stream digest — not a full Jira-comment mirror. AuthorAccountID is the
 // commenter's Atlassian account id (distinct from Author, the display name);

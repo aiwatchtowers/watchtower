@@ -126,12 +126,15 @@ func TestGetChannelStats(t *testing.T) {
 // TestGetChannelStats_MentionCountNamespacedUserID pins the same
 // reduce-before-LIKE fix as FindPendingMentions: currentUserID is namespaced
 // ("1:U1") but messages.text carries Slack's raw mention markup ("<@U1>")
-// untouched, since it is source data no migration rewrites.
+// untouched, since it is source data no migration rewrites. The channel is
+// namespaced too (migration 00048 rewrote channel_id along with user_id),
+// matching currentUserID's own account so the account-scoping fix (audit F2)
+// does not suppress this mention.
 func TestGetChannelStats_MentionCountNamespacedUserID(t *testing.T) {
 	db := openTestDB(t)
-	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
 
-	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000.001', '1:U2', 'hey <@U1> check this')`)
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', '1:U2', 'hey <@U1> check this')`)
 	require.NoError(t, err)
 
 	stats, err := db.GetChannelStats("1:U1")
@@ -139,13 +142,69 @@ func TestGetChannelStats_MentionCountNamespacedUserID(t *testing.T) {
 
 	var c1 *ChannelStatRow
 	for i := range stats {
-		if stats[i].ChannelID == "C1" {
+		if stats[i].ChannelID == "1:C1" {
 			c1 = &stats[i]
 			break
 		}
 	}
-	require.NotNil(t, c1, "C1 should be in stats")
+	require.NotNil(t, c1, "1:C1 should be in stats")
 	assert.Equal(t, 1, c1.Mentions)
+}
+
+// TestGetChannelStats_MentionCountScopedToAccount pins the account-scoping
+// half of the fix (audit F2): a raw <@U…> mention markup carries no account
+// discriminator, so a channel in a DIFFERENT connected account whose raw
+// mention text happens to collide with this owner's raw id must not count
+// toward this owner's mention total in that channel.
+func TestGetChannelStats_MentionCountScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "acct1-general", Type: "public"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "2:C1", Name: "acct2-general", Type: "public"}))
+
+	// A real mention of the account-1 owner in their own account.
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', '1:U2', 'hey <@U1> check this')`)
+	require.NoError(t, err)
+	// An account-2 message mentioning the same raw id in a DIFFERENT
+	// account's channel — refers to a different person (2:U1), not the
+	// account-1 owner.
+	_, err = db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('2:C1', '1000.002', '2:U2', 'hey <@U1> different workspace')`)
+	require.NoError(t, err)
+
+	stats, err := db.GetChannelStats("1:U1")
+	require.NoError(t, err)
+
+	byID := map[string]*ChannelStatRow{}
+	for i := range stats {
+		byID[stats[i].ChannelID] = &stats[i]
+	}
+	require.NotNil(t, byID["1:C1"])
+	require.NotNil(t, byID["2:C1"])
+	assert.Equal(t, 1, byID["1:C1"].Mentions, "the owner's own-account mention counts")
+	assert.Equal(t, 0, byID["2:C1"].Mentions, "the other account's colliding raw-id mention must not attribute to this owner")
+}
+
+// TestGetChannelStats_MentionCountPipeForm pins the pipe-form fix (audit F2):
+// MentionPatterns returns two patterns — strict `<@U123>` and resolved
+// `<@U123|Display Name>` — both must be counted, not just the strict one.
+func TestGetChannelStats_MentionCountPipeForm(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
+
+	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.001', '1:U2', 'hey <@U1|Owner Name> check this')`)
+	require.NoError(t, err)
+
+	stats, err := db.GetChannelStats("1:U1")
+	require.NoError(t, err)
+
+	var c1 *ChannelStatRow
+	for i := range stats {
+		if stats[i].ChannelID == "1:C1" {
+			c1 = &stats[i]
+			break
+		}
+	}
+	require.NotNil(t, c1, "1:C1 should be in stats")
+	assert.Equal(t, 1, c1.Mentions, "the pipe-form resolved mention must be counted too")
 }
 
 func TestGetChannelStats_EmptyUserID(t *testing.T) {

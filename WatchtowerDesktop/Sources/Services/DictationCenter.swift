@@ -543,7 +543,12 @@ final class DictationCenter {
             engineBecameIdle()
             onResult(result)
         } catch {
-            NSLog("[Dictation] cleanup failed, raw text kept: %@", String(describing: error))
+            // D2: never log the error's full description here — a cleanup
+            // failure's error can carry fragments of the dictated speech (the
+            // CLI's stderr, a decode error's mismatched value), and the
+            // unified log is not where that belongs. The error TYPE is
+            // enough to diagnose which failure mode fired.
+            NSLog("[Dictation] cleanup failed (%@), raw text kept", String(describing: type(of: error)))
             guard !Task.isCancelled else { return }
             onCleanupFailure?(rawText)
             finish(failed: "cleanup failed — raw text kept")

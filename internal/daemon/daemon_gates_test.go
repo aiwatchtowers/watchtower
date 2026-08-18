@@ -52,8 +52,10 @@ type gateCase struct {
 	wire func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger)
 	run  func(d *Daemon)
 	// check defaults to assertNoPipelineRuns; a couple of phases need a
-	// different observable (feed doesn't use trackedPipelineRun at all;
-	// ideas additionally must never touch the backfill lock file).
+	// different observable (ideas/stream_digests additionally must never
+	// touch the backfill lock file). Feed is Core (see
+	// TestDaemon_PhaseFeed_IgnoresConfigKillSwitch below) and is not one of
+	// these cases — it has no gate to prove absent.
 	check func(t *testing.T, cfg *config.Config, database *db.DB)
 }
 
@@ -233,25 +235,6 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				d.runDayPlanConflictPhase(context.Background(), now)
 			},
 		},
-		{
-			name: "feed",
-			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
-				cfg.Feed.Enabled = false
-				_, err := database.Exec(`INSERT INTO situations (id, title, priority, status, updated_at)
-					VALUES (1, 'release blocked', 'high', 'open', '2026-07-09T10:00:00Z')`)
-				require.NoError(t, err)
-				d.SetFeedPipeline(feed.New(database, cfg, l))
-			},
-			run: func(d *Daemon) { d.phaseFeed() },
-			// phaseFeed never uses trackedPipelineRun, so the pipeline_runs
-			// table can't observe its gate — check the feed_items table
-			// (the TestDaemon_FeedPhase precedent) instead.
-			check: func(t *testing.T, cfg *config.Config, database *db.DB) {
-				item, err := database.GetFeedItem("situation", "1")
-				require.NoError(t, err)
-				assert.Nil(t, item, "feed.enabled=false must never publish")
-			},
-		},
 	}
 
 	for _, tc := range cases {
@@ -283,6 +266,45 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			check(t, cfg, database)
 		})
 	}
+}
+
+// TestDaemon_PhaseFeed_IgnoresConfigKillSwitch pins the Core-feature
+// counterpart to TestFeatureGates_DisabledPhaseWritesNoPipelineRun: Feed is
+// registered Core in internal/features (no toggle, `features
+// enable/disable feed` is refused), so unlike every gated phase above,
+// clearing cfg.Feed.Enabled directly — the one way `feed.enabled` remained
+// reachable, via `config set feed.enabled false` or a hand-edited yaml —
+// must NOT stop phaseFeed from publishing. Before this test's fix, the same
+// early-return-on-disabled pattern used by every other phase let a plain
+// config edit permanently kill the Dashboard timeline with no feature-manager
+// path back on.
+func TestDaemon_PhaseFeed_IgnoresConfigKillSwitch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+	cfg.Feed.Enabled = false
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o755))
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	_, err = database.Exec(`INSERT INTO situations (id, title, priority, status, updated_at)
+		VALUES (1, 'release blocked', 'high', 'open', '2026-07-09T10:00:00Z')`)
+	require.NoError(t, err)
+
+	l := log.New(os.Stderr, "[test-feed-core] ", 0)
+	d := New(cfg)
+	d.SetLogger(l)
+	d.SetDB(database)
+	d.SetFeedPipeline(feed.New(database, cfg, l))
+
+	d.phaseFeed()
+
+	item, err := database.GetFeedItem("situation", "1")
+	require.NoError(t, err)
+	assert.NotNil(t, item, "feed.enabled=false must never silently kill the Core feed phase")
 }
 
 // TestDaemon_RunDayPlanConflictPhase_DisabledSkipsEntirely pins the gate this

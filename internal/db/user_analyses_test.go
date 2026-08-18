@@ -583,6 +583,42 @@ func TestComputeUserInteractions_MentionsNamespacedIDs(t *testing.T) {
 	assert.Equal(t, 1, interactions[0].MentionsFrom) // U2 mentioned U1 once
 }
 
+// TestComputeUserInteractions_MentionsScopedToAccount pins the multi-account
+// mention-attribution fix (audit F1/F2): a raw <@U…> mention markup carries
+// no account discriminator, so two connected Slack accounts can each have a
+// user sharing the same raw id ("1:U1" and "2:U1" are different people). A
+// mention inside account 1's channel must resolve only against account 1's
+// users, and a mention inside account 2's channel must never be attributed
+// to account 1's owner even if account 2 happens to have a user with the
+// same raw id.
+func TestComputeUserInteractions_MentionsScopedToAccount(t *testing.T) {
+	db := openTestDB(t)
+
+	// Account 1: the owner (1:U1) and the person they mention (1:U2).
+	require.NoError(t, db.UpsertUser(User{ID: "1:U1", Name: "owner"}))
+	require.NoError(t, db.UpsertUser(User{ID: "1:U2", Name: "alice-acct1"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "1:C1", Name: "general", Type: "public"}))
+
+	// Account 2: unrelated people who happen to collide on raw ids with
+	// account 1's owner (U1) and target (U2).
+	require.NoError(t, db.UpsertUser(User{ID: "2:U1", Name: "different-person-acct2"}))
+	require.NoError(t, db.UpsertUser(User{ID: "2:U2", Name: "different-person-acct2b"}))
+	require.NoError(t, db.UpsertChannel(Channel{ID: "2:C1", Name: "general", Type: "public"}))
+
+	// mentToRows case: the owner mentions <@U2> in their own account-1 channel.
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "1:C1", TS: "1500000.000001", UserID: "1:U1", Text: "hey <@U2> check this"}))
+	// mentFromRows case: an unrelated account-2 user mentions <@U1> in an
+	// account-2 channel — this is a mention of 2:U1, NOT the account-1 owner.
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "2:C1", TS: "1500000.000002", UserID: "2:U2", Text: "done <@U1>"}))
+
+	interactions, err := db.ComputeUserInteractions("1:U1", 1000000, 2000000)
+	require.NoError(t, err)
+	require.Len(t, interactions, 1, "only the real account-1 target (1:U2) should appear, not the account-2 collision")
+	assert.Equal(t, "1:U2", interactions[0].UserB)
+	assert.Equal(t, 1, interactions[0].MentionsTo, "owner mentioned 1:U2 once")
+	assert.Equal(t, 0, interactions[0].MentionsFrom, "the account-2 mention of a colliding raw id must not attribute to the account-1 owner")
+}
+
 func TestComputeUserInteractions_Reactions(t *testing.T) {
 	db := openTestDB(t)
 

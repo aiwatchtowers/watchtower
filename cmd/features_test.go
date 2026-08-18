@@ -258,8 +258,10 @@ func TestFeaturesDisable_DryRunJSONWireShape(t *testing.T) {
 	}
 
 	// A leaf feature must still emit `[]`, never `null`: Swift's non-optional
-	// [Dependent] throws on a null (review-rules "wire shape").
-	leaf, rawJSON := runDryRun(t, "briefing")
+	// [Dependent] throws on a null (review-rules "wire shape"). next-step has
+	// no FeedsInto edges and nothing feeds into it, so it stays a genuine
+	// leaf under defaults (unlike briefing, which now feeds day-plan).
+	leaf, rawJSON := runDryRun(t, "next-step")
 	leafDeps, ok := leaf["dependents"].([]any)
 	require.True(t, ok, "dependents must be a JSON array even with no dependents, got %T", leaf["dependents"])
 	assert.Empty(t, leafDeps)
