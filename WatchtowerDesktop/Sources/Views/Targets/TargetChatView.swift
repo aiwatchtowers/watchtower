@@ -286,7 +286,12 @@ struct TargetChatPane: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                // A plain VStack, not Lazy: a lazy stack tears offscreen rows
+                // down and re-lays them out on every scroll pass, and with a
+                // large pasted document in a bubble that rebuild is visible
+                // scroll jank. Transcripts are tens of messages — build every
+                // row once and let scrolling be pure compositing.
+                VStack(alignment: .leading, spacing: 10) {
                     if chatVM.messages.isEmpty {
                         emptyState
                     }
