@@ -3,8 +3,11 @@ package targets
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -245,5 +248,259 @@ func TestGenerateAllNextSteps_RespectsActiveSnapshotLimit(t *testing.T) {
 	}
 	if gen.calls() != 1 {
 		t.Fatalf("expected exactly 1 AI call, got %d", gen.calls())
+	}
+}
+
+// --- enriched next-step prompt (2026-08-18: the step becomes live) ---
+
+// createChatTablesForNextStepTest creates the Swift-owned chat tables the way
+// the Desktop app's GRDB ensureTable helpers do. They are absent from Go's
+// goose schema, so the prompt builder must work with and without them.
+func createChatTablesForNextStepTest(t *testing.T, d *db.DB) {
+	t.Helper()
+	stmts := []string{
+		`CREATE TABLE chat_conversations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL DEFAULT '',
+			session_id TEXT,
+			context_type TEXT,
+			context_id TEXT,
+			created_at REAL NOT NULL,
+			updated_at REAL NOT NULL)`,
+		`CREATE TABLE chat_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			text TEXT NOT NULL,
+			created_at REAL NOT NULL)`,
+	}
+	for _, s := range stmts {
+		if _, err := d.Exec(s); err != nil {
+			t.Fatalf("create chat table: %v", err)
+		}
+	}
+}
+
+// seedTargetChat inserts one conversation for the target plus the given turns
+// (oldest first), spaced one minute apart ending now — no hardcoded dates.
+func seedTargetChat(t *testing.T, d *db.DB, targetID int64, turns [][2]string) {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('', 'target', ?, 0, 0)`, strconv.FormatInt(targetID, 10))
+	if err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	convID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("conversation id: %v", err)
+	}
+	start := time.Now().Add(-time.Duration(len(turns)) * time.Minute)
+	for i, turn := range turns {
+		ts := float64(start.Add(time.Duration(i) * time.Minute).Unix())
+		if _, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at)
+			VALUES (?, ?, ?, ?)`, convID, turn[0], turn[1], ts); err != nil {
+			t.Fatalf("insert chat message: %v", err)
+		}
+	}
+}
+
+// notesJSON renders n notes, oldest first, stamped relative to now.
+func notesJSON(t *testing.T, texts ...string) string {
+	t.Helper()
+	notes := make([]db.TargetNote, 0, len(texts))
+	for i, text := range texts {
+		notes = append(notes, db.TargetNote{
+			Text:      text,
+			CreatedAt: time.Now().Add(-time.Duration(len(texts)-i) * time.Hour).UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	raw, err := json.Marshal(notes)
+	if err != nil {
+		t.Fatalf("marshal notes: %v", err)
+	}
+	return string(raw)
+}
+
+// TestBuildNextStepPrompt_RendersProgressNotesAndChatExcerpt: the prompt is no
+// longer blind to the work — progress, the last notes and the assistant
+// conversation (system "Action applied" lines included) all reach the model.
+func TestBuildNextStepPrompt_RendersProgressNotesAndChatExcerpt(t *testing.T) {
+	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
+	createChatTablesForNextStepTest(t, d)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Ship the v2 API", Status: "in_progress", Ownership: "mine", Priority: "high",
+		SourceType: "manual", PeriodStart: "2026-07-01",
+		Notes: notesJSON(t, "oldest note", "middle note", "newer note", "newest note"),
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	// progress is derived from status on write, so set it directly.
+	if _, err := d.Exec(`UPDATE targets SET progress = ? WHERE id = ?`, 0.42, id); err != nil {
+		t.Fatalf("seed progress: %v", err)
+	}
+	seedTargetChat(t, d, id, [][2]string{
+		{"user", "Collect the checklist from the channel"},
+		{"assistant", "Here is the checklist I found"},
+		{"system", "Action applied: added 4 sub-items. Continue with the task."},
+	})
+
+	target, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	prompt := p.buildNextStepPrompt(target)
+
+	if !strings.Contains(prompt, "Progress: 42%") {
+		t.Errorf("prompt missing progress percentage:\n%s", prompt)
+	}
+	for _, want := range []string{"newest note", "newer note", "middle note"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing recent note %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "oldest note") {
+		t.Errorf("prompt should keep only the last %d notes:\n%s", nextStepNoteLimit, prompt)
+	}
+	if !strings.Contains(prompt, "Action applied: added 4 sub-items.") {
+		t.Errorf("prompt missing the system action record:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[user] Collect the checklist from the channel") {
+		t.Errorf("prompt missing role-labelled user turn:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[assistant] Here is the checklist I found") {
+		t.Errorf("prompt missing role-labelled assistant turn:\n%s", prompt)
+	}
+	// Oldest first inside the excerpt.
+	if strings.Index(prompt, "[user] Collect") > strings.Index(prompt, "Action applied:") {
+		t.Errorf("chat excerpt must run oldest-first:\n%s", prompt)
+	}
+}
+
+// TestBuildNextStepPrompt_ChatExcerptIsCapped: a long conversation can never
+// dominate the user message — the excerpt is bounded by both the turn count and
+// the character budget, and it is the NEWEST turns that survive.
+func TestBuildNextStepPrompt_ChatExcerptIsCapped(t *testing.T) {
+	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
+	createChatTablesForNextStepTest(t, d)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Long chat", Status: "todo", Ownership: "mine", Priority: "medium",
+		SourceType: "manual", PeriodStart: "2026-07-01",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	turns := make([][2]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		turns = append(turns, [2]string{"user", fmt.Sprintf("turn-%02d %s", i, strings.Repeat("padding ", 60))})
+	}
+	seedTargetChat(t, d, id, turns)
+
+	target, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	prompt := p.buildNextStepPrompt(target)
+
+	rendered := strings.Count(prompt, "[user] turn-")
+	if rendered == 0 {
+		t.Fatalf("expected some turns in the excerpt:\n%s", prompt)
+	}
+	if rendered > nextStepChatTurnLimit {
+		t.Errorf("excerpt rendered %d turns, above the %d-turn cap", rendered, nextStepChatTurnLimit)
+	}
+	if !strings.Contains(prompt, "turn-39") {
+		t.Errorf("the newest turn must survive the cap:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "turn-00") {
+		t.Errorf("the oldest turn must be dropped by the cap:\n%s", prompt)
+	}
+	// The whole prompt stays close to the excerpt budget: the excerpt itself
+	// must not exceed it by more than one truncated turn.
+	if len(prompt) > nextStepChatCharBudget+nextStepChatTurnChars+1000 {
+		t.Errorf("prompt too long (%d chars) — the char budget is not applied", len(prompt))
+	}
+}
+
+// TestBuildNextStepPrompt_CyrillicExcerptGetsTheSameBudget: the budget is
+// counted in runes, so a Cyrillic conversation keeps as many turns as a Latin
+// one of the same visible length — a byte budget would silently halve it.
+func TestBuildNextStepPrompt_CyrillicExcerptGetsTheSameBudget(t *testing.T) {
+	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
+	createChatTablesForNextStepTest(t, d)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Кириллица", Status: "todo", Ownership: "mine", Priority: "medium",
+		SourceType: "manual", PeriodStart: "2026-07-01",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	turns := make([][2]string, 0, nextStepChatTurnLimit)
+	for i := 0; i < nextStepChatTurnLimit; i++ {
+		turns = append(turns, [2]string{"user", fmt.Sprintf("ход-%02d %s", i, strings.Repeat("текст ", 20))})
+	}
+	seedTargetChat(t, d, id, turns)
+
+	target, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	prompt := p.buildNextStepPrompt(target)
+
+	rendered := strings.Count(prompt, "[user] ход-")
+	if rendered != nextStepChatTurnLimit {
+		t.Errorf("rendered %d of %d Cyrillic turns — the budget is being counted in bytes",
+			rendered, nextStepChatTurnLimit)
+	}
+}
+
+// TestBuildNextStepPrompt_AbsentChatTablesStillBuilds: a CLI-only install has
+// never run the Desktop app, so the Swift-owned chat tables do not exist — the
+// builder degrades to no excerpt rather than failing the generation.
+func TestBuildNextStepPrompt_AbsentChatTablesStillBuilds(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
+	p, d := makeTestPipeline(t, gen)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "No desktop here", Status: "todo", Ownership: "mine", Priority: "medium",
+		SourceType: "manual", PeriodStart: "2026-07-01",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	// An out-of-range stored progress must clamp, not render nonsense.
+	if _, err := d.Exec(`UPDATE targets SET progress = ? WHERE id = ?`, 1.4, id); err != nil {
+		t.Fatalf("seed progress: %v", err)
+	}
+	target, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+
+	prompt := p.buildNextStepPrompt(target)
+	if !strings.Contains(prompt, "TARGET: No desktop here") {
+		t.Fatalf("prompt not built without the chat tables:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Progress: 100%") {
+		t.Errorf("progress missing or unclamped:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Recent assistant conversation") {
+		t.Errorf("no chat tables must mean no excerpt section:\n%s", prompt)
+	}
+	// And the generation itself still works end to end.
+	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
+		t.Fatalf("GenerateNextStep without chat tables: %v", err)
+	}
+}
+
+// TestNextStepSystemPrompt_ForbidsRepeatingADoneStep pins the rule added for
+// the live-step work: history showing the step was carried out must push the
+// model to what comes next.
+func TestNextStepSystemPrompt_ForbidsRepeatingADoneStep(t *testing.T) {
+	if !strings.Contains(nextStepSystemPrompt, "never repeat a step that is done") {
+		t.Errorf("system prompt lost the already-carried-out rule:\n%s", nextStepSystemPrompt)
 	}
 }

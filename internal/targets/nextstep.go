@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -61,6 +64,7 @@ Rules:
 - Pick "urgency": "deadline" if a due date is near/passed, "blocked" if status is blocked or someone else holds the ball, "stale" if it has not moved in a while, else "normal".
 - "urgency_detail" is a SHORT hint (e.g. days remaining). Leave "" if nothing meaningful.
 - Provide 1-3 actions. The FIRST is the primary action. Always include a final {"kind":"assistant","prompt":"Suggest a different next step for this target"} option labelled like "Different plan" unless it would be the only action.
+- If the recent history (notes, assistant conversation, applied actions) shows the previously suggested step was already carried out, propose what comes AFTER it — never repeat a step that is done.
 - Use "open_links" only if the target has links/referenced items.
 - Keep everything in the operator's language (match the target's text language).`
 
@@ -145,6 +149,16 @@ func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (int, error) {
 	return done, ctx.Err()
 }
 
+// Bounds on the assistant-conversation excerpt folded into the next-step
+// prompt: the most recent turns, capped by BOTH turn count and characters so a
+// long chat can never dominate the user message.
+const (
+	nextStepChatTurnLimit  = 12
+	nextStepChatCharBudget = 2000
+	nextStepNoteLimit      = 3
+	nextStepChatTurnChars  = 400 // per-turn truncation before the budget is applied
+)
+
 // buildNextStepPrompt renders the target and its surrounding context into the
 // user message for the next-step call.
 func (p *Pipeline) buildNextStepPrompt(t *db.Target) string {
@@ -156,6 +170,7 @@ func (p *Pipeline) buildNextStepPrompt(t *db.Target) string {
 		fmt.Fprintf(&b, "Why it matters: %s\n", t.Intent)
 	}
 	fmt.Fprintf(&b, "Status: %s | Priority: %s | Ownership: %s\n", t.Status, t.Priority, t.Ownership)
+	fmt.Fprintf(&b, "Progress: %d%%\n", progressPercent(t.Progress))
 	if t.Level != "" {
 		fmt.Fprintf(&b, "Horizon: %s (%s – %s)\n", t.Level, t.PeriodStart, t.PeriodEnd)
 	}
@@ -197,6 +212,94 @@ func (p *Pipeline) buildNextStepPrompt(t *db.Target) string {
 		fmt.Fprintf(&b, "\nThis target has %d linked item(s).\n", len(links))
 	}
 
+	// The last few notes the operator (or the assistant) left on the target.
+	if notes := recentTargetNotes(t.Notes, nextStepNoteLimit); len(notes) > 0 {
+		b.WriteString("\nRecent notes (oldest first):\n")
+		for _, n := range notes {
+			line := strings.TrimSpace(n.Text)
+			if n.CreatedAt != "" {
+				line = n.CreatedAt + " — " + line
+			}
+			fmt.Fprintf(&b, "  - %s\n", line)
+		}
+	}
+
+	// What actually happened with the assistant since the last suggestion. A DB
+	// error (or absent Swift-owned chat tables) degrades to no excerpt — it must
+	// never fail the generation.
+	turns, err := p.db.ListRecentChatTurns("target", strconv.Itoa(t.ID), nextStepChatTurnLimit)
+	if err != nil {
+		p.logger.Printf("targets/nextstep: chat excerpt for target %d unavailable: %v", t.ID, err)
+	}
+	if excerpt := renderChatExcerpt(turns, nextStepChatCharBudget); excerpt != "" {
+		b.WriteString("\nRecent assistant conversation (oldest first; 'system' lines record actions that were actually applied):\n")
+		b.WriteString(excerpt)
+	}
+
+	return b.String()
+}
+
+// recentTargetNotes decodes targets.notes (a JSON array, like sub_items) and
+// returns at most the last `limit` entries, oldest first. A malformed or empty
+// value yields no notes rather than an error — the column is app-written.
+func recentTargetNotes(raw string, limit int) []db.TargetNote {
+	if raw == "" || raw == "[]" || limit <= 0 {
+		return nil
+	}
+	var notes []db.TargetNote
+	if err := json.Unmarshal([]byte(raw), &notes); err != nil {
+		return nil
+	}
+	kept := notes[:0]
+	for _, n := range notes {
+		if strings.TrimSpace(n.Text) != "" {
+			kept = append(kept, n)
+		}
+	}
+	if len(kept) > limit {
+		kept = kept[len(kept)-limit:]
+	}
+	return kept
+}
+
+// renderChatExcerpt renders chat turns oldest-first, labelled by role, dropping
+// the OLDEST turns first once the character budget is exhausted so the newest
+// activity always survives the cap.
+func renderChatExcerpt(turns []db.ChatTurn, charBudget int) string {
+	if len(turns) == 0 || charBudget <= 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(turns))
+	total := 0
+	for i := len(turns) - 1; i >= 0; i-- {
+		text := strings.TrimSpace(turns[i].Text)
+		if text == "" {
+			continue
+		}
+		text = strings.Join(strings.Fields(text), " ")
+		// Rune-safe: the operator's language is routinely Cyrillic, so a byte
+		// slice here would cut a multi-byte rune in half.
+		if truncated := truncateRunes(text, nextStepChatTurnChars); truncated != text {
+			text = truncated + "…"
+		}
+		line := fmt.Sprintf("  [%s] %s", turns[i].Role, text)
+		// Counted in runes, not bytes: a byte budget silently halves the
+		// excerpt for a Cyrillic conversation.
+		cost := utf8.RuneCountInString(line)
+		if total+cost > charBudget && len(lines) > 0 {
+			break
+		}
+		total += cost
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	// lines were collected newest-first; emit oldest-first.
+	var b strings.Builder
+	for i := len(lines) - 1; i >= 0; i-- {
+		b.WriteString(lines[i] + "\n")
+	}
 	return b.String()
 }
 
@@ -209,6 +312,19 @@ func parseSubItems(raw string) []storedSubItem {
 		return nil
 	}
 	return items
+}
+
+// progressPercent renders targets.progress (0.0..1.0) as a whole percentage,
+// clamped — an out-of-range stored value must not produce nonsense like "-40%".
+func progressPercent(p float64) int {
+	switch {
+	case p <= 0:
+		return 0
+	case p >= 1:
+		return 100
+	default:
+		return int(math.Round(p * 100))
+	}
 }
 
 func subItemOverdue(it storedSubItem, now time.Time) bool {
