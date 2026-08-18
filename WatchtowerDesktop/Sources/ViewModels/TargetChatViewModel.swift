@@ -48,6 +48,16 @@ final class TargetChatViewModel {
     private var streamTask: Task<Void, Never>?
     private var observationTask: Task<Void, Never>?
 
+    /// Follow-ups produced by a decision taken while a turn was still streaming.
+    /// The write applies immediately; its message waits here until the running
+    /// turn ends (or the user sends the next one) so it is never dropped.
+    private var queuedFollowUps: [String] = []
+
+    /// Cards still awaiting a decision — drives the "Approve all" affordance.
+    var pendingActionCount: Int {
+        actionCards.filter { $0.state == .pending }.count
+    }
+
     init(
         target: Target,
         viewModel: TargetsViewModel,
@@ -148,17 +158,43 @@ final class TargetChatViewModel {
             timestamp: Date(),
             isStreaming: true
         ))
-        startStream(prompt: text)
+        startStream(prompt: prependQueuedFollowUps(to: text))
     }
 
+    /// Feed a follow-up turn back into the conversation. The text is shown as a
+    /// system message right away; when a turn is already streaming the prompt is
+    /// queued instead of being dropped, and goes out at the next flush point.
     private func sendFollowUp(_ text: String) {
-        guard !isStreaming else { return }
-        streamTask?.cancel()
         appendSystemMessage(text)
+        guard !isStreaming else {
+            queuedFollowUps.append(text)
+            return
+        }
         messages.append(ChatMessage(
             id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
         ))
         startStream(prompt: text)
+    }
+
+    /// Drain the queue into `text`, so a decision taken mid-stream still reaches
+    /// the assistant even when the turn it was queued behind was cancelled.
+    private func prependQueuedFollowUps(to text: String) -> String {
+        guard !queuedFollowUps.isEmpty else { return text }
+        let queued = queuedFollowUps.joined(separator: "\n")
+        queuedFollowUps.removeAll()
+        return "\(queued)\n\n\(text)"
+    }
+
+    /// Send everything queued during the finished turn as ONE follow-up turn.
+    /// The system messages were already appended when the decisions were taken.
+    private func flushQueuedFollowUps() {
+        guard !queuedFollowUps.isEmpty, !isStreaming else { return }
+        let prompt = queuedFollowUps.joined(separator: "\n")
+        queuedFollowUps.removeAll()
+        messages.append(ChatMessage(
+            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
+        ))
+        startStream(prompt: prompt)
     }
 
     /// Spawn the streaming turn. Shared by `send()` and `sendFollowUp(_:)` —
@@ -338,6 +374,46 @@ final class TargetChatViewModel {
         }
     }
 
+    /// Approve every pending card in one pass. Approving them one by one costs a
+    /// full AI turn each (the follow-up restarts the stream), so a batch of 20-odd
+    /// proposals is applied here as 20 writes and reported in a single follow-up.
+    /// The AI's proposed kind is kept for each card — the per-card checkpoint /
+    /// sub-task override stays a per-card decision.
+    func approveAll() {
+        let pendingIDs = actionCards.filter { $0.state == .pending }.map(\.id)
+        guard !pendingIDs.isEmpty else { return }
+        reloadTarget()
+
+        var applied: [String] = []
+        var failed: [String] = []
+        for cardID in pendingIDs {
+            guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
+            do {
+                let summary = try TargetActionExecutor.apply(
+                    actionCards[idx].action, target: target, viewModel: viewModel
+                )
+                actionCards[idx].state = .applied(summary)
+                applied.append(summary)
+                // Each write changes the target the next action is applied to.
+                reloadTarget()
+            } catch {
+                actionCards[idx].state = .failed(error.localizedDescription)
+                failed.append(error.localizedDescription)
+            }
+        }
+
+        var parts: [String] = []
+        if !applied.isEmpty {
+            parts.append("Actions applied (\(applied.count)): \(applied.joined(separator: "; ")).")
+        }
+        if !failed.isEmpty {
+            parts.append("Actions FAILED (\(failed.count)): \(failed.joined(separator: "; ")). " +
+                         "Do NOT assume they were applied.")
+        }
+        parts.append("Continue with the task.")
+        sendFollowUp(parts.joined(separator: " "))
+    }
+
     func reject(_ card: TargetActionCard) {
         guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
               actionCards[idx].state == .pending else { return }
@@ -374,6 +450,7 @@ final class TargetChatViewModel {
         isStreaming = false
         reloadTarget()
         viewModel.load()
+        flushQueuedFollowUps()
     }
 
     func cancelStream() {

@@ -161,6 +161,184 @@ final class TargetChatViewModelTests: XCTestCase {
         }
     }
 
+    // MARK: - Approve all
+
+    func testApproveAllAppliesEveryPendingCardInOneFollowUp() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let msgID = UUID()
+        chat.actionCards = [
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .updateStatus, reason: "r", status: "done"),
+                             state: .pending),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "Ping Bob"),
+                             state: .pending),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .updateProgress, reason: "r", progress: 40),
+                             state: .pending)
+        ]
+        XCTAssertEqual(chat.pendingActionCount, 3)
+
+        chat.approveAll()
+
+        XCTAssertTrue(chat.actionCards.allSatisfy {
+            if case .applied = $0.state { return true } else { return false }
+        }, "every card must end up applied, got \(chat.actionCards.map(\.state))")
+        XCTAssertEqual(chat.pendingActionCount, 0)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.status, "done")
+        XCTAssertTrue(after.decodedSubItems.contains { $0.text == "Ping Bob" })
+
+        // ONE follow-up turn for the whole batch, not one per card.
+        let followUps = chat.messages.filter { $0.role == .system && $0.text.contains("Actions applied") }
+        XCTAssertEqual(followUps.count, 1)
+        XCTAssertTrue(try XCTUnwrap(followUps.first).text.contains("(3)"))
+    }
+
+    func testApproveAllLeavesAlreadyDecidedCardsUntouched() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let msgID = UUID()
+        chat.actionCards = [
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .updateStatus, reason: "r", status: "done"),
+                             state: .rejected),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "Ping Bob"),
+                             state: .pending)
+        ]
+
+        chat.approveAll()
+
+        XCTAssertEqual(chat.actionCards[0].state, .rejected)
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.status, "todo", "a rejected card must not be applied by Approve all")
+        XCTAssertTrue(after.decodedSubItems.contains { $0.text == "Ping Bob" })
+    }
+
+    func testApproveAllReportsFailuresWithoutClaimingSuccess() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let msgID = UUID()
+        chat.actionCards = [
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "Ping Bob"),
+                             state: .pending),
+            // missing `status` — cannot be applied
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .updateStatus, reason: "r", status: nil),
+                             state: .pending)
+        ]
+
+        chat.approveAll()
+
+        if case .applied = chat.actionCards[0].state {} else {
+            XCTFail("valid card must still apply, got \(chat.actionCards[0].state)")
+        }
+        if case .failed = chat.actionCards[1].state {} else {
+            XCTFail("invalid card must fail, got \(chat.actionCards[1].state)")
+        }
+        let followUp = try XCTUnwrap(chat.messages.last { $0.role == .system })
+        XCTAssertTrue(followUp.text.contains("Actions applied (1)"))
+        XCTAssertTrue(followUp.text.contains("FAILED (1)"))
+        XCTAssertTrue(followUp.text.contains("Do NOT assume"))
+    }
+
+    // MARK: - Deciding mid-stream
+
+    /// A decision taken while a turn is streaming used to be impossible (the cards
+    /// were disabled) because `sendFollowUp` dropped the message. The write must
+    /// apply immediately and its follow-up must reach the assistant once the
+    /// running turn ends — never be silently lost.
+    func testApproveDuringStreamAppliesNowAndSendsFollowUpAfterTurnEnds() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [
+            [.sessionID("s1"), .text("first reply"), .done],
+            [.text("second reply"), .done]
+        ])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock, provider: .claude)
+
+        let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+
+        chat.inputText = "hello"
+        chat.send()
+        XCTAssertTrue(chat.isStreaming)
+
+        chat.approve(card)
+
+        // Applied straight away — the DB write does not wait for the turn.
+        XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
+        // A nested sync function keeps the read off GRDB's async overload.
+        func storedStatus() throws -> String? {
+            try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }?.status
+        }
+        XCTAssertEqual(try storedStatus(), "done")
+
+        try await waitForStreamEnd(chat)
+
+        // The queued follow-up went out as its own turn after the first finished.
+        XCTAssertEqual(mock.prompts.count, 2)
+        XCTAssertTrue(mock.prompts[1].contains("Action applied"))
+    }
+
+    /// Cancelling the turn must not lose a queued decision: it rides along with
+    /// the user's next message instead.
+    func testFollowUpQueuedDuringCancelledStreamRidesNextUserMessage() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [
+            [.sessionID("s1"), .text("first reply"), .done],
+            [.text("second reply"), .done]
+        ])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock, provider: .claude)
+
+        let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+
+        chat.inputText = "hello"
+        chat.send()
+        chat.approve(card)
+        chat.cancelStream()
+        // Cancelling must not auto-start another turn to drain the queue.
+        XCTAssertFalse(chat.isStreaming)
+
+        chat.inputText = "what now?"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        // The user's message carries the queued decision with it. (The cancelled
+        // turn may or may not have reached the service, so match by content.)
+        let sent = try XCTUnwrap(mock.prompts.first { $0.hasSuffix("what now?") })
+        XCTAssertTrue(sent.contains("Action applied"), "queued decision must ride the next message")
+    }
+
     func testRejectMarksCardRejected() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
