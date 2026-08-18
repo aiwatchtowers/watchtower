@@ -27,6 +27,17 @@ struct CreateTargetSheet: View {
     /// so a sheet never reacts to a result/error started by a different
     /// CreateTargetSheet instance elsewhere in the app.
     @State private var awaitingOwnExtraction = false
+    /// Inline outcome of the extraction this sheet started. `.empty`/`.failed`
+    /// used to be handed to the global capsule, which sits in the main window
+    /// *underneath* this modal sheet — unreachable, so the button read as a
+    /// no-op. Every terminal phase now lands here instead.
+    @State private var extractNotice: ExtractNotice?
+    /// The level the AI proposed a period for. The proposed window is persisted
+    /// verbatim only while `level` still matches; picking another level hands
+    /// the period back to the sheet's own rules.
+    @State private var aiPeriodLevel: String?
+    /// Form snapshot taken right before an AI fill, restored by banner's Undo.
+    @State private var preFillDraft: TargetDraft?
     @State private var showMoreOptions: Bool = false
     @State private var showChecklist: Bool = false
     /// Indices into `subItems` that the user marked to be promoted into
@@ -96,15 +107,24 @@ struct CreateTargetSheet: View {
             case .ready:
                 awaitingOwnExtraction = false
                 if let result = appState.targetExtractCenter.result {
-                    extractedResult = result
-                    showExtractSheet = true
-                    // The sheet now owns a copy; clear the Center so the global
-                    // capsule doesn't also offer the same result.
+                    applyExtractResult(result)
+                    // The sheet now owns the outcome; clear the Center so the
+                    // global capsule doesn't also offer the same result.
                     appState.targetExtractCenter.dismiss()
                 }
-            case .empty, .failed:
-                // Hand off to the global capsule (friendly message + retry).
+            case .empty:
                 awaitingOwnExtraction = false
+                showNothingFoundNotice()
+                appState.targetExtractCenter.dismiss()
+            case let .failed(message, canRetry):
+                awaitingOwnExtraction = false
+                extractNotice = ExtractNotice(
+                    kind: .failed,
+                    message: message,
+                    canRetry: canRetry,
+                    details: appState.targetExtractCenter.lastRawError
+                )
+                appState.targetExtractCenter.dismiss()
             case .idle, .extracting:
                 break
             }
@@ -130,6 +150,7 @@ struct CreateTargetSheet: View {
             VStack(alignment: .leading, spacing: 14) {
                 textFieldWithAI
                 extractButton
+                extractNoticeRow
                 levelPriorityRow
                 parentPickerRow
                 customPeriodRow
@@ -171,7 +192,9 @@ struct CreateTargetSheet: View {
                 if isExtracting && awaitingOwnExtraction {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("Extracting…")
+                        // The call routinely runs 20–45 s; saying so up front
+                        // stops it reading as a hang.
+                        Text("Extracting… (up to a minute)")
                     }
                 } else {
                     Label("Extract with AI", systemImage: "sparkles")
@@ -182,9 +205,22 @@ struct CreateTargetSheet: View {
             .help(
                 isExtracting && !awaitingOwnExtraction
                     ? "An extraction is already running — wait for it to finish"
-                    : "Run the entered text through the LLM to propose structured targets"
+                    : "Runs the goal text and the context you wrote through the LLM, "
+                        + "then fills this form (or offers a list when it finds several targets)"
             )
             Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var extractNoticeRow: some View {
+        if let notice = extractNotice {
+            ExtractNoticeBanner(
+                notice: notice,
+                onRetry: { Task { await runExtract() } },
+                onUndo: { undoExtractFill() },
+                onDismiss: { extractNotice = nil }
+            )
         }
     }
 
@@ -485,9 +521,12 @@ struct CreateTargetSheet: View {
         defer { isCreating = false }
 
         let today = dateFormatter.string(from: Date())
-        let useCustom = level == "custom"
-        let start = useCustom ? dateFormatter.string(from: periodStart) : today
-        let end = useCustom ? dateFormatter.string(from: periodEnd) : today
+        // An AI-proposed window is persisted verbatim as long as the level it
+        // was proposed for still stands; changing the level hands the period
+        // back to the sheet's today/today default.
+        let useExplicitPeriod = level == "custom" || aiPeriodLevel == level
+        let start = useExplicitPeriod ? dateFormatter.string(from: periodStart) : today
+        let end = useExplicitPeriod ? dateFormatter.string(from: periodEnd) : today
 
         let subItemsJSON: String
         if subItems.isEmpty {
@@ -559,7 +598,85 @@ struct CreateTargetSheet: View {
             return
         }
         errorMessage = nil
+        extractNotice = nil
         awaitingOwnExtraction = true
-        appState.targetExtractCenter.start(text: text, runner: runner)
+        // The "Add context" field rides along — it used to be dropped, so
+        // context the user had written could not influence the proposal.
+        let input = TargetExtractFill.composeInput(text: text, context: intent)
+        appState.targetExtractCenter.start(text: input, runner: runner)
+    }
+
+    /// Routes a finished extraction: one proposal fills this form, several open
+    /// the multi-select preview, none leaves an inline "nothing found" notice.
+    private func applyExtractResult(_ result: TargetExtractResult) {
+        switch TargetExtractFill.apply(result.extracted, to: currentDraft()) {
+        case .nothing:
+            showNothingFoundNotice()
+        case .needsPreview:
+            extractedResult = result
+            showExtractSheet = true
+        case let .filled(draft):
+            preFillDraft = currentDraft()
+            apply(draft)
+            extractNotice = ExtractNotice(
+                kind: .filled,
+                message: "AI filled in the form below — check it, then Create.",
+                canRetry: false,
+                details: nil
+            )
+        }
+    }
+
+    private func showNothingFoundNotice() {
+        extractNotice = ExtractNotice(
+            kind: .nothing,
+            message: "AI found no target in this text. Add a bit more detail and try again.",
+            canRetry: true,
+            details: nil
+        )
+    }
+
+    private func undoExtractFill() {
+        if let draft = preFillDraft { apply(draft) }
+        preFillDraft = nil
+        extractNotice = nil
+    }
+
+    private func currentDraft() -> TargetDraft {
+        TargetDraft(
+            text: text,
+            intent: intent,
+            level: level,
+            priority: priority,
+            periodStart: dateFormatter.string(from: periodStart),
+            periodEnd: dateFormatter.string(from: periodEnd),
+            hasExplicitPeriod: aiPeriodLevel == level,
+            subItems: subItems,
+            parentID: parentID
+        )
+    }
+
+    private func apply(_ draft: TargetDraft) {
+        text = draft.text
+        intent = draft.intent
+        level = draft.level
+        priority = draft.priority
+        subItems = draft.subItems
+        parentID = draft.parentID
+        if draft.hasExplicitPeriod,
+           let start = dateFormatter.date(from: draft.periodStart),
+           let end = dateFormatter.date(from: draft.periodEnd) {
+            periodStart = start
+            periodEnd = end
+            aiPeriodLevel = draft.level
+        } else {
+            aiPeriodLevel = nil
+        }
+        if !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            showMoreOptions = true
+        }
+        if !subItems.isEmpty {
+            showChecklist = true
+        }
     }
 }
