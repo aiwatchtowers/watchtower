@@ -109,48 +109,46 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     ]
 
     package func validate() throws {
-        if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw ProposedActionError.invalid("reason is required")
-        }
+        try Self.requireNonEmpty(reason, name: "reason")
         switch type {
         case .updateStatus:
-            guard let status, Self.allowedStatuses.contains(status) else {
-                throw ProposedActionError.invalid("status must be one of \(Self.allowedStatuses.sorted())")
-            }
+            try Self.requireAllowed(status, in: Self.allowedStatuses, name: "status")
         case .updateNotes:
-            guard let note, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ProposedActionError.invalid("note is required")
-            }
+            try Self.requireNonEmpty(note, name: "note")
         case .updateProgress:
             guard let progress, (0...100).contains(progress) else {
                 throw ProposedActionError.invalid("progress must be 0...100")
             }
-        case .addSubItem, .createChildTarget:
-            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ProposedActionError.invalid("text is required")
-            }
-            if type == .createChildTarget, let priority, !Self.allowedPriorities.contains(priority) {
-                throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
+        case .addSubItem, .updateTitle, .updateIntent:
+            try Self.requireNonEmpty(text, name: "text")
+        case .createChildTarget:
+            try Self.requireNonEmpty(text, name: "text")
+            if priority != nil {
+                try Self.requireAllowed(priority, in: Self.allowedPriorities, name: "priority")
             }
         case .linkTarget:
             guard let targetId, targetId > 0 else {
                 throw ProposedActionError.invalid("target_id is required")
             }
-            guard let relation, Self.allowedRelations.contains(relation) else {
-                throw ProposedActionError.invalid("relation must be one of \(Self.allowedRelations.sorted())")
-            }
-        case .updateTitle, .updateIntent:
-            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ProposedActionError.invalid("text is required")
-            }
+            try Self.requireAllowed(relation, in: Self.allowedRelations, name: "relation")
         case .updatePriority:
-            guard let priority, Self.allowedPriorities.contains(priority) else {
-                throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
-            }
+            try Self.requireAllowed(priority, in: Self.allowedPriorities, name: "priority")
         case .updateDue:
             guard let text, Self.isValidDueDate(text) else {
                 throw ProposedActionError.invalid("text must be a valid YYYY-MM-DD date")
             }
+        }
+    }
+
+    private static func requireNonEmpty(_ value: String?, name: String) throws {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProposedActionError.invalid("\(name) is required")
+        }
+    }
+
+    private static func requireAllowed(_ value: String?, in allowed: Set<String>, name: String) throws {
+        guard let value, allowed.contains(value) else {
+            throw ProposedActionError.invalid("\(name) must be one of \(allowed.sorted())")
         }
     }
 

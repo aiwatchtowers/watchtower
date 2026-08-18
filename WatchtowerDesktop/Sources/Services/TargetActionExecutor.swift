@@ -33,27 +33,27 @@ enum TargetActionExecutor {
 
         switch action.type {
         case .updateStatus:
-            guard let status = action.status else { throw TargetActionError.writeFailed("missing status") }
+            let status = try require(action.status, "status")
             viewModel.updateStatus(target, to: status)
             try checkWrite()
             return "set status to \(status)"
         case .updateNotes:
-            guard let note = action.note else { throw TargetActionError.writeFailed("missing note") }
+            let note = try require(action.note, "note")
             viewModel.addNote(target, text: note)
             try checkWrite()
             return "added a note"
         case .updateProgress:
-            guard let pct = action.progress else { throw TargetActionError.writeFailed("missing progress") }
+            let pct = try require(action.progress, "progress")
             viewModel.updateProgress(target, to: Double(pct) / 100.0)
             try checkWrite()
             return "set progress to \(pct)%"
         case .addSubItem:
-            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let text = try require(action.text, "text")
             viewModel.addSubItem(target, text: text)
             try checkWrite()
             return "added sub-item \"\(text)\""
         case .createChildTarget:
-            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let text = try require(action.text, "text")
             guard viewModel.createChild(
                 target, text: text,
                 intent: action.intent ?? "",
@@ -63,37 +63,44 @@ enum TargetActionExecutor {
             }
             return "created child target \"\(text)\""
         case .linkTarget:
-            guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
+            let targetID = try require(action.targetId, "target_id")
             guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
-            guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
+            let relation = try require(action.relation, "relation")
             viewModel.createLink(from: target.id, to: targetID, relation: relation)
             try checkWrite()
             return "linked to target #\(targetID) (\(relation))"
         case .updateTitle:
             // updateText silently no-ops on a whitespace-only title, which would
             // read as a false "renamed" success — reject it here instead.
-            guard let text = action.text,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let text = try require(action.text, "text")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw TargetActionError.writeFailed("missing text")
             }
             viewModel.updateText(target, to: text)
             try checkWrite()
             return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
         case .updatePriority:
-            guard let priority = action.priority else { throw TargetActionError.writeFailed("missing priority") }
+            let priority = try require(action.priority, "priority")
             viewModel.updatePriority(target, to: priority)
             try checkWrite()
             return "set priority to \(priority)"
         case .updateDue:
-            guard let due = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let due = try require(action.text, "text")
             viewModel.updateDueDate(target, to: due)
             try checkWrite()
             return "set due date to \(due)"
         case .updateIntent:
-            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let text = try require(action.text, "text")
             viewModel.updateIntent(target, to: text)
             try checkWrite()
             return "updated context"
         }
+    }
+
+    /// Unwraps an action field that validate() should have guaranteed, throwing
+    /// the same "missing <field>" error the guards used to produce.
+    private static func require<T>(_ value: T?, _ name: String) throws -> T {
+        guard let value else { throw TargetActionError.writeFailed("missing \(name)") }
+        return value
     }
 }

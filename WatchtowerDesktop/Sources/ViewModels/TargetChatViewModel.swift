@@ -249,7 +249,23 @@ final class TargetChatViewModel {
             return
         }
 
-        // Parse watchtower-action blocks out of the final text.
+        let displayText = surfaceActions(from: fullText)
+
+        if !displayText.isEmpty, let convID = conversationID {
+            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: displayText)
+        }
+
+        finishStream()
+    }
+
+    /// Parses watchtower-action blocks out of the assistant's final text,
+    /// surfaces a card per action, auto-applies execute-mode actions (an
+    /// explicit owner directive) through the same apply core the Approve
+    /// button uses — no per-action follow-up AI turn, one summary system
+    /// message instead — and appends warnings for malformed blocks.
+    /// Propose-mode actions stay pending and await Approve.
+    /// Returns the visible prose for the assistant turn.
+    private func surfaceActions(from fullText: String) -> String {
         let parsed = TargetActionParser.parse(fullText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
@@ -265,10 +281,6 @@ final class TargetChatViewModel {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
-            // Execute-mode actions (an explicit owner directive) are applied
-            // immediately through the same apply core the Approve button uses —
-            // no per-action follow-up AI turn; one summary system message below.
-            // Propose-mode actions stay pending and await Approve.
             guard action.isExecute else { continue }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
@@ -290,12 +302,7 @@ final class TargetChatViewModel {
         for err in parsed.errors {
             appendSystemMessage("⚠️ Invalid action proposal: \(err)")
         }
-
-        if !displayText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: displayText)
-        }
-
-        finishStream()
+        return displayText
     }
 
     // MARK: - Persistence helpers
