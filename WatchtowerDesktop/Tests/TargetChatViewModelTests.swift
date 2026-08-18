@@ -202,6 +202,34 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(followUps.first).text.contains("(3)"))
     }
 
+    /// Sub-items live in one JSON column rewritten wholesale, so a batch must
+    /// read the target back between writes — otherwise each card overwrites the
+    /// previous one's sub-item and only the last survives.
+    func testApproveAllKeepsEverySubItemFromTheBatch() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: MockClaudeService())
+
+        let msgID = UUID()
+        chat.actionCards = ["Ping Bob", "Ping Ann", "Ping Joe"].map {
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: $0),
+                             state: .pending)
+        }
+
+        chat.approveAll()
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        let texts = after.decodedSubItems.map(\.text)
+        XCTAssertEqual(texts.count, 3, "every sub-item must survive the batch, got \(texts)")
+        for expected in ["Ping Bob", "Ping Ann", "Ping Joe"] {
+            XCTAssertTrue(texts.contains(expected), "missing \(expected) in \(texts)")
+        }
+    }
+
     func testApproveAllLeavesAlreadyDecidedCardsUntouched() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

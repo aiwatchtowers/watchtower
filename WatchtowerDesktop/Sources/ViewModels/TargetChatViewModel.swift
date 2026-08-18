@@ -394,12 +394,14 @@ final class TargetChatViewModel {
                 )
                 actionCards[idx].state = .applied(summary)
                 applied.append(summary)
-                // Each write changes the target the next action is applied to.
-                reloadTarget()
             } catch {
                 actionCards[idx].state = .failed(error.localizedDescription)
                 failed.append(error.localizedDescription)
             }
+            // Unconditionally: the actions rewrite whole JSON columns (sub-items),
+            // so the next one must read back what this one wrote — including when
+            // apply threw only AFTER its write landed.
+            reloadTarget()
         }
 
         var parts: [String] = []
