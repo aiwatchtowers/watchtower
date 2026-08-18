@@ -14,7 +14,26 @@ final class TargetChatViewTests: XCTestCase {
         XCTAssertTrue(card.action.cardDescription.contains("done"))
         XCTAssertTrue(card.action.cardDescription.contains("all merged"))
         // View constructs without crashing.
-        _ = TargetActionCardView(card: card, onApprove: { _ in }, onReject: {})
+        _ = TargetActionCardView(card: card, currentTargetID: 1, onApprove: { _ in }, onReject: {})
+    }
+
+    /// An action addressing another task in the tree surfaces that address on
+    /// the card; an un-addressed action (and link_target's endpoint id) do not.
+    func testActionCardViewFlagsAddressedTarget() throws {
+        let addressed = ProposedAction(type: .addSubItem, reason: "fill", text: "x", targetId: 41)
+        let own = ProposedAction(type: .addSubItem, reason: "fill", text: "x")
+        let link = ProposedAction(type: .linkTarget, reason: "dep", targetId: 41, relation: "blocks")
+
+        func makeView(_ a: ProposedAction) -> TargetActionCardView {
+            TargetActionCardView(card: TargetActionCard(messageID: UUID(), action: a, state: .pending),
+                                 currentTargetID: 39, onApprove: { _ in }, onReject: {})
+        }
+        XCTAssertEqual(makeView(addressed).addressedTargetID, 41)
+        XCTAssertNil(makeView(own).addressedTargetID)
+        XCTAssertNil(makeView(link).addressedTargetID)
+        // Addressing the chat's own task explicitly is not "another task".
+        let selfAddressed = ProposedAction(type: .addSubItem, reason: "fill", text: "x", targetId: 39)
+        XCTAssertNil(makeView(selfAddressed).addressedTargetID)
     }
 
     /// The section is now the tab bar plus the active tab's pane; both must

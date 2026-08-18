@@ -590,4 +590,178 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(notifications, 1)
     }
+
+    // MARK: - target_id addressing (act on the task's tree, not just the task)
+
+    private func makeChild(
+        _ manager: DatabaseManager, parent: Target, text: String = "child task"
+    ) throws -> Target {
+        let id = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: text,
+                                     periodStart: parent.periodStart, periodEnd: parent.periodEnd,
+                                     parentId: parent.id)
+        }
+        return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+    }
+
+    func testApproveAppliesAddressedActionToChild() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let child = try makeChild(manager, parent: target)
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager)
+
+        let action = ProposedAction(type: .addSubItem, reason: "fill checklist",
+                                    text: "step 1", targetId: child.id)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        let childAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: child.id) })
+        XCTAssertTrue(childAfter.decodedSubItems.contains { $0.text == "step 1" })
+        let currentAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertTrue(currentAfter.decodedSubItems.isEmpty)
+        // The applied summary (echoed into the follow-up) names the addressed task.
+        guard case .applied(let summary) = chat.actionCards.first?.state else {
+            return XCTFail("expected .applied, got \(String(describing: chat.actionCards.first?.state))")
+        }
+        XCTAssertTrue(summary.contains("#\(child.id)"), "summary should name the addressed task: \(summary)")
+    }
+
+    func testApproveAppliesAddressedActionToAncestor() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let root = try makeTarget(manager, intent: "x")
+        let current = try makeChild(manager, parent: root)
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: current, vm: vm, manager: manager)
+
+        let action = ProposedAction(type: .updateStatus, reason: "parent done",
+                                    status: "done", targetId: root.id)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        let rootAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: root.id) })
+        XCTAssertEqual(rootAfter.status, "done")
+    }
+
+    func testApproveRejectsSiblingAddress() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let root = try makeTarget(manager, intent: "x")
+        let current = try makeChild(manager, parent: root)
+        let sibling = try makeChild(manager, parent: root, text: "sibling task")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: current, vm: vm, manager: manager)
+
+        let action = ProposedAction(type: .addSubItem, reason: "sneak",
+                                    text: "nope", targetId: sibling.id)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        if case .failed = chat.actionCards.first?.state {} else {
+            XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
+        }
+        let siblingAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: sibling.id) })
+        XCTAssertTrue(siblingAfter.decodedSubItems.isEmpty)
+        XCTAssertTrue(chat.messages.contains { $0.role == .system && $0.text.contains("Action FAILED") })
+    }
+
+    func testApproveRejectsUnknownAddress() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager)
+
+        let action = ProposedAction(type: .updateStatus, reason: "ghost",
+                                    status: "done", targetId: 9999)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        if case .failed = chat.actionCards.first?.state {} else {
+            XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
+        }
+    }
+
+    func testCreateChildUnderAddressedChildMakesGrandchild() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let child = try makeChild(manager, parent: target)
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager)
+
+        let action = ProposedAction(type: .createChildTarget, reason: "deeper",
+                                    text: "grandchild", targetId: child.id)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        let grandchildren = try manager.dbPool.read { db in
+            try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE parent_id = ?", arguments: [child.id])
+        }
+        XCTAssertEqual(grandchildren.count, 1)
+        XCTAssertEqual(grandchildren.first?.text, "grandchild")
+    }
+
+    func testApproveAllAppliesAddressedBatchAcrossChildren() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let childA = try makeChild(manager, parent: target, text: "child A")
+        let childB = try makeChild(manager, parent: target, text: "child B")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager)
+
+        let msgID = UUID()
+        chat.actionCards = [
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r",
+                                                    text: "A step", targetId: childA.id),
+                             state: .pending),
+            TargetActionCard(messageID: msgID,
+                             action: ProposedAction(type: .addSubItem, reason: "r",
+                                                    text: "B step", targetId: childB.id),
+                             state: .pending)
+        ]
+        chat.approveAll()
+
+        let aAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: childA.id) })
+        let bAfter = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: childB.id) })
+        XCTAssertTrue(aAfter.decodedSubItems.contains { $0.text == "A step" })
+        XCTAssertTrue(bAfter.decodedSubItems.contains { $0.text == "B step" })
+    }
+
+    func testSystemPromptIncludesTaskTreeAndAddressingContract() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let root = try makeTarget(manager, intent: "big goal")
+        let current = try makeChild(manager, parent: root, text: "current task")
+        let child = try makeChild(manager, parent: current, text: "leaf task")
+        let vm = TargetsViewModel(dbManager: manager)
+        vm.addSubItem(child, text: "leaf item")
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: current, dbPool: manager.dbPool)
+        XCTAssertTrue(prompt.contains("=== TASK TREE ==="))
+        XCTAssertTrue(prompt.contains("#\(root.id)"))
+        XCTAssertTrue(prompt.contains("#\(child.id)"))
+        XCTAssertTrue(prompt.contains("leaf item"))
+        XCTAssertTrue(prompt.contains("target_id"))
+    }
+
+    func testSystemPromptOmitsTaskTreeForLoneTask() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let target = try makeTarget(manager, intent: "x")
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
+        XCTAssertFalse(prompt.contains("=== TASK TREE ==="))
+    }
 }

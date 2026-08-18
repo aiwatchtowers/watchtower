@@ -71,14 +71,16 @@ enum TargetActionExecutor {
             return "added sub-item \"\(shorten(text))\""
         case .createChildTarget:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
-            guard viewModel.createChild(
+            guard let childID = viewModel.createChild(
                 target, text: text,
                 intent: action.intent ?? "",
                 priority: action.priority ?? "medium"
-            ) != nil else {
+            ) else {
                 throw TargetActionError.writeFailed(viewModel.errorMessage ?? "could not create child target")
             }
-            return "created child target \"\(shorten(text))\""
+            // The id lets the assistant address the new child (target_id) in
+            // the same conversation without asking the user to open it.
+            return "created child target #\(childID) \"\(shorten(text))\""
         case .linkTarget:
             return try applyLink(action, target: target, viewModel: viewModel, priorError: priorError)
         default:

@@ -226,6 +226,7 @@ struct TargetChatPane: View {
                 ForEach(cards) { card in
                     TargetActionCardView(
                         card: card,
+                        currentTargetID: chatVM.targetID,
                         onApprove: { kind in chatVM.approve(card, as: kind) },
                         onReject: { chatVM.reject(card) }
                     )
@@ -309,6 +310,7 @@ struct TargetChatPane: View {
                             ForEach(cards) { card in
                                 TargetActionCardView(
                                     card: card,
+                                    currentTargetID: chatVM.targetID,
                                     onApprove: { kind in chatVM.approve(card, as: kind) },
                                     onReject: { chatVM.reject(card) }
                                 )
@@ -407,6 +409,9 @@ struct TargetChatPane: View {
 
 struct TargetActionCardView: View {
     let card: TargetActionCard
+    /// The chat's own target — an action addressing any OTHER task (target_id)
+    /// gets an explicit "→ in task #N" line so the user sees where it will land.
+    let currentTargetID: Int
     /// `kind` is the user's chosen create-kind for checkpoint/sub-task proposals (nil otherwise).
     let onApprove: (TargetActionKind?) -> Void
     let onReject: () -> Void
@@ -416,13 +421,23 @@ struct TargetActionCardView: View {
 
     init(
         card: TargetActionCard,
+        currentTargetID: Int,
         onApprove: @escaping (TargetActionKind?) -> Void,
         onReject: @escaping () -> Void
     ) {
         self.card = card
+        self.currentTargetID = currentTargetID
         self.onApprove = onApprove
         self.onReject = onReject
         _createKind = State(initialValue: card.action.type)
+    }
+
+    /// The addressed task when it is not this chat's own target (link_target's
+    /// target_id is the link endpoint, not an address).
+    var addressedTargetID: Int? {
+        guard card.action.type != .linkTarget,
+              let id = card.action.targetId, id != currentTargetID else { return nil }
+        return id
     }
 
     /// add_sub_item and create_child_target are interchangeable — both just need
@@ -439,6 +454,13 @@ struct TargetActionCardView: View {
                 Text("Proposed change")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+            }
+
+            if let addressed = addressedTargetID {
+                Label("in task #\(addressed)", systemImage: "arrow.turn.down.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.card.addressedTarget")
             }
 
             Text(card.action.cardDescription)

@@ -80,7 +80,10 @@ final class TargetActionExecutorTests: XCTestCase {
         }
         XCTAssertEqual(children.count, 1)
         XCTAssertEqual(children.first?.text, "Ping Bob")
-        XCTAssertFalse(summary.isEmpty)
+        // The summary must carry the new child's id — it is echoed back into the
+        // conversation, and the assistant needs it to address the child next.
+        let childID = try XCTUnwrap(children.first?.id)
+        XCTAssertTrue(summary.contains("#\(childID)"), "summary should name the new child id: \(summary)")
     }
 
     func testApplyLinkTarget() throws {

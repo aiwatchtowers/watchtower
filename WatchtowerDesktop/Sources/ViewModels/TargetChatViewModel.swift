@@ -326,7 +326,8 @@ final class TargetChatViewModel {
         // current state, and can still emit valid watchtower-action blocks.
         let effectivePrompt = currentSessionID == nil
             ? text
-            : "\(Self.taskContextBlock(target))\n\n\(Self.taskActionsContract)\n\n\(text)"
+            : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
+                + "\(Self.taskActionsContract)\n\n\(text)"
 
         var fullText = ""
         var streamFailed = false
@@ -440,7 +441,9 @@ final class TargetChatViewModel {
         let action = Self.resolved(card.action, overrideKind: kind)
         reloadTarget()
         do {
-            let summary = try TargetActionExecutor.apply(action, target: target, viewModel: viewModel)
+            let applyTarget = try resolveActionTarget(action)
+            var summary = try TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
+            if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
             actionCards[idx].state = .applied(summary)
             reloadTarget()
             sendFollowUp("Action applied: \(summary). Continue with the task.")
@@ -475,9 +478,11 @@ final class TargetChatViewModel {
         for cardID in pendingIDs {
             guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
             do {
-                let summary = try TargetActionExecutor.apply(
-                    actionCards[idx].action, target: target, viewModel: viewModel
+                let applyTarget = try resolveActionTarget(actionCards[idx].action)
+                var summary = try TargetActionExecutor.apply(
+                    actionCards[idx].action, target: applyTarget, viewModel: viewModel
                 )
+                if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
                 actionCards[idx].state = .applied(summary)
                 applied.append(summary)
             } catch {
@@ -575,6 +580,33 @@ final class TargetChatViewModel {
         }
     }
 
+    /// Resolves which target an approved action applies to. An action carrying
+    /// "target_id" may address any task in the current task's vertical line —
+    /// its descendants or its parent chain (TargetTreeScope) — fetched fresh
+    /// from the DB at apply time. Everything else applies to the current task.
+    /// link_target's target_id is the link's other endpoint, not an address.
+    private func resolveActionTarget(_ action: ProposedAction) throws -> Target {
+        guard action.type != .linkTarget,
+              let addressedID = action.targetId,
+              addressedID != target.id else { return target }
+        let (addressed, parents) = try dbManager.dbPool.read { db -> (Target?, [Int: Int?]) in
+            var parents: [Int: Int?] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT id, parent_id FROM targets") {
+                let id: Int = row["id"]
+                parents[id] = row["parent_id"] as Int?
+            }
+            return (try TargetQueries.fetchByID(db, id: addressedID), parents)
+        }
+        guard let addressed,
+              TargetTreeScope.isInScope(addressed: addressedID, current: target.id, parents: parents) else {
+            throw TargetActionError.writeFailed(
+                "task #\(addressedID) is not in this task's tree — only this task, " +
+                "its sub-tasks, or its parents can be addressed"
+            )
+        }
+        return addressed
+    }
+
     private func reloadTarget() {
         do {
             if let updated = try dbManager.dbPool.read({ db in
@@ -644,12 +676,26 @@ final class TargetChatViewModel {
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     Every block must also include "reason".
     For the *_sub_item actions, "index" is the #N shown next to the item in the
-    CURRENT TASK sub-items list and "match" is that item's EXACT current text —
-    both are required and are re-checked at apply time, so never guess either.
+    addressed task's sub-items list (the CURRENT TASK by default) and "match" is
+    that item's EXACT current text — both are required and are re-checked at
+    apply time, so never guess either.
     To PROMOTE an existing sub-item into a real sub-task, emit create_child_target
     with the item's text, then delete_sub_item for that item.
     For link_target, first look up the other target's id by querying the `targets`
     table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
+
+    ADDRESSING OTHER TASKS IN THIS TASK'S TREE (optional "target_id"):
+    Every action except link_target also accepts "target_id": <id> — the task
+    the action applies to. Omitted = the CURRENT task. It may ONLY address this
+    task's own vertical line: its sub-tasks at any depth or its parent chain
+    (both listed in TASK TREE), plus sub-tasks created during this conversation
+    — their id is echoed back as "created child target #N". The apply step
+    re-checks this scope and fails the card for any other task, so never
+    address a sibling or unrelated task.
+    For create_child_target, "target_id" is the PARENT the new sub-task is
+    created under — that is how you build deeper levels of the tree.
+    For the *_sub_item actions on another task, only address a sub-items list
+    you have actually seen (in TASK TREE or a get_target lookup) — never guess.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every
@@ -714,6 +760,73 @@ final class TargetChatViewModel {
         """
     }
 
+    /// The `=== TASK TREE ===` context block: the current task's parent chain
+    /// and its sub-task tree (each sub-task with its checklist), so the
+    /// assistant can address them with "target_id". Empty string when the task
+    /// has neither a parent nor sub-tasks (the block is then omitted).
+    nonisolated static func taskTreeBlock(target: Target, dbPool: DatabasePool) -> String {
+        let all = (try? dbPool.read { db in
+            try Target.fetchAll(db, sql: "SELECT * FROM targets")
+        }) ?? []
+        let byID = Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+        var childrenOf: [Int: [Target]] = [:]
+        for t in all {
+            if let parent = t.parentId { childrenOf[parent, default: []].append(t) }
+        }
+
+        // Parent chain, nearest first. Visited guards against parent_id cycles.
+        var ancestors: [Target] = []
+        var visited: Set<Int> = [target.id]
+        var cursor = target.parentId
+        while let pid = cursor, visited.insert(pid).inserted, let parent = byID[pid] {
+            ancestors.append(parent)
+            cursor = parent.parentId
+        }
+
+        // Descendants, depth-first (same cycle guard via `seen`).
+        var flat: [(depth: Int, node: Target)] = []
+        var seen: Set<Int> = [target.id]
+        func walk(_ parentID: Int, depth: Int) {
+            for child in childrenOf[parentID] ?? [] where seen.insert(child.id).inserted {
+                flat.append((depth, child))
+                walk(child.id, depth: depth + 1)
+            }
+        }
+        walk(target.id, depth: 0)
+
+        guard !ancestors.isEmpty || !flat.isEmpty else { return "" }
+
+        func describe(_ t: Target) -> String {
+            "#\(t.id) \"\(t.text)\" (\(t.status), \(Int((t.progress * 100).rounded()))%)"
+        }
+        var lines: [String] = []
+        if !ancestors.isEmpty {
+            lines.append("Parents (nearest first):")
+            lines.append(contentsOf: ancestors.map { "- \(describe($0))" })
+        }
+        if !flat.isEmpty {
+            lines.append("Sub-tasks (with their sub-items):")
+            // Cap so a huge tree cannot flood the prompt; the cut is reported.
+            let cap = 50
+            for (depth, node) in flat.prefix(cap) {
+                let indent = String(repeating: "  ", count: depth)
+                lines.append("\(indent)- \(describe(node))")
+                for (i, item) in node.decodedSubItems.enumerated() {
+                    var due = ""
+                    if let d = item.dueDate, !d.isEmpty { due = " (due \(d))" }
+                    lines.append("\(indent)    - [\(item.done ? "x" : " ")] #\(i) \(item.text)\(due)")
+                }
+            }
+            if flat.count > cap { lines.append("(… \(flat.count - cap) more sub-tasks omitted)") }
+        }
+        return """
+
+        === TASK TREE ===
+        Tasks you may also act on with "target_id" (this task's parents and sub-tasks):
+        \(lines.joined(separator: "\n"))
+        """
+    }
+
     /// This target's subjects for the MEMORY block: every track linked via
     /// `tracks.linked_target_id = target.id` (unfiltered by origin/dismissed —
     /// unlike TrackQueries.fetchByLinkedTarget, which is scoped to custom
@@ -769,6 +882,7 @@ final class TargetChatViewModel {
         task (target) tracked in their workspace.
 
         \(Self.taskContextBlock(target))
+        \(Self.taskTreeBlock(target: target, dbPool: dbPool))
         \(Self.watchActivityBlock(target: target, dbPool: dbPool))
 
         \(memoryBlock)\(Self.taskActionsContract)
