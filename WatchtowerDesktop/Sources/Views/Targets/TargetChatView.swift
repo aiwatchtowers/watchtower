@@ -1,9 +1,134 @@
 import SwiftUI
 import WatchtowerCore
 
-// MARK: - Chat Section
+// MARK: - Chat Section (tab bar + active chat)
 
+/// The target's assistant surface: a chip row of chat tabs on top, the active
+/// tab's conversation below. The container owns the chat VMs, so switching tabs
+/// never interrupts a turn running in the tab you left.
 struct TargetChatSection: View {
+    @Bindable var assistant: TargetAssistantViewModel
+
+    @State private var renamingConversationID: Int64?
+    @State private var renameText: String = ""
+    @State private var showRename = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            tabBar
+
+            Divider()
+
+            if let chatVM = assistant.activeChat {
+                TargetChatPane(chatVM: chatVM)
+            } else {
+                noChatState
+            }
+        }
+        .alert("Rename chat", isPresented: $showRename) {
+            TextField("Title", text: $renameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Rename") {
+                if let id = renamingConversationID {
+                    assistant.rename(id, to: renameText)
+                }
+            }
+        }
+    }
+
+    // MARK: Tabs
+
+    private var tabBar: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(assistant.conversations) { conversation in
+                        chip(conversation)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            Button {
+                assistant.newConversation()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .help("Start another chat on this task")
+            .accessibilityIdentifier("chat.newTab")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private func chip(_ conversation: ChatConversation) -> some View {
+        let isActive = conversation.id == assistant.activeConversationID
+        return Button {
+            assistant.select(conversation.id)
+        } label: {
+            HStack(spacing: 5) {
+                if assistant.isWorking(conversation.id) {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .help("This chat is working")
+                }
+                Text(conversation.displayTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .font(.caption)
+            .foregroundStyle(isActive ? Color.primary : Color.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .frame(maxWidth: 180)
+            .background(
+                isActive ? Color.accentColor.opacity(0.18) : Color(.controlBackgroundColor),
+                in: Capsule()
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    isActive ? Color.accentColor.opacity(0.35) : Color(.separatorColor).opacity(0.4),
+                    lineWidth: 0.5
+                )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("chat.tab.\(conversation.id)")
+        .contextMenu {
+            Button("Rename…") {
+                renamingConversationID = conversation.id
+                renameText = conversation.title
+                showRename = true
+            }
+            Button("Close", role: .destructive) {
+                assistant.close(conversation.id)
+            }
+            .disabled(assistant.conversations.count <= 1)
+        }
+    }
+
+    private var noChatState: some View {
+        VStack(spacing: 6) {
+            Text(assistant.errorMessage ?? "No chat is open for this task.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Start a chat") { assistant.newConversation() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+    }
+}
+
+// MARK: - One chat
+
+/// One conversation: header, transcript and input. Unchanged by tabs — it is
+/// handed the active tab's view model.
+struct TargetChatPane: View {
     @Bindable var chatVM: TargetChatViewModel
 
     var body: some View {

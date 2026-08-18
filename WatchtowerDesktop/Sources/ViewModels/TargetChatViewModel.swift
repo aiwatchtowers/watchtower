@@ -53,15 +53,31 @@ final class TargetChatViewModel {
     /// turn ends (or the user sends the next one) so it is never dropped.
     private var queuedFollowUps: [String] = []
 
+    /// Called after the chat did something that counts as activity on the target:
+    /// an applied action or a finished turn. The host screen uses it to re-read the
+    /// target row (a daemon-written next step included) and re-derive its
+    /// next-step staleness badge. Never fires an AI call by itself; nil by default.
+    var onTargetActivity: (() -> Void)?
+
+    /// Called with the text of a user turn the moment it is sent. The tab
+    /// container uses it to auto-title a brand-new tab from its first message.
+    /// Only real user turns fire it — action follow-ups and system notices do
+    /// not. Never fires an AI call by itself; nil by default.
+    var onUserMessage: ((String) -> Void)?
+
     /// Cards still awaiting a decision — drives the "Approve all" affordance.
     var pendingActionCount: Int {
         actionCards.filter { $0.state == .pending }.count
     }
 
+    /// `conversationID` is the tab this VM speaks into. Finding or creating it is
+    /// the container's job (`TargetAssistantViewModel` owns the target's tab
+    /// list), so this VM only ever adopts a conversation that already exists.
     init(
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
+        conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         provider: AIProvider? = nil
     ) {
@@ -74,38 +90,39 @@ final class TargetChatViewModel {
         self.provider = resolvedProvider
         self.selectedModel = ChatModel.defaultModel(for: resolvedProvider)
 
-        loadOrCreateConversation()
+        loadConversation(id: conversationID)
         startMessageObservation()
     }
 
-    private func loadOrCreateConversation() {
+    /// Tears the VM's long-lived work down: the GRDB message observation and any
+    /// running turn. Called by the container when a tab is closed and when the
+    /// center evicts the whole container — a `@MainActor deinit` cannot touch
+    /// these tasks (the `CustomTrackTimelineViewModel.stop()` precedent), and
+    /// without it the observation would keep the pool observed forever.
+    func stop() {
+        observationTask?.cancel()
+        observationTask = nil
+        streamTask?.cancel()
+        streamTask = nil
+    }
+
+    /// Adopt the conversation the container resolved for this tab. A row that
+    /// vanished (closed from another surface) surfaces as an error rather than
+    /// silently starting a second, unpersisted thread.
+    private func loadConversation(id: Int64) {
         do {
-            if let existing = try dbManager.dbPool.read({ db in
-                try ChatConversationQueries.fetchByContext(
-                    db, type: "target", id: String(target.id)
-                )
-            }) {
-                let records = try dbManager.dbPool.read { db in
-                    try ChatMessageQueries.fetchByConversation(
-                        db, conversationID: existing.id
-                    )
-                }
-                conversationID = existing.id
-                sessionID = existing.sessionID
-                messages = records.map { $0.toChatMessage() }
+            guard let conversation = try dbManager.dbPool.read({ db in
+                try ChatConversationQueries.fetchByID(db, id: id)
+            }) else {
+                errorMessage = "This chat no longer exists."
                 return
             }
-            let conv = try dbManager.dbPool.write { db in
-                try ChatConversationQueries.create(
-                    db,
-                    title: "Task: \(String(target.text.prefix(60)))",
-                    contextType: "target",
-                    contextID: String(target.id)
-                )
+            let records = try dbManager.dbPool.read { db in
+                try ChatMessageQueries.fetchByConversation(db, conversationID: id)
             }
-            conversationID = conv.id
-            sessionID = conv.sessionID
-            messages = []
+            conversationID = conversation.id
+            sessionID = conversation.sessionID
+            messages = records.map { $0.toChatMessage() }
         } catch {
             errorMessage = "Failed to load conversation: \(error.localizedDescription)"
         }
@@ -121,7 +138,10 @@ final class TargetChatViewModel {
             do {
                 for try await records in observation.values(in: dbPool).dropFirst() {
                     guard !Task.isCancelled else { break }
-                    guard let self, !self.isStreaming else { continue }
+                    // A vanished VM ends the observation — `continue` would keep
+                    // the pool observed for the process's lifetime.
+                    guard let self else { break }
+                    guard !self.isStreaming else { continue }
                     if records.count != self.messages.count {
                         self.messages = records.map { $0.toChatMessage() }
                     }
@@ -150,6 +170,7 @@ final class TargetChatViewModel {
         if let convID = conversationID {
             persistMessage(conversationID: convID, role: "user", text: text)
         }
+        onUserMessage?(text)
 
         messages.append(ChatMessage(
             id: UUID(),
@@ -372,6 +393,7 @@ final class TargetChatViewModel {
             sendFollowUp("Action FAILED: \(error.localizedDescription). " +
                          "Do NOT assume it was applied; suggest how to proceed.")
         }
+        onTargetActivity?()
     }
 
     /// Approve every pending card in one pass. Approving them one by one costs a
@@ -414,6 +436,7 @@ final class TargetChatViewModel {
         }
         parts.append("Continue with the task.")
         sendFollowUp(parts.joined(separator: " "))
+        onTargetActivity?()
     }
 
     func reject(_ card: TargetActionCard) {
@@ -452,6 +475,7 @@ final class TargetChatViewModel {
         isStreaming = false
         reloadTarget()
         viewModel.load()
+        onTargetActivity?()
         flushQueuedFollowUps()
     }
 

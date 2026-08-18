@@ -61,6 +61,12 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide registry of target assistant tab containers, so a chat turn
+    /// started on a target keeps streaming after the operator navigates away
+    /// from (and back to) that target's detail screen. Bounded LRU; a container
+    /// is never evicted while one of its tabs is working.
+    let targetAssistantCenter = TargetAssistantCenter()
+
     /// App-wide, single-slot registry for meeting recording + transcription, so
     /// an in-flight recording and its transcription survive navigating away from
     /// the calendar event that started it.

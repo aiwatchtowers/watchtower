@@ -14,6 +14,29 @@ final class TargetChatViewModelTests: XCTestCase {
         return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
     }
 
+    /// A chat VM wired to a real conversation row. The VM adopts a conversation
+    /// the container resolved for it, so the tab has to exist first — and the
+    /// chat tables are Desktop-owned (created at runtime by `DatabaseManager`),
+    /// so the shared test schema does not carry them.
+    private func makeChat(
+        target: Target,
+        vm: TargetsViewModel,
+        manager: DatabaseManager,
+        aiService: any AIServiceProtocol = MockClaudeService(),
+        provider: AIProvider? = nil
+    ) throws -> TargetChatViewModel {
+        let conversationID = try manager.dbPool.write { db -> Int64 in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTable(db)
+            return try ChatConversationQueries.create(
+                db, title: "Task", contextType: "target", contextID: String(target.id)
+            ).id
+        }
+        return TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                   conversationID: conversationID,
+                                   aiService: aiService, provider: provider)
+    }
+
     func testSystemPromptIncludesIntentAndContract() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -33,14 +56,14 @@ final class TargetChatViewModelTests: XCTestCase {
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
 
-        let claude = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                         aiService: MockClaudeService(), provider: .claude)
+        let claude = try makeChat(target: target, vm: vm, manager: manager,
+                                  aiService: MockClaudeService(), provider: .claude)
         XCTAssertEqual(claude.provider, .claude)
         XCTAssertEqual(claude.selectedModel, ChatModel.defaultModel(for: .claude))
         XCTAssertTrue(ChatModel.models(for: .claude).contains(claude.selectedModel))
 
-        let codex = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                        aiService: MockClaudeService(), provider: .codex)
+        let codex = try makeChat(target: target, vm: vm, manager: manager,
+                                 aiService: MockClaudeService(), provider: .codex)
         XCTAssertEqual(codex.selectedModel, ChatModel.defaultModel(for: .codex))
     }
 
@@ -49,8 +72,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -72,8 +95,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         // AI proposed a checkpoint (sub-item); user overrides to a full sub-task.
         let action = ProposedAction(type: .addSubItem, reason: "spin off", text: "Ping Bob")
@@ -96,8 +119,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         // An action missing its required field cannot be applied — the card must
         // surface .failed and the follow-up must NOT claim success.
@@ -130,8 +153,8 @@ final class TargetChatViewModelTests: XCTestCase {
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
         ])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock, provider: .claude)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock, provider: .claude)
 
         chat.inputText = "hello"
         chat.send()
@@ -168,8 +191,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let msgID = UUID()
         chat.actionCards = [
@@ -210,8 +233,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let msgID = UUID()
         chat.actionCards = ["Ping Bob", "Ping Ann", "Ping Joe"].map {
@@ -235,8 +258,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let msgID = UUID()
         chat.actionCards = [
@@ -261,8 +284,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let msgID = UUID()
         chat.actionCards = [
@@ -304,8 +327,8 @@ final class TargetChatViewModelTests: XCTestCase {
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
         ])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock, provider: .claude)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock, provider: .claude)
 
         let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -343,8 +366,8 @@ final class TargetChatViewModelTests: XCTestCase {
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
         ])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock, provider: .claude)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock, provider: .claude)
 
         let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -372,8 +395,8 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: MockClaudeService())
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -386,5 +409,95 @@ final class TargetChatViewModelTests: XCTestCase {
         })
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged
+    }
+
+    // MARK: - Target-activity callback
+
+    /// The host screen re-derives its next-step staleness badge from this hook;
+    /// an approved action is target activity even before the follow-up turn runs.
+    func testApproveNotifiesTargetActivity() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+        var notifications = 0
+        chat.onTargetActivity = { notifications += 1 }
+
+        let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        XCTAssertEqual(notifications, 1)
+    }
+
+    /// A failed action is activity too — the screen must not keep showing a step
+    /// derived from a state the chat has since tried to change.
+    func testApproveNotifiesTargetActivityEvenWhenTheActionFails() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+        var notifications = 0
+        chat.onTargetActivity = { notifications += 1 }
+
+        // No status at all — the executor rejects it.
+        let action = ProposedAction(type: .updateStatus, reason: "r", status: nil)
+        let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+
+        if case .failed = chat.actionCards.first?.state {} else {
+            XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
+        }
+        XCTAssertEqual(notifications, 1)
+    }
+
+    /// Approve-all applies a batch in one pass, so it notifies once, not per card.
+    func testApproveAllNotifiesTargetActivityOnce() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+        var notifications = 0
+        chat.onTargetActivity = { notifications += 1 }
+
+        chat.actionCards = [
+            TargetActionCard(messageID: UUID(),
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "one"),
+                             state: .pending),
+            TargetActionCard(messageID: UUID(),
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "two"),
+                             state: .pending)
+        ]
+        chat.approveAll()
+
+        XCTAssertEqual(notifications, 1)
+    }
+
+    /// A plain chat turn mutates nothing, but it is still work on the target —
+    /// the badge is derived from conversation activity, so the hook must fire.
+    func testFinishedTurnNotifiesTargetActivity() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [[.sessionID("s1"), .text("reply"), .done]])
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock, provider: .claude)
+        var notifications = 0
+        chat.onTargetActivity = { notifications += 1 }
+
+        chat.inputText = "what now?"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertEqual(notifications, 1)
     }
 }

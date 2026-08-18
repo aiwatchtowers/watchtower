@@ -37,8 +37,9 @@ struct TargetDetailView: View {
     @State private var suggestedLinks: SuggestedLinksResult?
     @State private var isSuggestingLinks = false
     @State private var suggestLinksError: String?
-    @State private var chatVM: TargetChatViewModel?
+    @State private var assistant: TargetAssistantViewModel?
     @State private var nextStep: TargetNextStep?
+    @State private var isNextStepStale = false
     @State private var isGeneratingNextStep = false
     @State private var nextStepError: String?
     @State private var assistantInput: String = ""
@@ -115,23 +116,17 @@ struct TargetDetailView: View {
                         if let vm = watchesVM {
                             TargetWatchTabView(viewModel: vm) { seed in
                                 selectedTab = .assistant
-                                chatVM?.inputText = seed
+                                ensureAssistant()?.activeChat?.inputText = seed
                             }
                         }
                     case .links:
                         linksTab
                     case .assistant:
-                        if let chatVM {
-                            TargetChatSection(chatVM: chatVM)
+                        if let assistant {
+                            TargetChatSection(assistant: assistant)
                                 .frame(minHeight: 320)
                         } else {
-                            Color.clear.onAppear {
-                                if let dbManager = appState.databaseManager {
-                                    chatVM = TargetChatViewModel(
-                                        target: target, viewModel: viewModel, dbManager: dbManager
-                                    )
-                                }
-                            }
+                            Color.clear.onAppear { _ = ensureAssistant() }
                         }
                     }
                 }
@@ -154,6 +149,9 @@ struct TargetDetailView: View {
             loadLinks()
             loadHierarchy()
             syncNextStep()
+            // The container is per target — drop the previous target's one so
+            // the Assistant tab re-resolves it from the center.
+            assistant = nil
             watchesVM?.stop(); watchesVM = nil
             if let db = appState.databaseManager { startWatchesVM(db: db) }
         }
@@ -163,6 +161,7 @@ struct TargetDetailView: View {
         .onChange(of: target.nextStep) {
             // Pick up suggestions written by the daemon's next-step phase.
             if !isGeneratingNextStep { nextStep = target.decodedNextStep }
+            recomputeNextStepStaleness(from: nil)
         }
         .onChange(of: focusedField) { oldValue, _ in
             switch oldValue {
@@ -220,6 +219,10 @@ struct TargetDetailView: View {
         ) {
             Button("Delete", role: .destructive) {
                 viewModel.deleteTarget(target)
+                // The target's conversations go with it; drop its container so
+                // the center never hands out tabs for a row that is gone.
+                appState.targetAssistantCenter.drop(targetID: target.id)
+                assistant = nil
                 onClose?()
             }
             Button("Cancel", role: .cancel) {}
@@ -448,6 +451,10 @@ struct TargetDetailView: View {
                 .help("Regenerate next step")
             }
 
+            if isNextStepStale {
+                staleStepStrip
+            }
+
             Text(ns.title)
                 .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
@@ -475,6 +482,32 @@ struct TargetDetailView: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color.purple.opacity(0.35), lineWidth: 1)
         )
+    }
+
+    /// Shown when the target moved on since this suggestion was generated. The
+    /// card keeps its text — it is still the last thing the operator agreed to
+    /// work on — and offers one click. Nothing here fires an AI call on its own:
+    /// the strong-model call happens on the button, or on the daemon's schedule.
+    private var staleStepStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.arrow.circlepath")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Text("Context changed since this step")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("Refresh step") {
+                Task { await generateNextStep() }
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .disabled(isGeneratingNextStep)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -818,7 +851,9 @@ struct TargetDetailView: View {
     /// not surface cross-process writes onto the in-memory `target`.
     private func syncNextStep() {
         nextStepError = nil
-        if let stored = storedNextStep() {
+        let fresh = freshTarget()
+        recomputeNextStepStaleness(from: fresh)
+        if let stored = storedNextStep(fresh) {
             nextStep = stored
             return
         }
@@ -828,14 +863,65 @@ struct TargetDetailView: View {
         }
     }
 
-    /// Reads the authoritative stored next-step for this target from the DB,
-    /// falling back to the (possibly stale) value carried on `target`.
-    private func storedNextStep() -> TargetNextStep? {
-        guard let dbManager = appState.databaseManager else { return target.decodedNextStep }
-        let fresh = try? dbManager.dbPool.read { db in
-            try TargetQueries.fetchByID(db, id: target.id)
+    /// Re-reads the stored row and refreshes both the displayed suggestion — so a
+    /// suggestion the daemon regenerated in the background lands on an open
+    /// screen — and the staleness badge. Deliberately never starts a generation:
+    /// the contract is a badge plus one click, never an automatic AI call.
+    private func refreshNextStepState() {
+        let fresh = freshTarget()
+        if !isGeneratingNextStep, let stored = storedNextStep(fresh) {
+            nextStep = stored
         }
-        return fresh?.decodedNextStep ?? target.decodedNextStep
+        recomputeNextStepStaleness(from: fresh)
+    }
+
+    /// Derives the badge: the suggestion is stale once the target moved on, where
+    /// "moved on" is `targets.updated_at` OR any assistant-chat activity — a chat
+    /// session that mutated nothing still counts as work on the target.
+    private func recomputeNextStepStaleness(from fresh: Target?) {
+        isNextStepStale = (fresh ?? target).isNextStepStale(
+            latestAssistantActivity: latestAssistantActivity()
+        )
+    }
+
+    /// When this target's assistant last had a real chat turn, or nil when it has
+    /// had none. Opening or renaming a tab is deliberately NOT activity — only a
+    /// persisted message is. A read failure (a CLI-only install has never created
+    /// the Swift-owned chat tables) reads as "no chat activity" — never as
+    /// "stale now".
+    private func latestAssistantActivity() -> Date? {
+        guard let dbManager = appState.databaseManager else { return nil }
+        do {
+            return try dbManager.dbPool.read { db in
+                try ChatConversationQueries.latestTurnActivity(
+                    db, type: "target", id: String(target.id)
+                )
+            }
+        } catch {
+            print("TargetDetail: reading chat activity for target \(target.id) failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Re-reads this target from the DB, because the CLI and the daemon write it
+    /// from another process and GRDB's observation does not surface cross-process
+    /// writes onto the in-memory `target`. Nil when the row cannot be read.
+    private func freshTarget() -> Target? {
+        guard let dbManager = appState.databaseManager else { return nil }
+        do {
+            return try dbManager.dbPool.read { db in
+                try TargetQueries.fetchByID(db, id: target.id)
+            }
+        } catch {
+            print("TargetDetail: re-reading target \(target.id) failed: \(error)")
+            return nil
+        }
+    }
+
+    /// The authoritative stored next-step, falling back to the (possibly stale)
+    /// value carried on `target` when the fresh row has none.
+    private func storedNextStep(_ fresh: Target?) -> TargetNextStep? {
+        fresh?.decodedNextStep ?? target.decodedNextStep
     }
 
     private func generateNextStep() async {
@@ -849,6 +935,9 @@ struct TargetDetailView: View {
         do {
             let service = TargetNextStepService(runner: runner)
             nextStep = try await service.generate(targetID: target.id)
+            // Just generated from the current context, so the badge is cleared
+            // without waiting for a re-read of the row the CLI just wrote.
+            isNextStepStale = false
         } catch {
             nextStepError = "Couldn't generate a next step"
         }
@@ -876,16 +965,30 @@ struct TargetDetailView: View {
         sendToAssistant(text)
     }
 
-    /// Routes a prompt into the target assistant chat, creating the view model
-    /// if needed, and switches to the Assistant tab so the user sees the reply.
+    /// Resolves this target's assistant tab container from the app-wide center
+    /// (so a chat that is mid-turn survives navigating away) and attaches the
+    /// staleness callback: an applied action or a finished turn re-runs the
+    /// next-step check on the open screen, which also picks up a daemon-written
+    /// suggestion. Nil only when the DB is not available yet.
+    @discardableResult
+    private func ensureAssistant() -> TargetAssistantViewModel? {
+        if let assistant { return assistant }
+        guard let dbManager = appState.databaseManager else { return nil }
+        let container = appState.targetAssistantCenter.container(
+            for: target, viewModel: viewModel, dbManager: dbManager
+        )
+        container.onTargetActivity = { refreshNextStepState() }
+        assistant = container
+        return container
+    }
+
+    /// Routes a prompt into the ACTIVE assistant tab, creating the container if
+    /// needed, and switches to the Assistant tab so the user sees the reply.
     private func sendToAssistant(_ prompt: String) {
-        if chatVM == nil, let dbManager = appState.databaseManager {
-            chatVM = TargetChatViewModel(target: target, viewModel: viewModel, dbManager: dbManager)
-        }
-        guard let chatVM else { return }
+        guard let chat = ensureAssistant()?.activeChat else { return }
         selectedTab = .assistant
-        chatVM.inputText = prompt
-        chatVM.send()
+        chat.inputText = prompt
+        chat.send()
     }
 
     private func urgencyLabel(_ ns: TargetNextStep) -> String? {
