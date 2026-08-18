@@ -1,6 +1,14 @@
 import SwiftUI
+import AppKit
 import WatchtowerCore
 
+/// Chat-first creation composer (spec §9.5): one multiline editor, a permanent
+/// key-hint caption, the Extract affordance as a secondary control, and an
+/// error row — no form fields. Enter creates the target row mechanically
+/// (TGT-BRIEF-02: no AI involvement in row creation) and briefs the secretary
+/// via `TargetBriefCenter`; ⌘Enter creates silently; Shift+Enter inserts a
+/// newline. Submit logic (title derivation) lives in the testable Core type
+/// `TargetComposerLogic`.
 struct CreateTargetSheet: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -8,17 +16,11 @@ struct CreateTargetSheet: View {
     var prefill: TargetPrefill? = nil
     /// Fires after a successful insert with the new target id. Used by the inbox
     /// callsite (Task 14) to backfill `inbox_items.target_id` via
-    /// `InboxQueries.linkTarget`. Other callsites pass nil.
+    /// `InboxQueries.linkTarget`, and by TargetsListView to land on the new
+    /// target's streaming chat after an Enter-submit. Other callsites pass nil.
     var onCreated: ((Int) -> Void)? = nil
 
     @State private var text: String = ""
-    @State private var intent: String = ""
-    @State private var level: String = "day"
-    @State private var priority: String = "medium"
-    @State private var periodStart: Date = Date()
-    @State private var periodEnd: Date = Date()
-    @State private var subItems: [TargetSubItem] = []
-    @State private var newSubItemText: String = ""
     @State private var errorMessage: String?
     @State private var showExtractSheet = false
     @State private var extractedResult: TargetExtractResult?
@@ -27,20 +29,13 @@ struct CreateTargetSheet: View {
     /// so a sheet never reacts to a result/error started by a different
     /// CreateTargetSheet instance elsewhere in the app.
     @State private var awaitingOwnExtraction = false
-    @State private var showMoreOptions: Bool = false
-    @State private var showChecklist: Bool = false
-    /// Indices into `subItems` that the user marked to be promoted into
-    /// standalone child targets right after the parent target is created.
-    /// Indices are kept in sync with `subItems` mutations (see `removeSubItem`).
-    @State private var pendingPromotions: Set<Int> = []
     @State private var isCreating: Bool = false
     @State private var sourceType: String = "manual"
     @State private var sourceID: String = ""
     @State private var secondaryLinks: [TargetPrefillLink] = []
     /// Optional parent target (`targets.parent_id`). nil = top-level target.
+    /// Kept for the "Add sub-target" call site (TargetDetailView).
     @State private var parentID: Int?
-    /// Active targets offered in the parent picker. Loaded once on appear.
-    @State private var candidateParents: [Target] = []
 
     private let dateFormatter: DateFormatter = {
         let fmt = DateFormatter()
@@ -53,30 +48,25 @@ struct CreateTargetSheet: View {
         VStack(spacing: 0) {
             sheetHeader
             Divider()
-            formContent
-            Divider()
-            sheetFooter
+            VStack(alignment: .leading, spacing: 10) {
+                composerEditor
+                captionRow
+                extractButton
+                sourceInfo
+                errorRow
+            }
+            .padding()
         }
-        .frame(width: 520, height: 480)
-        .onAppear {
-            if let p = prefill {
-                text = p.text
-                intent = p.intent
-                sourceType = p.sourceType
-                sourceID = p.sourceID
-                secondaryLinks = p.secondaryLinks
-                parentID = p.parentID
-            }
-            if !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                showMoreOptions = true
-            }
-            if !subItems.isEmpty {
-                showChecklist = true
-            }
-            loadCandidateParents()
-            // A preselected parent (sub-target creation) snaps the planning
-            // window to the parent's, matching `createChild` semantics.
-            if let pid = parentID { inheritFromParent(pid) }
+        .frame(width: 520)
+        .onAppear { applyPrefill() }
+        .background {
+            // ⌘Enter — just create. The editor's NSTextView does not consume
+            // Cmd+Return as a key equivalent, so this window-level shortcut
+            // fires even while the editor has focus (the TargetsListView ⌘N
+            // hidden-button precedent).
+            Button("") { Task { await submit(brief: false) } }
+                .keyboardShortcut(.return, modifiers: .command)
+                .hidden()
         }
         .sheet(isPresented: $showExtractSheet) {
             if let result = extractedResult {
@@ -116,6 +106,10 @@ struct CreateTargetSheet: View {
             Text("New Target")
                 .font(.headline)
             Spacer()
+            if isCreating {
+                ProgressView().controlSize(.small)
+                    .padding(.trailing, 8)
+            }
             Button("Cancel") { dismiss() }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -125,40 +119,32 @@ struct CreateTargetSheet: View {
         .padding(.vertical, 12)
     }
 
-    private var formContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                textFieldWithAI
-                extractButton
-                levelPriorityRow
-                parentPickerRow
-                customPeriodRow
-                checklistSection
-                moreOptionsSection
-                sourceInfo
-                errorRow
-            }
-            .padding()
-        }
-    }
-
-    private var textFieldWithAI: some View {
+    private var composerEditor: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
-                Text("What's the goal? Paste a message or write your own…")
+                Text("Brief the secretary: what needs to happen, links, context — it will name the task, break it down, and gather data.")
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .frame(minHeight: 56, maxHeight: 180)
+            ComposerTextInput(
+                text: $text,
+                onSubmit: { Task { await submit(brief: true) } },
+                onSilentSubmit: { Task { await submit(brief: false) } }
+            )
+            .padding(4)
         }
+        .frame(height: 180)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Permanent discoverability caption (spec §4) — not a transient tooltip.
+    private var captionRow: some View {
+        Text("Enter — brief the secretary · ⌘Enter — just create")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     private var extractButton: some View {
@@ -188,210 +174,6 @@ struct CreateTargetSheet: View {
         }
     }
 
-    private var levelPriorityRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Picker("Level", selection: $level) {
-                Text("Quarter").tag("quarter")
-                Text("Month").tag("month")
-                Text("Week").tag("week")
-                Text("Day").tag("day")
-                Text("Custom").tag("custom")
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(maxWidth: .infinity)
-
-            Picker("Priority", selection: $priority) {
-                Text("High").tag("high")
-                Text("Med").tag("medium")
-                Text("Low").tag("low")
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 160)
-        }
-    }
-
-    @ViewBuilder
-    private var customPeriodRow: some View {
-        if level == "custom" {
-            HStack(spacing: 8) {
-                DatePicker("Start", selection: $periodStart, displayedComponents: .date)
-                    .labelsHidden()
-                Text("→").foregroundStyle(.secondary)
-                DatePicker("End", selection: $periodEnd, displayedComponents: .date)
-                    .labelsHidden()
-                Spacer()
-            }
-            .font(.callout)
-        }
-    }
-
-    private var parentPickerRow: some View {
-        HStack(spacing: 8) {
-            Text("Parent")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Menu {
-                Button("None (top-level)") { selectParent(nil) }
-                if !candidateParents.isEmpty {
-                    Divider()
-                    ForEach(candidateParents) { candidate in
-                        Button(candidate.text) { selectParent(candidate.id) }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(parentDisplayName)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            Spacer()
-        }
-    }
-
-    private var parentDisplayName: String {
-        guard let parentID,
-              let parent = candidateParents.first(where: { $0.id == parentID })
-        else { return "None" }
-        return parent.text
-    }
-
-    /// Selects a parent and, when one is chosen, inherits its planning window.
-    private func selectParent(_ id: Int?) {
-        parentID = id
-        if let id { inheritFromParent(id) }
-    }
-
-    /// Snaps `level`/period to the parent's so a sub-target lands inside the
-    /// parent's planning window. The user can still override afterward.
-    private func inheritFromParent(_ id: Int) {
-        guard let parent = candidateParents.first(where: { $0.id == id }) else { return }
-        level = parent.level
-        if let start = dateFormatter.date(from: parent.periodStart) {
-            periodStart = start
-        }
-        if let end = dateFormatter.date(from: parent.periodEnd) {
-            periodEnd = end
-        }
-    }
-
-    private func loadCandidateParents() {
-        guard let db = appState.databaseManager else { return }
-        var loaded: [Target]
-        do {
-            loaded = try db.dbPool.read { dbConn in
-                try TargetQueries.fetchAll(dbConn, filter: TargetFilter())
-            }
-        } catch {
-            print("CreateTargetSheet: failed to load candidate parents: \(error)")
-            loaded = []
-        }
-        // Ensure a preselected parent is offered even if it's done/dismissed
-        // (active-only filter would otherwise drop it and blank the label).
-        if let pid = parentID, !loaded.contains(where: { $0.id == pid }),
-           let parent = try? db.dbPool.read({ try TargetQueries.fetchByID($0, id: pid) }) {
-            loaded.insert(parent, at: 0)
-        }
-        candidateParents = loaded
-    }
-
-    @ViewBuilder
-    private var checklistSection: some View {
-        if subItems.isEmpty && !showChecklist {
-            Button {
-                withAnimation { showChecklist = true }
-            } label: {
-                Label("Add checklist", systemImage: "plus.circle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(subItems.enumerated()), id: \.offset) { index, item in
-                    HStack(spacing: 8) {
-                        Image(systemName: "circle")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                        Text(item.text)
-                            .font(.callout)
-                        Spacer()
-                        Button {
-                            togglePromote(at: index)
-                        } label: {
-                            Image(systemName: pendingPromotions.contains(index)
-                                  ? "arrow.up.right.square.fill"
-                                  : "arrow.up.right.square")
-                                .foregroundStyle(pendingPromotions.contains(index)
-                                                 ? Color.accentColor
-                                                 : .secondary)
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .help(pendingPromotions.contains(index)
-                              ? "Will become a sub-target"
-                              : "Promote to sub-target on save")
-                        Button {
-                            removeSubItem(at: index)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.tertiary)
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                HStack(spacing: 8) {
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                    TextField("Add checklist item…", text: $newSubItemText)
-                        .font(.callout)
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            let trimmed = newSubItemText.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !trimmed.isEmpty {
-                                subItems.append(TargetSubItem(text: trimmed, done: false))
-                                newSubItemText = ""
-                            }
-                        }
-                }
-            }
-        }
-    }
-
-    private var moreOptionsSection: some View {
-        DisclosureGroup(isExpanded: $showMoreOptions) {
-            ZStack(alignment: .topLeading) {
-                if intent.isEmpty {
-                    Text("Why does this matter?")
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 10)
-                        .allowsHitTesting(false)
-                }
-                TextEditor(text: $intent)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-                    .frame(minHeight: 50, maxHeight: 110)
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.top, 6)
-        } label: {
-            Text("Add context")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     @ViewBuilder
     private var sourceInfo: some View {
         if sourceType != "manual" {
@@ -414,34 +196,6 @@ struct CreateTargetSheet: View {
         }
     }
 
-    private var sheetFooter: some View {
-        HStack {
-            if !pendingPromotions.isEmpty {
-                Text("\(pendingPromotions.count) checklist item\(pendingPromotions.count == 1 ? "" : "s") will become sub-target\(pendingPromotions.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                Task { await createTargetAndPromote() }
-            } label: {
-                if isCreating {
-                    HStack(spacing: 4) {
-                        ProgressView().controlSize(.small)
-                        Text("Creating…")
-                    }
-                } else {
-                    Text("Create")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(isCreating || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 12)
-    }
-
     private var sourceIcon: String {
         switch sourceType {
         case "track": return "binoculars"
@@ -451,78 +205,60 @@ struct CreateTargetSheet: View {
         }
     }
 
-    /// Toggles the "promote on save" mark for the sub-item at `index`.
-    private func togglePromote(at index: Int) {
-        if pendingPromotions.contains(index) {
-            pendingPromotions.remove(index)
-        } else {
-            pendingPromotions.insert(index)
+    private func applyPrefill() {
+        guard let p = prefill else { return }
+        // Prefill text plus intent (as a second paragraph) become the
+        // composer's initial text — the secretary derives structure from it.
+        var combined = p.text
+        let intentTrimmed = p.intent.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !intentTrimmed.isEmpty {
+            combined = combined.isEmpty ? intentTrimmed : combined + "\n\n" + intentTrimmed
         }
+        text = combined
+        sourceType = p.sourceType
+        sourceID = p.sourceID
+        secondaryLinks = p.secondaryLinks
+        parentID = p.parentID
     }
 
-    /// Removes a sub-item and shifts pending-promotion indices so they keep
-    /// pointing at the same items after the removal.
-    private func removeSubItem(at index: Int) {
-        subItems.remove(at: index)
-        var rebuilt: Set<Int> = []
-        for i in pendingPromotions where i != index {
-            rebuilt.insert(i < index ? i : i - 1)
-        }
-        pendingPromotions = rebuilt
-    }
-
-    private func createTargetAndPromote() async {
+    /// Both submit paths create the row mechanically, instantly, locally —
+    /// an unreachable AI CLI can never block creating a target
+    /// (TGT-BRIEF-02). `brief: true` (Enter) additionally hands the full
+    /// composer text to `TargetBriefCenter`, whose run survives this sheet's
+    /// dismissal; `brief: false` (⌘Enter) stops at the row.
+    private func submit(brief: Bool) async {
+        guard !isCreating else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         guard let db = appState.databaseManager else {
             errorMessage = "Database not available"
             return
         }
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
         isCreating = true
         errorMessage = nil
         defer { isCreating = false }
 
+        let title = TargetComposerLogic.deriveTitle(from: trimmed)
         let today = dateFormatter.string(from: Date())
-        let useCustom = level == "custom"
-        let start = useCustom ? dateFormatter.string(from: periodStart) : today
-        let end = useCustom ? dateFormatter.string(from: periodEnd) : today
-
-        let subItemsJSON: String
-        if subItems.isEmpty {
-            subItemsJSON = "[]"
-        } else if let data = try? JSONEncoder().encode(subItems),
-                  let json = String(data: data, encoding: .utf8) {
-            subItemsJSON = json
-        } else {
-            subItemsJSON = "[]"
-        }
-
         // Snapshot @MainActor-isolated values into Sendable locals before
         // they're captured by the async write closure.
-        let intentCopy = intent.trimmingCharacters(in: .whitespacesAndNewlines)
-        let levelCopy = level
-        let priorityCopy = priority
         let sourceTypeCopy = sourceType
         let sourceIDCopy = sourceID
         let secondaryLinksCopy = secondaryLinks
         let parentIDCopy = parentID
 
-        // 1. Insert the parent target.
         let newID: Int
         do {
             newID = try await db.dbPool.write { dbConn -> Int in
                 try TargetQueries.create(
                     dbConn,
-                    text: trimmed,
-                    intent: intentCopy,
-                    level: levelCopy,
-                    periodStart: start,
-                    periodEnd: end,
+                    text: title,
+                    intent: "",  // the secretary fills it (update_intent)
+                    level: "day",
+                    periodStart: today,
+                    periodEnd: today,
                     parentId: parentIDCopy,
-                    priority: priorityCopy,
-                    subItems: subItemsJSON,
                     sourceType: sourceTypeCopy,
                     sourceID: sourceIDCopy,
                     secondaryLinks: secondaryLinksCopy
@@ -533,19 +269,17 @@ struct CreateTargetSheet: View {
             return
         }
 
-        // 2. If the user marked any sub-items for promotion, delegate to the
-        //    canonical batch-promote on TargetsViewModel — single source of
-        //    truth for the descending-index contract.
-        if !pendingPromotions.isEmpty {
-            let vm = TargetsViewModel(dbManager: db)
-            let items = pendingPromotions.map { (index: $0, overrides: PromoteSubItemOverrides()) }
+        if brief {
             do {
-                try await vm.promoteSubItemsAfterCreate(parentID: newID, items: items)
+                if let created = try await db.dbPool.read({ dbConn in
+                    try TargetQueries.fetchByID(dbConn, id: newID)
+                }) {
+                    appState.targetBriefCenter.startBrief(target: created, text: trimmed)
+                }
             } catch {
-                // Parent persisted; surface the partial failure and keep the
-                // sheet open so the user can retry or close manually.
-                errorMessage = "Target created but some sub-items failed to promote: \(error.localizedDescription)"
-                return
+                // The row exists; only the brief could not start. The owner
+                // re-asks in the target's chat (spec §7).
+                print("CreateTargetSheet: failed to load created target \(newID) for brief: \(error)")
             }
         }
 
@@ -561,5 +295,85 @@ struct CreateTargetSheet: View {
         errorMessage = nil
         awaitingOwnExtraction = true
         appState.targetExtractCenter.start(text: text, runner: runner)
+    }
+}
+
+// MARK: - Composer text input
+// Enter = brief the secretary, ⌘Enter = just create, Shift+Enter = newline
+// (the ChatInput/ExpandingTextInput key-handling shape, fixed-height variant).
+
+private struct ComposerTextInput: NSViewRepresentable {
+    @Binding var text: String
+    var onSubmit: () -> Void
+    var onSilentSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+
+        textView.delegate = context.coordinator
+        textView.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.allowsUndo = true
+        textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.textContainer?.lineFragmentPadding = 4
+        textView.drawsBackground = false
+        textView.string = text
+
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        if textView.string != text {
+            textView.string = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: ComposerTextInput
+
+        init(_ parent: ComposerTextInput) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+            if sel == #selector(NSResponder.insertNewline(_:)) {
+                let event = NSApp.currentEvent
+                if event?.modifierFlags.contains(.shift) == true {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                }
+                if event?.modifierFlags.contains(.command) == true {
+                    // Normally intercepted by the sheet's hidden ⌘Enter
+                    // shortcut before reaching the text view; handled here too
+                    // so ⌘Enter can never fall through to a plain newline —
+                    // and never to a brief the owner didn't ask for.
+                    parent.onSilentSubmit()
+                    return true
+                }
+                // Plain Enter → brief the secretary
+                parent.onSubmit()
+                return true
+            }
+            return false
+        }
     }
 }

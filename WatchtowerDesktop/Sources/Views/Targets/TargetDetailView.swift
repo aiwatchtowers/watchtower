@@ -125,13 +125,7 @@ struct TargetDetailView: View {
                             TargetChatSection(chatVM: chatVM)
                                 .frame(minHeight: 320)
                         } else {
-                            Color.clear.onAppear {
-                                if let dbManager = appState.databaseManager {
-                                    chatVM = TargetChatViewModel(
-                                        target: target, viewModel: viewModel, dbManager: dbManager
-                                    )
-                                }
-                            }
+                            Color.clear.onAppear { initChatVM() }
                         }
                     }
                 }
@@ -147,6 +141,11 @@ struct TargetDetailView: View {
             loadHierarchy()
             syncNextStep()
             if let db = appState.databaseManager { startWatchesVM(db: db) }
+            // A creation-time brief run for this target lands the user on the
+            // streaming chat, not the Details form.
+            if appState.targetBriefCenter.isBriefing(target.id) {
+                selectedTab = .assistant
+            }
         }
         .onChange(of: target.id) {
             syncState()
@@ -156,6 +155,9 @@ struct TargetDetailView: View {
             syncNextStep()
             watchesVM?.stop(); watchesVM = nil
             if let db = appState.databaseManager { startWatchesVM(db: db) }
+            if appState.targetBriefCenter.isBriefing(target.id) {
+                selectedTab = .assistant
+            }
         }
         .onDisappear {
             watchesVM?.stop()
@@ -230,8 +232,17 @@ struct TargetDetailView: View {
 
     private func tabButton(_ tab: Tab) -> some View {
         let isSelected = selectedTab == tab
-        return Button(tab.rawValue) {
+        return Button {
             selectedTab = tab
+        } label: {
+            HStack(spacing: 5) {
+                Text(tab.rawValue)
+                // Working indicator while the creation-time brief run for
+                // THIS target is still streaming (TargetBriefCenter).
+                if tab == .assistant, appState.targetBriefCenter.isBriefing(target.id) {
+                    ProgressView().controlSize(.mini)
+                }
+            }
         }
         .buttonStyle(.plain)
         .font(.callout)
@@ -876,12 +887,24 @@ struct TargetDetailView: View {
         sendToAssistant(text)
     }
 
+    /// Adopt the brief-run VM held by `TargetBriefCenter` for this target —
+    /// so the creation-time run and the detail chat never race one
+    /// conversation — and only create a fresh VM when none is held.
+    private func initChatVM() {
+        guard chatVM == nil else { return }
+        if let adopted = appState.targetBriefCenter.adoptVM(for: target.id) {
+            chatVM = adopted
+            return
+        }
+        if let dbManager = appState.databaseManager {
+            chatVM = TargetChatViewModel(target: target, viewModel: viewModel, dbManager: dbManager)
+        }
+    }
+
     /// Routes a prompt into the target assistant chat, creating the view model
     /// if needed, and switches to the Assistant tab so the user sees the reply.
     private func sendToAssistant(_ prompt: String) {
-        if chatVM == nil, let dbManager = appState.databaseManager {
-            chatVM = TargetChatViewModel(target: target, viewModel: viewModel, dbManager: dbManager)
-        }
+        if chatVM == nil { initChatVM() }
         guard let chatVM else { return }
         selectedTab = .assistant
         chatVM.inputText = prompt
