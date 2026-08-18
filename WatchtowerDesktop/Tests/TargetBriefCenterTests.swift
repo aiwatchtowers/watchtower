@@ -118,12 +118,92 @@ final class TargetBriefCenterTests: XCTestCase {
         center.startBrief(target: target, text: "brief text")
         await center.task?.value
 
-        XCTAssertEqual(center.phase, .failed(message: "CLI unavailable"))
+        // Failed carries the target id so the detail view can show the
+        // failure banner for exactly this target; it is NOT auto-cleared.
+        XCTAssertEqual(center.phase, .failed(targetID: target.id, message: "CLI unavailable"))
         XCTAssertNil(center.adoptVM(for: target.id))
         // The instruction survives as a persisted chat message (spec §7) —
         // the owner re-asks in the chat.
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
         XCTAssertEqual(persisted.filter { $0.role == "user" }.map(\.text), ["brief text"])
+    }
+
+    /// Single-slot supersede: starting a brief for B while A is still
+    /// streaming must actually CANCEL A's stream (not just drop the
+    /// reference), so a superseded run can never keep streaming and
+    /// auto-apply invisibly.
+    func testNewBriefCancelsTheSupersededStream() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let targetA = try makeTarget(manager, text: "target A")
+        let targetB = try makeTarget(manager, text: "target B")
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text("ok"), .done])
+        let center = makeCenter(manager: manager, mock: mock)
+
+        center.startBrief(target: targetA, text: "brief A")
+        let vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        XCTAssertTrue(vmA.isStreaming)
+
+        center.startBrief(target: targetB, text: "brief B")
+
+        XCTAssertFalse(vmA.isStreaming)
+        XCTAssertNil(center.adoptVM(for: targetA.id))
+        XCTAssertEqual(center.phase, .briefing(targetID: targetB.id))
+        XCTAssertNotNil(center.adoptVM(for: targetB.id))
+
+        await center.task?.value
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// A lingering `.failed` is cleared when the next brief starts — never
+    /// silently in between.
+    func testStartBriefClearsPriorFailure() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let targetA = try makeTarget(manager, text: "target A")
+        let targetB = try makeTarget(manager, text: "target B")
+        struct Boom: Error, LocalizedError {
+            var errorDescription: String? { "CLI unavailable" }
+        }
+        let center = makeCenter(manager: manager, mock: MockClaudeService(error: Boom()))
+
+        center.startBrief(target: targetA, text: "brief A")
+        await center.task?.value
+        XCTAssertEqual(center.phase, .failed(targetID: targetA.id, message: "CLI unavailable"))
+
+        // Swap in a healthy factory for the second run.
+        let okMock = MockClaudeService(events: [.sessionID("s2"), .text("ok"), .done])
+        center.makeChatVM = { target in
+            TargetChatViewModel(
+                target: target,
+                viewModel: TargetsViewModel(dbManager: manager),
+                dbManager: manager,
+                aiService: okMock
+            )
+        }
+        center.startBrief(target: targetB, text: "brief B")
+        XCTAssertEqual(center.phase, .briefing(targetID: targetB.id))
+
+        await center.task?.value
+        XCTAssertEqual(center.phase, .idle)
+    }
+
+    /// `markFailed` (the CreateTargetSheet hand-off failure path) lands on
+    /// the same `.failed` phase a failed run does; `dismissFailure` clears
+    /// it and nothing else.
+    func testMarkFailedAndDismissFailure() {
+        let center = TargetBriefCenter()
+
+        center.dismissFailure()  // no-op on idle
+        XCTAssertEqual(center.phase, .idle)
+
+        center.markFailed(targetID: 7, message: "Couldn't start the brief")
+        XCTAssertEqual(center.phase, .failed(targetID: 7, message: "Couldn't start the brief"))
+
+        center.dismissFailure()
+        XCTAssertEqual(center.phase, .idle)
     }
 
     /// Degenerate-but-valid input: no factory wired (DB never opened) fails
@@ -136,7 +216,7 @@ final class TargetBriefCenterTests: XCTestCase {
 
         center.startBrief(target: target, text: "brief text")
 
-        XCTAssertEqual(center.phase, .failed(message: "Database not available"))
+        XCTAssertEqual(center.phase, .failed(targetID: target.id, message: "Database not available"))
         XCTAssertNil(center.adoptVM(for: target.id))
     }
 }

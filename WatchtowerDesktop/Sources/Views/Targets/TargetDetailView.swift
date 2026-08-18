@@ -121,6 +121,10 @@ struct TargetDetailView: View {
                     case .links:
                         linksTab
                     case .assistant:
+                        if case let .failed(failedID, message) = appState.targetBriefCenter.phase,
+                           failedID == target.id {
+                            briefFailureBanner(message)
+                        }
                         if let chatVM {
                             TargetChatSection(chatVM: chatVM)
                                 .frame(minHeight: 320)
@@ -142,12 +146,18 @@ struct TargetDetailView: View {
             syncNextStep()
             if let db = appState.databaseManager { startWatchesVM(db: db) }
             // A creation-time brief run for this target lands the user on the
-            // streaming chat, not the Details form.
-            if appState.targetBriefCenter.isBriefing(target.id) {
+            // streaming chat, not the Details form — and a failed brief on
+            // the chat's failure banner.
+            switch appState.targetBriefCenter.phase {
+            case .briefing(target.id), .failed(target.id, _):
                 selectedTab = .assistant
+            default:
+                break
             }
         }
         .onChange(of: target.id) {
+            // No brief-center check here: the host applies .id(id), so an id
+            // change recreates the view and only the onAppear copy runs.
             syncState()
             loadJiraIssue()
             loadLinks()
@@ -155,8 +165,22 @@ struct TargetDetailView: View {
             syncNextStep()
             watchesVM?.stop(); watchesVM = nil
             if let db = appState.databaseManager { startWatchesVM(db: db) }
-            if appState.targetBriefCenter.isBriefing(target.id) {
-                selectedTab = .assistant
+        }
+        .onChange(of: appState.targetBriefCenter.phase) { oldPhase, newPhase in
+            // When the creation-time brief run for THIS target finishes, its
+            // actions were applied through the run's own ad-hoc VM — reload
+            // this view's data so title/priority/due/hierarchy reflect them
+            // immediately.
+            guard oldPhase == .briefing(targetID: target.id),
+                  newPhase != .briefing(targetID: target.id) else { return }
+            viewModel.load()
+            loadHierarchy()
+            loadLinks()
+            if let dbManager = appState.databaseManager,
+               let fresh = try? dbManager.dbPool.read({ db in
+                   try TargetQueries.fetchByID(db, id: target.id)
+               }) {
+                syncState(from: fresh)
             }
         }
         .onDisappear {
@@ -252,14 +276,45 @@ struct TargetDetailView: View {
         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
     }
 
-    private func syncState() {
-        editingIntent = target.intent
-        editingBlocking = target.blocking
-        editingBallOn = target.ballOn
-        hasDueDate = !target.dueDate.isEmpty
-        if let date = Target.parseDueDate(target.dueDate) {
+    /// Copies the target's fields into the editing state. `source` overrides
+    /// the view's `target` for the post-brief reload, where the freshly
+    /// applied row is read from the DB before SwiftUI re-renders the prop.
+    private func syncState(from source: Target? = nil) {
+        let t = source ?? target
+        editingIntent = t.intent
+        editingBlocking = t.blocking
+        editingBallOn = t.ballOn
+        hasDueDate = !t.dueDate.isEmpty
+        if let date = Target.parseDueDate(t.dueDate) {
             dueDate = date
         }
+    }
+
+    /// Compact failure banner for a brief run that errored (or never started)
+    /// for this target. Dismiss clears the center's `.failed` phase; the
+    /// owner recovers by re-asking in the chat below (spec §7).
+    private func briefFailureBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button {
+                appState.targetBriefCenter.dismissFailure()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(8)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - Details Tab

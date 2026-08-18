@@ -17,7 +17,7 @@ final class TargetBriefCenter {
     enum Phase: Equatable {
         case idle
         case briefing(targetID: Int)
-        case failed(message: String)
+        case failed(targetID: Int, message: String)
     }
 
     private(set) var phase: Phase = .idle
@@ -44,15 +44,19 @@ final class TargetBriefCenter {
 
     /// Start the brief run: build the VM, send `text` as the first owner
     /// message, and watch the stream to completion. Single-slot: a new brief
-    /// supersedes a still-running one (dropping an un-adopted VM aborts that
-    /// stream; its persisted user message survives, so the owner re-asks in
-    /// that target's chat — the spec §7 failure contract).
+    /// supersedes a still-running one — the previous VM's stream is cancelled
+    /// explicitly (so a superseded run can never keep streaming and auto-apply
+    /// invisibly) before the reference is dropped; its persisted user message
+    /// survives, so the owner re-asks in that target's chat — the spec §7
+    /// failure contract. Starting a new brief also clears a lingering
+    /// `.failed` phase.
     func startBrief(target: Target, text: String) {
         task?.cancel()
+        vm?.cancelStream()
         guard let chatVM = makeChatVM?(target) else {
             vm = nil
             vmTargetID = nil
-            phase = .failed(message: "Database not available")
+            phase = .failed(targetID: target.id, message: "Database not available")
             return
         }
         vm = chatVM
@@ -60,6 +64,7 @@ final class TargetBriefCenter {
         phase = .briefing(targetID: target.id)
         chatVM.inputText = text
         chatVM.send()
+        let targetID = target.id
         task = Task { [weak self] in
             // `send()` flips `isStreaming` synchronously, so polling until it
             // clears observes the whole run (stream + execute-mode auto-apply).
@@ -68,7 +73,9 @@ final class TargetBriefCenter {
             }
             guard let self, !Task.isCancelled else { return }
             if let message = self.vm?.errorMessage {
-                self.phase = .failed(message: message)
+                // Not auto-cleared: the failure stays visible (the detail
+                // view's banner) until dismissed or the next brief starts.
+                self.phase = .failed(targetID: targetID, message: message)
             } else {
                 self.phase = .idle
             }
@@ -77,6 +84,21 @@ final class TargetBriefCenter {
             // conversation, exactly as it does today.
             self.vm = nil
             self.vmTargetID = nil
+        }
+    }
+
+    /// Record a brief that could not even start (e.g. the post-create fetch
+    /// for the hand-off failed) so the target's detail view shows the same
+    /// failure banner a failed run does. The row itself already exists.
+    func markFailed(targetID: Int, message: String) {
+        phase = .failed(targetID: targetID, message: message)
+    }
+
+    /// Explicit dismissal of a `.failed` phase (the banner's close button).
+    /// The owner recovers by re-asking in the target's chat.
+    func dismissFailure() {
+        if case .failed = phase {
+            phase = .idle
         }
     }
 

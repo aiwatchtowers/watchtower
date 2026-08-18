@@ -251,13 +251,26 @@ struct CreateTargetSheet: View {
         let newID: Int
         do {
             newID = try await db.dbPool.write { dbConn -> Int in
-                try TargetQueries.create(
+                // A composer-created sub-target inherits the parent's level
+                // and planning period — the TargetsViewModel.createChild
+                // semantics, so it matches a secretary-created one. No
+                // parent → day/today.
+                var level = "day"
+                var periodStart = today
+                var periodEnd = today
+                if let parentIDCopy,
+                   let parent = try TargetQueries.fetchByID(dbConn, id: parentIDCopy) {
+                    level = parent.level
+                    periodStart = parent.periodStart
+                    periodEnd = parent.periodEnd
+                }
+                return try TargetQueries.create(
                     dbConn,
                     text: title,
                     intent: "",  // the secretary fills it (update_intent)
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
+                    level: level,
+                    periodStart: periodStart,
+                    periodEnd: periodEnd,
                     parentId: parentIDCopy,
                     sourceType: sourceTypeCopy,
                     sourceID: sourceIDCopy,
@@ -270,16 +283,26 @@ struct CreateTargetSheet: View {
         }
 
         if brief {
+            // The row exists either way (mechanical create succeeded); a
+            // failed hand-off lands on the center's `.failed` phase so the
+            // target's Assistant tab shows the failure banner — the owner
+            // re-asks in the target's chat (spec §7).
             do {
                 if let created = try await db.dbPool.read({ dbConn in
                     try TargetQueries.fetchByID(dbConn, id: newID)
                 }) {
                     appState.targetBriefCenter.startBrief(target: created, text: trimmed)
+                } else {
+                    appState.targetBriefCenter.markFailed(
+                        targetID: newID,
+                        message: "Couldn't start the brief: the created target could not be loaded"
+                    )
                 }
             } catch {
-                // The row exists; only the brief could not start. The owner
-                // re-asks in the target's chat (spec §7).
-                print("CreateTargetSheet: failed to load created target \(newID) for brief: \(error)")
+                appState.targetBriefCenter.markFailed(
+                    targetID: newID,
+                    message: "Couldn't start the brief: \(error.localizedDescription)"
+                )
             }
         }
 

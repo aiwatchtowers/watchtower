@@ -38,8 +38,14 @@ final class TargetsViewModel {
         load()
         let dbPool = dbManager.dbPool
         observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
+            // Track (row count, latest update), not just the count: same-row
+            // updates — e.g. a brief run's ad-hoc VM applying
+            // update_title/priority/due — must refresh this shared VM too,
+            // not only inserts/deletes.
+            let observation = ValueObservation.tracking { db -> String in
+                let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
+                let latest = try String.fetchOne(db, sql: "SELECT MAX(updated_at) FROM targets") ?? ""
+                return "\(count)|\(latest)"
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
