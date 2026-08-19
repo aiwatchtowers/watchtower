@@ -88,6 +88,21 @@ final class TargetActionParserTests: XCTestCase {
         XCTAssertTrue(r.errors.isEmpty)
     }
 
+    /// Execute-mode blocks parse like any other and keep the `mode` field so
+    /// the apply layer can distinguish directive from proposal.
+    func testExecuteModePassesThrough() {
+        let raw = """
+        ```watchtower-action
+        {"type":"update_due","text":"2026-09-01","reason":"owner directive","mode":"execute"}
+        ```
+        """
+        let r = TargetActionParser.parse(raw)
+        XCTAssertEqual(r.actions.count, 1)
+        XCTAssertEqual(r.actions.first?.mode, "execute")
+        XCTAssertEqual(r.actions.first?.isExecute, true)
+        XCTAssertTrue(r.errors.isEmpty)
+    }
+
     /// An unknown action type must surface a specific error naming the field,
     /// not the opaque "malformed action JSON".
     func testUnknownTypeProducesSpecificError() {
