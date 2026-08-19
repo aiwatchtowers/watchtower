@@ -48,6 +48,7 @@ var (
 	syncFlagDaemon       bool
 	syncFlagDetach       bool
 	syncFlagStop         bool
+	syncFlagNow          bool
 	syncFlagChannels     []string
 	syncFlagWorkers      int
 	syncFlagSkipDMs      bool
@@ -76,6 +77,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncFlagDaemon, "daemon", false, "run in daemon mode with periodic syncing")
 	syncCmd.Flags().BoolVar(&syncFlagDetach, "detach", false, "start daemon in the background (requires --daemon)")
 	syncCmd.Flags().BoolVar(&syncFlagStop, "stop", false, "stop a running detached daemon")
+	syncCmd.Flags().BoolVar(&syncFlagNow, "now", false, "ask the running daemon to sync immediately instead of waiting for its next poll")
 	syncCmd.Flags().StringSliceVar(&syncFlagChannels, "channels", nil, "limit sync to specific channel names or IDs")
 	syncCmd.Flags().IntVar(&syncFlagWorkers, "workers", 0, "number of concurrent sync workers (0 = use config default)")
 	syncCmd.Flags().BoolVar(&syncFlagSkipDMs, "skip-dms", false, "skip syncing DMs and group DMs")
@@ -175,6 +177,26 @@ func runSyncStop(cfg *config.Config) error {
 	return fmt.Errorf("daemon (PID %d) did not exit within 10 seconds", pid)
 }
 
+// runSyncNow asks a running daemon to start a sync now. It deliberately does
+// not fall back to syncing in this process: the daemon holds an exclusive
+// flock on sync.lock, so a local sync would fail on the lock anyway, and a
+// second syncer racing the daemon is exactly what that lock exists to prevent.
+func runSyncNow(cfg *config.Config) error {
+	pidPath := pidFilePath(cfg)
+	pid, err := daemon.FindProcess(pidPath)
+	if err != nil {
+		return fmt.Errorf("reading pid file: %w", err)
+	}
+	if pid == 0 {
+		return errors.New("no daemon is running (start one with: watchtower sync --daemon --detach)")
+	}
+	if err := syscall.Kill(pid, daemon.TriggerSignal); err != nil {
+		return fmt.Errorf("signalling daemon (PID %d): %w", pid, err)
+	}
+	fmt.Printf("Sync requested (daemon PID %d).\n", pid)
+	return nil
+}
+
 func runSyncDetach(cfg *config.Config) error {
 	pidPath := pidFilePath(cfg)
 	pid, err := daemon.FindProcess(pidPath)
@@ -238,6 +260,15 @@ func runSync(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid config: %w", err)
 		}
 		return runSyncStop(cfg)
+	}
+
+	// --now signals the running daemon; like --stop it never syncs in this
+	// process, so it needs no Slack token either.
+	if syncFlagNow {
+		if err := cfg.ValidateWorkspace(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+		return runSyncNow(cfg)
 	}
 
 	// Slack is optional: without a token the daemon still runs (Calendar,
