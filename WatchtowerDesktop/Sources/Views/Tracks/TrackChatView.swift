@@ -162,7 +162,11 @@ final class TrackChatViewModel {
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
                 dbPath: dbPath,
-                extraAllowedTools: ["Bash(watchtower*)"]
+                // No shell grant: `ai query` now hides Bash from the model
+                // outright (internal/ai/client.go --disallowedTools), and this
+                // chat's own prompt tells it so. Asking for one anyway would be
+                // a grant the deny list overrides.
+                extraAllowedTools: []
             )
             var sawTurnComplete = false
             for try await event in stream {

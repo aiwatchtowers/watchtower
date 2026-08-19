@@ -40,10 +40,6 @@ package final class JiraBoardAnalysisCenter {
         errors[board.rowID]
     }
 
-    package func clearError(for board: JiraBoard) {
-        errors[board.rowID] = nil
-    }
-
     func task(for board: JiraBoard) -> Task<Void, Never>? {
         tasks[board.rowID]
     }

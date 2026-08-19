@@ -253,7 +253,9 @@ final class TargetAssistantViewModel {
             }) else { return }
             conversations[index] = fresh
         } catch {
-            print("TargetAssistant: re-reading conversation \(conversationID) failed: \(error)")
+            // The write itself already landed; only the in-memory row is stale,
+            // so the tab would keep showing the old title with no explanation.
+            errorMessage = "Could not refresh the chat tab: \(error.localizedDescription)"
         }
     }
 }
