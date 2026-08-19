@@ -2,12 +2,12 @@ import Foundation
 import XCTest
 @testable import WatchtowerCore
 
-/// `SkillsCatalog` — the Swift half of the persona-skills dual-path. The
+/// `SkillsCatalog` — the Swift half of the assistant-skills dual-path. The
 /// fixtures here mirror the Go parser's cases in `internal/skills` so both
 /// sides can be checked against the same file shapes: strict on what matters
-/// (frontmatter fences, non-empty `description`, known `persona`), lenient
-/// elsewhere (unknown keys ignored, `enabled` defaulting to true), and one bad
-/// file never breaks the catalog.
+/// (frontmatter fences, non-empty `description`), lenient elsewhere (unknown
+/// keys ignored — the legacy `persona` key included — and `enabled` defaulting
+/// to true), and one bad file never breaks the catalog.
 final class SkillsCatalogTests: XCTestCase {
     private var dir: String!
 
@@ -38,7 +38,6 @@ final class SkillsCatalogTests: XCTestCase {
         let parsed = SkillsCatalog.parse(name: "thread-untangle", content: """
             ---
             description: Reconstruct who asked what in a tangled thread.
-            persona: secretary
             enabled: true
             ---
             Body instructions.
@@ -46,7 +45,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertEqual(parsed, SkillSummary(
             name: "thread-untangle",
             description: "Reconstruct who asked what in a tangled thread.",
-            persona: .secretary,
             enabled: true))
     }
 
@@ -54,19 +52,16 @@ final class SkillsCatalogTests: XCTestCase {
         let parsed = SkillsCatalog.parse(name: "status-update", content: """
             ---
             description: Draft a status update.
-            persona: both
             ---
             Body.
             """)
         XCTAssertEqual(parsed?.enabled, true, "an absent `enabled` key means enabled")
-        XCTAssertEqual(parsed?.persona, .both)
     }
 
     func testExplicitDisabledIsHonoured() {
         let parsed = SkillsCatalog.parse(name: "target-breakdown", content: """
             ---
             description: Decompose a target into sub-targets.
-            persona: assistant
             enabled: false
             ---
             Body.
@@ -78,7 +73,6 @@ final class SkillsCatalogTests: XCTestCase {
         let parsed = SkillsCatalog.parse(name: "extra-keys", content: """
             ---
             description: Still valid.
-            persona: secretary
             author: someone
             version: 3
             ---
@@ -87,22 +81,36 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertEqual(parsed?.description, "Still valid.", "an extra key must not knock a skill out")
     }
 
+    /// The two-persona era stamped a `persona` key into every skill file. It
+    /// is an ordinary unknown key today — whatever its value, even one that
+    /// was never valid back then.
+    func testLegacyPersonaKeyIsIgnored() {
+        let parsed = SkillsCatalog.parse(name: "legacy", content: """
+            ---
+            description: Carries a legacy persona key.
+            persona: butler
+            ---
+            Body.
+            """)
+        XCTAssertEqual(parsed?.description, "Carries a legacy persona key.")
+        XCTAssertEqual(parsed?.enabled, true)
+    }
+
     func testInlineCommentAndQuotesAreStripped() {
         let parsed = SkillsCatalog.parse(name: "quoted", content: """
             ---
             description: "Use when the owner asks for a recap."
-            persona: secretary   # secretary | assistant | both
+            enabled: true   # switched on
             ---
             Body.
             """)
         XCTAssertEqual(parsed?.description, "Use when the owner asks for a recap.")
-        XCTAssertEqual(parsed?.persona, .secretary)
+        XCTAssertEqual(parsed?.enabled, true)
     }
 
     func testRejectsMissingOpeningFence() {
         XCTAssertNil(SkillsCatalog.parse(name: "no-fence", content: """
             description: No frontmatter block at all.
-            persona: secretary
             """))
     }
 
@@ -110,7 +118,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "unterminated", content: """
             ---
             description: Never closed.
-            persona: secretary
             """))
     }
 
@@ -118,7 +125,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "empty-desc", content: """
             ---
             description:
-            persona: secretary
             ---
             Body.
             """))
@@ -127,26 +133,7 @@ final class SkillsCatalogTests: XCTestCase {
     func testRejectsMissingDescription() {
         XCTAssertNil(SkillsCatalog.parse(name: "no-desc", content: """
             ---
-            persona: secretary
-            ---
-            Body.
-            """))
-    }
-
-    func testRejectsUnknownPersona() {
-        XCTAssertNil(SkillsCatalog.parse(name: "bad-persona", content: """
-            ---
-            description: Valid description.
-            persona: butler
-            ---
-            Body.
-            """))
-    }
-
-    func testRejectsMissingPersona() {
-        XCTAssertNil(SkillsCatalog.parse(name: "no-persona", content: """
-            ---
-            description: Valid description.
+            enabled: true
             ---
             Body.
             """))
@@ -156,7 +143,6 @@ final class SkillsCatalogTests: XCTestCase {
         let content = """
             ---
             description: Valid description.
-            persona: secretary
             ---
             Body.
             """
@@ -172,33 +158,23 @@ final class SkillsCatalogTests: XCTestCase {
         writeFixture("zeta.md", """
             ---
             description: Zeta skill.
-            persona: assistant
             ---
             """)
         writeFixture("alpha.md", """
             ---
             description: Alpha skill.
-            persona: secretary
             ---
             """)
-        // Skipped: malformed frontmatter, unknown persona, invalid stem, non-md.
+        // Skipped: malformed frontmatter, invalid stem, non-md.
         writeFixture("broken.md", "no frontmatter here")
-        writeFixture("wrong-persona.md", """
-            ---
-            description: Bad persona.
-            persona: butler
-            ---
-            """)
         writeFixture("Upper.md", """
             ---
             description: Invalid stem.
-            persona: secretary
             ---
             """)
         writeFixture("notes.txt", """
             ---
             description: Not markdown.
-            persona: secretary
             ---
             """)
 
@@ -217,7 +193,6 @@ final class SkillsCatalogTests: XCTestCase {
         writeFixture("off.md", """
             ---
             description: Disabled skill.
-            persona: secretary
             enabled: false
             ---
             """)
@@ -228,112 +203,74 @@ final class SkillsCatalogTests: XCTestCase {
 
     // MARK: - promptBlock
 
-    /// Seeds one skill file per persona/enabled combination used below.
+    /// Seeds the enabled/disabled combination used below.
     private func seedMixedCatalog() {
-        writeFixture("sec-on.md", """
+        writeFixture("alpha-on.md", """
             ---
-            description: Secretary skill.
-            persona: secretary
-            ---
-            """)
-        writeFixture("asst-on.md", """
-            ---
-            description: Assistant skill.
-            persona: assistant
+            description: Alpha skill.
             ---
             """)
-        writeFixture("both-on.md", """
+        writeFixture("beta-on.md", """
             ---
-            description: Shared skill.
-            persona: both
+            description: Beta skill.
             ---
             """)
-        writeFixture("sec-off.md", """
+        writeFixture("gamma-off.md", """
             ---
-            description: Disabled secretary skill.
-            persona: secretary
+            description: Disabled skill.
             enabled: false
             ---
             """)
     }
 
-    func testPromptBlockFiltersBySecretaryPersona() throws {
+    func testPromptBlockListsEveryEnabledSkill() throws {
         seedMixedCatalog()
-        let block = try XCTUnwrap(SkillsCatalog.promptBlock(persona: .secretary, dir: dir))
+        let block = try XCTUnwrap(SkillsCatalog.promptBlock(dir: dir))
 
         XCTAssertTrue(block.contains("AVAILABLE SKILLS"))
-        XCTAssertTrue(block.contains("sec-on — Secretary skill."))
-        XCTAssertTrue(block.contains("both-on — Shared skill."), "`both` matches either persona")
-        XCTAssertFalse(block.contains("asst-on"), "the other persona's skills must not leak in")
-        XCTAssertFalse(block.contains("sec-off"), "a disabled skill is never listed")
+        XCTAssertTrue(block.contains("alpha-on — Alpha skill."))
+        XCTAssertTrue(block.contains("beta-on — Beta skill."))
+        XCTAssertFalse(block.contains("gamma-off"), "a disabled skill is never listed")
         XCTAssertTrue(block.contains("load_skill"), "the block must point at the load tool")
     }
 
-    func testPromptBlockFiltersByAssistantPersona() throws {
-        seedMixedCatalog()
-        let block = try XCTUnwrap(SkillsCatalog.promptBlock(persona: .assistant, dir: dir))
-
-        XCTAssertTrue(block.contains("asst-on — Assistant skill."))
-        XCTAssertTrue(block.contains("both-on — Shared skill."))
-        XCTAssertFalse(block.contains("sec-on"))
-    }
-
-    func testPromptBlockNilWhenNothingMatches() {
-        writeFixture("asst-on.md", """
-            ---
-            description: Assistant skill.
-            persona: assistant
-            ---
-            """)
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .secretary, dir: dir),
-                     "no matching enabled skill must leave the prompt byte-identical")
-    }
-
     func testPromptBlockNilOnEmptyOrMissingDir() {
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .secretary, dir: dir))
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .assistant, dir: dir + "/nope"))
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .assistant, dir: nil))
+        XCTAssertNil(SkillsCatalog.promptBlock(dir: dir))
+        XCTAssertNil(SkillsCatalog.promptBlock(dir: dir + "/nope"))
+        XCTAssertNil(SkillsCatalog.promptBlock(dir: nil))
     }
 
-    func testPromptBlockNilWhenEveryMatchIsDisabled() {
-        writeFixture("sec-off.md", """
+    func testPromptBlockNilWhenEverySkillIsDisabled() {
+        writeFixture("gamma-off.md", """
             ---
-            description: Disabled secretary skill.
-            persona: secretary
+            description: Disabled skill.
             enabled: false
             ---
             """)
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .secretary, dir: dir))
+        XCTAssertNil(SkillsCatalog.promptBlock(dir: dir),
+                     "no enabled skill must leave the prompt byte-identical")
     }
 
-    // MARK: - Persona mapping
+    // MARK: - Chat surface gate
 
-    func testPersonaByContextTypeMatchesTheContract() {
-        XCTAssertEqual(SkillsCatalog.personaByContextType, [
-            "situation": .secretary,
-            "meeting": .secretary,
-            "target": .assistant,
-            "track": .assistant,
-            "idea": .assistant
-        ])
+    func testChatContextTypesMatchesTheContract() {
+        XCTAssertEqual(SkillsCatalog.chatContextTypes,
+                       ["situation", "meeting", "target", "track", "idea"])
     }
 
     /// The overload every chat VM goes through: the context type it stores on
-    /// its conversation picks the persona, and a context type nobody mapped
-    /// gets no block rather than a default persona's skills.
-    func testPromptBlockByContextTypeResolvesThroughTheTable() throws {
+    /// its conversation decides whether skills are listed at all, and a
+    /// context type nobody added gets no block rather than the full catalog.
+    func testPromptBlockByContextTypeResolvesThroughTheSet() throws {
         seedMixedCatalog()
 
-        let secretary = try XCTUnwrap(SkillsCatalog.promptBlock(contextType: "situation", dir: dir))
-        XCTAssertTrue(secretary.contains("sec-on"))
-        XCTAssertFalse(secretary.contains("asst-on"))
-
-        let assistant = try XCTUnwrap(SkillsCatalog.promptBlock(contextType: "idea", dir: dir))
-        XCTAssertTrue(assistant.contains("asst-on"))
-        XCTAssertFalse(assistant.contains("sec-on"))
+        for contextType in SkillsCatalog.chatContextTypes {
+            let block = try XCTUnwrap(SkillsCatalog.promptBlock(contextType: contextType, dir: dir))
+            XCTAssertTrue(block.contains("alpha-on"), "\(contextType) must list skills")
+        }
 
         XCTAssertNil(SkillsCatalog.promptBlock(contextType: "onboarding", dir: dir),
-                     "an unmapped surface must not inherit a persona by accident")
+                     "an unlisted surface must not inherit skills by accident")
     }
 
     // MARK: - yaml.v3 equivalence
@@ -369,7 +306,6 @@ final class SkillsCatalogTests: XCTestCase {
         SkillsCatalog.parse(name: "probe", content: """
             ---
             description: A description.
-            persona: both
             enabled: \(value)
             ---
             Body.
@@ -381,7 +317,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "bare", content: """
             ---
             description: A description.
-            persona: secretary
             this line has no colon
             ---
             Body.
@@ -391,7 +326,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "indented", content: """
              ---
             description: A description.
-            persona: secretary
             ---
             Body.
             """))
@@ -399,7 +333,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "unclosed", content: """
             ---
             description: "never closed
-            persona: secretary
             ---
             Body.
             """))
@@ -407,7 +340,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "unclosed-extra", content: """
             ---
             description: A description.
-            persona: secretary
             author: "never closed
             ---
             Body.
@@ -416,7 +348,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "junk", content: """
             ---
             description: 'quoted' junk
-            persona: secretary
             ---
             Body.
             """))
@@ -424,7 +355,6 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "dup", content: """
             ---
             description: A description.
-            persona: secretary
             author: first
             author: second
             ---
@@ -436,43 +366,43 @@ final class SkillsCatalogTests: XCTestCase {
     /// end follows it — the rule yaml.v3 applies, and the reason
     /// `description:foo` is a broken file rather than a description of "foo".
     func testKeySeparatorNeedsWhitespaceAfterTheColon() {
-        XCTAssertNil(parseFrontmatter("description:foo\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("description:\npersona: secretary"),
+        XCTAssertNil(parseFrontmatter("description:foo"))
+        XCTAssertNil(parseFrontmatter("description:"),
                      "a bare key with no value leaves the description empty")
         // A colon inside the key name is fine as long as a real separator
         // follows later — yaml.v3 reads the key as `a:b` and so do we.
         XCTAssertEqual(
-            parseFrontmatter("a:b: c\ndescription: A description.\npersona: secretary")?.description,
+            parseFrontmatter("a:b: c\ndescription: A description.")?.description,
             "A description.")
         // …and a tab after the colon separates just as well as a space.
         XCTAssertEqual(
-            parseFrontmatter("description:\tA description.\npersona: secretary")?.description,
+            parseFrontmatter("description:\tA description.")?.description,
             "A description.")
     }
 
     func testRejectsIndentedLinesAndTabs() {
-        XCTAssertNil(parseFrontmatter("description: A description.\n  persona: secretary"))
-        XCTAssertNil(parseFrontmatter("\tdescription: A description.\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("  description: A description.\n  persona: secretary"),
+        XCTAssertNil(parseFrontmatter("description: A description.\n  author: someone"))
+        XCTAssertNil(parseFrontmatter("\tdescription: A description."))
+        XCTAssertNil(parseFrontmatter("  description: A description.\n  author: someone"),
                      "uniformly indented frontmatter is legal YAML this parser does not take")
-        XCTAssertNil(parseFrontmatter("description: A description.\npersona: secretary\nlist:\n  - a"))
+        XCTAssertNil(parseFrontmatter("description: A description.\nlist:\n  - a"))
         // An indented COMMENT is still fine — it carries no structure.
         XCTAssertEqual(
-            parseFrontmatter("description: A description.\n   # a note\npersona: secretary")?.description,
+            parseFrontmatter("description: A description.\n   # a note")?.description,
             "A description.")
     }
 
     func testRejectsAPlainScalarCarryingAMappingSeparator() {
-        XCTAssertNil(parseFrontmatter("description: Use when: the owner asks\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("description: Use when:\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("description: Use when:\tx\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("description: Use when: the owner asks"))
+        XCTAssertNil(parseFrontmatter("description: Use when:"))
+        XCTAssertNil(parseFrontmatter("description: Use when:\tx"))
         // A colon with no space after it is ordinary text on both sides.
         XCTAssertEqual(
-            parseFrontmatter("description: ratio 3:1 rule\npersona: secretary")?.description,
+            parseFrontmatter("description: ratio 3:1 rule")?.description,
             "ratio 3:1 rule")
         // …and a separator inside a comment is not a separator at all.
         XCTAssertEqual(
-            parseFrontmatter("description: fine # note: here\npersona: secretary")?.description,
+            parseFrontmatter("description: fine # note: here")?.description,
             "fine")
     }
 
@@ -482,18 +412,18 @@ final class SkillsCatalogTests: XCTestCase {
     func testRejectsPlainScalarsOpeningWithAnIndicator() {
         for indicator in ["[", "]", "{", "}", ",", "*", "!", "&", "|", ">", "%", "@", "`"] {
             XCTAssertNil(
-                parseFrontmatter("description: \(indicator)foo bar\npersona: secretary"),
+                parseFrontmatter("description: \(indicator)foo bar"),
                 "a description opening with \(indicator) must be refused")
         }
-        XCTAssertNil(parseFrontmatter("description: &a hey\npersona: secretary"),
+        XCTAssertNil(parseFrontmatter("description: &a hey"),
                      "an anchor reaches Go as `hey`, not as the text on the line")
         // `-` and `?` only open a block entry when the value is the bare
         // indicator or the indicator plus whitespace.
         for indicator in ["-", "?"] {
-            XCTAssertNil(parseFrontmatter("description: \(indicator) foo\npersona: secretary"))
-            XCTAssertNil(parseFrontmatter("description: \(indicator)\npersona: secretary"))
+            XCTAssertNil(parseFrontmatter("description: \(indicator) foo"))
+            XCTAssertNil(parseFrontmatter("description: \(indicator)"))
             XCTAssertEqual(
-                parseFrontmatter("description: \(indicator)foo\npersona: secretary")?.description,
+                parseFrontmatter("description: \(indicator)foo")?.description,
                 "\(indicator)foo",
                 "tight `\(indicator)foo` is ordinary text to yaml.v3")
         }
@@ -505,24 +435,24 @@ final class SkillsCatalogTests: XCTestCase {
     func testRejectsStructuralKeys() {
         for key in ["- foo", "[a]", "*a", "{a}", "}a", "]a", ",a", "%a", "@a", "`a", "|a", ">a"] {
             XCTAssertNil(
-                parseFrontmatter("\(key): x\ndescription: A description.\npersona: secretary"),
+                parseFrontmatter("\(key): x\ndescription: A description."),
                 "a `\(key):` key must be refused")
         }
         // An anchor or a tag on a key: yaml.v3 accepts these but reads a key
         // other than the bytes on the line, so this parser refuses them —
         // the same call it makes for an anchored value.
-        XCTAssertNil(parseFrontmatter("&a k: x\ndescription: A description.\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("!t k: x\ndescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("&a k: x\ndescription: A description."))
+        XCTAssertNil(parseFrontmatter("!t k: x\ndescription: A description."))
         // An empty key, a plain key carrying a comment, and junk after a
         // quoted key are all yaml.v3 errors.
-        XCTAssertNil(parseFrontmatter(": x\ndescription: A description.\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("a #c: x\ndescription: A description.\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter("\"a\" junk: x\ndescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter(": x\ndescription: A description."))
+        XCTAssertNil(parseFrontmatter("a #c: x\ndescription: A description."))
+        XCTAssertNil(parseFrontmatter("\"a\" junk: x\ndescription: A description."))
         // …while an ordinary key with a space, a tight `-`/`?`, or a colon
         // inside it is text to yaml.v3, and stays listable here.
         for key in ["a b", "a:b", "-ak", "?ak", "\"a b\"", "'k'"] {
             XCTAssertEqual(
-                parseFrontmatter("\(key): x\ndescription: A description.\npersona: secretary")?
+                parseFrontmatter("\(key): x\ndescription: A description.")?
                     .description,
                 "A description.",
                 "`\(key):` is an ordinary unknown key")
@@ -535,49 +465,45 @@ final class SkillsCatalogTests: XCTestCase {
     func testQuotedKeysAreUnquotedForMatchingAndForDuplicates() {
         let quoted = parseFrontmatter("""
             "description": A quoted description key.
-            'persona': assistant
             "enabled": false
             """)
         XCTAssertEqual(quoted?.description, "A quoted description key.")
-        XCTAssertEqual(quoted?.persona, .assistant)
         XCTAssertEqual(quoted?.enabled, false)
 
         XCTAssertNil(parseFrontmatter("""
             description: First.
             "description": Second.
-            persona: secretary
             """), "a quoted duplicate is still a duplicate")
         XCTAssertNil(parseFrontmatter("""
             description: First.
             'description': Second.
-            persona: secretary
             """))
     }
 
     func testDoubleQuotedEscapesMatchYamlsSet() {
-        XCTAssertEqual(parseFrontmatter(#"description: "a\nb""# + "\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\nb""# + "")?.description,
                        "a\nb")
-        XCTAssertEqual(parseFrontmatter(#"description: "a\"b""# + "\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\"b""# + "")?.description,
                        "a\"b")
-        XCTAssertEqual(parseFrontmatter(#"description: "a\\b""# + "\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\\b""# + "")?.description,
                        #"a\b"#)
-        XCTAssertEqual(parseFrontmatter(#"description: "a\_b""# + "\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\_b""# + "")?.description,
                        "a\u{A0}b")
         // `\'` needs no escaping inside double quotes but is legal there, and
         // a backslash before a literal tab is an escape of the tab itself.
-        XCTAssertEqual(parseFrontmatter(#"description: "it\'s fine""# + "\npersona: secretary")?
+        XCTAssertEqual(parseFrontmatter(#"description: "it\'s fine""# + "")?
             .description, "it's fine")
-        XCTAssertEqual(parseFrontmatter("description: \"a\\\tb\"\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter("description: \"a\\\tb\"")?.description,
                        "a\tb")
         // Unknown escapes are refused, not passed through — `\/` is legal JSON
         // and NOT legal YAML, which is exactly the trap.
-        XCTAssertNil(parseFrontmatter(#"description: "a\qb""# + "\npersona: secretary"))
-        XCTAssertNil(parseFrontmatter(#"description: "a\/b""# + "\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter(#"description: "a\qb""# + ""))
+        XCTAssertNil(parseFrontmatter(#"description: "a\/b""# + ""))
         // The numeric forms are legal YAML this parser does not decode, so it
         // refuses them rather than inventing text (documented divergence).
-        XCTAssertNil(parseFrontmatter(#"description: "a\x41b""# + "\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter(#"description: "a\x41b""# + ""))
         // A backslash is ordinary inside a single-quoted scalar.
-        XCTAssertEqual(parseFrontmatter(#"description: 'a\qb'"# + "\npersona: secretary")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: 'a\qb'"# + "")?.description,
                        #"a\qb"#)
     }
 
@@ -590,14 +516,12 @@ final class SkillsCatalogTests: XCTestCase {
         XCTAssertNil(SkillsCatalog.parse(name: "blank", content: """
             ---
             description: "   "
-            persona: secretary
             ---
             Body.
             """), "quoted whitespace is an empty description once unquoted")
         XCTAssertNil(SkillsCatalog.parse(name: "empty-quoted", content: """
             ---
             description: ''
-            persona: secretary
             ---
             Body.
             """))
@@ -609,7 +533,6 @@ final class SkillsCatalogTests: XCTestCase {
         let parsed = SkillsCatalog.parse(name: "quoted", content: """
             ---
             description: 'it''s a fix: x # y'
-            persona: secretary
             ---
             Body.
             """)
@@ -622,7 +545,6 @@ final class SkillsCatalogTests: XCTestCase {
         let parsed = SkillsCatalog.parse(name: "hash", content: """
             ---
             description: rollback#2 plan
-            persona: secretary
             ---
             Body.
             """)
@@ -633,7 +555,6 @@ final class SkillsCatalogTests: XCTestCase {
         let content = """
             ---
             description: A shipped skill.
-            persona: secretary
             x-watchtower-shipped: v1
             ---
             Body.
@@ -677,27 +598,31 @@ final class SkillsCatalogTests: XCTestCase {
             // goListsThemSwiftRefuses below.
             SkillSummary(name: "enabled-comment",
                          description: "Switched off with the reason written as an inline comment.",
-                         persona: .both, enabled: false),
+                         enabled: false),
             SkillSummary(name: "enabled-no",
                          description: "Switched off with YAML 1.1's `no` rather than `false`.",
-                         persona: .assistant, enabled: false),
+                         enabled: false),
             SkillSummary(name: "escaped-apostrophe",
                          description: "Use when it's the owner's own wording that matters.",
-                         persona: .assistant, enabled: true),
+                         enabled: true),
+            SkillSummary(name: "legacy-persona",
+                         description: "Carries a legacy persona key from the two-persona era, "
+                             + "ignored like any unknown key.",
+                         enabled: true),
             SkillSummary(name: "quoted-key",
                          description: "Written with a quoted key, which yaml.v3 unquotes.",
-                         persona: .secretary, enabled: true, shipped: true),
+                         enabled: true, shipped: true),
             SkillSummary(name: "valid-basic",
                          description: "Use when the owner asks for the shape of a valid skill file.",
-                         persona: .secretary, enabled: true),
+                         enabled: true),
             SkillSummary(name: "valid-disabled",
-                         description: "A skill both personas could use, switched off by its own frontmatter.",
-                         persona: .both, enabled: false)
+                         description: "A skill any chat could use, switched off by its own frontmatter.",
+                         enabled: false)
         ], "must match internal/skills/skills_test.go's wantListed, in the same order")
 
         let skipped = stems.filter { stem in !listed.contains { $0.name == stem } }
         XCTAssertEqual(skipped, [
-            "anchor-description", "anchor-key", "bad-enabled", "bad-persona", "bare-line",
+            "anchor-description", "anchor-key", "bad-enabled", "bare-line",
             "blank-description", "colon-in-description", "duplicate-key",
             "indented-fence", "indented-key", "leading-indicator", "no-frontmatter",
             "no-space-after-colon", "quoted-duplicate-key", "structural-key",
@@ -707,7 +632,7 @@ final class SkillsCatalogTests: XCTestCase {
 
     /// The shipped pack is the one set of skill files that MUST parse on both
     /// sides: Go's `TestShippedPack` pins them for the daemon that deploys
-    /// them, and this pins them for the personas that have to see them listed.
+    /// them, and this pins them for the chats that have to see them listed.
     /// A tightening of this parser that refuses a shipped file would otherwise
     /// show up only as three skills quietly missing from every chat.
     func testShippedPackParsesHere() throws {

@@ -1138,7 +1138,7 @@ final class TargetChatViewModelTests: XCTestCase {
         return dir
     }
 
-    func testSkillsBlockListsAssistantSkillsOnly() throws {
+    func testSkillsBlockListsEveryEnabledSkill() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "ship it")
@@ -1146,14 +1146,12 @@ final class TargetChatViewModelTests: XCTestCase {
             "target-breakdown.md": """
                 ---
                 description: Decompose a target into sub-targets.
-                persona: assistant
                 ---
                 Body.
                 """,
             "thread-untangle.md": """
                 ---
                 description: Reconstruct who asked what in a tangled thread.
-                persona: secretary
                 ---
                 Body.
                 """
@@ -1164,8 +1162,8 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
         XCTAssertTrue(prompt.contains("target-breakdown — Decompose a target into sub-targets."))
+        XCTAssertTrue(prompt.contains("thread-untangle — Reconstruct who asked what in a tangled thread."))
         XCTAssertTrue(prompt.contains("load_skill"))
-        XCTAssertFalse(prompt.contains("thread-untangle"), "secretary skills must not reach the assistant")
     }
 
     func testSkillsBlockAbsentWhenNoSkillsExist() throws {

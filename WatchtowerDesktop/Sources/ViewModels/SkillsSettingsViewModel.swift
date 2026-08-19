@@ -10,7 +10,6 @@ struct SkillRow: Identifiable, Equatable, Sendable {
     var id: String { name }
     let name: String
     let description: String
-    let persona: SkillPersona
     let enabled: Bool
     let shipped: Bool
 }
@@ -21,11 +20,10 @@ struct SkillRow: Identifiable, Equatable, Sendable {
 struct SkillDraft: Equatable, Sendable {
     var name: String
     var description: String
-    var persona: SkillPersona
     var body: String
 
     static func emptyDraft() -> Self {
-        Self(name: "", description: "", persona: .secretary, body: "")
+        Self(name: "", description: "", body: "")
     }
 }
 
@@ -37,7 +35,7 @@ struct SkillDraft: Equatable, Sendable {
 /// `<workspace>/skills/<name>.md` and the list is re-read from disk right
 /// after. Reading and validation go through `SkillsCatalog`, the same parser
 /// the chat prompt builders use, so the card can never show a skill the
-/// personas do not see.
+/// chats do not see.
 @MainActor
 @Observable
 final class SkillsSettingsViewModel {
@@ -64,7 +62,6 @@ final class SkillsSettingsViewModel {
             SkillRow(
                 name: summary.name,
                 description: summary.description,
-                persona: summary.persona,
                 enabled: summary.enabled,
                 shipped: summary.shipped
             )
@@ -108,7 +105,6 @@ final class SkillsSettingsViewModel {
         return SkillDraft(
             name: name,
             description: summary.description,
-            persona: summary.persona,
             body: parts.body
         )
     }
@@ -133,7 +129,7 @@ final class SkillsSettingsViewModel {
         }
         let description = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !description.isEmpty else {
-            error = "Description is required — it is what the persona sees when picking a skill."
+            error = "Description is required — it is what the assistant sees when picking a skill."
             return false
         }
         let path = "\(dir)/\(name).md"
@@ -162,7 +158,6 @@ final class SkillsSettingsViewModel {
 
         let content = SkillFileEditor.composeDocument(
             description: description,
-            persona: draft.persona,
             enabled: enabled,
             extraFrontmatterLines: extras,
             body: draft.body
@@ -170,7 +165,7 @@ final class SkillsSettingsViewModel {
         // Round-trip guard: the composed file goes through `SkillsCatalog`, the
         // same parser the chat prompts use, before it is written. That is a
         // Swift-side check only — it proves the file will not vanish from the
-        // personas, and since the catalog accepts a strict subset of what
+        // chats, and since the catalog accepts a strict subset of what
         // yaml.v3 does (see the note atop SkillsCatalog.swift), a file that
         // passes it also parses on the Go side; the reverse is not implied.
         guard SkillsCatalog.parse(name: name, content: content) != nil else {
@@ -249,8 +244,9 @@ final class SkillsSettingsViewModel {
 /// byte-preservation rules below are directly testable.
 enum SkillFileEditor {
     struct Parts: Equatable {
-        /// Frontmatter lines other than description/persona/enabled, verbatim
-        /// (terminators stripped) — carried through by `compose`.
+        /// Frontmatter lines other than description/enabled (and the legacy
+        /// persona key, which a save quietly sheds), verbatim (terminators
+        /// stripped) — carried through by `compose`.
         var extraFrontmatterLines: [String]
         /// Already resolved against the format's default (absent key = on).
         var enabled: Bool
@@ -277,6 +273,8 @@ enum SkillFileEditor {
             let key = trimmed[..<colon].trimmingCharacters(in: .whitespaces)
             switch key {
             case "description", "persona":
+                // `persona` is the two-persona era's key: no parser reads it
+                // any more, so a save is the natural point to shed it.
                 continue
             case "enabled":
                 // Read through the shared interpreter, not a local string
@@ -337,14 +335,12 @@ enum SkillFileEditor {
     /// Render a whole skill file from the editor's fields.
     static func composeDocument(
         description: String,
-        persona: SkillPersona,
         enabled: Bool,
         extraFrontmatterLines: [String],
         body: String
     ) -> String {
         var out = "---\n"
         out += "description: \(yamlScalar(description))\n"
-        out += "persona: \(persona.rawValue)\n"
         out += "enabled: \(enabled ? "true" : "false")\n"
         for line in extraFrontmatterLines {
             out += "\(line)\n"

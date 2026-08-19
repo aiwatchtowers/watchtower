@@ -1,16 +1,17 @@
 import Foundation
 
-// MARK: - Persona Skills catalog (Swift side of the dual-path)
+// MARK: - Assistant Skills catalog (Swift side of the dual-path)
 //
-// Reads `<workspace>/skills/*.md` — the persona-skill files the Go side
+// Reads `<workspace>/skills/*.md` — the assistant-skill files the Go side
 // deploys and parses in `internal/skills/`. This is a deliberate dual-path
 // (the `saveNotes` precedent): the file format is the single source of truth
 // shared by both sides, so the parsing semantics here MUST stay equivalent to
 // the Go parser — filename stem is the identity (`^[a-z0-9][a-z0-9-]*$`),
-// frontmatter between `---` lines carries `description` (required non-empty),
-// `persona` (secretary | assistant | both), and `enabled` (optional, default
-// true). Invalid files are skipped, never fatal; unknown frontmatter keys are
-// ignored. Equivalence is pinned by the SHARED fixtures in
+// frontmatter between `---` lines carries `description` (required non-empty)
+// and `enabled` (optional, default true). Invalid files are skipped, never
+// fatal; unknown frontmatter keys are ignored — including the `persona` key
+// files from the two-persona era still carry. Equivalence is pinned by the
+// SHARED fixtures in
 // `internal/skills/testdata`, which `internal/skills.TestListFixtures` and
 // `SkillsCatalogTests.testSharedGoFixturesGetTheSameVerdict` both read.
 //
@@ -42,19 +43,11 @@ import Foundation
 //     yaml.v3 hands Go as just `hey` — a listing whose text does not match the
 //     file) or on a key (`&a description: x` and `!t note: x`, likewise).
 
-/// Persona a skill targets. Raw values are the literal frontmatter tokens.
-package enum SkillPersona: String, Sendable, Equatable {
-    case secretary
-    case assistant
-    case both
-}
-
 /// One parsed skill file's listing-level data (the body stays on disk — it is
 /// served by the `load_skill` MCP tool, never inlined into the system prompt).
 package struct SkillSummary: Sendable, Equatable {
     package let name: String
     package let description: String
-    package let persona: SkillPersona
     package let enabled: Bool
     /// True when the file carries the `x-watchtower-shipped` frontmatter
     /// marker `internal/skills` stamps on the pack it deploys — the origin
@@ -65,13 +58,11 @@ package struct SkillSummary: Sendable, Equatable {
     package init(
         name: String,
         description: String,
-        persona: SkillPersona,
         enabled: Bool,
         shipped: Bool = false
     ) {
         self.name = name
         self.description = description
-        self.persona = persona
         self.enabled = enabled
         self.shipped = shipped
     }
@@ -279,19 +270,15 @@ package enum SkillFrontmatter {
 }
 
 package enum SkillsCatalog {
-    /// Chat `context_type` → persona, mirroring the pinned persona contract in
-    /// `docs/review/review-rules.md` ("Personas & chat contracts").
+    /// Chat `context_type`s whose prompts list skills, mirroring the assistant
+    /// contract in `docs/review/review-rules.md` ("The assistant & chat
+    /// contracts"). Setup/onboarding chats are deliberately absent.
     ///
-    /// Swift-side only, with no Go twin: every chat prompt is built in Swift,
-    /// so Go never has to answer "which persona is this surface". A chat
-    /// surface joins the table by adding its `context_type` here — see
+    /// Swift-side only, with no Go twin: every chat prompt is built in Swift.
+    /// A chat surface joins the set by adding its `context_type` here — see
     /// `promptBlock(contextType:dir:)`, which every chat VM goes through.
-    package static let personaByContextType: [String: SkillPersona] = [
-        "situation": .secretary,
-        "meeting": .secretary,
-        "target": .assistant,
-        "track": .assistant,
-        "idea": .assistant
+    package static let chatContextTypes: Set<String> = [
+        "situation", "meeting", "target", "track", "idea"
     ]
 
     /// The active workspace's skills directory
@@ -342,20 +329,15 @@ package enum SkillsCatalog {
     /// Parse one skill file's frontmatter. Strict on what matters, lenient
     /// elsewhere: nil (skip) on an illegal name, a missing/unterminated
     /// frontmatter block, a line yaml.v3 would refuse, a `description` that is
-    /// empty once unquoted and trimmed, a missing/unknown `persona`, or an
-    /// `enabled` value that is not a YAML bool; unknown keys are ignored and
-    /// `enabled` defaults to true when absent.
+    /// empty once unquoted and trimmed, or an `enabled` value that is not a
+    /// YAML bool; unknown keys are ignored (the legacy `persona` key included)
+    /// and `enabled` defaults to true when absent.
     package nonisolated static func parse(name: String, content: String) -> SkillSummary? {
         guard isValidSkillName(name), let fields = frontmatterFields(content) else { return nil }
 
         let description = (fields["description"]?.text ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !description.isEmpty else { return nil }
-
-        guard let personaRaw = fields["persona"]?.text
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              let persona = SkillPersona(rawValue: personaRaw)
-        else { return nil }
 
         var enabled = true
         if let value = fields["enabled"] {
@@ -369,7 +351,7 @@ package enum SkillsCatalog {
         let shipped = !(fields[shippedMarkerKey]?.text
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         return SkillSummary(
-            name: name, description: description, persona: persona,
+            name: name, description: description,
             enabled: enabled, shipped: shipped
         )
     }
@@ -450,17 +432,13 @@ package enum SkillsCatalog {
         return line[line.startIndex..<end] == "---"
     }
 
-    /// The AVAILABLE SKILLS system-prompt block for one persona, or nil when
-    /// no enabled skill matches (persona match = exact or `both`) — so a
-    /// surface with no skills keeps a byte-identical prompt (the
-    /// sentinel-gate precedent).
+    /// The AVAILABLE SKILLS system-prompt block, or nil when no enabled skill
+    /// exists — so a surface with no skills keeps a byte-identical prompt
+    /// (the sentinel-gate precedent).
     package nonisolated static func promptBlock(
-        persona: SkillPersona,
         dir: String? = defaultDir()
     ) -> String? {
-        let matching = list(dir: dir).filter {
-            $0.enabled && ($0.persona == persona || $0.persona == .both)
-        }
+        let matching = list(dir: dir).filter(\.enabled)
         guard !matching.isEmpty else { return nil }
         let lines = matching.map { "- \($0.name) — \($0.description)" }.joined(separator: "\n")
         return """
@@ -472,15 +450,15 @@ package enum SkillsCatalog {
     }
 
     /// `promptBlock` addressed the way a chat VM knows itself — by the
-    /// `context_type` it stores on its conversation — so the persona contract
-    /// is read from `personaByContextType` instead of being hardcoded five
-    /// times. An unmapped context type gets no block at all: a surface nobody
-    /// assigned a persona must not inherit one by accident.
+    /// `context_type` it stores on its conversation — so the set of surfaces
+    /// that list skills is read from `chatContextTypes` instead of being
+    /// hardcoded five times. An unlisted context type gets no block at all: a
+    /// surface nobody added must not inherit skills by accident.
     package nonisolated static func promptBlock(
         contextType: String,
         dir: String? = defaultDir()
     ) -> String? {
-        guard let persona = personaByContextType[contextType] else { return nil }
-        return promptBlock(persona: persona, dir: dir)
+        guard chatContextTypes.contains(contextType) else { return nil }
+        return promptBlock(dir: dir)
     }
 }
