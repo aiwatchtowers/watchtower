@@ -419,7 +419,7 @@ final class TargetChatViewModelTests: XCTestCase {
             [.text("second reply"), .done]
         ])
         let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: mock, provider: .claude)
+                                aiService: mock)
 
         let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -458,7 +458,7 @@ final class TargetChatViewModelTests: XCTestCase {
             [.text("second reply"), .done]
         ])
         let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: mock, provider: .claude)
+                                aiService: mock)
 
         let action = ProposedAction(type: .updateStatus, reason: "r", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
@@ -581,7 +581,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService(eventSequence: [[.sessionID("s1"), .text("reply"), .done]])
         let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: mock, provider: .claude)
+                                aiService: mock)
         var notifications = 0
         chat.onTargetActivity = { notifications += 1 }
 

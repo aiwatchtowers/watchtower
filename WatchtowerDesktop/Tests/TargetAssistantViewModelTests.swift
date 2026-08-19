@@ -43,7 +43,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         ) { conversationID in
             TargetChatViewModel(
                 target: target, viewModel: targets, dbManager: manager,
-                conversationID: conversationID, aiService: aiService(), provider: .claude
+                conversationID: conversationID, aiService: aiService()
             )
         }
     }

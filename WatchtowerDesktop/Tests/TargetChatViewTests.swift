@@ -56,7 +56,7 @@ final class TargetChatViewTests: XCTestCase {
         ) { conversationID in
             TargetChatViewModel(target: target, viewModel: targets, dbManager: manager,
                                 conversationID: conversationID,
-                                aiService: MockClaudeService(), provider: .claude)
+                                aiService: MockClaudeService())
         }
 
         XCTAssertEqual(assistant.conversations.count, 1)

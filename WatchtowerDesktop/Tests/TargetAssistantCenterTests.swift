@@ -35,8 +35,7 @@ final class TargetAssistantCenterTests: XCTestCase {
                 TargetChatViewModel(
                     target: target, viewModel: targets, dbManager: manager,
                     conversationID: conversationID,
-                    aiService: MockClaudeService(events: [.sessionID("s1"), .text("reply"), .done]),
-                    provider: .claude
+                    aiService: MockClaudeService(events: [.sessionID("s1"), .text("reply"), .done])
                 )
             }
         }

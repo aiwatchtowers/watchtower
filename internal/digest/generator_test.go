@@ -130,7 +130,7 @@ func TestClaudeGeneratorSurfacesEnvelopeErrorOnNonZeroExit(t *testing.T) {
 		`"subtype":"error_during_execution","type":"result",` +
 		`"result":"API Error: request was interrupted"}]`
 
-	gen := NewClaudeGenerator("test-model", fakeClaude(t, envelope, 1))
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, envelope, 1))
 
 	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
 	if err == nil {
@@ -156,7 +156,7 @@ func TestClaudeGeneratorEnvelopeErrorWithoutMessage(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	envelope := `{"type":"result","subtype":"error_max_turns","is_error":true,"result":""}`
-	gen := NewClaudeGenerator("test-model", fakeClaude(t, envelope, 1))
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, envelope, 1))
 
 	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
 	if err == nil {
@@ -174,7 +174,7 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	const secret = "acme-merger-with-globex-is-confidential"
-	gen := NewClaudeGenerator("test-model", fakeClaude(t, secret, 1))
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, secret, 1))
 
 	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
 	if err == nil {
