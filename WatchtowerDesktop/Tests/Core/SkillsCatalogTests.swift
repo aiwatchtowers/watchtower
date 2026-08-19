@@ -499,6 +499,61 @@ final class SkillsCatalogTests: XCTestCase {
         }
     }
 
+    /// Keys are scalars too, and yaml.v3 refuses a structural one outright —
+    /// so a line whose key is a sequence entry, a flow collection or an alias
+    /// is a rejected file here as well, not an "unknown key" to skip past.
+    func testRejectsStructuralKeys() {
+        for key in ["- foo", "[a]", "*a", "{a}", "}a", "]a", ",a", "%a", "@a", "`a", "|a", ">a"] {
+            XCTAssertNil(
+                parseFrontmatter("\(key): x\ndescription: A description.\npersona: secretary"),
+                "a `\(key):` key must be refused")
+        }
+        // An anchor or a tag on a key: yaml.v3 accepts these but reads a key
+        // other than the bytes on the line, so this parser refuses them —
+        // the same call it makes for an anchored value.
+        XCTAssertNil(parseFrontmatter("&a k: x\ndescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("!t k: x\ndescription: A description.\npersona: secretary"))
+        // An empty key, a plain key carrying a comment, and junk after a
+        // quoted key are all yaml.v3 errors.
+        XCTAssertNil(parseFrontmatter(": x\ndescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("a #c: x\ndescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("\"a\" junk: x\ndescription: A description.\npersona: secretary"))
+        // …while an ordinary key with a space, a tight `-`/`?`, or a colon
+        // inside it is text to yaml.v3, and stays listable here.
+        for key in ["a b", "a:b", "-ak", "?ak", "\"a b\"", "'k'"] {
+            XCTAssertEqual(
+                parseFrontmatter("\(key): x\ndescription: A description.\npersona: secretary")?
+                    .description,
+                "A description.",
+                "`\(key):` is an ordinary unknown key")
+        }
+    }
+
+    /// yaml.v3 unquotes a key before matching it to a field, so a quoted key
+    /// fills the same slot as its plain spelling — and collides with it as a
+    /// duplicate rather than reading as a second, different key.
+    func testQuotedKeysAreUnquotedForMatchingAndForDuplicates() {
+        let quoted = parseFrontmatter("""
+            "description": A quoted description key.
+            'persona': assistant
+            "enabled": false
+            """)
+        XCTAssertEqual(quoted?.description, "A quoted description key.")
+        XCTAssertEqual(quoted?.persona, .assistant)
+        XCTAssertEqual(quoted?.enabled, false)
+
+        XCTAssertNil(parseFrontmatter("""
+            description: First.
+            "description": Second.
+            persona: secretary
+            """), "a quoted duplicate is still a duplicate")
+        XCTAssertNil(parseFrontmatter("""
+            description: First.
+            'description': Second.
+            persona: secretary
+            """))
+    }
+
     func testDoubleQuotedEscapesMatchYamlsSet() {
         XCTAssertEqual(parseFrontmatter(#"description: "a\nb""# + "\npersona: secretary")?.description,
                        "a\nb")
@@ -508,6 +563,12 @@ final class SkillsCatalogTests: XCTestCase {
                        #"a\b"#)
         XCTAssertEqual(parseFrontmatter(#"description: "a\_b""# + "\npersona: secretary")?.description,
                        "a\u{A0}b")
+        // `\'` needs no escaping inside double quotes but is legal there, and
+        // a backslash before a literal tab is an escape of the tab itself.
+        XCTAssertEqual(parseFrontmatter(#"description: "it\'s fine""# + "\npersona: secretary")?
+            .description, "it's fine")
+        XCTAssertEqual(parseFrontmatter("description: \"a\\\tb\"\npersona: secretary")?.description,
+                       "a\tb")
         // Unknown escapes are refused, not passed through — `\/` is legal JSON
         // and NOT legal YAML, which is exactly the trap.
         XCTAssertNil(parseFrontmatter(#"description: "a\qb""# + "\npersona: secretary"))
@@ -611,14 +672,21 @@ final class SkillsCatalogTests: XCTestCase {
 
         let listed = SkillsCatalog.list(dir: fixtures)
         XCTAssertEqual(listed, [
-            // NOTE: `anchor-description` is in Go's wantListed and NOT here —
-            // the one deliberate asymmetry, see goListsThemSwiftRefuses below.
+            // NOTE: `anchor-description` and `anchor-key` are in Go's
+            // wantListed and NOT here — the deliberate asymmetries, see
+            // goListsThemSwiftRefuses below.
             SkillSummary(name: "enabled-comment",
                          description: "Switched off with the reason written as an inline comment.",
                          persona: .both, enabled: false),
             SkillSummary(name: "enabled-no",
                          description: "Switched off with YAML 1.1's `no` rather than `false`.",
                          persona: .assistant, enabled: false),
+            SkillSummary(name: "escaped-apostrophe",
+                         description: "Use when it's the owner's own wording that matters.",
+                         persona: .assistant, enabled: true),
+            SkillSummary(name: "quoted-key",
+                         description: "Written with a quoted key, which yaml.v3 unquotes.",
+                         persona: .secretary, enabled: true, shipped: true),
             SkillSummary(name: "valid-basic",
                          description: "Use when the owner asks for the shape of a valid skill file.",
                          persona: .secretary, enabled: true),
@@ -629,10 +697,11 @@ final class SkillsCatalogTests: XCTestCase {
 
         let skipped = stems.filter { stem in !listed.contains { $0.name == stem } }
         XCTAssertEqual(skipped, [
-            "anchor-description", "bad-enabled", "bad-persona", "bare-line",
+            "anchor-description", "anchor-key", "bad-enabled", "bad-persona", "bare-line",
             "blank-description", "colon-in-description", "duplicate-key",
             "indented-fence", "indented-key", "leading-indicator", "no-frontmatter",
-            "no-space-after-colon", "tab-indent", "unknown-escape", "unterminated-quote"
+            "no-space-after-colon", "quoted-duplicate-key", "structural-key",
+            "tab-indent", "unknown-escape", "unterminated-quote"
         ], "must match internal/skills/skills_test.go's wantSkipped, plus goListsThemSwiftRefuses")
     }
 
@@ -663,12 +732,12 @@ final class SkillsCatalogTests: XCTestCase {
 
     /// The fixtures Go lists and this parser deliberately refuses — the whole
     /// permitted asymmetry between the two sides, written down so it stays one
-    /// short, reviewed list instead of drift. Each entry is a shape where
-    /// yaml.v3 would hand Go a description the file does not literally contain,
-    /// so refusing to advertise the skill beats advertising it under invented
-    /// text. The reverse direction (Swift lists, Go cannot read) has no entries
-    /// and must never gain one.
-    private static let goListsThemSwiftRefuses = ["anchor-description"]
+    /// short, reviewed list instead of drift. Both entries are anchors: yaml.v3
+    /// would hand Go a description (or a key) the file does not literally
+    /// contain, so refusing to advertise the skill beats advertising it under
+    /// invented text. The reverse direction (Swift lists, Go cannot read) has
+    /// no entries and must never gain one.
+    private static let goListsThemSwiftRefuses = ["anchor-description", "anchor-key"]
 
     func testTheOnlyGoListedFixturesWeRefuseAreTheDocumentedOnes() throws {
         let fixtures = Self.goFixturesDir()

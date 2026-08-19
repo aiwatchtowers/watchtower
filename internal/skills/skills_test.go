@@ -264,14 +264,19 @@ var (
 		persona     string
 		enabled     bool
 	}{
-		// The ONE fixture whose verdict the two sides deliberately do not
-		// share: `&a` is an anchor, so yaml.v3 hands us `hey` rather than the
-		// text on the line. Swift refuses the file instead of guessing —
-		// SkillsCatalogTests lists it under `goListsThemSwiftRefuses`. Skipping
-		// is the safe direction; listing text the file does not contain is not.
+		// The TWO fixtures whose verdict the two sides deliberately do not
+		// share, both anchors: on a value yaml.v3 hands us `hey` rather than
+		// the text on the line, and on a key it reports a key the line does
+		// not spell. Swift refuses both instead of guessing —
+		// SkillsCatalogTests lists them under `goListsThemSwiftRefuses`.
+		// Skipping is the safe direction; listing text or keys the file does
+		// not contain is not.
 		{"anchor-description", "hey", PersonaSecretary, true},
+		{"anchor-key", "Carries an anchor on one of its keys.", PersonaSecretary, true},
 		{"enabled-comment", "Switched off with the reason written as an inline comment.", PersonaBoth, false},
 		{"enabled-no", "Switched off with YAML 1.1's `no` rather than `false`.", PersonaAssistant, false},
+		{"escaped-apostrophe", "Use when it's the owner's own wording that matters.", PersonaAssistant, true},
+		{"quoted-key", "Written with a quoted key, which yaml.v3 unquotes.", PersonaSecretary, true},
 		{"valid-basic", "Use when the owner asks for the shape of a valid skill file.", PersonaSecretary, true},
 		{"valid-disabled", "A skill both personas could use, switched off by its own frontmatter.", PersonaBoth, false},
 	}
@@ -287,6 +292,8 @@ var (
 		"leading-indicator",
 		"no-frontmatter",
 		"no-space-after-colon",
+		"quoted-duplicate-key",
+		"structural-key",
 		"tab-indent",
 		"unknown-escape",
 		"unterminated-quote",

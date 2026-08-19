@@ -29,11 +29,15 @@ import Foundation
 //
 // The refused-but-legal shapes, each verified against yaml.v3 (see the
 // fixtures in `internal/skills/testdata` and the probes recorded in the
-// review): any indented line, and therefore nested mappings, sequences and
-// folded continuations under a key; uniformly indented frontmatter; `\xNN`,
-// `\uNNNN` and `\UNNNNNNNN` escapes in a double-quoted scalar; and a plain
-// scalar opening with an anchor or a tag (`description: &a hey`, which yaml.v3
-// hands Go as just `hey` — a listing whose text does not match the file).
+// review):
+//   - any indented line, and therefore nested mappings, sequences and folded
+//     continuations under a key, plus uniformly indented frontmatter;
+//   - a scalar continued onto the next line (`"a\` + newline + `b"`);
+//   - `\xNN`, `\uNNNN` and `\UNNNNNNNN` escapes in a double-quoted scalar;
+//   - a quoted key whose own text contains a `: ` separator (`"a: b": c`);
+//   - an anchor or a tag on a scalar, in a value (`description: &a hey`, which
+//     yaml.v3 hands Go as just `hey` — a listing whose text does not match the
+//     file) or on a key (`&a description: x`, likewise).
 
 /// Persona a skill targets. Raw values are the literal frontmatter tokens.
 package enum SkillPersona: String, Sendable, Equatable {
@@ -118,6 +122,31 @@ package enum SkillFrontmatter {
         return plain(trimmed)
     }
 
+    /// Read the key half of a `key: value` frontmatter line, unquoted. Returns
+    /// nil for every shape yaml.v3 refuses there — a sequence entry, a flow
+    /// collection, an alias, an empty key, a broken or trailing-junk quoted
+    /// scalar, a plain key carrying an inline comment — and for the anchored
+    /// and tagged keys yaml.v3 accepts but reads as a different key than the
+    /// bytes on the line.
+    ///
+    /// A key is a scalar with the same rules as a value, so it runs through the
+    /// same machinery: the ONE difference is that nothing at all may follow a
+    /// quoted key, not even a comment (`"a" junk: c` and `a #x: c` are both
+    /// errors on the Go side). Unquoting here is what makes `"description": x`
+    /// reach the description field, exactly as it does in Go, and what makes a
+    /// plain key and its quoted spelling collide as the duplicate they are.
+    package static func key(_ raw: some StringProtocol) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard let first = trimmed.first else { return nil }
+        if first == "'" || first == "\"" {
+            return quoted(trimmed, quote: first, allowTrailingComment: false)?.text
+        }
+        // `value.text == trimmed` is the comment check: a plain key that lost
+        // characters to `strippingComment` is a key yaml.v3 never sees.
+        guard let value = plain(trimmed), value.text == trimmed else { return nil }
+        return value.text
+    }
+
     /// `value` plus the bool reading, for callers holding the raw line.
     package static func bool(_ raw: some StringProtocol) -> BoolValue {
         guard let value = value(raw) else { return .invalid }
@@ -176,20 +205,29 @@ package enum SkillFrontmatter {
     private static let blockEntryIndicators: Set<Character> = ["-", "?"]
 
     /// The escapes yaml.v3 accepts inside a double-quoted scalar, mapped to the
-    /// same characters it produces. Anything else — including `\/`, which is
-    /// legal JSON but not legal YAML, and the numeric `\xNN`/`\uNNNN` forms
-    /// this parser does not decode — is refused rather than passed through as
-    /// a literal, so the description text can never differ between the sides.
+    /// same characters it produces. The set is the whole single-character table
+    /// yaml.v3 has, swept character by character against it — including `\'`
+    /// and a backslash before a literal tab, and NOT `\/`, which is legal JSON
+    /// and not legal YAML. Anything outside it — an unknown letter, or the
+    /// numeric `\xNN`/`\uNNNN`/`\UNNNNNNNN` forms this parser does not decode —
+    /// is refused rather than passed through as a literal, so the description
+    /// text can never differ between the two sides.
     private static let doubleQuoteEscapes: [Character: Character] = [
         "0": "\0", "a": "\u{07}", "b": "\u{08}", "e": "\u{1B}", "f": "\u{0C}",
         "n": "\n", "r": "\r", "t": "\t", "v": "\u{0B}", "L": "\u{2028}",
-        "N": "\u{85}", "P": "\u{2029}", "_": "\u{A0}", " ": " ", "\"": "\"", "\\": "\\"
+        "N": "\u{85}", "P": "\u{2029}", "_": "\u{A0}", " ": " ", "\"": "\"",
+        "\\": "\\", "'": "'", "\t": "\t"
     ]
 
     /// Unwrap a quoted scalar: `''` is an escaped quote inside single quotes, a
-    /// backslash escapes the next character inside double ones. Only a comment
-    /// may follow the closing quote.
-    private static func quoted(_ trimmed: String, quote: Character) -> Value? {
+    /// backslash escapes the next character inside double ones. A comment may
+    /// follow the closing quote of a value; nothing at all may follow the
+    /// closing quote of a key.
+    private static func quoted(
+        _ trimmed: String,
+        quote: Character,
+        allowTrailingComment: Bool = true
+    ) -> Value? {
         var text = ""
         var index = trimmed.index(after: trimmed.startIndex)
         var closed = false
@@ -216,7 +254,7 @@ package enum SkillFrontmatter {
         }
         guard closed else { return nil }
         let rest = trimmed[index...].trimmingCharacters(in: .whitespaces)
-        guard rest.isEmpty || rest.hasPrefix("#") else { return nil }
+        guard rest.isEmpty || (allowTrailingComment && rest.hasPrefix("#")) else { return nil }
         return Value(text: text, quoted: true)
     }
 
@@ -365,10 +403,16 @@ package enum SkillsCatalog {
             // own (which is what silently disagreed with Go before).
             guard line.first != " ",
                   let separator = keySeparator(trimmed),
-                  let value = SkillFrontmatter.value(trimmed[trimmed.index(after: separator)...])
+                  // The key gets the same scrutiny as the value: a structural
+                  // key (`- foo:`, `[a]:`, `*a:`) is a file yaml.v3 refuses,
+                  // and a quoted key is unquoted here exactly as Go unquotes
+                  // it — so `"description": x` fills the description, and a
+                  // plain key collides with its quoted spelling as the
+                  // duplicate Go calls it.
+                  let key = SkillFrontmatter.key(trimmed[..<separator]),
+                  let value = SkillFrontmatter.value(trimmed[trimmed.index(after: separator)...]),
+                  fields[key] == nil
             else { return nil }
-            let key = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
-            guard fields[key] == nil else { return nil }
             fields[key] = value
         }
         return nil
