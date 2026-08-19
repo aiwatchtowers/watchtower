@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
+	"watchtower/internal/skills"
 )
 
 var mcpCmd = &cobra.Command{
@@ -59,7 +60,9 @@ func runMCP(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("enforcing read-only: %w", err)
 	}
 
-	var opts []internalmcp.ServerOption
+	opts := []internalmcp.ServerOption{
+		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
+	}
 	if cfg.Memory.Enabled {
 		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
 		if cfg.Memory.Retrieve.RecallCompare {

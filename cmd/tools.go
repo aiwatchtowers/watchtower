@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
+	"watchtower/internal/skills"
 )
 
 // The `tools` command group is the console analog of `watchtower mcp`: the
@@ -137,7 +138,9 @@ func openToolSession(cmd *cobra.Command) (*internalmcp.LocalSession, func(), err
 		database.Close()
 		return nil, nil, fmt.Errorf("enforcing read-only: %w", err)
 	}
-	var mcpOpts []internalmcp.ServerOption
+	mcpOpts := []internalmcp.ServerOption{
+		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
+	}
 	var shadowDB *db.DB
 	if cfg.Memory.Enabled {
 		mcpOpts = append(mcpOpts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))

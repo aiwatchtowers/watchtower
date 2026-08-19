@@ -110,4 +110,58 @@ final class SituationChatPromptTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("be blunt with him"))
     }
+
+    // MARK: - Persona skills (secretary surface)
+
+    /// Writes one skill file into a fresh temp dir and returns the dir.
+    private func makeSkillsDir(_ files: [String: String]) throws -> String {
+        let dir = NSTemporaryDirectory() + "skills_\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for (name, content) in files {
+            try Data(content.utf8).write(to: URL(fileURLWithPath: dir + "/" + name))
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: dir) }
+        return dir
+    }
+
+    func testSkillsBlockListsSecretarySkillsOnly() throws {
+        let situation = try makeSituation()
+        let dir = try makeSkillsDir([
+            "thread-untangle.md": """
+                ---
+                description: Reconstruct who asked what in a tangled thread.
+                persona: secretary
+                ---
+                Body.
+                """,
+            "target-breakdown.md": """
+                ---
+                description: Decompose a target into sub-targets.
+                persona: assistant
+                ---
+                Body.
+                """
+        ])
+
+        let prompt = SituationChatViewModel.buildSystemPrompt(
+            situation: situation, memberSignals: [], dbPool: dbManager.dbPool, skillsDir: dir)
+
+        XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
+        XCTAssertTrue(prompt.contains("thread-untangle — Reconstruct who asked what in a tangled thread."))
+        XCTAssertTrue(prompt.contains("load_skill"), "the model must be told to load the skill first")
+        XCTAssertFalse(prompt.contains("target-breakdown"), "assistant skills must not reach the secretary")
+    }
+
+    func testSkillsBlockAbsentWhenNoSkillsExist() throws {
+        let situation = try makeSituation()
+        let empty = try makeSkillsDir([:])
+
+        let withEmptyDir = SituationChatViewModel.buildSystemPrompt(
+            situation: situation, memberSignals: [], dbPool: dbManager.dbPool, skillsDir: empty)
+        let withNoDir = SituationChatViewModel.buildSystemPrompt(
+            situation: situation, memberSignals: [], dbPool: dbManager.dbPool, skillsDir: nil)
+
+        XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
+        XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
+    }
 }

@@ -536,6 +536,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	wireImapSyncers(ctx, d, cfg, database, logger)
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
 	wireCalDAVSyncers(d, cfg, database, logger)
+	// Refresh the shipped persona skills in the workspace. Log-only: a skills
+	// directory we cannot write is not a reason to refuse to run the daemon.
+	deployPersonaSkills(cfg, logger)
 	return d.Run(ctx)
 }
 

@@ -638,7 +638,8 @@ final class TargetChatViewModel {
         target: Target,
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
-        memoryVaultDir: String? = Constants.memoryVaultDir()
+        memoryVaultDir: String? = Constants.memoryVaultDir(),
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         let schema = (try? dbPool.read { db in
             try ChatViewModel.fetchSchema(db)
@@ -661,6 +662,13 @@ final class TargetChatViewModel {
                 context: relevantMemoryContext(subjects: targetMemorySubjects(target: target, dbPool: dbPool), dbPool: dbPool)
               ) + "\n\n"
             : ""
+
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "target", dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
 
         return """
         You are Watchtower, an AI assistant helping the user make progress on a specific \
@@ -717,6 +725,6 @@ final class TargetChatViewModel {
         - Be concise and direct
         - Match the user's language
         - Use markdown for readability
-        """
+        """ + skillsSuffix
     }
 }
