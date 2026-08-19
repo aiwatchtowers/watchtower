@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/slack-go/slack"
+	"golang.org/x/net/http2"
 )
 
 // Client wraps the slack-go client with rate limiting.
@@ -18,17 +19,50 @@ type Client struct {
 	logger      *log.Logger
 }
 
-// httpTimeout bounds every Slack API request. slack-go's default client has
-// no timeout, so a socket left dead by a laptop sleep hangs the request until
-// the OS gives up on the TCP connection — measured at ~24 minutes on macOS,
-// which is long enough to stall a whole sync cycle (the idle-connection pool
-// cannot expire it either: Go's monotonic clock stops while the machine sleeps).
-const httpTimeout = 30 * time.Second
+// Timeouts bounding every Slack API request. slack-go's default client has no
+// timeout at all, so a socket left dead by a laptop sleep hangs the request
+// until the OS gives up on the TCP connection — measured at ~24 minutes on
+// macOS, long enough to stall a whole sync cycle. The idle-connection pool
+// cannot expire such a socket either: Go's monotonic clock stops while the
+// machine sleeps, so an idle timer that "expired" during sleep never fires.
+const (
+	// httpTimeout is the whole-request ceiling, matching every other
+	// integration in this repo (jira, gmail, calendar, caldav, imap). It is a
+	// backstop, not the working bound — a healthy Slack call answers in
+	// well under a second.
+	httpTimeout = 30 * time.Second
+
+	// responseHeaderTimeout bounds the wait for response headers. It only
+	// applies to HTTP/1.1 connections (the field lives on http.Transport);
+	// slack.com negotiates HTTP/2, where the h2 keepalive below is what
+	// actually detects a dead connection.
+	responseHeaderTimeout = 10 * time.Second
+
+	// h2ReadIdleTimeout makes the HTTP/2 transport ping a connection that has
+	// been idle this long, and h2PingTimeout drops it when the ping goes
+	// unanswered. This is the one bound that kills a sleep-killed socket
+	// *before* a request is sent down it, rather than making the request wait.
+	h2ReadIdleTimeout = 30 * time.Second
+	h2PingTimeout     = 10 * time.Second
+)
+
+// newHTTPClient builds the bounded HTTP client every Slack call goes through.
+func newHTTPClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = responseHeaderTimeout
+	// Best-effort: a transport that cannot be h2-configured still works, it
+	// just falls back to the HTTP/1.1 bounds above.
+	if h2, err := http2.ConfigureTransports(tr); err == nil {
+		h2.ReadIdleTimeout = h2ReadIdleTimeout
+		h2.PingTimeout = h2PingTimeout
+	}
+	return &http.Client{Timeout: httpTimeout, Transport: tr}
+}
 
 // NewClient creates a new rate-limited Slack client.
 func NewClient(token string) *Client {
 	return &Client{
-		api:         slack.New(token, slack.OptionHTTPClient(&http.Client{Timeout: httpTimeout})),
+		api:         slack.New(token, slack.OptionHTTPClient(newHTTPClient())),
 		rateLimiter: NewRateLimiter(),
 	}
 }

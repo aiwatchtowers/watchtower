@@ -653,3 +653,18 @@ func TestHandleErrorNilError(t *testing.T) {
 	// Should not panic on nil error
 	c.handleError(Tier2, nil)
 }
+
+// TestNewHTTPClientBounds pins the timeouts that keep a sleep-killed socket
+// from stalling a sync cycle. The h2 assertion is the load-bearing one:
+// slack.com negotiates HTTP/2, where ResponseHeaderTimeout does not apply, so
+// a transport that silently failed to be h2-configured would leave a dead
+// connection hanging until the OS TCP timeout (~24 min) all over again.
+func TestNewHTTPClientBounds(t *testing.T) {
+	c := newHTTPClient()
+	assert.Equal(t, httpTimeout, c.Timeout, "whole-request ceiling")
+
+	tr, ok := c.Transport.(*http.Transport)
+	require.True(t, ok, "transport should be an *http.Transport")
+	assert.Equal(t, responseHeaderTimeout, tr.ResponseHeaderTimeout, "HTTP/1.1 header wait")
+	assert.Contains(t, tr.TLSNextProto, "h2", "HTTP/2 keepalive must be configured")
+}
