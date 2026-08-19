@@ -795,7 +795,7 @@ struct TargetDetailView: View {
         .frame(width: 240)
     }
 
-    // MARK: - Checklist (2 columns, "stuck" badge on overdue)
+    // MARK: - Checklist (one row per item, "stuck" badge on overdue)
 
     @ViewBuilder
     private var checklistSection: some View {

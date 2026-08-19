@@ -195,6 +195,13 @@ final class TargetChatViewModelTests: XCTestCase {
         let rootAfter = try XCTUnwrap(fetchTargetRow(manager, id: root.id))
         XCTAssertNotEqual(rootAfter.status, "done")
         XCTAssertFalse(chat.messages.contains { $0.role == .system && $0.text.contains("Applied:") })
+        // The reply itself claims it closed the parent — the model was told
+        // execute means "applied immediately" — so the transcript has to say
+        // otherwise, both for the owner and for the model's next turn.
+        XCTAssertTrue(
+            chat.messages.contains { $0.role == .system && $0.text.contains("waiting for approval") },
+            "a held execute action must be called out, not silently downgraded"
+        )
 
         // Approving it still works — the narrowing is about the gate, not the reach.
         chat.approve(try XCTUnwrap(chat.actionCards.first))

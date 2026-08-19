@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/claude"
 )
@@ -174,10 +175,16 @@ func errorEnvelopeMessage(resp *cliResponse) string {
 	// partial output rather than a short diagnostic, so bound what reaches the
 	// log the way the sibling stderr path is bounded by limitedWriter.
 	const maxEnvelopeMessage = 4096
-	if len(msg) > maxEnvelopeMessage {
-		return msg[:maxEnvelopeMessage] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-maxEnvelopeMessage)
+	if len(msg) <= maxEnvelopeMessage {
+		return msg
 	}
-	return msg
+	// Back off to a rune boundary: this text is model output and routinely
+	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
+	cut := maxEnvelopeMessage
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:

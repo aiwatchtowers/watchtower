@@ -424,10 +424,14 @@ final class TargetChatViewModel {
         let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
         var appliedSummaries: [String] = []
         var failedSummaries: [String] = []
+        var heldForApproval = 0
         for action in parsed.actions {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
+            if action.isExecute && !action.autoApplies(inChatFor: target.id) {
+                heldForApproval += 1
+            }
             guard action.autoApplies(inChatFor: target.id) else { continue }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
@@ -451,6 +455,16 @@ final class TargetChatViewModel {
                 parts.append("Failed: " + failedSummaries.joined(separator: "; "))
             }
             systemMessages.append(parts.joined(separator: ". "))
+        }
+        if heldForApproval > 0 {
+            // The reply almost certainly claims the write was made — the model
+            // was told execute means "applied immediately". Correct it in the
+            // transcript so the owner is not left reading "Done" beside a card
+            // that has not been applied, and so the model's next turn sees it.
+            systemMessages.append(
+                "\(heldForApproval) change(s) aimed at another task were NOT applied — " +
+                "they are waiting for approval."
+            )
         }
         for err in parsed.errors {
             systemMessages.append("⚠️ Invalid action proposal: \(err)")
@@ -777,9 +791,11 @@ final class TargetChatViewModel {
     when absent) or "execute".
     - "mode":"execute" — use it when the owner's message is an explicit
       instruction (imperative: "break this down", "set the deadline", "gather
-      the Jira data"). Execute-mode actions are applied immediately, and your
-      reply MUST report what was done (e.g. "Done: created 4 sub-tasks and set
-      the due date").
+      the Jira data"). Execute-mode actions on the CURRENT task are applied
+      immediately, and your reply MUST report what was done (e.g. "Done:
+      created 4 sub-tasks and set the due date"). If any action in the reply
+      addresses another task, say that part is waiting for approval instead of
+      reporting it as done.
     - "mode":"propose" (or no mode) — use it when the owner is discussing or
       thinking aloud. Propose-mode actions become cards awaiting the owner's
       approval. In propose mode never claim a task or change "was made" — it

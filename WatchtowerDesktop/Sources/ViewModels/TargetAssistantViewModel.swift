@@ -253,9 +253,29 @@ final class TargetAssistantViewModel {
             }) else { return }
             conversations[index] = fresh
         } catch {
-            // The write itself already landed; only the in-memory row is stale,
-            // so the tab would keep showing the old title with no explanation.
-            errorMessage = "Could not refresh the chat tab: \(error.localizedDescription)"
+            // The write already landed, so this is a stale label, not lost data
+            // — and `errorMessage` would not be rendered on this path anyway
+            // (the chat screen shows it only when there is no active chat).
+            // Heal it by re-reading the list instead; deliberately NOT load(),
+            // which would also re-select the newest tab and move the owner off
+            // the chat they are reading. If the retry fails too the label stays
+            // stale until the next load, which is the honest outcome here.
+            refreshConversationList(after: error)
+        }
+    }
+
+    /// Second chance for `reloadConversation`: re-read every row, no selection
+    /// side effects. Logs rather than surfacing, because by this point the
+    /// user-visible state is a tab title one revision behind the database.
+    private func refreshConversationList(after original: any Error) {
+        do {
+            conversations = try dbManager.dbPool.read { db in
+                try ChatConversationQueries.fetchAllByContext(
+                    db, type: "target", id: String(targetID)
+                )
+            }
+        } catch {
+            print("TargetAssistant: chat list is stale — row re-read failed (\(original)), list re-read failed (\(error))")
         }
     }
 }
