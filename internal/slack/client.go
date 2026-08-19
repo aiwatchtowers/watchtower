@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
+	"time"
 
 	"github.com/slack-go/slack"
 )
@@ -16,10 +18,17 @@ type Client struct {
 	logger      *log.Logger
 }
 
+// httpTimeout bounds every Slack API request. slack-go's default client has
+// no timeout, so a socket left dead by a laptop sleep hangs the request until
+// the OS gives up on the TCP connection — measured at ~24 minutes on macOS,
+// which is long enough to stall a whole sync cycle (the idle-connection pool
+// cannot expire it either: Go's monotonic clock stops while the machine sleeps).
+const httpTimeout = 30 * time.Second
+
 // NewClient creates a new rate-limited Slack client.
 func NewClient(token string) *Client {
 	return &Client{
-		api:         slack.New(token),
+		api:         slack.New(token, slack.OptionHTTPClient(&http.Client{Timeout: httpTimeout})),
 		rateLimiter: NewRateLimiter(),
 	}
 }
