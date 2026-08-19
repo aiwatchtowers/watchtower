@@ -51,7 +51,7 @@ struct SkillsSettingsSection: View {
                     + "immediately."
             )
         }
-        .onAppear { viewModel.load() }
+        .onAppear { viewModel.loadSkills() }
         .sheet(item: $editorTarget) { target in
             SkillEditorSheet(viewModel: viewModel, target: target)
         }
@@ -65,7 +65,7 @@ struct SkillsSettingsSection: View {
         ) {
             Button("Delete Skill", role: .destructive) {
                 if let row = pendingDeletion {
-                    viewModel.delete(name: row.name)
+                    viewModel.deleteSkill(name: row.name)
                 }
                 pendingDeletion = nil
             }
@@ -116,7 +116,7 @@ struct SkillsSettingsSection: View {
 
             Toggle("Enabled", isOn: Binding(
                 get: { row.enabled },
-                set: { viewModel.setEnabled(name: row.name, enabled: $0) }
+                set: { viewModel.setSkillEnabled(name: row.name, enabled: $0) }
             ))
             .labelsHidden()
             .toggleStyle(.switch)
@@ -176,14 +176,14 @@ struct SkillEditorSheet: View {
         switch target {
         case .new:
             isNew = true
-            _draft = State(initialValue: SkillDraft.empty())
+            _draft = State(initialValue: SkillDraft.emptyDraft())
             _loadFailed = State(initialValue: false)
         case .existing(let name):
             isNew = false
             // "File missing" and "file present but unparsable" are different
             // states: both refuse to save, and the sheet says so rather than
             // offering a blank editor that Save would flush over real content.
-            let loaded = viewModel.draft(for: name)
+            let loaded = viewModel.skillDraft(for: name)
             _draft = State(
                 initialValue: loaded ?? SkillDraft(
                     name: name, description: "", persona: .secretary, body: ""
@@ -258,7 +258,7 @@ struct SkillEditorSheet: View {
     }
 
     private func save() {
-        if viewModel.save(draft, isNew: isNew) {
+        if viewModel.saveSkill(draft, isNew: isNew) {
             errorText = nil
             dismiss()
         } else {

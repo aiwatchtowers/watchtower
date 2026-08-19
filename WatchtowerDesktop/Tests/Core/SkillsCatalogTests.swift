@@ -24,11 +24,11 @@ final class SkillsCatalogTests: XCTestCase {
 
     /// Writes `<dir>/<file>` verbatim (the file name carries its own suffix so
     /// non-`.md` and invalid-stem cases can be exercised too).
-    private func write(_ file: String, _ content: String) {
+    private func writeFixture(_ file: String, _ content: String) {
         try? Data(content.utf8).write(to: URL(fileURLWithPath: dir + "/" + file))
     }
 
-    private func skill(named name: String, in skills: [SkillSummary]) -> SkillSummary? {
+    private func listedSkill(named name: String, in skills: [SkillSummary]) -> SkillSummary? {
         skills.first { $0.name == name }
     }
 
@@ -169,33 +169,33 @@ final class SkillsCatalogTests: XCTestCase {
     // MARK: - list
 
     func testListParsesSortsAndSkipsInvalidFiles() {
-        write("zeta.md", """
+        writeFixture("zeta.md", """
             ---
             description: Zeta skill.
             persona: assistant
             ---
             """)
-        write("alpha.md", """
+        writeFixture("alpha.md", """
             ---
             description: Alpha skill.
             persona: secretary
             ---
             """)
         // Skipped: malformed frontmatter, unknown persona, invalid stem, non-md.
-        write("broken.md", "no frontmatter here")
-        write("wrong-persona.md", """
+        writeFixture("broken.md", "no frontmatter here")
+        writeFixture("wrong-persona.md", """
             ---
             description: Bad persona.
             persona: butler
             ---
             """)
-        write("Upper.md", """
+        writeFixture("Upper.md", """
             ---
             description: Invalid stem.
             persona: secretary
             ---
             """)
-        write("notes.txt", """
+        writeFixture("notes.txt", """
             ---
             description: Not markdown.
             persona: secretary
@@ -214,7 +214,7 @@ final class SkillsCatalogTests: XCTestCase {
     }
 
     func testListReportsDisabledSkillsWithTheirFlag() {
-        write("off.md", """
+        writeFixture("off.md", """
             ---
             description: Disabled skill.
             persona: secretary
@@ -222,7 +222,7 @@ final class SkillsCatalogTests: XCTestCase {
             ---
             """)
         let skills = SkillsCatalog.list(dir: dir)
-        XCTAssertEqual(skill(named: "off", in: skills)?.enabled, false,
+        XCTAssertEqual(listedSkill(named: "off", in: skills)?.enabled, false,
                        "list reports the flag; filtering is promptBlock's job")
     }
 
@@ -230,25 +230,25 @@ final class SkillsCatalogTests: XCTestCase {
 
     /// Seeds one skill file per persona/enabled combination used below.
     private func seedMixedCatalog() {
-        write("sec-on.md", """
+        writeFixture("sec-on.md", """
             ---
             description: Secretary skill.
             persona: secretary
             ---
             """)
-        write("asst-on.md", """
+        writeFixture("asst-on.md", """
             ---
             description: Assistant skill.
             persona: assistant
             ---
             """)
-        write("both-on.md", """
+        writeFixture("both-on.md", """
             ---
             description: Shared skill.
             persona: both
             ---
             """)
-        write("sec-off.md", """
+        writeFixture("sec-off.md", """
             ---
             description: Disabled secretary skill.
             persona: secretary
@@ -279,7 +279,7 @@ final class SkillsCatalogTests: XCTestCase {
     }
 
     func testPromptBlockNilWhenNothingMatches() {
-        write("asst-on.md", """
+        writeFixture("asst-on.md", """
             ---
             description: Assistant skill.
             persona: assistant
@@ -296,7 +296,7 @@ final class SkillsCatalogTests: XCTestCase {
     }
 
     func testPromptBlockNilWhenEveryMatchIsDisabled() {
-        write("sec-off.md", """
+        writeFixture("sec-off.md", """
             ---
             description: Disabled secretary skill.
             persona: secretary

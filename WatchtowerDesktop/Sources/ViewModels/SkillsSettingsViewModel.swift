@@ -24,7 +24,7 @@ struct SkillDraft: Equatable, Sendable {
     var persona: SkillPersona
     var body: String
 
-    static func empty() -> Self {
+    static func emptyDraft() -> Self {
         Self(name: "", description: "", persona: .secretary, body: "")
     }
 }
@@ -55,7 +55,7 @@ final class SkillsSettingsViewModel {
 
     // MARK: - Load
 
-    func load() {
+    func loadSkills() {
         guard let dir else {
             rows = []
             return
@@ -78,8 +78,8 @@ final class SkillsSettingsViewModel {
     /// endings — is preserved: the owner may have edited a shipped skill, and
     /// a toggle must never be the thing that rewrites their prose.
     @discardableResult
-    func setEnabled(name: String, enabled: Bool) -> Bool {
-        guard let path = path(for: name) else { return false }
+    func setSkillEnabled(name: String, enabled: Bool) -> Bool {
+        guard let path = skillPath(for: name) else { return false }
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
             error = "Could not read \(name).md"
             return false
@@ -88,9 +88,9 @@ final class SkillsSettingsViewModel {
             error = "\(name).md has no frontmatter block to update"
             return false
         }
-        guard write(updated, to: path) else { return false }
+        guard writeSkillFile(updated, to: path) else { return false }
         error = nil
-        load()
+        loadSkills()
         return true
     }
 
@@ -99,11 +99,11 @@ final class SkillsSettingsViewModel {
     /// The current on-disk state of one skill, for the editor sheet. `nil` when
     /// the file is missing or unparsable — the sheet then refuses to open
     /// rather than silently offering a blank file that Save would overwrite.
-    func draft(for name: String) -> SkillDraft? {
-        guard let path = path(for: name),
+    func skillDraft(for name: String) -> SkillDraft? {
+        guard let path = skillPath(for: name),
               let content = try? String(contentsOfFile: path, encoding: .utf8),
               let summary = SkillsCatalog.parse(name: name, content: content),
-              let parts = SkillFileEditor.split(content)
+              let parts = SkillFileEditor.splitDocument(content)
         else { return nil }
         return SkillDraft(
             name: name,
@@ -121,7 +121,7 @@ final class SkillsSettingsViewModel {
     /// shipped skill does not silently reclassify it as owner-created and let
     /// a later Delete fight the daemon's re-deploy.
     @discardableResult
-    func save(_ draft: SkillDraft, isNew: Bool) -> Bool {
+    func saveSkill(_ draft: SkillDraft, isNew: Bool) -> Bool {
         guard let dir else {
             error = "No active workspace — cannot save skills."
             return false
@@ -146,7 +146,7 @@ final class SkillsSettingsViewModel {
         var enabled = true
         var extras: [String] = []
         if exists, let content = try? String(contentsOfFile: path, encoding: .utf8),
-           let parts = SkillFileEditor.split(content) {
+           let parts = SkillFileEditor.splitDocument(content) {
             enabled = parts.enabled
             extras = parts.extraFrontmatterLines
         }
@@ -160,7 +160,7 @@ final class SkillsSettingsViewModel {
             return false
         }
 
-        let content = SkillFileEditor.compose(
+        let content = SkillFileEditor.composeDocument(
             description: description,
             persona: draft.persona,
             enabled: enabled,
@@ -178,9 +178,9 @@ final class SkillsSettingsViewModel {
                 + "and any custom frontmatter lines."
             return false
         }
-        guard write(content, to: path) else { return false }
+        guard writeSkillFile(content, to: path) else { return false }
         error = nil
-        load()
+        loadSkills()
         return true
     }
 
@@ -188,8 +188,8 @@ final class SkillsSettingsViewModel {
     /// `Deploy` would write them straight back, so disabling is the only honest
     /// off switch for them.
     @discardableResult
-    func delete(name: String) -> Bool {
-        guard let dir, let path = path(for: name) else { return false }
+    func deleteSkill(name: String) -> Bool {
+        guard let dir, let path = skillPath(for: name) else { return false }
         guard !isShipped(name: name, dir: dir) else {
             error = "Shipped skills can only be disabled, not deleted."
             return false
@@ -201,7 +201,7 @@ final class SkillsSettingsViewModel {
             return false
         }
         error = nil
-        load()
+        loadSkills()
         return true
     }
 
@@ -215,12 +215,12 @@ final class SkillsSettingsViewModel {
     /// the file, which is exactly when the answer matters.
     private func isShipped(name: String, dir: String) -> Bool {
         guard let content = try? String(contentsOfFile: "\(dir)/\(name).md", encoding: .utf8),
-              let parts = SkillFileEditor.split(content)
+              let parts = SkillFileEditor.splitDocument(content)
         else { return false }
         return parts.shipped
     }
 
-    private func path(for name: String) -> String? {
+    private func skillPath(for name: String) -> String? {
         guard let dir else {
             error = "No active workspace — cannot edit skills."
             return nil
@@ -232,7 +232,7 @@ final class SkillsSettingsViewModel {
         return "\(dir)/\(name).md"
     }
 
-    private func write(_ content: String, to path: String) -> Bool {
+    private func writeSkillFile(_ content: String, to path: String) -> Bool {
         do {
             try content.write(toFile: path, atomically: true, encoding: .utf8)
             return true
@@ -260,8 +260,8 @@ enum SkillFileEditor {
 
     /// Split a skill file into its recognised frontmatter fields and its body.
     /// Returns nil when there is no terminated frontmatter block.
-    static func split(_ content: String) -> Parts? {
-        let ls = lines(of: content)
+    static func splitDocument(_ content: String) -> Parts? {
+        let ls = documentLines(of: content)
         guard let close = closingFenceIndex(ls) else { return nil }
 
         var extras: [String] = []
@@ -315,7 +315,7 @@ enum SkillFileEditor {
     /// key is inserted just above the closing fence when the file has none.
     /// Returns nil when there is no terminated frontmatter block.
     static func settingEnabled(_ enabled: Bool, in content: String) -> String? {
-        let ls = lines(of: content)
+        let ls = documentLines(of: content)
         guard let close = closingFenceIndex(ls) else { return nil }
         let value = enabled ? "true" : "false"
         var out = ls.map(String.init)
@@ -325,17 +325,17 @@ enum SkillFileEditor {
             guard let colon = text.firstIndex(of: ":") else { continue }
             guard text[..<colon].trimmingCharacters(in: .whitespaces) == "enabled" else { continue }
             let indent = String(text.prefix { $0 == " " || $0 == "\t" })
-            out[index] = "\(indent)enabled: \(value)\(terminator(of: ls[index]))"
+            out[index] = "\(indent)enabled: \(value)\(lineTerminator(of: ls[index]))"
             return out.joined()
         }
 
-        let fenceTerminator = terminator(of: ls[close])
+        let fenceTerminator = lineTerminator(of: ls[close])
         out.insert("enabled: \(value)\(fenceTerminator.isEmpty ? "\n" : fenceTerminator)", at: close)
         return out.joined()
     }
 
     /// Render a whole skill file from the editor's fields.
-    static func compose(
+    static func composeDocument(
         description: String,
         persona: SkillPersona,
         enabled: Bool,
@@ -381,7 +381,7 @@ enum SkillFileEditor {
     /// grapheme cluster, and `"\r\n"` is ONE of them — searching for `"\n"`
     /// never matches inside a CRLF file, which would collapse the whole file
     /// into a single "line" and lose the frontmatter fence.
-    private static func lines(of content: String) -> [Substring] {
+    private static func documentLines(of content: String) -> [Substring] {
         var result: [Substring] = []
         var start = content.startIndex
         var index = content.startIndex
@@ -399,7 +399,7 @@ enum SkillFileEditor {
         return result
     }
 
-    private static func terminator(of line: Substring) -> String {
+    private static func lineTerminator(of line: Substring) -> String {
         guard let last = line.last else { return "" }
         return (last == "\n" || last == "\r\n") ? String(last) : ""
     }
