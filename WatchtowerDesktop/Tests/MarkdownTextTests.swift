@@ -34,7 +34,7 @@ final class MarkdownTextTests: XCTestCase {
             .numberedList(["one", "two"]),
             .blockquote("quoted"),
             .codeBlock("code here"),
-            .divider,
+            .divider
         ])
     }
 
