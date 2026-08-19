@@ -34,6 +34,12 @@ final class TargetBriefCenterTests: XCTestCase {
         return center
     }
 
+    // Sync helper: inside async test methods GRDB's async read overload would
+    // win inside an autoclosure; a sync func pins the sync overload.
+    private func fetchTarget(_ manager: DatabaseManager, id: Int) throws -> Target? {
+        try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
+
     private func fetchPersistedMessages(_ manager: DatabaseManager, targetID: Int) throws -> [ChatMessageRecord] {
         try manager.dbPool.read { db in
             guard let conv = try ChatConversationQueries.fetchByContext(
@@ -129,20 +135,37 @@ final class TargetBriefCenterTests: XCTestCase {
     }
 
     /// Single-slot supersede: starting a brief for B while A is still
-    /// streaming must actually CANCEL A's stream (not just drop the
-    /// reference), so a superseded run can never keep streaming and
-    /// auto-apply invisibly.
+    /// streaming must actually CANCEL A's stream — and a cancelled run must
+    /// produce NO writes: no auto-applied actions (even for an execute block
+    /// that fully streamed before the cancel) and no duplicate assistant
+    /// persist. Pins the "superseded run can never auto-apply invisibly"
+    /// contract, not just the isStreaming flag.
     func testNewBriefCancelsTheSupersededStream() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
-        let mock = MockClaudeService(events: [.sessionID("s1"), .text("ok"), .done])
+        // A's run streams a COMPLETE execute-mode action block, then hangs
+        // mid-stream — only the supersede's cancel ends it.
+        let execBlock = """
+        Working on it.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "sneaky step", "mode": "execute", "reason": "directive" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(execBlock)], thenHangs: true)
         let center = makeCenter(manager: manager, mock: mock)
 
         center.startBrief(target: targetA, text: "brief A")
         let vmA = try XCTUnwrap(center.adoptVM(for: targetA.id))
+        // Wait until the action block has actually arrived in A's stream, so
+        // the supersede below interrupts a run that HAS a parseable directive.
+        let deadline = Date().addingTimeInterval(5)
+        while !(vmA.messages.last?.text.contains("watchtower-action") ?? false) {
+            guard Date() < deadline else { return XCTFail("A's stream never delivered the block") }
+            await Task.yield()
+        }
         XCTAssertTrue(vmA.isStreaming)
 
         center.startBrief(target: targetB, text: "brief B")
@@ -152,8 +175,24 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .briefing(targetID: targetB.id))
         XCTAssertNotNil(center.adoptVM(for: targetB.id))
 
-        await center.task?.value
-        XCTAssertEqual(center.phase, .idle)
+        // Give A's cancelled executeStream a chance to run its tail (a
+        // bounded settle window — we assert an ABSENCE, so there is no
+        // condition to await), then assert the superseded run wrote NOTHING:
+        let settleDeadline = Date().addingTimeInterval(0.2)
+        while Date() < settleDeadline { await Task.yield() }
+        let afterA = try XCTUnwrap(fetchTarget(manager, id: targetA.id))
+        XCTAssertFalse(afterA.decodedSubItems.contains { $0.text == "sneaky step" },
+                       "superseded run auto-applied an action after cancel")
+        XCTAssertTrue(vmA.actionCards.isEmpty, "superseded run surfaced action cards")
+        let persistedA = try fetchPersistedMessages(manager, targetID: targetA.id)
+        XCTAssertLessThanOrEqual(persistedA.filter { $0.role == "assistant" }.count, 1,
+                                 "partial assistant text persisted twice")
+        XCTAssertFalse(persistedA.contains { $0.role == "system" },
+                       "cancelled run persisted a summary/failure message")
+
+        // Clean up the hanging B run.
+        center.adoptVM(for: targetB.id)?.cancelStream()
+        center.task?.cancel()
     }
 
     /// A lingering `.failed` is cleared when the next brief starts — never

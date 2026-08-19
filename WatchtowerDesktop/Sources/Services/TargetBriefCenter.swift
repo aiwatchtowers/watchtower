@@ -90,7 +90,15 @@ final class TargetBriefCenter {
     /// Record a brief that could not even start (e.g. the post-create fetch
     /// for the hand-off failed) so the target's detail view shows the same
     /// failure banner a failed run does. The row itself already exists.
+    /// Single-slot discipline applies here too: like `startBrief`, this
+    /// supersedes any still-running brief — otherwise the orphaned run would
+    /// keep streaming with no `.briefing` phase and its completion watcher
+    /// would later clobber this `.failed` banner.
     func markFailed(targetID: Int, message: String) {
+        task?.cancel()
+        vm?.cancelStream()
+        vm = nil
+        vmTargetID = nil
         phase = .failed(targetID: targetID, message: message)
     }
 

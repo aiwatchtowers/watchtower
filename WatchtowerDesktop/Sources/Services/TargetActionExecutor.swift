@@ -68,11 +68,7 @@ enum TargetActionExecutor {
         case .linkTarget:
             let targetID = try require(action.targetId, "target_id")
             guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
-            // The AI may hallucinate an id; verify the linked target exists
-            // before writing so a bad link fails loudly instead of dangling.
-            guard viewModel.itemByID(targetID) != nil else {
-                throw TargetActionError.writeFailed("target #\(targetID) does not exist")
-            }
+            try requireTargetExists(targetID, viewModel: viewModel)
             let relation = try require(action.relation, "relation")
             viewModel.createLink(from: target.id, to: targetID, relation: relation)
             try checkWrite()
@@ -110,5 +106,23 @@ enum TargetActionExecutor {
     private static func require<T>(_ value: T?, _ name: String) throws -> T {
         guard let value else { throw TargetActionError.writeFailed("missing \(name)") }
         return value
+    }
+
+    /// The AI may hallucinate a link target id; verify it exists before
+    /// writing so a bad link fails loudly instead of dangling. A failed READ
+    /// is reported as such — not conflated with "does not exist".
+    @MainActor
+    private static func requireTargetExists(_ id: Int, viewModel: TargetsViewModel) throws {
+        let linked: Target?
+        do {
+            linked = try viewModel.fetchByID(id)
+        } catch {
+            throw TargetActionError.writeFailed(
+                "could not verify target #\(id): \(error.localizedDescription)"
+            )
+        }
+        guard linked != nil else {
+            throw TargetActionError.writeFailed("target #\(id) does not exist")
+        }
     }
 }

@@ -258,9 +258,14 @@ final class TargetChatViewModel {
             }
         }
 
-        // On a failed/cancelled stream, do NOT parse actions out of partial,
-        // possibly-truncated output — that could surface a half-formed proposal.
-        if streamFailed {
+        // On a failed OR cancelled stream, do NOT parse actions out of partial,
+        // possibly-truncated output — that could surface a half-formed proposal
+        // or auto-apply a half-streamed directive. Cancellation must be checked
+        // explicitly: cancelling the consuming task makes the AsyncThrowingStream
+        // end WITHOUT throwing, so the loop above exits cleanly. cancelStream()
+        // has already persisted the partial assistant text; parsing here would
+        // also persist it a second time.
+        if streamFailed || Task.isCancelled {
             finishStream()
             return
         }

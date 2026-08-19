@@ -423,6 +423,14 @@ final class TargetsViewModel {
         }
     }
 
+    /// Throwing variant of `itemByID` for callers that must tell "no such
+    /// row" apart from a failed read (the executor's link validation).
+    func fetchByID(_ id: Int) throws -> Target? {
+        try dbManager.dbPool.read { db in
+            try TargetQueries.fetchByID(db, id: id)
+        }
+    }
+
     func fetchLinks(for targetID: Int) -> [TargetLink] {
         do {
             return try dbManager.dbPool.read { db in
