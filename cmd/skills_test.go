@@ -23,9 +23,9 @@ func deployHarness(t *testing.T, buf *bytes.Buffer) (*config.Config, string, *lo
 	return cfg, skills.Dir(cfg.WorkspaceDir()), log.New(buf, "", 0)
 }
 
-// TestDeployPersonaSkills_InstallsShippedPack: a workspace that has never seen
+// TestDeployShippedSkills_InstallsShippedPack: a workspace that has never seen
 // the pack gets every shipped file written, each reported once.
-func TestDeployPersonaSkills_InstallsShippedPack(t *testing.T) {
+func TestDeployShippedSkills_InstallsShippedPack(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, dir, logger := deployHarness(t, &buf)
 
@@ -42,10 +42,10 @@ func TestDeployPersonaSkills_InstallsShippedPack(t *testing.T) {
 	}
 }
 
-// TestDeployPersonaSkills_LeavesForeignFileAndSaysSo: a file the owner put
+// TestDeployShippedSkills_LeavesForeignFileAndSaysSo: a file the owner put
 // under a name we also ship is never overwritten, and the log names it — the
 // owner's copy of a shipped skill must not disappear on a daemon start.
-func TestDeployPersonaSkills_LeavesForeignFileAndSaysSo(t *testing.T) {
+func TestDeployShippedSkills_LeavesForeignFileAndSaysSo(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, dir, logger := deployHarness(t, &buf)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -62,10 +62,10 @@ func TestDeployPersonaSkills_LeavesForeignFileAndSaysSo(t *testing.T) {
 	assert.Contains(t, buf.String(), foreign)
 }
 
-// TestDeployPersonaSkills_ReportsUnlistableFiles: a broken skill file (the
+// TestDeployShippedSkills_ReportsUnlistableFiles: a broken skill file (the
 // owner's or ours) is logged as skipped, so it is visible in the daemon log
 // instead of just missing from every chat's AVAILABLE SKILLS block.
-func TestDeployPersonaSkills_ReportsUnlistableFiles(t *testing.T) {
+func TestDeployShippedSkills_ReportsUnlistableFiles(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, dir, logger := deployHarness(t, &buf)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -79,10 +79,10 @@ func TestDeployPersonaSkills_ReportsUnlistableFiles(t *testing.T) {
 		"the log must carry the reason, not just the path")
 }
 
-// TestDeployPersonaSkills_UnwritableDirIsLoggedNotFatal: the whole call is
+// TestDeployShippedSkills_UnwritableDirIsLoggedNotFatal: the whole call is
 // best-effort — an unusable skills directory costs the owner the starter pack,
 // never the daemon start.
-func TestDeployPersonaSkills_UnwritableDirIsLoggedNotFatal(t *testing.T) {
+func TestDeployShippedSkills_UnwritableDirIsLoggedNotFatal(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, dir, logger := deployHarness(t, &buf)
 	// A regular file where the skills directory should be: MkdirAll fails.
@@ -95,9 +95,9 @@ func TestDeployPersonaSkills_UnwritableDirIsLoggedNotFatal(t *testing.T) {
 	assert.Contains(t, buf.String(), "skills: listing failed")
 }
 
-// TestDeployPersonaSkills_SecondRunIsQuiet: nothing changed, so nothing is
+// TestDeployShippedSkills_SecondRunIsQuiet: nothing changed, so nothing is
 // logged — the daemon starts often and an unchanged pack must not add noise.
-func TestDeployPersonaSkills_SecondRunIsQuiet(t *testing.T) {
+func TestDeployShippedSkills_SecondRunIsQuiet(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, _, logger := deployHarness(t, &buf)
 	deployShippedSkills(cfg, logger)
