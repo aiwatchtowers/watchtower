@@ -254,7 +254,9 @@ func TestListSortedAndSkips(t *testing.T) {
 // These two lists ARE the dual-path contract: SkillsCatalogTests reads the same
 // directory (via a #filePath-relative path) and asserts the same verdicts, so a
 // parser change that makes one side stricter than the other fails here or
-// there. Add a fixture for every shape whose verdict is worth pinning.
+// there. Add a fixture for every shape whose verdict is worth pinning, and the
+// description text too — a listing with the wrong text is its own bug class
+// (see anchor-description below).
 var (
 	wantListed = []struct {
 		name        string
@@ -262,6 +264,12 @@ var (
 		persona     string
 		enabled     bool
 	}{
+		// The ONE fixture whose verdict the two sides deliberately do not
+		// share: `&a` is an anchor, so yaml.v3 hands us `hey` rather than the
+		// text on the line. Swift refuses the file instead of guessing —
+		// SkillsCatalogTests lists it under `goListsThemSwiftRefuses`. Skipping
+		// is the safe direction; listing text the file does not contain is not.
+		{"anchor-description", "hey", PersonaSecretary, true},
 		{"enabled-comment", "Switched off with the reason written as an inline comment.", PersonaBoth, false},
 		{"enabled-no", "Switched off with YAML 1.1's `no` rather than `false`.", PersonaAssistant, false},
 		{"valid-basic", "Use when the owner asks for the shape of a valid skill file.", PersonaSecretary, true},
@@ -272,9 +280,15 @@ var (
 		"bad-persona",
 		"bare-line",
 		"blank-description",
+		"colon-in-description",
 		"duplicate-key",
 		"indented-fence",
+		"indented-key",
+		"leading-indicator",
 		"no-frontmatter",
+		"no-space-after-colon",
+		"tab-indent",
+		"unknown-escape",
 		"unterminated-quote",
 	}
 )

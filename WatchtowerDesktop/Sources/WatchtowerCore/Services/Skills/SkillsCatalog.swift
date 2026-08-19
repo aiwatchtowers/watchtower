@@ -15,13 +15,25 @@ import Foundation
 // `SkillsCatalogTests.testSharedGoFixturesGetTheSameVerdict` both read.
 //
 // Go feeds the frontmatter to `gopkg.in/yaml.v3`; this is a hand parser, so
-// every shape yaml.v3 refuses has to be refused here by hand. Where the two
-// still differ they differ in ONE safe direction — Swift may skip a file Go
-// lists (the prompt then never advertises it), never the reverse (which would
-// advertise a skill `load_skill` cannot read). Three known cases of that, all
-// legal YAML the flat line parser below cannot represent: a bare indented
-// continuation line, a sequence under an unknown key, and a nested key that
-// repeats an outer one.
+// every shape yaml.v3 refuses has to be refused here by hand. What it accepts
+// is deliberately a strict SUBSET of YAML: one `key: value` mapping entry per
+// line, starting at column zero, with plain, single-quoted or double-quoted
+// scalars and `#` comments. Everything else is refused.
+//
+// So the two sides can still disagree, but only in the direction where Swift
+// refuses a file Go accepts: the prompt then never advertises the skill, which
+// costs the owner a listing. The reverse — Swift listing a skill `load_skill`
+// cannot read, or listing it with a description Go reads differently — is the
+// failure this subset exists to prevent, and no shape is currently known to
+// produce it.
+//
+// The refused-but-legal shapes, each verified against yaml.v3 (see the
+// fixtures in `internal/skills/testdata` and the probes recorded in the
+// review): any indented line, and therefore nested mappings, sequences and
+// folded continuations under a key; uniformly indented frontmatter; `\xNN`,
+// `\uNNNN` and `\UNNNNNNNN` escapes in a double-quoted scalar; and a plain
+// scalar opening with an anchor or a tag (`description: &a hey`, which yaml.v3
+// hands Go as just `hey` — a listing whose text does not match the file).
 
 /// Persona a skill targets. Raw values are the literal frontmatter tokens.
 package enum SkillPersona: String, Sendable, Equatable {
@@ -90,15 +102,20 @@ package enum SkillFrontmatter {
     }
 
     /// Read the value half of a `key: value` frontmatter line. Returns nil for
-    /// the shapes that break the whole YAML document on the Go side: an
-    /// unterminated quoted scalar, or junk after a closing quote.
+    /// every shape yaml.v3 refuses, or reads as something other than its own
+    /// literal text: an unterminated quoted scalar, junk after a closing quote,
+    /// an unknown escape, a plain scalar carrying an unquoted `key: value`
+    /// separator, or a plain scalar opening with a YAML indicator (a flow
+    /// collection, an anchor, a tag, an alias, a block scalar) — those either
+    /// break the document or make yaml.v3 hand Go a DIFFERENT string than the
+    /// bytes on the line, which is worse than refusing them.
     package static func value(_ raw: some StringProtocol) -> Value? {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
         guard let first = trimmed.first else { return Value(text: "", quoted: false) }
         if first == "'" || first == "\"" {
             return quoted(trimmed, quote: first)
         }
-        return Value(text: strippingComment(trimmed), quoted: false)
+        return plain(trimmed)
     }
 
     /// `value` plus the bool reading, for callers holding the raw line.
@@ -128,6 +145,47 @@ package enum SkillFrontmatter {
     private static let coreFalse: Set<String> = ["false", "False", "FALSE"]
     private static let nullTokens: Set<String> = ["", "~", "null", "Null", "NULL"]
 
+    /// A plain (unquoted) scalar, or nil when yaml.v3 would read it as
+    /// structure rather than as text. See `value`'s doc for why the indicator
+    /// cases are refused rather than taken literally.
+    private static func plain(_ trimmed: String) -> Value? {
+        let text = strippingComment(trimmed)
+        guard let first = text.first else { return Value(text: "", quoted: false) }
+        guard !refusedIndicators.contains(first) else { return nil }
+        // `-` and `?` open a block entry only when the value is the bare
+        // indicator or the indicator plus whitespace; `-5 items` and `?why` are
+        // ordinary text to yaml.v3, and stay ordinary text here.
+        if blockEntryIndicators.contains(first) {
+            let next = text.dropFirst().first
+            if next == nil || next == " " || next == "\t" { return nil }
+        }
+        // An unquoted `: ` (or a trailing `:`) is a mapping separator, not
+        // text — "Use when: the owner asks" is the realistic way an owner
+        // writes a description that yaml.v3 then refuses outright.
+        guard !text.contains(": "), !text.contains(":\t"), !text.hasSuffix(":") else { return nil }
+        return Value(text: text, quoted: false)
+    }
+
+    /// Leading characters that make a plain scalar something other than its own
+    /// text: flow collections, an alias, a tag, an anchor, a block scalar, a
+    /// directive, and the two YAML reserves. Pinned by probe against yaml.v3 —
+    /// `!x y` and `&x y` both parse to just `y`, the rest are hard errors.
+    private static let refusedIndicators: Set<Character> = [
+        "[", "]", "{", "}", ",", "*", "!", "&", "|", ">", "%", "@", "`"
+    ]
+    private static let blockEntryIndicators: Set<Character> = ["-", "?"]
+
+    /// The escapes yaml.v3 accepts inside a double-quoted scalar, mapped to the
+    /// same characters it produces. Anything else — including `\/`, which is
+    /// legal JSON but not legal YAML, and the numeric `\xNN`/`\uNNNN` forms
+    /// this parser does not decode — is refused rather than passed through as
+    /// a literal, so the description text can never differ between the sides.
+    private static let doubleQuoteEscapes: [Character: Character] = [
+        "0": "\0", "a": "\u{07}", "b": "\u{08}", "e": "\u{1B}", "f": "\u{0C}",
+        "n": "\n", "r": "\r", "t": "\t", "v": "\u{0B}", "L": "\u{2028}",
+        "N": "\u{85}", "P": "\u{2029}", "_": "\u{A0}", " ": " ", "\"": "\"", "\\": "\\"
+    ]
+
     /// Unwrap a quoted scalar: `''` is an escaped quote inside single quotes, a
     /// backslash escapes the next character inside double ones. Only a comment
     /// may follow the closing quote.
@@ -138,15 +196,11 @@ package enum SkillFrontmatter {
         while index < trimmed.endIndex {
             let char = trimmed[index]
             index = trimmed.index(after: index)
-            if quote == "\"", char == "\\", index < trimmed.endIndex {
-                let escaped = trimmed[index]
+            if quote == "\"", char == "\\" {
+                guard index < trimmed.endIndex,
+                      let mapped = doubleQuoteEscapes[trimmed[index]] else { return nil }
                 index = trimmed.index(after: index)
-                switch escaped {
-                case "n": text.append("\n")
-                case "t": text.append("\t")
-                case "\"", "\\", "/": text.append(escaped)
-                default: text.append(char); text.append(escaped)
-                }
+                text.append(mapped)
                 continue
             }
             if char == quote {
@@ -299,14 +353,39 @@ package enum SkillsCatalog {
         var fields: [String: SkillFrontmatter.Value] = [:]
         for line in lines.dropFirst() {
             if isClosingFence(line) { return fields }
+            // A tab anywhere in the indentation is a hard yaml.v3 scanner
+            // error, comment lines included.
+            guard !line.hasPrefix("\t") else { return nil }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-            guard let colon = trimmed.firstIndex(of: ":"),
-                  let value = SkillFrontmatter.value(trimmed[trimmed.index(after: colon)...])
+            // Key lines live at column zero. An indented line belongs to the
+            // previous entry — a nested mapping, a sequence, a folded
+            // continuation — none of which this flat parser can represent, so
+            // it refuses the file instead of reading the line as a key of its
+            // own (which is what silently disagreed with Go before).
+            guard line.first != " ",
+                  let separator = keySeparator(trimmed),
+                  let value = SkillFrontmatter.value(trimmed[trimmed.index(after: separator)...])
             else { return nil }
-            let key = trimmed[..<colon].trimmingCharacters(in: .whitespaces)
+            let key = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
             guard fields[key] == nil else { return nil }
             fields[key] = value
+        }
+        return nil
+    }
+
+    /// The colon separating key from value: the first one followed by a space,
+    /// a tab, or the end of the line, exactly as YAML defines it. nil means the
+    /// line is not a mapping entry at all — `description:foo` has a colon but
+    /// no separator, and yaml.v3 refuses it.
+    nonisolated private static func keySeparator(_ trimmed: String) -> String.Index? {
+        var index = trimmed.startIndex
+        while let colon = trimmed[index...].firstIndex(of: ":") {
+            let after = trimmed.index(after: colon)
+            if after == trimmed.endIndex || trimmed[after] == " " || trimmed[after] == "\t" {
+                return colon
+            }
+            index = after
         }
         return nil
     }

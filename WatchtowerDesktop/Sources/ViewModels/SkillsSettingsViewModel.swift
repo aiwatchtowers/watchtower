@@ -167,11 +167,12 @@ final class SkillsSettingsViewModel {
             extraFrontmatterLines: extras,
             body: draft.body
         )
-        // Round-trip guard: the composed file goes through the same parser the
-        // chat prompts (and, equivalently, the Go side) use before it is
-        // written. A file that cannot be read back is a skill that would
-        // silently vanish from every persona, so it is an error the sheet keeps
-        // open, never a write.
+        // Round-trip guard: the composed file goes through `SkillsCatalog`, the
+        // same parser the chat prompts use, before it is written. That is a
+        // Swift-side check only — it proves the file will not vanish from the
+        // personas, and since the catalog accepts a strict subset of what
+        // yaml.v3 does (see the note atop SkillsCatalog.swift), a file that
+        // passes it also parses on the Go side; the reverse is not implied.
         guard SkillsCatalog.parse(name: name, content: content) != nil else {
             error = "This skill could not be saved in a readable form — check the description "
                 + "and any custom frontmatter lines."
@@ -410,14 +411,25 @@ enum SkillFileEditor {
 
     /// Index of the frontmatter's closing `---`, or nil when the file does not
     /// open with a fence or never closes it.
+    ///
+    /// Fences are matched the way `SkillsCatalog.isClosingFence` and Go's
+    /// `splitFrontmatter` match them: the opening one exactly, the closing one
+    /// right-trimmed of spaces and tabs. An indented `  ---` is ordinary
+    /// content to all three, so the editor can never treat as a fence a line
+    /// the catalog reads as the file's first broken key.
     private static func closingFenceIndex(_ ls: [Substring]) -> Int? {
-        guard let first = ls.first,
-              stripTerminator(first).trimmingCharacters(in: .whitespaces) == "---"
-        else { return nil }
-        for index in 1..<ls.count
-        where stripTerminator(ls[index]).trimmingCharacters(in: .whitespaces) == "---" {
+        guard let first = ls.first, stripTerminator(first) == "---" else { return nil }
+        for index in 1..<ls.count where isFence(ls[index]) {
             return index
         }
         return nil
+    }
+
+    private static func isFence(_ line: Substring) -> Bool {
+        var text = stripTerminator(line)
+        while let last = text.last, last == " " || last == "\t" {
+            text = text.dropLast()
+        }
+        return text == "---"
     }
 }

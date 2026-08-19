@@ -432,6 +432,99 @@ final class SkillsCatalogTests: XCTestCase {
             """))
     }
 
+    /// A colon only separates key from value when a space, a tab or the line
+    /// end follows it — the rule yaml.v3 applies, and the reason
+    /// `description:foo` is a broken file rather than a description of "foo".
+    func testKeySeparatorNeedsWhitespaceAfterTheColon() {
+        XCTAssertNil(parseFrontmatter("description:foo\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("description:\npersona: secretary"),
+                     "a bare key with no value leaves the description empty")
+        // A colon inside the key name is fine as long as a real separator
+        // follows later — yaml.v3 reads the key as `a:b` and so do we.
+        XCTAssertEqual(
+            parseFrontmatter("a:b: c\ndescription: A description.\npersona: secretary")?.description,
+            "A description.")
+        // …and a tab after the colon separates just as well as a space.
+        XCTAssertEqual(
+            parseFrontmatter("description:\tA description.\npersona: secretary")?.description,
+            "A description.")
+    }
+
+    func testRejectsIndentedLinesAndTabs() {
+        XCTAssertNil(parseFrontmatter("description: A description.\n  persona: secretary"))
+        XCTAssertNil(parseFrontmatter("\tdescription: A description.\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("  description: A description.\n  persona: secretary"),
+                     "uniformly indented frontmatter is legal YAML this parser does not take")
+        XCTAssertNil(parseFrontmatter("description: A description.\npersona: secretary\nlist:\n  - a"))
+        // An indented COMMENT is still fine — it carries no structure.
+        XCTAssertEqual(
+            parseFrontmatter("description: A description.\n   # a note\npersona: secretary")?.description,
+            "A description.")
+    }
+
+    func testRejectsAPlainScalarCarryingAMappingSeparator() {
+        XCTAssertNil(parseFrontmatter("description: Use when: the owner asks\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("description: Use when:\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter("description: Use when:\tx\npersona: secretary"))
+        // A colon with no space after it is ordinary text on both sides.
+        XCTAssertEqual(
+            parseFrontmatter("description: ratio 3:1 rule\npersona: secretary")?.description,
+            "ratio 3:1 rule")
+        // …and a separator inside a comment is not a separator at all.
+        XCTAssertEqual(
+            parseFrontmatter("description: fine # note: here\npersona: secretary")?.description,
+            "fine")
+    }
+
+    /// A plain scalar opening with an indicator is structure, not text: yaml.v3
+    /// either refuses the document or hands Go a different string (`&a hey` and
+    /// `!!str hey` both arrive as `hey`), so the file is refused here.
+    func testRejectsPlainScalarsOpeningWithAnIndicator() {
+        for indicator in ["[", "]", "{", "}", ",", "*", "!", "&", "|", ">", "%", "@", "`"] {
+            XCTAssertNil(
+                parseFrontmatter("description: \(indicator)foo bar\npersona: secretary"),
+                "a description opening with \(indicator) must be refused")
+        }
+        XCTAssertNil(parseFrontmatter("description: &a hey\npersona: secretary"),
+                     "an anchor reaches Go as `hey`, not as the text on the line")
+        // `-` and `?` only open a block entry when the value is the bare
+        // indicator or the indicator plus whitespace.
+        for indicator in ["-", "?"] {
+            XCTAssertNil(parseFrontmatter("description: \(indicator) foo\npersona: secretary"))
+            XCTAssertNil(parseFrontmatter("description: \(indicator)\npersona: secretary"))
+            XCTAssertEqual(
+                parseFrontmatter("description: \(indicator)foo\npersona: secretary")?.description,
+                "\(indicator)foo",
+                "tight `\(indicator)foo` is ordinary text to yaml.v3")
+        }
+    }
+
+    func testDoubleQuotedEscapesMatchYamlsSet() {
+        XCTAssertEqual(parseFrontmatter(#"description: "a\nb""# + "\npersona: secretary")?.description,
+                       "a\nb")
+        XCTAssertEqual(parseFrontmatter(#"description: "a\"b""# + "\npersona: secretary")?.description,
+                       "a\"b")
+        XCTAssertEqual(parseFrontmatter(#"description: "a\\b""# + "\npersona: secretary")?.description,
+                       #"a\b"#)
+        XCTAssertEqual(parseFrontmatter(#"description: "a\_b""# + "\npersona: secretary")?.description,
+                       "a\u{A0}b")
+        // Unknown escapes are refused, not passed through — `\/` is legal JSON
+        // and NOT legal YAML, which is exactly the trap.
+        XCTAssertNil(parseFrontmatter(#"description: "a\qb""# + "\npersona: secretary"))
+        XCTAssertNil(parseFrontmatter(#"description: "a\/b""# + "\npersona: secretary"))
+        // The numeric forms are legal YAML this parser does not decode, so it
+        // refuses them rather than inventing text (documented divergence).
+        XCTAssertNil(parseFrontmatter(#"description: "a\x41b""# + "\npersona: secretary"))
+        // A backslash is ordinary inside a single-quoted scalar.
+        XCTAssertEqual(parseFrontmatter(#"description: 'a\qb'"# + "\npersona: secretary")?.description,
+                       #"a\qb"#)
+    }
+
+    /// Parses a frontmatter body (without the fences) under a valid name.
+    private func parseFrontmatter(_ frontmatter: String) -> SkillSummary? {
+        SkillsCatalog.parse(name: "probe", content: "---\n\(frontmatter)\n---\nBody.\n")
+    }
+
     func testDescriptionMustSurviveUnquotingAndTrimming() {
         XCTAssertNil(SkillsCatalog.parse(name: "blank", content: """
             ---
@@ -518,6 +611,8 @@ final class SkillsCatalogTests: XCTestCase {
 
         let listed = SkillsCatalog.list(dir: fixtures)
         XCTAssertEqual(listed, [
+            // NOTE: `anchor-description` is in Go's wantListed and NOT here —
+            // the one deliberate asymmetry, see goListsThemSwiftRefuses below.
             SkillSummary(name: "enabled-comment",
                          description: "Switched off with the reason written as an inline comment.",
                          persona: .both, enabled: false),
@@ -534,8 +629,54 @@ final class SkillsCatalogTests: XCTestCase {
 
         let skipped = stems.filter { stem in !listed.contains { $0.name == stem } }
         XCTAssertEqual(skipped, [
-            "bad-enabled", "bad-persona", "bare-line", "blank-description",
-            "duplicate-key", "indented-fence", "no-frontmatter", "unterminated-quote"
-        ], "must match internal/skills/skills_test.go's wantSkipped")
+            "anchor-description", "bad-enabled", "bad-persona", "bare-line",
+            "blank-description", "colon-in-description", "duplicate-key",
+            "indented-fence", "indented-key", "leading-indicator", "no-frontmatter",
+            "no-space-after-colon", "tab-indent", "unknown-escape", "unterminated-quote"
+        ], "must match internal/skills/skills_test.go's wantSkipped, plus goListsThemSwiftRefuses")
+    }
+
+    /// The shipped pack is the one set of skill files that MUST parse on both
+    /// sides: Go's `TestShippedPack` pins them for the daemon that deploys
+    /// them, and this pins them for the personas that have to see them listed.
+    /// A tightening of this parser that refuses a shipped file would otherwise
+    /// show up only as three skills quietly missing from every chat.
+    func testShippedPackParsesHere() throws {
+        let shipped = URL(fileURLWithPath: Self.goFixturesDir())
+            .deletingLastPathComponent()
+            .appendingPathComponent("shipped")
+            .path
+        let files = try FileManager.default.contentsOfDirectory(atPath: shipped)
+            .filter { $0.hasSuffix(".md") }
+        XCTAssertEqual(files.count, 3, "the shipped pack must be reachable at \(shipped)")
+
+        for file in files {
+            let name = String(file.dropLast(3))
+            let content = try String(contentsOfFile: "\(shipped)/\(file)", encoding: .utf8)
+            let parsed = try XCTUnwrap(SkillsCatalog.parse(name: name, content: content),
+                                       "shipped skill \(name) must parse")
+            XCTAssertTrue(parsed.enabled, "\(name) must ship enabled")
+            XCTAssertTrue(parsed.shipped, "\(name) must carry the shipped marker")
+            XCTAssertFalse(parsed.description.isEmpty)
+        }
+    }
+
+    /// The fixtures Go lists and this parser deliberately refuses — the whole
+    /// permitted asymmetry between the two sides, written down so it stays one
+    /// short, reviewed list instead of drift. Each entry is a shape where
+    /// yaml.v3 would hand Go a description the file does not literally contain,
+    /// so refusing to advertise the skill beats advertising it under invented
+    /// text. The reverse direction (Swift lists, Go cannot read) has no entries
+    /// and must never gain one.
+    private static let goListsThemSwiftRefuses = ["anchor-description"]
+
+    func testTheOnlyGoListedFixturesWeRefuseAreTheDocumentedOnes() throws {
+        let fixtures = Self.goFixturesDir()
+        for stem in Self.goListsThemSwiftRefuses {
+            let content = try String(
+                contentsOfFile: "\(fixtures)/\(stem).md", encoding: .utf8)
+            XCTAssertNil(SkillsCatalog.parse(name: stem, content: content),
+                         "\(stem) is documented as refused here even though Go lists it")
+        }
     }
 }
