@@ -19,7 +19,7 @@ const (
 // just omits its section. The function itself never fails.
 func buildSecretaryBrief(database *db.DB, currentUserID string, now time.Time) string {
 	var b strings.Builder
-	b.WriteString("=== SECRETARY BRIEF ===\n")
+	b.WriteString("=== ASSISTANT BRIEF ===\n")
 
 	writeProfileSection(&b, database)
 	writeRoleSection(&b, database, currentUserID)

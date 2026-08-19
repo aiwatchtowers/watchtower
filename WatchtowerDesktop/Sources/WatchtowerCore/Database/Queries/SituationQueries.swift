@@ -82,7 +82,7 @@ package enum SituationQueries {
     }
 
     /// User's "Keep open" on a suggested resolution (DASH-07): clears the
-    /// secretary's mark, nothing else — status untouched, no feedback call,
+    /// assistant's mark, nothing else — status untouched, no feedback call,
     /// and `updated_at` is deliberately left alone. Bumping it here would
     /// make the dashboard's feed-ordering (which tracks content changes)
     /// resurface this row right after the user said "nothing new here"; the

@@ -404,7 +404,7 @@ struct IdeaDetailPane: View {
             .buttonStyle(.bordered)
             .help("Not helpful")
 
-            TextField("Comment to teach the secretary…", text: $comment)
+            TextField("Comment to teach the assistant…", text: $comment)
                 .textFieldStyle(.roundedBorder)
         }
     }

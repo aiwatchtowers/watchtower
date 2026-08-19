@@ -18,8 +18,8 @@ enum SkillEditorTarget: Identifiable {
 
 /// Settings → Skills card.
 ///
-/// A skill is a markdown file in `<workspace>/skills/` that one of the two AI
-/// personas can load on demand during a Discuss chat. Shipped skills arrive
+/// A skill is a markdown file in `<workspace>/skills/` that the assistant
+/// can load on demand during a Discuss chat. Shipped skills arrive
 /// with the app and are kept current by the daemon; owner-created ones are
 /// plain files this card writes. Everything here is an immediate file write —
 /// nothing is staged for the surrounding tab's Save button, which the footer
@@ -45,7 +45,7 @@ struct SkillsSettingsSection: View {
             Text("Skills")
         } footer: {
             Text(
-                "Skills teach the secretary and the assistant how to handle a kind of request — "
+                "Skills teach the assistant how to handle a kind of request — "
                     + "untangling a thread, drafting a status update, breaking a target down. A chat "
                     + "loads one when it fits the ask. Changes here are written to the skill files "
                     + "immediately."
@@ -71,7 +71,7 @@ struct SkillsSettingsSection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Removes the skill file. The personas stop seeing it on the next chat.")
+            Text("Removes the skill file. The assistant stops seeing it on the next chat.")
         }
     }
 
@@ -100,7 +100,6 @@ struct SkillsSettingsSection: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(row.name)
-                        badge(Self.personaLabel(row.persona), color: Self.personaColor(row.persona))
                         badge(row.shipped ? "Built-in" : "Custom", color: .secondary)
                     }
                     Text(row.description)
@@ -142,22 +141,6 @@ struct SkillsSettingsSection: View {
             .background(color.opacity(0.15), in: Capsule())
             .foregroundStyle(color)
     }
-
-    static func personaLabel(_ persona: SkillPersona) -> String {
-        switch persona {
-        case .secretary: return "Secretary"
-        case .assistant: return "Assistant"
-        case .both: return "Both"
-        }
-    }
-
-    static func personaColor(_ persona: SkillPersona) -> Color {
-        switch persona {
-        case .secretary: return .purple
-        case .assistant: return .blue
-        case .both: return .teal
-        }
-    }
 }
 
 /// New-skill / edit-skill sheet. The name is the file's identity, so it is
@@ -185,9 +168,7 @@ struct SkillEditorSheet: View {
             // offering a blank editor that Save would flush over real content.
             let loaded = viewModel.skillDraft(for: name)
             _draft = State(
-                initialValue: loaded ?? SkillDraft(
-                    name: name, description: "", persona: .secretary, body: ""
-                )
+                initialValue: loaded ?? SkillDraft(name: name, description: "", body: "")
             )
             _loadFailed = State(initialValue: loaded == nil)
         }
@@ -246,15 +227,10 @@ struct SkillEditorSheet: View {
                 text: $draft.description,
                 prompt: Text("Use when the owner asks for a status update.")
             )
-            .help("One line. This is what the persona reads when deciding whether the skill fits.")
-            Picker("Persona", selection: $draft.persona) {
-                Text("Secretary").tag(SkillPersona.secretary)
-                Text("Assistant").tag(SkillPersona.assistant)
-                Text("Both").tag(SkillPersona.both)
-            }
+            .help("One line. This is what the assistant reads when deciding whether the skill fits.")
         }
         .formStyle(.grouped)
-        .frame(height: 130)
+        .frame(height: 100)
     }
 
     private func save() {

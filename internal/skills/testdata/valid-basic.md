@@ -1,6 +1,5 @@
 ---
 description: Use when the owner asks for the shape of a valid skill file.
-persona: secretary
 ---
 
 # Valid basic

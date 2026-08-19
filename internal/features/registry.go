@@ -24,7 +24,7 @@ const (
 // Feature describes one entry in the registry.
 type Feature struct {
 	ID          string      // kebab-case, stable: "secretary-inbox"
-	Title       string      // "Secretary Inbox"
+	Title       string      // "Assistant Inbox"
 	Description string      // one user-facing paragraph, English
 	Tagline     string      // one benefit-first phrase, e.g. "Your team's pulse, distilled"
 	Benefits    []string    // 2-3 short benefit bullets, user language, no jargon
@@ -53,12 +53,12 @@ var registry = []Feature{
 	{
 		ID:          "dashboard",
 		Title:       "Dashboard",
-		Description: "The secretary's home screen: every situation clustered from Slack, email, Jira and calendar activity, with a secretary card and Discuss chat per situation, plus a parallel timeline of upcoming meetings. Always on — it is where the rest of Watchtower's output surfaces.",
+		Description: "The assistant's home screen: every situation clustered from Slack, email, Jira and calendar activity, with a situation card and Discuss chat per situation, plus a parallel timeline of upcoming meetings. Always on — it is where the rest of Watchtower's output surfaces.",
 		Tagline:     "Everything that needs you, in one place",
 		Benefits: []string{
 			"Situations from Slack, email, Jira and calendar merged into one view",
-			"A secretary card explains why each one matters",
-			"Discuss each situation directly with your secretary",
+			"A situation card explains why each one matters",
+			"Discuss each situation directly with your assistant",
 		},
 		Icon: "tray",
 		Core: true,
@@ -80,9 +80,9 @@ var registry = []Feature{
 	},
 	{
 		ID:          "chat",
-		Title:       "Secretary Chat",
-		Description: "Free-form chat with the secretary about anything in your workspace — situations, targets, tracks, meetings, memory. Always available; it spends AI tokens only when you send a message, never on a cycle.",
-		Tagline:     "Ask your secretary anything about your work",
+		Title:       "Assistant Chat",
+		Description: "Free-form chat with the assistant about anything in your workspace — situations, targets, tracks, meetings, memory. Always available; it spends AI tokens only when you send a message, never on a cycle.",
+		Tagline:     "Ask your assistant anything about your work",
 		Benefits: []string{
 			"Ask about any situation, target, track, meeting or memory",
 			"Available whenever you need it, not on a fixed cycle",
@@ -110,13 +110,13 @@ var registry = []Feature{
 	},
 	{
 		ID:          "secretary-inbox",
-		Title:       "Secretary Inbox",
-		Description: "Triages every new mention, DM and thread reply, clusters them into situations on the Dashboard and writes a secretary card per situation. Heavy AI use each cycle. Feeds Memory and the daily Briefing.",
+		Title:       "Assistant Inbox",
+		Description: "Triages every new mention, DM and thread reply, clusters them into situations on the Dashboard and writes a situation card per situation. Heavy AI use each cycle. Feeds Memory and the daily Briefing.",
 		Tagline:     "Never lose a thread again",
 		Benefits: []string{
 			"Every mention, DM and reply triaged for you",
 			"Related messages clustered into one situation",
-			"A secretary card tells you why it matters",
+			"A situation card tells you why it matters",
 		},
 		Icon:      "tray",
 		ConfigKey: "inbox.enabled",
@@ -127,11 +127,11 @@ var registry = []Feature{
 	{
 		ID:          "slack-digests",
 		Title:       "Slack Digests",
-		Description: "Summarizes Slack channel activity into per-channel digests — topics, decisions, and proposed ideas. Heavy AI use each cycle; it is the substrate several other pipelines mine, including the Secretary Inbox, Tracks, People Cards, Ideas, and the daily Briefing.",
+		Description: "Summarizes Slack channel activity into per-channel digests — topics, decisions, and proposed ideas. Heavy AI use each cycle; it is the substrate several other pipelines mine, including the Assistant Inbox, Tracks, People Cards, Ideas, and the daily Briefing.",
 		Tagline:     "Catch up on any channel in a minute",
 		Benefits: []string{
 			"Per-channel digests of topics, decisions and proposed ideas",
-			"The foundation Secretary Inbox, Tracks, People Cards and Ideas all build on",
+			"The foundation the Assistant Inbox, Tracks, People Cards and Ideas all build on",
 			"Read the digest instead of scrolling the whole channel",
 		},
 		Icon:      "doc.text.magnifyingglass",
@@ -143,7 +143,7 @@ var registry = []Feature{
 	{
 		ID:          "stream-digests",
 		Title:       "Stream Digests",
-		Description: "Summarizes new Gmail threads and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and the Secretary Inbox's Jira-comment detection.",
+		Description: "Summarizes new Gmail threads and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and the Assistant Inbox's Jira-comment detection.",
 		Tagline:     "Email and Jira, digested like Slack",
 		Benefits: []string{
 			"New Gmail threads and changed Jira issues summarized per account",
@@ -208,7 +208,7 @@ var registry = []Feature{
 		ID:          "memory",
 		Title:       "Memory",
 		Description: "Builds and maintains a durable long-term memory vault — people, projects, and beliefs — from what the rest of Watchtower observes, so later answers, drafts, and briefings have real context instead of starting cold. Off by default. Medium AI use for the core pipeline; the sources and surfaces below are further switches within it. Feeds the daily Briefing and Day Plan.",
-		Tagline:     "A secretary that remembers, not just reacts",
+		Tagline:     "An assistant that remembers, not just reacts",
 		Benefits: []string{
 			"Durable memory of people, projects and beliefs",
 			"Later answers and briefings start with real context, not a blank slate",

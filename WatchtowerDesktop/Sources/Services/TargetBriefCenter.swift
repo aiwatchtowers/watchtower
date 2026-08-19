@@ -1,7 +1,7 @@
 import Foundation
 import WatchtowerCore
 
-/// App-wide, single-slot registry for the creation-time "brief the secretary"
+/// App-wide, single-slot registry for the creation-time "brief the assistant"
 /// chat run (spec §9.6). `CreateTargetSheet`'s Enter path creates the target
 /// row mechanically, then hands the full composer text here — the center
 /// constructs the target's `TargetChatViewModel`, sends the text through the

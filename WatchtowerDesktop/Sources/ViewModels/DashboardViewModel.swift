@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// Drives the secretary Dashboard — a single ranked feed of `Situation`s (clustered
+/// Drives the assistant Dashboard — a single ranked feed of `Situation`s (clustered
 /// signals + work updates) that replaces the old two-tier Inbox feed. See
 /// `internal/inbox/compose.go` on the Go side and `SituationQueries` for the
 /// underlying reads/writes.
@@ -214,7 +214,7 @@ final class DashboardViewModel {
         }
     }
 
-    /// "Keep open" on a suggested resolution (DASH-07): clears the secretary's
+    /// "Keep open" on a suggested resolution (DASH-07): clears the assistant's
     /// mark and nothing else.
     func keepOpen(_ situation: Situation) {
         do {

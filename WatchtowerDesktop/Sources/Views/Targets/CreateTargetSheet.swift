@@ -5,7 +5,7 @@ import WatchtowerCore
 /// Chat-first creation composer (spec §9.5): one multiline editor, a permanent
 /// key-hint caption, the Extract affordance as a secondary control, and an
 /// error row — no form fields. Enter creates the target row mechanically
-/// (TGT-BRIEF-02: no AI involvement in row creation) and briefs the secretary
+/// (TGT-BRIEF-02: no AI involvement in row creation) and briefs the assistant
 /// via `TargetBriefCenter`; ⌘Enter creates silently; Shift+Enter inserts a
 /// newline. Submit logic (title derivation) lives in the testable Core type
 /// `TargetComposerLogic`.
@@ -122,7 +122,7 @@ struct CreateTargetSheet: View {
     private var composerEditor: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
-                Text("Brief the secretary: what needs to happen, links, context — it will name the task, break it down, and gather data.")
+                Text("Brief the assistant: what needs to happen, links, context — it will name the task, break it down, and gather data.")
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 8)
@@ -142,7 +142,7 @@ struct CreateTargetSheet: View {
 
     /// Permanent discoverability caption (spec §4) — not a transient tooltip.
     private var captionRow: some View {
-        Text("Enter — brief the secretary · ⌘Enter — just create")
+        Text("Enter — brief the assistant · ⌘Enter — just create")
             .font(.caption)
             .foregroundStyle(.secondary)
     }
@@ -208,7 +208,7 @@ struct CreateTargetSheet: View {
     private func applyPrefill() {
         guard let p = prefill else { return }
         // Prefill text plus intent (as a second paragraph) become the
-        // composer's initial text — the secretary derives structure from it.
+        // composer's initial text — the assistant derives structure from it.
         var combined = p.text
         let intentTrimmed = p.intent.trimmingCharacters(in: .whitespacesAndNewlines)
         if !intentTrimmed.isEmpty {
@@ -253,7 +253,7 @@ struct CreateTargetSheet: View {
             newID = try await db.dbPool.write { dbConn -> Int in
                 // A composer-created sub-target inherits the parent's level
                 // and planning period — the TargetsViewModel.createChild
-                // semantics, so it matches a secretary-created one. No
+                // semantics, so it matches an assistant-created one. No
                 // parent → day/today.
                 var level = "day"
                 var periodStart = today
@@ -267,7 +267,7 @@ struct CreateTargetSheet: View {
                 return try TargetQueries.create(
                     dbConn,
                     text: title,
-                    intent: "",  // the secretary fills it (update_intent)
+                    intent: "",  // the assistant fills it (update_intent)
                     level: level,
                     periodStart: periodStart,
                     periodEnd: periodEnd,
@@ -322,7 +322,7 @@ struct CreateTargetSheet: View {
 }
 
 // MARK: - Composer text input
-// Enter = brief the secretary, ⌘Enter = just create, Shift+Enter = newline
+// Enter = brief the assistant, ⌘Enter = just create, Shift+Enter = newline
 // (the ChatInput/ExpandingTextInput key-handling shape, fixed-height variant).
 
 private struct ComposerTextInput: NSViewRepresentable {
@@ -392,7 +392,7 @@ private struct ComposerTextInput: NSViewRepresentable {
                     parent.onSilentSubmit()
                     return true
                 }
-                // Plain Enter → brief the secretary
+                // Plain Enter → brief the assistant
                 parent.onSubmit()
                 return true
             }

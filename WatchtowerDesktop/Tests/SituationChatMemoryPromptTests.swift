@@ -113,7 +113,7 @@ final class SituationChatMemoryPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("memory_recall"))
         XCTAssertTrue(prompt.contains("memory_open"))
         XCTAssertTrue(prompt.contains("memory_map"))
-        XCTAssertTrue(prompt.contains("check what the secretary already knows before asking the user"))
+        XCTAssertTrue(prompt.contains("check what the assistant already knows before asking the user"))
     }
 
     func testAbsentMapDegradesToNote() throws {

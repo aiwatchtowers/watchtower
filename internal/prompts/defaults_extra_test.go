@@ -25,9 +25,41 @@ func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
 	}
 }
 
+// TestPersonaMergeVersionFloors pins the floors set by the 2026-08-19 persona
+// merge: every prompt whose default text was reworded (secretary → assistant)
+// carries at least the bumped version, so Seed's auto-upgrade
+// (existing.Version < defaultVer) reaches installed non-customized rows.
+// Silently reverting a bump would leave installs on the pre-merge wording and
+// fail here; a later intentional bump only raises a version and still passes.
+func TestPersonaMergeVersionFloors(t *testing.T) {
+	floors := map[string]int{
+		BriefingDaily:              7,
+		InboxTriage:                2,
+		MeetingPrep:                5,
+		DayPlanGenerate:            4,
+		InboxCompose:               4,
+		InboxSituationCard:         2,
+		MemoryExtractEpisodes:      2,
+		MemoryExtractEpisodesBatch: 3,
+		MemoryExtractEmailEpisodes: 2,
+		MemoryEntityRewrite:        2,
+		MemoryReviseBeliefs:        2,
+		MemoryRenderMap:            2,
+		MemoryReflect:              2,
+		MemoryRenderChannelDigest:  2,
+		IdeasDigestEmail:           2,
+		IdeasDigestJira:            2,
+		IdeasConsolidate:           4,
+	}
+	for id, floor := range floors {
+		assert.GreaterOrEqual(t, DefaultVersions[id], floor,
+			"%q was reworded by the persona merge and must stay at v%d or later", id, floor)
+	}
+}
+
 // TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
 // (plus the Phase-4 reflection prompt) into every registration surface:
-// constant → Defaults template, AllIDs display order, DefaultVersions (v1),
+// constant → Defaults template, AllIDs display order, DefaultVersions,
 // and Descriptions. Each template must open with the language Directive
 // placeholder and must never begin with a dash (the claude-CLI argv gotcha
 // guarded for the extract builders).
@@ -45,7 +77,7 @@ func TestMemorySemanticPromptsRegistered(t *testing.T) {
 			assert.True(t, ok, "Defaults must contain %q", id)
 			assert.NotEmpty(t, tmpl, "template for %q must be non-empty", id)
 			assert.True(t, allIDs[id], "AllIDs must contain %q", id)
-			assert.Equal(t, 1, DefaultVersions[id], "%q must be registered at v1", id)
+			assert.GreaterOrEqual(t, DefaultVersions[id], 1, "%q must be registered in DefaultVersions", id)
 			assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
 
 			// Language directive slot: the template's first verb is filled by
@@ -61,7 +93,7 @@ func TestMemorySemanticPromptsRegistered(t *testing.T) {
 
 // TestMemoryRenderPromptRegistered pins the Phase-5 slice-3 channel-digest
 // render prompt into all four registration surfaces (Defaults, AllIDs,
-// DefaultVersions v1, Descriptions), carrying the language directive and never
+// DefaultVersions, Descriptions), carrying the language directive and never
 // beginning with a dash.
 func TestMemoryRenderPromptRegistered(t *testing.T) {
 	id := MemoryRenderChannelDigest
@@ -75,7 +107,7 @@ func TestMemoryRenderPromptRegistered(t *testing.T) {
 	assert.True(t, ok, "Defaults must contain %q", id)
 	assert.NotEmpty(t, tmpl)
 	assert.True(t, allIDs[id], "AllIDs must contain %q", id)
-	assert.Equal(t, 1, DefaultVersions[id], "%q must be registered at v1", id)
+	assert.GreaterOrEqual(t, DefaultVersions[id], 1, "%q must be registered in DefaultVersions", id)
 	assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
 
 	rendered := DefaultFor(id)

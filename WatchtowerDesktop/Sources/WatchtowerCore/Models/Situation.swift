@@ -64,10 +64,10 @@ package struct Situation: FetchableRecord, Identifiable, Equatable {
         CardStatus(rawValue: cardStatusRaw) ?? .none
     }
 
-    /// True when a secretary card has been successfully generated for this situation.
+    /// True when a situation card has been successfully generated for this situation.
     package var hasCard: Bool { cardStatus == .ready }
 
-    /// True when the secretary has marked this situation as looking resolved (DASH-07).
+    /// True when the assistant has marked this situation as looking resolved (DASH-07).
     package var hasSuggestedResolution: Bool { !suggestedResolution.isEmpty }
 
     /// Parsed `last_signal_at` — the real time of the newest member signal (or

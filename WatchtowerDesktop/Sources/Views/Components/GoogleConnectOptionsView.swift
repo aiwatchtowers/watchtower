@@ -38,7 +38,7 @@ struct GoogleConnectOptionsView: View {
             if showGmailOption {
                 optionRow(
                     title: "Gmail",
-                    subtitle: "Inbox emails in the secretary feed",
+                    subtitle: "Inbox emails in the assistant's feed",
                     isOn: $flow.includeGmail
                 )
             }

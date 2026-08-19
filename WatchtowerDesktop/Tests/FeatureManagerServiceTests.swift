@@ -41,7 +41,7 @@ struct FeatureManagerServiceTests {
       },
       {
         "id":"memory","title":"Memory","description":"Long-term memory vault.",
-        "tagline":"A secretary that remembers, not just reacts",
+        "tagline":"An assistant that remembers, not just reacts",
         "benefits":[
           "Durable memory of people, projects and beliefs",
           "Later answers and briefings start with real context, not a blank slate",
@@ -62,8 +62,8 @@ struct FeatureManagerServiceTests {
         "tagline":"Everything that needs you, in one place",
         "benefits":[
           "Situations from Slack, email, Jira and calendar merged into one view",
-          "A secretary card explains why each one matters",
-          "Discuss each situation directly with your secretary"
+          "A situation card explains why each one matters",
+          "Discuss each situation directly with your assistant"
         ],
         "icon":"tray",
         "state":"core","core":true,"parent":"","config_key":"","cost":"none",
@@ -103,7 +103,7 @@ struct FeatureManagerServiceTests {
       },
       {
         "id":"memory","title":"Memory","description":"Long-term memory vault.",
-        "tagline":"A secretary that remembers, not just reacts",
+        "tagline":"An assistant that remembers, not just reacts",
         "benefits":[
           "Durable memory of people, projects and beliefs",
           "Later answers and briefings start with real context, not a blank slate",
@@ -124,8 +124,8 @@ struct FeatureManagerServiceTests {
         "tagline":"Everything that needs you, in one place",
         "benefits":[
           "Situations from Slack, email, Jira and calendar merged into one view",
-          "A secretary card explains why each one matters",
-          "Discuss each situation directly with your secretary"
+          "A situation card explains why each one matters",
+          "Discuss each situation directly with your assistant"
         ],
         "icon":"tray",
         "state":"core","core":true,"parent":"","config_key":"","cost":"none",
@@ -160,7 +160,7 @@ struct FeatureManagerServiceTests {
         #expect(memory.feedsInto == ["briefing", "day-plan"])
         #expect(memory.subToggles.first?.key == "memory.semantic.enabled")
         #expect(memory.subToggles.first?.enabled == false)
-        #expect(memory.tagline == "A secretary that remembers, not just reacts")
+        #expect(memory.tagline == "An assistant that remembers, not just reacts")
         #expect(memory.benefits.count == 3)
         #expect(memory.benefits.first == "Durable memory of people, projects and beliefs")
         #expect(memory.icon == "archivebox")

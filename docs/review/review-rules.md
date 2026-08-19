@@ -108,23 +108,31 @@ tags in brackets.
 - A ViewModel read-modify-write of a whole JSON column must reload the row immediately before writing (the TargetChatViewModel pattern). (2026-07-04) [9]
 - A scan/validation site where "file missing" is a meaningful contract state must treat "file present but undecodable" as a THIRD state, never fold it into the missing branch; a `compactMap` over two chained `try?` where only one of them means "absent" is the tell. (2026-08-03, 5th recurrence of the absent-vs-error class) [9]
 
-### Personas & chat contracts
+### The assistant & chat contracts
 
-Owner decision 2026-08-18. The app has two AI personas sharing one engine, and the words encode
-different trust contracts — they are not interchangeable labels:
+Owner decision 2026-08-19 (supersedes the two-persona split of 2026-08-18): the app has ONE AI
+persona — **the assistant** — and that is the only word UI strings, prompts, and
+`docs/app-guide.md` may use for it ("secretary" survives only in stable identifiers:
+`workspace.secretary_profile`, the `secretary-inbox` feature id, historical type names). What
+used to be encoded as two personas is now encoded as per-surface capability contracts, and those
+contracts did NOT move:
 
-- **Secretary** (Inbox/situations, meeting & memory surfaces): speaks FOR the owner and never
-  acts on the world. Intent-draft contract — the owner states WHAT to say, the secretary renders
-  it in the owner's voice, adds nothing unstated, never posts anywhere (Copy only). Its only
-  writes are learning side-effects (belief evidence, learned rules), never actions.
-- **Assistant** (target/task chat, setup panels): acts on local state, but ONLY through the
-  proposal→Approve gate — nothing is written until the owner approves.
+- **Draft-only surfaces** (Inbox/situation and meeting Discuss chats, memory surfaces; the
+  track and idea Discuss chats sit here too until someone deliberately builds them an action
+  path): the assistant discusses and drafts but never acts on the world. On situation/meeting
+  chats the intent-draft contract applies — the owner states WHAT to say, the assistant renders
+  it in the owner's voice, adds nothing unstated, never posts anywhere (Copy only); track/idea
+  chats are plain discussion with the same no-actions rule. The only writes are learning
+  side-effects (belief evidence, learned rules), never actions.
+- **Action surfaces** (target/task chat, setup panels): the assistant acts on local state, but
+  ONLY through the proposal→Approve gate — nothing is written until the owner approves
+  (execute-mode directives ride the same single-writer executor, per TGT-BRIEF-03).
 
-Rules: a new chat surface must consciously pick ONE of the two contracts and use its word
-consistently in UI strings and `docs/app-guide.md` — never inherit a persona name by copying a
-sibling VM. A change that gives the secretary any action capability must route it through the
-assistant's proposal/approval mechanism, not grant direct writes — flag it for owner review.
-Mixing the words across one surface, or a "secretary" surface that mutates data, is the tell. [5/6]
+Rules: a new chat surface must consciously pick ONE of the two capability contracts — never
+inherit one by copying a sibling VM. A change that gives a draft-only surface any action
+capability must route it through the proposal/approval mechanism, not grant direct writes —
+flag it for owner review. A draft-only surface that mutates data, or new UI text calling the
+assistant a "secretary", is the tell. [5/6]
 
 ### Tests
 

@@ -9,12 +9,12 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Module | Inventory file | Code paths |
 |---|---|---|
 | Inbox Pulse | [inbox-pulse.md](inbox-pulse.md) | `internal/inbox/`, `WatchtowerDesktop/Sources/Views/Inbox/`, `WatchtowerDesktop/Sources/ViewModels/Inbox*.swift` |
-| Secretary Dashboard | [dashboard.md](dashboard.md) | `internal/inbox/` (compose/situation_card stages), `internal/db/situations.go`, `WatchtowerDesktop/Sources/Views/Dashboard/`, `WatchtowerDesktop/Sources/ViewModels/DashboardViewModel.swift` |
+| Dashboard | [dashboard.md](dashboard.md) | `internal/inbox/` (compose/situation_card stages), `internal/db/situations.go`, `WatchtowerDesktop/Sources/Views/Dashboard/`, `WatchtowerDesktop/Sources/ViewModels/DashboardViewModel.swift` |
 | Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
 | Targets (brief chat + creation) | [targets.md](targets.md) | `WatchtowerDesktop/Sources/Views/Targets/`, `WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift`, `WatchtowerDesktop/Sources/Services/TargetActionExecutor.swift`, `WatchtowerDesktop/Sources/Services/TargetBriefCenter.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/` (ProposedAction, TargetActionParser, TargetComposerLogic, TargetQueries), `internal/prompts/defaults.go` (`defaultTrackRun` grammar) |
 | Catch-up | [catchup.md](catchup.md) | `internal/catchup/`, `internal/db/catchup_store.go`, `internal/db/digests.go` (`MarkDigestRead` decision cascade), `WatchtowerDesktop/Sources/{Views,ViewModels}/CatchUp*`, `WatchtowerDesktop/Sources/Database/Queries/CatchUpQueries.swift` |
 | Feature Manager | [features.md](features.md) | `internal/features/`, `internal/daemon/daemon.go` (phase gates), `cmd/features.go`, `internal/config/feature_migrate.go`, `WatchtowerDesktop/Sources/Services/FeatureManagerService.swift`, `WatchtowerDesktop/Sources/Views/Settings/` |
-| Secretary Memory | [memory.md](memory.md) | `internal/memory/`, `internal/db/memory.go`, `internal/daemon/daemon.go` (`phaseMemory`), `internal/mcp/memory.go`, `cmd/memory.go` |
+| Memory | [memory.md](memory.md) | `internal/memory/`, `internal/db/memory.go`, `internal/daemon/daemon.go` (`phaseMemory`), `internal/mcp/memory.go`, `cmd/memory.go` |
 | Ideas & Decisions Registry | [ideas.md](ideas.md) | `internal/ideas/`, `internal/db/ideas.go`, `internal/jira/sync.go` (bounded comment sync), `internal/daemon/daemon.go` (`phaseIdeas`), `internal/mcp/ideas.go`, `cmd/ideas.go`, `WatchtowerDesktop/Sources/Views/Ideas/`, `WatchtowerDesktop/Sources/Database/Queries/IdeaQueries.swift` |
 | Developer Surface | [dev-surface.md](dev-surface.md) | `internal/mcp/` (`taskcontext.go`, `experts.go`, `situations.go`), `internal/devpack/`, `cmd/integrate.go` |
 

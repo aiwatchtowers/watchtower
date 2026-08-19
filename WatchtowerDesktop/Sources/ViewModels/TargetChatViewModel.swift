@@ -373,7 +373,7 @@ final class TargetChatViewModel {
             // reloaded conversation still shows that the run died (spec §7).
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
-                appendSystemMessage("⚠️ The secretary run failed: \(error.localizedDescription)")
+                appendSystemMessage("⚠️ The assistant run failed: \(error.localizedDescription)")
             }
         }
 
@@ -995,8 +995,8 @@ final class TargetChatViewModel {
               ) + "\n\n"
             : ""
 
-        // Persona skills: the persona comes from this surface's context_type
-        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // Assistant skills: whether this surface lists them comes from its
+        // context_type via SkillsCatalog.chatContextTypes, and the block is
         // nil when no enabled skill matches, so a workspace with no skills
         // keeps a byte-identical prompt.
         let skillsSuffix = SkillsCatalog.promptBlock(contextType: "target", dir: skillsDir)

@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// Secretary chat about ONE meeting recording. Persisted conversation per
+/// Assistant chat about ONE meeting recording. Persisted conversation per
 /// transcript (`chat_conversations.context_type = "meeting"`), streaming via
 /// `AIServiceProtocol` — same skeleton as SituationChatViewModel, but the
 /// context is the transcript + recap, and the full transcript text is
@@ -311,15 +311,15 @@ final class MeetingChatViewModel {
               ) + "\n\n"
             : ""
 
-        // Persona skills: the persona comes from this surface's context_type
-        // via SkillsCatalog's mapping table (secretary here), and the block is
+        // Assistant skills: whether this surface lists them comes from its
+        // context_type via SkillsCatalog.chatContextTypes, and the block is
         // nil when no enabled skill matches, so a workspace with no skills
         // keeps a byte-identical prompt.
         let skillsSuffix = SkillsCatalog.promptBlock(contextType: "meeting", dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
         return """
-        You are the user's AI secretary, discussing ONE recorded meeting. \
+        You are the user's AI assistant, discussing ONE recorded meeting. \
         Help them recall what was said, clarify decisions, and draft follow-ups when asked.
 
         \(meetingContextBlock(transcript, recapContent: recapContent))

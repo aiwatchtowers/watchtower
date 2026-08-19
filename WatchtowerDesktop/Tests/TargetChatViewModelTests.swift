@@ -275,11 +275,11 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(chat.errorMessage, "CLI exploded")
         XCTAssertTrue(chat.messages.contains {
-            $0.role == .system && $0.text.contains("The secretary run failed: CLI exploded")
+            $0.role == .system && $0.text.contains("The assistant run failed: CLI exploded")
         })
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
         XCTAssertTrue(persisted.contains {
-            $0.role == "system" && $0.text.contains("The secretary run failed: CLI exploded")
+            $0.role == "system" && $0.text.contains("The assistant run failed: CLI exploded")
         })
         // No assistant turn is persisted for a failed stream.
         XCTAssertFalse(persisted.contains { $0.role == "assistant" })
@@ -1138,7 +1138,7 @@ final class TargetChatViewModelTests: XCTestCase {
         return dir
     }
 
-    func testSkillsBlockListsAssistantSkillsOnly() throws {
+    func testSkillsBlockListsEveryEnabledSkill() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "ship it")
@@ -1146,14 +1146,12 @@ final class TargetChatViewModelTests: XCTestCase {
             "target-breakdown.md": """
                 ---
                 description: Decompose a target into sub-targets.
-                persona: assistant
                 ---
                 Body.
                 """,
             "thread-untangle.md": """
                 ---
                 description: Reconstruct who asked what in a tangled thread.
-                persona: secretary
                 ---
                 Body.
                 """
@@ -1164,8 +1162,8 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
         XCTAssertTrue(prompt.contains("target-breakdown — Decompose a target into sub-targets."))
+        XCTAssertTrue(prompt.contains("thread-untangle — Reconstruct who asked what in a tangled thread."))
         XCTAssertTrue(prompt.contains("load_skill"))
-        XCTAssertFalse(prompt.contains("thread-untangle"), "secretary skills must not reach the assistant")
     }
 
     func testSkillsBlockAbsentWhenNoSkillsExist() throws {

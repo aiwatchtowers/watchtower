@@ -4,10 +4,10 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The meeting Discuss surface's half of the persona-skills wiring: it resolves
-/// its persona from `SkillsCatalog.personaByContextType["meeting"]`
-/// (secretary), so only secretary skills may reach it, and an empty catalog
-/// must leave the prompt byte-identical to the no-skills-dir one.
+/// The meeting Discuss surface's half of the assistant-skills wiring: its
+/// `context_type` ("meeting") is in `SkillsCatalog.chatContextTypes`, so every
+/// enabled skill reaches its prompt, and an empty catalog must leave the
+/// prompt byte-identical to the no-skills-dir one.
 final class MeetingChatSkillsPromptTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
@@ -32,19 +32,18 @@ final class MeetingChatSkillsPromptTests: XCTestCase {
         })
     }
 
-    func testSkillsBlockListsSecretarySkillsOnly() throws {
+    func testSkillsBlockListsEveryEnabledSkill() throws {
         let transcript = try makeTranscript()
-        let dir = try SkillsPromptFixtures.makePersonaPair(self)
+        let dir = try SkillsPromptFixtures.makePair(self)
 
         let prompt = MeetingChatViewModel.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: dir)
 
         XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
-        XCTAssertTrue(prompt.contains(SkillsPromptFixtures.secretaryLine))
+        XCTAssertTrue(prompt.contains(SkillsPromptFixtures.untangleLine))
+        XCTAssertTrue(prompt.contains(SkillsPromptFixtures.breakdownLine))
         XCTAssertTrue(prompt.contains("load_skill"), "the model must be told to load the skill first")
-        XCTAssertFalse(prompt.contains(SkillsPromptFixtures.assistantName),
-                       "assistant skills must not reach a secretary surface")
     }
 
     func testSkillsBlockAbsentWhenNoSkillsExist() throws {

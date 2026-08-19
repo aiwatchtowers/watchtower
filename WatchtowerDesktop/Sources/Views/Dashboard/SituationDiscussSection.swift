@@ -4,7 +4,7 @@ import WatchtowerCore
 
 // MARK: - SituationDiscussSection
 
-/// Collapsed-by-default "Discuss with secretary" chat at the bottom of the
+/// Collapsed-by-default "Discuss with assistant" chat at the bottom of the
 /// situation review pane's SCROLL content: header + message bubbles only.
 /// The input field is docked by the owning `SituationReviewPane` below the
 /// scroll (`SituationDiscussInputBar`) — `ChatInput` wraps a nested
@@ -42,7 +42,7 @@ struct SituationDiscussSection: View {
                 Image(systemName: "bubble.left.and.text.bubble.right")
                     .font(.caption)
                     .foregroundStyle(Color.accentColor)
-                Text("Discuss with secretary")
+                Text("Discuss with assistant")
                     .font(.subheadline)
                     .fontWeight(.medium)
                 if persistedCount > 0 && !isExpanded {

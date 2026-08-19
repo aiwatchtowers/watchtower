@@ -7,7 +7,7 @@ import WatchtowerCore
 // The rich single-situation review screen on the right of the Dashboard's
 // master-detail split (modeled on CatchUpReviewPane). Shows kind/priority
 // badges, the title, a Sources block (Target/Track navigation + newest-signal
-// Slack link), the secretary card (why-it-matters callout, summary,
+// Slack link), the situation card (why-it-matters callout, summary,
 // chronology), the member-signal originals with per-bubble Slack links, and a
 // bottom action bar (👍/👎 + teaching comment, Snooze, Target, Track, Dismiss,
 // Done). All mutating actions are delegated to the owning DashboardView.
@@ -87,7 +87,7 @@ struct SituationReviewPane: View {
 
     private var suggestedResolutionBanner: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("The secretary believes this is resolved", systemImage: "checkmark.circle")
+            Label("The assistant believes this is resolved", systemImage: "checkmark.circle")
                 .font(.headline)
                 .foregroundStyle(.green)
             Text(situation.suggestedResolution)
@@ -240,7 +240,7 @@ struct SituationReviewPane: View {
         return slackURL(newest)
     }
 
-    // MARK: - Secretary card
+    // MARK: - Situation card
 
     @ViewBuilder
     private var secretaryCardOrPlaceholder: some View {
@@ -379,7 +379,7 @@ struct SituationReviewPane: View {
                 .buttonStyle(.bordered)
                 .help("Not helpful")
 
-                TextField("Comment to teach the secretary…", text: $comment)
+                TextField("Comment to teach the assistant…", text: $comment)
                     .textFieldStyle(.roundedBorder)
             }
             .task {

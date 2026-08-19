@@ -34,7 +34,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     private let shippedFile = """
         ---
         description: Untangle a thread.
-        persona: secretary
         enabled: true
         x-watchtower-shipped: v1
         ---
@@ -45,7 +44,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     private let customFile = """
         ---
         description: Break a target down.
-        persona: assistant
         ---
 
         Body of the custom skill.
@@ -53,7 +51,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
 
     // MARK: - load
 
-    func testLoadListsSortedRowsWithOriginAndPersona() throws {
+    func testLoadListsSortedRowsWithOrigin() throws {
         try writeSkillFile("thread-untangle.md", shippedFile)
         try writeSkillFile("break-down.md", customFile)
 
@@ -61,18 +59,16 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         viewModel.loadSkills()
 
         XCTAssertEqual(viewModel.rows.map(\.name), ["break-down", "thread-untangle"])
-        XCTAssertEqual(viewModel.rows[0].persona, .assistant)
         XCTAssertFalse(viewModel.rows[0].shipped)
         // `enabled` is absent from the custom file — the format's default is on.
         XCTAssertTrue(viewModel.rows[0].enabled)
-        XCTAssertEqual(viewModel.rows[1].persona, .secretary)
         XCTAssertTrue(viewModel.rows[1].shipped)
         XCTAssertEqual(viewModel.rows[1].description, "Untangle a thread.")
     }
 
     func testLoadSkipsUnparsableFilesAndNonMarkdown() throws {
         try writeSkillFile("good.md", customFile)
-        try writeSkillFile("bad-persona.md", "---\ndescription: x\npersona: butler\n---\nbody\n")
+        try writeSkillFile("bad-yaml.md", "---\ndescription: \"unclosed\n---\nbody\n")
         try writeSkillFile("no-frontmatter.md", "just prose\n")
         try writeSkillFile("notes.txt", customFile)
         try writeSkillFile(".watchtower-shipped.json", "{}")
@@ -106,7 +102,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     func testSetEnabledRewritesOnlyThatKey() throws {
         let original = """
             ---
-            persona: secretary
             description: Untangle a thread.
             enabled: true    # owner's note
             x-watchtower-shipped: v1
@@ -147,7 +142,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
             """
             ---
             description: Break a target down.
-            persona: assistant
             enabled: false
             ---
 
@@ -158,7 +152,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     }
 
     func testSetEnabledPreservesCRLFLineEndings() throws {
-        let original = "---\r\ndescription: X.\r\npersona: both\r\nenabled: true\r\n---\r\n\r\nBody\r\n"
+        let original = "---\r\ndescription: X.\r\nenabled: true\r\n---\r\n\r\nBody\r\n"
         try writeSkillFile("crlf.md", original)
 
         let viewModel = SkillsSettingsViewModel(dir: dir)
@@ -182,7 +176,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     func testSetEnabledRefusesAnIllegalName() throws {
         let outside = FileManager.default.temporaryDirectory
             .appendingPathComponent("outside-\(UUID().uuidString).md").path
-        try "---\ndescription: X\npersona: both\n---\nsecret\n".write(
+        try "---\ndescription: X\n---\nsecret\n".write(
             toFile: outside, atomically: true, encoding: .utf8
         )
         defer { try? FileManager.default.removeItem(atPath: outside) }
@@ -202,7 +196,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
 
         XCTAssertEqual(draft.name, "thread-untangle")
         XCTAssertEqual(draft.description, "Untangle a thread.")
-        XCTAssertEqual(draft.persona, .secretary)
         XCTAssertEqual(draft.body, "Body of the shipped skill.")
     }
 
@@ -220,7 +213,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         let draft = SkillDraft(
             name: "status-update",
             description: "Use when the owner asks for a status update.",
-            persona: .both,
             body: "Ask what to say, then render it."
         )
 
@@ -230,7 +222,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
             SkillsCatalog.parse(name: "status-update", content: try readSkillFile("status-update.md"))
         )
         XCTAssertEqual(parsed.description, "Use when the owner asks for a status update.")
-        XCTAssertEqual(parsed.persona, .both)
         XCTAssertTrue(parsed.enabled)
         XCTAssertEqual(viewModel.rows.map(\.name), ["status-update"])
         XCTAssertFalse(try XCTUnwrap(viewModel.rows.first).shipped)
@@ -241,7 +232,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         let viewModel = SkillsSettingsViewModel(dir: nested)
 
         XCTAssertTrue(viewModel.saveSkill(
-            SkillDraft(name: "x-ray", description: "Look inside.", persona: .secretary, body: "Do it."),
+            SkillDraft(name: "x-ray", description: "Look inside.", body: "Do it."),
             isNew: true
         ))
         XCTAssertTrue(FileManager.default.fileExists(atPath: "\(nested)/x-ray.md"))
@@ -253,7 +244,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
             SkillDraft(
                 name: "tricky",
                 description: "Use when: the owner says #status",
-                persona: .secretary,
                 body: "Body."
             ),
             isNew: true
@@ -270,7 +260,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         for bad in ["Status Update", "../escape", "-leading", "under_score", ""] {
             XCTAssertFalse(
                 viewModel.saveSkill(
-                    SkillDraft(name: bad, description: "D.", persona: .secretary, body: "B."),
+                    SkillDraft(name: bad, description: "D.", body: "B."),
                     isNew: true
                 ),
                 "expected \(bad) to be rejected"
@@ -283,7 +273,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     func testSaveRejectsAnEmptyDescription() {
         let viewModel = SkillsSettingsViewModel(dir: dir)
         XCTAssertFalse(viewModel.saveSkill(
-            SkillDraft(name: "empty", description: "   ", persona: .secretary, body: "B."),
+            SkillDraft(name: "empty", description: "   ", body: "B."),
             isNew: true
         ))
         XCTAssertNotNil(viewModel.error)
@@ -294,7 +284,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
 
         let viewModel = SkillsSettingsViewModel(dir: dir)
         XCTAssertFalse(viewModel.saveSkill(
-            SkillDraft(name: "break-down", description: "Other.", persona: .secretary, body: "B."),
+            SkillDraft(name: "break-down", description: "Other.", body: "B."),
             isNew: true
         ))
         XCTAssertEqual(try readSkillFile("break-down.md"), customFile)
@@ -303,7 +293,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     func testSaveWithNilDirectoryFails() {
         let viewModel = SkillsSettingsViewModel(dir: nil)
         XCTAssertFalse(viewModel.saveSkill(
-            SkillDraft(name: "nope", description: "D.", persona: .secretary, body: "B."),
+            SkillDraft(name: "nope", description: "D.", body: "B."),
             isNew: true
         ))
         XCTAssertNotNil(viewModel.error)
@@ -348,7 +338,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
             try writeSkillFile("\(name).md", """
                 ---
                 description: A disabled skill.
-                persona: assistant
                 \(line)
                 ---
 
@@ -367,14 +356,13 @@ final class SkillsSettingsViewModelTests: XCTestCase {
 
     /// Round-trip guard: a composed file the catalog cannot read is never
     /// written, because a skill the parsers skip is a skill that silently
-    /// vanishes from every persona's prompt.
+    /// vanishes from every chat's prompt.
     func testSaveRefusesToWriteAFileTheCatalogCannotRead() throws {
         // An unterminated quote on an unknown key — carried through verbatim by
         // compose, and fatal to yaml.v3 on the Go side.
         let broken = """
             ---
             description: Break a target down.
-            persona: assistant
             author: "unclosed
             ---
 
@@ -384,7 +372,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
 
         let viewModel = SkillsSettingsViewModel(dir: dir)
         XCTAssertFalse(viewModel.saveSkill(
-            SkillDraft(name: "break-down", description: "New.", persona: .assistant, body: "B."),
+            SkillDraft(name: "break-down", description: "New.", body: "B."),
             isNew: false
         ))
         XCTAssertNotNil(viewModel.error)
@@ -399,7 +387,6 @@ final class SkillsSettingsViewModelTests: XCTestCase {
             SkillDraft(
                 name: "quoted",
                 description: "Use when it's a fix: x # y",
-                persona: .secretary,
                 body: "Body."
             ),
             isNew: true
@@ -426,7 +413,10 @@ final class SkillsSettingsViewModelTests: XCTestCase {
         draft.body = "New body."
         XCTAssertTrue(viewModel.saveSkill(draft, isNew: false))
 
-        XCTAssertTrue(try readSkillFile("break-down.md").contains("author: owner"))
+        let updated = try readSkillFile("break-down.md")
+        XCTAssertTrue(updated.contains("author: owner"))
+        XCTAssertFalse(updated.contains("persona:"),
+                       "a save is where the legacy two-persona key gets shed")
     }
 
     // MARK: - delete
@@ -463,19 +453,19 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     // MARK: - round trip with the chat prompt block
 
     /// The card and the chat prompt read the same files through the same
-    /// parser, so a skill disabled in Settings must vanish from the persona's
+    /// parser, so a skill disabled in Settings must vanish from the chat
     /// prompt block on the next build.
-    func testDisablingRemovesTheSkillFromThePersonaPromptBlock() throws {
+    func testDisablingRemovesTheSkillFromThePromptBlock() throws {
         try writeSkillFile("thread-untangle.md", shippedFile)
 
         XCTAssertTrue(
-            try XCTUnwrap(SkillsCatalog.promptBlock(persona: .secretary, dir: dir))
+            try XCTUnwrap(SkillsCatalog.promptBlock(dir: dir))
                 .contains("thread-untangle")
         )
 
         let viewModel = SkillsSettingsViewModel(dir: dir)
         XCTAssertTrue(viewModel.setSkillEnabled(name: "thread-untangle", enabled: false))
 
-        XCTAssertNil(SkillsCatalog.promptBlock(persona: .secretary, dir: dir))
+        XCTAssertNil(SkillsCatalog.promptBlock(dir: dir))
     }
 }

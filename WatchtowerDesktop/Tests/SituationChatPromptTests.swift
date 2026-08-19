@@ -124,20 +124,18 @@ final class SituationChatPromptTests: XCTestCase {
         return dir
     }
 
-    func testSkillsBlockListsSecretarySkillsOnly() throws {
+    func testSkillsBlockListsEveryEnabledSkill() throws {
         let situation = try makeSituation()
         let dir = try makeSkillsDir([
             "thread-untangle.md": """
                 ---
                 description: Reconstruct who asked what in a tangled thread.
-                persona: secretary
                 ---
                 Body.
                 """,
             "target-breakdown.md": """
                 ---
                 description: Decompose a target into sub-targets.
-                persona: assistant
                 ---
                 Body.
                 """
@@ -148,8 +146,8 @@ final class SituationChatPromptTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
         XCTAssertTrue(prompt.contains("thread-untangle — Reconstruct who asked what in a tangled thread."))
+        XCTAssertTrue(prompt.contains("target-breakdown — Decompose a target into sub-targets."))
         XCTAssertTrue(prompt.contains("load_skill"), "the model must be told to load the skill first")
-        XCTAssertFalse(prompt.contains("target-breakdown"), "assistant skills must not reach the secretary")
     }
 
     func testSkillsBlockAbsentWhenNoSkillsExist() throws {

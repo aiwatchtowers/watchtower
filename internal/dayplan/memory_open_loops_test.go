@@ -187,6 +187,7 @@ func TestBuildPrompt_MemoryOpenLoopsRendered(t *testing.T) {
 	assert.NotContains(t, got, "%!")
 }
 
-func TestDayPlanGenerateVersionBumpedToThree(t *testing.T) {
-	assert.Equal(t, 3, prompts.DefaultVersions[prompts.DayPlanGenerate])
+func TestDayPlanGenerateVersionAtLeastThree(t *testing.T) {
+	// v3 introduced the memory open-loops section; later bumps only reword.
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.DayPlanGenerate], 3)
 }

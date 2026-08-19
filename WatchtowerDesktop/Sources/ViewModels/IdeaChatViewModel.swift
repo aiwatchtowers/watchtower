@@ -4,12 +4,12 @@ import WatchtowerCore
 
 // MARK: - IdeaChatViewModel
 
-/// Drives the "Discuss with secretary" chat inside the idea detail pane. The
+/// Drives the "Discuss with assistant" chat inside the idea detail pane. The
 /// deliberate house-pattern copy of `SituationChatViewModel` for ideas
 /// (`chat_conversations.context_type = "idea"`), streaming via
 /// `AIServiceProtocol`. Kept lean relative to the situation VM: no member
 /// signals, no counterparty/register-sample/memory blocks — the idea's own
-/// context (kind/status/title/essence/mentions) plus the owner's secretary
+/// context (kind/status/title/essence/mentions) plus the owner's assistant
 /// brief and style are enough for a discussion about one registry entry.
 @MainActor
 @Observable
@@ -280,8 +280,8 @@ final class IdeaChatViewModel {
         let style = (try? dbPool.read { db in try SecretaryProfileQueries.fetchStyle(db).text }) ?? ""
         let styleBlock = style.isEmpty ? "" : "\n\n=== OWNER'S COMMUNICATION STYLE ===\n\(style)"
 
-        // Persona skills: the persona comes from this surface's context_type
-        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // Assistant skills: whether this surface lists them comes from its
+        // context_type via SkillsCatalog.chatContextTypes, and the block is
         // nil when no enabled skill matches, so a workspace with no skills
         // keeps a byte-identical prompt.
         let skillsSuffix = SkillsCatalog.promptBlock(contextType: "idea", dir: skillsDir)
