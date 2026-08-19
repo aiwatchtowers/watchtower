@@ -72,6 +72,9 @@ func TestAIModels_JSONShape(t *testing.T) {
 	assert.Equal(t, "haiku", claude.ResolvedLight)
 	assert.Equal(t, "sonnet", claude.ResolvedStrong)
 	assert.Equal(t, "cli", claude.Kind)
+	// Known CLI aliases flow through `models` so the Desktop picker can
+	// suggest opus even though it is no tier's default.
+	assert.Equal(t, []string{"haiku", "sonnet", "opus"}, claude.Models)
 
 	codexP := parsed.Providers[byID["codex"]]
 	assert.Equal(t, "gpt-5.4-mini", codexP.ResolvedLight)

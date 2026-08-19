@@ -205,6 +205,7 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 	for _, p := range providers.All() {
 		entry := aiModelsProvider{Provider: p}
 		entry.ResolvedLight, entry.ResolvedStrong = providers.ResolveModelsFor(cfg, p.ID)
+		entry.Models = p.KnownModels
 		if p.LiveModels {
 			// Best-effort: an unreachable server yields an empty list plus an
 			// error string, never a failing command.
