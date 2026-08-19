@@ -106,8 +106,8 @@ final class TargetChatViewModelTests: XCTestCase {
         ```
         """
         let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock)
 
         chat.inputText = "mark this done"
         chat.send()
@@ -153,8 +153,8 @@ final class TargetChatViewModelTests: XCTestCase {
         ```
         """
         let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock)
 
         chat.inputText = "add the step and link it"
         chat.send()
@@ -191,8 +191,8 @@ final class TargetChatViewModelTests: XCTestCase {
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService(error: StubStreamError())
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock)
 
         chat.inputText = "do the thing"
         chat.send()
@@ -224,8 +224,8 @@ final class TargetChatViewModelTests: XCTestCase {
         ```
         """
         let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock)
 
         chat.inputText = "what do you think?"
         chat.send()
@@ -254,8 +254,8 @@ final class TargetChatViewModelTests: XCTestCase {
         ```
         """
         let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
-        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
-                                       aiService: mock)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: mock)
 
         chat.inputText = "mark this done"
         chat.send()
@@ -992,6 +992,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
         XCTAssertFalse(prompt.contains("=== TASK TREE ==="))
+    }
 
     // MARK: - Persona skills (assistant surface)
 

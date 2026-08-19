@@ -24,10 +24,16 @@ final class TargetBriefCenterTests: XCTestCase {
     private func makeCenter(manager: DatabaseManager, mock: MockClaudeService) -> TargetBriefCenter {
         let center = TargetBriefCenter()
         center.makeChatVM = { target in
-            TargetChatViewModel(
+            guard let conversationID = try? manager.dbPool.write({ db in
+                try ChatConversationQueries.create(
+                    db, title: "Task", contextType: "target", contextID: String(target.id)
+                ).id
+            }) else { return nil }
+            return TargetChatViewModel(
                 target: target,
                 viewModel: TargetsViewModel(dbManager: manager),
                 dbManager: manager,
+                conversationID: conversationID,
                 aiService: mock
             )
         }
@@ -220,10 +226,16 @@ final class TargetBriefCenterTests: XCTestCase {
         // Swap in a healthy factory for the second run.
         let okMock = MockClaudeService(events: [.sessionID("s2"), .text("ok"), .done])
         center.makeChatVM = { target in
-            TargetChatViewModel(
+            guard let conversationID = try? manager.dbPool.write({ db in
+                try ChatConversationQueries.create(
+                    db, title: "Task", contextType: "target", contextID: String(target.id)
+                ).id
+            }) else { return nil }
+            return TargetChatViewModel(
                 target: target,
                 viewModel: TargetsViewModel(dbManager: manager),
                 dbManager: manager,
+                conversationID: conversationID,
                 aiService: okMock
             )
         }

@@ -428,6 +428,11 @@ final class TargetChatViewModel {
                 failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
             }
         }
+        if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
+            // Execute-mode writes are target activity too — same contract as
+            // the Approve paths, one ping per run.
+            onTargetActivity?()
+        }
         var systemMessages: [String] = []
         if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
             var parts: [String] = []
@@ -491,6 +496,9 @@ final class TargetChatViewModel {
             sendFollowUp("Action FAILED: \(error.localizedDescription). " +
                          "Do NOT assume it was applied; suggest how to proceed.")
         }
+        // A decided action is target activity whether or not the write stuck —
+        // the host screen must re-derive its staleness badge either way.
+        onTargetActivity?()
     }
 
     /// Shared apply core for the Approve button and execute-mode auto-apply:
@@ -511,7 +519,6 @@ final class TargetChatViewModel {
             actionCards[idx].state = .failed(error.localizedDescription)
             return .failure(error)
         }
-        onTargetActivity?()
     }
 
     /// Approve every pending card in one pass. Approving them one by one costs a

@@ -24,6 +24,10 @@ enum TargetActionError: LocalizedError {
 enum TargetActionExecutor {
     @MainActor
     static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String {
+        // Cleared up front so failure detection is absolute, not a diff against
+        // a prior snapshot — an identical repeat failure must still throw
+        // (review fix from the target-brief-chat branch).
+        viewModel.errorMessage = nil
         switch action.type {
         case .updateStatus, .updateNotes, .updateProgress, .addSubItem, .createChildTarget, .linkTarget:
             return try applyCore(action, target: target, viewModel: viewModel)
@@ -34,11 +38,12 @@ enum TargetActionExecutor {
         }
     }
 
-    /// Throws when `viewModel.errorMessage` changed across the mutator call —
-    /// the mutators swallow DB errors into that property (see the type comment).
+    /// Throws when a mutator swallowed a DB error into `viewModel.errorMessage`
+    /// (the established house idiom — see the type comment). `apply` clears the
+    /// slot up front, so any non-nil value here is this action's own failure.
     @MainActor
-    private static func checkWrite(_ viewModel: TargetsViewModel, prior: String?) throws {
-        if let err = viewModel.errorMessage, err != prior {
+    private static func checkWrite(_ viewModel: TargetsViewModel) throws {
+        if let err = viewModel.errorMessage {
             throw TargetActionError.writeFailed(err)
         }
     }
@@ -47,27 +52,26 @@ enum TargetActionExecutor {
     private static func applyCore(
         _ action: ProposedAction, target: Target, viewModel: TargetsViewModel
     ) throws -> String {
-        let priorError = viewModel.errorMessage
         switch action.type {
         case .updateStatus:
             guard let status = action.status else { throw TargetActionError.writeFailed("missing status") }
             viewModel.updateStatus(target, to: status)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "set status to \(status)"
         case .updateNotes:
             guard let note = action.note else { throw TargetActionError.writeFailed("missing note") }
             viewModel.addNote(target, text: note)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "added a note"
         case .updateProgress:
             guard let pct = action.progress else { throw TargetActionError.writeFailed("missing progress") }
             viewModel.updateProgress(target, to: Double(pct) / 100.0)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "set progress to \(pct)%"
         case .addSubItem:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.addSubItem(target, text: text)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "added sub-item \"\(shorten(text))\""
         case .createChildTarget:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
@@ -82,7 +86,7 @@ enum TargetActionExecutor {
             // the same conversation without asking the user to open it.
             return "created child target #\(childID) \"\(shorten(text))\""
         case .linkTarget:
-            return try applyLink(action, target: target, viewModel: viewModel, priorError: priorError)
+            return try applyLink(action, target: target, viewModel: viewModel)
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a core action")
         }
@@ -90,14 +94,14 @@ enum TargetActionExecutor {
 
     @MainActor
     private static func applyLink(
-        _ action: ProposedAction, target: Target, viewModel: TargetsViewModel, priorError: String?
+        _ action: ProposedAction, target: Target, viewModel: TargetsViewModel
     ) throws -> String {
         guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
         guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
         try requireTargetExists(targetID, viewModel: viewModel)
         guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
         viewModel.createLink(from: target.id, to: targetID, relation: relation)
-        try checkWrite(viewModel, prior: priorError)
+        try checkWrite(viewModel)
         return "linked to target #\(targetID) (\(relation))"
     }
 
@@ -123,7 +127,6 @@ enum TargetActionExecutor {
     private static func applySubItem(
         _ action: ProposedAction, target: Target, viewModel: TargetsViewModel
     ) throws -> String {
-        let priorError = viewModel.errorMessage
         let items = target.decodedSubItems
         let idx = try resolveSubItem(action, in: items)
         let current = shorten(items[idx].text)
@@ -134,23 +137,23 @@ enum TargetActionExecutor {
                 return "sub-item \"\(current)\" already \(done ? "done" : "not done")"
             }
             viewModel.toggleSubItem(target, index: idx)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "\(done ? "checked" : "unchecked") sub-item \"\(current)\""
         case .editSubItem:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.editSubItem(target, index: idx, newText: text)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             // The new text alone: the old one is redundant (the address already
             // identified the item) and doubles the follow-up's size.
             return "edited sub-item → \"\(shorten(text))\""
         case .deleteSubItem:
             viewModel.removeSubItem(target, index: idx)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "deleted sub-item \"\(current)\""
         case .setSubItemDue:
             guard let due = action.dueDate else { throw TargetActionError.writeFailed("missing due_date") }
             viewModel.updateSubItemDueDate(target, index: idx, dueDate: due.isEmpty ? nil : due)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return due.isEmpty
                 ? "cleared due date on sub-item \"\(current)\""
                 : "set sub-item \"\(current)\" due \(due)"
@@ -163,22 +166,21 @@ enum TargetActionExecutor {
     private static func applyTargetField(
         _ action: ProposedAction, target: Target, viewModel: TargetsViewModel
     ) throws -> String {
-        let priorError = viewModel.errorMessage
         switch action.type {
         case .updateDueDate:
             guard let due = action.dueDate else { throw TargetActionError.writeFailed("missing due_date") }
             viewModel.updateDueDate(target, to: due)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return due.isEmpty ? "cleared due date" : "set due date to \(due)"
         case .updatePriority:
             guard let priority = action.priority else { throw TargetActionError.writeFailed("missing priority") }
             viewModel.updatePriority(target, to: priority)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "set priority to \(priority)"
         case .updateBallOn:
             guard let ballOn = action.ballOn else { throw TargetActionError.writeFailed("missing ball_on") }
             viewModel.updateBallOn(target, to: ballOn)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return ballOn.isEmpty ? "cleared ball-on" : "set ball on \(ballOn)"
         case .updateTitle:
             // updateText silently no-ops on a whitespace-only title, which would
@@ -188,12 +190,12 @@ enum TargetActionExecutor {
                 throw TargetActionError.writeFailed("missing text")
             }
             viewModel.updateText(target, to: text)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
         case .updateIntent:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.updateIntent(target, to: text)
-            try checkWrite(viewModel, prior: priorError)
+            try checkWrite(viewModel)
             return "updated context"
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")

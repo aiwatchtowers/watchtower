@@ -186,20 +186,6 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertEqual(summary, "set priority to high")
     }
 
-    func testApplyUpdateDue() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
-
-        let action = ProposedAction(type: .updateDue, reason: "friday", text: "2026-09-01")
-        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
-
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
-        XCTAssertEqual(after.dueDate, "2026-09-01")
-        XCTAssertEqual(summary, "set due date to 2026-09-01")
-    }
-
     func testApplyUpdateIntent() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -407,23 +393,11 @@ final class TargetActionExecutorTests: XCTestCase {
         let vm = TargetsViewModel(dbManager: manager)
 
         let action = ProposedAction(type: .updateDueDate, reason: "agreed", dueDate: "2026-08-22")
-        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.dueDate, "2026-08-22")
-    }
-
-    func testApplyUpdatePriority() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
-
-        let action = ProposedAction(type: .updatePriority, reason: "urgent now", priority: "high")
-        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
-
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
-        XCTAssertEqual(after.priority, "high")
+        XCTAssertEqual(summary, "set due date to 2026-08-22")
     }
 
     func testApplyUpdateBallOn() throws {

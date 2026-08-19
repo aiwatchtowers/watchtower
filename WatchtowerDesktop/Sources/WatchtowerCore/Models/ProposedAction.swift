@@ -156,7 +156,9 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     ]
 
     package func validate() throws {
-        try Self.requireNonEmpty(reason, name: "reason")
+        if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ProposedActionError.invalid("reason is required")
+        }
         switch type {
         case .updateStatus:
             try validateStatus()
