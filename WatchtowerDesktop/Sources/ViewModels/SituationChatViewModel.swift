@@ -286,7 +286,8 @@ final class SituationChatViewModel {
         memberSignals: [InboxItem],
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
-        memoryVaultDir: String? = Constants.memoryVaultDir()
+        memoryVaultDir: String? = Constants.memoryVaultDir(),
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         // current_user_id moved from workspace to slack_accounts (migration
         // 00048); pinned to account #1, mirroring Go's db.GetCurrentUserID.
@@ -356,7 +357,13 @@ final class SituationChatViewModel {
         - Be concise; this is a working discussion, not a report.
         """
 
-        return base
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (secretary here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "situation", dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
+        return base + skillsSuffix
     }
 
     // MARK: - Memory surface (Phase 4, behind memory.surfaces.chat)

@@ -29,7 +29,7 @@ enum TargetActionExecutor {
             return try applyCore(action, target: target, viewModel: viewModel)
         case .toggleSubItem, .editSubItem, .deleteSubItem, .setSubItemDue:
             return try applySubItem(action, target: target, viewModel: viewModel)
-        case .updateDueDate, .updatePriority, .updateBallOn:
+        case .updateDueDate, .updatePriority, .updateBallOn, .updateTitle, .updateIntent:
             return try applyTargetField(action, target: target, viewModel: viewModel)
         }
     }
@@ -94,10 +94,29 @@ enum TargetActionExecutor {
     ) throws -> String {
         guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
         guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
+        try requireTargetExists(targetID, viewModel: viewModel)
         guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
         viewModel.createLink(from: target.id, to: targetID, relation: relation)
         try checkWrite(viewModel, prior: priorError)
         return "linked to target #\(targetID) (\(relation))"
+    }
+
+    /// The AI may hallucinate a link target id; verify it exists before
+    /// writing so a bad link fails loudly instead of dangling. A failed READ
+    /// is reported as such — not conflated with "does not exist".
+    @MainActor
+    private static func requireTargetExists(_ id: Int, viewModel: TargetsViewModel) throws {
+        let linked: Target?
+        do {
+            linked = try viewModel.fetchByID(id)
+        } catch {
+            throw TargetActionError.writeFailed(
+                "could not verify target #\(id): \(error.localizedDescription)"
+            )
+        }
+        guard linked != nil else {
+            throw TargetActionError.writeFailed("target #\(id) does not exist")
+        }
     }
 
     @MainActor
@@ -161,6 +180,21 @@ enum TargetActionExecutor {
             viewModel.updateBallOn(target, to: ballOn)
             try checkWrite(viewModel, prior: priorError)
             return ballOn.isEmpty ? "cleared ball-on" : "set ball on \(ballOn)"
+        case .updateTitle:
+            // updateText silently no-ops on a whitespace-only title, which would
+            // read as a false "renamed" success — reject it here instead.
+            guard let text = action.text,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw TargetActionError.writeFailed("missing text")
+            }
+            viewModel.updateText(target, to: text)
+            try checkWrite(viewModel, prior: priorError)
+            return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
+        case .updateIntent:
+            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            viewModel.updateIntent(target, to: text)
+            try checkWrite(viewModel, prior: priorError)
+            return "updated context"
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")
         }

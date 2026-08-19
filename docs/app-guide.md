@@ -41,7 +41,7 @@ When a discussion resolves itself (someone else answered and the question was ac
 
 **Empty state** — when the wall itself is empty, the Feed shows a "Generate your inbox" button (a "Generate" button also lives in the toolbar) that runs the inbox pipeline on demand.
 
-**Create target / Create track** — converts a situation into a Target or a Track. The situation is marked converted (and drops out of the open feed) but keeps a link back to the new target/track id, so its history stays reachable. Creating a target opens a prefilled Create Target sheet (title/context drawn from the situation); creating a track opens the track-management sheet and links the resulting track once created.
+**Create target / Create track** — converts a situation into a Target or a Track. The situation is marked converted (and drops out of the open feed) but keeps a link back to the new target/track id, so its history stays reachable. Creating a target opens the target composer prefilled with the situation's text (see "Creating targets" in the Tasks section — Enter briefs the secretary, ⌘Enter just creates); creating a track opens the track-management sheet and links the resulting track once created.
 
 **Learned tab** — shows the system's current model of you: mutes, boosts, and manual rules with weight, source ("learned from 12 dismissals" / "I added this manually"), and inline remove/edit.
 
@@ -171,7 +171,14 @@ Optional integration that syncs your Gmail Inbox so emails are triaged into the 
 ### Tasks
 Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.
 
-**Creating tasks** — Tasks can be created from six sources:
+**Creating targets** — "New target" opens a **composer**, not a form: one multiline text field with a permanent hint underneath ("Enter — brief the secretary · ⌘Enter — just create"). Write the task in your own words — as much or as little context as you have — and:
+
+- **Enter — brief the secretary.** The target is created instantly and locally (its provisional title is the first line of your text; no AI is involved in creating the row, so an unreachable AI can never block it), and your full text is sent as the first message in the target's Discuss chat. The secretary treats it as a directive: it derives a clean title from your own words, decomposes the work into sub-items or child targets, gathers context from your synced Jira/Slack data and meeting transcripts, fills in the "why it matters" intent, and sets priority or a due date when you asked for one. The detail view opens with the chat working; the run keeps going if you navigate away. If the AI fails mid-run, the target still exists — the error shows in the chat and you can just re-ask there.
+- **⌘Enter — just create.** Same instant mechanical creation, no chat message, no AI call — for trivial targets. (Shift+Enter inserts a newline.)
+
+The **Extract** control remains for pasting a large blob of text and splitting it into several targets at once. The old form fields (title, context, checklist, level) are gone — precision editing lives in the target detail view.
+
+Targets can be created from six sources:
 
 | Source | How |
 |--------|-----|
@@ -182,7 +189,9 @@ Personal action items — what you need to do, follow up on, or react to. Unlike
 | **Manual** | "+" button in the Tasks toolbar or sidebar |
 | **Chat** | AI suggests creating a task during conversation |
 
-Each task created from a source retains a link back to it. Click the source link in the detail view to navigate to the originating track, digest, briefing, or inbox situation.
+Every source opens the same composer, prefilled with the source's text. Each task created from a source retains a link back to it. Click the source link in the detail view to navigate to the originating track, digest, briefing, or inbox situation.
+
+**Directing the secretary from the chat** — the target's Discuss chat understands two kinds of messages. A question or discussion ("what do you think?", "what do we know about X?") gets an answer, and any suggested changes appear as proposal cards you approve or reject — nothing is applied without you. An instruction ("break this into steps", "set the deadline to Friday", "pull the data from Jira") is executed: the secretary applies the changes to this target and its sub-items immediately and reports what was done. It only ever touches this target and its subtree, only does what your instruction implies, and anything interesting it finds beyond that is reported as text for you to act on. It never acts between your messages and never re-runs an instruction on its own.
 
 **Today view vs All view** — The list is split into two sections:
 - **Today** — overdue tasks, tasks due today, and high-priority active tasks. This is your daily focus area (inbox zero approach).
@@ -316,7 +325,9 @@ Five tabs, in order: **Connections**, **Features**, **Meetings**, **System**, **
 
 **System** — Workspace (active workspace, read-only), AI (provider — Claude, Codex, or Ollama; per-tier **Light Model** and **Strong Model** fields — free text with a suggestions menu fed by the provider registry, empty = provider default; an Ollama **Server URL** row when Ollama is selected; workers; Claude/Codex CLI paths with auto-detection indicator; Test Connection — for Ollama it calls the server directly with the form's URL and model), Sync (poll interval, workers, initial history days, sync threads), Daemon (read-only status — running/stopped, binary path, and any daemon start/stop error — the Start/Stop toggle is gone; lifecycle is app-owned, see "Menu Bar & App Lifecycle" below), Data (storage info, regenerate AI data, delete everything), an **Open Logs** button that opens live daemon logs (with filtering) in a dedicated window, Update (check/download/install app updates), and a link to Usage & Pipeline Progress.
 
-**Profile** — Your role, team, manager, reports, peers, starred channels/people.
+**Profile** — Your role, team, manager, reports, peers, starred channels/people, plus the **Skills** card.
+
+The Skills card lists every skill Watchtower knows about, each row showing its name, the persona it belongs to (**Secretary**, **Assistant**, or **Both**), whether it is **Built-in** or **Custom**, and an on/off switch. Turning a skill off hides it from the personas without deleting anything. Clicking a row opens the editor: description (the one line a persona reads when deciding whether the skill fits), persona picker, and the instruction text. **New Skill** creates your own — the name becomes the filename (lowercase letters, digits and hyphens) and is fixed once created. Built-in skills can be edited and disabled but not deleted: Watchtower re-installs them on start, so disabling is their off switch. Unlike the rest of the tab, the Skills card writes to disk as you go — the Save bar at the bottom applies to the profile fields only.
 
 ## Menu Bar & App Lifecycle
 
@@ -429,6 +440,7 @@ watchtower config set memory.sources.operational true # give your Targets and Tr
 - **People-pipeline situations** — Extracted interaction patterns (conflicts, collaborations, bottlenecks) used to build people cards. Not to be confused with dashboard situations below — same word, two different features.
 - **Dashboard situations** — Clusters of signals (Slack/Jira/Calendar) plus target/track updates, composed into a single narrative unit with its own context packet (summary, why it matters, chronology). This is what the Inbox tab's feed shows situation cards for, ranked by priority and recency.
 - **Feed items** — index rows (`feed_items`) pointing at source records; hiding an item sets `hidden_at`, never deletes.
+- **Skills** — Reusable instruction sheets that teach a persona how to handle a kind of request: untangling a tangled thread, drafting a status update, breaking a target down. Watchtower ships three and you can write your own in Settings › Profile › Skills. Each skill belongs to the **secretary** (the Inbox and meeting Discuss chats) or to the **assistant** (the Target, Track, and Idea Discuss chats), or to both; when you ask for something a skill covers, the chat loads it and follows it. Skills change how a chat works, never what it can do — the secretary still has no way to send or post anything, and the assistant still routes every change through the usual proposal/Approve step. They apply to chats only; background pipelines (triage, situations, digests) ignore them.
 - **Feedback loop** — Your thumbs up/down ratings improve AI quality over time through prompt tuning
 - **Starred items** — Star channels and people to prioritize them in analysis and filtering
 - **Muted channels** — Channels excluded from AI processing (digests, tracks, briefings). Use the Statistics tab to mute noisy or bot-heavy channels and reduce token costs

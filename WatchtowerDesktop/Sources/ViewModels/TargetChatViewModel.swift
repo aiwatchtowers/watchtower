@@ -70,6 +70,8 @@ extension TargetActionKind {
         case .updateDueDate: "due date"
         case .updatePriority: "priority"
         case .updateBallOn: "ball-on"
+        case .updateTitle: "rename"
+        case .updateIntent: "context update"
         }
     }
 }
@@ -96,7 +98,9 @@ final class TargetChatViewModel {
     private var target: Target
     private let viewModel: TargetsViewModel
     private var streamTask: Task<Void, Never>?
-    private var observationTask: Task<Void, Never>?
+    // nonisolated(unsafe) so deinit (nonisolated) can cancel it; written only
+    // on the main actor, and deinit has exclusive access to self.
+    nonisolated(unsafe) private var observationTask: Task<Void, Never>?
 
     /// Follow-ups produced by a decision taken while a turn was still streaming.
     /// The write applies immediately; its message waits here until the running
@@ -187,7 +191,12 @@ final class TargetChatViewModel {
                     // the pool observed for the process's lifetime.
                     guard let self else { break }
                     guard !self.isStreaming else { continue }
-                    if records.count != self.messages.count {
+                    // Only adopt a snapshot that has MORE messages than we hold:
+                    // observation events are delivered asynchronously, so right
+                    // after a stream ends a stale snapshot (written mid-run) can
+                    // arrive and must not clobber the fresher in-memory tail
+                    // (e.g. the just-appended run summary).
+                    if records.count > self.messages.count {
                         self.messages = records.map { $0.toChatMessage() }
                     }
                 }
@@ -351,19 +360,51 @@ final class TargetChatViewModel {
             }
         } catch {
             streamFailed = true
+            // A user-cancelled stream is not a failure — persist nothing for it.
+            // A real failure lands in the transcript as a system message so a
+            // reloaded conversation still shows that the run died (spec §7).
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
+                appendSystemMessage("⚠️ The secretary run failed: \(error.localizedDescription)")
             }
         }
 
-        // On a failed/cancelled stream, do NOT parse actions out of partial,
-        // possibly-truncated output — that could surface a half-formed proposal.
-        if streamFailed {
+        // On a failed OR cancelled stream, do NOT parse actions out of partial,
+        // possibly-truncated output — that could surface a half-formed proposal
+        // or auto-apply a half-streamed directive. Cancellation must be checked
+        // explicitly: cancelling the consuming task makes the AsyncThrowingStream
+        // end WITHOUT throwing, so the loop above exits cleanly. cancelStream()
+        // has already persisted the partial assistant text; parsing here would
+        // also persist it a second time.
+        if streamFailed || Task.isCancelled {
             finishStream()
             return
         }
 
-        // Parse watchtower-action blocks out of the final text.
+        let surfaced = surfaceActions(from: fullText)
+
+        // Persist the assistant turn BEFORE the run summary / warnings, so the
+        // reloaded transcript reads in the same order the run happened.
+        if !surfaced.displayText.isEmpty, let convID = conversationID {
+            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: surfaced.displayText)
+        }
+        for text in surfaced.systemMessages {
+            appendSystemMessage(text)
+        }
+
+        finishStream()
+    }
+
+    /// Parses watchtower-action blocks out of the assistant's final text,
+    /// surfaces a card per action, and auto-applies execute-mode actions (an
+    /// explicit owner directive) through the same apply core the Approve
+    /// button uses — no per-action follow-up AI turn.
+    /// Propose-mode actions stay pending and await Approve.
+    /// Returns the visible prose for the assistant turn plus the system-message
+    /// texts (one apply-run summary + a warning per malformed block) that the
+    /// caller appends AFTER persisting the assistant turn, keeping the
+    /// transcript in assistant-then-system order.
+    private func surfaceActions(from fullText: String) -> (displayText: String, systemMessages: [String]) {
         let parsed = TargetActionParser.parse(fullText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
@@ -373,20 +414,35 @@ final class TargetChatViewModel {
         updateLastMessage(displayText)
 
         let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
+        var appliedSummaries: [String] = []
+        var failedSummaries: [String] = []
         for action in parsed.actions {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
+            guard action.isExecute else { continue }
+            switch applyAction(action, cardIndex: actionCards.count - 1) {
+            case .success(let summary):
+                appliedSummaries.append(summary)
+            case .failure(let error):
+                failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
+            }
+        }
+        var systemMessages: [String] = []
+        if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
+            var parts: [String] = []
+            if !appliedSummaries.isEmpty {
+                parts.append("Applied: " + appliedSummaries.joined(separator: "; "))
+            }
+            if !failedSummaries.isEmpty {
+                parts.append("Failed: " + failedSummaries.joined(separator: "; "))
+            }
+            systemMessages.append(parts.joined(separator: ". "))
         }
         for err in parsed.errors {
-            appendSystemMessage("⚠️ Invalid action proposal: \(err)")
+            systemMessages.append("⚠️ Invalid action proposal: \(err)")
         }
-
-        if !displayText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: displayText)
-        }
-
-        finishStream()
+        return (displayText, systemMessages)
     }
 
     // MARK: - Persistence helpers
@@ -428,6 +484,21 @@ final class TargetChatViewModel {
         guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
               actionCards[idx].state == .pending else { return }
         let action = Self.resolved(card.action, overrideKind: kind)
+        switch applyAction(action, cardIndex: idx) {
+        case .success(let summary):
+            sendFollowUp("Action applied: \(summary). Continue with the task.")
+        case .failure(let error):
+            sendFollowUp("Action FAILED: \(error.localizedDescription). " +
+                         "Do NOT assume it was applied; suggest how to proceed.")
+        }
+    }
+
+    /// Shared apply core for the Approve button and execute-mode auto-apply:
+    /// reload the target (so the executor sees fresh state), apply through
+    /// TargetActionExecutor, transition the card at `idx` to .applied/.failed,
+    /// and reload again so the chat context stays current. The caller decides
+    /// what (if anything) is fed back into the conversation.
+    private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
         reloadTarget()
         do {
             let applyTarget = try resolveActionTarget(action)
@@ -435,11 +506,10 @@ final class TargetChatViewModel {
             if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
             actionCards[idx].state = .applied(summary)
             reloadTarget()
-            sendFollowUp("Action applied: \(summary). Continue with the task.")
+            return .success(summary)
         } catch {
             actionCards[idx].state = .failed(error.localizedDescription)
-            sendFollowUp("Action FAILED: \(error.localizedDescription). " +
-                         "Do NOT assume it was applied; suggest how to proceed.")
+            return .failure(error)
         }
         onTargetActivity?()
     }
@@ -519,7 +589,8 @@ final class TargetChatViewModel {
             progress: action.progress, text: action.text, intent: action.intent,
             priority: action.priority, targetId: action.targetId, relation: action.relation,
             index: action.index, match: action.match, done: action.done,
-            dueDate: action.dueDate, ballOn: action.ballOn
+            dueDate: action.dueDate, ballOn: action.ballOn,
+            mode: action.mode
         )
     }
 
@@ -640,15 +711,13 @@ final class TargetChatViewModel {
 
     === TASK ACTIONS ===
     Creating or changing tasks works ONLY through the blocks below. You have NO
-    todo list and NO task tool — never use any built-in to-do/task/sub-agent tool,
-    and never claim a task or sub-task "was created": it exists only after the user
-    approves the card. To create or change anything, output a fenced block exactly like:
+    todo list and NO task tool — never use any built-in to-do/task/sub-agent tool.
+    To create or change anything, output a fenced block exactly like:
     ```watchtower-action
     { "type": "<action>", ...fields, "reason": "<why>" }
     ```
     One JSON object per block, and ONE block PER item — to create 8 sub-tasks emit
     8 create_child_target blocks. Do NOT write to the database directly.
-    After emitting block(s), STOP and wait — do NOT assume anything was applied.
     Supported actions and required fields:
     - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
     - update_notes       { "note": "<text to append>" }
@@ -663,6 +732,8 @@ final class TargetChatViewModel {
     - set_sub_item_due   { "index": <N>, "match": "<current text>", "due_date": "YYYY-MM-DD", "" clears }
     - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
+    - update_title       { "text": "<new task title>" }
+    - update_intent      { "text": "<the task's goal/context, replaces the current intent>" }
     Every block must also include "reason".
     For the *_sub_item actions, "index" is the #N shown next to the item in the
     addressed task's sub-items list (the CURRENT TASK by default) and "match" is
@@ -685,6 +756,29 @@ final class TargetChatViewModel {
     created under — that is how you build deeper levels of the tree.
     For the *_sub_item actions on another task, only address a sub-items list
     you have actually seen (in TASK TREE or a get_target lookup) — never guess.
+
+    MODE — propose vs execute:
+    Every action block may carry an optional "mode" field: "propose" (the default
+    when absent) or "execute".
+    - "mode":"execute" — use it when the owner's message is an explicit
+      instruction (imperative: "break this down", "set the deadline", "gather
+      the Jira data"). Execute-mode actions are applied immediately, and your
+      reply MUST report what was done (e.g. "Done: created 4 sub-tasks and set
+      the due date").
+    - "mode":"propose" (or no mode) — use it when the owner is discussing or
+      thinking aloud. Propose-mode actions become cards awaiting the owner's
+      approval. In propose mode never claim a task or change "was made" — it
+      exists only after the owner approves the card; after emitting the
+      block(s), STOP and wait, and do NOT assume anything was applied.
+    - When the message is ambiguous, propose.
+
+    MANDATE — broad powers, narrow mandate:
+    Within a directive you may modify this task and its subtree (title, intent,
+    priority, due date, status, notes, sub-items, child targets) — but only what
+    the directive implies. Findings beyond the mandate (adjacent tasks, other
+    people's blockers) go into your prose reply, NEVER into actions. Never emit
+    actions the owner did not ask for, and never create targets outside this
+    task's subtree.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every
@@ -842,7 +936,8 @@ final class TargetChatViewModel {
         target: Target,
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
-        memoryVaultDir: String? = Constants.memoryVaultDir()
+        memoryVaultDir: String? = Constants.memoryVaultDir(),
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
@@ -860,6 +955,13 @@ final class TargetChatViewModel {
                 context: relevantMemoryContext(subjects: targetMemorySubjects(target: target, dbPool: dbPool), dbPool: dbPool)
               ) + "\n\n"
             : ""
+
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "target", dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
 
         return """
         You are Watchtower, an AI assistant helping the user make progress on a specific \
@@ -912,6 +1014,6 @@ final class TargetChatViewModel {
         - Be concise and direct
         - Match the user's language
         - Use markdown for readability
-        """
+        """ + skillsSuffix
     }
 }

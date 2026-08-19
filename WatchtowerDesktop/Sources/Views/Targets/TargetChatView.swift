@@ -521,6 +521,8 @@ struct TargetActionCardView: View {
         case .updateDueDate: "calendar"
         case .updatePriority: "exclamationmark.circle"
         case .updateBallOn: "person.circle"
+        case .updateTitle: "pencil.line"
+        case .updateIntent: "text.alignleft"
         }
     }
 }

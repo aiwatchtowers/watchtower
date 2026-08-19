@@ -14,6 +14,8 @@ package enum TargetActionKind: String, Codable {
     case updateDueDate = "update_due_date"
     case updatePriority = "update_priority"
     case updateBallOn = "update_ball_on"
+    case updateTitle = "update_title"
+    case updateIntent = "update_intent"
 }
 
 package enum ProposedActionError: Error, Equatable {
@@ -43,10 +45,18 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     package var dueDate: String?
     package var ballOn: String?
 
+    /// "propose" | "execute". Absent or any other value ⇒ propose (backward
+    /// compatible with old model output and persisted track_events rows).
+    package var mode: String?
+
+    /// True only for an explicit `"mode":"execute"` — everything else is a
+    /// proposal awaiting the Approve gate.
+    package var isExecute: Bool { mode == "execute" }
+
     package enum CodingKeys: String, CodingKey {
         case type, reason, status, note, progress, text, intent, priority
         case targetId = "target_id"
-        case relation
+        case relation, mode
         case index, match, done
         case dueDate = "due_date"
         case ballOn = "ball_on"
@@ -67,7 +77,8 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         match: String? = nil,
         done: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         dueDate: String? = nil,
-        ballOn: String? = nil
+        ballOn: String? = nil,
+        mode: String? = nil
     ) {
         self.type = type
         self.reason = reason
@@ -84,6 +95,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         self.done = done
         self.dueDate = dueDate
         self.ballOn = ballOn
+        self.mode = mode
     }
 
     package init(from decoder: Decoder) throws {
@@ -99,6 +111,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         match = try? c.decodeIfPresent(String.self, forKey: .match)
         dueDate = try? c.decodeIfPresent(String.self, forKey: .dueDate)
         ballOn = try? c.decodeIfPresent(String.self, forKey: .ballOn)
+        mode = try? c.decodeIfPresent(String.self, forKey: .mode)
         // LLMs frequently emit numeric fields as quoted strings — accept both.
         progress = Self.lenientInt(c, .progress)
         targetId = Self.lenientInt(c, .targetId)
@@ -143,9 +156,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     ]
 
     package func validate() throws {
-        if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw ProposedActionError.invalid("reason is required")
-        }
+        try Self.requireNonEmpty(reason, name: "reason")
         switch type {
         case .updateStatus:
             try validateStatus()
@@ -153,7 +164,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             try validateNote()
         case .updateProgress:
             try validateProgress()
-        case .addSubItem:
+        case .addSubItem, .updateTitle, .updateIntent:
             try validateText()
         case .createChildTarget:
             try validateText()
@@ -323,6 +334,10 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         case .updateBallOn:
             let ball = ballOn ?? ""
             return ball.isEmpty ? "Clear ball-on\n\(reason)" : "Set ball on → \(ball)\n\(reason)"
+        case .updateTitle:
+            return "Rename to \"\(text ?? "")\"\n\(reason)"
+        case .updateIntent:
+            return "Update context\n\(reason)"
         }
     }
 }

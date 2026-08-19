@@ -321,7 +321,8 @@ final class TrackChatViewModel {
         track: Track,
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
-        memoryVaultDir: String? = Constants.memoryVaultDir()
+        memoryVaultDir: String? = Constants.memoryVaultDir(),
+        skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
@@ -344,6 +345,13 @@ final class TrackChatViewModel {
                 context: relevantMemoryContext(subjects: trackMemorySubjects(track: track), dbPool: dbPool)
               ) + "\n\n"
             : ""
+
+        // Persona skills: the persona comes from this surface's context_type
+        // via SkillsCatalog's mapping table (assistant here), and the block is
+        // nil when no enabled skill matches, so a workspace with no skills
+        // keeps a byte-identical prompt.
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "track", dir: skillsDir)
+            .map { "\n\n" + $0 } ?? ""
 
         return """
         You are Watchtower, an AI assistant helping the user understand a specific track \
@@ -376,7 +384,7 @@ final class TrackChatViewModel {
         Slack web domain: \(domain).slack.com
 
         \(Self.linkingGuidance(teamID: teamID, domain: domain))
-        """
+        """ + skillsSuffix
     }
 
     /// LINKING RULES / RESPONSE STYLE guidance shared by buildSystemPrompt's

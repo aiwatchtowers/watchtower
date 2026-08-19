@@ -38,6 +38,11 @@ struct ProfileSettings: View {
                 aboutSection
                 teamSection
                 starredSection
+                // Skills sit with the rest of "how the AI works for me". They
+                // write their own files on the spot — the Save bar below
+                // covers the profile fields only, which the card's footer
+                // states explicitly.
+                SkillsSettingsSection()
                 onboardingSection
             }
         }

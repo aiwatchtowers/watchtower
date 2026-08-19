@@ -5,6 +5,7 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private let events: [StreamEvent]
     private let eventSequence: [[StreamEvent]]
     private let error: (any Error)?
+    private var hangs = false
     private let lock = NSLock()
     private var _callIndex = 0
     private var callIndex: Int {
@@ -25,6 +26,17 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         self.events = events
         self.eventSequence = []
         self.error = nil
+    }
+
+    /// Create a mock that yields `events` and then leaves the stream OPEN
+    /// forever — the consumer sees the events but the stream never finishes
+    /// until the consuming task is cancelled. Simulates a run that is still
+    /// mid-stream when something (a supersede, a user cancel) interrupts it.
+    package init(events: [StreamEvent], thenHangs: Bool) {
+        self.events = events
+        self.eventSequence = []
+        self.error = nil
+        self.hangs = thenHangs
     }
 
     /// Create a mock that yields `events` first, then fails the stream —
@@ -71,10 +83,16 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
             eventsToUse = events
         }
         let error = self.error
+        let hangs = self.hangs
         return AsyncThrowingStream { continuation in
             Task {
                 for event in eventsToUse {
                     continuation.yield(event)
+                }
+                if hangs {
+                    // Leave the stream open: the consumer's `for try await`
+                    // only ends when its own task is cancelled.
+                    return
                 }
                 if let error {
                     continuation.finish(throwing: error)

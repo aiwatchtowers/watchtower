@@ -78,6 +78,11 @@ type Server struct {
 	// nil means the flag is off — memory_recall behaves byte-identically to
 	// before this field existed.
 	retrieveShadowDB *db.DB
+
+	// skillsDir is the workspace persona-skills directory
+	// (WorkspaceDir()/skills); empty when no workspace was resolved — the
+	// load_skill tool then reports skills as unavailable.
+	skillsDir string
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -98,6 +103,13 @@ func WithMemoryVault(path string) ServerOption {
 // (nil) or never called, memory_recall never touches that table.
 func WithMemoryRetrieveCompare(shadowDB *db.DB) ServerOption {
 	return func(srv *Server) { srv.retrieveShadowDB = shadowDB }
+}
+
+// WithSkillsDir points load_skill at the workspace persona-skills directory
+// (skills.Dir(WorkspaceDir())). Without it the tool is still registered — the
+// tool set must not vary between sessions — but reports skills as unavailable.
+func WithSkillsDir(path string) ServerOption {
+	return func(srv *Server) { srv.skillsDir = path }
 }
 
 // NewServer builds an MCP server over the given database and registers every
@@ -123,6 +135,7 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerTaskContext(srv.s, database)
 	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
+	registerSkills(srv.s, srv.skillsDir)
 
 	return srv
 }

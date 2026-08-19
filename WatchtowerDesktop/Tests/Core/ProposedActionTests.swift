@@ -245,4 +245,65 @@ final class ProposedActionTests: XCTestCase {
         let a = try resolver(index: 99, match: "write spec")
         XCTAssertEqual(try a.resolveSubItemIndex(in: items), 0)
     }
+
+    func testUpdatePriorityRequiresField() throws {
+        let a = try decode(#"{"type":"update_priority","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
+    // MARK: - New kinds (target-brief-chat)
+
+    func testDecodesUpdateTitle() throws {
+        let a = try decode(#"{"type":"update_title","text":"Ship the registry","reason":"owner asked"}"#)
+        XCTAssertEqual(a.type, .updateTitle)
+        XCTAssertEqual(a.text, "Ship the registry")
+        XCTAssertNoThrow(try a.validate())
+        XCTAssertTrue(a.cardDescription.contains("Ship the registry"))
+    }
+
+    func testValidateRejectsUpdateTitleWithoutText() throws {
+        let a = try decode(#"{"type":"update_title","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+        let blank = try decode(#"{"type":"update_title","text":"   ","reason":"x"}"#)
+        XCTAssertThrowsError(try blank.validate())
+    }
+
+    func testDecodesUpdateIntent() throws {
+        let a = try decode(#"{"type":"update_intent","text":"Context: unblock the API team","reason":"directive"}"#)
+        XCTAssertEqual(a.type, .updateIntent)
+        XCTAssertNoThrow(try a.validate())
+    }
+
+    func testValidateRejectsUpdateIntentWithoutText() throws {
+        let a = try decode(#"{"type":"update_intent","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
+    // MARK: - mode field
+
+    func testModeExecuteDecodesAndIsExecute() throws {
+        let a = try decode(#"{"type":"update_status","status":"done","reason":"r","mode":"execute"}"#)
+        XCTAssertEqual(a.mode, "execute")
+        XCTAssertTrue(a.isExecute)
+    }
+
+    func testModeAbsentMeansPropose() throws {
+        let a = try decode(#"{"type":"update_status","status":"done","reason":"r"}"#)
+        XCTAssertNil(a.mode)
+        XCTAssertFalse(a.isExecute)
+    }
+
+    func testModeJunkValueMeansPropose() throws {
+        let a = try decode(#"{"type":"update_status","status":"done","reason":"r","mode":"banana"}"#)
+        XCTAssertEqual(a.mode, "banana")
+        XCTAssertFalse(a.isExecute)
+        XCTAssertNoThrow(try a.validate())
+    }
+
+    func testModeNonStringDecodesLeniently() throws {
+        // A non-string mode must not fail the whole action — it degrades to propose.
+        let a = try decode(#"{"type":"update_status","status":"done","reason":"r","mode":7}"#)
+        XCTAssertNil(a.mode)
+        XCTAssertFalse(a.isExecute)
+    }
 }

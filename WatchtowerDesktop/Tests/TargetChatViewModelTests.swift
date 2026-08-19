@@ -4,6 +4,10 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
+private struct StubStreamError: LocalizedError {
+    var errorDescription: String? { "CLI exploded" }
+}
+
 @MainActor
 final class TargetChatViewModelTests: XCTestCase {
     private func makeTarget(_ manager: DatabaseManager, intent: String) throws -> Target {
@@ -36,6 +40,29 @@ final class TargetChatViewModelTests: XCTestCase {
                                    aiService: aiService)
     }
 
+    /// Synchronous DB helpers — inside an `async` test the trailing-closure
+    /// `dbPool.read` resolves to GRDB's async overload, which XCTUnwrap's
+    /// autoclosure cannot await; a sync function pins the sync overload.
+    private func fetchTargetRow(_ manager: DatabaseManager, id: Int) throws -> Target? {
+        try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
+
+    private func ensureChatTables(_ manager: DatabaseManager) throws {
+        try manager.dbPool.write { db in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTable(db)
+        }
+    }
+
+    private func fetchPersistedMessages(_ manager: DatabaseManager, targetID: Int) throws -> [ChatMessageRecord] {
+        try manager.dbPool.read { db in
+            guard let conv = try ChatConversationQueries.fetchByContext(
+                db, type: "target", id: String(targetID)
+            ) else { return [] }
+            return try ChatMessageQueries.fetchByConversation(db, conversationID: conv.id)
+        }
+    }
+
     func testSystemPromptIncludesIntentAndContract() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -47,6 +74,207 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("=== TASK ACTIONS ==="))
         XCTAssertTrue(prompt.contains("watchtower-action"))
         XCTAssertTrue(prompt.contains("create_child_target"))
+        // The four newer kinds are documented.
+        XCTAssertTrue(prompt.contains("update_title"))
+        XCTAssertTrue(prompt.contains("update_priority"))
+        XCTAssertTrue(prompt.contains("update_due"))
+        XCTAssertTrue(prompt.contains("update_intent"))
+        // Mode grammar: propose default, execute for directives, ambiguity → propose.
+        XCTAssertTrue(prompt.contains("MODE — propose vs execute"))
+        XCTAssertTrue(prompt.contains("\"mode\":\"execute\""))
+        XCTAssertTrue(prompt.contains("\"mode\":\"propose\""))
+        XCTAssertTrue(prompt.contains("When the message is ambiguous, propose"))
+        // Mandate rule wording.
+        XCTAssertTrue(prompt.contains("broad powers, narrow mandate"))
+        XCTAssertTrue(prompt.contains("task's subtree"))
+        XCTAssertTrue(prompt.contains("NEVER into actions"))
+    }
+
+    /// A reply carrying an execute-mode action block is applied immediately —
+    /// no Approve gate, no per-action follow-up AI turn — and exactly one
+    /// persisted system message summarizes what was done.
+    func testExecuteModeActionAutoAppliesWithOneSummaryMessage() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Done — marked it done.
+        ```watchtower-action
+        { "type": "update_status", "status": "done", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock)
+
+        chat.inputText = "mark this done"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        // The DB row actually changed, without any user approval.
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertEqual(after.status, "done")
+        XCTAssertEqual(chat.actionCards.count, 1)
+        XCTAssertEqual(chat.actionCards.first?.state, .applied("set status to done"))
+        // Exactly ONE system summary message in the transcript.
+        let summaries = chat.messages.filter { $0.role == .system && $0.text.contains("Applied:") }
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertTrue(try XCTUnwrap(summaries.first).text.contains("set status to done"))
+        // NO extra AI invocation (unlike approve's follow-up turn).
+        XCTAssertEqual(mock.prompts.count, 1)
+        // The summary is persisted through the same path as other system messages,
+        // AFTER the assistant turn — the reloaded transcript keeps run order.
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.filter { $0.role == "system" && $0.text.contains("Applied:") }.count, 1)
+        let assistantIdx = try XCTUnwrap(persisted.firstIndex { $0.role == "assistant" })
+        let summaryIdx = try XCTUnwrap(persisted.firstIndex { $0.role == "system" && $0.text.contains("Applied:") })
+        XCTAssertLessThan(assistantIdx, summaryIdx)
+    }
+
+    /// Two execute-mode actions in one reply where one succeeds and one fails
+    /// at apply time (self-link passes validate() but the executor rejects it):
+    /// ONE summary system message reports both outcomes, and the successful
+    /// write actually landed in the DB.
+    func testExecuteMixedSuccessAndFailureReportsBothInOneSummary() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Doing both.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "draft reply", "mode": "execute", "reason": "owner instructed" }
+        ```
+        ```watchtower-action
+        { "type": "link_target", "target_id": \(target.id), "relation": "blocks", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock)
+
+        chat.inputText = "add the step and link it"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        // The successful action landed in the DB.
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertTrue(after.decodedSubItems.contains { $0.text == "draft reply" })
+        // One card applied, one failed.
+        XCTAssertEqual(chat.actionCards.count, 2)
+        XCTAssertEqual(chat.actionCards[0].state, .applied("added sub-item \"draft reply\""))
+        if case .failed = chat.actionCards[1].state {} else {
+            XCTFail("expected .failed, got \(String(describing: chat.actionCards[1].state))")
+        }
+        // A single summary message carries BOTH the applied and the failed part.
+        let summaries = chat.messages.filter {
+            $0.role == .system && ($0.text.contains("Applied:") || $0.text.contains("Failed:"))
+        }
+        XCTAssertEqual(summaries.count, 1)
+        let summary = try XCTUnwrap(summaries.first)
+        XCTAssertTrue(summary.text.contains("Applied:"))
+        XCTAssertTrue(summary.text.contains("added sub-item"))
+        XCTAssertTrue(summary.text.contains("Failed:"))
+        XCTAssertTrue(summary.text.contains("link_target"))
+    }
+
+    /// A stream failure that is NOT a user cancellation must land in the
+    /// persisted transcript (spec §7) — a reloaded conversation shows the run
+    /// died instead of silently ending after the owner's message.
+    func testStreamFailurePersistsFailureIntoTranscript() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(error: StubStreamError())
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock)
+
+        chat.inputText = "do the thing"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertEqual(chat.errorMessage, "CLI exploded")
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("The secretary run failed: CLI exploded")
+        })
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertTrue(persisted.contains {
+            $0.role == "system" && $0.text.contains("The secretary run failed: CLI exploded")
+        })
+        // No assistant turn is persisted for a failed stream.
+        XCTAssertFalse(persisted.contains { $0.role == "assistant" })
+    }
+
+    /// Regression pin: an action block with NO mode field keeps today's
+    /// behavior exactly — a pending card, nothing applied, no summary message.
+    func testNoModeActionStaysPendingAndUnapplied() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        I suggest we mark it done.
+        ```watchtower-action
+        { "type": "update_status", "status": "done", "reason": "looks finished" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock)
+
+        chat.inputText = "what do you think?"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertEqual(chat.actionCards.count, 1)
+        XCTAssertEqual(chat.actionCards.first?.state, .pending)
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertEqual(after.status, "todo") // unchanged
+        XCTAssertFalse(chat.messages.contains { $0.role == .system && $0.text.contains("Applied:") })
+        XCTAssertEqual(mock.prompts.count, 1)
+    }
+
+    /// A malformed execute-mode block (missing its required field) is never
+    /// applied — it surfaces as the existing invalid-action warning instead.
+    func testMalformedExecuteModeBlockNotApplied() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Doing it.
+        ```watchtower-action
+        { "type": "update_status", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       aiService: mock)
+
+        chat.inputText = "mark this done"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertTrue(chat.actionCards.isEmpty)
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertEqual(after.status, "todo") // unchanged
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("Invalid action proposal")
+        })
+        XCTAssertFalse(chat.messages.contains { $0.role == .system && $0.text.contains("Applied:") })
+        // The warning is persisted AFTER the assistant turn (transcript order).
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        let assistantIdx = try XCTUnwrap(persisted.firstIndex { $0.role == "assistant" })
+        let warningIdx = try XCTUnwrap(persisted.firstIndex {
+            $0.role == "system" && $0.text.contains("Invalid action proposal")
+        })
+        XCTAssertLessThan(assistantIdx, warningIdx)
     }
 
     /// The prompt must brief the model on its real toolset: MCP tools over the
@@ -764,5 +992,62 @@ final class TargetChatViewModelTests: XCTestCase {
 
         let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
         XCTAssertFalse(prompt.contains("=== TASK TREE ==="))
+
+    // MARK: - Persona skills (assistant surface)
+
+    /// Writes the given skill files into a fresh temp dir and returns the dir.
+    private func makeSkillsDir(_ files: [String: String]) throws -> String {
+        let dir = NSTemporaryDirectory() + "skills_\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        for (name, content) in files {
+            try Data(content.utf8).write(to: URL(fileURLWithPath: dir + "/" + name))
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: dir) }
+        return dir
+    }
+
+    func testSkillsBlockListsAssistantSkillsOnly() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "ship it")
+        let dir = try makeSkillsDir([
+            "target-breakdown.md": """
+                ---
+                description: Decompose a target into sub-targets.
+                persona: assistant
+                ---
+                Body.
+                """,
+            "thread-untangle.md": """
+                ---
+                description: Reconstruct who asked what in a tangled thread.
+                persona: secretary
+                ---
+                Body.
+                """
+        ])
+
+        let prompt = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: dir)
+
+        XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
+        XCTAssertTrue(prompt.contains("target-breakdown — Decompose a target into sub-targets."))
+        XCTAssertTrue(prompt.contains("load_skill"))
+        XCTAssertFalse(prompt.contains("thread-untangle"), "secretary skills must not reach the assistant")
+    }
+
+    func testSkillsBlockAbsentWhenNoSkillsExist() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "ship it")
+        let empty = try makeSkillsDir([:])
+
+        let withEmptyDir = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: empty)
+        let withNoDir = TargetChatViewModel.buildSystemPrompt(
+            target: target, dbPool: manager.dbPool, skillsDir: nil)
+
+        XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
+        XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
     }
 }
