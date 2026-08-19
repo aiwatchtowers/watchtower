@@ -210,6 +210,14 @@ final class TargetChatViewModel {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
 
+        // This VM is cached per target in an app-wide container and holds a
+        // `Target` VALUE, while the detail view around it is itself a mutation
+        // site (checklist drag-reorder, inline edits) — so the snapshot the
+        // prompt renders has to be re-read per turn. Sending a stale checklist
+        // is not cosmetic: the model addresses sub-items by index + text, and
+        // both are re-checked against the live list at apply time.
+        reloadTarget()
+
         streamTask?.cancel()
         inputText = ""
 
@@ -420,7 +428,7 @@ final class TargetChatViewModel {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
-            guard action.isExecute else { continue }
+            guard action.autoApplies(inChatFor: target.id) else { continue }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
                 appliedSummaries.append(summary)
@@ -778,14 +786,18 @@ final class TargetChatViewModel {
       exists only after the owner approves the card; after emitting the
       block(s), STOP and wait, and do NOT assume anything was applied.
     - When the message is ambiguous, propose.
+    - An action carrying a "target_id" other than the CURRENT task is ALWAYS a
+      proposal: the owner approves every write that leaves this chat's own task,
+      so "mode":"execute" is ignored there and the card waits for approval.
 
     MANDATE — broad powers, narrow mandate:
-    Within a directive you may modify this task and its subtree (title, intent,
+    Within a directive you may modify this task's vertical line — the task
+    itself, its sub-tasks at any depth and its parent chain (title, intent,
     priority, due date, status, notes, sub-items, child targets) — but only what
-    the directive implies. Findings beyond the mandate (adjacent tasks, other
+    the directive implies. Findings beyond the mandate (sibling branches, other
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
-    task's subtree.
+    task's vertical line.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every

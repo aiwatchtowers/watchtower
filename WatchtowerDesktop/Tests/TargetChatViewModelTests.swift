@@ -86,7 +86,10 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("When the message is ambiguous, propose"))
         // Mandate rule wording.
         XCTAssertTrue(prompt.contains("broad powers, narrow mandate"))
-        XCTAssertTrue(prompt.contains("task's subtree"))
+        // The mandate names the same boundary TargetTreeScope enforces at apply
+        // — the vertical line, not the subtree it used to be (TGT-BRIEF-01).
+        XCTAssertTrue(prompt.contains("task's vertical line"))
+        XCTAssertFalse(prompt.contains("task's subtree"))
         XCTAssertTrue(prompt.contains("NEVER into actions"))
     }
 
@@ -131,6 +134,72 @@ final class TargetChatViewModelTests: XCTestCase {
         let assistantIdx = try XCTUnwrap(persisted.firstIndex { $0.role == "assistant" })
         let summaryIdx = try XCTUnwrap(persisted.firstIndex { $0.role == "system" && $0.text.contains("Applied:") })
         XCTAssertLessThan(assistantIdx, summaryIdx)
+    }
+
+    /// The VM is cached per target in an app-wide container and holds a `Target`
+    /// VALUE, so a checklist edit made on the detail view around it (drag-
+    /// reorder, tick, inline edit) would otherwise never reach the prompt: the
+    /// model would address sub-items by an index and text that no longer exist.
+    func testSendRendersTheCurrentChecklistNotTheSnapshotFromInit() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService()
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        // The world moves under the held VM.
+        try await manager.dbPool.write { db in
+            try TargetQueries.updateSubItems(db, id: target.id,
+                                             subItems: [TargetSubItem(text: "Added after the VM was built", done: false)])
+        }
+
+        chat.inputText = "what's left?"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        let systemPrompt = try XCTUnwrap(mock.systemPrompts.compactMap { $0 }.first)
+        XCTAssertTrue(systemPrompt.contains("Added after the VM was built"),
+                      "the prompt rendered a stale checklist snapshot")
+    }
+
+    /// Execute mode is scoped to the chat's OWN target: an execute-mode action
+    /// addressing another task on the vertical line — a legal address, the same
+    /// one Approve would apply — still waits for the owner (TGT-BRIEF-03). The
+    /// destructive kinds are the reason: nothing leaves this chat's target
+    /// without the owner seeing the card first.
+    func testExecuteModeDoesNotAutoApplyToAnotherTarget() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        let root = try makeTarget(manager, intent: "x")
+        let current = try makeChild(manager, parent: root)
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Closing the parent.
+        ```watchtower-action
+        { "type": "update_status", "target_id": \(root.id), "status": "done", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = try makeChat(target: current, vm: vm, manager: manager, aiService: mock)
+
+        chat.inputText = "close the parent too"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        // The card is there and pending — nothing was written.
+        XCTAssertEqual(chat.actionCards.count, 1)
+        XCTAssertEqual(chat.actionCards.first?.state, .pending)
+        let rootAfter = try XCTUnwrap(fetchTargetRow(manager, id: root.id))
+        XCTAssertNotEqual(rootAfter.status, "done")
+        XCTAssertFalse(chat.messages.contains { $0.role == .system && $0.text.contains("Applied:") })
+
+        // Approving it still works — the narrowing is about the gate, not the reach.
+        chat.approve(try XCTUnwrap(chat.actionCards.first))
+        let rootApproved = try XCTUnwrap(fetchTargetRow(manager, id: root.id))
+        XCTAssertEqual(rootApproved.status, "done")
     }
 
     /// Two execute-mode actions in one reply where one succeeds and one fails
@@ -506,6 +575,62 @@ final class TargetChatViewModelTests: XCTestCase {
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo", "a rejected card must not be applied by Approve all")
         XCTAssertTrue(after.decodedSubItems.contains { $0.text == "Ping Bob" })
+    }
+
+    /// The inline "Approve all" sits above one turn's batch, so it must approve
+    /// that turn's cards only — an earlier turn's still-undecided proposals stay
+    /// pending, exactly as if the owner had never scrolled back to them.
+    func testApproveAllScopedToOneMessageLeavesOtherBatchesPending() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService())
+
+        let firstTurn = UUID()
+        let secondTurn = UUID()
+        chat.actionCards = [
+            TargetActionCard(messageID: firstTurn,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "From the first turn"),
+                             state: .pending),
+            TargetActionCard(messageID: secondTurn,
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "From the second turn"),
+                             state: .pending)
+        ]
+
+        chat.approveAll(messageID: secondTurn)
+
+        XCTAssertEqual(chat.actionCards[0].state, .pending, "the other turn's batch must stay untouched")
+        if case .applied = chat.actionCards[1].state {} else {
+            XCTFail("the addressed turn's card should have been applied, got \(chat.actionCards[1].state)")
+        }
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertTrue(after.decodedSubItems.contains { $0.text == "From the second turn" })
+        XCTAssertFalse(after.decodedSubItems.contains { $0.text == "From the first turn" })
+    }
+
+    /// Approve all with nothing left to decide is a no-op, not an empty
+    /// follow-up telling the assistant a batch was applied.
+    func testApproveAllWithNoPendingCardsSaysNothing() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService()
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        chat.actionCards = [
+            TargetActionCard(messageID: UUID(),
+                             action: ProposedAction(type: .updateStatus, reason: "r", status: "done"),
+                             state: .rejected)
+        ]
+
+        chat.approveAll()
+
+        XCTAssertEqual(chat.actionCards[0].state, .rejected)
+        XCTAssertNil(chat.errorMessage)
+        XCTAssertEqual(mock.prompts.count, 0, "no follow-up turn for an empty batch")
     }
 
     func testApproveAllReportsFailuresWithoutClaimingSuccess() throws {

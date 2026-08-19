@@ -53,6 +53,19 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     /// proposal awaiting the Approve gate.
     package var isExecute: Bool { mode == "execute" }
 
+    /// Whether this action may auto-apply in the chat opened on `currentTargetID`.
+    /// Execute mode skips the Approve gate only for writes to the chat's OWN
+    /// target: an action addressing another task in the tree stays a pending
+    /// card however the model marked it, so the owner approves every write that
+    /// leaves the target they are looking at (`docs/inventory/targets.md`
+    /// TGT-BRIEF-03). `link_target` is exempt — its `target_id` names the link
+    /// partner, not a write target; the row it writes belongs to this target.
+    package func autoApplies(inChatFor currentTargetID: Int) -> Bool {
+        guard isExecute else { return false }
+        guard type != .linkTarget, let targetId else { return true }
+        return targetId == currentTargetID
+    }
+
     package enum CodingKeys: String, CodingKey {
         case type, reason, status, note, progress, text, intent, priority
         case targetId = "target_id"
@@ -274,9 +287,19 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
 
     /// Accepts the two stored due-date shapes ("YYYY-MM-DD" and
     /// "YYYY-MM-DDTHH:MM") plus "" meaning "clear".
+    ///
+    /// Shape alone is not enough: it admits impossible calendar dates like
+    /// "2026-02-30", which `Target.parseDueDate` — the non-lenient reader every
+    /// due-date surface goes through — then returns nil for, so the value would
+    /// store fine and afterwards render as no due date at all and never go
+    /// overdue. Validate through that same parse so what passes here is exactly
+    /// what the UI can read back.
     package static func isValidDueDate(_ s: String) -> Bool {
         if s.isEmpty { return true }
-        return s.range(of: #"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$"#, options: .regularExpression) != nil
+        guard s.range(of: #"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$"#, options: .regularExpression) != nil else {
+            return false
+        }
+        return Target.parseDueDate(s) != nil
     }
 
     /// Resolves this action's sub-item address against the live sub-items list.

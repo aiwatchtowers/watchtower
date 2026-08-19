@@ -163,6 +163,41 @@ final class ProposedActionTests: XCTestCase {
         XCTAssertThrowsError(try a.validate())
     }
 
+    /// Right shape, impossible calendar date. Shape-only validation would store
+    /// it and then `Target.parseDueDate` would read back nil — a due date the UI
+    /// never shows and that never goes overdue.
+    func testUpdateDueDateRejectsImpossibleCalendarDate() throws {
+        XCTAssertThrowsError(try decode(#"{"type":"update_due_date","due_date":"2026-02-30","reason":"r"}"#).validate())
+        XCTAssertThrowsError(try decode(#"{"type":"update_due_date","due_date":"2026-13-45","reason":"r"}"#).validate())
+        XCTAssertThrowsError(try decode(#"{"type":"update_due_date","due_date":"2026-09-01T25:00","reason":"r"}"#).validate())
+        XCTAssertThrowsError(try decode(#"{"type":"set_sub_item_due","index":0,"match":"x","due_date":"2026-02-30","reason":"r"}"#).validate())
+        // A real leap day still passes — the check is a calendar parse, not a
+        // blanket "29th/30th of February" string rule.
+        XCTAssertNoThrow(try decode(#"{"type":"update_due_date","due_date":"2028-02-29","reason":"r"}"#).validate())
+    }
+
+    // MARK: - Execute mode is scoped to the chat's own target (TGT-BRIEF-03)
+
+    func testExecuteAutoAppliesOnlyToTheChatsOwnTarget() throws {
+        let own = try decode(#"{"type":"update_status","status":"done","mode":"execute","reason":"r"}"#)
+        XCTAssertTrue(own.autoApplies(inChatFor: 7))
+
+        let addressedSelf = try decode(#"{"type":"update_status","target_id":7,"status":"done","mode":"execute","reason":"r"}"#)
+        XCTAssertTrue(addressedSelf.autoApplies(inChatFor: 7))
+
+        let addressedOther = try decode(#"{"type":"update_status","target_id":9,"status":"done","mode":"execute","reason":"r"}"#)
+        XCTAssertFalse(addressedOther.autoApplies(inChatFor: 7))
+
+        // link_target's target_id is the link partner, not a write target: the
+        // row it writes belongs to this chat's own target, so it stays eligible.
+        let link = try decode(#"{"type":"link_target","target_id":9,"relation":"blocks","mode":"execute","reason":"r"}"#)
+        XCTAssertTrue(link.autoApplies(inChatFor: 7))
+
+        // Propose is still propose, addressed or not.
+        let proposed = try decode(#"{"type":"update_status","target_id":9,"status":"done","reason":"r"}"#)
+        XCTAssertFalse(proposed.autoApplies(inChatFor: 7))
+    }
+
     func testDecodesUpdatePriority() throws {
         let a = try decode(#"{"type":"update_priority","priority":"high","reason":"r"}"#)
         XCTAssertNoThrow(try a.validate())

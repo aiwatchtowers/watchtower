@@ -21,6 +21,10 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private var _sessionIDs: [String?] = []
     /// Every sessionID passed to `stream`, in call order.
     package var sessionIDs: [String?] { lock.withLock { _sessionIDs } }
+    private var _systemPrompts: [String?] = []
+    /// Every systemPrompt passed to `stream`, in call order — nil on the turns
+    /// that resume a session instead of opening one.
+    package var systemPrompts: [String?] { lock.withLock { _systemPrompts } }
 
     package init(events: [StreamEvent] = [.text("Hello from Claude"), .done]) {
         self.events = events
@@ -73,6 +77,7 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
             _prompts.append(prompt)
             _providers.append(provider)
             _sessionIDs.append(sessionID)
+            _systemPrompts.append(systemPrompt)
         }
         let eventsToUse: [StreamEvent]
         if !eventSequence.isEmpty {
