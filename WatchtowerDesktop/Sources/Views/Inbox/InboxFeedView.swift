@@ -2,8 +2,8 @@ import SwiftUI
 
 // MARK: - InboxFeedView
 
-/// Tab container for the secretary Dashboard: the ranked situation feed (`.feed`,
-/// rendered by `DashboardView`), the learned-rules manager, and the secretary
+/// Tab container for the assistant Dashboard: the ranked situation feed (`.feed`,
+/// rendered by `DashboardView`), the learned-rules manager, and the assistant
 /// profile editor. The `.feed` tab used to render a two-tier Inbox feed directly
 /// (sender-grouped action/awareness items via `InboxViewModel`/`InboxCardView`);
 /// it now renders the situation-composed Dashboard feed instead — see the D9
@@ -79,7 +79,7 @@ struct InboxFeedView: View {
         HStack(spacing: 8) {
             Image(systemName: "power")
                 .foregroundStyle(.secondary)
-            Text("The secretary is off — no new situations will appear.")
+            Text("The assistant inbox is off — no new situations will appear.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 

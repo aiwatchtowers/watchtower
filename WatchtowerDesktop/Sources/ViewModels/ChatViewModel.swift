@@ -354,7 +354,7 @@ final class ChatViewModel {
         - list_jira_issues / get_jira_issue — synced Jira issues.
         - list_transcripts / get_transcript — recorded meeting transcripts.
         - list_upcoming_events — calendar events in the next N hours.
-        - memory_recall / memory_open / memory_map — the secretary's long-term memory, once it has been built.
+        - memory_recall / memory_open / memory_map — the assistant's long-term memory, once it has been built.
         Never ask for a database path; the data is already local and the tools are already connected.
 
         There is no SQL tool and no shell — you cannot run database or shell commands of any kind. \

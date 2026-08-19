@@ -39,7 +39,7 @@ struct SecretaryProfileView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Who you are")
                 .font(.headline)
-            Text("Tell the secretary who you are and what matters. It reads this before every scan.")
+            Text("Tell the assistant who you are and what matters. It reads this before every scan.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             editor(text: $vm.briefText, minHeight: 160)

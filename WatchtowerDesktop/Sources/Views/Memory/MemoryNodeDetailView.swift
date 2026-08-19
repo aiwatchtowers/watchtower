@@ -113,7 +113,7 @@ struct MemoryNodeDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("The secretary flagged this for your attention — expect a dashboard item.")
+                Text("The assistant flagged this for your attention — expect a dashboard item.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

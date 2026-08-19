@@ -121,25 +121,25 @@ package func hotMap(vaultDir: String?) -> String? {
 /// nothing relevant.
 package func renderMemorySection(hotMap: String?, context: MemoryContextResult) -> String {
     var lines: [String] = [
-        "=== MEMORY (notes the secretary has built from Slack/Jira — model-mediated, not the owner's own words) ==="
+        "=== MEMORY (notes the assistant has built from Slack/Jira — model-mediated, not the owner's own words) ==="
     ]
 
     if let hotMap {
         lines.append("Hot map:")
         lines.append(hotMap)
     } else {
-        lines.append("Hot map: (none yet — the secretary hasn't written a memory map for this workspace).")
+        lines.append("Hot map: (none yet — the assistant hasn't written a memory map for this workspace).")
     }
 
     if context.entityTitles.isEmpty && context.beliefs.isEmpty && context.recentEpisodeTitles.isEmpty {
         lines.append("Relevant notes: (none match the people or channels here yet).")
     } else {
         if !context.entityTitles.isEmpty {
-            lines.append("People & topics the secretary already tracks:")
+            lines.append("People & topics the assistant already tracks:")
             for title in context.entityTitles { lines.append("- \(title)") }
         }
         if !context.beliefs.isEmpty {
-            lines.append("What the secretary believes (model-mediated, may be wrong):")
+            lines.append("What the assistant believes (model-mediated, may be wrong):")
             for belief in context.beliefs {
                 var line = "- \(belief.title) (confidence \(String(format: "%.2f", belief.confidence)), \(belief.status))"
                 if belief.status == "shaken" { line += " (uncertain — evidence conflicts)" }

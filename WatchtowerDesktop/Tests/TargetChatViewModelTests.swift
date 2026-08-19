@@ -275,11 +275,11 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(chat.errorMessage, "CLI exploded")
         XCTAssertTrue(chat.messages.contains {
-            $0.role == .system && $0.text.contains("The secretary run failed: CLI exploded")
+            $0.role == .system && $0.text.contains("The assistant run failed: CLI exploded")
         })
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
         XCTAssertTrue(persisted.contains {
-            $0.role == "system" && $0.text.contains("The secretary run failed: CLI exploded")
+            $0.role == "system" && $0.text.contains("The assistant run failed: CLI exploded")
         })
         // No assistant turn is persisted for a failed stream.
         XCTAssertFalse(persisted.contains { $0.role == "assistant" })

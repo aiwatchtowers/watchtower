@@ -4,12 +4,12 @@ import WatchtowerCore
 
 // MARK: - IdeaChatViewModel
 
-/// Drives the "Discuss with secretary" chat inside the idea detail pane. The
+/// Drives the "Discuss with assistant" chat inside the idea detail pane. The
 /// deliberate house-pattern copy of `SituationChatViewModel` for ideas
 /// (`chat_conversations.context_type = "idea"`), streaming via
 /// `AIServiceProtocol`. Kept lean relative to the situation VM: no member
 /// signals, no counterparty/register-sample/memory blocks — the idea's own
-/// context (kind/status/title/essence/mentions) plus the owner's secretary
+/// context (kind/status/title/essence/mentions) plus the owner's assistant
 /// brief and style are enough for a discussion about one registry entry.
 @MainActor
 @Observable

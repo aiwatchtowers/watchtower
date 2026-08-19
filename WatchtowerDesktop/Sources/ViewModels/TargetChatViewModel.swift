@@ -373,7 +373,7 @@ final class TargetChatViewModel {
             // reloaded conversation still shows that the run died (spec §7).
             if !Task.isCancelled {
                 errorMessage = error.localizedDescription
-                appendSystemMessage("⚠️ The secretary run failed: \(error.localizedDescription)")
+                appendSystemMessage("⚠️ The assistant run failed: \(error.localizedDescription)")
             }
         }
 

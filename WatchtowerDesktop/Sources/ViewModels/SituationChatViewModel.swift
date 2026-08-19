@@ -4,11 +4,11 @@ import WatchtowerCore
 
 // MARK: - SituationChatViewModel
 
-/// Drives the "Discuss with secretary" chat inside the situation review pane.
+/// Drives the "Discuss with assistant" chat inside the situation review pane.
 /// A de-actioned mirror of `TargetChatViewModel`: persisted conversation per
 /// situation (`chat_conversations.context_type = "situation"`), streaming via
 /// `AIServiceProtocol`, no watchtower-action blocks. Its specialty is the
-/// system prompt: situation context + member signals + the owner's secretary
+/// system prompt: situation context + member signals + the owner's assistant
 /// brief, communication style profile, counterparty People-card briefs, and a
 /// register sample of the owner's own messages in the situation's channels —
 /// so a requested draft comes out in the owner's voice.
@@ -314,13 +314,13 @@ final class SituationChatViewModel {
               ) + "\n\n"
             : ""
         let memoryToolsBullet = memoryChatEnabled
-            ? "- memory_recall / memory_open / memory_map — the secretary's built-up memory of "
-                + "people, topics, and what it currently believes; check what the secretary already knows before "
+            ? "- memory_recall / memory_open / memory_map — the assistant's built-up memory of "
+                + "people, topics, and what it currently believes; check what the assistant already knows before "
                 + "asking the user.\n"
             : ""
 
         let base = """
-        You are the user's AI secretary, discussing ONE situation from their work dashboard. \
+        You are the user's AI assistant, discussing ONE situation from their work dashboard. \
         Help them think it through; when they tell you WHAT to reply, turn their intent into the reply FOR them.
 
         DRAFT CONTRACT (strict): when the user states what to reply (their intent — e.g. "tell them we'll \

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Bridges the Desktop app to `watchtower inbox generate` — the on-demand secretary
+/// Bridges the Desktop app to `watchtower inbox generate` — the on-demand assistant
 /// pipeline run (detectors → triage → cards → situation composer) triggered from the
 /// Dashboard's "Generate" button/empty-state action, instead of waiting for the
 /// daemon's next cycle. Mirrors `TrackComposeService`.
