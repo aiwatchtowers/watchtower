@@ -24,6 +24,7 @@ struct TargetDetailView: View {
     @State private var subItemDueDateIndex: Int?
     @State private var subItemDueDate: Date = Date()
     @State private var promotingSubItem: PromotingSubItemContext?
+    @State private var subItemDropIndex: Int?
     @State private var newNoteText: String = ""
     @State private var jiraIssue: JiraIssue?
     @State private var jiraConnected = false
@@ -808,6 +809,27 @@ struct TargetDetailView: View {
             Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
+        .padding(.vertical, 2)
+        .background(
+            subItemDropIndex == index ? Color.accentColor.opacity(0.15) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 4)
+        )
+        .draggable(TargetSubItemDrag.payload(targetID: target.id, index: index)) {
+            Text(item.text)
+                .font(.callout)
+                .lineLimit(1)
+                .padding(6)
+        }
+        .dropDestination(for: String.self) { payloads, _ in
+            dropSubItem(payloads, on: index)
+        } isTargeted: { targeted in
+            if targeted {
+                subItemDropIndex = index
+            } else if subItemDropIndex == index {
+                subItemDropIndex = nil
+            }
+        }
+        .help("Drag to reorder")
         .contextMenu {
             Button("Convert to sub-target") {
                 promotingSubItem = PromotingSubItemContext(index: index, item: item)
@@ -816,6 +838,24 @@ struct TargetDetailView: View {
                 viewModel.removeSubItem(target, index: index)
             }
         }
+    }
+
+    /// Reorders the checklist when a row is dropped on row `index`. Returns
+    /// false — leaving the list untouched — for anything that is not one of
+    /// THIS target's rows, so text dragged in from another app is ignored.
+    private func dropSubItem(_ payloads: [String], on index: Int) -> Bool {
+        subItemDropIndex = nil
+        let items = target.decodedSubItems
+        guard let payload = payloads.first,
+              let source = TargetSubItemDrag.sourceIndex(
+                  from: payload, targetID: target.id, itemCount: items.count
+              ),
+              let offset = TargetSubItemDrag.moveOffset(from: source, to: index)
+        else { return false }
+        // The inline editor addresses a row by index, which the move invalidates.
+        editingSubItemIndex = nil
+        viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset)
+        return true
     }
 
     // MARK: - Assistant inline input

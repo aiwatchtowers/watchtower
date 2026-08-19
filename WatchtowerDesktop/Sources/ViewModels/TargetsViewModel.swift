@@ -235,6 +235,11 @@ final class TargetsViewModel {
 
     func moveSubItem(_ target: Target, from source: IndexSet, to destination: Int) {
         var items = target.decodedSubItems
+        // `move(fromOffsets:toOffset:)` traps out of range, and a drag can outlive
+        // the list it started in (a CLI write, another window, a Remove).
+        guard let lowest = source.min(), let highest = source.max(),
+              lowest >= 0, highest < items.count,
+              destination >= 0, destination <= items.count else { return }
         items.move(fromOffsets: source, toOffset: destination)
         saveSubItems(target, items: items)
     }
