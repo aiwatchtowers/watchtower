@@ -277,6 +277,36 @@ package enum TargetQueries {
         )
     }
 
+    package static func updateText(_ db: Database, id: Int, text: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET text = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [text, id]
+        )
+    }
+
+    package static func updateIntent(_ db: Database, id: Int, intent: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET intent = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [intent, id]
+        )
+    }
+
+    package static func updateDueDate(_ db: Database, id: Int, dueDate: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET due_date = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [dueDate, id]
+        )
+    }
+
     /// Updates a target's horizon level. Switching to any standard level
     /// (quarter/month/week/day) clears `custom_label`, which is only meaningful
     /// for the "custom" level. When `periodStart`/`periodEnd` are supplied (the

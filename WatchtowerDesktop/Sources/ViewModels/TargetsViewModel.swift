@@ -38,8 +38,14 @@ final class TargetsViewModel {
         load()
         let dbPool = dbManager.dbPool
         observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
+            // Track (row count, latest update), not just the count: same-row
+            // updates — e.g. a brief run's ad-hoc VM applying
+            // update_title/priority/due — must refresh this shared VM too,
+            // not only inserts/deletes.
+            let observation = ValueObservation.tracking { db -> String in
+                let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? 0
+                let latest = try String.fetchOne(db, sql: "SELECT MAX(updated_at) FROM targets") ?? ""
+                return "\(count)|\(latest)"
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
@@ -128,10 +134,7 @@ final class TargetsViewModel {
         guard !trimmed.isEmpty else { return }
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET text = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [trimmed, target.id]
-                )
+                try TargetQueries.updateText(db, id: target.id, text: trimmed)
             }
             load()
         } catch {
@@ -142,9 +145,9 @@ final class TargetsViewModel {
     func updateIntent(_ target: Target, to intent: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET intent = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [intent.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateIntent(
+                    db, id: target.id,
+                    intent: intent.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
@@ -156,10 +159,7 @@ final class TargetsViewModel {
     func updateDueDate(_ target: Target, to dueDate: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET due_date = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [dueDate, target.id]
-                )
+                try TargetQueries.updateDueDate(db, id: target.id, dueDate: dueDate)
             }
             load()
         } catch {
@@ -420,6 +420,14 @@ final class TargetsViewModel {
             }
         } catch {
             return nil
+        }
+    }
+
+    /// Throwing variant of `itemByID` for callers that must tell "no such
+    /// row" apart from a failed read (the executor's link validation).
+    func fetchByID(_ id: Int) throws -> Target? {
+        try dbManager.dbPool.read { db in
+            try TargetQueries.fetchByID(db, id: id)
         }
     }
 

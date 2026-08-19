@@ -19,41 +19,44 @@ enum TargetActionError: LocalizedError {
 ///
 /// The shared TargetsViewModel mutators swallow DB errors into `errorMessage`
 /// (the established house idiom for the list UI), so we detect failure by
-/// snapshotting `errorMessage` around the call rather than changing those
-/// signatures and rippling into every existing caller.
+/// clearing `errorMessage` before the call and checking it after, rather than
+/// changing those signatures and rippling into every existing caller. Clearing
+/// first (instead of snapshotting the prior value) means a write that fails
+/// with the same message as a previous action's failure is still detected —
+/// a stale identical error can never mask a new one as a false success.
 enum TargetActionExecutor {
     @MainActor
     static func apply(_ action: ProposedAction, target: Target, viewModel: TargetsViewModel) throws -> String {
-        let priorError = viewModel.errorMessage
+        viewModel.errorMessage = nil
         func checkWrite() throws {
-            if let err = viewModel.errorMessage, err != priorError {
+            if let err = viewModel.errorMessage {
                 throw TargetActionError.writeFailed(err)
             }
         }
 
         switch action.type {
         case .updateStatus:
-            guard let status = action.status else { throw TargetActionError.writeFailed("missing status") }
+            let status = try require(action.status, "status")
             viewModel.updateStatus(target, to: status)
             try checkWrite()
             return "set status to \(status)"
         case .updateNotes:
-            guard let note = action.note else { throw TargetActionError.writeFailed("missing note") }
+            let note = try require(action.note, "note")
             viewModel.addNote(target, text: note)
             try checkWrite()
             return "added a note"
         case .updateProgress:
-            guard let pct = action.progress else { throw TargetActionError.writeFailed("missing progress") }
+            let pct = try require(action.progress, "progress")
             viewModel.updateProgress(target, to: Double(pct) / 100.0)
             try checkWrite()
             return "set progress to \(pct)%"
         case .addSubItem:
-            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let text = try require(action.text, "text")
             viewModel.addSubItem(target, text: text)
             try checkWrite()
             return "added sub-item \"\(text)\""
         case .createChildTarget:
-            guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
+            let text = try require(action.text, "text")
             guard viewModel.createChild(
                 target, text: text,
                 intent: action.intent ?? "",
@@ -63,12 +66,63 @@ enum TargetActionExecutor {
             }
             return "created child target \"\(text)\""
         case .linkTarget:
-            guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
+            let targetID = try require(action.targetId, "target_id")
             guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
-            guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
+            try requireTargetExists(targetID, viewModel: viewModel)
+            let relation = try require(action.relation, "relation")
             viewModel.createLink(from: target.id, to: targetID, relation: relation)
             try checkWrite()
             return "linked to target #\(targetID) (\(relation))"
+        case .updateTitle:
+            // updateText silently no-ops on a whitespace-only title, which would
+            // read as a false "renamed" success — reject it here instead.
+            let text = try require(action.text, "text")
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw TargetActionError.writeFailed("missing text")
+            }
+            viewModel.updateText(target, to: text)
+            try checkWrite()
+            return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
+        case .updatePriority:
+            let priority = try require(action.priority, "priority")
+            viewModel.updatePriority(target, to: priority)
+            try checkWrite()
+            return "set priority to \(priority)"
+        case .updateDue:
+            let due = try require(action.text, "text")
+            viewModel.updateDueDate(target, to: due)
+            try checkWrite()
+            return "set due date to \(due)"
+        case .updateIntent:
+            let text = try require(action.text, "text")
+            viewModel.updateIntent(target, to: text)
+            try checkWrite()
+            return "updated context"
+        }
+    }
+
+    /// Unwraps an action field that validate() should have guaranteed, throwing
+    /// the same "missing <field>" error the guards used to produce.
+    private static func require<T>(_ value: T?, _ name: String) throws -> T {
+        guard let value else { throw TargetActionError.writeFailed("missing \(name)") }
+        return value
+    }
+
+    /// The AI may hallucinate a link target id; verify it exists before
+    /// writing so a bad link fails loudly instead of dangling. A failed READ
+    /// is reported as such — not conflated with "does not exist".
+    @MainActor
+    private static func requireTargetExists(_ id: Int, viewModel: TargetsViewModel) throws {
+        let linked: Target?
+        do {
+            linked = try viewModel.fetchByID(id)
+        } catch {
+            throw TargetActionError.writeFailed(
+                "could not verify target #\(id): \(error.localizedDescription)"
+            )
+        }
+        guard linked != nil else {
+            throw TargetActionError.writeFailed("target #\(id) does not exist")
         }
     }
 }

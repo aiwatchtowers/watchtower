@@ -56,7 +56,18 @@ struct TargetsListView: View {
             }
         }
         .sheet(isPresented: $showCreateSheet) {
-            CreateTargetSheet()
+            CreateTargetSheet { newID in
+                // An Enter-submit (brief) lands the user on the new target's
+                // streaming chat — or, when the brief hand-off failed, on its
+                // failure banner; a ⌘Enter silent create stays put. The brief
+                // center is already .briefing/.failed before onCreated fires.
+                switch appState.targetBriefCenter.phase {
+                case .briefing(newID), .failed(newID, _):
+                    selectedItemID = newID
+                default:
+                    break
+                }
+            }
         }
         .background {
             Button("") { showCreateSheet = true }

@@ -61,6 +61,12 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide, single-slot registry for the creation-time "brief the
+    /// secretary" chat run, so the send + streaming + execute-mode auto-apply
+    /// survive the composer sheet being dismissed and any navigation away.
+    /// Its chat-VM factory is wired below once the DB pool opens.
+    let targetBriefCenter = TargetBriefCenter()
+
     /// App-wide, single-slot registry for meeting recording + transcription, so
     /// an in-flight recording and its transcription survive navigating away from
     /// the calendar event that started it.
@@ -408,6 +414,18 @@ final class AppState {
                 databaseManager = manager
                 errorMessage = nil
                 wireMeetingRecorderLoaders(dbPool: manager.dbPool)
+                // Brief-run chat VMs need the open DB; wired here rather than
+                // at construction (centers exist before the pool opens). Each
+                // run gets its own TargetsViewModel — the ad-hoc-VM precedent
+                // from CreateTargetSheet's promote path.
+                targetBriefCenter.makeChatVM = { [weak self] target in
+                    guard let manager = self?.databaseManager else { return nil }
+                    return TargetChatViewModel(
+                        target: target,
+                        viewModel: TargetsViewModel(dbManager: manager),
+                        dbManager: manager
+                    )
+                }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {
                     let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)

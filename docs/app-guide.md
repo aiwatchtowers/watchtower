@@ -41,7 +41,7 @@ When a discussion resolves itself (someone else answered and the question was ac
 
 **Empty state** — when the wall itself is empty, the Feed shows a "Generate your inbox" button (a "Generate" button also lives in the toolbar) that runs the inbox pipeline on demand.
 
-**Create target / Create track** — converts a situation into a Target or a Track. The situation is marked converted (and drops out of the open feed) but keeps a link back to the new target/track id, so its history stays reachable. Creating a target opens a prefilled Create Target sheet (title/context drawn from the situation); creating a track opens the track-management sheet and links the resulting track once created.
+**Create target / Create track** — converts a situation into a Target or a Track. The situation is marked converted (and drops out of the open feed) but keeps a link back to the new target/track id, so its history stays reachable. Creating a target opens the target composer prefilled with the situation's text (see "Creating targets" in the Tasks section — Enter briefs the secretary, ⌘Enter just creates); creating a track opens the track-management sheet and links the resulting track once created.
 
 **Learned tab** — shows the system's current model of you: mutes, boosts, and manual rules with weight, source ("learned from 12 dismissals" / "I added this manually"), and inline remove/edit.
 
@@ -171,7 +171,14 @@ Optional integration that syncs your Gmail Inbox so emails are triaged into the 
 ### Tasks
 Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.
 
-**Creating tasks** — Tasks can be created from six sources:
+**Creating targets** — "New target" opens a **composer**, not a form: one multiline text field with a permanent hint underneath ("Enter — brief the secretary · ⌘Enter — just create"). Write the task in your own words — as much or as little context as you have — and:
+
+- **Enter — brief the secretary.** The target is created instantly and locally (its provisional title is the first line of your text; no AI is involved in creating the row, so an unreachable AI can never block it), and your full text is sent as the first message in the target's Discuss chat. The secretary treats it as a directive: it derives a clean title from your own words, decomposes the work into sub-items or child targets, gathers context from your synced Jira/Slack data and meeting transcripts, fills in the "why it matters" intent, and sets priority or a due date when you asked for one. The detail view opens with the chat working; the run keeps going if you navigate away. If the AI fails mid-run, the target still exists — the error shows in the chat and you can just re-ask there.
+- **⌘Enter — just create.** Same instant mechanical creation, no chat message, no AI call — for trivial targets. (Shift+Enter inserts a newline.)
+
+The **Extract** control remains for pasting a large blob of text and splitting it into several targets at once. The old form fields (title, context, checklist, level) are gone — precision editing lives in the target detail view.
+
+Targets can be created from six sources:
 
 | Source | How |
 |--------|-----|
@@ -182,7 +189,9 @@ Personal action items — what you need to do, follow up on, or react to. Unlike
 | **Manual** | "+" button in the Tasks toolbar or sidebar |
 | **Chat** | AI suggests creating a task during conversation |
 
-Each task created from a source retains a link back to it. Click the source link in the detail view to navigate to the originating track, digest, briefing, or inbox situation.
+Every source opens the same composer, prefilled with the source's text. Each task created from a source retains a link back to it. Click the source link in the detail view to navigate to the originating track, digest, briefing, or inbox situation.
+
+**Directing the secretary from the chat** — the target's Discuss chat understands two kinds of messages. A question or discussion ("what do you think?", "what do we know about X?") gets an answer, and any suggested changes appear as proposal cards you approve or reject — nothing is applied without you. An instruction ("break this into steps", "set the deadline to Friday", "pull the data from Jira") is executed: the secretary applies the changes to this target and its sub-items immediately and reports what was done. It only ever touches this target and its subtree, only does what your instruction implies, and anything interesting it finds beyond that is reported as text for you to act on. It never acts between your messages and never re-runs an instruction on its own.
 
 **Today view vs All view** — The list is split into two sections:
 - **Today** — overdue tasks, tasks due today, and high-priority active tasks. This is your daily focus area (inbox zero approach).
