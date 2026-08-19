@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,6 +138,9 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 }
 
 func TestDaemon_RunsInitialSync(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -158,6 +163,9 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 }
 
 func TestDaemon_PollTriggersSync(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -181,6 +189,9 @@ func TestDaemon_PollTriggersSync(t *testing.T) {
 }
 
 func TestDaemon_WakeEventTriggersSync(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -214,6 +225,9 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 }
 
 func TestDaemon_GracefulShutdown(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -292,6 +306,9 @@ func TestDaemon_SetPIDPath(t *testing.T) {
 }
 
 func TestDaemon_RunWithPIDFile(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -394,6 +411,9 @@ func TestPhaseSlackSyncEmptySlice(t *testing.T) {
 // not stop the healthy sibling's run, and each account's own status must
 // reflect only its own outcome (Orchestrator.recordAuthResult).
 func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	// Healthy account.
 	var healthyCount atomic.Int32
 	healthyOrch, healthyDB := newStatusTrackingOrchestrator(t, testMux(), &healthyCount)
@@ -439,6 +459,9 @@ func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
 // team.info (unlike TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling's
 // pre-seeded helper, where team.info is cached and never called).
 func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	mux := http.NewServeMux()
 	mux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -783,6 +806,9 @@ func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
 }
 
 func TestDaemon_MinPollInterval(t *testing.T) {
+	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
+	// which is derived from HOME — keep those out of the real workspace dir.
+	t.Setenv("HOME", t.TempDir())
 	var syncCount atomic.Int32
 	orch, _ := newTestOrchestrator(t, &syncCount)
 
@@ -1152,4 +1178,67 @@ func TestPhaseGmailSyncNilGuard(t *testing.T) {
 	d := newQuietDaemon(t)
 	// No syncer set — must be a no-op, not a panic.
 	d.phaseGmailSync(context.Background())
+}
+
+// TestDaemon_ManualTriggerCausesSync covers the `watchtower sync --now` path
+// end to end at the loop level: a trigger arriving between polls must start a
+// sync, and the heartbeat file the tray reads must be left idle afterwards.
+// HOME is redirected because config.WorkspaceDir() is derived from it.
+func TestDaemon_ManualTriggerCausesSync(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var syncCount atomic.Int32
+	orch, _ := newTestOrchestrator(t, &syncCount)
+
+	cfg := &config.Config{
+		Sync: config.SyncConfig{
+			PollInterval: 10 * time.Second, // long, so only the trigger fires
+			SyncOnWake:   false,
+		},
+	}
+
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
+
+	triggerCh := make(chan struct{}, 1)
+	d.triggerCh = triggerCh
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		triggerCh <- struct{}{}
+	}()
+
+	require.NoError(t, d.Run(ctx))
+	assert.GreaterOrEqual(t, syncCount.Load(), int32(2), "manual trigger should cause an additional sync")
+
+	progress, err := sync.ReadSyncProgress(filepath.Join(cfg.WorkspaceDir(), "sync_progress.json"))
+	require.NoError(t, err, "a sync must publish the heartbeat the tray reads")
+	assert.False(t, progress.IsSyncing(time.Now()), "heartbeat must be idle once the sync finished")
+}
+
+// TestSyncHeartbeat_PublishesLiveProgress pins the other half: while a sync is
+// running the file says so, with the phase named. Before this, a sync in
+// progress was invisible outside the daemon process.
+func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	cfg := &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}}
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(io.Discard, "", 0))
+
+	stop := d.startSyncHeartbeat(orch)
+	progress, err := sync.ReadSyncProgress(d.syncProgressPath())
+	stop()
+	require.NoError(t, err, "starting a sync must publish a heartbeat immediately")
+	assert.True(t, progress.IsSyncing(time.Now()), "heartbeat should report an active sync")
+	assert.NotEmpty(t, progress.Phase, "heartbeat should name the phase")
+
+	d.writeSyncProgress(sync.IdleProgress())
+	progress, err = sync.ReadSyncProgress(d.syncProgressPath())
+	require.NoError(t, err)
+	assert.False(t, progress.IsSyncing(time.Now()))
 }
