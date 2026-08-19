@@ -18,6 +18,64 @@ struct TargetActionCard: Identifiable, Equatable {
     }
 }
 
+extension Array where Element == TargetActionCard {
+    /// One-line composition summary for the collapsed batch block, grouped by
+    /// action kind in first-appearance order: "9× check off · 21× edit".
+    var batchBreakdown: String {
+        var order: [TargetActionKind] = []
+        var counts: [TargetActionKind: Int] = [:]
+        for card in self {
+            if counts[card.action.type] == nil { order.append(card.action.type) }
+            counts[card.action.type, default: 0] += 1
+        }
+        return order.map { "\(counts[$0] ?? 0)× \($0.batchLabel)" }.joined(separator: " · ")
+    }
+
+    /// "1 pending · 2 applied · 1 failed" once any card is decided; nil while
+    /// the whole batch is still pending (a fresh batch's default state).
+    var batchStateSummary: String? {
+        var pending = 0, applied = 0, failed = 0, rejected = 0
+        for card in self {
+            switch card.state {
+            case .pending: pending += 1
+            case .applied: applied += 1
+            case .failed: failed += 1
+            case .rejected: rejected += 1
+            }
+        }
+        guard pending != count else { return nil }
+        var parts: [String] = []
+        if pending > 0 { parts.append("\(pending) pending") }
+        if applied > 0 { parts.append("\(applied) applied") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if rejected > 0 { parts.append("\(rejected) rejected") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+extension TargetActionKind {
+    /// Short noun for the batch breakdown line.
+    var batchLabel: String {
+        switch self {
+        case .updateStatus: "status change"
+        case .updateNotes: "note"
+        case .updateProgress: "progress update"
+        case .addSubItem: "new checkpoint"
+        case .createChildTarget: "new sub-task"
+        case .linkTarget: "link"
+        case .toggleSubItem: "check off"
+        case .editSubItem: "edit"
+        case .deleteSubItem: "deletion"
+        case .setSubItemDue: "item due date"
+        case .updateDueDate: "due date"
+        case .updatePriority: "priority"
+        case .updateBallOn: "ball-on"
+        case .updateTitle: "rename"
+        case .updateIntent: "context update"
+        }
+    }
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -44,10 +102,36 @@ final class TargetChatViewModel {
     // on the main actor, and deinit has exclusive access to self.
     nonisolated(unsafe) private var observationTask: Task<Void, Never>?
 
+    /// Follow-ups produced by a decision taken while a turn was still streaming.
+    /// The write applies immediately; its message waits here until the running
+    /// turn ends (or the user sends the next one) so it is never dropped.
+    private var queuedFollowUps: [String] = []
+
+    /// Called after the chat did something that counts as activity on the target:
+    /// an applied action or a finished turn. The host screen uses it to re-read the
+    /// target row (a daemon-written next step included) and re-derive its
+    /// next-step staleness badge. Never fires an AI call by itself; nil by default.
+    var onTargetActivity: (() -> Void)?
+
+    /// Called with the text of a user turn the moment it is sent. The tab
+    /// container uses it to auto-title a brand-new tab from its first message.
+    /// Only real user turns fire it — action follow-ups and system notices do
+    /// not. Never fires an AI call by itself; nil by default.
+    var onUserMessage: ((String) -> Void)?
+
+    /// Cards still awaiting a decision — drives the "Approve all" affordance.
+    var pendingActionCount: Int {
+        actionCards.filter { $0.state == .pending }.count
+    }
+
+    /// `conversationID` is the tab this VM speaks into. Finding or creating it is
+    /// the container's job (`TargetAssistantViewModel` owns the target's tab
+    /// list), so this VM only ever adopts a conversation that already exists.
     init(
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
+        conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil
     ) {
         self.target = target
@@ -55,42 +139,39 @@ final class TargetChatViewModel {
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
 
-        loadOrCreateConversation()
+        loadConversation(id: conversationID)
         startMessageObservation()
     }
 
-    deinit {
+    /// Tears the VM's long-lived work down: the GRDB message observation and any
+    /// running turn. Called by the container when a tab is closed and when the
+    /// center evicts the whole container — a `@MainActor deinit` cannot touch
+    /// these tasks (the `CustomTrackTimelineViewModel.stop()` precedent), and
+    /// without it the observation would keep the pool observed forever.
+    func stop() {
         observationTask?.cancel()
+        observationTask = nil
+        streamTask?.cancel()
+        streamTask = nil
     }
 
-    private func loadOrCreateConversation() {
+    /// Adopt the conversation the container resolved for this tab. A row that
+    /// vanished (closed from another surface) surfaces as an error rather than
+    /// silently starting a second, unpersisted thread.
+    private func loadConversation(id: Int64) {
         do {
-            if let existing = try dbManager.dbPool.read({ db in
-                try ChatConversationQueries.fetchByContext(
-                    db, type: "target", id: String(target.id)
-                )
-            }) {
-                let records = try dbManager.dbPool.read { db in
-                    try ChatMessageQueries.fetchByConversation(
-                        db, conversationID: existing.id
-                    )
-                }
-                conversationID = existing.id
-                sessionID = existing.sessionID
-                messages = records.map { $0.toChatMessage() }
+            guard let conversation = try dbManager.dbPool.read({ db in
+                try ChatConversationQueries.fetchByID(db, id: id)
+            }) else {
+                errorMessage = "This chat no longer exists."
                 return
             }
-            let conv = try dbManager.dbPool.write { db in
-                try ChatConversationQueries.create(
-                    db,
-                    title: "Task: \(String(target.text.prefix(60)))",
-                    contextType: "target",
-                    contextID: String(target.id)
-                )
+            let records = try dbManager.dbPool.read { db in
+                try ChatMessageQueries.fetchByConversation(db, conversationID: id)
             }
-            conversationID = conv.id
-            sessionID = conv.sessionID
-            messages = []
+            conversationID = conversation.id
+            sessionID = conversation.sessionID
+            messages = records.map { $0.toChatMessage() }
         } catch {
             errorMessage = "Failed to load conversation: \(error.localizedDescription)"
         }
@@ -106,6 +187,8 @@ final class TargetChatViewModel {
             do {
                 for try await records in observation.values(in: dbPool).dropFirst() {
                     guard !Task.isCancelled else { break }
+                    // A vanished VM ends the observation — `continue` would keep
+                    // the pool observed for the process's lifetime.
                     guard let self else { break }
                     guard !self.isStreaming else { continue }
                     // Only adopt a snapshot that has MORE messages than we hold:
@@ -127,6 +210,14 @@ final class TargetChatViewModel {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
 
+        // This VM is cached per target in an app-wide container and holds a
+        // `Target` VALUE, while the detail view around it is itself a mutation
+        // site (checklist drag-reorder, inline edits) — so the snapshot the
+        // prompt renders has to be re-read per turn. Sending a stale checklist
+        // is not cosmetic: the model addresses sub-items by index + text, and
+        // both are re-checked against the live list at apply time.
+        reloadTarget()
+
         streamTask?.cancel()
         inputText = ""
 
@@ -141,6 +232,7 @@ final class TargetChatViewModel {
         if let convID = conversationID {
             persistMessage(conversationID: convID, role: "user", text: text)
         }
+        onUserMessage?(text)
 
         messages.append(ChatMessage(
             id: UUID(),
@@ -149,17 +241,43 @@ final class TargetChatViewModel {
             timestamp: Date(),
             isStreaming: true
         ))
-        startStream(prompt: text)
+        startStream(prompt: prependQueuedFollowUps(to: text))
     }
 
+    /// Feed a follow-up turn back into the conversation. The text is shown as a
+    /// system message right away; when a turn is already streaming the prompt is
+    /// queued instead of being dropped, and goes out at the next flush point.
     private func sendFollowUp(_ text: String) {
-        guard !isStreaming else { return }
-        streamTask?.cancel()
         appendSystemMessage(text)
+        guard !isStreaming else {
+            queuedFollowUps.append(text)
+            return
+        }
         messages.append(ChatMessage(
             id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
         ))
         startStream(prompt: text)
+    }
+
+    /// Drain the queue into `text`, so a decision taken mid-stream still reaches
+    /// the assistant even when the turn it was queued behind was cancelled.
+    private func prependQueuedFollowUps(to text: String) -> String {
+        guard !queuedFollowUps.isEmpty else { return text }
+        let queued = queuedFollowUps.joined(separator: "\n")
+        queuedFollowUps.removeAll()
+        return "\(queued)\n\n\(text)"
+    }
+
+    /// Send everything queued during the finished turn as ONE follow-up turn.
+    /// The system messages were already appended when the decisions were taken.
+    private func flushQueuedFollowUps() {
+        guard !queuedFollowUps.isEmpty, !isStreaming else { return }
+        let prompt = queuedFollowUps.joined(separator: "\n")
+        queuedFollowUps.removeAll()
+        messages.append(ChatMessage(
+            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
+        ))
+        startStream(prompt: prompt)
     }
 
     /// Spawn the streaming turn. Shared by `send()` and `sendFollowUp(_:)` —
@@ -214,7 +332,8 @@ final class TargetChatViewModel {
         // current state, and can still emit valid watchtower-action blocks.
         let effectivePrompt = currentSessionID == nil
             ? text
-            : "\(Self.taskContextBlock(target))\n\n\(Self.taskActionsContract)\n\n\(text)"
+            : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
+                + "\(Self.taskActionsContract)\n\n\(text)"
 
         var fullText = ""
         var streamFailed = false
@@ -305,17 +424,26 @@ final class TargetChatViewModel {
         let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
         var appliedSummaries: [String] = []
         var failedSummaries: [String] = []
+        var heldForApproval = 0
         for action in parsed.actions {
             actionCards.append(TargetActionCard(
                 messageID: assistantMessageID, action: action, state: .pending
             ))
-            guard action.isExecute else { continue }
+            if action.isExecute && !action.autoApplies(inChatFor: target.id) {
+                heldForApproval += 1
+            }
+            guard action.autoApplies(inChatFor: target.id) else { continue }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
                 appliedSummaries.append(summary)
             case .failure(let error):
                 failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
             }
+        }
+        if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
+            // Execute-mode writes are target activity too — same contract as
+            // the Approve paths, one ping per run.
+            onTargetActivity?()
         }
         var systemMessages: [String] = []
         if !appliedSummaries.isEmpty || !failedSummaries.isEmpty {
@@ -327,6 +455,20 @@ final class TargetChatViewModel {
                 parts.append("Failed: " + failedSummaries.joined(separator: "; "))
             }
             systemMessages.append(parts.joined(separator: ". "))
+        }
+        if heldForApproval > 0 {
+            // The reply may well claim the write was made. This message is what
+            // the OWNER reads instead — like the Applied/Failed summary next to
+            // it, it never reaches the model (a resumed turn carries the context
+            // blocks and the contract, not transcript rows); what keeps the
+            // model honest is the MODE rule in taskActionsContract.
+            // Worded as "not applied automatically" rather than promising an
+            // Approve: an action addressed outside the vertical line is held
+            // here too, and approving that one fails at resolveActionTarget.
+            systemMessages.append(
+                "\(heldForApproval) change(s) aimed at another task were NOT applied " +
+                "automatically — decide on their cards."
+            )
         }
         for err in parsed.errors {
             systemMessages.append("⚠️ Invalid action proposal: \(err)")
@@ -380,6 +522,9 @@ final class TargetChatViewModel {
             sendFollowUp("Action FAILED: \(error.localizedDescription). " +
                          "Do NOT assume it was applied; suggest how to proceed.")
         }
+        // A decided action is target activity whether or not the write stuck —
+        // the host screen must re-derive its staleness badge either way.
+        onTargetActivity?()
     }
 
     /// Shared apply core for the Approve button and execute-mode auto-apply:
@@ -390,7 +535,9 @@ final class TargetChatViewModel {
     private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
         reloadTarget()
         do {
-            let summary = try TargetActionExecutor.apply(action, target: target, viewModel: viewModel)
+            let applyTarget = try resolveActionTarget(action)
+            var summary = try TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
+            if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
             actionCards[idx].state = .applied(summary)
             reloadTarget()
             return .success(summary)
@@ -398,6 +545,64 @@ final class TargetChatViewModel {
             actionCards[idx].state = .failed(error.localizedDescription)
             return .failure(error)
         }
+    }
+
+    /// Approve every pending card in one pass. Approving them one by one costs a
+    /// full AI turn each (the follow-up restarts the stream), so a batch of 20-odd
+    /// proposals is applied here as 20 writes and reported in a single follow-up.
+    /// The AI's proposed kind is kept for each card — the per-card checkpoint /
+    /// sub-task override stays a per-card decision.
+    /// `messageID` scopes the pass to one turn's batch (the inline "Approve all"
+    /// row above a batch of cards); nil approves every pending card in the chat.
+    /// Above this many cards, the batch follow-up switches from an itemized
+    /// list to a bare count (failures stay itemized).
+    nonisolated static let compactBatchThreshold = 8
+
+    func approveAll(messageID: UUID? = nil) {
+        let pendingIDs = actionCards
+            .filter { $0.state == .pending && (messageID == nil || $0.messageID == messageID) }
+            .map(\.id)
+        guard !pendingIDs.isEmpty else { return }
+        reloadTarget()
+
+        var applied: [String] = []
+        var failed: [String] = []
+        for cardID in pendingIDs {
+            guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
+            do {
+                let applyTarget = try resolveActionTarget(actionCards[idx].action)
+                var summary = try TargetActionExecutor.apply(
+                    actionCards[idx].action, target: applyTarget, viewModel: viewModel
+                )
+                if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
+                actionCards[idx].state = .applied(summary)
+                applied.append(summary)
+            } catch {
+                actionCards[idx].state = .failed(error.localizedDescription)
+                failed.append(error.localizedDescription)
+            }
+            // Unconditionally: the actions rewrite whole JSON columns (sub-items),
+            // so the next one must read back what this one wrote — including when
+            // apply threw only AFTER its write landed.
+            reloadTarget()
+        }
+
+        var parts: [String] = []
+        if !applied.isEmpty {
+            // A big batch's follow-up lands in the transcript and in the AI's
+            // context verbatim — report a count, not dozens of item summaries.
+            // Failures below stay itemized whatever the batch size.
+            parts.append(pendingIDs.count > Self.compactBatchThreshold
+                ? "Actions applied (\(applied.count) of \(pendingIDs.count))."
+                : "Actions applied (\(applied.count)): \(applied.joined(separator: "; ")).")
+        }
+        if !failed.isEmpty {
+            parts.append("Actions FAILED (\(failed.count)): \(failed.joined(separator: "; ")). " +
+                         "Do NOT assume they were applied.")
+        }
+        parts.append("Continue with the task.")
+        sendFollowUp(parts.joined(separator: " "))
+        onTargetActivity?()
     }
 
     func reject(_ card: TargetActionCard) {
@@ -416,6 +621,8 @@ final class TargetChatViewModel {
             type: kind, reason: action.reason, status: action.status, note: action.note,
             progress: action.progress, text: action.text, intent: action.intent,
             priority: action.priority, targetId: action.targetId, relation: action.relation,
+            index: action.index, match: action.match, done: action.done,
+            dueDate: action.dueDate, ballOn: action.ballOn,
             mode: action.mode
         )
     }
@@ -437,6 +644,8 @@ final class TargetChatViewModel {
         isStreaming = false
         reloadTarget()
         viewModel.load()
+        onTargetActivity?()
+        flushQueuedFollowUps()
     }
 
     func cancelStream() {
@@ -462,6 +671,33 @@ final class TargetChatViewModel {
         } catch {
             print("TargetChat: failed to persist \(role) message for conversation \(conversationID): \(error)")
         }
+    }
+
+    /// Resolves which target an approved action applies to. An action carrying
+    /// "target_id" may address any task in the current task's vertical line —
+    /// its descendants or its parent chain (TargetTreeScope) — fetched fresh
+    /// from the DB at apply time. Everything else applies to the current task.
+    /// link_target's target_id is the link's other endpoint, not an address.
+    private func resolveActionTarget(_ action: ProposedAction) throws -> Target {
+        guard action.type != .linkTarget,
+              let addressedID = action.targetId,
+              addressedID != target.id else { return target }
+        let (addressed, parents) = try dbManager.dbPool.read { db -> (Target?, [Int: Int?]) in
+            var parents: [Int: Int?] = [:]
+            for row in try Row.fetchAll(db, sql: "SELECT id, parent_id FROM targets") {
+                let id: Int = row["id"]
+                parents[id] = row["parent_id"] as Int?
+            }
+            return (try TargetQueries.fetchByID(db, id: addressedID), parents)
+        }
+        guard let addressed,
+              TargetTreeScope.isInScope(addressed: addressedID, current: target.id, parents: parents) else {
+            throw TargetActionError.writeFailed(
+                "task #\(addressedID) is not in this task's tree — only this task, " +
+                "its sub-tasks, or its parents can be addressed"
+            )
+        }
+        return addressed
     }
 
     private func reloadTarget() {
@@ -519,39 +755,69 @@ final class TargetChatViewModel {
     - update_status      { "status": "todo|in_progress|blocked|done|dismissed|snoozed" }
     - update_notes       { "note": "<text to append>" }
     - update_progress    { "progress": <0-100 integer> }
+    - update_priority    { "priority": "high|medium|low" }
+    - update_due_date    { "due_date": "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM", "" clears }
+    - update_ball_on     { "ball_on": "<who the ball is on>", "" clears }
     - add_sub_item       { "text": "<sub-item text>" }
+    - toggle_sub_item    { "index": <N>, "match": "<current text>", "done": true|false }
+    - edit_sub_item      { "index": <N>, "match": "<current text>", "text": "<new text>" }
+    - delete_sub_item    { "index": <N>, "match": "<current text>" }
+    - set_sub_item_due   { "index": <N>, "match": "<current text>", "due_date": "YYYY-MM-DD", "" clears }
     - create_child_target{ "text": "<title>", "intent": "<goal>", "priority": "high|medium|low" }
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     - update_title       { "text": "<new task title>" }
-    - update_priority    { "priority": "high|medium|low" }
-    - update_due         { "text": "<due date, YYYY-MM-DD>" }
     - update_intent      { "text": "<the task's goal/context, replaces the current intent>" }
     Every block must also include "reason".
-    For link_target, first look up the other target's id by querying the `targets`
-    table (e.g. SELECT id, text FROM targets WHERE ...); never guess an id.
+    For the *_sub_item actions, "index" is the #N shown next to the item in the
+    addressed task's sub-items list (the CURRENT TASK by default) and "match" is
+    that item's EXACT current text — both are required and are re-checked at
+    apply time, so never guess either.
+    To PROMOTE an existing sub-item into a real sub-task, emit create_child_target
+    with the item's text, then delete_sub_item for that item.
+    For link_target, first resolve the other target's id with the list_targets /
+    get_target tools; never guess an id.
+
+    ADDRESSING OTHER TASKS IN THIS TASK'S TREE (optional "target_id"):
+    Every action except link_target also accepts "target_id": <id> — the task
+    the action applies to. Omitted = the CURRENT task. It may ONLY address this
+    task's own vertical line: its sub-tasks at any depth or its parent chain
+    (both listed in TASK TREE), plus sub-tasks created during this conversation
+    — their id is echoed back as "created child target #N". The apply step
+    re-checks this scope and fails the card for any other task, so never
+    address a sibling or unrelated task.
+    For create_child_target, "target_id" is the PARENT the new sub-task is
+    created under — that is how you build deeper levels of the tree.
+    For the *_sub_item actions on another task, only address a sub-items list
+    you have actually seen (in TASK TREE or a get_target lookup) — never guess.
 
     MODE — propose vs execute:
     Every action block may carry an optional "mode" field: "propose" (the default
     when absent) or "execute".
     - "mode":"execute" — use it when the owner's message is an explicit
       instruction (imperative: "break this down", "set the deadline", "gather
-      the Jira data"). Execute-mode actions are applied immediately, and your
-      reply MUST report what was done (e.g. "Done: created 4 sub-tasks and set
-      the due date").
+      the Jira data"). Execute-mode actions on the CURRENT task are applied
+      immediately, and your reply MUST report what was done (e.g. "Done:
+      created 4 sub-tasks and set the due date"). If any action in the reply
+      addresses another task, say that part is waiting for approval instead of
+      reporting it as done.
     - "mode":"propose" (or no mode) — use it when the owner is discussing or
       thinking aloud. Propose-mode actions become cards awaiting the owner's
       approval. In propose mode never claim a task or change "was made" — it
       exists only after the owner approves the card; after emitting the
       block(s), STOP and wait, and do NOT assume anything was applied.
     - When the message is ambiguous, propose.
+    - An action carrying a "target_id" other than the CURRENT task is ALWAYS a
+      proposal: the owner approves every write that leaves this chat's own task,
+      so "mode":"execute" is ignored there and the card waits for approval.
 
     MANDATE — broad powers, narrow mandate:
-    Within a directive you may modify this task and its subtree (title, intent,
+    Within a directive you may modify this task's vertical line — the task
+    itself, its sub-tasks at any depth and its parent chain (title, intent,
     priority, due date, status, notes, sub-items, child targets) — but only what
-    the directive implies. Findings beyond the mandate (adjacent tasks, other
+    the directive implies. Findings beyond the mandate (sibling branches, other
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
-    task's subtree.
+    task's vertical line.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every
@@ -567,8 +833,12 @@ final class TargetChatViewModel {
     nonisolated private static func taskContextBlock(_ target: Target) -> String {
         let notesList = target.decodedNotes.map { "- \($0.text)" }.joined(separator: "\n")
         let notesText = notesList.isEmpty ? "(none)" : notesList
-        let subItemsList = target.decodedSubItems
-            .map { "- [\($0.done ? "x" : " ")] \($0.text)" }
+        let subItemsList = target.decodedSubItems.enumerated()
+            .map { i, item in
+                var due = ""
+                if let d = item.dueDate, !d.isEmpty { due = " (due \(d))" }
+                return "- [\(item.done ? "x" : " ")] #\(i) \(item.text)\(due)"
+            }
             .joined(separator: "\n")
         let subItemsText = subItemsList.isEmpty ? "(none)" : subItemsList
         return """
@@ -612,6 +882,73 @@ final class TargetChatViewModel {
         """
     }
 
+    /// The `=== TASK TREE ===` context block: the current task's parent chain
+    /// and its sub-task tree (each sub-task with its checklist), so the
+    /// assistant can address them with "target_id". Empty string when the task
+    /// has neither a parent nor sub-tasks (the block is then omitted).
+    nonisolated static func taskTreeBlock(target: Target, dbPool: DatabasePool) -> String {
+        let all = (try? dbPool.read { db in
+            try Target.fetchAll(db, sql: "SELECT * FROM targets")
+        }) ?? []
+        let byID = Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+        var childrenOf: [Int: [Target]] = [:]
+        for t in all {
+            if let parent = t.parentId { childrenOf[parent, default: []].append(t) }
+        }
+
+        // Parent chain, nearest first. Visited guards against parent_id cycles.
+        var ancestors: [Target] = []
+        var visited: Set<Int> = [target.id]
+        var cursor = target.parentId
+        while let pid = cursor, visited.insert(pid).inserted, let parent = byID[pid] {
+            ancestors.append(parent)
+            cursor = parent.parentId
+        }
+
+        // Descendants, depth-first (same cycle guard via `seen`).
+        var flat: [(depth: Int, node: Target)] = []
+        var seen: Set<Int> = [target.id]
+        func walk(_ parentID: Int, depth: Int) {
+            for child in childrenOf[parentID] ?? [] where seen.insert(child.id).inserted {
+                flat.append((depth, child))
+                walk(child.id, depth: depth + 1)
+            }
+        }
+        walk(target.id, depth: 0)
+
+        guard !ancestors.isEmpty || !flat.isEmpty else { return "" }
+
+        func describe(_ t: Target) -> String {
+            "#\(t.id) \"\(t.text)\" (\(t.status), \(Int((t.progress * 100).rounded()))%)"
+        }
+        var lines: [String] = []
+        if !ancestors.isEmpty {
+            lines.append("Parents (nearest first):")
+            lines.append(contentsOf: ancestors.map { "- \(describe($0))" })
+        }
+        if !flat.isEmpty {
+            lines.append("Sub-tasks (with their sub-items):")
+            // Cap so a huge tree cannot flood the prompt; the cut is reported.
+            let cap = 50
+            for (depth, node) in flat.prefix(cap) {
+                let indent = String(repeating: "  ", count: depth)
+                lines.append("\(indent)- \(describe(node))")
+                for (i, item) in node.decodedSubItems.enumerated() {
+                    var due = ""
+                    if let d = item.dueDate, !d.isEmpty { due = " (due \(d))" }
+                    lines.append("\(indent)    - [\(item.done ? "x" : " ")] #\(i) \(item.text)\(due)")
+                }
+            }
+            if flat.count > cap { lines.append("(… \(flat.count - cap) more sub-tasks omitted)") }
+        }
+        return """
+
+        === TASK TREE ===
+        Tasks you may also act on with "target_id" (this task's parents and sub-tasks):
+        \(lines.joined(separator: "\n"))
+        """
+    }
+
     /// This target's subjects for the MEMORY block: every track linked via
     /// `tracks.linked_target_id = target.id` (unfiltered by origin/dismissed —
     /// unlike TrackQueries.fetchByLinkedTarget, which is scoped to custom
@@ -641,11 +978,6 @@ final class TargetChatViewModel {
         memoryVaultDir: String? = Constants.memoryVaultDir(),
         skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> String {
-        let schema = (try? dbPool.read { db in
-            try ChatViewModel.fetchSchema(db)
-        }) ?? ""
-        let dbPath = dbPool.path
-
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
         }
@@ -675,28 +1007,24 @@ final class TargetChatViewModel {
         task (target) tracked in their workspace.
 
         \(Self.taskContextBlock(target))
+        \(Self.taskTreeBlock(target: target, dbPool: dbPool))
         \(Self.watchActivityBlock(target: target, dbPool: dbPool))
 
         \(memoryBlock)\(Self.taskActionsContract)
 
-        === CAPABILITIES ===
-        You can query the database to find related messages, threads, and people involved.
-
-        === DATABASE ===
-        Database: \(dbPath)
-        \(schema)
+        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+        You have read-only tools over the user's OWN local Watchtower database. \
+        Use them to look things up instead of asking the user:
+        - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \
+        newest first. This is how you check what happened in Slack (it is already synced locally).
+        - list_targets / get_target — other targets and their links (resolve ids for link_target here).
+        - get_person / list_people — people cards; list_tracks / list_digests / list_jira_issues — work context.
+        - list_transcripts / get_transcript — recorded meeting transcripts.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === WORKSPACE ===
         Slack team ID: \(teamID)
         Slack web domain: \(domain).slack.com
-
-        === QUERY TIPS ===
-        - Always SELECT m.thread_ts alongside m.ts so you can build correct links for threaded messages.
-        - Find messages by text or people involved:
-          SELECT m.text, u.display_name, m.ts, m.thread_ts, m.channel_id FROM messages m
-          JOIN users u ON m.user_id = u.id
-          WHERE m.text LIKE '%keyword%'
-          ORDER BY m.ts_unix DESC LIMIT 20
 
         === LINKING RULES ===
         ALWAYS use markdown links with descriptive text in the user's language. Never output bare URLs.
@@ -718,7 +1046,7 @@ final class TargetChatViewModel {
         Rules:
         - Every referenced message MUST have a link
         - Link text describes WHAT is linked, not "link" or "click here"
-        - Always SELECT channel_id, ts, AND thread_ts when fetching messages so you can build correct links
+        - list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links
         - NEVER link to a channel when the user asked for a specific message — resolve the actual ts first
 
         === RESPONSE STYLE ===

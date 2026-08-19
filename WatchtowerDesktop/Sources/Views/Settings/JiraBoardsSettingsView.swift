@@ -10,11 +10,13 @@ struct JiraBoardsSettingsView: View {
     @State private var toggleError: String?
 
     @State private var isFetching = false
-    @State private var reAnalyzingBoardID: Int?
     // TODO: notifiedBoardIDs resets when the view is recreated. Consider @AppStorage or a static Set if persistent dedup is needed.
     @State private var notifiedBoardIDs: Set<Int> = []
 
     private var syncManager: JiraBoardSyncManager { .shared }
+    /// Analysis runs are owned app-wide so leaving this screen mid-run does not
+    /// discard the spinner, the failure, or the post-run refresh.
+    private var analysisCenter: JiraBoardAnalysisCenter { .shared }
 
     var body: some View {
         Section("Boards") {
@@ -40,7 +42,7 @@ struct JiraBoardsSettingsView: View {
             }
             .disabled(isFetching)
 
-            if let err = toggleError {
+            if let err = toggleError ?? analysisError {
                 Text(err)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -52,6 +54,14 @@ struct JiraBoardsSettingsView: View {
                 if let db = appState.databaseManager {
                     loadBoards(db: db)
                 }
+            }
+        }
+        // An analysis writes its profile from the CLI subprocess, which GRDB's
+        // ValueObservation cannot see — reload once each run finishes, whichever
+        // screen started it.
+        .onChange(of: analysisCenter.completedRuns) {
+            if let db = appState.databaseManager {
+                loadBoards(db: db)
             }
         }
         .onDisappear { observationTask?.cancel() }
@@ -192,10 +202,11 @@ struct JiraBoardsSettingsView: View {
 
     private func reAnalyzeButton(_ board: JiraBoard) -> some View {
         Button {
-            reAnalyzeBoard(board)
+            toggleError = nil
+            analysisCenter.start(board: board)
         } label: {
             HStack(spacing: 4) {
-                if reAnalyzingBoardID == board.id {
+                if analysisCenter.isAnalyzing(board) {
                     ProgressView().controlSize(.mini)
                 }
                 Text("Re-analyze")
@@ -204,62 +215,18 @@ struct JiraBoardsSettingsView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(reAnalyzingBoardID == board.id)
+        .disabled(analysisCenter.isAnalyzing(board))
     }
 
-    private func reAnalyzeBoard(_ board: JiraBoard) {
-        guard let cliPath = Constants.findCLIPath() else {
-            toggleError = "Watchtower CLI not found"
-            return
-        }
-
-        reAnalyzingBoardID = board.id
-        toggleError = nil
-
-        Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = [
-                "jira", "--account", String(board.accountID),
-                "boards", "analyze", "--force",
-                String(board.id),
-            ]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    reAnalyzingBoardID = nil
-                    toggleError = "Failed to launch CLI"
-                }
-                return
-            }
-
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
-
-            await MainActor.run {
-                reAnalyzingBoardID = nil
-                if process.terminationStatus != 0 {
-                    let stderr = String(
-                        data: stderrData, encoding: .utf8
-                    )?.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ) ?? ""
-                    toggleError = stderr.isEmpty
-                        ? "Re-analysis failed"
-                        : String(stderr.prefix(200))
-                }
+    /// The first failed analysis among the listed boards, named so the message
+    /// is readable in a shared error slot. Survives navigation with the run.
+    private var analysisError: String? {
+        for board in boards {
+            if let err = analysisCenter.error(for: board) {
+                return "\(board.name): \(err)"
             }
         }
+        return nil
     }
 
     private func checkAndNotifyConfigChange(_ board: JiraBoard) {

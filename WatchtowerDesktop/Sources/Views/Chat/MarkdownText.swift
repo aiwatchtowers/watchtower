@@ -7,7 +7,7 @@ struct MarkdownText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(parseBlocks().enumerated()), id: \.offset) { _, block in
+            ForEach(Array(blocks().enumerated()), id: \.offset) { _, block in
                 renderBlock(block)
             }
         }
@@ -16,7 +16,7 @@ struct MarkdownText: View {
 
     // MARK: - Block types
 
-    private enum Block {
+    enum Block: Equatable {
         case paragraph(String)
         case header(Int, String)
         case codeBlock(String)
@@ -24,6 +24,68 @@ struct MarkdownText: View {
         case numberedList([String])
         case blockquote(String)
         case divider
+    }
+
+    // MARK: - Caches
+
+    // Rendering is a pure function of the source text, but not a cheap one: a
+    // line-by-line block parse plus one cmark AttributedString build per block.
+    // Chat transcripts hold these views in lazy stacks that tear rows down
+    // offscreen and rebuild them mid-scroll, so a large message would otherwise
+    // re-parse on the main thread on every scroll pass — visible jank.
+
+    private final class BlocksEntry {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+
+    private final class InlineEntry {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    private static let blocksCache: NSCache<NSString, BlocksEntry> = {
+        let cache = NSCache<NSString, BlocksEntry>()
+        cache.totalCostLimit = 4 << 20
+        return cache
+    }()
+
+    private static let inlineCache: NSCache<NSString, InlineEntry> = {
+        let cache = NSCache<NSString, InlineEntry>()
+        cache.totalCostLimit = 4 << 20
+        return cache
+    }()
+
+    /// The parsed blocks for `text`, memoized across view rebuilds.
+    func blocks() -> [Block] {
+        let key = text as NSString
+        if let hit = Self.blocksCache.object(forKey: key) { return hit.blocks }
+        let parsed = parseBlocks()
+        Self.blocksCache.setObject(BlocksEntry(parsed), forKey: key, cost: text.utf16.count)
+        return parsed
+    }
+
+    /// One block's inline render (bold/italic/code/links), memoized. The cache
+    /// stores the already-sanitized string, so a disallowed link scheme is
+    /// stripped before it can ever be served from a warm entry.
+    static func inlineAttributed(_ text: String) -> AttributedString {
+        let key = text as NSString
+        if let hit = inlineCache.object(forKey: key) { return hit.value }
+        // inlineOnlyPreservingWhitespace keeps \n as actual line breaks and renders bold/italic/code/links
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        let value: AttributedString
+        if let attr = try? AttributedString(markdown: text, options: options) {
+            // Assistant replies are built from attacker-reachable content, so a
+            // link on a disallowed scheme loses its `.link` attribute and stays
+            // as plain visible text.
+            value = AllowedURLSchemes.strippingDisallowedLinks(attr)
+        } else {
+            value = AttributedString(text)
+        }
+        inlineCache.setObject(InlineEntry(value), forKey: key, cost: text.utf16.count)
+        return value
     }
 
     // MARK: - Helpers
@@ -256,17 +318,7 @@ struct MarkdownText: View {
     }
 
     private func inlineMarkdown(_ text: String) -> Text {
-        // inlineOnlyPreservingWhitespace keeps \n as actual line breaks and renders bold/italic/code/links
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-        if let attr = try? AttributedString(markdown: text, options: options) {
-            // Assistant replies are built from attacker-reachable content, so a
-            // link on a disallowed scheme loses its `.link` attribute and stays
-            // as plain visible text.
-            return Text(AllowedURLSchemes.strippingDisallowedLinks(attr))
-        }
-        return Text(text)
+        Text(Self.inlineAttributed(text))
     }
 
     private func headerFont(_ level: Int) -> Font {

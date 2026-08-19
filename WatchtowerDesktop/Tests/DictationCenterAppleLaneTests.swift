@@ -14,8 +14,10 @@ import WatchtowerTestSupport
 /// cross-file edge and trip the god-file gate.
 private struct AppleLaneStubTranscribeError: Error {}
 
-/// Canned `watchtower dictate clean --mode chat` stdout envelope.
-private let chatCleanedEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
+/// Canned `watchtower dictate clean --mode idea` stdout envelope. Idea is
+/// the cleanup-mode stand-in throughout these tests: chat fields deliver the
+/// raw transcript and never reach the CLI at all.
+private let ideaCleanedEnvelope = Data(#"{"mode":"idea","body":"cleaned"}"#.utf8)
 
 /// Split from `DictationCenterTests` (file_length): the live-text-replacement
 /// half of MARK 23 plus the Apple lane (MARK 24) of the original suite — kept
@@ -31,7 +33,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set("en", forKey: "transcription.forceLang")
         let recorder = FakeMicRecorder()
-        let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
+        let runner = TranscriptCapturingRunner(stdout: ideaCleanedEnvelope)
         let session = FakeDictationSession(updates: ["hello", "hello world corrected"],
                                            finalText: "hello world corrected")
         let center = DictationCenter(
@@ -45,7 +47,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
 
         var liveTexts: [String] = []
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat,
+        center.start(targetID: "t1", mode: .idea,
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
         await waitUntil("engine loaded") { center.phase == .recording && !center.isEngineLoading }
@@ -75,7 +77,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set("apple", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
-        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let runner = FakeCLIRunner(stdout: ideaCleanedEnvelope)
         let session = FakeDictationSession(updates: ["hi"], finalText: "hi there")
         let center = DictationCenter(
             recorderFactory: { recorder },
@@ -93,7 +95,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
 
         var liveTexts: [String] = []
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat,
+        center.start(targetID: "t1", mode: .idea,
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
 
@@ -121,7 +123,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set("apple", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
-        let runner = FakeCLIRunner(stdout: chatCleanedEnvelope)
+        let runner = FakeCLIRunner(stdout: ideaCleanedEnvelope)
         let session = FakeDictationSession(updates: ["hi"], finalText: "hi there")
         let center = DictationCenter(
             recorderFactory: { recorder },
@@ -141,7 +143,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
 
         var liveTexts: [String] = []
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat,
+        center.start(targetID: "t1", mode: .idea,
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
         await waitUntil("session delivering") { !liveTexts.isEmpty }
@@ -165,7 +167,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
         let defaults = try isolatedDefaults()
         defaults.set("apple", forKey: "dictation.model")
         let recorder = FakeMicRecorder()
-        let runner = TranscriptCapturingRunner(stdout: chatCleanedEnvelope)
+        let runner = TranscriptCapturingRunner(stdout: ideaCleanedEnvelope)
         let session = FakeDictationSession(updates: ["hi"], finalText: "never returned",
                                            errorAfterDrain: AppleLaneStubTranscribeError())
         var decodedBuffers: [[Float]] = []
@@ -189,7 +191,7 @@ final class DictationCenterAppleLaneTests: MeetingRecorderTestCase {
 
         var liveTexts: [String] = []
         var result: DictationCleanResult?
-        center.start(targetID: "t1", mode: .chat,
+        center.start(targetID: "t1", mode: .idea,
                      onLiveText: { liveTexts.append($0) },
                      onResult: { result = $0 })
         await waitUntil("session delivering") { !liveTexts.isEmpty }

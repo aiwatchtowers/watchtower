@@ -93,7 +93,7 @@ final class TargetActionParserTests: XCTestCase {
     func testExecuteModePassesThrough() {
         let raw = """
         ```watchtower-action
-        {"type":"update_due","text":"2026-09-01","reason":"owner directive","mode":"execute"}
+        {"type":"update_due_date","due_date":"2026-09-01","reason":"owner directive","mode":"execute"}
         ```
         """
         let r = TargetActionParser.parse(raw)

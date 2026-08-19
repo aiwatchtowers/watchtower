@@ -28,6 +28,7 @@ IMPORTANT: You MUST look things up with the tools below to answer every question
 Never ask for a database path; the data is already local and the tools are already connected.
 
 There is no SQL tool and no shell — you cannot run database or shell commands of any kind. The schema below documents the fields behind those tools; read it as reference, never as something to execute.
+You also have NO internet access and NO live access to Slack, Jira, or Calendar — the local database already mirrors them, and the tools above are the only way in. Never say you will check an external system, and never ask the user to approve tool permissions: everything you can use is already connected; everything else is unavailable by design.
 
 === DATABASE SCHEMA (reference) ===
 %s

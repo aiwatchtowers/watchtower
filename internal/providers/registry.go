@@ -21,6 +21,10 @@ type Provider struct {
 	// LiveModels reports whether the provider can list its models at runtime
 	// (OpenAI-compatible `GET /v1/models`).
 	LiveModels bool `json:"live_models"`
+	// KnownModels lists CLI aliases beyond the tier defaults, so pickers can
+	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
+	// folds it into the same `models` field the live listing uses.
+	KnownModels []string `json:"-"`
 }
 
 // registry order is the display order in UIs.
@@ -31,6 +35,7 @@ var registry = []Provider{
 		Kind:          "cli",
 		DefaultLight:  "haiku",
 		DefaultStrong: "sonnet",
+		KnownModels:   []string{"haiku", "sonnet", "opus"},
 	},
 	{
 		ID:            "codex",

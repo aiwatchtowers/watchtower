@@ -288,7 +288,7 @@ final class IdeaChatViewModel {
             .map { "\n\n" + $0 } ?? ""
 
         return """
-        You are the user's AI secretary, discussing ONE entry from their Ideas & Decisions registry \
+        You are Watchtower, an AI assistant discussing ONE entry from the user's Ideas & Decisions registry \
         (an idea, decision, or note). Help them think it through — clarify the reasoning, surface risks, \
         or expand on it as asked.
 
@@ -306,6 +306,7 @@ final class IdeaChatViewModel {
         Never ask for a database path, never ask the user to authorize Slack, and never use claude.ai connectors \
         (the Slack connector or any other) — the data is already local and these tools are already connected. \
         If a lookup returns nothing, say so plainly rather than blaming access.
+        \(ChatViewModel.noLiveSourcesRule)
 
         === RESPONSE STYLE ===
         - Match the user's language in conversation.

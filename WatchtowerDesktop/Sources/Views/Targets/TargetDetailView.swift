@@ -24,6 +24,7 @@ struct TargetDetailView: View {
     @State private var subItemDueDateIndex: Int?
     @State private var subItemDueDate: Date = Date()
     @State private var promotingSubItem: PromotingSubItemContext?
+    @State private var subItemDropIndex: Int?
     @State private var newNoteText: String = ""
     @State private var jiraIssue: JiraIssue?
     @State private var jiraConnected = false
@@ -37,8 +38,9 @@ struct TargetDetailView: View {
     @State private var suggestedLinks: SuggestedLinksResult?
     @State private var isSuggestingLinks = false
     @State private var suggestLinksError: String?
-    @State private var chatVM: TargetChatViewModel?
+    @State private var assistant: TargetAssistantViewModel?
     @State private var nextStep: TargetNextStep?
+    @State private var isNextStepStale = false
     @State private var isGeneratingNextStep = false
     @State private var nextStepError: String?
     @State private var assistantInput: String = ""
@@ -106,35 +108,7 @@ struct TargetDetailView: View {
             .padding(.horizontal, 4)
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    switch selectedTab {
-                    case .details:
-                        detailsTab
-                    case .watch:
-                        if let vm = watchesVM {
-                            TargetWatchTabView(viewModel: vm) { seed in
-                                selectedTab = .assistant
-                                chatVM?.inputText = seed
-                            }
-                        }
-                    case .links:
-                        linksTab
-                    case .assistant:
-                        if case let .failed(failedID, message) = appState.targetBriefCenter.phase,
-                           failedID == target.id {
-                            briefFailureBanner(message)
-                        }
-                        if let chatVM {
-                            TargetChatSection(chatVM: chatVM)
-                                .frame(minHeight: 320)
-                        } else {
-                            Color.clear.onAppear { initChatVM() }
-                        }
-                    }
-                }
-                .padding()
-            }
+            tabContent
         }
         .onAppear {
             jiraConnected = JiraQueries.isConnected()
@@ -163,6 +137,9 @@ struct TargetDetailView: View {
             loadLinks()
             loadHierarchy()
             syncNextStep()
+            // The container is per target — drop the previous target's one so
+            // the Assistant tab re-resolves it from the center.
+            assistant = nil
             watchesVM?.stop(); watchesVM = nil
             if let db = appState.databaseManager { startWatchesVM(db: db) }
         }
@@ -189,6 +166,7 @@ struct TargetDetailView: View {
         .onChange(of: target.nextStep) {
             // Pick up suggestions written by the daemon's next-step phase.
             if !isGeneratingNextStep { nextStep = target.decodedNextStep }
+            recomputeNextStepStaleness(from: nil)
         }
         .onChange(of: focusedField) { oldValue, _ in
             switch oldValue {
@@ -246,6 +224,10 @@ struct TargetDetailView: View {
         ) {
             Button("Delete", role: .destructive) {
                 viewModel.deleteTarget(target)
+                // The target's conversations go with it; drop its container so
+                // the center never hands out tabs for a row that is gone.
+                appState.targetAssistantCenter.drop(targetID: target.id)
+                assistant = nil
                 onClose?()
             }
             Button("Cancel", role: .cancel) {}
@@ -319,6 +301,78 @@ struct TargetDetailView: View {
 
     // MARK: - Details Tab
 
+    // MARK: - Tab content
+
+    /// Every tab owns its own scrolling. The Assistant tab is deliberately NOT
+    /// wrapped in a ScrollView here: it already nests one (the message list)
+    /// plus the ChatInput's NSScrollView, and a scroll view inside a scroll
+    /// view leaves the outer one stuck — neither end of the conversation is
+    /// reachable (the `SituationDiscussInputBar` house gotcha; the same reason
+    /// `RecordingDetailView` scrolls per tab rather than around them).
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .details:
+            VStack(spacing: 0) {
+                scrollableTab { detailsTab }
+                Divider()
+                // Docked below the scroll, never inside it: ChatInput wraps an
+                // NSScrollView, which misbehaves nested in a SwiftUI ScrollView
+                // (the `SituationDiscussInputBar` placement, same reason).
+                assistantInlineInput
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            }
+        case .watch:
+            scrollableTab { watchTab }
+        case .links:
+            scrollableTab { linksTab }
+        case .assistant:
+            assistantTab
+        }
+    }
+
+    private func scrollableTab<Content: View>(
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                content()
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private var watchTab: some View {
+        if let vm = watchesVM {
+            TargetWatchTabView(viewModel: vm) { seed in
+                selectedTab = .assistant
+                ensureAssistant()?.activeChat?.inputText = seed
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var assistantTab: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if case let .failed(failedID, message) = appState.targetBriefCenter.phase,
+               failedID == target.id {
+                briefFailureBanner(message)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
+            }
+            if let assistant {
+                TargetChatSection(assistant: assistant)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear { _ = ensureAssistant() }
+            }
+        }
+    }
+
     private var detailsTab: some View {
         VStack(alignment: .leading, spacing: 20) {
             breadcrumbSection
@@ -331,7 +385,6 @@ struct TargetDetailView: View {
             hierarchySection
             notesSection
             jiraIssueSection
-            assistantInlineInput
             aboutSection
             footerActions
         }
@@ -514,6 +567,10 @@ struct TargetDetailView: View {
                 .help("Regenerate next step")
             }
 
+            if isNextStepStale {
+                staleStepStrip
+            }
+
             Text(ns.title)
                 .font(.headline)
                 .fixedSize(horizontal: false, vertical: true)
@@ -541,6 +598,32 @@ struct TargetDetailView: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color.purple.opacity(0.35), lineWidth: 1)
         )
+    }
+
+    /// Shown when the target moved on since this suggestion was generated. The
+    /// card keeps its text — it is still the last thing the operator agreed to
+    /// work on — and offers one click. Nothing here fires an AI call on its own:
+    /// the strong-model call happens on the button, or on the daemon's schedule.
+    private var staleStepStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.arrow.circlepath")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Text("Context changed since this step")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("Refresh step") {
+                Task { await generateNextStep() }
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .disabled(isGeneratingNextStep)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -712,7 +795,7 @@ struct TargetDetailView: View {
         .frame(width: 240)
     }
 
-    // MARK: - Checklist (2 columns, "stuck" badge on overdue)
+    // MARK: - Checklist (one row per item, "stuck" badge on overdue)
 
     @ViewBuilder
     private var checklistSection: some View {
@@ -724,10 +807,12 @@ struct TargetDetailView: View {
                 .foregroundStyle(.tertiary)
                 .tracking(0.5)
 
+            // One full-width column: real checklist items are long enough that
+            // two columns wrapped every row onto 2-3 ragged lines, which costs
+            // the same vertical space as one column of single-line rows and
+            // reads worse.
             if !items.isEmpty {
-                let columns = [GridItem(.flexible(), alignment: .leading),
-                               GridItem(.flexible(), alignment: .leading)]
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         checklistRow(index: index, item: item)
                     }
@@ -751,7 +836,10 @@ struct TargetDetailView: View {
 
     @ViewBuilder
     private func checklistRow(index: Int, item: TargetSubItem) -> some View {
-        HStack(spacing: 8) {
+        // The label wraps instead of clipping — real items ("[Maintenance] Deploy
+        // Trade 8.7.0 …") do not fit one line on a narrow window. Top-aligned so
+        // the checkbox and the "stuck" badge stay on the first line.
+        HStack(alignment: .top, spacing: 8) {
             Button {
                 viewModel.toggleSubItem(target, index: index)
             } label: {
@@ -761,9 +849,10 @@ struct TargetDetailView: View {
             .buttonStyle(.plain)
 
             if editingSubItemIndex == index {
-                TextField("Sub-item", text: $editingSubItemText)
+                TextField("Sub-item", text: $editingSubItemText, axis: .vertical)
                     .font(.callout)
                     .textFieldStyle(.plain)
+                    .lineLimit(1...6)
                     .onSubmit {
                         viewModel.editSubItem(target, index: index, newText: editingSubItemText)
                         editingSubItemIndex = nil
@@ -774,7 +863,10 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .strikethrough(item.done)
                     .foregroundStyle(item.done ? .secondary : .primary)
-                    .lineLimit(1)
+                    .lineLimit(4)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(item.text)
                     .onTapGesture {
                         editingSubItemIndex = index
                         editingSubItemText = item.text
@@ -793,6 +885,27 @@ struct TargetDetailView: View {
             Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
+        .padding(.vertical, 2)
+        .background(
+            subItemDropIndex == index ? Color.accentColor.opacity(0.15) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 4)
+        )
+        .draggable(TargetSubItemDrag.payload(targetID: target.id, index: index)) {
+            Text(item.text)
+                .font(.callout)
+                .lineLimit(1)
+                .padding(6)
+        }
+        .dropDestination(for: String.self) { payloads, _ in
+            dropSubItem(payloads, on: index)
+        } isTargeted: { targeted in
+            if targeted {
+                subItemDropIndex = index
+            } else if subItemDropIndex == index {
+                subItemDropIndex = nil
+            }
+        }
+        .help("Drag to reorder")
         .contextMenu {
             Button("Convert to sub-target") {
                 promotingSubItem = PromotingSubItemContext(index: index, item: item)
@@ -801,6 +914,24 @@ struct TargetDetailView: View {
                 viewModel.removeSubItem(target, index: index)
             }
         }
+    }
+
+    /// Reorders the checklist when a row is dropped on row `index`. Returns
+    /// false — leaving the list untouched — for anything that is not one of
+    /// THIS target's rows, so text dragged in from another app is ignored.
+    private func dropSubItem(_ payloads: [String], on index: Int) -> Bool {
+        subItemDropIndex = nil
+        let items = target.decodedSubItems
+        guard let payload = payloads.first,
+              let source = TargetSubItemDrag.sourceIndex(
+                  from: payload, targetID: target.id, itemCount: items.count
+              ),
+              let offset = TargetSubItemDrag.moveOffset(from: source, to: index)
+        else { return false }
+        // The inline editor addresses a row by index, which the move invalidates.
+        editingSubItemIndex = nil
+        viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset)
+        return true
     }
 
     // MARK: - Assistant inline input
@@ -884,7 +1015,9 @@ struct TargetDetailView: View {
     /// not surface cross-process writes onto the in-memory `target`.
     private func syncNextStep() {
         nextStepError = nil
-        if let stored = storedNextStep() {
+        let fresh = freshTarget()
+        recomputeNextStepStaleness(from: fresh)
+        if let stored = storedNextStep(fresh) {
             nextStep = stored
             return
         }
@@ -894,14 +1027,65 @@ struct TargetDetailView: View {
         }
     }
 
-    /// Reads the authoritative stored next-step for this target from the DB,
-    /// falling back to the (possibly stale) value carried on `target`.
-    private func storedNextStep() -> TargetNextStep? {
-        guard let dbManager = appState.databaseManager else { return target.decodedNextStep }
-        let fresh = try? dbManager.dbPool.read { db in
-            try TargetQueries.fetchByID(db, id: target.id)
+    /// Re-reads the stored row and refreshes both the displayed suggestion — so a
+    /// suggestion the daemon regenerated in the background lands on an open
+    /// screen — and the staleness badge. Deliberately never starts a generation:
+    /// the contract is a badge plus one click, never an automatic AI call.
+    private func refreshNextStepState() {
+        let fresh = freshTarget()
+        if !isGeneratingNextStep, let stored = storedNextStep(fresh) {
+            nextStep = stored
         }
-        return fresh?.decodedNextStep ?? target.decodedNextStep
+        recomputeNextStepStaleness(from: fresh)
+    }
+
+    /// Derives the badge: the suggestion is stale once the target moved on, where
+    /// "moved on" is `targets.updated_at` OR any assistant-chat activity — a chat
+    /// session that mutated nothing still counts as work on the target.
+    private func recomputeNextStepStaleness(from fresh: Target?) {
+        isNextStepStale = (fresh ?? target).isNextStepStale(
+            latestAssistantActivity: latestAssistantActivity()
+        )
+    }
+
+    /// When this target's assistant last had a real chat turn, or nil when it has
+    /// had none. Opening or renaming a tab is deliberately NOT activity — only a
+    /// persisted message is. A read failure (a CLI-only install has never created
+    /// the Swift-owned chat tables) reads as "no chat activity" — never as
+    /// "stale now".
+    private func latestAssistantActivity() -> Date? {
+        guard let dbManager = appState.databaseManager else { return nil }
+        do {
+            return try dbManager.dbPool.read { db in
+                try ChatConversationQueries.latestTurnActivity(
+                    db, type: "target", id: String(target.id)
+                )
+            }
+        } catch {
+            print("TargetDetail: reading chat activity for target \(target.id) failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Re-reads this target from the DB, because the CLI and the daemon write it
+    /// from another process and GRDB's observation does not surface cross-process
+    /// writes onto the in-memory `target`. Nil when the row cannot be read.
+    private func freshTarget() -> Target? {
+        guard let dbManager = appState.databaseManager else { return nil }
+        do {
+            return try dbManager.dbPool.read { db in
+                try TargetQueries.fetchByID(db, id: target.id)
+            }
+        } catch {
+            print("TargetDetail: re-reading target \(target.id) failed: \(error)")
+            return nil
+        }
+    }
+
+    /// The authoritative stored next-step, falling back to the (possibly stale)
+    /// value carried on `target` when the fresh row has none.
+    private func storedNextStep(_ fresh: Target?) -> TargetNextStep? {
+        fresh?.decodedNextStep ?? target.decodedNextStep
     }
 
     private func generateNextStep() async {
@@ -915,6 +1099,9 @@ struct TargetDetailView: View {
         do {
             let service = TargetNextStepService(runner: runner)
             nextStep = try await service.generate(targetID: target.id)
+            // Just generated from the current context, so the badge is cleared
+            // without waiting for a re-read of the row the CLI just wrote.
+            isNextStepStale = false
         } catch {
             nextStepError = "Couldn't generate a next step"
         }
@@ -942,28 +1129,30 @@ struct TargetDetailView: View {
         sendToAssistant(text)
     }
 
-    /// Adopt the brief-run VM held by `TargetBriefCenter` for this target —
-    /// so the creation-time run and the detail chat never race one
-    /// conversation — and only create a fresh VM when none is held.
-    private func initChatVM() {
-        guard chatVM == nil else { return }
-        if let adopted = appState.targetBriefCenter.adoptVM(for: target.id) {
-            chatVM = adopted
-            return
-        }
-        if let dbManager = appState.databaseManager {
-            chatVM = TargetChatViewModel(target: target, viewModel: viewModel, dbManager: dbManager)
-        }
+    /// Resolves this target's assistant tab container from the app-wide center
+    /// (so a chat that is mid-turn survives navigating away) and attaches the
+    /// staleness callback: an applied action or a finished turn re-runs the
+    /// next-step check on the open screen, which also picks up a daemon-written
+    /// suggestion. Nil only when the DB is not available yet.
+    @discardableResult
+    private func ensureAssistant() -> TargetAssistantViewModel? {
+        if let assistant { return assistant }
+        guard let dbManager = appState.databaseManager else { return nil }
+        let container = appState.targetAssistantCenter.container(
+            for: target, viewModel: viewModel, dbManager: dbManager
+        )
+        container.onTargetActivity = { refreshNextStepState() }
+        assistant = container
+        return container
     }
 
-    /// Routes a prompt into the target assistant chat, creating the view model
-    /// if needed, and switches to the Assistant tab so the user sees the reply.
+    /// Routes a prompt into the ACTIVE assistant tab, creating the container if
+    /// needed, and switches to the Assistant tab so the user sees the reply.
     private func sendToAssistant(_ prompt: String) {
-        if chatVM == nil { initChatVM() }
-        guard let chatVM else { return }
+        guard let chat = ensureAssistant()?.activeChat else { return }
         selectedTab = .assistant
-        chatVM.inputText = prompt
-        chatVM.send()
+        chat.inputText = prompt
+        chat.send()
     }
 
     private func urgencyLabel(_ ns: TargetNextStep) -> String? {

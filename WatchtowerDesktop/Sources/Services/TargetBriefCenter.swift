@@ -9,8 +9,10 @@ import WatchtowerCore
 /// auto-apply all ride), and holds the VM while the run streams, so the run
 /// survives the composer sheet being dismissed and any navigation away (the
 /// "начал → ушёл → вернулся" contract shared with `TargetExtractCenter`).
-/// `TargetDetailView` adopts the held VM via `adoptVM(for:)` instead of
-/// creating its own, so two VMs never race one conversation.
+/// Two VMs never race one conversation because the VM this center holds is the
+/// same one the detail view gets: both go through `TargetAssistantCenter`'s
+/// per-target container (wired in `AppState.makeChatVM`), so a brief started
+/// from the composer keeps streaming into the very chat the owner opens.
 @MainActor
 @Observable
 final class TargetBriefCenter {
@@ -110,9 +112,11 @@ final class TargetBriefCenter {
         }
     }
 
-    /// Hand the held VM to the detail view for `targetID` (nil for any other
-    /// target, or when no run is held). The center keeps its own reference
-    /// until the run finishes, so the run still survives the adopting view.
+    /// The VM this center is holding for `targetID` — nil for any other target,
+    /// or once the run has finished and the slot has been released. Views reach
+    /// the same VM through `TargetAssistantCenter`; this accessor exists so the
+    /// hold itself (the thing that makes the run survive navigation) is
+    /// observable from outside, and it is what the center's tests assert on.
     func adoptVM(for targetID: Int) -> TargetChatViewModel? {
         guard vmTargetID == targetID else { return nil }
         return vm

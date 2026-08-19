@@ -155,6 +155,13 @@ func (db *DB) SetTargetNextStep(id int, nextStep, generatedAt string) error {
 // whose next_step is missing or stale — i.e. never generated, or generated
 // before the target's last edit. Ordered by priority then nearest due date so
 // the most pressing targets are refreshed first. limit <= 0 means no cap.
+//
+// Staleness here is deliberately NARROWER than the Desktop badge's
+// (Target.isNextStepStale, WatchtowerCore): the Desktop also ages a suggestion
+// when the target's assistant chat had a turn, while this query sees only
+// targets.updated_at. A badge is free; a daemon pass here is a strong-model
+// call per target, so chat-only aging is left to the operator's one click.
+// If that trade is revisited, the two rules move together.
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')

@@ -80,7 +80,10 @@ final class TargetActionExecutorTests: XCTestCase {
         }
         XCTAssertEqual(children.count, 1)
         XCTAssertEqual(children.first?.text, "Ping Bob")
-        XCTAssertFalse(summary.isEmpty)
+        // The summary must carry the new child's id — it is echoed back into the
+        // conversation, and the assistant needs it to address the child next.
+        let childID = try XCTUnwrap(children.first?.id)
+        XCTAssertTrue(summary.contains("#\(childID)"), "summary should name the new child id: \(summary)")
     }
 
     func testApplyLinkTarget() throws {
@@ -183,20 +186,6 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertEqual(summary, "set priority to high")
     }
 
-    func testApplyUpdateDue() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let target = try makeTarget(manager)
-        let vm = TargetsViewModel(dbManager: manager)
-
-        let action = ProposedAction(type: .updateDue, reason: "friday", text: "2026-09-01")
-        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
-
-        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
-        XCTAssertEqual(after.dueDate, "2026-09-01")
-        XCTAssertEqual(summary, "set due date to 2026-09-01")
-    }
-
     func testApplyUpdateIntent() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -238,5 +227,189 @@ final class TargetActionExecutorTests: XCTestCase {
 
         let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
         XCTAssertEqual(after.status, "todo") // unchanged
+    }
+
+    // MARK: - Sub-item mutations
+
+    /// Creates a target with three sub-items and returns the re-fetched row.
+    private func makeTargetWithSubItems(_ manager: DatabaseManager, vm: TargetsViewModel) throws -> Target {
+        let target = try makeTarget(manager)
+        vm.addSubItem(target, text: "write spec")
+        var fresh = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        vm.addSubItem(fresh, text: "review PR")
+        fresh = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        vm.addSubItem(fresh, text: "ship it")
+        return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+    }
+
+    func testApplyToggleSubItem() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .toggleSubItem, reason: "user did it",
+                                    index: 1, match: "review PR", done: true)
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertTrue(after.decodedSubItems[1].done)
+    }
+
+    /// Toggling to the state the item is already in is a reported no-op, not a flip.
+    func testApplyToggleSubItemAlreadyInStateIsNoOp() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .toggleSubItem, reason: "r",
+                                    index: 0, match: "write spec", done: false)
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+        XCTAssertTrue(summary.contains("already"))
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertFalse(after.decodedSubItems[0].done)
+    }
+
+    func testApplyEditSubItem() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .editSubItem, reason: "reword",
+                                    text: "ship it to staging", index: 2, match: "ship it")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedSubItems[2].text, "ship it to staging")
+    }
+
+    func testApplyDeleteSubItem() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .deleteSubItem, reason: "obsolete",
+                                    index: 1, match: "review PR")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedSubItems.map(\.text), ["write spec", "ship it"])
+    }
+
+    /// The AI's index went stale (items shifted) but the text still uniquely
+    /// identifies the item — the executor must resolve it, not delete the wrong row.
+    func testApplyDeleteSubItemStaleIndexResolvesByText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .deleteSubItem, reason: "obsolete",
+                                    index: 0, match: "ship it")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedSubItems.map(\.text), ["write spec", "review PR"])
+    }
+
+    func testApplyDeleteSubItemNoMatchThrows() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .deleteSubItem, reason: "r",
+                                    index: 0, match: "never existed")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedSubItems.count, 3) // unchanged
+    }
+
+    func testApplySetSubItemDueAndClear() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let set = ProposedAction(type: .setSubItemDue, reason: "deadline",
+                                 index: 0, match: "write spec", dueDate: "2026-09-01")
+        _ = try TargetActionExecutor.apply(set, target: target, viewModel: vm)
+        var after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedSubItems[0].dueDate, "2026-09-01")
+
+        let clear = ProposedAction(type: .setSubItemDue, reason: "slipped",
+                                   index: 0, match: "write spec", dueDate: "")
+        _ = try TargetActionExecutor.apply(clear, target: after, viewModel: vm)
+        after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertNil(after.decodedSubItems[0].dueDate)
+    }
+
+    /// Summaries quote item texts capped with an ellipsis — a batch follow-up
+    /// must not echo whole checklists into the transcript.
+    func testApplySummariesTruncateLongItemText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTarget(manager)
+        let longText = String(repeating: "release checklist item ", count: 8) // ~180 chars
+        vm.addSubItem(target, text: longText)
+        let fresh = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+
+        let action = ProposedAction(type: .toggleSubItem, reason: "r",
+                                    index: 0, match: longText, done: true)
+        let summary = try TargetActionExecutor.apply(action, target: fresh, viewModel: vm)
+
+        XCTAssertTrue(summary.contains("…"), "long text must be truncated, got: \(summary)")
+        XCTAssertFalse(summary.contains(longText), "full text must not be echoed, got: \(summary)")
+    }
+
+    /// The edit summary names only the new text — the old text is redundant
+    /// (the card's match already identified the item) and doubles the noise.
+    func testApplyEditSubItemSummaryOmitsOldText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = TargetsViewModel(dbManager: manager)
+        let target = try makeTargetWithSubItems(manager, vm: vm)
+
+        let action = ProposedAction(type: .editSubItem, reason: "reword",
+                                    text: "ship to staging", index: 2, match: "ship it")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        XCTAssertTrue(summary.contains("ship to staging"))
+        XCTAssertFalse(summary.contains("\"ship it\""), "old text must not be echoed, got: \(summary)")
+    }
+
+    // MARK: - Target field mutations
+
+    func testApplyUpdateDueDate() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updateDueDate, reason: "agreed", dueDate: "2026-08-22")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.dueDate, "2026-08-22")
+        XCTAssertEqual(summary, "set due date to 2026-08-22")
+    }
+
+    func testApplyUpdateBallOn() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .updateBallOn, reason: "handed off", ballOn: "@petya")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.ballOn, "@petya")
     }
 }

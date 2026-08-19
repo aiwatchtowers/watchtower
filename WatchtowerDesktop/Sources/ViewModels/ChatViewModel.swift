@@ -366,6 +366,18 @@ final class ChatViewModel {
         """
     }
 
+    /// The data-access ground rule shared by every chat surface's system
+    /// prompt. Written against a real failure mode: tools the model cannot use
+    /// get silently denied in headless mode, so an unbriefed model wastes a
+    /// turn trying them and then asks the user to "approve tool permissions".
+    nonisolated static let noLiveSourcesRule = """
+        You have NO shell, NO filesystem access, NO internet, and NO live access to Slack, Jira, \
+        or Calendar — the local Watchtower database already mirrors them, and the tools listed above \
+        are the ONLY way in. Never say you will check an external system, and never ask the user to \
+        approve tool permissions: everything you can use is already connected; everything else is \
+        unavailable by design.
+        """
+
     nonisolated private static func promptDeepLinksAndRestrictions(teamID: String) -> String {
         """
         Deep link format:
@@ -400,7 +412,7 @@ final class ChatViewModel {
         Rules:
         - Every channel mention (#name) MUST be a link to that channel
         - Every referenced message or thread MUST have a link with descriptive text in the user's language
-        - Always SELECT channel_id and ts in your queries so you can build links
+        - The tools return channel_id and ts for every message, so you can always build links
 
         === RESPONSE STYLE ===
         - Be concise and direct — give the answer, not the process

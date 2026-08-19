@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/claude"
 )
@@ -157,7 +158,33 @@ type cliResponse struct {
 	NumTurns   int      `json:"num_turns"`
 	IsError    bool     `json:"is_error"`
 	SessionID  string   `json:"session_id"`
+	Subtype    string   `json:"subtype"`
+	StopReason string   `json:"stop_reason"`
 	Usage      cliUsage `json:"usage"`
+}
+
+// errorEnvelopeMessage returns the CLI's own message for a failed run, falling
+// back to a fixed string when the envelope carries none — an error whose tail
+// is empty tells a reader nothing.
+func errorEnvelopeMessage(resp *cliResponse) string {
+	msg := strings.TrimSpace(resp.Result)
+	if msg == "" {
+		return "no message in the CLI result envelope"
+	}
+	// On subtype=error_max_turns the envelope's result carries the model's own
+	// partial output rather than a short diagnostic, so bound what reaches the
+	// log the way the sibling stderr path is bounded by limitedWriter.
+	const maxEnvelopeMessage = 4096
+	if len(msg) <= maxEnvelopeMessage {
+		return msg
+	}
+	// Back off to a rune boundary: this text is model output and routinely
+	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
+	cut := maxEnvelopeMessage
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -254,14 +281,22 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 			}
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			// The CLI reports an API or usage failure as an ordinary result
+			// envelope on stdout and exits 1, with the human-readable message
+			// behind kilobytes of usage telemetry. Parse it so the error
+			// carries that message instead of the whole blob.
+			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
+				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp))
+			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg == "" {
 				stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 			}
-			// Include any stdout output for debugging
-			stdoutMsg := strings.TrimSpace(string(output))
-			if stderrMsg == "" && stdoutMsg != "" {
-				stderrMsg = stdoutMsg
+			// Stdout the parser could not understand is model-derived text:
+			// describe it, never echo it (see claude.DescribeOutput).
+			if stderrMsg == "" && len(bytes.TrimSpace(output)) > 0 {
+				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
 				return "", nil, "", fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg)
@@ -277,7 +312,9 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	}
 
 	if resp.IsError {
-		return "", nil, "", fmt.Errorf("claude returned error: %s", resp.Result)
+		// Same envelope, same empty-result trap as the non-zero-exit branch
+		// above — the CLI can flag is_error and still exit 0.
+		return "", nil, "", fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {

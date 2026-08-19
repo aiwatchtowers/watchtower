@@ -955,20 +955,34 @@ struct RecordingChatTab: View {
                     .font(.caption2)
                     .foregroundStyle(Color.accentColor)
                     .padding(.top, 9)
-                Group {
-                    if msg.text.isEmpty && msg.isStreaming {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
-                            Text("Thinking…").foregroundStyle(.secondary)
-                        }
-                        .font(.subheadline)
-                    } else {
-                        MarkdownText(text: msg.text)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Group {
+                        if msg.text.isEmpty && msg.isStreaming {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("Thinking…").foregroundStyle(.secondary)
+                            }
                             .font(.subheadline)
-                            .textSelection(.enabled)
+                        } else {
+                            MarkdownText(text: msg.text)
+                                .font(.subheadline)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if !msg.isStreaming && !msg.text.isEmpty {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(msg.text, forType: .string)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Copy message")
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 14))

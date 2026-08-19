@@ -11,7 +11,8 @@ struct AIModelCatalogTests {
       "providers": [
         {"id": "claude", "display_name": "Claude", "kind": "cli",
          "default_light": "haiku", "default_strong": "sonnet", "live_models": false,
-         "resolved_light": "haiku", "resolved_strong": "claude-opus-4-6"},
+         "resolved_light": "haiku", "resolved_strong": "claude-opus-4-6",
+         "models": ["haiku", "sonnet", "opus"]},
         {"id": "codex", "display_name": "Codex", "kind": "cli",
          "default_light": "gpt-5.4-mini", "default_strong": "gpt-5.4", "live_models": false,
          "resolved_light": "gpt-5.4-mini", "resolved_strong": "gpt-5.4"},
@@ -43,7 +44,7 @@ struct AIModelCatalogTests {
         let output = try AIModelCatalog.parse(Data(sample.utf8))
 
         let claude = try #require(output.providers.first { $0.id == "claude" })
-        #expect(AIModelCatalog.suggestions(for: claude) == ["haiku", "claude-opus-4-6", "sonnet"])
+        #expect(AIModelCatalog.suggestions(for: claude) == ["haiku", "claude-opus-4-6", "sonnet", "opus"])
 
         // Ollama: every value is gemma4:31b except the extra live model —
         // duplicates collapse, live list extends the tail.

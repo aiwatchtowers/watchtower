@@ -113,25 +113,24 @@ func TestDictateCleanNoteMode(t *testing.T) {
 	assert.Equal(t, 1, gen.calls)
 }
 
-func TestDictateCleanChatMode(t *testing.T) {
+// Chat fields deliver the raw transcript in the Desktop app and never call
+// this CLI (owner call 2026-08-18) — the retired mode must be rejected, not
+// silently accepted with an empty envelope.
+func TestDictateCleanRejectsRetiredChatMode(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
 	resetDictateFlags(t)
-	gen := &dictateMockGen{response: `{"text":"Can you check the deploy status?"}`}
+	gen := &dictateMockGen{response: `{"text":"unused"}`}
 	stubDictateGenerator(t, gen)
 
 	f := writeTempTranscript(t, "um can you check the deploy status")
 
-	var buf bytes.Buffer
-	dictateCleanCmd.SetOut(&buf)
 	dictateCleanFlagMode = "chat"
 	dictateCleanFlagFile = f
-	require.NoError(t, dictateCleanCmd.RunE(dictateCleanCmd, nil))
-
-	env := rawEnvelopeFrom(t, buf.Bytes())
-	assert.Equal(t, "chat", env["mode"])
-	assert.Equal(t, "Can you check the deploy status?", env["text"])
-	assert.Equal(t, 1, gen.calls)
+	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --mode")
+	assert.Equal(t, 0, gen.calls)
 }
 
 func TestDictateCleanRejectsUnknownMode(t *testing.T) {
@@ -149,7 +148,7 @@ func TestDictateCleanRejectsUnknownMode(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "idea")
 	assert.Contains(t, err.Error(), "note")
-	assert.Contains(t, err.Error(), "chat")
+	assert.NotContains(t, err.Error(), "chat")
 	assert.Equal(t, 0, gen.calls)
 }
 
@@ -160,7 +159,7 @@ func TestDictateCleanRequiresTranscriptFile(t *testing.T) {
 	gen := &dictateMockGen{response: `{"text":"unused"}`}
 	stubDictateGenerator(t, gen)
 
-	dictateCleanFlagMode = "chat"
+	dictateCleanFlagMode = "note"
 	dictateCleanFlagFile = ""
 	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
 	require.Error(t, err)
@@ -176,7 +175,7 @@ func TestDictateCleanEmptyTranscript(t *testing.T) {
 
 	f := writeTempTranscript(t, "   \n\t  ")
 
-	dictateCleanFlagMode = "chat"
+	dictateCleanFlagMode = "note"
 	dictateCleanFlagFile = f
 	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
 	require.Error(t, err)
@@ -192,7 +191,7 @@ func TestDictateCleanGeneratorFailure(t *testing.T) {
 
 	f := writeTempTranscript(t, "some dictation text")
 
-	dictateCleanFlagMode = "chat"
+	dictateCleanFlagMode = "note"
 	dictateCleanFlagFile = f
 	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
 	require.Error(t, err)
@@ -234,22 +233,6 @@ func TestDictateCleanMissingMarkdownKeyNoteMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "markdown")
 }
 
-func TestDictateCleanMissingTextKeyChatMode(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-	resetDictateFlags(t)
-	gen := &dictateMockGen{response: `{"markdown":"not chat text"}`}
-	stubDictateGenerator(t, gen)
-
-	f := writeTempTranscript(t, "some dictation text")
-
-	dictateCleanFlagMode = "chat"
-	dictateCleanFlagFile = f
-	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "text")
-}
-
 func TestDictateCleanNonexistentTranscriptFile(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -257,7 +240,7 @@ func TestDictateCleanNonexistentTranscriptFile(t *testing.T) {
 	gen := &dictateMockGen{response: `{"text":"unused"}`}
 	stubDictateGenerator(t, gen)
 
-	dictateCleanFlagMode = "chat"
+	dictateCleanFlagMode = "note"
 	dictateCleanFlagFile = filepath.Join(t.TempDir(), "does-not-exist.txt")
 	err := dictateCleanCmd.RunE(dictateCleanCmd, nil)
 	require.Error(t, err)
@@ -269,17 +252,17 @@ func TestDictateCleanFencedJSON(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
 	resetDictateFlags(t)
-	gen := &dictateMockGen{response: "```json\n{\"text\":\"cleaned up text\"}\n```"}
+	gen := &dictateMockGen{response: "```json\n{\"markdown\":\"cleaned up text\"}\n```"}
 	stubDictateGenerator(t, gen)
 
 	f := writeTempTranscript(t, "some dictation text")
 
 	var buf bytes.Buffer
 	dictateCleanCmd.SetOut(&buf)
-	dictateCleanFlagMode = "chat"
+	dictateCleanFlagMode = "note"
 	dictateCleanFlagFile = f
 	require.NoError(t, dictateCleanCmd.RunE(dictateCleanCmd, nil))
 
 	env := rawEnvelopeFrom(t, buf.Bytes())
-	assert.Equal(t, "cleaned up text", env["text"])
+	assert.Equal(t, "cleaned up text", env["markdown"])
 }

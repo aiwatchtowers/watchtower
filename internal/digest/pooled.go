@@ -50,7 +50,7 @@ func (pg *PooledGenerator) Generate(ctx context.Context, systemPrompt, userMessa
 	// Log generation event.
 	if pg.sessionLog != nil && sessionID != "" {
 		source := "unknown"
-		if s, ok := ctx.Value(sessionSourceKey{}).(string); ok && s != "" {
+		if s, ok := SourceFromContext(ctx); ok {
 			source = s
 		}
 		pg.sessionLog.Log(sessions.SessionEvent{

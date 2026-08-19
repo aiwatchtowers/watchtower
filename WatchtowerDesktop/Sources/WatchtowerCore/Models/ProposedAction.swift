@@ -7,9 +7,14 @@ package enum TargetActionKind: String, Codable {
     case addSubItem = "add_sub_item"
     case createChildTarget = "create_child_target"
     case linkTarget = "link_target"
-    case updateTitle = "update_title"
+    case toggleSubItem = "toggle_sub_item"
+    case editSubItem = "edit_sub_item"
+    case deleteSubItem = "delete_sub_item"
+    case setSubItemDue = "set_sub_item_due"
+    case updateDueDate = "update_due_date"
     case updatePriority = "update_priority"
-    case updateDue = "update_due"
+    case updateBallOn = "update_ball_on"
+    case updateTitle = "update_title"
     case updateIntent = "update_intent"
 }
 
@@ -32,6 +37,14 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     package var priority: String?
     package var targetId: Int?
     package var relation: String?
+    package var index: Int?
+    package var match: String?
+    // Tri-state by design: nil = the model omitted the field (validation error),
+    // not a default — so an optional Bool is the honest type here.
+    package var done: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    package var dueDate: String?
+    package var ballOn: String?
+
     /// "propose" | "execute". Absent or any other value ⇒ propose (backward
     /// compatible with old model output and persisted track_events rows).
     package var mode: String?
@@ -40,10 +53,26 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     /// proposal awaiting the Approve gate.
     package var isExecute: Bool { mode == "execute" }
 
+    /// Whether this action may auto-apply in the chat opened on `currentTargetID`.
+    /// Execute mode skips the Approve gate only for writes to the chat's OWN
+    /// target: an action addressing another task in the tree stays a pending
+    /// card however the model marked it, so the owner approves every write that
+    /// leaves the target they are looking at (`docs/inventory/targets.md`
+    /// TGT-BRIEF-03). `link_target` is exempt — its `target_id` names the link
+    /// partner, not a write target; the row it writes belongs to this target.
+    package func autoApplies(inChatFor currentTargetID: Int) -> Bool {
+        guard isExecute else { return false }
+        guard type != .linkTarget, let targetId else { return true }
+        return targetId == currentTargetID
+    }
+
     package enum CodingKeys: String, CodingKey {
         case type, reason, status, note, progress, text, intent, priority
         case targetId = "target_id"
         case relation, mode
+        case index, match, done
+        case dueDate = "due_date"
+        case ballOn = "ball_on"
     }
 
     package init(
@@ -57,6 +86,11 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         priority: String? = nil,
         targetId: Int? = nil,
         relation: String? = nil,
+        index: Int? = nil,
+        match: String? = nil,
+        done: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        dueDate: String? = nil,
+        ballOn: String? = nil,
         mode: String? = nil
     ) {
         self.type = type
@@ -69,6 +103,11 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         self.priority = priority
         self.targetId = targetId
         self.relation = relation
+        self.index = index
+        self.match = match
+        self.done = done
+        self.dueDate = dueDate
+        self.ballOn = ballOn
         self.mode = mode
     }
 
@@ -82,10 +121,15 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         intent = try? c.decodeIfPresent(String.self, forKey: .intent)
         priority = try? c.decodeIfPresent(String.self, forKey: .priority)
         relation = try? c.decodeIfPresent(String.self, forKey: .relation)
+        match = try? c.decodeIfPresent(String.self, forKey: .match)
+        dueDate = try? c.decodeIfPresent(String.self, forKey: .dueDate)
+        ballOn = try? c.decodeIfPresent(String.self, forKey: .ballOn)
         mode = try? c.decodeIfPresent(String.self, forKey: .mode)
         // LLMs frequently emit numeric fields as quoted strings — accept both.
         progress = Self.lenientInt(c, .progress)
         targetId = Self.lenientInt(c, .targetId)
+        index = Self.lenientInt(c, .index)
+        done = Self.lenientBool(c, .done)
     }
 
     /// Decodes an optional Int that the model may have emitted as a JSON number
@@ -100,6 +144,22 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         return nil
     }
 
+    /// Decodes an optional Bool that the model may have emitted as a JSON bool
+    /// or as a quoted string ("true"/"false"). Returns nil when absent or unparseable.
+    private static func lenientBool(
+        _ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys
+    ) -> Bool? { // swiftlint:disable:this discouraged_optional_boolean
+        if let b = try? c.decodeIfPresent(Bool.self, forKey: key) { return b }
+        if let s = try? c.decodeIfPresent(String.self, forKey: key) {
+            switch s.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "true": return true
+            case "false": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
     package static let allowedStatuses: Set<String> = [
         "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
     ]
@@ -109,66 +169,162 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
     ]
 
     package func validate() throws {
-        try Self.requireNonEmpty(reason, name: "reason")
+        if reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ProposedActionError.invalid("reason is required")
+        }
         switch type {
         case .updateStatus:
-            try Self.requireAllowed(status, in: Self.allowedStatuses, name: "status")
+            try validateStatus()
         case .updateNotes:
-            try Self.requireNonEmpty(note, name: "note")
+            try validateNote()
         case .updateProgress:
-            guard let progress, (0...100).contains(progress) else {
-                throw ProposedActionError.invalid("progress must be 0...100")
-            }
+            try validateProgress()
         case .addSubItem, .updateTitle, .updateIntent:
-            try Self.requireNonEmpty(text, name: "text")
+            try validateText()
         case .createChildTarget:
-            try Self.requireNonEmpty(text, name: "text")
-            if priority != nil {
-                try Self.requireAllowed(priority, in: Self.allowedPriorities, name: "priority")
-            }
+            try validateText()
+            try validateOptionalPriority()
         case .linkTarget:
-            guard let targetId, targetId > 0 else {
-                throw ProposedActionError.invalid("target_id is required")
-            }
-            try Self.requireAllowed(relation, in: Self.allowedRelations, name: "relation")
+            try validateLink()
+        case .toggleSubItem:
+            try validateSubItemAddress()
+            try validateDone()
+        case .editSubItem:
+            try validateSubItemAddress()
+            try validateText()
+        case .deleteSubItem:
+            try validateSubItemAddress()
+        case .setSubItemDue:
+            try validateSubItemAddress()
+            try validateDueDateField()
+        case .updateDueDate:
+            try validateDueDateField()
         case .updatePriority:
-            try Self.requireAllowed(priority, in: Self.allowedPriorities, name: "priority")
-        case .updateDue:
-            guard let text, Self.isValidDueDate(text) else {
-                throw ProposedActionError.invalid("text must be a valid YYYY-MM-DD date")
-            }
+            try validatePriority()
+        case .updateBallOn:
+            try validateBallOn()
         }
     }
 
-    private static func requireNonEmpty(_ value: String?, name: String) throws {
-        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ProposedActionError.invalid("\(name) is required")
+    private func validateStatus() throws {
+        guard let status, Self.allowedStatuses.contains(status) else {
+            throw ProposedActionError.invalid("status must be one of \(Self.allowedStatuses.sorted())")
         }
     }
 
-    private static func requireAllowed(_ value: String?, in allowed: Set<String>, name: String) throws {
-        guard let value, allowed.contains(value) else {
-            throw ProposedActionError.invalid("\(name) must be one of \(allowed.sorted())")
+    private func validateNote() throws {
+        guard let note, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProposedActionError.invalid("note is required")
         }
     }
 
-    /// Strict `YYYY-MM-DD` check: shape via regex, then a non-lenient calendar
-    /// parse so an impossible date ("2026-02-30") is rejected too.
+    private func validateProgress() throws {
+        guard let progress, (0...100).contains(progress) else {
+            throw ProposedActionError.invalid("progress must be 0...100")
+        }
+    }
+
+    private func validateText() throws {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProposedActionError.invalid("text is required")
+        }
+    }
+
+    /// A priority is optional on create_child_target but must be valid when given.
+    private func validateOptionalPriority() throws {
+        if let priority, !Self.allowedPriorities.contains(priority) {
+            throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
+        }
+    }
+
+    private func validatePriority() throws {
+        guard let priority, Self.allowedPriorities.contains(priority) else {
+            throw ProposedActionError.invalid("priority must be one of \(Self.allowedPriorities.sorted())")
+        }
+    }
+
+    private func validateLink() throws {
+        guard let targetId, targetId > 0 else {
+            throw ProposedActionError.invalid("target_id is required")
+        }
+        guard let relation, Self.allowedRelations.contains(relation) else {
+            throw ProposedActionError.invalid("relation must be one of \(Self.allowedRelations.sorted())")
+        }
+    }
+
+    private func validateDone() throws {
+        guard done != nil else {
+            throw ProposedActionError.invalid("done (true|false) is required")
+        }
+    }
+
+    private func validateBallOn() throws {
+        guard ballOn != nil else {
+            throw ProposedActionError.invalid("ball_on is required (\"\" to clear)")
+        }
+    }
+
+    /// Sub-item-addressing actions must carry both the index the AI saw and the
+    /// item's current text; the pair is re-resolved against the live list at
+    /// apply time (see resolveSubItemIndex).
+    private func validateSubItemAddress() throws {
+        guard let index, index >= 0 else {
+            throw ProposedActionError.invalid("index is required (from the sub-items list)")
+        }
+        guard let match, !match.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProposedActionError.invalid("match (the sub-item's current text) is required")
+        }
+    }
+
+    private func validateDueDateField() throws {
+        guard let dueDate else {
+            throw ProposedActionError.invalid("due_date is required (\"\" to clear)")
+        }
+        guard Self.isValidDueDate(dueDate) else {
+            throw ProposedActionError.invalid("due_date must be YYYY-MM-DD, YYYY-MM-DDTHH:MM, or \"\" to clear")
+        }
+    }
+
+    /// Accepts the two stored due-date shapes ("YYYY-MM-DD" and
+    /// "YYYY-MM-DDTHH:MM") plus "" meaning "clear".
+    ///
+    /// Shape alone is not enough: it admits impossible calendar dates like
+    /// "2026-02-30", which `Target.parseDueDate` — the non-lenient reader every
+    /// due-date surface goes through — then returns nil for, so the value would
+    /// store fine and afterwards render as no due date at all and never go
+    /// overdue. Validate through that same parse so what passes here is exactly
+    /// what the UI can read back.
     package static func isValidDueDate(_ s: String) -> Bool {
-        guard s.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else {
+        if s.isEmpty { return true }
+        guard s.range(of: #"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$"#, options: .regularExpression) != nil else {
             return false
         }
-        return dueDateFormatter.date(from: s) != nil
+        return Target.parseDueDate(s) != nil
     }
 
-    private static let dueDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd"
-        f.isLenient = false
-        return f
-    }()
+    /// Resolves this action's sub-item address against the live sub-items list.
+    /// The prompt snapshot the AI saw may be stale by apply time, so the index
+    /// counts only when the text at that index still matches; otherwise a
+    /// unique text match wins; otherwise the action fails (never guess).
+    package func resolveSubItemIndex(in items: [TargetSubItem]) throws -> Int {
+        guard let index, let match else {
+            throw ProposedActionError.invalid("index and match are required")
+        }
+        let wanted = match.trimmingCharacters(in: .whitespacesAndNewlines)
+        func text(_ i: Int) -> String {
+            items[i].text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if items.indices.contains(index), text(index) == wanted { return index }
+        let hits = items.indices.filter { text($0) == wanted }
+        guard hits.count == 1 else {
+            throw ProposedActionError.invalid(
+                hits.isEmpty
+                    ? "no sub-item matches \"\(wanted)\" — the list may have changed"
+                    : "\"\(wanted)\" matches several sub-items — cannot pick one safely"
+            )
+        }
+        return hits[0]
+    }
 
     package var cardDescription: String {
         switch type {
@@ -184,12 +340,27 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             return "Create child target: \(text ?? "")\n\(reason)"
         case .linkTarget:
             return "Link → target #\(targetId ?? 0) as \"\(relation ?? "?")\"\n\(reason)"
+        case .toggleSubItem:
+            return "\(done == true ? "Check" : "Uncheck") sub-item: \(match ?? "")\n\(reason)"
+        case .editSubItem:
+            return "Edit sub-item: \(match ?? "") → \(text ?? "")\n\(reason)"
+        case .deleteSubItem:
+            return "Delete sub-item: \(match ?? "")\n\(reason)"
+        case .setSubItemDue:
+            let due = dueDate ?? ""
+            return due.isEmpty
+                ? "Clear due date on sub-item: \(match ?? "")\n\(reason)"
+                : "Set sub-item due → \(due): \(match ?? "")\n\(reason)"
+        case .updateDueDate:
+            let due = dueDate ?? ""
+            return due.isEmpty ? "Clear due date\n\(reason)" : "Set due date → \(due)\n\(reason)"
+        case .updatePriority:
+            return "Set priority → \(priority ?? "?")\n\(reason)"
+        case .updateBallOn:
+            let ball = ballOn ?? ""
+            return ball.isEmpty ? "Clear ball-on\n\(reason)" : "Set ball on → \(ball)\n\(reason)"
         case .updateTitle:
             return "Rename to \"\(text ?? "")\"\n\(reason)"
-        case .updatePriority:
-            return "Set priority to \(priority ?? "?")\n\(reason)"
-        case .updateDue:
-            return "Set due date to \(text ?? "?")\n\(reason)"
         case .updateIntent:
             return "Update context\n\(reason)"
         }

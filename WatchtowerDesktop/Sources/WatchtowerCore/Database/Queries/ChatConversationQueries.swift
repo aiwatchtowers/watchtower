@@ -79,6 +79,49 @@ package enum ChatConversationQueries {
         )
     }
 
+    /// All conversations for one context, oldest first — the tab order on the
+    /// target assistant. `id` breaks ties so two rows created inside the same
+    /// `Date()` tick keep a stable order.
+    package static func fetchAllByContext(_ db: Database, type: String, id: String) throws -> [ChatConversation] {
+        try ChatConversation.fetchAll(
+            db,
+            sql: """
+                SELECT * FROM chat_conversations
+                WHERE context_type = ? AND context_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+            arguments: [type, id]
+        )
+    }
+
+    /// When this context last had a real chat TURN, or nil when it has had none.
+    ///
+    /// Deliberately measured over `chat_messages`, not over the conversations'
+    /// own `updated_at`: a row's stamp moves when the tab is merely created or
+    /// renamed, so a `MAX(updated_at)` would report "activity" for an empty tab
+    /// the operator just opened. It also lags a real turn — only the assistant's
+    /// reply calls `touch`, so a user turn whose reply failed would report none.
+    /// Every persisted message (user, assistant and the "Action applied: …"
+    /// system lines) counts, and only those.
+    ///
+    /// `created_at` is a REAL unix timestamp in these Swift-owned tables, so the
+    /// raw MAX is seconds since 1970. `chat_messages` is created by the Desktop
+    /// module alongside `chat_conversations`; a caller running before either
+    /// exists gets the thrown "no such table", which reads as "no activity".
+    package static func latestTurnActivity(_ db: Database, type: String, id: String) throws -> Date? {
+        let newest = try Double.fetchOne(
+            db,
+            sql: """
+                SELECT MAX(m.created_at) FROM chat_messages m
+                JOIN chat_conversations c ON c.id = m.conversation_id
+                WHERE c.context_type = ? AND c.context_id = ?
+                """,
+            arguments: [type, id]
+        )
+        guard let newest else { return nil }
+        return Date(timeIntervalSince1970: newest)
+    }
+
     package static func updateTitle(_ db: Database, id: Int64, title: String) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """

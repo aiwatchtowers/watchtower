@@ -108,11 +108,22 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// commands. The task-chat agent still changes targets ONLY via
 		// watchtower-action approval cards, never by writing to the DB directly.
 		"--allowedTools", "mcp__watchtower",
-		// Block file-editing plus Claude Code's native task tooling (TodoWrite/Task):
-		// the assistants here read the DB and answer, and the task-chat agent must
-		// create/change targets ONLY via watchtower-action approval cards — not via
-		// the CLI's ephemeral todo list, which would silently bypass the DB.
-		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead",
+		// Hide every built-in tool from the model outright, not just deny it:
+		// a tool that is merely denied still shows up in the model's tool list,
+		// so it tries the call, gets a silent headless rejection, and then asks
+		// the user to "approve tool permissions" — a dead-end UX in the app's
+		// chats. Three groups, all deliberate:
+		//  - file editing + Claude Code task tooling (Edit/Write/TodoWrite/Task):
+		//    targets change ONLY via watchtower-action approval cards;
+		//  - shell + web (Bash/WebSearch/WebFetch): the assistant must never
+		//    reach live Slack/Jira/Calendar or the open web — the local DB
+		//    mirrors the sources, and web fetches are an exfiltration channel
+		//    for prompt-injection payloads in synced content;
+		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
+		//    and probing user folders can trigger TCC prompts (a project P0).
+		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
+			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
+			"ExitPlanMode,SlashCommand,Skill",
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.

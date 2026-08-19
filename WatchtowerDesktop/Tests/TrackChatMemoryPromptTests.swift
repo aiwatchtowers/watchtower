@@ -45,6 +45,20 @@ final class TrackChatMemoryPromptTests: XCTestCase {
         XCTAssertTrue(prompt.contains("model-mediated"))
     }
 
+    /// The prompt must brief the model on its real toolset (MCP over the local
+    /// database) — SQL recipes and the database path sent it hunting for
+    /// shell/SQL tools it does not have.
+    func testTrackPromptBriefsToolsAndBansSQL() throws {
+        let track = try makeTrack()
+        let prompt = TrackChatViewModel.buildSystemPrompt(
+            track: track, dbPool: dbManager.dbPool, memoryChatEnabled: false, memoryVaultDir: nil)
+        XCTAssertTrue(prompt.contains("list_messages"))
+        XCTAssertTrue(prompt.contains("never ask the user to approve tool permissions"))
+        XCTAssertTrue(prompt.contains("NO live access to Slack, Jira"))
+        XCTAssertFalse(prompt.contains("SELECT "), "SQL recipes imply a SQL tool that does not exist")
+        XCTAssertFalse(prompt.contains(dbManager.dbPool.path), "the database path must stay out of the prompt")
+    }
+
     func testMemoryBlockAbsentWhenFlagOff() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertMemoryNode(db, id: "ent_cf", type: "entity", title: "Cloudflare (vendor)")

@@ -423,6 +423,14 @@ struct SystemSettings: View {
         return legacy == "claude-sonnet-4-6" ? "" : legacy
     }
 
+    /// The light-tier model the test should exercise: the form value, else
+    /// the catalog's resolved value. No legacy fallback — ai.model only ever
+    /// configured the strong tier.
+    private var testModelLight: String? {
+        if let light = config.aiModelLight, !light.isEmpty { return light }
+        return catalogProvider?.resolvedLight
+    }
+
     private func testConnection() {
         if selectedProviderID == "ollama" {
             testOllamaConnection()
@@ -438,119 +446,129 @@ struct SystemSettings: View {
             return
         }
 
-        connectionTestRunning = true
-        connectionTestResult = nil
-
-        let model = testModel
-        guard !model.isEmpty else {
+        // Both tiers get probed — a broken light model would otherwise pass
+        // the test and then fail every triage/digest call.
+        let models = ConnectionTest.models(light: testModelLight, strong: testModel)
+        guard !models.isEmpty else {
             // No form value and the catalog has not loaded: without a model
             // there is nothing meaningful to test (and hardcoding one here
             // would violate the no-model-names-in-Swift rule).
-            connectionTestRunning = false
             connectionTestSuccess = false
             connectionTestResult = "Model list unavailable — enter a model first"
             return
         }
 
+        connectionTestRunning = true
+        connectionTestResult = nil
+
         Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-
-            if isCodex {
-                process.arguments = ["exec", "--model", model, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "respond with: OK"]
-            } else {
-                process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+            var results: [(model: String, error: String?)] = []
+            for model in models {
+                results.append((model, Self.runCLIProbe(path: path, isCodex: isCodex, model: model)))
             }
-
-            process.environment = Constants.resolvedEnvironment()
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    connectionTestRunning = false
-                    connectionTestSuccess = false
-                    connectionTestResult = "Failed to launch: \(error.localizedDescription)"
-                }
-                return
-            }
-
-            process.waitUntilExit()
-
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
+            let (ok, message) = ConnectionTest.summary(results)
             await MainActor.run {
                 connectionTestRunning = false
-                if process.terminationStatus == 0 && !stdout.isEmpty {
-                    connectionTestSuccess = true
-                    connectionTestResult = "Connected (\(model))"
-                } else {
-                    connectionTestSuccess = false
-                    connectionTestResult = Self.diagnoseError(stderr: stderr, exitCode: process.terminationStatus)
-                }
+                connectionTestSuccess = ok
+                connectionTestResult = message
             }
         }
+    }
+
+    /// One blocking CLI probe; nil means the model answered.
+    private static func runCLIProbe(path: String, isCodex: Bool, model: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+
+        if isCodex {
+            process.arguments = ["exec", "--model", model, "--json", "--skip-git-repo-check", "-c", "approval_policy=never", "respond with: OK"]
+        } else {
+            process.arguments = ["-p", "respond with: OK", "--output-format", "text", "--model", model]
+        }
+
+        process.environment = Constants.resolvedEnvironment()
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return "Failed to launch: \(error.localizedDescription)"
+        }
+
+        process.waitUntilExit()
+
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if process.terminationStatus == 0 && !stdout.isEmpty {
+            return nil
+        }
+        return diagnoseError(stderr: stderr, exitCode: process.terminationStatus)
     }
 
     /// Test an OpenAI-compatible server with a direct chat-completions call,
     /// so the button exercises the exact URL and model in the form (saved or
     /// not) rather than whatever config is on disk.
     private func testOllamaConnection() {
-        connectionTestRunning = true
-        connectionTestResult = nil
-
         let base = (config.aiOllamaURL ?? "").isEmpty ? Self.defaultOllamaURL : (config.aiOllamaURL ?? "")
-        let model = testModel
-        guard !model.isEmpty else {
-            connectionTestRunning = false
+        let models = ConnectionTest.models(light: testModelLight, strong: testModel)
+        guard !models.isEmpty else {
             connectionTestSuccess = false
             connectionTestResult = "Pick a model first (Strong Model field)"
             return
         }
         let endpoint = base.hasSuffix("/") ? base + "v1/chat/completions" : base + "/v1/chat/completions"
         guard let url = URL(string: endpoint) else {
-            connectionTestRunning = false
             connectionTestSuccess = false
             connectionTestResult = "Invalid server URL"
             return
         }
 
-        Task {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.timeoutInterval = 30
-            let body: [String: Any] = [
-                "model": model,
-                "messages": [["role": "user", "content": "respond with: OK"]],
-                "stream": false
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        connectionTestRunning = true
+        connectionTestResult = nil
 
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if status == 200 {
-                    connectionTestSuccess = true
-                    connectionTestResult = "Connected (\(model))"
-                } else {
-                    let text = String(data: data.prefix(200), encoding: .utf8) ?? ""
-                    connectionTestSuccess = false
-                    connectionTestResult = "HTTP \(status): \(text)"
-                }
-            } catch {
-                connectionTestSuccess = false
-                connectionTestResult = "Server unreachable: \(error.localizedDescription)"
+        Task {
+            var results: [(model: String, error: String?)] = []
+            for model in models {
+                results.append((model, await Self.probeOllama(url: url, model: model)))
             }
+            let (ok, message) = ConnectionTest.summary(results)
+            connectionTestSuccess = ok
+            connectionTestResult = message
             connectionTestRunning = false
+        }
+    }
+
+    /// One chat-completions probe against an OpenAI-compatible server; nil
+    /// means the model answered.
+    private static func probeOllama(url: URL, model: String) async -> String? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [["role": "user", "content": "respond with: OK"]],
+            "stream": false
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 200 {
+                return nil
+            }
+            let text = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            return "HTTP \(status): \(text)"
+        } catch {
+            return "Server unreachable: \(error.localizedDescription)"
         }
     }
 

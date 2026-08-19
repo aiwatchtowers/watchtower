@@ -26,24 +26,21 @@ final class DictationCleanServiceTests: XCTestCase {
         XCTAssertEqual(result, DictationCleanResult(title: nil, text: "# Heading\nbody"))
     }
 
-    func testChatModeMapsTextWithNilTitle() async throws {
-        let runner = FakeCLIRunner(stdout: Data("""
-        {"mode":"chat","text":"reply text"}
-        """.utf8))
-        let service = DictationCleanService(runner: runner)
-
-        let result = try await service.clean(transcript: "some words", mode: .chat)
-
-        XCTAssertEqual(result, DictationCleanResult(title: nil, text: "reply text"))
+    /// Chat fields deliver the raw transcript and never reach this service —
+    /// the destination has no cleanup mode at all.
+    func testChatDestinationHasNoCleanupMode() {
+        XCTAssertNil(DictationMode.chat.cleanupMode)
+        XCTAssertEqual(DictationMode.idea.cleanupMode, .idea)
+        XCTAssertEqual(DictationMode.note.cleanupMode, .note)
     }
 
     func testTranscriptTravelsViaTempFileRemovedAfterCall() async throws {
         let runner = TranscriptCapturingRunner(stdout: Data("""
-        {"mode":"chat","text":"reply text"}
+        {"mode":"note","markdown":"reply text"}
         """.utf8))
         let service = DictationCleanService(runner: runner)
 
-        _ = try await service.clean(transcript: "captured transcript text", mode: .chat)
+        _ = try await service.clean(transcript: "captured transcript text", mode: .note)
 
         XCTAssertEqual(runner.savedTranscripts, ["captured transcript text"])
         guard let invocation = runner.invocations.first,

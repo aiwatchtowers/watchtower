@@ -43,7 +43,7 @@ var dictateCleanCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(dictateCmd)
 	dictateCmd.AddCommand(dictateCleanCmd)
-	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagMode, "mode", "", "cleanup destination: idea, note, or chat (required)")
+	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagMode, "mode", "", "cleanup destination: idea or note (required)")
 	dictateCleanCmd.Flags().StringVar(&dictateCleanFlagFile, "transcript-file", "", "path to the raw transcript text file (required)")
 }
 
@@ -73,7 +73,7 @@ func dictateEnv() (*config.Config, *db.DB, error) {
 func runDictateClean(cmd *cobra.Command, _ []string) error {
 	instructions, ok := prompts.DictationModeInstructions(dictateCleanFlagMode)
 	if !ok {
-		return fmt.Errorf("invalid --mode %q (valid: idea, note, chat)", dictateCleanFlagMode)
+		return fmt.Errorf("invalid --mode %q (valid: idea, note)", dictateCleanFlagMode)
 	}
 	if dictateCleanFlagFile == "" {
 		return fmt.Errorf("--transcript-file is required")
@@ -137,7 +137,6 @@ func dictateCleanEnvelope(mode, reply string) (map[string]any, error) {
 		Title    string `json:"title"`
 		Body     string `json:"body"`
 		Markdown string `json:"markdown"`
-		Text     string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(obj), &parsed); err != nil {
 		return nil, fmt.Errorf("parsing cleanup JSON: %w", err)
@@ -155,11 +154,6 @@ func dictateCleanEnvelope(mode, reply string) (map[string]any, error) {
 			return nil, fmt.Errorf("cleanup reply missing markdown")
 		}
 		envelope["markdown"] = parsed.Markdown
-	case "chat":
-		if strings.TrimSpace(parsed.Text) == "" {
-			return nil, fmt.Errorf("cleanup reply missing text")
-		}
-		envelope["text"] = parsed.Text
 	}
 	return envelope, nil
 }

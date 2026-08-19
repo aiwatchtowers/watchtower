@@ -61,6 +61,12 @@ final class AppState {
     /// closed mid-extraction.
     let targetExtractCenter = TargetExtractCenter()
 
+    /// App-wide registry of target assistant tab containers, so a chat turn
+    /// started on a target keeps streaming after the operator navigates away
+    /// from (and back to) that target's detail screen. Bounded LRU; a container
+    /// is never evicted while one of its tabs is working.
+    let targetAssistantCenter = TargetAssistantCenter()
+
     /// App-wide, single-slot registry for the creation-time "brief the
     /// secretary" chat run, so the send + streaming + execute-mode auto-apply
     /// survive the composer sheet being dismissed and any navigation away.
@@ -419,12 +425,16 @@ final class AppState {
                 // run gets its own TargetsViewModel — the ad-hoc-VM precedent
                 // from CreateTargetSheet's promote path.
                 targetBriefCenter.makeChatVM = { [weak self] target in
-                    guard let manager = self?.databaseManager else { return nil }
-                    return TargetChatViewModel(
-                        target: target,
+                    guard let self, let manager = self.databaseManager else { return nil }
+                    // Route through the assistant center so the detail screen
+                    // later resolves the SAME container (and tab VM) — never
+                    // two VMs on one conversation.
+                    let container = self.targetAssistantCenter.container(
+                        for: target,
                         viewModel: TargetsViewModel(dbManager: manager),
                         dbManager: manager
                     )
+                    return container.activeChat
                 }
                 // Sync state machine with DB: if profile says done, mark complete
                 if onboarding.currentStep != .complete {

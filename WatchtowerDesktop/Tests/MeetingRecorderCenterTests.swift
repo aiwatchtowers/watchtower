@@ -1960,7 +1960,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
     /// A canned `dictate clean --mode chat` envelope for the dictation side
     /// of the handoff tests (the DictationCenterTests fixture).
-    private static let dictationChatEnvelope = Data(#"{"mode":"chat","text":"cleaned"}"#.utf8)
+    private static let dictationCleanEnvelope = Data(#"{"mode":"idea","body":"cleaned"}"#.utf8)
 
     /// Builds the meeting↔dictation pair wired exactly as `AppState.initialize()`
     /// wires them, with a GateEngine (caller-released) behind the dictation
@@ -1975,7 +1975,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         let dictation = DictationCenter(
             recorderFactory: { mic },
             engineFactory: { _ in TestTranscriber(dictationEngine, supportsLive: true) },
-            runnerResolver: { FakeCLIRunner(stdout: Self.dictationChatEnvelope) },
+            runnerResolver: { FakeCLIRunner(stdout: Self.dictationCleanEnvelope) },
             defaults: defaults,
             engineIdleTTL: .seconds(900)
         )
@@ -2017,7 +2017,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             defaults: defaults, meetingRecorder: meetingRecorder, dictationEngine: gateEngine)
 
         var dictationResult: DictationCleanResult?
-        dictation.start(targetID: "t1", mode: .chat,
+        dictation.start(targetID: "t1", mode: .idea,
                         onLiveText: { _ in }, onResult: { dictationResult = $0 })
         await waitUntil("dictation recording") { dictation.phase == .recording }
         mic.emit([Float](repeating: 0.1, count: 1_600))
@@ -2057,7 +2057,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
 
         // A full dictation leaves the engine warm and the center idle.
         var dictationResult: DictationCleanResult?
-        dictation.start(targetID: "t1", mode: .chat,
+        dictation.start(targetID: "t1", mode: .idea,
                         onLiveText: { _ in }, onResult: { dictationResult = $0 })
         await waitUntil("dictation recording") { dictation.phase == .recording }
         mic.emit([Float](repeating: 0.1, count: 1_600))
