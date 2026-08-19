@@ -190,9 +190,14 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertFalse(persistedA.contains { $0.role == "system" },
                        "cancelled run persisted a summary/failure message")
 
-        // Clean up the hanging B run.
+        // Clean up the hanging B run — and let its cancelled tail
+        // (finishStream → reloadTarget) settle BEFORE the deferred
+        // TestDatabase.cleanup deletes the pool, so the read doesn't race
+        // the teardown (noisy "disk I/O error" log otherwise).
         center.adoptVM(for: targetB.id)?.cancelStream()
         center.task?.cancel()
+        let teardownDeadline = Date().addingTimeInterval(0.2)
+        while Date() < teardownDeadline { await Task.yield() }
     }
 
     /// A lingering `.failed` is cleared when the next brief starts — never
