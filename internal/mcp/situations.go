@@ -42,7 +42,7 @@ type situationSignal struct {
 	Permalink    string `json:"permalink,omitempty"`
 }
 
-// situationDetail is the get_situation shape: the row plus the secretary card
+// situationDetail is the get_situation shape: the row plus the situation card
 // and the signals that produced it.
 type situationDetail struct {
 	situationRow
@@ -56,7 +56,7 @@ type situationDetail struct {
 func registerSituations(s *mcpsdk.Server, database *db.DB) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "list_situations",
-		Description: "List the secretary's situations — clustered stories from Slack, Jira, " +
+		Description: "List the assistant's situations — clustered stories from Slack, Jira, " +
 			"mail and calendar that need the owner's attention. Use to answer " +
 			"'what is going on' or 'what changed recently'.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listSituationsArgs) (*mcpsdk.CallToolResult, any, error) {
@@ -90,7 +90,7 @@ func registerSituations(s *mcpsdk.Server, database *db.DB) {
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "get_situation",
-		Description: "Fetch one situation by id: the secretary's card (why it matters, summary, " +
+		Description: "Fetch one situation by id: the assistant's card (why it matters, summary, " +
 			"chronology) plus the member messages it was built from.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getSituationArgs) (*mcpsdk.CallToolResult, any, error) {
 		situation, err := database.GetSituation(args.ID)

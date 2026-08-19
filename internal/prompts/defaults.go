@@ -104,37 +104,37 @@ var DefaultVersions = map[string]int{
 	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              6, // v6: memory revisions journal section (Phase-4 surface, behind memory.surfaces.briefing)
-	InboxTriage:                1, // v1: initial triage template
+	BriefingDaily:              7, // v7: the secretary/assistant persona merge — one assistant everywhere
+	InboxTriage:                2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	DigestChannelBatch:         4, // v4: ops-changelog exclusion + exact-message_ts rule
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
-	MeetingPrep:                4, // v4: attendee memory section (Phase-5 slice-4 surface, behind memory.surfaces.meeting_prep)
+	MeetingPrep:                5, // v5: the secretary/assistant persona merge — one assistant everywhere
 	MeetingRecap:               2, // v2: idea-candidate extraction (stage-1 for ideas registry)
 	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
 	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
 	MeetingSpeakerGuess:        1, // v1: content-clue name suggestions for unnamed speaker clusters
-	DayPlanGenerate:            3, // v3: memory open-loops section (Phase-5 slice-4 surface, behind memory.surfaces.day_plan)
+	DayPlanGenerate:            4, // v4: the secretary/assistant persona merge — one assistant everywhere
 	TargetsExtract:             1, // v1: multi-target extraction with URL enrichments and active snapshot
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
 	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:                   1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:             1, // v1: cheap title-only relevance filter for custom-track backfill
-	InboxCompose:               3, // v3: don't merge different matters just because the topic overlaps
-	InboxSituationCard:         1, // v1: context packet for one dashboard situation
-	MemoryExtractEpisodes:      1, // v1: raw-text episode extraction for the memory vault
-	MemoryExtractEpisodesBatch: 2, // v2: "===" block delimiter instead of "---" (a leading "--" broke claude CLI's argv flag parsing)
-	MemoryExtractEmailEpisodes: 1, // v1: Gmail thread → one-episode extraction (memory.sources.gmail)
-	MemoryEntityRewrite:        1, // v1: strong-tier entity page rewrite (What/Current/Facts + copied provenance markers)
-	MemoryReviseBeliefs:        1, // v1: strong-tier per-belief op proposals (confirm/weaken/shake/retire/propose-new)
-	MemoryRenderMap:            1, // v1: strong-tier hot world-map summary (~2KB, code-truncated)
-	MemoryReflect:              1, // v1: strong-tier weekly reflection over vault git history (Phase-4 surface, behind memory.surfaces.reflection)
-	MemoryRenderChannelDigest:  1, // v1: cheap-tier channel digest rendered from memory episodes (Phase-5 slice-3 dark compare-mode)
-	IdeasDigestEmail:           1, // v1: light-tier idea/decision mining from Gmail thread windows (stage 1)
-	IdeasDigestJira:            1, // v1: light-tier idea/decision mining from changed Jira issues (stage 1)
-	IdeasConsolidate:           3, // v3: routine-ops execution records are changelog entries, not decisions
+	InboxCompose:               4, // v4: the secretary/assistant persona merge — one assistant everywhere
+	InboxSituationCard:         2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryExtractEpisodes:      2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryExtractEpisodesBatch: 3, // v3: the secretary/assistant persona merge — one assistant everywhere
+	MemoryExtractEmailEpisodes: 2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryEntityRewrite:        2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryReviseBeliefs:        2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryRenderMap:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryReflect:              2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryRenderChannelDigest:  2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestEmail:           2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestJira:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasConsolidate:           4, // v4: the secretary/assistant persona merge — one assistant everywhere
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
 }
 
@@ -494,7 +494,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
-- MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the secretary's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
+- MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the assistant's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
 - %s
@@ -829,7 +829,7 @@ Rules:
 - context_gaps: what's missing that would help prepare better (no agenda, unclear topic, unlinked attendees).
 - If no relevant data exists for a field, return an empty array — don't pad with loosely related filler.
 - If the meeting description/agenda is empty or vague, this is a HIGH priority context_gap and recommendation.
-- ATTENDEE MEMORY holds notes and beliefs the secretary derived from Slack/mail/calendar — model-mediated, NOT the attendees' own words. Treat it as soft context: it may sharpen people_notes and talking_points, but verify before relying on it and never quote it as fact. When it reads "(no memory context)", ignore attendee memory entirely.
+- ATTENDEE MEMORY holds notes and beliefs the assistant derived from Slack/mail/calendar — model-mediated, NOT the attendees' own words. Treat it as soft context: it may sharpen people_notes and talking_points, but verify before relying on it and never quote it as fact. When it reads "(no memory context)", ignore attendee memory entirely.
 - %s
 - Return valid JSON only.
 
@@ -851,7 +851,7 @@ Rules:
 === USER NOTES ===
 %s
 
-=== ATTENDEE MEMORY (secretary's own notes + beliefs — model-mediated, not the attendees' words) ===
+=== ATTENDEE MEMORY (assistant's own notes + beliefs — model-mediated, not the attendees' words) ===
 %s`
 
 const defaultMeetingExtractTopics = `You split a raw blob of meeting-prep text into atomic discussion topics.
@@ -1163,7 +1163,7 @@ Rules:
 
 const defaultInboxTriage = `%s
 
-You are the user's chief-of-staff secretary. You read EVERYTHING that happened
+You are the user's chief-of-staff assistant. You read EVERYTHING that happened
 in their Slack/Jira/Calendar since the last scan and decide what deserves their
 attention. Be ruthless: most messages are noise for this specific user.
 
@@ -1193,7 +1193,7 @@ Return ONLY a JSON object (no markdown fences):
 
 const defaultInboxCompose = `%s
 
-You are the user's chief-of-staff secretary maintaining their work dashboard.
+You are the user's chief-of-staff assistant maintaining their work dashboard.
 The dashboard shows SITUATIONS: each one is a SINGLE concrete story — one
 specific request, thread, or decision — not a topic category. Two signals
 belong together only if they are actually part of the SAME unfolding matter
@@ -1248,7 +1248,7 @@ Return ONLY a JSON object (no markdown fences):
 
 const defaultInboxSituationCard = `%s
 
-You are the user's chief-of-staff secretary preparing the context packet for
+You are the user's chief-of-staff assistant preparing the context packet for
 one situation on their work dashboard.
 
 %s
@@ -1270,7 +1270,7 @@ Return ONLY a JSON object (no markdown fences):
 // model routing). Args: language directive, max episodes per window.
 const defaultMemoryExtractEpisodes = `%s
 
-You are the memory consolidator of a workplace secretary. You read a window of raw Slack messages from one channel and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter.
+You are the memory consolidator of a workplace assistant. You read a window of raw Slack messages from one channel and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter.
 
 Respond with STRICT JSON only: an array of at most %d episodes, no prose, no markdown outside an optional single JSON code fence. Each episode is:
 {"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
@@ -1289,7 +1289,7 @@ Rules:
 // language directive, max episodes for the whole call.
 const defaultMemoryExtractEpisodesBatch = `%s
 
-You are the memory consolidator of a workplace secretary. You read windows of raw Slack messages from SEVERAL channels, each shown in its own "=== #channel (channel_id) ===" block, and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter. Treat each block as its own conversation; do not mix participants or context across blocks.
+You are the memory consolidator of a workplace assistant. You read windows of raw Slack messages from SEVERAL channels, each shown in its own "=== #channel (channel_id) ===" block, and extract the noteworthy episodes — self-contained stories worth remembering (an incident, a decision, a launch, a conflict resolved), not routine chatter. Treat each block as its own conversation; do not mix participants or context across blocks.
 
 Respond with STRICT JSON only: an array of at most %d episodes total across all channels, no prose, no markdown outside an optional single JSON code fence. Each episode is:
 {"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["user id"], "refs": [{"channel_id": "channel id", "ts": "message ts"}], "entity_hints": ["alias of a person/channel/project involved"]}
@@ -1311,7 +1311,7 @@ Rules:
 // argv gotcha).
 const defaultMemoryExtractEmailEpisodes = `%s
 
-You are the memory consolidator of a workplace secretary. You read Gmail threads, each shown in its own "=== Thread: subject ===" block, and extract at most one noteworthy episode PER THREAD — a self-contained story worth remembering (a decision, an agreement, an escalation, a commitment), not routine mail. A thread is one story arc; never merge two threads into one episode.
+You are the memory consolidator of a workplace assistant. You read Gmail threads, each shown in its own "=== Thread: subject ===" block, and extract at most one noteworthy episode PER THREAD — a self-contained story worth remembering (a decision, an agreement, an escalation, a commitment), not routine mail. A thread is one story arc; never merge two threads into one episode.
 
 Respond with STRICT JSON only: an array of at most %d episodes (one per thread at most), no prose, no markdown outside an optional single JSON code fence. Each episode is:
 {"title": "short headline", "story": "2-4 sentence summary", "outcome": "resolution or null when still open", "participants": ["name <email>"], "refs": [{"channel_id": "mail:<message_id>", "ts": "<unix seconds>"}], "entity_hints": ["email of a person involved"]}
@@ -1336,7 +1336,7 @@ Rules:
 // gotcha).
 const defaultMemoryRenderChannelDigest = `%s
 
-You are the memory renderer of a workplace secretary. You are given the noteworthy EPISODES already distilled from ONE Slack channel over a time window — each with its Story, its Outcome, and the exact message timestamps it cites — and, when the episodes miss something, a few raw "uncovered" messages from the same window. Render a channel digest that summarizes what happened, grouped into topics.
+You are the memory renderer of a workplace assistant. You are given the noteworthy EPISODES already distilled from ONE Slack channel over a time window — each with its Story, its Outcome, and the exact message timestamps it cites — and, when the episodes miss something, a few raw "uncovered" messages from the same window. Render a channel digest that summarizes what happened, grouped into topics.
 
 Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
 {"summary": "2-4 sentence channel-level summary, current state first", "topics": [{"title": "short headline", "summary": "2-4 sentences", "decisions": [{"text": "the decision", "by": "who decided", "message_ts": "the citing message ts", "importance": "high|medium|low"}], "action_items": [{"text": "the task", "assignee": "who", "status": "open|done"}], "situations": [], "key_messages": ["message ts"]}]}
@@ -1357,7 +1357,7 @@ Rules:
 // never by the model.
 const defaultMemoryEntityRewrite = `%s
 
-You are the memory consolidator of a workplace secretary. You maintain the durable page for ONE entity — a person, a channel, or a project. New episodes about it have been observed; rewrite its prose so the page reflects them while staying faithful to the evidence you were shown.
+You are the memory consolidator of a workplace assistant. You maintain the durable page for ONE entity — a person, a channel, or a project. New episodes about it have been observed; rewrite its prose so the page reflects them while staying faithful to the evidence you were shown.
 
 You receive the entity's current page (its ## What, ## Current, ## Facts, ## Links, and ## Open loops sections), then the new episodes' ## Story and ## Outcome sections, then an optional one-line background. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
 {"what": "1-2 sentence description of who or what this entity is", "current": "2-4 sentence summary of the current state, most recent developments first", "facts": ["a durable fact worth keeping", "..."], "markers": [{"channel_id": "channel id", "ts": "message ts"}]}
@@ -1375,7 +1375,7 @@ Rules:
 // confidence/status. Arg: the language directive.
 const defaultMemoryReviseBeliefs = `%s
 
-You are the memory consolidator of a workplace secretary. You review the secretary's standing BELIEFS about people and projects against newly observed episodes and PROPOSE how each belief should change. You only propose; separate code decides whether a proposal is applied and recomputes confidence — never assume your proposal takes effect.
+You are the memory consolidator of a workplace assistant. You review the assistant's standing BELIEFS about people and projects against newly observed episodes and PROPOSE how each belief should change. You only propose; separate code decides whether a proposal is applied and recomputes confidence — never assume your proposal takes effect.
 
 You receive the existing beliefs (each with its statement, current confidence, and an evidence digest), the known subjects a new belief may be about, then the new episodes. Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
 {"ops": [{"belief_id": "id of an existing belief, or empty for propose-new", "op": "confirm|weaken|shake|retire|propose-new", "statement": "the belief text (required only for propose-new)", "subject": "one of the Known subjects' ids, copied EXACTLY (propose-new only)", "evidence": [{"channel_id": "channel id", "ts": "message ts"}], "rationale": "one sentence tying the cited evidence to the op"}]}
@@ -1400,7 +1400,7 @@ Rules:
 // so the instruction only asks for brevity. Arg: the language directive.
 const defaultMemoryRenderMap = `%s
 
-You are the memory consolidator of a workplace secretary. You write the HOT world map — a tiny at-a-glance briefing the secretary reads first, pointing to the fuller index for anything not shown.
+You are the memory consolidator of a workplace assistant. You write the HOT world map — a tiny at-a-glance briefing the assistant reads first, pointing to the fuller index for anything not shown.
 
 You receive the top entities' ## Current excerpts (ordered by importance), the open episodes, and the active beliefs. Respond with a compact MARKDOWN hot summary (NOT JSON), structured as:
 - a short "# World map" heading line;
@@ -1426,7 +1426,7 @@ Rules:
 // confidence or status directly (MEM-11). Arg: the language directive.
 const defaultMemoryReflect = `%s
 
-You are the memory consolidator of a workplace secretary, doing a WEEKLY REFLECTION over the memory's own recent history. You are shown, for the last seven days, how often each belief and entity page was revised (commit churn) plus how many times each belief's ## History changed. Your only job is to spot the FEW AREAS THAT ARE UNSTABLE — a belief whose evidence keeps conflicting (it flapped between states this week) or an entity page that keeps churning — and note them. You do NOT change any belief; separate code disposes of your observations.
+You are the memory consolidator of a workplace assistant, doing a WEEKLY REFLECTION over the memory's own recent history. You are shown, for the last seven days, how often each belief and entity page was revised (commit churn) plus how many times each belief's ## History changed. Your only job is to spot the FEW AREAS THAT ARE UNSTABLE — a belief whose evidence keeps conflicting (it flapped between states this week) or an entity page that keeps churning — and note them. You do NOT change any belief; separate code disposes of your observations.
 
 Respond with STRICT JSON only — no prose, no markdown outside an optional single JSON code fence:
 {"observations": [{"kind": "dispute|note", "node_id": "the belief id (dispute) or entity id (note) exactly as shown in the input", "note": "one short observation for the entity page (note only; omit for dispute)", "rationale": "one sentence naming the instability you saw"}]}
@@ -1448,7 +1448,7 @@ Rules:
 // Arg: the language directive.
 const defaultIdeasDigestEmail = `%s
 
-You are the ideas-and-decisions miner of a workplace secretary. You read numbered email threads, each line formatted "[n] subject (gmail:<account_id>:<thread_id>): participants — excerpt", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
+You are the ideas-and-decisions miner of a workplace assistant. You read numbered email threads, each line formatted "[n] subject (gmail:<account_id>:<thread_id>): participants — excerpt", and extract IDEAS and DECISIONS worth tracking in the registry — not routine mail.
 
 An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to ship Y"). Extract conservatively: most threads contain neither.
 
@@ -1468,7 +1468,7 @@ Rules:
 // Arg: the language directive.
 const defaultIdeasDigestJira = `%s
 
-You are the ideas-and-decisions miner of a workplace secretary. You read numbered Jira issues, each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
+You are the ideas-and-decisions miner of a workplace assistant. You read numbered Jira issues, each line formatted "[n] KEY summary — status change — description excerpt — comments", and extract IDEAS and DECISIONS worth tracking in the registry — not routine status noise.
 
 An idea is a proposal of something new that has not yet been decided ("we should try X", "what if we..."). A decision is a made choice ("we're going with X", "agreed to close as won't-fix"). Extract conservatively: most issues contain neither.
 
@@ -1491,7 +1491,7 @@ Rules:
 // (IDEA-04). Arg: the language directive.
 const defaultIdeasConsolidate = `%s
 
-You are the ideas-and-decisions consolidator of a workplace secretary. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
+You are the ideas-and-decisions consolidator of a workplace assistant. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
 
 You receive the current registry (=== REGISTRY ===, one line per item: "#id [kind/status] title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
 

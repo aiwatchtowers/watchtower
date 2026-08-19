@@ -243,6 +243,7 @@ func TestGatherMemoryRevisions_CompareGateOffWritesNoShadow(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
-func TestBriefingDailyVersionBumpedToSix(t *testing.T) {
-	assert.Equal(t, 6, prompts.DefaultVersions[prompts.BriefingDaily])
+func TestBriefingDailyVersionAtLeastSix(t *testing.T) {
+	// v6 introduced the memory-revisions journal; later bumps only reword.
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 6)
 }

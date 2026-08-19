@@ -23,7 +23,7 @@ import (
 
 var memoryCmd = &cobra.Command{
 	Use:   "memory",
-	Short: "Inspect and manage the secretary memory vault",
+	Short: "Inspect and manage the assistant memory vault",
 }
 
 var memoryStatusCmd = &cobra.Command{

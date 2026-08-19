@@ -324,6 +324,7 @@ func TestGatherMemoryContext_CompareGateOffWritesNoShadow(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
-func TestMeetingPrepVersionBumpedToFour(t *testing.T) {
-	assert.Equal(t, 4, prompts.DefaultVersions[prompts.MeetingPrep])
+func TestMeetingPrepVersionAtLeastFour(t *testing.T) {
+	// v4 introduced the attendee-memory section; later bumps only reword.
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.MeetingPrep], 4)
 }
