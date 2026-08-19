@@ -167,6 +167,50 @@ func TestClaudeGeneratorEnvelopeErrorWithoutMessage(t *testing.T) {
 	}
 }
 
+// TestClaudeGeneratorEnvelopeErrorOnZeroExit covers the sibling of the
+// non-zero-exit path: the CLI can flag is_error and still exit 0, and that
+// branch reads the same envelope, so it needs the same treatment — a missing
+// message must not leave an empty tail here either.
+func TestClaudeGeneratorEnvelopeErrorOnZeroExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	envelope := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":""}`
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, envelope, 0))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for an is_error envelope on exit 0")
+	}
+	if !strings.Contains(err.Error(), "error_during_execution") {
+		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
+	}
+	if strings.HasSuffix(err.Error(), ": ") {
+		t.Errorf("error = %q, want a message rather than an empty tail", err)
+	}
+}
+
+// TestClaudeGeneratorEnvelopeMessageIsBounded keeps a runaway envelope out of
+// the logs: on subtype=error_max_turns the result field carries the model's own
+// partial output, which is unbounded where the sibling stderr path is capped.
+func TestClaudeGeneratorEnvelopeMessageIsBounded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	huge := strings.Repeat("x", 200_000)
+	envelope := `{"type":"result","subtype":"error_max_turns","is_error":true,"result":"` + huge + `"}`
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, envelope, 1))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for an is_error envelope")
+	}
+	if len(err.Error()) > 8192 {
+		t.Errorf("error length = %d, want the envelope message bounded", len(err.Error()))
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error = %q, want the truncation stated rather than silent", err)
+	}
+}
+
 // TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed keeps the
 // DescribeOutput doctrine on the failure path: stdout the parser cannot
 // understand is model-derived text and must reach logs/UI as a fingerprint.

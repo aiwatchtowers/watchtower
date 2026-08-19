@@ -166,10 +166,18 @@ type cliResponse struct {
 // back to a fixed string when the envelope carries none — an error whose tail
 // is empty tells a reader nothing.
 func errorEnvelopeMessage(resp *cliResponse) string {
-	if msg := strings.TrimSpace(resp.Result); msg != "" {
-		return msg
+	msg := strings.TrimSpace(resp.Result)
+	if msg == "" {
+		return "no message in the CLI result envelope"
 	}
-	return "no message in the CLI result envelope"
+	// On subtype=error_max_turns the envelope's result carries the model's own
+	// partial output rather than a short diagnostic, so bound what reaches the
+	// log the way the sibling stderr path is bounded by limitedWriter.
+	const maxEnvelopeMessage = 4096
+	if len(msg) > maxEnvelopeMessage {
+		return msg[:maxEnvelopeMessage] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-maxEnvelopeMessage)
+	}
+	return msg
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -297,7 +305,9 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	}
 
 	if resp.IsError {
-		return "", nil, "", fmt.Errorf("claude returned error: %s", resp.Result)
+		// Same envelope, same empty-result trap as the non-zero-exit branch
+		// above — the CLI can flag is_error and still exit 0.
+		return "", nil, "", fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {
