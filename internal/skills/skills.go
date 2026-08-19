@@ -1,14 +1,14 @@
-// Package skills is the persona-skill catalog: one markdown file per skill in
-// <workspace>/skills, loadable on demand by the secretary and the assistant
-// during a Discuss chat.
+// Package skills is the assistant-skill catalog: one markdown file per skill
+// in <workspace>/skills, loadable on demand by the assistant during a Discuss
+// chat.
 //
 // The file is the single source of truth — identity is the filename stem, and
-// everything else (description, persona, enable toggle) lives in the file's
-// YAML frontmatter, so Go and Swift always agree without a DB or a defaults
-// store. Parsing is strict on what matters (a skill with no description or an
-// unknown persona is skipped, never listed, never loadable) and lenient
-// elsewhere (unknown frontmatter keys are ignored, the memory-vault Obsidian
-// precedent).
+// everything else (description, enable toggle) lives in the file's YAML
+// frontmatter, so Go and Swift always agree without a DB or a defaults store.
+// Parsing is strict on what matters (a skill with no description is skipped,
+// never listed, never loadable) and lenient elsewhere (unknown frontmatter
+// keys are ignored, the memory-vault Obsidian precedent — including the
+// `persona` key files from the two-persona era still carry).
 package skills
 
 import (
@@ -21,13 +21,6 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-)
-
-// Persona values a skill may target. "both" matches either persona.
-const (
-	PersonaSecretary = "secretary"
-	PersonaAssistant = "assistant"
-	PersonaBoth      = "both"
 )
 
 // fileExt is the one extension the catalog reads; anything else in the
@@ -53,8 +46,6 @@ type Skill struct {
 	Name string
 	// Description tells the model when to load this skill.
 	Description string
-	// Persona is secretary, assistant, or both.
-	Persona string
 	// Enabled defaults to true when the frontmatter omits it.
 	Enabled bool
 	// Shipped is true when the file carries our shipped marker.
@@ -77,7 +68,6 @@ type Skipped struct {
 // a pointer so an omitted key can default to true rather than to false.
 type frontmatter struct {
 	Description string `yaml:"description"`
-	Persona     string `yaml:"persona"`
 	Enabled     *bool  `yaml:"enabled"`
 	Shipped     string `yaml:"x-watchtower-shipped"`
 }
@@ -158,7 +148,7 @@ func Load(dir, name string) (Skill, error) {
 
 // Parse turns one file's name and content into a Skill, or returns the reason
 // it is not listable. Everything it rejects is a hard requirement: a legal
-// name, a frontmatter block, a non-empty description, a known persona.
+// name, a frontmatter block, a non-empty description.
 func Parse(name, content string) (Skill, error) {
 	if !ValidName(name) {
 		return Skill{}, fmt.Errorf("invalid skill name %q: must match %s", name, namePattern)
@@ -175,14 +165,6 @@ func Parse(name, content string) (Skill, error) {
 	if description == "" {
 		return Skill{}, errors.New("description is required")
 	}
-	persona := strings.TrimSpace(fm.Persona)
-	switch persona {
-	case PersonaSecretary, PersonaAssistant, PersonaBoth:
-	case "":
-		return Skill{}, errors.New("persona is required")
-	default:
-		return Skill{}, fmt.Errorf("unknown persona %q: must be secretary, assistant, or both", persona)
-	}
 	enabled := true
 	if fm.Enabled != nil {
 		enabled = *fm.Enabled
@@ -190,17 +172,10 @@ func Parse(name, content string) (Skill, error) {
 	return Skill{
 		Name:        name,
 		Description: description,
-		Persona:     persona,
 		Enabled:     enabled,
 		Shipped:     strings.TrimSpace(fm.Shipped) != "",
 		Body:        body,
 	}, nil
-}
-
-// MatchesPersona reports whether the skill applies to persona; a "both" skill
-// matches either side.
-func (s Skill) MatchesPersona(persona string) bool {
-	return s.Persona == persona || s.Persona == PersonaBoth
 }
 
 // splitFrontmatter separates a leading "---" delimited YAML block from the

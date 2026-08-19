@@ -1,6 +1,5 @@
 ---
 description: Use when the owner asks for a status update to be drafted on a situation, a thread, or a piece of work — for a channel, a manager, or a stakeholder.
-persona: secretary
 enabled: true
 x-watchtower-shipped: v1
 ---

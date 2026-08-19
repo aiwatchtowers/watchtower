@@ -42,9 +42,9 @@ func seedSkillsDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"status-update.md": "---\ndescription: Draft a status update.\npersona: secretary\n---\n" +
+		"status-update.md": "---\ndescription: Draft a status update.\nenabled: true\n---\n" +
 			"# Draft a status update\n\nAsk the owner what it should say.\n",
-		"quiet-skill.md": "---\ndescription: Switched off.\npersona: assistant\nenabled: false\n---\n" +
+		"quiet-skill.md": "---\ndescription: Switched off.\nenabled: false\n---\n" +
 			"# Quiet\n\nBody.\n",
 	}
 	for name, content := range files {
@@ -77,14 +77,13 @@ func TestLoadSkillHappyPath(t *testing.T) {
 	var got struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
-		Persona     string `json:"persona"`
 		Enabled     bool   `json:"enabled"`
 		Body        string `json:"body"`
 	}
 	if err := json.Unmarshal([]byte(textContent(t, res)), &got); err != nil {
 		t.Fatalf("decoding result: %v", err)
 	}
-	if got.Name != "status-update" || got.Persona != "secretary" || !got.Enabled {
+	if got.Name != "status-update" || !got.Enabled {
 		t.Errorf("unexpected metadata: %+v", got)
 	}
 	if got.Description != "Draft a status update." {
@@ -93,7 +92,7 @@ func TestLoadSkillHappyPath(t *testing.T) {
 	if !strings.Contains(got.Body, "Ask the owner what it should say.") {
 		t.Errorf("body does not carry the instructions: %q", got.Body)
 	}
-	if strings.Contains(got.Body, "persona:") {
+	if strings.Contains(got.Body, "description:") {
 		t.Errorf("body must not include the frontmatter block: %q", got.Body)
 	}
 }
@@ -132,7 +131,7 @@ func TestLoadSkillUnknownName(t *testing.T) {
 func TestLoadSkillRejectsTraversal(t *testing.T) {
 	dir := seedSkillsDir(t)
 	secret := filepath.Join(filepath.Dir(dir), "secret.md")
-	if err := os.WriteFile(secret, []byte("---\ndescription: S.\npersona: secretary\n---\ntop secret\n"), 0o644); err != nil {
+	if err := os.WriteFile(secret, []byte("---\ndescription: S.\n---\ntop secret\n"), 0o644); err != nil {
 		t.Fatalf("writing secret: %v", err)
 	}
 	cs := newSkillsSession(t, seedDB(t), dir)

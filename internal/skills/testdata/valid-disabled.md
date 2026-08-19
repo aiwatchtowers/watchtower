@@ -1,6 +1,5 @@
 ---
-description: A skill both personas could use, switched off by its own frontmatter.
-persona: both
+description: A skill any chat could use, switched off by its own frontmatter.
 enabled: false
 unknown-key: ignored on purpose
 ---

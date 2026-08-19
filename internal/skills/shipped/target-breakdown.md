@@ -1,6 +1,5 @@
 ---
 description: Use in a target's own chat when the owner asks to break a target down into sub-tasks, a plan, or first steps — or when a target is too big to start on. In any other chat it can only sketch the breakdown as text.
-persona: assistant
 enabled: true
 x-watchtower-shipped: v1
 ---

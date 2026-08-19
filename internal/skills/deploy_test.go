@@ -95,7 +95,7 @@ func TestDeployIdempotent(t *testing.T) {
 // touched is replaced by the new version.
 func TestDeployCleanUpgradeReplaces(t *testing.T) {
 	dir := t.TempDir()
-	old := ShippedSkill{Name: "demo", Content: "---\ndescription: v1.\npersona: secretary\n---\nold body\n"}
+	old := ShippedSkill{Name: "demo", Content: "---\ndescription: v1.\n---\nold body\n"}
 	old.SHA256 = digestOf(old.Content)
 	file := filepath.Join(dir, "demo.md")
 	if err := os.WriteFile(file, []byte(old.Content), 0o644); err != nil {
@@ -105,7 +105,7 @@ func TestDeployCleanUpgradeReplaces(t *testing.T) {
 		t.Fatalf("seeding sidecar: %v", err)
 	}
 
-	next := ShippedSkill{Name: "demo", Content: "---\ndescription: v2.\npersona: secretary\n---\nnew body\n"}
+	next := ShippedSkill{Name: "demo", Content: "---\ndescription: v2.\n---\nnew body\n"}
 	next.SHA256 = digestOf(next.Content)
 	recorded, err := readSidecar(dir)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestDeployOwnerEditedUntouched(t *testing.T) {
 	}
 	victim := Shipped()[0].Name
 	file := filepath.Join(dir, victim+fileExt)
-	edited := "---\ndescription: My own version.\npersona: secretary\n---\nowner text\n"
+	edited := "---\ndescription: My own version.\n---\nowner text\n"
 	if err := os.WriteFile(file, []byte(edited), 0o644); err != nil {
 		t.Fatalf("editing: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestDeployForeignFileUntouched(t *testing.T) {
 	dir := t.TempDir()
 	victim := Shipped()[0].Name
 	file := filepath.Join(dir, victim+fileExt)
-	foreign := "---\ndescription: Mine, written first.\npersona: assistant\n---\nforeign body\n"
+	foreign := "---\ndescription: Mine, written first.\n---\nforeign body\n"
 	if err := os.WriteFile(file, []byte(foreign), 0o644); err != nil {
 		t.Fatalf("seeding foreign file: %v", err)
 	}

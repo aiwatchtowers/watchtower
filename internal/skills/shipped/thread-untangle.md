@@ -1,6 +1,5 @@
 ---
 description: Use when the owner asks who asked what in a messy thread or channel, what is still unanswered, or what they missed while away.
-persona: secretary
 enabled: true
 x-watchtower-shipped: v1
 ---

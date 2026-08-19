@@ -24,7 +24,6 @@ type loadSkillArgs struct {
 type loadSkillResult struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Persona     string `json:"persona"`
 	Enabled     bool   `json:"enabled"`
 	Body        string `json:"body"`
 }
@@ -37,7 +36,7 @@ type loadSkillResult struct {
 func registerSkills(s *mcpsdk.Server, skillsDir string) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "load_skill",
-		Description: "Load one persona skill by name — the full instructions for handling a class " +
+		Description: "Load one assistant skill by name — the full instructions for handling a class " +
 			"of request. Call it when a skill listed in the AVAILABLE SKILLS block matches what the owner " +
 			"is asking for, before doing the work, then follow what it says.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args loadSkillArgs) (*mcpsdk.CallToolResult, any, error) {
@@ -64,7 +63,6 @@ func registerSkills(s *mcpsdk.Server, skillsDir string) {
 		return jsonResult(loadSkillResult{
 			Name:        skill.Name,
 			Description: skill.Description,
-			Persona:     skill.Persona,
 			Enabled:     skill.Enabled,
 			Body:        skill.Body,
 		})

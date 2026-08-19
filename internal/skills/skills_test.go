@@ -24,39 +24,43 @@ func TestParse(t *testing.T) {
 		file        string
 		content     string
 		wantErr     string // substring; "" means the parse must succeed
-		wantPersona string
 		wantEnabled bool
 		wantBody    string
 	}{
 		{
 			name:        "valid with explicit enabled",
 			file:        "status-update",
-			content:     "---\ndescription: Draft a status update.\npersona: secretary\nenabled: true\n---\nbody line\n",
-			wantPersona: PersonaSecretary,
+			content:     "---\ndescription: Draft a status update.\nenabled: true\n---\nbody line\n",
 			wantEnabled: true,
 			wantBody:    "body line\n",
 		},
 		{
 			name:        "enabled defaults to true when omitted",
 			file:        "thread-untangle",
-			content:     "---\ndescription: Untangle.\npersona: both\n---\nbody\n",
-			wantPersona: PersonaBoth,
+			content:     "---\ndescription: Untangle.\n---\nbody\n",
 			wantEnabled: true,
 			wantBody:    "body\n",
 		},
 		{
 			name:        "enabled false is honoured",
 			file:        "quiet",
-			content:     "---\ndescription: Off.\npersona: assistant\nenabled: false\n---\nbody\n",
-			wantPersona: PersonaAssistant,
+			content:     "---\ndescription: Off.\nenabled: false\n---\nbody\n",
 			wantEnabled: false,
 			wantBody:    "body\n",
 		},
 		{
 			name:        "unknown frontmatter keys are ignored",
 			file:        "extra-keys",
-			content:     "---\ndescription: Fine.\npersona: secretary\nwhatever: 12\nnested:\n  a: b\n---\nbody\n",
-			wantPersona: PersonaSecretary,
+			content:     "---\ndescription: Fine.\nwhatever: 12\nnested:\n  a: b\n---\nbody\n",
+			wantEnabled: true,
+			wantBody:    "body\n",
+		},
+		{
+			// The two-persona era stamped a `persona` key into every file;
+			// today it is an ordinary unknown key, whatever its value.
+			name:        "legacy persona key is ignored",
+			file:        "legacy",
+			content:     "---\ndescription: Fine.\npersona: butler\n---\nbody\n",
 			wantEnabled: true,
 			wantBody:    "body\n",
 		},
@@ -69,43 +73,31 @@ func TestParse(t *testing.T) {
 		{
 			name:    "unterminated frontmatter block",
 			file:    "unterminated",
-			content: "---\ndescription: Broken.\npersona: secretary\n",
+			content: "---\ndescription: Broken.\n",
 			wantErr: "missing YAML frontmatter",
 		},
 		{
 			name:    "malformed yaml",
 			file:    "broken-yaml",
-			content: "---\ndescription: \"unclosed\npersona: secretary\n---\nbody\n",
+			content: "---\ndescription: \"unclosed\n---\nbody\n",
 			wantErr: "malformed frontmatter",
 		},
 		{
 			name:    "empty description",
 			file:    "no-description",
-			content: "---\ndescription: \"   \"\npersona: secretary\n---\nbody\n",
+			content: "---\ndescription: \"   \"\n---\nbody\n",
 			wantErr: "description is required",
 		},
 		{
 			name:    "missing description key",
 			file:    "no-description-key",
-			content: "---\npersona: secretary\n---\nbody\n",
+			content: "---\nenabled: true\n---\nbody\n",
 			wantErr: "description is required",
-		},
-		{
-			name:    "unknown persona",
-			file:    "bad-persona",
-			content: "---\ndescription: Fine.\npersona: butler\n---\nbody\n",
-			wantErr: "unknown persona",
-		},
-		{
-			name:    "missing persona",
-			file:    "no-persona",
-			content: "---\ndescription: Fine.\n---\nbody\n",
-			wantErr: "persona is required",
 		},
 		{
 			name:    "illegal name",
 			file:    "Bad_Name",
-			content: "---\ndescription: Fine.\npersona: secretary\n---\nbody\n",
+			content: "---\ndescription: Fine.\n---\nbody\n",
 			wantErr: "invalid skill name",
 		},
 	}
@@ -128,9 +120,6 @@ func TestParse(t *testing.T) {
 			if skill.Name != tc.file {
 				t.Errorf("name = %q, want %q", skill.Name, tc.file)
 			}
-			if skill.Persona != tc.wantPersona {
-				t.Errorf("persona = %q, want %q", skill.Persona, tc.wantPersona)
-			}
 			if skill.Enabled != tc.wantEnabled {
 				t.Errorf("enabled = %v, want %v", skill.Enabled, tc.wantEnabled)
 			}
@@ -146,7 +135,7 @@ func TestParse(t *testing.T) {
 
 // TestParseCRLF: a file saved with Windows line endings parses the same.
 func TestParseCRLF(t *testing.T) {
-	skill, err := Parse("crlf", "---\r\ndescription: Fine.\r\npersona: both\r\n---\r\nbody\r\n")
+	skill, err := Parse("crlf", "---\r\ndescription: Fine.\r\n---\r\nbody\r\n")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -167,21 +156,6 @@ func TestValidName(t *testing.T) {
 		if ValidName(n) {
 			t.Errorf("ValidName(%q) = true, want false", n)
 		}
-	}
-}
-
-func TestMatchesPersona(t *testing.T) {
-	both := Skill{Persona: PersonaBoth}
-	sec := Skill{Persona: PersonaSecretary}
-	asst := Skill{Persona: PersonaAssistant}
-	if !both.MatchesPersona(PersonaSecretary) || !both.MatchesPersona(PersonaAssistant) {
-		t.Errorf("a 'both' skill must match either persona")
-	}
-	if !sec.MatchesPersona(PersonaSecretary) || sec.MatchesPersona(PersonaAssistant) {
-		t.Errorf("secretary skill matched the wrong persona")
-	}
-	if !asst.MatchesPersona(PersonaAssistant) || asst.MatchesPersona(PersonaSecretary) {
-		t.Errorf("assistant skill matched the wrong persona")
 	}
 }
 
@@ -218,8 +192,8 @@ func TestListEmptyDir(t *testing.T) {
 // files (including the deploy sidecar) are ignored outright.
 func TestListSortedAndSkips(t *testing.T) {
 	dir := t.TempDir()
-	fixture(t, dir, "zulu.md", "---\ndescription: Z.\npersona: secretary\n---\nz\n")
-	fixture(t, dir, "alpha.md", "---\ndescription: A.\npersona: assistant\nenabled: false\n---\na\n")
+	fixture(t, dir, "zulu.md", "---\ndescription: Z.\n---\nz\n")
+	fixture(t, dir, "alpha.md", "---\ndescription: A.\nenabled: false\n---\na\n")
 	fixture(t, dir, "broken.md", "no frontmatter at all\n")
 	fixture(t, dir, "notes.txt", "not a skill\n")
 	fixture(t, dir, sidecarFile, `{"alpha":"deadbeef"}`)
@@ -261,7 +235,6 @@ var (
 	wantListed = []struct {
 		name        string
 		description string
-		persona     string
 		enabled     bool
 	}{
 		// The THREE fixtures whose verdict the two sides deliberately do not
@@ -271,19 +244,19 @@ var (
 		// instead of guessing — SkillsCatalogTests lists them under
 		// `goListsThemSwiftRefuses`. Skipping is the safe direction; listing
 		// text or keys the file does not contain is not.
-		{"anchor-description", "hey", PersonaSecretary, true},
-		{"anchor-key", "Carries an anchor on one of its keys.", PersonaSecretary, true},
-		{"enabled-comment", "Switched off with the reason written as an inline comment.", PersonaBoth, false},
-		{"enabled-no", "Switched off with YAML 1.1's `no` rather than `false`.", PersonaAssistant, false},
-		{"escaped-apostrophe", "Use when it's the owner's own wording that matters.", PersonaAssistant, true},
-		{"quoted-key", "Written with a quoted key, which yaml.v3 unquotes.", PersonaSecretary, true},
-		{"tagged-key", "Carries a tag on one of its keys.", PersonaSecretary, true},
-		{"valid-basic", "Use when the owner asks for the shape of a valid skill file.", PersonaSecretary, true},
-		{"valid-disabled", "A skill both personas could use, switched off by its own frontmatter.", PersonaBoth, false},
+		{"anchor-description", "hey", true},
+		{"anchor-key", "Carries an anchor on one of its keys.", true},
+		{"enabled-comment", "Switched off with the reason written as an inline comment.", false},
+		{"enabled-no", "Switched off with YAML 1.1's `no` rather than `false`.", false},
+		{"escaped-apostrophe", "Use when it's the owner's own wording that matters.", true},
+		{"legacy-persona", "Carries a legacy persona key from the two-persona era, ignored like any unknown key.", true},
+		{"quoted-key", "Written with a quoted key, which yaml.v3 unquotes.", true},
+		{"tagged-key", "Carries a tag on one of its keys.", true},
+		{"valid-basic", "Use when the owner asks for the shape of a valid skill file.", true},
+		{"valid-disabled", "A skill any chat could use, switched off by its own frontmatter.", false},
 	}
 	wantSkipped = []string{
 		"bad-enabled",
-		"bad-persona",
 		"bare-line",
 		"blank-description",
 		"colon-in-description",
@@ -313,11 +286,10 @@ func TestListFixtures(t *testing.T) {
 	}
 	for i, want := range wantListed {
 		got := list[i]
-		if got.Name != want.name || got.Persona != want.persona ||
-			got.Enabled != want.enabled || got.Description != want.description {
-			t.Errorf("fixture %d = {%s %q %s enabled=%v}, want {%s %q %s enabled=%v}",
-				i, got.Name, got.Description, got.Persona, got.Enabled,
-				want.name, want.description, want.persona, want.enabled)
+		if got.Name != want.name || got.Enabled != want.enabled || got.Description != want.description {
+			t.Errorf("fixture %d = {%s %q enabled=%v}, want {%s %q enabled=%v}",
+				i, got.Name, got.Description, got.Enabled,
+				want.name, want.description, want.enabled)
 		}
 	}
 	if len(skipped) != len(wantSkipped) {
@@ -332,7 +304,7 @@ func TestListFixtures(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
-	fixture(t, dir, "alpha.md", "---\ndescription: A.\npersona: assistant\n---\nalpha body\n")
+	fixture(t, dir, "alpha.md", "---\ndescription: A.\n---\nalpha body\n")
 
 	skill, err := Load(dir, "alpha")
 	if err != nil {
@@ -361,7 +333,7 @@ func TestLoadTraversalNeverEscapes(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	fixture(t, root, "secret.md", "---\ndescription: S.\npersona: secretary\n---\ntop secret\n")
+	fixture(t, root, "secret.md", "---\ndescription: S.\n---\ntop secret\n")
 
 	skill, err := Load(dir, "../secret")
 	if err == nil {
@@ -377,17 +349,16 @@ func TestLoadTraversalNeverEscapes(t *testing.T) {
 // workspace and then silently skipped by the catalog.
 func TestShippedPack(t *testing.T) {
 	pack := Shipped()
-	want := map[string]string{
-		"thread-untangle":  PersonaSecretary,
-		"status-update":    PersonaSecretary,
-		"target-breakdown": PersonaAssistant,
+	want := map[string]bool{
+		"thread-untangle":  true,
+		"status-update":    true,
+		"target-breakdown": true,
 	}
 	if len(pack) != len(want) {
 		t.Fatalf("expected %d shipped skills, got %d", len(want), len(pack))
 	}
 	for _, s := range pack {
-		persona, known := want[s.Name]
-		if !known {
+		if !want[s.Name] {
 			t.Errorf("unexpected shipped skill %q", s.Name)
 			continue
 		}
@@ -395,9 +366,6 @@ func TestShippedPack(t *testing.T) {
 		if err != nil {
 			t.Errorf("shipped skill %q does not parse: %v", s.Name, err)
 			continue
-		}
-		if skill.Persona != persona {
-			t.Errorf("shipped skill %q persona = %q, want %q", s.Name, skill.Persona, persona)
 		}
 		if !skill.Enabled {
 			t.Errorf("shipped skill %q must ship enabled", s.Name)
