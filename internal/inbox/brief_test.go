@@ -44,7 +44,7 @@ func TestBuildSecretaryBrief_AllSections(t *testing.T) {
 
 	got := buildSecretaryBrief(d, "U1", time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC))
 	for _, want := range []string{
-		"=== SECRETARY BRIEF ===",
+		"=== ASSISTANT BRIEF ===",
 		"I run direction X. CEO pings are always action.",
 		"ACTIVE TRACKS", "MY OPEN JIRA", "TODAY'S CALENDAR",
 	} {
@@ -58,7 +58,7 @@ func TestBuildSecretaryBrief_EmptySourcesStillUsable(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
 	got := buildSecretaryBrief(d, "U1", time.Now())
-	if !strings.Contains(got, "=== SECRETARY BRIEF ===") {
+	if !strings.Contains(got, "=== ASSISTANT BRIEF ===") {
 		t.Fatalf("brief must always carry its header, got: %q", got)
 	}
 	if strings.Contains(got, "ACTIVE TRACKS") {

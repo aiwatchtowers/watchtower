@@ -152,7 +152,7 @@ final class SkillsSettingsViewModelTests: XCTestCase {
     }
 
     func testSetEnabledPreservesCRLFLineEndings() throws {
-        let original = "---\r\ndescription: X.\r\r\nenabled: true\r\n---\r\n\r\nBody\r\n"
+        let original = "---\r\ndescription: X.\r\nenabled: true\r\n---\r\n\r\nBody\r\n"
         try writeSkillFile("crlf.md", original)
 
         let viewModel = SkillsSettingsViewModel(dir: dir)

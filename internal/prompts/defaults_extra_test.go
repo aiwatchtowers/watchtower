@@ -25,6 +25,38 @@ func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
 	}
 }
 
+// TestPersonaMergeVersionFloors pins the floors set by the 2026-08-19 persona
+// merge: every prompt whose default text was reworded (secretary → assistant)
+// carries at least the bumped version, so Seed's auto-upgrade
+// (existing.Version < defaultVer) reaches installed non-customized rows.
+// Silently reverting a bump would leave installs on the pre-merge wording and
+// fail here; a later intentional bump only raises a version and still passes.
+func TestPersonaMergeVersionFloors(t *testing.T) {
+	floors := map[string]int{
+		BriefingDaily:              7,
+		InboxTriage:                2,
+		MeetingPrep:                5,
+		DayPlanGenerate:            4,
+		InboxCompose:               4,
+		InboxSituationCard:         2,
+		MemoryExtractEpisodes:      2,
+		MemoryExtractEpisodesBatch: 3,
+		MemoryExtractEmailEpisodes: 2,
+		MemoryEntityRewrite:        2,
+		MemoryReviseBeliefs:        2,
+		MemoryRenderMap:            2,
+		MemoryReflect:              2,
+		MemoryRenderChannelDigest:  2,
+		IdeasDigestEmail:           2,
+		IdeasDigestJira:            2,
+		IdeasConsolidate:           4,
+	}
+	for id, floor := range floors {
+		assert.GreaterOrEqual(t, DefaultVersions[id], floor,
+			"%q was reworded by the persona merge and must stay at v%d or later", id, floor)
+	}
+}
+
 // TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
 // (plus the Phase-4 reflection prompt) into every registration surface:
 // constant → Defaults template, AllIDs display order, DefaultVersions,

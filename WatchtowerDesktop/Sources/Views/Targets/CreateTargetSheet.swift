@@ -253,7 +253,7 @@ struct CreateTargetSheet: View {
             newID = try await db.dbPool.write { dbConn -> Int in
                 // A composer-created sub-target inherits the parent's level
                 // and planning period — the TargetsViewModel.createChild
-                // semantics, so it matches a assistant-created one. No
+                // semantics, so it matches an assistant-created one. No
                 // parent → day/today.
                 var level = "day"
                 var periodStart = today

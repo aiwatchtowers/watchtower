@@ -481,29 +481,29 @@ final class SkillsCatalogTests: XCTestCase {
     }
 
     func testDoubleQuotedEscapesMatchYamlsSet() {
-        XCTAssertEqual(parseFrontmatter(#"description: "a\nb""# + "")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\nb""#)?.description,
                        "a\nb")
-        XCTAssertEqual(parseFrontmatter(#"description: "a\"b""# + "")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\"b""#)?.description,
                        "a\"b")
-        XCTAssertEqual(parseFrontmatter(#"description: "a\\b""# + "")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\\b""#)?.description,
                        #"a\b"#)
-        XCTAssertEqual(parseFrontmatter(#"description: "a\_b""# + "")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: "a\_b""#)?.description,
                        "a\u{A0}b")
         // `\'` needs no escaping inside double quotes but is legal there, and
         // a backslash before a literal tab is an escape of the tab itself.
-        XCTAssertEqual(parseFrontmatter(#"description: "it\'s fine""# + "")?
+        XCTAssertEqual(parseFrontmatter(#"description: "it\'s fine""#)?
             .description, "it's fine")
         XCTAssertEqual(parseFrontmatter("description: \"a\\\tb\"")?.description,
                        "a\tb")
         // Unknown escapes are refused, not passed through — `\/` is legal JSON
         // and NOT legal YAML, which is exactly the trap.
-        XCTAssertNil(parseFrontmatter(#"description: "a\qb""# + ""))
-        XCTAssertNil(parseFrontmatter(#"description: "a\/b""# + ""))
+        XCTAssertNil(parseFrontmatter(#"description: "a\qb""#))
+        XCTAssertNil(parseFrontmatter(#"description: "a\/b""#))
         // The numeric forms are legal YAML this parser does not decode, so it
         // refuses them rather than inventing text (documented divergence).
-        XCTAssertNil(parseFrontmatter(#"description: "a\x41b""# + ""))
+        XCTAssertNil(parseFrontmatter(#"description: "a\x41b""#))
         // A backslash is ordinary inside a single-quoted scalar.
-        XCTAssertEqual(parseFrontmatter(#"description: 'a\qb'"# + "")?.description,
+        XCTAssertEqual(parseFrontmatter(#"description: 'a\qb'"#)?.description,
                        #"a\qb"#)
     }
 

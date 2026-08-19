@@ -29,7 +29,7 @@ func TestDeployPersonaSkills_InstallsShippedPack(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, dir, logger := deployHarness(t, &buf)
 
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	listed, skipped, err := skills.ListWithSkips(dir)
 	require.NoError(t, err)
@@ -53,7 +53,7 @@ func TestDeployPersonaSkills_LeavesForeignFileAndSaysSo(t *testing.T) {
 	const ownersContent = "---\ndescription: Mine, not yours.\npersona: secretary\n---\nowner body\n"
 	require.NoError(t, os.WriteFile(foreign, []byte(ownersContent), 0o644))
 
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	got, err := os.ReadFile(foreign)
 	require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestDeployPersonaSkills_ReportsUnlistableFiles(t *testing.T) {
 	broken := filepath.Join(dir, "owner-broken.md")
 	require.NoError(t, os.WriteFile(broken, []byte("no frontmatter at all\n"), 0o644))
 
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	assert.Contains(t, buf.String(), "skills: skipping "+broken)
 	assert.Contains(t, buf.String(), "missing YAML frontmatter",
@@ -89,7 +89,7 @@ func TestDeployPersonaSkills_UnwritableDirIsLoggedNotFatal(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(dir), 0o755))
 	require.NoError(t, os.WriteFile(dir, []byte("not a directory"), 0o644))
 
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	assert.Contains(t, buf.String(), "skills: deploy failed")
 	assert.Contains(t, buf.String(), "skills: listing failed")
@@ -100,10 +100,10 @@ func TestDeployPersonaSkills_UnwritableDirIsLoggedNotFatal(t *testing.T) {
 func TestDeployPersonaSkills_SecondRunIsQuiet(t *testing.T) {
 	var buf bytes.Buffer
 	cfg, _, logger := deployHarness(t, &buf)
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	buf.Reset()
-	deployPersonaSkills(cfg, logger)
+	deployShippedSkills(cfg, logger)
 
 	assert.Empty(t, buf.String(), "a no-op deploy must log nothing")
 }

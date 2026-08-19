@@ -117,11 +117,13 @@ persona — **the assistant** — and that is the only word UI strings, prompts,
 used to be encoded as two personas is now encoded as per-surface capability contracts, and those
 contracts did NOT move:
 
-- **Draft-only surfaces** (Inbox/situation and meeting Discuss chats, memory surfaces): the
-  assistant speaks FOR the owner and never acts on the world. Intent-draft contract — the owner
-  states WHAT to say, the assistant renders it in the owner's voice, adds nothing unstated,
-  never posts anywhere (Copy only). The only writes are learning side-effects (belief evidence,
-  learned rules), never actions.
+- **Draft-only surfaces** (Inbox/situation and meeting Discuss chats, memory surfaces; the
+  track and idea Discuss chats sit here too until someone deliberately builds them an action
+  path): the assistant discusses and drafts but never acts on the world. On situation/meeting
+  chats the intent-draft contract applies — the owner states WHAT to say, the assistant renders
+  it in the owner's voice, adds nothing unstated, never posts anywhere (Copy only); track/idea
+  chats are plain discussion with the same no-actions rule. The only writes are learning
+  side-effects (belief evidence, learned rules), never actions.
 - **Action surfaces** (target/task chat, setup panels): the assistant acts on local state, but
   ONLY through the proposal→Approve gate — nothing is written until the owner approves
   (execute-mode directives ride the same single-writer executor, per TGT-BRIEF-03).

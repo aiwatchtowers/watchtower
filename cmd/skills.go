@@ -7,7 +7,7 @@ import (
 	"watchtower/internal/skills"
 )
 
-// deployPersonaSkills refreshes the shipped persona skills in the workspace's
+// deployShippedSkills refreshes the shipped assistant skills in the workspace's
 // skills directory. It is the single call site (daemon start, the
 // ensureLegacy* precedent), so the Desktop app's managed daemon keeps shipped
 // skills current without any user action.
@@ -16,7 +16,7 @@ import (
 // costs the owner three starter skills, never a daemon that refuses to start.
 // The owner's own skills — and any shipped file they edited — are untouched by
 // Deploy itself (see internal/skills/deploy.go).
-func deployPersonaSkills(cfg *config.Config, logger *log.Logger) {
+func deployShippedSkills(cfg *config.Config, logger *log.Logger) {
 	dir := skills.Dir(cfg.WorkspaceDir())
 	statuses, err := skills.Deploy(dir)
 	if err != nil {
