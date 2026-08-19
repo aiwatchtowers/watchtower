@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // containsPair reports whether args contains flag immediately followed by value.
@@ -208,6 +209,28 @@ func TestClaudeGeneratorEnvelopeMessageIsBounded(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "truncated") {
 		t.Errorf("error = %q, want the truncation stated rather than silent", err)
+	}
+}
+
+// TestClaudeGeneratorEnvelopeTruncationKeepsValidUTF8 pins the rune backoff:
+// this text is model output and routinely Cyrillic, so a cut on a byte index
+// lands mid-rune. An ASCII-only truncation test passes with the backoff deleted.
+func TestClaudeGeneratorEnvelopeTruncationKeepsValidUTF8(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// THREE bytes per rune, deliberately: 4096 % 3 == 1, so the cap lands one
+	// byte inside a rune and a naive slice produces invalid UTF-8. (A 2-byte
+	// fill would put byte 4096 exactly on a boundary and pass either way.)
+	huge := strings.Repeat("…", 60_000)
+	envelope := `{"type":"result","subtype":"error_max_turns","is_error":true,"result":"` + huge + `"}`
+	gen := NewClaudeGenerator("test-model", "test-model", fakeClaude(t, envelope, 1))
+
+	_, _, _, err := gen.Generate(context.Background(), "sys", "hi", "")
+	if err == nil {
+		t.Fatal("Generate returned nil error for an is_error envelope")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error = %q, want the truncation to land on a rune boundary", err)
 	}
 }
 

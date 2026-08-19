@@ -457,13 +457,17 @@ final class TargetChatViewModel {
             systemMessages.append(parts.joined(separator: ". "))
         }
         if heldForApproval > 0 {
-            // The reply almost certainly claims the write was made — the model
-            // was told execute means "applied immediately". Correct it in the
-            // transcript so the owner is not left reading "Done" beside a card
-            // that has not been applied, and so the model's next turn sees it.
+            // The reply may well claim the write was made. This message is what
+            // the OWNER reads instead — like the Applied/Failed summary next to
+            // it, it never reaches the model (a resumed turn carries the context
+            // blocks and the contract, not transcript rows); what keeps the
+            // model honest is the MODE rule in taskActionsContract.
+            // Worded as "not applied automatically" rather than promising an
+            // Approve: an action addressed outside the vertical line is held
+            // here too, and approving that one fails at resolveActionTarget.
             systemMessages.append(
-                "\(heldForApproval) change(s) aimed at another task were NOT applied — " +
-                "they are waiting for approval."
+                "\(heldForApproval) change(s) aimed at another task were NOT applied " +
+                "automatically — decide on their cards."
             )
         }
         for err in parsed.errors {
