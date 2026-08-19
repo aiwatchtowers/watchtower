@@ -672,8 +672,8 @@ final class SkillsCatalogTests: XCTestCase {
 
         let listed = SkillsCatalog.list(dir: fixtures)
         XCTAssertEqual(listed, [
-            // NOTE: `anchor-description` and `anchor-key` are in Go's
-            // wantListed and NOT here — the deliberate asymmetries, see
+            // NOTE: `anchor-description`, `anchor-key` and `tagged-key` are in
+            // Go's wantListed and NOT here — the deliberate asymmetries, see
             // goListsThemSwiftRefuses below.
             SkillSummary(name: "enabled-comment",
                          description: "Switched off with the reason written as an inline comment.",
@@ -701,7 +701,7 @@ final class SkillsCatalogTests: XCTestCase {
             "blank-description", "colon-in-description", "duplicate-key",
             "indented-fence", "indented-key", "leading-indicator", "no-frontmatter",
             "no-space-after-colon", "quoted-duplicate-key", "structural-key",
-            "tab-indent", "unknown-escape", "unterminated-quote"
+            "tab-indent", "tagged-key", "unknown-escape", "unterminated-quote"
         ], "must match internal/skills/skills_test.go's wantSkipped, plus goListsThemSwiftRefuses")
     }
 
@@ -732,12 +732,14 @@ final class SkillsCatalogTests: XCTestCase {
 
     /// The fixtures Go lists and this parser deliberately refuses — the whole
     /// permitted asymmetry between the two sides, written down so it stays one
-    /// short, reviewed list instead of drift. Both entries are anchors: yaml.v3
-    /// would hand Go a description (or a key) the file does not literally
-    /// contain, so refusing to advertise the skill beats advertising it under
-    /// invented text. The reverse direction (Swift lists, Go cannot read) has
-    /// no entries and must never gain one.
-    private static let goListsThemSwiftRefuses = ["anchor-description", "anchor-key"]
+    /// short, reviewed list instead of drift. Every entry is a node property
+    /// (an anchor or a tag): yaml.v3 would hand Go a description, or a key, the
+    /// file does not literally contain, so refusing to advertise the skill
+    /// beats advertising it under invented text. The reverse direction (Swift
+    /// lists, Go cannot read) has no entries and must never gain one.
+    private static let goListsThemSwiftRefuses = [
+        "anchor-description", "anchor-key", "tagged-key"
+    ]
 
     func testTheOnlyGoListedFixturesWeRefuseAreTheDocumentedOnes() throws {
         let fixtures = Self.goFixturesDir()

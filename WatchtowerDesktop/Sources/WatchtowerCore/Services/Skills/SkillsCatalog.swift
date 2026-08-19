@@ -35,9 +35,12 @@ import Foundation
 //   - a scalar continued onto the next line (`"a\` + newline + `b"`);
 //   - `\xNN`, `\uNNNN` and `\UNNNNNNNN` escapes in a double-quoted scalar;
 //   - a quoted key whose own text contains a `: ` separator (`"a: b": c`);
+//   - a plain key ending in a colon (`a:: c`, whose key yaml.v3 reads as `a:`);
+//   - a key that is a bare block-entry indicator (`-: c` and `?: c`, whose keys
+//     yaml.v3 reads as `-` and `?`);
 //   - an anchor or a tag on a scalar, in a value (`description: &a hey`, which
 //     yaml.v3 hands Go as just `hey` — a listing whose text does not match the
-//     file) or on a key (`&a description: x`, likewise).
+//     file) or on a key (`&a description: x` and `!t note: x`, likewise).
 
 /// Persona a skill targets. Raw values are the literal frontmatter tokens.
 package enum SkillPersona: String, Sendable, Equatable {
