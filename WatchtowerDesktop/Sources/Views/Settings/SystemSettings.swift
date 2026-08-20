@@ -475,8 +475,9 @@ struct SystemSettings: View {
         }
     }
 
-    /// One blocking CLI probe; nil means the model answered.
-    private static func runCLIProbe(path: String, isCodex: Bool, model: String) -> String? {
+    /// One blocking CLI probe; nil means the model answered. nonisolated so the
+    /// detached test task can run it off the main actor (View infers @MainActor).
+    private nonisolated static func runCLIProbe(path: String, isCodex: Bool, model: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
 
@@ -572,7 +573,7 @@ struct SystemSettings: View {
         }
     }
 
-    private static func diagnoseError(stderr: String, exitCode: Int32) -> String {
+    private nonisolated static func diagnoseError(stderr: String, exitCode: Int32) -> String {
         let lower = stderr.lowercased()
         if lower.contains("not authenticated") || lower.contains("unauthorized")
             || lower.contains("api key") || lower.contains("log in") || lower.contains("login") {

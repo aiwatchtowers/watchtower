@@ -98,9 +98,9 @@ final class TargetChatViewModel {
     private var target: Target
     private let viewModel: TargetsViewModel
     private var streamTask: Task<Void, Never>?
-    // nonisolated(unsafe) so deinit (nonisolated) can cancel it; written only
-    // on the main actor, and deinit has exclusive access to self.
-    nonisolated(unsafe) private var observationTask: Task<Void, Never>?
+    // Cancelled by stop() (main actor) — the container calls it on tab close
+    // and on container eviction; there is no deinit touching this.
+    private var observationTask: Task<Void, Never>?
 
     /// Follow-ups produced by a decision taken while a turn was still streaming.
     /// The write applies immediately; its message waits here until the running
