@@ -13,6 +13,7 @@ import (
 	"time"
 
 	gosync "sync"
+	"sync/atomic"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -67,6 +68,7 @@ type Daemon struct {
 	config              *config.Config
 	logger              *log.Logger
 	wakeCh              <-chan struct{}
+	triggerCh           <-chan struct{}
 	pidPath             string
 	db                  *db.DB
 	digestPipe          *digest.Pipeline
@@ -93,6 +95,8 @@ type Daemon struct {
 	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+
+	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -259,6 +263,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if d.config.Sync.SyncOnWake {
 		d.wakeCh = WatchWake(ctx, pollInterval)
 	}
+	// Only when not already wired: a test drives the loop through an injected
+	// channel, and installing the real signal handler would replace it.
+	if d.triggerCh == nil {
+		d.triggerCh = WatchTrigger(ctx)
+	}
 
 	// Restore last pipeline times from disk so throttle guards survive restarts.
 	d.loadLastPeople()
@@ -286,6 +295,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.runSync(ctx)
 			// Reset the ticker so the next poll is a full interval from now.
 			ticker.Reset(pollInterval)
+		case <-d.triggerChannel():
+			d.logger.Println("manual sync trigger received, syncing")
+			d.runSync(ctx)
+			// Same as the wake path: the next poll is a full interval from now.
+			ticker.Reset(pollInterval)
 		}
 	}
 }
@@ -295,6 +309,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) wakeChannel() <-chan struct{} {
 	if d.wakeCh != nil {
 		return d.wakeCh
+	}
+	return nil
+}
+
+// triggerChannel returns the manual-trigger channel or a nil channel (blocks
+// forever) when no watcher is wired — a Daemon driven directly by a test never
+// installs the signal handler.
+func (d *Daemon) triggerChannel() <-chan struct{} {
+	if d.triggerCh != nil {
+		return d.triggerCh
 	}
 	return nil
 }
@@ -405,20 +429,83 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 	}
 	var firstErr error
 	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
-	for _, o := range d.orchestrators {
-		if err := o.Run(ctx, sync.SyncOptions{}); err != nil {
-			d.logger.Printf("sync error: %v", err)
-			if firstErr == nil {
-				firstErr = err
+	// Tracked like every other pipeline so the Slack sync finally shows up in
+	// pipeline_runs (and the Desktop's Pipeline Progress window) — it was the
+	// one phase that ran invisibly.
+	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
+		messages := 0
+		for _, o := range d.orchestrators {
+			stopBeat := d.startSyncHeartbeat(o)
+			err := o.Run(ctx, sync.SyncOptions{})
+			stopBeat()
+			if err != nil {
+				d.logger.Printf("sync error: %v", err)
+				if firstErr == nil {
+					firstErr = err
+				}
 			}
+			snap := o.Progress().Snapshot()
+			snaps = append(snaps, snap)
+			messages += snap.MessagesFetched
 		}
-		snaps = append(snaps, o.Progress().Snapshot())
-	}
+		return pipelineRunStats{items: messages, err: firstErr}
+	})
+	d.writeSyncProgress(sync.IdleProgress())
 	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
 	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
 	}
 	return firstErr
+}
+
+// syncHeartbeatInterval is how often a running sync republishes its progress.
+// Fast enough that the tray line moves while a phase grinds through hundreds
+// of rate-limited API calls, slow enough to stay a rounding error on disk.
+const syncHeartbeatInterval = 3 * time.Second
+
+// syncProgressPath is the heartbeat file read by the tray — the live
+// counterpart to last_sync.json, which only records finished runs.
+func (d *Daemon) syncProgressPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "sync_progress.json")
+}
+
+// writeSyncProgress publishes one heartbeat. Failures are logged at most once
+// per daemon lifetime: this runs on a ticker, and a workspace directory we
+// cannot write is not a reason to fill the log or to stop syncing.
+func (d *Daemon) writeSyncProgress(p sync.SyncProgress) {
+	if err := sync.WriteSyncProgress(d.syncProgressPath(), p); err != nil {
+		if d.heartbeatErrLogged.CompareAndSwap(false, true) {
+			d.logger.Printf("failed to write sync progress: %v (further heartbeat errors suppressed)", err)
+		}
+	}
+}
+
+// startSyncHeartbeat publishes one orchestrator's live progress until the
+// returned stop function is called; stop waits for the writer to finish, so
+// the caller can immediately publish a final state without racing it.
+func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
+	write := func() { d.writeSyncProgress(sync.ProgressFromSnapshot(o.Progress().Snapshot())) }
+	write()
+
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(syncHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				write()
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-finished
+	}
 }
 
 // phaseCalendarSync pulls Google Calendar events for every connected

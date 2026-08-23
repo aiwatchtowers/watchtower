@@ -335,7 +335,13 @@ The Skills card lists every skill Watchtower knows about, each row showing its n
 
 Watchtower is a menu-bar app first: it keeps syncing in the background even when its window is closed.
 
-**Menu bar icon** — always present while Watchtower is running, whether or not the window is open. Click it for a status line showing whether background sync is running (plus a daemon or CLI-install error, if either happened) and three actions: "Open Watchtower" (brings back the window and Dock icon), "Settings…" (opens the Settings window directly, without reopening the main window), and "Quit Watchtower" (full exit, see below).
+**Menu bar icon** — always present while Watchtower is running, whether or not the window is open. Click it for a status line and the tray's actions.
+
+The status line says what the daemon is actually doing, not merely whether it is alive: "Syncing: Messages · 34/105 channels" while a sync runs (the phase and its counter, refreshed every few seconds), "Daemon running · idle" between syncs, or "Sync daemon not running" when there is no daemon at all. A daemon or CLI-install error, if either happened, is shown underneath.
+
+Actions: **"Sync Now"** (asks the running daemon to start a sync immediately instead of waiting for its next poll — disabled when no daemon is running; a sync already in progress finishes first, since the daemon syncs one at a time), "New Voice Idea" (opens Quick Capture and starts dictating), "Open Watchtower" (brings back the window and Dock icon), "Settings…" (opens the Settings window directly, without reopening the main window), and "Quit Watchtower" (full exit, see below).
+
+The Slack sync also shows up in **Usage & Pipeline Progress** now, as a "Slack Sync" run alongside Digests, Tracks and the rest — previously it was the one background job that ran invisibly.
 
 **Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing. If Settings or the Pipeline Progress window is still open, the Dock icon stays until that window is closed too.
 
