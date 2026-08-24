@@ -200,6 +200,60 @@ final class TargetActionExecutorTests: XCTestCase {
         XCTAssertEqual(summary, "updated context")
     }
 
+    func testApplyAddLabel() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .addLabel, reason: "grouping", text: "ops")
+        let summary = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedTags, ["ops"])
+        XCTAssertTrue(summary.contains("ops"))
+    }
+
+    func testApplyAddLabelTrimsWhitespace() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .addLabel, reason: "grouping", text: "  ops ")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedTags, ["ops"])
+    }
+
+    func testApplyRemoveLabel() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+        try manager.dbPool.write { db in
+            try TargetQueries.addTag(db, id: target.id, tag: "ops")
+            try TargetQueries.addTag(db, id: target.id, tag: "infra")
+        }
+
+        let action = ProposedAction(type: .removeLabel, reason: "obsolete", text: "ops")
+        _ = try TargetActionExecutor.apply(action, target: target, viewModel: vm)
+
+        let after = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) })
+        XCTAssertEqual(after.decodedTags, ["infra"])
+    }
+
+    func testApplyAddLabelRejectsBlankText() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let vm = TargetsViewModel(dbManager: manager)
+
+        let action = ProposedAction(type: .addLabel, reason: "x", text: "   ")
+        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: target, viewModel: vm))
+    }
+
     func testApplyUpdateTitleRejectsBlankText() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

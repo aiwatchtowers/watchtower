@@ -72,6 +72,8 @@ extension TargetActionKind {
         case .updateBallOn: "ball-on"
         case .updateTitle: "rename"
         case .updateIntent: "context update"
+        case .addLabel: "new label"
+        case .removeLabel: "label removal"
         }
     }
 }
@@ -767,7 +769,13 @@ final class TargetChatViewModel {
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     - update_title       { "text": "<new task title>" }
     - update_intent      { "text": "<the task's goal/context, replaces the current intent>" }
+    - add_label          { "text": "<label>" } — adds one label (free-form tag) to the task
+    - remove_label       { "text": "<label>" } — removes that label from the task
     Every block must also include "reason".
+    Labels are free-form tags the owner filters the Targets list by (the task's
+    current ones are in the Labels line). One block per label; adding an existing
+    label is a no-op. Prefer a label the owner already uses (LABELS IN USE, when
+    listed) over coining a near-duplicate.
     For the *_sub_item actions, "index" is the #N shown next to the item in the
     addressed task's sub-items list (the CURRENT TASK by default) and "match" is
     that item's EXACT current text — both are required and are re-checked at
@@ -841,6 +849,7 @@ final class TargetChatViewModel {
             }
             .joined(separator: "\n")
         let subItemsText = subItemsList.isEmpty ? "(none)" : subItemsList
+        let labels = target.decodedTags.joined(separator: ", ")
         return """
         === CURRENT TASK ===
         ID: \(target.id)
@@ -848,6 +857,7 @@ final class TargetChatViewModel {
         Intent: \(target.intent)
         Status: \(target.status)
         Priority: \(target.priority)
+        Labels: \(labels.isEmpty ? "(none)" : labels)
         Ownership: \(target.ownership)
         Blocking: \(target.blocking)
         Progress: \(Int((target.progress * 100).rounded()))%
@@ -857,6 +867,20 @@ final class TargetChatViewModel {
         \(subItemsText)
         Created: \(target.createdAt)
         Updated: \(target.updatedAt)
+        """
+    }
+
+    /// The `=== LABELS IN USE ===` block: the workspace's existing label
+    /// vocabulary, so the assistant reuses the owner's labels instead of
+    /// coining near-duplicates. Empty string when no labels exist (block
+    /// omitted, byte-identical prompt — the watchActivityBlock shape).
+    nonisolated static func labelsInUseBlock(dbPool: DatabasePool) -> String {
+        let tags = (try? dbPool.read { db in try TargetQueries.fetchDistinctTags(db) }) ?? []
+        guard !tags.isEmpty else { return "" }
+        return """
+
+        === LABELS IN USE ===
+        \(tags.joined(separator: ", "))
         """
     }
 
@@ -1008,7 +1032,7 @@ final class TargetChatViewModel {
 
         \(Self.taskContextBlock(target))
         \(Self.taskTreeBlock(target: target, dbPool: dbPool))
-        \(Self.watchActivityBlock(target: target, dbPool: dbPool))
+        \(Self.watchActivityBlock(target: target, dbPool: dbPool))\(Self.labelsInUseBlock(dbPool: dbPool))
 
         \(memoryBlock)\(Self.taskActionsContract)
 

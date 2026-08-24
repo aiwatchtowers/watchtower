@@ -16,6 +16,8 @@ package enum TargetActionKind: String, Codable {
     case updateBallOn = "update_ball_on"
     case updateTitle = "update_title"
     case updateIntent = "update_intent"
+    case addLabel = "add_label"
+    case removeLabel = "remove_label"
 }
 
 package enum ProposedActionError: Error, Equatable {
@@ -179,7 +181,7 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             try validateNote()
         case .updateProgress:
             try validateProgress()
-        case .addSubItem, .updateTitle, .updateIntent:
+        case .addSubItem, .updateTitle, .updateIntent, .addLabel, .removeLabel:
             try validateText()
         case .createChildTarget:
             try validateText()
@@ -363,6 +365,10 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
             return "Rename to \"\(text ?? "")\"\n\(reason)"
         case .updateIntent:
             return "Update context\n\(reason)"
+        case .addLabel:
+            return "Add label \"\(text ?? "")\"\n\(reason)"
+        case .removeLabel:
+            return "Remove label \"\(text ?? "")\"\n\(reason)"
         }
     }
 }

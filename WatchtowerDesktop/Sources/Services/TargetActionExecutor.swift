@@ -33,7 +33,8 @@ enum TargetActionExecutor {
             return try applyCore(action, target: target, viewModel: viewModel)
         case .toggleSubItem, .editSubItem, .deleteSubItem, .setSubItemDue:
             return try applySubItem(action, target: target, viewModel: viewModel)
-        case .updateDueDate, .updatePriority, .updateBallOn, .updateTitle, .updateIntent:
+        case .updateDueDate, .updatePriority, .updateBallOn, .updateTitle, .updateIntent,
+             .addLabel, .removeLabel:
             return try applyTargetField(action, target: target, viewModel: viewModel)
         }
     }
@@ -197,9 +198,28 @@ enum TargetActionExecutor {
             viewModel.updateIntent(target, to: text)
             try checkWrite(viewModel)
             return "updated context"
+        case .addLabel:
+            let label = try requireLabel(action)
+            viewModel.addTag(target, tag: label)
+            try checkWrite(viewModel)
+            return "added label \"\(label)\""
+        case .removeLabel:
+            let label = try requireLabel(action)
+            viewModel.removeTag(target, tag: label)
+            try checkWrite(viewModel)
+            return "removed label \"\(label)\""
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")
         }
+    }
+
+    /// Validation guarantees non-empty text, but trim here too so the stored
+    /// label matches what the detail-view editor would have written.
+    private static func requireLabel(_ action: ProposedAction) throws -> String {
+        guard let raw = action.text else { throw TargetActionError.writeFailed("missing text") }
+        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { throw TargetActionError.writeFailed("missing text") }
+        return label
     }
 
     /// Caps quoted item texts in summaries — they are echoed into the chat

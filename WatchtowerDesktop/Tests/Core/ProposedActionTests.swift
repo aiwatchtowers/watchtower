@@ -341,4 +341,46 @@ final class ProposedActionTests: XCTestCase {
         XCTAssertNil(a.mode)
         XCTAssertFalse(a.isExecute)
     }
+
+    // MARK: - Labels
+
+    func testDecodesAddLabel() throws {
+        let a = try decode(#"{"type":"add_label","text":"ops","reason":"grouping"}"#)
+        XCTAssertEqual(a.type, .addLabel)
+        XCTAssertEqual(a.text, "ops")
+        XCTAssertNoThrow(try a.validate())
+    }
+
+    func testDecodesRemoveLabel() throws {
+        let a = try decode(#"{"type":"remove_label","text":"ops","reason":"obsolete"}"#)
+        XCTAssertEqual(a.type, .removeLabel)
+        XCTAssertEqual(a.text, "ops")
+        XCTAssertNoThrow(try a.validate())
+    }
+
+    func testAddLabelRejectsMissingText() throws {
+        let a = try decode(#"{"type":"add_label","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
+    func testRemoveLabelRejectsWhitespaceText() throws {
+        let a = try decode(#"{"type":"remove_label","text":"   ","reason":"x"}"#)
+        XCTAssertThrowsError(try a.validate())
+    }
+
+    func testLabelCardDescriptions() throws {
+        let add = try decode(#"{"type":"add_label","text":"ops","reason":"grouping"}"#)
+        XCTAssertTrue(add.cardDescription.contains("ops"))
+        XCTAssertTrue(add.cardDescription.contains("grouping"))
+        let remove = try decode(#"{"type":"remove_label","text":"ops","reason":"obsolete"}"#)
+        XCTAssertTrue(remove.cardDescription.contains("ops"))
+        XCTAssertTrue(remove.cardDescription.contains("obsolete"))
+    }
+
+    func testAddLabelExecuteAutoAppliesToOwnTargetOnly() throws {
+        let own = try decode(#"{"type":"add_label","text":"ops","reason":"r","mode":"execute"}"#)
+        XCTAssertTrue(own.autoApplies(inChatFor: 7))
+        let other = try decode(#"{"type":"add_label","text":"ops","reason":"r","mode":"execute","target_id":9}"#)
+        XCTAssertFalse(other.autoApplies(inChatFor: 7))
+    }
 }
