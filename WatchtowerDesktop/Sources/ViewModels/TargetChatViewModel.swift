@@ -821,7 +821,7 @@ final class TargetChatViewModel {
     MANDATE — broad powers, narrow mandate:
     Within a directive you may modify this task's vertical line — the task
     itself, its sub-tasks at any depth and its parent chain (title, intent,
-    priority, due date, status, notes, sub-items, child targets) — but only what
+    priority, due date, status, notes, labels, sub-items, child targets) — but only what
     the directive implies. Findings beyond the mandate (sibling branches, other
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
