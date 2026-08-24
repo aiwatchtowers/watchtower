@@ -1360,7 +1360,7 @@ struct TargetDetailView: View {
                         Text(tag)
                             .font(.caption)
                         Button {
-                            viewModel.updateTags(target, to: tags.filter { $0 != tag })
+                            viewModel.removeTag(target, tag: tag)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption2)
@@ -1401,12 +1401,12 @@ struct TargetDetailView: View {
     }
 
     private func addTag(_ raw: String) {
-        newTagText = ""
+        // Validate before clearing: a rejected entry (blank/duplicate) keeps the
+        // typed text so it never looks like a silent success.
         let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        var tags = target.decodedTags
-        guard !tag.isEmpty, !tags.contains(tag) else { return }
-        tags.append(tag)
-        viewModel.updateTags(target, to: tags)
+        guard !tag.isEmpty, !target.decodedTags.contains(tag) else { return }
+        viewModel.addTag(target, tag: tag)
+        newTagText = ""
     }
 
     private func aboutRow(_ label: String, _ value: String) -> some View {

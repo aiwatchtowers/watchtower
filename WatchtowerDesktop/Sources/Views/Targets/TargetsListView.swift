@@ -230,7 +230,7 @@ struct TargetsListView: View {
             // Hidden until at least one target carries a label; kept while a
             // filter is active so a just-cleared label can still be reset.
             if !vm.availableTags.isEmpty || vm.tagFilter != nil {
-                Menu(vm.tagFilter.map { "Label: \($0)" } ?? "Label") {
+                Menu("Label") {
                     Button("All") { vm.tagFilter = nil; vm.load() }
                     ForEach(vm.availableTags, id: \.self) { tag in
                         Button(tag) {

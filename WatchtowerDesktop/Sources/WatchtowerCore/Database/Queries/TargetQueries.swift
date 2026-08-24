@@ -11,7 +11,7 @@ package struct TargetFilter {
     package var periodStart: String? = nil     // filter targets whose period overlaps this date range start
     package var periodEnd: String? = nil       // filter targets whose period overlaps this date range end
     package var search: String? = nil
-    package var tag: String? = nil
+    package var tag: String?
     package var includeDone: Bool = false
     package var parentID: Int? = nil
     package var limit: Int = 200
@@ -115,8 +115,10 @@ package enum TargetQueries {
 
         // SQL predicate, not an in-memory pass: filtering after the LIMIT
         // would make rarely-used tags appear empty once the table outgrows it.
+        // json_valid guards the whole query: json_each over one malformed row
+        // would otherwise abort it and blank the entire list.
         if let tag = filter.tag, !tag.isEmpty {
-            conditions.append("EXISTS (SELECT 1 FROM json_each(targets.tags) WHERE json_each.value = ?)")
+            conditions.append("(json_valid(targets.tags) AND EXISTS (SELECT 1 FROM json_each(targets.tags) WHERE value = ?))")
             args.append(tag)
         }
 
@@ -368,8 +370,7 @@ package enum TargetQueries {
     }
 
     package static func updateSubItems(_ db: Database, id: Int, subItems: [TargetSubItem]) throws {
-        let data = try JSONEncoder().encode(subItems)
-        let json = String(data: data, encoding: .utf8) ?? "[]"
+        let json = try jsonString(JSONEncoder().encode(subItems))
         try db.execute(
             sql: """
                 UPDATE targets SET sub_items = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -379,9 +380,45 @@ package enum TargetQueries {
         )
     }
 
-    package static func updateTags(_ db: Database, id: Int, tags: [String]) throws {
-        let data = try JSONEncoder().encode(tags)
-        let json = String(data: data, encoding: .utf8) ?? "[]"
+    /// Tag edits are semantic add/remove against a fresh in-transaction read,
+    /// never a wholesale rewrite from the caller's snapshot — a label written
+    /// concurrently (daemon, CLI, second window) must survive the edit
+    /// (review-rules: reload the row immediately before writing).
+    package static func addTag(_ db: Database, id: Int, tag: String) throws {
+        guard var tags = try currentTags(db, id: id) else { return }
+        guard !tags.contains(tag) else { return }
+        tags.append(tag)
+        try writeTags(db, id: id, tags: tags)
+    }
+
+    package static func removeTag(_ db: Database, id: Int, tag: String) throws {
+        guard let tags = try currentTags(db, id: id), tags.contains(tag) else { return }
+        try writeTags(db, id: id, tags: tags.filter { $0 != tag })
+    }
+
+    /// nil = row vanished (edit becomes a no-op, the sibling mutators' contract).
+    /// An undecodable column throws — deliberately NOT `Target.decodedTags`'
+    /// tolerant `try? → []`, which here would silently replace whatever the
+    /// column held with the freshly built array.
+    private static func currentTags(_ db: Database, id: Int) throws -> [String]? {
+        guard let raw = try String.fetchOne(db, sql: "SELECT tags FROM targets WHERE id = ?", arguments: [id]) else {
+            return nil
+        }
+        return try JSONDecoder().decode([String].self, from: Data(raw.utf8))
+    }
+
+    /// JSONEncoder output is always valid UTF-8, so the nil branch is
+    /// unreachable — but if it ever fired, a `?? "[]"` fallback would silently
+    /// erase the column; throwing is the only honest handling.
+    private static func jsonString(_ data: Data) throws -> String {
+        guard let json = String(bytes: data, encoding: .utf8) else {
+            throw DatabaseError(message: "JSON encoding produced non-UTF-8 data")
+        }
+        return json
+    }
+
+    private static func writeTags(_ db: Database, id: Int, tags: [String]) throws {
+        let json = try jsonString(JSONEncoder().encode(tags))
         try db.execute(
             sql: """
                 UPDATE targets SET tags = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
@@ -391,10 +428,16 @@ package enum TargetQueries {
         )
     }
 
+    /// Blank tags are excluded: pre-fix `targets update --tags ""` wrote `[""]`,
+    /// which must not surface as an invisible filter-menu entry.
     package static func fetchDistinctTags(_ db: Database) throws -> [String] {
         try String.fetchAll(
             db,
-            sql: "SELECT DISTINCT value FROM targets, json_each(targets.tags) ORDER BY value COLLATE NOCASE"
+            sql: """
+                SELECT DISTINCT value FROM targets, json_each(targets.tags)
+                WHERE json_valid(targets.tags) AND value <> ''
+                ORDER BY value COLLATE NOCASE
+                """
         )
     }
 

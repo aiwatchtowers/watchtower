@@ -798,3 +798,14 @@ func TestPromoteSubItem_ParentNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
+
+// --- Tags flag parsing ---
+
+// parseTagsFlag must drop empty parts so `--tags ""` clears tags (writes "[]")
+// instead of writing `[""]` — matching the promote-subitem path in targets_ai.go.
+func TestParseTagsFlag(t *testing.T) {
+	assert.Equal(t, `[]`, parseTagsFlag(""))
+	assert.Equal(t, `[]`, parseTagsFlag("  "))
+	assert.Equal(t, `["a","b"]`, parseTagsFlag("a, b"))
+	assert.Equal(t, `["a"]`, parseTagsFlag("a,, ,"))
+}

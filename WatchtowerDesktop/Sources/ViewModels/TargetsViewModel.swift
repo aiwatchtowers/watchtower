@@ -325,14 +325,25 @@ final class TargetsViewModel {
         }
     }
 
-    func updateTags(_ target: Target, to tags: [String]) {
+    func addTag(_ target: Target, tag: String) {
         do {
             try dbManager.dbPool.write { db in
-                try TargetQueries.updateTags(db, id: target.id, tags: tags)
+                try TargetQueries.addTag(db, id: target.id, tag: tag)
             }
             load()
         } catch {
-            errorMessage = "Failed to update tags: \(error.localizedDescription)"
+            errorMessage = "Failed to add label: \(error.localizedDescription)"
+        }
+    }
+
+    func removeTag(_ target: Target, tag: String) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.removeTag(db, id: target.id, tag: tag)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to remove label: \(error.localizedDescription)"
         }
     }
 
