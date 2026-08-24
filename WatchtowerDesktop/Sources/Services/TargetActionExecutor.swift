@@ -186,40 +186,40 @@ enum TargetActionExecutor {
         case .updateTitle:
             // updateText silently no-ops on a whitespace-only title, which would
             // read as a false "renamed" success — reject it here instead.
-            guard let text = action.text,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw TargetActionError.writeFailed("missing text")
-            }
+            let text = try requireTrimmedText(action)
             viewModel.updateText(target, to: text)
             try checkWrite(viewModel)
-            return "renamed to \"\(text.trimmingCharacters(in: .whitespacesAndNewlines))\""
+            return "renamed to \"\(text)\""
         case .updateIntent:
             guard let text = action.text else { throw TargetActionError.writeFailed("missing text") }
             viewModel.updateIntent(target, to: text)
             try checkWrite(viewModel)
             return "updated context"
         case .addLabel:
-            let label = try requireLabel(action)
-            viewModel.addTag(target, tag: label)
+            let label = try requireTrimmedText(action)
+            let changed = viewModel.addTag(target, tag: label)
             try checkWrite(viewModel)
-            return "added label \"\(label)\""
+            // The no-op summary must not claim a write (the toggleSubItem
+            // precedent); `changed` is the in-transaction truth, not a snapshot.
+            return changed ? "added label \"\(label)\"" : "task already has label \"\(label)\""
         case .removeLabel:
-            let label = try requireLabel(action)
-            viewModel.removeTag(target, tag: label)
+            let label = try requireTrimmedText(action)
+            let changed = viewModel.removeTag(target, tag: label)
             try checkWrite(viewModel)
-            return "removed label \"\(label)\""
+            return changed ? "removed label \"\(label)\"" : "label \"\(label)\" was not on the task"
         default:
             throw TargetActionError.writeFailed("internal: \(action.type.rawValue) is not a field action")
         }
     }
 
-    /// Validation guarantees non-empty text, but trim here too so the stored
-    /// label matches what the detail-view editor would have written.
-    private static func requireLabel(_ action: ProposedAction) throws -> String {
+    /// Decode-time validation guarantees non-empty text on the parser path,
+    /// but track-watcher actions reach apply without validate() — and the
+    /// stored value must be trimmed to match what the manual editors write.
+    private static func requireTrimmedText(_ action: ProposedAction) throws -> String {
         guard let raw = action.text else { throw TargetActionError.writeFailed("missing text") }
-        let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !label.isEmpty else { throw TargetActionError.writeFailed("missing text") }
-        return label
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw TargetActionError.writeFailed("missing text") }
+        return text
     }
 
     /// Caps quoted item texts in summaries — they are echoed into the chat

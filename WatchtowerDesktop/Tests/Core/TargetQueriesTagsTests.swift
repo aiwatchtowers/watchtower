@@ -107,10 +107,11 @@ final class TargetQueriesTagsTests: XCTestCase {
             try self.createTarget(db, text: "target", tags: #"["infra"]"#)
         }
 
-        try queue.write { db in
+        let changed = try queue.write { db in
             try TargetQueries.addTag(db, id: id, tag: "ops")
         }
 
+        XCTAssertTrue(changed)
         let target = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
         XCTAssertEqual(target?.decodedTags, ["infra", "ops"])
     }
@@ -139,10 +140,11 @@ final class TargetQueriesTagsTests: XCTestCase {
             try self.createTarget(db, text: "target", tags: #"["ops"]"#)
         }
 
-        try queue.write { db in
+        let changed = try queue.write { db in
             try TargetQueries.addTag(db, id: id, tag: "ops")
         }
 
+        XCTAssertFalse(changed, "duplicate add reports no change")
         let target = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
         XCTAssertEqual(target?.decodedTags, ["ops"])
     }
@@ -192,10 +194,11 @@ final class TargetQueriesTagsTests: XCTestCase {
             try self.createTarget(db, text: "target", tags: #"["infra","ops"]"#)
         }
 
-        try queue.write { db in
+        let changed = try queue.write { db in
             try TargetQueries.removeTag(db, id: id, tag: "infra")
         }
 
+        XCTAssertTrue(changed)
         let target = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
         XCTAssertEqual(target?.decodedTags, ["ops"])
     }
@@ -222,10 +225,11 @@ final class TargetQueriesTagsTests: XCTestCase {
             try self.createTarget(db, text: "target", tags: #"["ops"]"#)
         }
 
-        try queue.write { db in
+        let changed = try queue.write { db in
             try TargetQueries.removeTag(db, id: id, tag: "infra")
         }
 
+        XCTAssertFalse(changed, "absent-tag removal reports no change")
         let target = try queue.read { db in try TargetQueries.fetchByID(db, id: id) }
         XCTAssertEqual(target?.decodedTags, ["ops"])
     }

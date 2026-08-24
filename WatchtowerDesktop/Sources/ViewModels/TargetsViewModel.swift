@@ -325,25 +325,34 @@ final class TargetsViewModel {
         }
     }
 
-    func addTag(_ target: Target, tag: String) {
+    /// Returns whether the label set actually changed (false on the idempotent
+    /// no-op cases and on error — errors land in `errorMessage` per the house
+    /// idiom, which the action executor consumes via checkWrite).
+    @discardableResult
+    func addTag(_ target: Target, tag: String) -> Bool {
         do {
-            try dbManager.dbPool.write { db in
+            let changed = try dbManager.dbPool.write { db in
                 try TargetQueries.addTag(db, id: target.id, tag: tag)
             }
             load()
+            return changed
         } catch {
             errorMessage = "Failed to add label: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func removeTag(_ target: Target, tag: String) {
+    @discardableResult
+    func removeTag(_ target: Target, tag: String) -> Bool {
         do {
-            try dbManager.dbPool.write { db in
+            let changed = try dbManager.dbPool.write { db in
                 try TargetQueries.removeTag(db, id: target.id, tag: tag)
             }
             load()
+            return changed
         } catch {
             errorMessage = "Failed to remove label: \(error.localizedDescription)"
+            return false
         }
     }
 

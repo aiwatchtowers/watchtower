@@ -384,16 +384,23 @@ package enum TargetQueries {
     /// never a wholesale rewrite from the caller's snapshot — a label written
     /// concurrently (daemon, CLI, second window) must survive the edit
     /// (review-rules: reload the row immediately before writing).
-    package static func addTag(_ db: Database, id: Int, tag: String) throws {
-        guard var tags = try currentTags(db, id: id) else { return }
-        guard !tags.contains(tag) else { return }
+    /// Returns whether anything changed, so callers can report an honest
+    /// summary for the idempotent no-op cases (duplicate add, absent remove,
+    /// vanished row).
+    @discardableResult
+    package static func addTag(_ db: Database, id: Int, tag: String) throws -> Bool {
+        guard var tags = try currentTags(db, id: id) else { return false }
+        guard !tags.contains(tag) else { return false }
         tags.append(tag)
         try writeTags(db, id: id, tags: tags)
+        return true
     }
 
-    package static func removeTag(_ db: Database, id: Int, tag: String) throws {
-        guard let tags = try currentTags(db, id: id), tags.contains(tag) else { return }
+    @discardableResult
+    package static func removeTag(_ db: Database, id: Int, tag: String) throws -> Bool {
+        guard let tags = try currentTags(db, id: id), tags.contains(tag) else { return false }
         try writeTags(db, id: id, tags: tags.filter { $0 != tag })
+        return true
     }
 
     /// nil = row vanished (edit becomes a no-op, the sibling mutators' contract).
