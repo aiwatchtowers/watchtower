@@ -11,6 +11,7 @@ package struct TargetFilter {
     package var periodStart: String? = nil     // filter targets whose period overlaps this date range start
     package var periodEnd: String? = nil       // filter targets whose period overlaps this date range end
     package var search: String? = nil
+    package var tag: String? = nil
     package var includeDone: Bool = false
     package var parentID: Int? = nil
     package var limit: Int = 200
@@ -23,6 +24,7 @@ package struct TargetFilter {
         periodStart: String? = nil,
         periodEnd: String? = nil,
         search: String? = nil,
+        tag: String? = nil,
         includeDone: Bool = false,
         parentID: Int? = nil,
         limit: Int = 200
@@ -34,6 +36,7 @@ package struct TargetFilter {
         self.periodStart = periodStart
         self.periodEnd = periodEnd
         self.search = search
+        self.tag = tag
         self.includeDone = includeDone
         self.parentID = parentID
         self.limit = limit
@@ -108,6 +111,13 @@ package enum TargetQueries {
             let pattern = "%\(search)%"
             args.append(pattern)
             args.append(pattern)
+        }
+
+        // SQL predicate, not an in-memory pass: filtering after the LIMIT
+        // would make rarely-used tags appear empty once the table outgrows it.
+        if let tag = filter.tag, !tag.isEmpty {
+            conditions.append("EXISTS (SELECT 1 FROM json_each(targets.tags) WHERE json_each.value = ?)")
+            args.append(tag)
         }
 
         var sql = "SELECT * FROM targets"
@@ -366,6 +376,25 @@ package enum TargetQueries {
                 WHERE id = ?
                 """,
             arguments: [json, id]
+        )
+    }
+
+    package static func updateTags(_ db: Database, id: Int, tags: [String]) throws {
+        let data = try JSONEncoder().encode(tags)
+        let json = String(data: data, encoding: .utf8) ?? "[]"
+        try db.execute(
+            sql: """
+                UPDATE targets SET tags = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [json, id]
+        )
+    }
+
+    package static func fetchDistinctTags(_ db: Database) throws -> [String] {
+        try String.fetchAll(
+            db,
+            sql: "SELECT DISTINCT value FROM targets, json_each(targets.tags) ORDER BY value COLLATE NOCASE"
         )
     }
 

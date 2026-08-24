@@ -17,8 +17,13 @@ final class TargetsViewModel {
     var statusFilter: String?
     var priorityFilter: String?
     var ownershipFilter: String?
+    var tagFilter: String?
     var showDone: Bool = false
     var searchText: String = ""
+
+    /// Distinct tags across all targets, refreshed on every load — feeds the
+    /// Label filter menu.
+    var availableTags: [String] = []
 
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
@@ -66,17 +71,20 @@ final class TargetsViewModel {
                 filter.status = self.statusFilter
                 filter.priority = self.priorityFilter
                 filter.ownership = self.ownershipFilter
+                filter.tag = self.tagFilter
                 filter.includeDone = self.showDone
                 if !self.searchText.isEmpty {
                     filter.search = self.searchText
                 }
                 let all = try TargetQueries.fetchAll(db, filter: filter)
-                return (all, counts)
+                let tags = try TargetQueries.fetchDistinctTags(db)
+                return (all, counts, tags)
             }
 
             let targets = result.0
             activeCount = result.1.active
             overdueCount = result.1.overdue
+            availableTags = result.2
 
             // Today: overdue + due today + high priority active
             todayTargets = targets.filter { target in
@@ -314,6 +322,17 @@ final class TargetsViewModel {
             load()
         } catch {
             errorMessage = "Failed to update priority: \(error.localizedDescription)"
+        }
+    }
+
+    func updateTags(_ target: Target, to tags: [String]) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TargetQueries.updateTags(db, id: target.id, tags: tags)
+            }
+            load()
+        } catch {
+            errorMessage = "Failed to update tags: \(error.localizedDescription)"
         }
     }
 

@@ -228,7 +228,9 @@ An **ask bar** sits at the bottom of the Details tab, below the scrolling conten
 
 **Quick actions** — right-click any task for: Mark Done, Dismiss, change Status, change Priority, Delete.
 
-**Filters** — filter by priority (high/medium/low), ownership (mine/delegated/watching), or toggle to show completed tasks.
+**Filters** — filter by level, priority (high/medium/low), or a custom label, or toggle to show completed tasks. The Label submenu lists every label in use and appears once at least one task carries a label.
+
+**Labels** — free-form tags on a task, edited in the detail view's About section: type into "Add label…" and press Enter, pick an existing label from the **+** menu, or remove one with the × on its chip. A task can carry any number of labels; the filter menu shows tasks carrying the selected label.
 
 **Sidebar badge** — shows active task count (todo + in_progress + blocked). Turns red when overdue tasks exist.
 
