@@ -71,6 +71,12 @@ package struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     package let rawJSON: String
     package let syncedAt: String
     package let updatedAt: String
+    /// Email of the Google account that owns this event's calendar, resolved by
+    /// a LEFT JOIN in `CalendarQueries` (`calendar_id` → `calendar_calendars`
+    /// → `google_accounts`). nil for CalDAV/ICS calendars (no owning account)
+    /// and for queries that don't join it. Used only to hint the right account
+    /// on a Google Meet join link — see `joinURL`.
+    package let accountEmail: String?
 
     package init(row: Row) {
         id = row["id"]
@@ -91,6 +97,7 @@ package struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         rawJSON = row["raw_json"] ?? "{}"
         syncedAt = row["synced_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        accountEmail = row["account_email"]
     }
 
     // MARK: - ISO8601 Parsing
@@ -174,6 +181,30 @@ package struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
               scheme == "https" || scheme == "http",
               url.host != nil else { return nil }
         return url
+    }
+
+    /// The link the Join button actually opens. Identical to `conferenceLink`
+    /// except for Google Meet: the browser opens `meet.google.com` under its
+    /// DEFAULT signed-in account (`authuser=0`), which for someone signed into
+    /// both a personal and a work account is usually the wrong one. When we
+    /// know the account that owns this event's calendar (`accountEmail`), we
+    /// append `?authuser=<email>` so Meet lands on the right account. Only
+    /// `meet.google.com` understands `authuser`; Zoom/Teams/Webex — and any
+    /// Meet link on a calendar with no owning account (CalDAV/ICS, or a query
+    /// that didn't join it) — are opened verbatim. An existing `authuser` is
+    /// left untouched.
+    package var joinURL: URL? {
+        guard let link = conferenceLink else { return nil }
+        guard link.host?.lowercased() == "meet.google.com",
+              let email = accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !email.isEmpty,
+              var comps = URLComponents(url: link, resolvingAgainstBaseURL: false)
+        else { return link }
+        var items = comps.queryItems ?? []
+        guard !items.contains(where: { $0.name == "authuser" }) else { return link }
+        items.append(URLQueryItem(name: "authuser", value: email))
+        comps.queryItems = items
+        return comps.url ?? link
     }
 
     // MARK: - Status

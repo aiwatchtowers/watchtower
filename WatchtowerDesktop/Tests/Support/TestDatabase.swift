@@ -1580,18 +1580,19 @@ package enum TestDatabase {
         eventStatus: String = "confirmed",
         eventType: String = "",
         htmlLink: String = "",
+        conferenceURL: String = "",
         updatedAt: String = ""
     ) throws {
         try ensureCalendar(db, id: calendarID)
         try db.execute(sql: """
             INSERT INTO calendar_events (id, calendar_id, title, description, location,
                 start_time, end_time, organizer_email, attendees, is_recurring,
-                is_all_day, event_status, event_type, html_link, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_all_day, event_status, event_type, html_link, conference_url, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [id, calendarID, title, description, location,
                              startTime, endTime, organizerEmail, attendees,
                              isRecurring ? 1 : 0, isAllDay ? 1 : 0, eventStatus,
-                             eventType, htmlLink, updatedAt])
+                             eventType, htmlLink, conferenceURL, updatedAt])
     }
 
     // MARK: - Day Plan Fixtures
