@@ -26,6 +26,7 @@ struct TargetDetailView: View {
     @State private var promotingSubItem: PromotingSubItemContext?
     @State private var subItemDropIndex: Int?
     @State private var newNoteText: String = ""
+    @State private var newTagText: String = ""
     @State private var jiraIssue: JiraIssue?
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
@@ -1345,19 +1346,67 @@ struct TargetDetailView: View {
             }
             aboutRow("Created", relativeOrDate(target.createdDate))
             aboutRow("Updated", relativeOrDate(target.updatedDate))
-            let tags = target.decodedTags
-            if !tags.isEmpty {
-                FlowLayout(spacing: 6) {
-                    ForEach(tags, id: \.self) { tag in
+            labelsEditor
+        }
+    }
+
+    @ViewBuilder
+    private var labelsEditor: some View {
+        let tags = target.decodedTags
+        if !tags.isEmpty {
+            FlowLayout(spacing: 6) {
+                ForEach(tags, id: \.self) { tag in
+                    HStack(spacing: 4) {
                         Text(tag)
                             .font(.caption)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(.blue.opacity(0.1), in: Capsule())
+                        Button {
+                            viewModel.removeTag(target, tag: tag)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.blue.opacity(0.1), in: Capsule())
                 }
             }
         }
+        HStack(spacing: 8) {
+            Image(systemName: "tag")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Add label...", text: $newTagText)
+                .font(.callout)
+                .textFieldStyle(.plain)
+                .onSubmit { addTag(newTagText) }
+            let suggestions = viewModel.availableTags.filter { !tags.contains($0) }
+            if !suggestions.isEmpty {
+                Menu {
+                    ForEach(suggestions, id: \.self) { tag in
+                        Button(tag) { addTag(tag) }
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Add an existing label")
+            }
+        }
+    }
+
+    private func addTag(_ raw: String) {
+        // Validate before clearing: a rejected entry (blank/duplicate) keeps the
+        // typed text so it never looks like a silent success.
+        let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tag.isEmpty, !target.decodedTags.contains(tag) else { return }
+        viewModel.addTag(target, tag: tag)
+        newTagText = ""
     }
 
     private func aboutRow(_ label: String, _ value: String) -> some View {

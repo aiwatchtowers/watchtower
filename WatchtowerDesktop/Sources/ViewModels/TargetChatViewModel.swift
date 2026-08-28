@@ -72,6 +72,8 @@ extension TargetActionKind {
         case .updateBallOn: "ball-on"
         case .updateTitle: "rename"
         case .updateIntent: "context update"
+        case .addLabel: "new label"
+        case .removeLabel: "label removal"
         }
     }
 }
@@ -98,9 +100,9 @@ final class TargetChatViewModel {
     private var target: Target
     private let viewModel: TargetsViewModel
     private var streamTask: Task<Void, Never>?
-    // nonisolated(unsafe) so deinit (nonisolated) can cancel it; written only
-    // on the main actor, and deinit has exclusive access to self.
-    nonisolated(unsafe) private var observationTask: Task<Void, Never>?
+    // Cancelled by stop() (main actor) — the container calls it on tab close
+    // and on container eviction; there is no deinit touching this.
+    private var observationTask: Task<Void, Never>?
 
     /// Follow-ups produced by a decision taken while a turn was still streaming.
     /// The write applies immediately; its message waits here until the running
@@ -767,7 +769,13 @@ final class TargetChatViewModel {
     - link_target        { "target_id": <id of an EXISTING target>, "relation": "contributes_to|blocks|related|duplicates" }
     - update_title       { "text": "<new task title>" }
     - update_intent      { "text": "<the task's goal/context, replaces the current intent>" }
+    - add_label          { "text": "<label>" } — adds one label (free-form tag) to the task
+    - remove_label       { "text": "<label>" } — removes that label from the task
     Every block must also include "reason".
+    Labels are free-form tags the owner filters the Targets list by (the task's
+    current ones are in the Labels line). One block per label; adding an existing
+    label is a no-op. Prefer a label the owner already uses (LABELS IN USE, when
+    listed) over coining a near-duplicate.
     For the *_sub_item actions, "index" is the #N shown next to the item in the
     addressed task's sub-items list (the CURRENT TASK by default) and "match" is
     that item's EXACT current text — both are required and are re-checked at
@@ -813,7 +821,7 @@ final class TargetChatViewModel {
     MANDATE — broad powers, narrow mandate:
     Within a directive you may modify this task's vertical line — the task
     itself, its sub-tasks at any depth and its parent chain (title, intent,
-    priority, due date, status, notes, sub-items, child targets) — but only what
+    priority, due date, status, notes, labels, sub-items, child targets) — but only what
     the directive implies. Findings beyond the mandate (sibling branches, other
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
@@ -841,6 +849,7 @@ final class TargetChatViewModel {
             }
             .joined(separator: "\n")
         let subItemsText = subItemsList.isEmpty ? "(none)" : subItemsList
+        let labels = target.decodedTags.joined(separator: ", ")
         return """
         === CURRENT TASK ===
         ID: \(target.id)
@@ -848,6 +857,7 @@ final class TargetChatViewModel {
         Intent: \(target.intent)
         Status: \(target.status)
         Priority: \(target.priority)
+        Labels: \(labels.isEmpty ? "(none)" : labels)
         Ownership: \(target.ownership)
         Blocking: \(target.blocking)
         Progress: \(Int((target.progress * 100).rounded()))%
@@ -857,6 +867,20 @@ final class TargetChatViewModel {
         \(subItemsText)
         Created: \(target.createdAt)
         Updated: \(target.updatedAt)
+        """
+    }
+
+    /// The `=== LABELS IN USE ===` block: the workspace's existing label
+    /// vocabulary, so the assistant reuses the owner's labels instead of
+    /// coining near-duplicates. Empty string when no labels exist (block
+    /// omitted, byte-identical prompt — the watchActivityBlock shape).
+    nonisolated static func labelsInUseBlock(dbPool: DatabasePool) -> String {
+        let tags = (try? dbPool.read { db in try TargetQueries.fetchDistinctTags(db) }) ?? []
+        guard !tags.isEmpty else { return "" }
+        return """
+
+        === LABELS IN USE ===
+        \(tags.joined(separator: ", "))
         """
     }
 
@@ -1008,7 +1032,7 @@ final class TargetChatViewModel {
 
         \(Self.taskContextBlock(target))
         \(Self.taskTreeBlock(target: target, dbPool: dbPool))
-        \(Self.watchActivityBlock(target: target, dbPool: dbPool))
+        \(Self.watchActivityBlock(target: target, dbPool: dbPool))\(Self.labelsInUseBlock(dbPool: dbPool))
 
         \(memoryBlock)\(Self.taskActionsContract)
 

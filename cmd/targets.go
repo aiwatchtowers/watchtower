@@ -569,12 +569,7 @@ func runTargetsCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	if targetsFlagTags != "" {
-		parts := strings.Split(targetsFlagTags, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
-		}
-		tagsJSON, _ := json.Marshal(parts)
-		target.Tags = string(tagsJSON)
+		target.Tags = parseTagsFlag(targetsFlagTags)
 	}
 
 	id, err := database.CreateTarget(target)
@@ -827,12 +822,7 @@ func runTargetsUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if cmd.Flags().Changed("tags") {
-		parts := strings.Split(targetsFlagTags, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
-		}
-		tagsJSON, _ := json.Marshal(parts)
-		target.Tags = string(tagsJSON)
+		target.Tags = parseTagsFlag(targetsFlagTags)
 	}
 
 	if err := database.UpdateTarget(*target); err != nil {
@@ -920,4 +910,18 @@ func runTargetsNoteList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  [%s] %s\n", ts, n.Text)
 	}
 	return nil
+}
+
+// parseTagsFlag converts the comma-separated --tags value to a JSON array,
+// dropping empty parts so `--tags ""` clears tags (writes "[]") instead of
+// writing `[""]` — the promote-subitem path's semantics (cmd/targets_ai.go).
+func parseTagsFlag(raw string) string {
+	parts := []string{}
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	tagsJSON, _ := json.Marshal(parts)
+	return string(tagsJSON)
 }

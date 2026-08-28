@@ -317,8 +317,12 @@ struct MarkdownText: View {
         }
     }
 
-    private func inlineMarkdown(_ text: String) -> Text {
+    // fixedSize(horizontal: false, vertical: true) keeps long lines wrapping:
+    // inside the chat bubbles' HStack rows AppKit-backed Text otherwise
+    // collapses to a single truncated line with an ellipsis.
+    private func inlineMarkdown(_ text: String) -> some View {
         Text(Self.inlineAttributed(text))
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func headerFont(_ level: Int) -> Font {

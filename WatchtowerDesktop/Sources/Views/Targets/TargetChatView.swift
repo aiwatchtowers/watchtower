@@ -523,6 +523,8 @@ struct TargetActionCardView: View {
         case .updateBallOn: "person.circle"
         case .updateTitle: "pencil.line"
         case .updateIntent: "text.alignleft"
+        case .addLabel: "tag"
+        case .removeLabel: "tag.slash"
         }
     }
 }
