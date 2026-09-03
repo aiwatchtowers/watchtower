@@ -3,12 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
 func TestCreateTarget_ValidateRejectsBadInput(t *testing.T) {
@@ -19,7 +18,7 @@ func TestCreateTarget_ValidateRejectsBadInput(t *testing.T) {
 		"unknown field": `{"text":"x","reason":"r","bogus":1}`,
 		"bad priority":  `{"text":"x","reason":"r","priority":"urgent"}`,
 		"bad due":       `{"text":"x","reason":"r","due":"tomorrow"}`,
-		"long text":     `{"text":"` + string(make([]byte, 201)) + `","reason":"r"}`,
+		"long text":     `{"text":"` + strings.Repeat("x", 201) + `","reason":"r"}`,
 	}
 	for name, raw := range cases {
 		err := tool.Validate(context.Background(), database, json.RawMessage(raw))
@@ -30,6 +29,9 @@ func TestCreateTarget_ValidateRejectsBadInput(t *testing.T) {
 		json.RawMessage(`{"text":"Call Vasya","reason":"r","due":"2026-09-05T16:00","priority":"high"}`)))
 	assert.NoError(t, tool.Validate(context.Background(), database,
 		json.RawMessage(`{"text":"Renew cert","reason":"r","due":"2026-09-12"}`)))
+	// Verify exactly 200 runes passes (including multi-byte Unicode)
+	assert.NoError(t, tool.Validate(context.Background(), database,
+		json.RawMessage(`{"text":"`+strings.Repeat("я", 200)+`","reason":"r"}`)))
 }
 
 func TestCreateTarget_ExecuteMatchesRemindShape(t *testing.T) {
@@ -64,5 +66,4 @@ func TestCreateTarget_Registration(t *testing.T) {
 	assert.False(t, tool.External)
 	assert.Equal(t, []string{"main"}, tool.Surfaces)
 	require.NotNil(t, tool.InputSchema)
-	_ = db.Target{} // keeps the import honest if GetTarget's name changes
 }
