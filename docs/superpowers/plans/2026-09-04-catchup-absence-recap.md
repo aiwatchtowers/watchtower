@@ -1256,7 +1256,7 @@ func TestParseWindowTime(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 9, 3, 0, 0, 0, 0, time.Local), d)
 	r, err := ParseWindowTime("2026-09-03T10:15:00Z", time.Local)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1788516900), r.Unix())
+	assert.Equal(t, int64(1788430500), r.Unix())
 	_, err = ParseWindowTime("yesterday", time.Local)
 	assert.Error(t, err)
 }
