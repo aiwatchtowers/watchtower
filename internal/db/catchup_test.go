@@ -2,7 +2,6 @@ package db
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,9 +51,36 @@ func TestListCatchupStreams(t *testing.T) {
 
 func TestListCatchupMeetings_RecapAndAdHoc(t *testing.T) {
 	d := openTestDB(t)
-	// event-linked recap whose calendar row is gone → title falls back to the transcript title, then "Meeting"
-	_, err := d.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at) VALUES (NULL, 's', '{"summary":"we agreed","key_decisions":["ship"],"action_items":["a"]}', '1970-01-01T00:20:00Z')`)
+	// Recap title fallback chain: calendar event title → linked transcript title
+	// → "Meeting". All three tiers get a fixture, ordered by created_at.
+	_, err := d.Exec(`INSERT INTO calendar_calendars (id, name) VALUES ('cal1', 'Primary')`)
 	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO calendar_events (id, calendar_id, title, start_time, end_time)
+		VALUES ('E1', 'cal1', 'Weekly sync', '1970-01-01T00:15:00Z', '1970-01-01T00:17:00Z')`)
+	require.NoError(t, err)
+	// A recording whose recap lives in meeting_recaps carries no summary_json, so
+	// it is not itself an ad-hoc transcript — it only supplies the recap's title.
+	linked, err := d.Exec(`INSERT INTO meeting_transcripts (event_id, title, transcript_text, summary_json, created_at) VALUES (NULL, 'Linked recording', 'txt', NULL, '1970-01-01T00:19:00Z')`)
+	require.NoError(t, err)
+	linkedID, err := linked.LastInsertId()
+	require.NoError(t, err)
+	// The event-linked meeting was recorded too, so its recap has BOTH titles
+	// available — which is what makes the event-over-transcript precedence testable.
+	evtRec, err := d.Exec(`INSERT INTO meeting_transcripts (event_id, title, transcript_text, summary_json, created_at) VALUES ('E1', 'Weekly sync recording', 'txt', NULL, '1970-01-01T00:17:30Z')`)
+	require.NoError(t, err)
+	evtRecID, err := evtRec.LastInsertId()
+	require.NoError(t, err)
+
+	// tier 1: calendar event title wins over the linked transcript's title
+	_, err = d.Exec(`INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json, created_at) VALUES ('E1', ?, 's', '{"summary":"synced"}', '1970-01-01T00:18:00Z')`, evtRecID)
+	require.NoError(t, err)
+	// tier 2: no event, but a linked transcript
+	_, err = d.Exec(`INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json, created_at) VALUES (NULL, ?, 's', '{"summary":"from recording"}', '1970-01-01T00:19:30Z')`, linkedID)
+	require.NoError(t, err)
+	// tier 3: neither → "Meeting"
+	_, err = d.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at) VALUES (NULL, 's', '{"summary":"we agreed","key_decisions":["ship"],"action_items":["a"]}', '1970-01-01T00:20:00Z')`)
+	require.NoError(t, err)
+
 	_, err = d.Exec(`INSERT INTO meeting_transcripts (event_id, title, transcript_text, summary_json, created_at) VALUES (NULL, 'Ad hoc sync', 'txt', '{"summary":"quick"}', '1970-01-01T00:25:00Z')`)
 	require.NoError(t, err)
 	_, err = d.Exec(`INSERT INTO meeting_transcripts (event_id, title, transcript_text, summary_json, created_at) VALUES (NULL, 'Old', 'txt', '{"summary":"old"}', '1970-01-01T05:00:00Z')`)
@@ -62,13 +88,19 @@ func TestListCatchupMeetings_RecapAndAdHoc(t *testing.T) {
 
 	items, err := d.ListCatchupMeetings(1000, 2000, 10)
 	require.NoError(t, err)
-	require.Len(t, items, 2)
+	require.Len(t, items, 4)
 	assert.Equal(t, "recaps", items[0].Area)
-	assert.Equal(t, "Meeting", items[0].Title)
-	assert.Contains(t, items[0].Body, "we agreed")
-	assert.Contains(t, items[0].Body, "Decisions: ship")
-	assert.Equal(t, "transcripts", items[1].Area)
-	assert.Equal(t, "Ad hoc sync", items[1].Title)
+	assert.Equal(t, "Weekly sync", items[0].Title)
+	assert.Contains(t, items[0].Body, "synced")
+	assert.Equal(t, "recaps", items[1].Area)
+	assert.Equal(t, "Linked recording", items[1].Title)
+	assert.Contains(t, items[1].Body, "from recording")
+	assert.Equal(t, "recaps", items[2].Area)
+	assert.Equal(t, "Meeting", items[2].Title)
+	assert.Contains(t, items[2].Body, "we agreed")
+	assert.Contains(t, items[2].Body, "Decisions: ship")
+	assert.Equal(t, "transcripts", items[3].Area)
+	assert.Equal(t, "Ad hoc sync", items[3].Title)
 }
 
 func TestListCatchupDecisions_MentionInWindow(t *testing.T) {
@@ -151,18 +183,19 @@ func TestListCatchupTracksAndTargets(t *testing.T) {
 	assert.Equal(t, "Review PR", tracks[0].Title)
 	assert.Contains(t, tracks[0].Meta, "high")
 
-	// targets.due_date is a LOCAL "YYYY-MM-DDTHH:MM" string, so the fixtures are
-	// derived the same way the query builds its bounds — time-zone-independent.
-	const dueLayout = "2006-01-02T15:04"
-	dueIn := time.Unix(1500, 0).Local().Format(dueLayout)
-	overdue := time.Unix(500, 0).Local().Format(dueLayout)
-	later := time.Unix(90000, 0).Local().Format(dueLayout)
+	// targets.due_date is "YYYY-MM-DDTHH:MM" in UTC (the targets.go convention),
+	// so these are literal UTC strings: the window unix 1000..2000 is
+	// 00:16..00:33 UTC. Two fixtures pin the bounds against a .Local() shift on a
+	// non-UTC host: 'Due in window' (00:20) drops out entirely under a negative
+	// offset, and 'Just after window' (00:34, one minute past the end) is pulled
+	// in — as in-window or as overdue — under any positive offset.
 	_, err = d.Exec(`INSERT INTO targets (text, period_start, period_end, status, priority, due_date) VALUES
-		('Due in window', '1970-01-01', '1970-01-01', 'todo', 'high', ?),
-		('Overdue', '1970-01-01', '1970-01-01', 'in_progress', 'medium', ?),
-		('Done', '1970-01-01', '1970-01-01', 'done', 'high', ?),
-		('Later', '1970-01-01', '1970-01-01', 'todo', 'high', ?),
-		('No due', '1970-01-01', '1970-01-01', 'todo', 'high', '')`, dueIn, overdue, dueIn, later)
+		('Due in window', '1970-01-01', '1970-01-01', 'todo', 'high', '1970-01-01T00:20'),
+		('Overdue', '1970-01-01', '1970-01-01', 'in_progress', 'medium', '1969-12-31T10:00'),
+		('Just after window', '1970-01-01', '1970-01-01', 'todo', 'high', '1970-01-01T00:34'),
+		('Done', '1970-01-01', '1970-01-01', 'done', 'high', '1970-01-01T00:20'),
+		('Later', '1970-01-01', '1970-01-01', 'todo', 'high', '1970-01-02T00:00'),
+		('No due', '1970-01-01', '1970-01-01', 'todo', 'high', '')`)
 	require.NoError(t, err)
 	targets, err := d.ListCatchupTargets(1000, 2000, 10)
 	require.NoError(t, err)

@@ -338,16 +338,18 @@ func (db *DB) ListCatchupTracks(from, to float64, limit int) ([]CatchupItem, err
 }
 
 // ListCatchupTargets returns open targets due inside the window or already
-// overdue at its end. targets.due_date is "YYYY-MM-DDTHH:MM" local, or "".
+// overdue at its start. targets.due_date is "YYYY-MM-DDTHH:MM" in UTC (the
+// targets.go convention — see GetTargetCounts/UnsnoozeExpiredTargets and the
+// Desktop writer in WatchtowerCore/Models/Target.swift), or "".
 func (db *DB) ListCatchupTargets(from, to float64, limit int) ([]CatchupItem, error) {
-	fromLocal := time.Unix(int64(from), 0).Local().Format("2006-01-02T15:04")
-	toLocal := time.Unix(int64(to), 0).Local().Format("2006-01-02T15:04")
+	fromUTC := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04")
+	toUTC := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04")
 	rows, err := db.Query(`
 		SELECT id, text, intent, due_date, status, priority
 		FROM targets
 		WHERE status NOT IN ('done','dismissed') AND due_date <> ''
 		  AND ((due_date > ? AND due_date <= ?) OR due_date < ?)
-		ORDER BY due_date ASC LIMIT ?`, fromLocal, toLocal, fromLocal, limit)
+		ORDER BY due_date ASC LIMIT ?`, fromUTC, toUTC, fromUTC, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup targets: %w", err)
 	}
