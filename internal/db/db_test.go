@@ -183,6 +183,7 @@ func TestAllTablesExist(t *testing.T) {
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
 		"memory_focus_matches",
 		"ideas", "idea_mentions", "stream_digests", "jira_comments",
+		"agent_actions", "tool_trust",
 	}
 
 	for _, table := range expectedTables {

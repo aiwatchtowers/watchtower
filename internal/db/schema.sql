@@ -1550,3 +1550,30 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
+
+CREATE TABLE IF NOT EXISTS agent_actions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool            TEXT    NOT NULL,
+    external        INTEGER NOT NULL DEFAULT 0,
+    args_json       TEXT    NOT NULL,
+    reason          TEXT    NOT NULL DEFAULT '',
+    surface         TEXT    NOT NULL DEFAULT '',
+    conversation_id INTEGER NOT NULL DEFAULT 0,
+    context_type    TEXT    NOT NULL DEFAULT '',
+    context_id      TEXT    NOT NULL DEFAULT '',
+    turn_id         TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','approved','rejected','applied','failed')),
+    trust_at_create TEXT    NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
+    result_json     TEXT    NOT NULL DEFAULT '',
+    error           TEXT    NOT NULL DEFAULT '',
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    decided_at      TEXT    NOT NULL DEFAULT '',
+    applied_at      TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS tool_trust (
+    tool       TEXT PRIMARY KEY,
+    trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
