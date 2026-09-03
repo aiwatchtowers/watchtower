@@ -234,7 +234,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	}
 	if trust == TrustExecute {
 		// Stamp decided_at the way an owner approval would.
-		if _, err := r.db.TransitionAgentAction(id, []string{"approved"}, "approved", "", ""); err != nil {
+		if _, err := r.finishTransition(id, []string{"approved"}, "approved", "", ""); err != nil {
 			return Receipt{}, err
 		}
 		applied, err := r.Apply(ctx, id)
@@ -266,8 +266,7 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	from := []string{"approved", "failed"}
 	t, ok := r.tools[row.Tool]
 	if !ok {
-		_, _ = r.db.TransitionAgentAction(id, from, "failed", "", "unknown tool "+row.Tool)
-		return r.db.GetAgentAction(id)
+		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
 	}
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: Binding{
 		Surface: row.Surface, ConversationID: row.ConversationID,
@@ -275,19 +274,37 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	}}
 	result, execErr := t.Execute(ctx, r.db, call)
 	if execErr != nil {
-		if _, err := r.db.TransitionAgentAction(id, from, "failed", "", execErr.Error()); err != nil {
-			return nil, err
-		}
-		return r.db.GetAgentAction(id)
+		return r.finishTransition(id, from, "failed", "", execErr.Error())
 	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		resultJSON = []byte("{}")
 	}
-	if _, err := r.db.TransitionAgentAction(id, from, "applied", string(resultJSON), ""); err != nil {
+	return r.finishTransition(id, from, "applied", string(resultJSON), "")
+}
+
+// finishTransition moves id from one of `from` to `to` and re-reads the row.
+// A lost race — the row was no longer in `from` when the UPDATE ran, e.g. the
+// owner rejected it while Execute was in flight, or a concurrent Apply won —
+// is reported as ErrBadTransition rather than silently returning stale state;
+// a row missing on re-read (it should never be deleted, but defend anyway) is
+// ErrNotFound. Apply must never return (nil, nil).
+func (r *Registry) finishTransition(id int64, from []string, to, resultJSON, errMsg string) (*db.AgentAction, error) {
+	ok, err := r.db.TransitionAgentAction(id, from, to, resultJSON, errMsg)
+	if err != nil {
 		return nil, err
 	}
-	return r.db.GetAgentAction(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: #%d changed state before it could be marked %s", ErrBadTransition, id, to)
+	}
+	row, err := r.db.GetAgentAction(id)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, ErrNotFound
+	}
+	return row, nil
 }
 
 func receiptFor(row *db.AgentAction) Receipt {

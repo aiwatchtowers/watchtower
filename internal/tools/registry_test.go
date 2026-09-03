@@ -181,6 +181,65 @@ func TestApply_FailureLandsFailedAndIsRetriable(t *testing.T) {
 	assert.Empty(t, row.Error)
 }
 
+// TestApply_LostRaceDuringExecuteReturnsBadTransition pins that a status
+// change that lands while Execute is in flight (the owner rejects the
+// action in the Desktop while the tool call is running) is surfaced as
+// ErrBadTransition rather than silently reported as applied — and that the
+// row is left in whatever state won the race, not overwritten.
+func TestApply_LostRaceDuringExecuteReturnsBadTransition(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	require.NoError(t, reg.Register(&Tool{
+		Name: "racy", Description: "x", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
+			// Simulate the owner rejecting the action in the Desktop while
+			// this Execute call is still running.
+			ok, terr := database.TransitionAgentAction(call.ActionID, []string{"approved"}, "rejected", "", "")
+			require.NoError(t, terr)
+			require.True(t, ok)
+			return map[string]any{"ok": true}, nil
+		},
+	}))
+	rc, err := reg.Propose(context.Background(), "racy", json.RawMessage(`{"reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = reg.Apply(context.Background(), rc.ActionID)
+	assert.ErrorIs(t, err, ErrBadTransition)
+
+	row, err := database.GetAgentAction(rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "rejected", row.Status, "the rejection that won the race must not be overwritten by applied")
+}
+
+// TestApply_RowGoneOnReReadIsNotFound pins that Apply never returns
+// (nil, nil): a row missing on read is reported as ErrNotFound. Production
+// never deletes agent_actions rows; this only forces the state the guard
+// defends against.
+func TestApply_RowGoneOnReReadIsNotFound(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = database.Exec(`DELETE FROM agent_actions WHERE id = ?`, rc.ActionID)
+	require.NoError(t, err)
+
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	assert.Nil(t, row)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestAgent03_ExternalToolCannotBeExecuteTrust(t *testing.T) {
 	database := openDB(t)
 	var executed []Call
