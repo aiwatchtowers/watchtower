@@ -3585,13 +3585,13 @@ In `WatchtowerDesktop/Tests/Support/TestDatabase.swift`, append to the `schema` 
     package static func insertAgentAction(
         _ db: Database,
         tool: String = "create_target",
+        external: Bool = false,
         argsJSON: String = #"{"text":"Call Vasya","reason":"r"}"#,
         reason: String = "r",
         surface: String = "main",
         conversationID: Int64 = 1,
         turnID: String = "turn-1",
         status: String = "pending",
-        external: Bool = false,
         resultJSON: String = "",
         error: String = "",
         createdAt: String = "2026-09-04T10:00:00Z",
@@ -4799,7 +4799,7 @@ final class AgentActionCardViewTests: XCTestCase {
 
     func testFailedExternalCardShowsRetryWithDuplicateWarning() throws {
         let action = try row { db in
-            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", status: "failed", external: true, error: "boom")
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "failed", error: "boom")
         }
         let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
