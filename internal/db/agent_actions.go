@@ -22,7 +22,7 @@ type AgentAction struct {
 	ContextType    string
 	ContextID      string
 	TurnID         string
-	Status         string // pending | approved | rejected | applied | failed
+	Status         string // pending | approved | rejected | executing | applied | failed
 	TrustAtCreate  string // ask | execute
 	ResultJSON     string
 	Error          string
@@ -126,7 +126,9 @@ func (db *DB) ListAgentActions(f AgentActionFilter) ([]AgentAction, error) {
 // TransitionAgentAction moves a row to `to` only when its current status is
 // one of `from`; it returns false when the row was in another state (or does
 // not exist), which is how callers detect a lost race or a bad transition.
-// decided_at is stamped for approved/rejected, applied_at for applied/failed.
+// decided_at is stamped for approved/rejected, applied_at for applied/failed;
+// `executing` (Apply's claim) stamps neither — it is a transient state whose
+// only job is to be exclusive.
 func (db *DB) TransitionAgentAction(id int64, from []string, to, resultJSON, errMsg string) (bool, error) {
 	if len(from) == 0 {
 		return false, fmt.Errorf("transition to %s: no source statuses", to)

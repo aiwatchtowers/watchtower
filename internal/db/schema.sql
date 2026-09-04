@@ -1562,8 +1562,10 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     context_type    TEXT    NOT NULL DEFAULT '',
     context_id      TEXT    NOT NULL DEFAULT '',
     turn_id         TEXT    NOT NULL DEFAULT '',
+    -- `executing` is the claim Apply takes before it runs the tool, so two
+    -- overlapping applies can never both perform the write (AGENT-05).
     status          TEXT    NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','approved','rejected','applied','failed')),
+                    CHECK(status IN ('pending','approved','rejected','applied','failed','executing')),
     trust_at_create TEXT    NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
     result_json     TEXT    NOT NULL DEFAULT '',
     error           TEXT    NOT NULL DEFAULT '',
@@ -1571,6 +1573,8 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     decided_at      TEXT    NOT NULL DEFAULT '',
     applied_at      TEXT    NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
 
 CREATE TABLE IF NOT EXISTS tool_trust (
     tool       TEXT PRIMARY KEY,

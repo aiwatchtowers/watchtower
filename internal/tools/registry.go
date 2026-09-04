@@ -265,6 +265,12 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if err != nil {
 		return Receipt{}, err
 	}
+	// Defense in depth for AGENT-03: SetTrust refuses `execute` for an external
+	// tool, but db.SetToolTrust does not, and a trust row keyed by tool NAME
+	// outlives a tool later being marked External. The read side decides too.
+	if t.External {
+		trust = TrustAsk
+	}
 	row := db.AgentAction{
 		Tool: name, External: t.External, ArgsJSON: string(args), Reason: reason,
 		Surface: b.Surface, ConversationID: b.ConversationID,
@@ -298,6 +304,12 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 
 // Apply executes an approved (or previously failed) row exactly once and
 // records applied/failed. applied and rejected are terminal (AGENT-05).
+//
+// The row is CLAIMED before the tool runs: `approved|failed → executing` is a
+// conditional UPDATE, so of two overlapping applies only one ever reaches
+// Execute — the other is refused before its side effect, not after it. A row
+// left in `executing` by a process that died mid-flight is not applicable
+// either; `watchtower actions apply --force` reclaims it.
 func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error) {
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
@@ -306,10 +318,20 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	if row == nil {
 		return nil, ErrNotFound
 	}
+	// The read is needed for the tool name and args anyway; checking the status
+	// here only buys the caller a message naming the state it was actually in.
+	// The claim below is what makes the decision exclusive.
 	if row.Status != "approved" && row.Status != "failed" {
 		return nil, fmt.Errorf("%w: #%d is %s", ErrBadTransition, id, row.Status)
 	}
-	from := []string{"approved", "failed"}
+	claimed, err := r.db.TransitionAgentAction(id, []string{"approved", "failed"}, "executing", "", "")
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return nil, fmt.Errorf("%w: #%d is already executing or decided", ErrBadTransition, id)
+	}
+	from := []string{"executing"}
 	t, ok := r.tools[row.Tool]
 	if !ok {
 		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
@@ -330,11 +352,12 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 }
 
 // finishTransition moves id from one of `from` to `to` and re-reads the row.
-// A lost race — the row was no longer in `from` when the UPDATE ran, e.g. the
-// owner rejected it while Execute was in flight, or a concurrent Apply won —
-// is reported as ErrBadTransition rather than silently returning stale state;
-// a row missing on re-read (it should never be deleted, but defend anyway) is
-// ErrNotFound. Apply must never return (nil, nil).
+// A lost race — the row was no longer in `from` when the UPDATE ran — is
+// reported as ErrBadTransition rather than silently returning stale state; a
+// row missing on re-read (it should never be deleted, but defend anyway) is
+// ErrNotFound. Apply must never return (nil, nil). Since Apply claims the row
+// as `executing` first, nothing but another claim can take it away mid-flight:
+// an owner reject that lands while Execute runs simply does not match.
 func (r *Registry) finishTransition(id int64, from []string, to, resultJSON, errMsg string) (*db.AgentAction, error) {
 	ok, err := r.db.TransitionAgentAction(id, from, to, resultJSON, errMsg)
 	if err != nil {

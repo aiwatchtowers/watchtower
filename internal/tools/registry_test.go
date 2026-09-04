@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
@@ -248,25 +250,27 @@ func TestApply_FailureLandsFailedAndIsRetriable(t *testing.T) {
 	assert.Empty(t, row.Error)
 }
 
-// TestApply_LostRaceDuringExecuteReturnsBadTransition pins that a status
-// change that lands while Execute is in flight (the owner rejects the
-// action in the Desktop while the tool call is running) is surfaced as
-// ErrBadTransition rather than silently reported as applied — and that the
-// row is left in whatever state won the race, not overwritten.
-func TestApply_LostRaceDuringExecuteReturnsBadTransition(t *testing.T) {
+// TestAgent05_RejectDuringExecuteCannotStealTheClaim pins the other half of
+// the claim: once Apply has moved the row to `executing`, a decision that
+// lands while Execute is in flight (the owner hitting Reject in the Desktop)
+// no longer matches, so the apply that is ALREADY performing the side effect
+// finishes and records it. Before the claim this same race left the write
+// done and the row `rejected`.
+func TestAgent05_RejectDuringExecuteCannotStealTheClaim(t *testing.T) {
 	database := openDB(t)
 	reg := New(database)
 	schema, err := jsonschema.For[echoArgs](nil)
 	require.NoError(t, err)
+	var rejectMatched bool
 	require.NoError(t, reg.Register(&Tool{
 		Name: "racy", Description: "x", InputSchema: schema, Access: AccessWrite,
 		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
 		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
-			// Simulate the owner rejecting the action in the Desktop while
-			// this Execute call is still running.
-			ok, terr := database.TransitionAgentAction(call.ActionID, []string{"approved"}, "rejected", "", "")
+			// The owner rejects the action in the Desktop while this Execute
+			// call is still running: the row is claimed, so nothing matches.
+			ok, terr := database.TransitionAgentAction(call.ActionID, []string{"pending", "approved"}, "rejected", "", "")
 			require.NoError(t, terr)
-			require.True(t, ok)
+			rejectMatched = ok
 			return map[string]any{"ok": true}, nil
 		},
 	}))
@@ -276,12 +280,100 @@ func TestApply_LostRaceDuringExecuteReturnsBadTransition(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	_, err = reg.Apply(context.Background(), rc.ActionID)
-	assert.ErrorIs(t, err, ErrBadTransition)
+	applied, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.False(t, rejectMatched, "a claimed row must not be decidable from under the apply that holds it")
+	assert.Equal(t, "applied", applied.Status)
 
 	row, err := database.GetAgentAction(rc.ActionID)
 	require.NoError(t, err)
-	assert.Equal(t, "rejected", row.Status, "the rejection that won the race must not be overwritten by applied")
+	assert.Equal(t, "applied", row.Status)
+}
+
+// TestAgent05_ConcurrentApplyExecutesOnce is the guard the claim exists for:
+// two overlapping applies on one approved row must produce exactly one side
+// effect. The loser has to be refused BEFORE Execute, not after — a
+// check-then-execute-then-CAS Apply passes the status assertions and still
+// files two Jira issues.
+func TestAgent05_ConcurrentApplyExecutesOnce(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 2)
+	var mu sync.Mutex
+	executions := 0
+	require.NoError(t, reg.Register(&Tool{
+		Name: "slow", Description: "x", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(context.Context, *db.DB, Call) (any, error) {
+			mu.Lock()
+			executions++
+			mu.Unlock()
+			entered <- struct{}{}
+			<-release
+			return map[string]any{"ok": true}, nil
+		},
+	}))
+	rc, err := reg.Propose(context.Background(), "slow", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	type outcome struct {
+		row *db.AgentAction
+		err error
+	}
+	results := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			row, err := reg.Apply(context.Background(), rc.ActionID)
+			results <- outcome{row, err}
+		}()
+	}
+
+	<-entered // one Apply holds the claim and is inside Execute
+	// The winner cannot answer while it is blocked, so this is the loser. If
+	// nothing answers, the second Apply is blocked inside Execute too — which
+	// is exactly the defect, so say so instead of deadlocking the suite.
+	select {
+	case loser := <-results:
+		assert.ErrorIs(t, loser.err, ErrBadTransition)
+		assert.Nil(t, loser.row)
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the second Apply reached Execute: the claim did not refuse it")
+	}
+
+	close(release)
+	winner := <-results
+	require.NoError(t, winner.err)
+	assert.Equal(t, "applied", winner.row.Status)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, executions, "the claim must keep the second apply out of Execute entirely")
+}
+
+// TestApply_ExecutingIsNotApplicable pins that a row stranded in `executing`
+// by an interrupted apply is refused like any other non-applicable state —
+// reclaiming it is the CLI's `--force` job, never an implicit retry.
+func TestApply_ExecutingIsNotApplicable(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "executing", "", "")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	_, err = reg.Apply(context.Background(), rc.ActionID)
+	assert.ErrorIs(t, err, ErrBadTransition)
+	assert.Empty(t, executed)
 }
 
 // TestApply_RowGoneOnReReadIsNotFound pins that Apply never returns
@@ -318,6 +410,27 @@ func TestAgent03_ExternalToolCannotBeExecuteTrust(t *testing.T) {
 	trust, _ := reg.Trust("echo")
 	assert.Equal(t, TrustAsk, trust)
 	assert.ErrorIs(t, reg.SetTrust("nope", TrustAsk), ErrUnknownTool)
+}
+
+// AGENT-03 is enforced on the read side too: db.SetToolTrust is exported and
+// does not know about External, and a trust row keyed by tool NAME outlives a
+// tool later being marked External — so Propose re-checks rather than trusting
+// the persisted value.
+func TestAgent03_ExternalToolNeverExecutesFromAPersistedTrustRow(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, true, &executed)))
+	// Written behind the registry's back, exactly as a pre-External row would be.
+	require.NoError(t, database.SetToolTrust("echo", "execute"))
+
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	assert.Equal(t, "pending", rc.Status)
+	assert.Empty(t, executed, "an external tool can never execute without an approval")
+	row, err := database.GetAgentAction(rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", row.Status)
 }
 
 func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {
