@@ -14,7 +14,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -30,7 +30,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         dbPath: dbPath,
                         model: model,
                         provider: provider,
-                        extraAllowedTools: extraAllowedTools,
+                        toolMode: toolMode,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -96,7 +96,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> [String] {
         var args = ["ai", "query", prompt]
 
@@ -115,8 +115,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         if let provider, !provider.isEmpty {
             args += ["--provider", provider]
         }
-        if !extraAllowedTools.isEmpty {
-            args += ["--allowed-tools", extraAllowedTools.joined(separator: ",")]
+        if let toolMode {
+            args += toolMode.cliArgs
         }
         return args
     }
@@ -129,7 +129,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        extraAllowedTools: [String],
+        toolMode: ChatToolMode?,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -142,7 +142,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             dbPath: dbPath,
             model: model,
             provider: provider,
-            extraAllowedTools: extraAllowedTools
+            toolMode: toolMode
         )
 
         let process = Process()

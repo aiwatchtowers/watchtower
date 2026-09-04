@@ -15,7 +15,7 @@ package protocol AIServiceProtocol: Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -33,7 +33,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: nil,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -51,7 +51,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: model,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -73,7 +73,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: model,
             provider: provider,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -82,7 +82,7 @@ extension AIServiceProtocol {
         systemPrompt: String?,
         sessionID: String?,
         dbPath: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,
@@ -91,7 +91,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: nil,
             provider: nil,
-            extraAllowedTools: extraAllowedTools
+            toolMode: toolMode
         )
     }
 }

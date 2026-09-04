@@ -508,7 +508,7 @@ final class ChatViewModelTests: XCTestCase {
             dbPath: String?,
             model: String?,
             provider: String?,
-            extraAllowedTools: [String]
+            toolMode: ChatToolMode?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             AsyncThrowingStream { continuation in
                 Task {

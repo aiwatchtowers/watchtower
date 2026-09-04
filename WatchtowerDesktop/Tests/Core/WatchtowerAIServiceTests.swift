@@ -15,7 +15,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: "codex",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertEqual(args, ["ai", "query", "hello", "--provider", "codex"])
@@ -29,7 +29,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertFalse(args.contains("--provider"))
@@ -43,7 +43,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: "",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertFalse(args.contains("--provider"))
@@ -57,9 +57,34 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: "gpt-5.4",
             provider: "codex",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertEqual(args, ["ai", "query", "hello", "--model", "gpt-5.4", "--provider", "codex"])
+    }
+
+    func testBuildArgsEmitsChatToolModeFlags() {
+        let mode = ChatToolMode(surface: "target", conversationID: 7, turnID: "t1", contextType: "target", contextID: "42")
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: nil, sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
+        )
+        XCTAssertEqual(args, ["ai", "query", "hi", "--db-path", "/tmp/w.db",
+                              "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
+                              "--context-type", "target", "--context-id", "42"])
+    }
+
+    /// AGENT-04: no toolMode → no --tools flag, ever. And the retired
+    /// --allowed-tools flag is gone for good.
+    func testBuildArgsWithoutToolModeNeverEmitsToolsFlag() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: "s", sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
+        )
+        XCTAssertFalse(args.contains("--tools"))
+        XCTAssertFalse(args.contains("--allowed-tools"))
+    }
+
+    func testChatToolModeMainOmitsContext() {
+        let mode = ChatToolMode(surface: "main", conversationID: 3, turnID: "x")
+        XCTAssertEqual(mode.cliArgs, ["--tools", "chat", "--surface", "main", "--conversation", "3", "--turn", "x"])
     }
 }
