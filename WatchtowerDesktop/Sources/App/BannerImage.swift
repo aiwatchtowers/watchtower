@@ -28,7 +28,7 @@ struct BannerImage: View {
         if let nsImage {
             Image(nsImage: nsImage)
                 .resizable()
-                .aspectRatio(contentMode: .fit)
+                .scaledToFit()
                 .frame(maxWidth: maxWidth)
         } else {
             // Fallback: show app name as text
