@@ -75,6 +75,43 @@ type Tool struct {
 	Validate func(ctx context.Context, d *db.DB, args json.RawMessage) error
 	// Execute performs the write. Only Apply (and RunDirect) call it.
 	Execute func(ctx context.Context, d *db.DB, call Call) (any, error)
+
+	// resolved is InputSchema prepared for validation. Unexported: a tool
+	// author declares the schema, the registry prepares it once in Register
+	// (RunDirect prepares it for a tool built outside the registry).
+	resolved *jsonschema.Resolved
+}
+
+// resolveSchema prepares InputSchema for validation. Idempotent, and a no-op
+// for a tool without a schema (only write tools are required to have one).
+func (t *Tool) resolveSchema() error {
+	if t.InputSchema == nil || t.resolved != nil {
+		return nil
+	}
+	res, err := t.InputSchema.Resolve(&jsonschema.ResolveOptions{})
+	if err != nil {
+		return err
+	}
+	t.resolved = res
+	return nil
+}
+
+// validateSchema checks args against the tool's declared InputSchema — the
+// first gate a call passes, ahead of the tool's own semantic Validate
+// (spec §4). Model-facing: the schema's message goes back verbatim, so the
+// model learns which argument it got wrong.
+func (t *Tool) validateSchema(args json.RawMessage) error {
+	if t.resolved == nil {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(args, &v); err != nil {
+		return &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if err := t.resolved.Validate(v); err != nil {
+		return &ValidationError{Msg: err.Error()}
+	}
+	return nil
 }
 
 // Receipt is what the model gets back from a write-tool call.
@@ -120,8 +157,14 @@ func (r *Registry) Register(t *Tool) error {
 	if _, dup := r.tools[t.Name]; dup {
 		return fmt.Errorf("register: duplicate tool %q", t.Name)
 	}
+	if t.Access != AccessRead && t.Access != AccessWrite {
+		return fmt.Errorf("register: tool %q has invalid access %q", t.Name, t.Access)
+	}
 	if t.Access == AccessWrite && (t.InputSchema == nil || t.Validate == nil || t.Execute == nil) {
 		return fmt.Errorf("register: write tool %q needs InputSchema, Validate and Execute", t.Name)
+	}
+	if err := t.resolveSchema(); err != nil {
+		return fmt.Errorf("register: tool %q has an unusable InputSchema: %w", t.Name, err)
 	}
 	r.tools[t.Name] = t
 	r.order = append(r.order, t.Name)
@@ -207,6 +250,9 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	}
 	if !json.Valid(args) {
 		return Receipt{}, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if err := t.validateSchema(args); err != nil {
+		return Receipt{}, err
 	}
 	if err := t.Validate(ctx, r.db, args); err != nil {
 		return Receipt{}, err
@@ -325,6 +371,14 @@ func receiptFor(row *db.AgentAction) Receipt {
 // RunDirect validates and executes a tool outside the proposal flow — the
 // CLI face (`watchtower jira create`) for humans and tests. ActionID is 0.
 func RunDirect(ctx context.Context, d *db.DB, t *Tool, args json.RawMessage) (any, error) {
+	// The CLI builds its tool inline, so it never went through Register —
+	// prepare the schema here (a no-op for a registered tool).
+	if err := t.resolveSchema(); err != nil {
+		return nil, err
+	}
+	if err := t.validateSchema(args); err != nil {
+		return nil, err
+	}
 	if err := t.Validate(ctx, d, args); err != nil {
 		return nil, err
 	}

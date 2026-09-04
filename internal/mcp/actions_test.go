@@ -140,6 +140,58 @@ func TestAgent01_WriteToolCallRecordsProposalOnly(t *testing.T) {
 	}
 }
 
+// AGENT-06: chat mode drops the query_only fence (the registry has to INSERT
+// its proposal rows), so the read tools run there with a WRITABLE connection —
+// exactly where the model also holds write tools. TestNoToolMutatesDatabase
+// covers them only on the dev session, where SQLite would refuse a write
+// anyway; this runs the same call list against the chat session, where nothing
+// but the handlers themselves stops one.
+func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
+	database := seedDB(t)
+	seedGuardFixture(t, database)
+	actionID, err := database.InsertAgentAction(db.AgentAction{
+		Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", ConversationID: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := countRows(t, database, guardTables)
+	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 7})
+	// The chat connection really is writable — otherwise this guard would be
+	// measuring the query_only pragma all over again instead of the handlers.
+	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WCHAT', 'w', 1)`); err != nil {
+		t.Fatalf("the chat-mode connection must stay writable for the registry: %v", err)
+	}
+	if _, err := database.Exec(`DELETE FROM users WHERE id = 'WCHAT'`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	calls := append(readOnlyGuardCalls(),
+		mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": actionID}})
+	for _, c := range calls {
+		res, err := cs.CallTool(ctx, &c)
+		if err != nil {
+			t.Fatalf("call %s: %v", c.Name, err)
+		}
+		if res.IsError {
+			t.Errorf("call %s returned an error result: %s", c.Name, textContent(t, res))
+		}
+	}
+
+	after := countRows(t, database, guardTables)
+	for _, tbl := range guardTables {
+		if before[tbl] != after[tbl] {
+			t.Errorf("table %s row count changed %d -> %d after read tools ran on the chat session", tbl, before[tbl], after[tbl])
+		}
+	}
+	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
+	if len(rows) != 1 {
+		t.Errorf("read tools wrote agent_actions rows: %d (want the 1 seeded)", len(rows))
+	}
+}
+
 func TestChatMode_ValidationErrorIsToolErrorWithoutRow(t *testing.T) {
 	database := seedDB(t)
 	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
@@ -149,8 +201,11 @@ func TestChatMode_ValidationErrorIsToolErrorWithoutRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(textContent(t, res), "text is required") {
-		t.Fatalf("expected validation error, got %s", textContent(t, res))
+	// The schema layer runs ahead of the tool's own Validate, so a missing
+	// required argument is reported by the schema — either way the message
+	// names the argument and no row is written.
+	if !res.IsError || !strings.Contains(textContent(t, res), "text") {
+		t.Fatalf("expected validation error naming the missing argument, got %s", textContent(t, res))
 	}
 	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
 	if len(rows) != 0 {

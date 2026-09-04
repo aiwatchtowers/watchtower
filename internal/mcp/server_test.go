@@ -221,6 +221,27 @@ func countRows(t *testing.T, database *db.DB, tables []string) map[string]int {
 	return m
 }
 
+// readOnlyGuardCalls is the read-tool call list both read-only guards run:
+// TestNoToolMutatesDatabase over the dev (query_only) session and
+// TestAgent06_ChatModeReadToolsDoNotWrite over the WRITABLE chat session. One
+// list so a tool added to one guard can never be missing from the other.
+// It expects seedGuardFixture's rows.
+func readOnlyGuardCalls() []mcpsdk.CallToolParams {
+	return []mcpsdk.CallToolParams{
+		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
+		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
+		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"query": "U1"}},
+		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
+		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
+		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "list_jira_projects"},
+		{Name: "list_situations"}, {Name: "get_situation", Arguments: map[string]any{"id": 1}},
+		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
+		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},
+	}
+}
+
 // TestNoToolMutatesDatabase is the behavioural read-only guard. Two layers:
 // the session runs over a query_only connection (any write inside a handler
 // errors at the SQLite level), and row counts are compared before/after as a
@@ -237,20 +258,7 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 		t.Fatalf("expected direct write to fail on the read-only MCP connection")
 	}
 	ctx := context.Background()
-	calls := []mcpsdk.CallToolParams{
-		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
-		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
-		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"query": "U1"}},
-		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
-		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
-		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
-		{Name: "list_jira_projects"},
-		{Name: "list_situations"}, {Name: "get_situation", Arguments: map[string]any{"id": 1}},
-		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
-		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
-		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},
-	}
-	for _, c := range calls {
+	for _, c := range readOnlyGuardCalls() {
 		res, err := cs.CallTool(ctx, &c)
 		if err != nil {
 			t.Fatalf("call %s: %v", c.Name, err)

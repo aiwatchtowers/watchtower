@@ -44,6 +44,20 @@ func newEchoTool(t *testing.T, external bool, executed *[]Call) *Tool {
 	}
 }
 
+// newLooseTool is a write tool whose own Validate accepts ANY arguments, so a
+// rejection can only have come from the schema layer — `echoArgs` marks both
+// `text` and `reason` required.
+func newLooseTool(t *testing.T) *Tool {
+	t.Helper()
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	return &Tool{
+		Name: "loose", Description: "test tool", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute:  func(context.Context, *db.DB, Call) (any, error) { return map[string]any{"ok": true}, nil },
+	}
+}
+
 func openDB(t *testing.T) *db.DB {
 	t.Helper()
 	database, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
@@ -120,6 +134,59 @@ func TestPropose_UnknownOrReadToolRejected(t *testing.T) {
 	reg := New(openDB(t))
 	_, err := reg.Propose(context.Background(), "nope", json.RawMessage(`{}`), Binding{})
 	assert.ErrorIs(t, err, ErrUnknownTool)
+
+	// A read tool is registered but can never be proposed — the proposal flow
+	// exists for writes only.
+	require.NoError(t, reg.Register(&Tool{Name: "read_thing", Description: "x", Access: AccessRead}))
+	_, err = reg.Propose(context.Background(), "read_thing", json.RawMessage(`{}`), Binding{})
+	assert.ErrorIs(t, err, ErrNotWritable)
+}
+
+// Spec §4: schema validation runs BEFORE the tool's own semantic Validate, so
+// a call missing a required argument is rejected even by a tool that would
+// have accepted it — and no row is written.
+func TestPropose_SchemaRejectsMissingRequiredField(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	require.NoError(t, reg.Register(newLooseTool(t)))
+
+	_, err := reg.Propose(context.Background(), "loose", json.RawMessage(`{"reason":"r"}`), Binding{})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Contains(t, verr.Msg, "text", "the schema message must name the missing argument")
+	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
+	assert.Empty(t, rows)
+}
+
+// RunDirect (the CLI face) gets a tool that never went through Register, so it
+// resolves the schema itself — the same gate, before Validate and Execute.
+func TestRunDirect_SchemaRejectsMissingRequiredField(t *testing.T) {
+	database := openDB(t)
+	tool := newLooseTool(t)
+
+	_, err := RunDirect(context.Background(), database, tool, json.RawMessage(`{"reason":"r"}`))
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Contains(t, verr.Msg, "text")
+
+	out, err := RunDirect(context.Background(), database, tool, json.RawMessage(`{"text":"hi","reason":"r"}`))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"ok": true}, out)
+}
+
+func TestRegister_RejectsUnknownAccess(t *testing.T) {
+	reg := New(openDB(t))
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	err = reg.Register(&Tool{
+		Name: "bogus", Description: "x", InputSchema: schema, Access: Access("bogus"),
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute:  func(context.Context, *db.DB, Call) (any, error) { return nil, nil },
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "access")
+	_, ok := reg.Get("bogus")
+	assert.False(t, ok, "a rejected tool must not land in the registry")
 }
 
 func TestApply_ExecutesOnceAndRecordsResult(t *testing.T) {
@@ -167,7 +234,7 @@ func TestApply_FailureLandsFailedAndIsRetriable(t *testing.T) {
 			return map[string]any{"ok": true}, nil
 		},
 	}))
-	rc, _ := reg.Propose(context.Background(), "flaky", json.RawMessage(`{"reason":"r"}`), Binding{})
+	rc, _ := reg.Propose(context.Background(), "flaky", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
 	_, _ = database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
 
 	row, err := reg.Apply(context.Background(), rc.ActionID)
@@ -203,7 +270,7 @@ func TestApply_LostRaceDuringExecuteReturnsBadTransition(t *testing.T) {
 			return map[string]any{"ok": true}, nil
 		},
 	}))
-	rc, err := reg.Propose(context.Background(), "racy", json.RawMessage(`{"reason":"r"}`), Binding{})
+	rc, err := reg.Propose(context.Background(), "racy", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
 	require.NoError(t, err)
 	ok, err := database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
 	require.NoError(t, err)
