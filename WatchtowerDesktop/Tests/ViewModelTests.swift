@@ -703,6 +703,35 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.messages.last?.turnID, mode.turnID)
     }
 
+    /// C1: proposals are inserted mid-turn by the `watchtower mcp --chat`
+    /// SUBPROCESS, on a connection the app's ValueObservation cannot see. The
+    /// turn boundary is where they have to appear.
+    @MainActor
+    func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager)
+        let conv = try makeConversation()
+        // An earlier row, through the app's own pool: waiting for it proves the
+        // observation is live, so what follows measures the hook and not a race
+        // with the observation's first fetch.
+        try TestDatabase.insertAgentActionSync(dbManager.dbPool, conversationID: conv.id, turnID: "earlier")
+        vm.bind(to: conv)
+        for _ in 0..<50 where vm.actionFeed.rows.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(vm.actionFeed.rows.count, 1)
+
+        vm.inputText = "make me a task"
+        vm.send()
+        let turnID = try XCTUnwrap(vm.messages.last?.turnID)
+        // Synchronous on purpose: the main actor must not yield between send()
+        // and this write, or the stream could finish before the row exists.
+        let otherPool = try DatabasePool(path: dbPath)
+        try TestDatabase.insertAgentActionSync(otherPool, conversationID: conv.id, turnID: turnID)
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(vm.actionFeed.cards(forTurn: turnID).count, 1,
+                       "finishStream must refetch — the observation never sees the subprocess's insert")
+    }
+
     @MainActor
     func testOllamaSendsNoToolModeAndHonestPrompt() async throws {
         let mock = MockClaudeService(events: [.text("ok"), .done])

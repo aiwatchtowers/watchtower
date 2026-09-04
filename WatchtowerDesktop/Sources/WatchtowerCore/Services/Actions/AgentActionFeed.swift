@@ -5,6 +5,16 @@ import GRDB
 /// one shared piece, composed per VM): observes agent_actions for the bound
 /// conversation, and drives Approve/Reject/Retry through the CLI, which is
 /// the only status writer (Go owns every transition).
+///
+/// Every row this feed shows is written by a `watchtower` SUBPROCESS — the
+/// chat-mode MCP server inserts proposals mid-turn, `watchtower actions …`
+/// transitions them. GRDB `ValueObservation` fires only on the app's own
+/// writer connection, so the observation alone would never see any of it
+/// (`DigestViewModel`, `IdeasViewModel`, `CatchUpViewModel`,
+/// `TargetWatchesViewModel.refreshEvents` all hit the same wall). Three
+/// readers close the gap: `refresh()` after every CLI call, a safety-net
+/// poll while started, and the chat VMs' stream-end hook. The observation
+/// stays for same-process writes.
 @MainActor
 @Observable
 package final class AgentActionFeed {
@@ -14,12 +24,18 @@ package final class AgentActionFeed {
 
     private let dbPool: DatabasePool
     private let cliRunner: CLIRunnerProtocol?
+    /// Safety-net poll cadence, at `IdeasViewModel.pollInterval`'s 30 s: the
+    /// turn-boundary refresh is what makes proposals feel immediate, this only
+    /// has to catch a turn that never reaches its end. Injectable for tests.
+    private let pollInterval: Duration
     private var observationTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
     private var conversationID: Int64?
 
-    package init(dbPool: DatabasePool, cliRunner: CLIRunnerProtocol? = nil) {
+    package init(dbPool: DatabasePool, cliRunner: CLIRunnerProtocol? = nil, pollInterval: Duration = .seconds(30)) {
         self.dbPool = dbPool
         self.cliRunner = cliRunner
+        self.pollInterval = pollInterval
     }
 
     package func start(conversationID: Int64) {
@@ -39,13 +55,35 @@ package final class AgentActionFeed {
                 self?.lastError = error.localizedDescription
             }
         }
+        let interval = pollInterval
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+                self?.refresh()
+            }
+        }
     }
 
     package func stop() {
         observationTask?.cancel()
         observationTask = nil
+        pollTask?.cancel()
+        pollTask = nil
         conversationID = nil
         rows = []
+    }
+
+    /// One-shot refetch from disk. The only thing that can surface a row a
+    /// subprocess wrote: called after every CLI call, on the poll, and by the
+    /// chat VMs when a streamed turn ends.
+    package func refresh() {
+        guard let conversationID else { return }
+        if let rows = try? dbPool.read({ db in
+            try AgentActionQueries.fetchByConversation(db, conversationID: conversationID)
+        }) {
+            self.rows = rows
+        }
     }
 
     package func cards(forTurn turnID: String) -> [AgentAction] {
@@ -54,13 +92,27 @@ package final class AgentActionFeed {
 
     package var pendingCount: Int { rows.filter(\.isPending).count }
 
-    package func approve(_ id: Int64) async { await run("approve", id: id) }
-    package func reject(_ id: Int64) async { await run("reject", id: id) }
-    package func retry(_ id: Int64) async { await run("apply", id: id) }
+    package func approve(_ id: Int64) async {
+        lastError = nil
+        await run("approve", id: id)
+    }
 
+    package func reject(_ id: Int64) async {
+        lastError = nil
+        await run("reject", id: id)
+    }
+
+    package func retry(_ id: Int64) async {
+        lastError = nil
+        await run("apply", id: id)
+    }
+
+    /// One owner gesture over several rows: the error is cleared once, up
+    /// front, so a failure on row 1 still shows after row 2 succeeds.
     package func approveAllPending(forTurn turnID: String) async {
+        lastError = nil
         for row in cards(forTurn: turnID) where row.isPending {
-            await approve(row.id)
+            await run("approve", id: row.id)
         }
     }
 
@@ -89,6 +141,8 @@ package final class AgentActionFeed {
         let error: String?
     }
 
+    /// Never clears `lastError` — its callers own that, so one gesture over
+    /// several rows accumulates rather than erasing its own failures.
     private func run(_ verb: String, id: Int64) async {
         guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
             lastError = CLIRunnerError.binaryNotFound.localizedDescription
@@ -96,7 +150,6 @@ package final class AgentActionFeed {
         }
         inFlight.insert(id)
         defer { inFlight.remove(id) }
-        lastError = nil
         do {
             let data = try await runner.run(args: ["actions", verb, String(id), "--json"])
             if let env = try? JSONDecoder().decode(Envelope.self, from: data),
@@ -106,5 +159,8 @@ package final class AgentActionFeed {
         } catch {
             lastError = error.localizedDescription
         }
+        // The CLI wrote on its own connection; the observation will never fire
+        // for it (TargetWatchesViewModel.refreshEvents precedent).
+        refresh()
     }
 }

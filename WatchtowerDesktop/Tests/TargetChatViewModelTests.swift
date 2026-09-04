@@ -48,6 +48,12 @@ final class TargetChatViewModelTests: XCTestCase {
         try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
     }
 
+    private func fetchConversationID(_ manager: DatabaseManager, targetID: Int) throws -> Int64? {
+        try manager.dbPool.read { db in
+            try ChatConversationQueries.fetchByContext(db, type: "target", id: String(targetID))?.id
+        }
+    }
+
     private func ensureChatTables(_ manager: DatabaseManager) throws {
         try manager.dbPool.write { db in
             try ChatConversationQueries.ensureTable(db)
@@ -1226,6 +1232,35 @@ final class TargetChatViewModelTests: XCTestCase {
     /// production — deterministically sends no tool mode and never
     /// advertises the AGENT ACTIONS contract, regardless of the developer's
     /// local config.
+    /// C1, target-chat half: the chat-mode MCP subprocess inserts the proposal
+    /// on its own connection, so the turn boundary has to refetch.
+    func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService(events: [.text("ok"), .done]))
+        let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
+        // An earlier row through the app's own pool proves the observation is live.
+        try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: convID, turnID: "earlier")
+        for _ in 0..<50 where chat.actionFeed.rows.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(chat.actionFeed.rows.count, 1)
+
+        chat.inputText = "file a ticket"
+        chat.send()
+        let turnID = try XCTUnwrap(chat.messages.last?.turnID)
+        // Synchronous: the main actor must not yield before the row exists.
+        let otherPool = try DatabasePool(path: path)
+        try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(chat.actionFeed.cards(forTurn: turnID).count, 1,
+                       "finishStream must refetch — the observation never sees the subprocess's insert")
+    }
+
     func testOllamaTargetChatSendsNoToolModeAndNoAgentActionsContract() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

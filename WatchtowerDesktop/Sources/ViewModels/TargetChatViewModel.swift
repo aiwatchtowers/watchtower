@@ -698,6 +698,10 @@ final class TargetChatViewModel {
             messages[idx].isStreaming = false
         }
         isStreaming = false
+        // Proposals made during the turn were inserted by the chat-mode MCP
+        // SUBPROCESS, which the feed's ValueObservation cannot see — the turn
+        // boundary is where they have to appear.
+        actionFeed.refresh()
         reloadTarget()
         viewModel.load()
         onTargetActivity?()
