@@ -72,6 +72,12 @@ The Enter/⌘Enter → `TargetQueries.create` routing itself lives in the view l
 
 ## Changelog
 
+- 2026-09-04: the agent-actions registry adds two write tools behind
+  Approve. `create_target` is offered on the main chat only — the target
+  chat's mandate (TGT-BRIEF-01 axis 3) forbids creating work outside the
+  vertical line. `create_jira_issue` is offered on the target chat: a Jira
+  issue is an external artifact outside the target mandate, still behind
+  Approve. The block grammar and TGT-BRIEF-01..03 are unchanged.
 - 2026-08-24: grammar widened with two Desktop-only kinds, `add_label`/`remove_label` (assistant-managed target labels). No contract semantics changed: both ride the standard propose→Approve path, execute mode auto-applies them only on the chat's own target via the unchanged `autoApplies` default (TGT-BRIEF-03), and the Go track-watcher grammar is still not taught them. TGT-BRIEF-03's Observable reworded from "the four new kinds" to "the Desktop-only kinds", and `labels` added to TGT-BRIEF-01's mandate field list (mirrored in the system prompt's MANDATE paragraph), to stay accurate.
 - 2026-08-19: persona merge (owner decision 2026-08-19): the two-persona concept (secretary/assistant) is collapsed into a single **assistant** — wording-only here; no contract semantics, guard tests, or gates changed. Historical changelog entries keep the old word. See "The assistant & chat contracts" in `docs/review/review-rules.md`.
 - 2026-08-19: TGT-BRIEF-01 mandate widened from "the target and its subtree" to the target's **vertical line** (self + descendants + parent chain), and the mechanism restated: the boundary no longer holds by construction of the grammar but is enforced at apply by `TargetTreeScope.isInScope`, since every action except `link_target` now accepts an optional `target_id`. Owner-approved on 2026-08-19 during the review of the target chat-tabs branch; the corresponding narrowing landed on TGT-BRIEF-03 in the same change — an action addressing another target never auto-applies, so widening the *reach* of the grammar did not widen what happens without an Approve.
