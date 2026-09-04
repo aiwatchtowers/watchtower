@@ -225,6 +225,83 @@ final class CatchUpQueriesTests: XCTestCase {
     }
 
     // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    //
+    // `to` is an EXCLUSIVE instant, so a window ending exactly on a local
+    // midnight (what the `yesterday` preset resolves to) covers the day BEFORE
+    // it: the briefing dated the day the window ends on must stay unread.
+    func testAcknowledgeMarksWindowReadOnMidnightTo() throws {
+        let dbQueue = try TestDatabase.create()
+        // Midnight in the RUNNING time zone — `briefings.date` is a local
+        // calendar date, so the fixture is derived the way the query is.
+        let calendar = Calendar.current
+        let midnight = calendar.startOfDay(for: Date(timeIntervalSince1970: base))
+        let dayBefore = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: midnight))
+        let endDate = localDate(midnight.timeIntervalSince1970)
+        let coveredDate = localDate(dayBefore.timeIntervalSince1970)
+
+        let recapID = try dbQueue.write { db -> Int64 in
+            try TestDatabase.insertBriefing(db, date: coveredDate)
+            try TestDatabase.insertBriefing(db, date: endDate)
+            return try insertRecap(
+                db, from: dayBefore.timeIntervalSince1970, to: midnight.timeIntervalSince1970
+            )
+        }
+
+        let recap = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
+
+        try dbQueue.read { db in
+            XCTAssertNotNil(
+                try String.fetchOne(db, sql: "SELECT read_at FROM briefings WHERE date = ?", arguments: [coveredDate]),
+                "the day the window actually covers is marked read"
+            )
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT read_at FROM briefings WHERE date = ?", arguments: [endDate]),
+                "the briefing for the day the window ENDS on stays unread"
+            )
+        }
+    }
+
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    //
+    // "I'm caught up" on a recap that never finished would mark its whole window
+    // read without the operator ever having been shown what was in it. The Go
+    // twin (`Pipeline.Acknowledge`) refuses the same way.
+    func testAcknowledgeRefusesRecapThatIsNotReady() throws {
+        let dbQueue = try TestDatabase.create()
+        let ids = try dbQueue.write { db -> [Int64] in
+            try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600)
+            return [
+                try insertRecap(db, from: base + 1000, to: base + 2000, status: "building"),
+                try insertRecap(db, from: base + 1000, to: base + 2000, status: "failed")
+            ]
+        }
+
+        for id in ids {
+            let recap = try fetchRecap(dbQueue, id)
+            XCTAssertThrowsError(
+                try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
+            ) { error in
+                guard case CatchUpQueries.AcknowledgeError.notReady = error else {
+                    return XCTFail("expected notReady for a \(recap.status) recap, got \(error)")
+                }
+            }
+        }
+
+        try dbQueue.read { db in
+            XCTAssertNil(
+                try String.fetchOne(db, sql: "SELECT read_at FROM digests"),
+                "a refused acknowledge marks nothing read"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM catchup_recaps WHERE acknowledged_at IS NOT NULL"),
+                0,
+                "and stamps no recap"
+            )
+        }
+    }
+
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
     func testAcknowledgeIsIdempotent() throws {
         let dbQueue = try TestDatabase.create()
         let recapID = try dbQueue.write { db -> Int64 in

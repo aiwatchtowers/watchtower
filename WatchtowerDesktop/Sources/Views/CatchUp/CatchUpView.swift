@@ -78,9 +78,14 @@ struct CatchUpView: View {
             // already fixed for the run in flight, so changing it here would only
             // desync the bar from the recap being produced.
             if rangeMode {
-                DatePicker("From", selection: $rangeFrom, displayedComponents: [.date, .hourAndMinute])
+                // A recap covers an absence, so neither bound may reach into the
+                // future: the CLI clamps a `--to` past now and rejects a future
+                // `--from` (catchup.ResolveWindow), and the picker says so first.
+                DatePicker("From", selection: $rangeFrom, in: ...Date(),
+                           displayedComponents: [.date, .hourAndMinute])
                     .disabled(vm.isBuilding)
-                DatePicker("To", selection: $rangeTo, displayedComponents: [.date, .hourAndMinute])
+                DatePicker("To", selection: $rangeTo, in: ...Date(),
+                           displayedComponents: [.date, .hourAndMinute])
                     .disabled(vm.isBuilding)
             } else {
                 Picker("Window", selection: $vm.windowChoice) {

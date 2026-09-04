@@ -19,7 +19,8 @@ package enum MeetingRecapQueries {
             .fetchOne(db)
     }
 
-    /// One recap by row id — how a Catch-Up recap resolves a `meetings` ref.
+    /// One recap by row id — how a Catch-Up recap resolves a `recaps` ref (the
+    /// ref area the Go gather emits for `meeting_recaps`).
     package static func fetchByID(_ db: Database, id: Int) throws -> MeetingRecap? {
         try MeetingRecap
             .filter(Column("id") == id)

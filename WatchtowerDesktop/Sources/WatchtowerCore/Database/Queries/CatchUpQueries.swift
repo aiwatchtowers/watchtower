@@ -53,6 +53,22 @@ package enum CatchUpQueries {
 
     // MARK: - Acknowledge (window-scoped mark-read)
 
+    /// Why an acknowledge was refused. The Go twin (`Pipeline.Acknowledge`)
+    /// returns the same refusal as an error.
+    package enum AcknowledgeError: Swift.Error, LocalizedError {
+        /// The recap never finished composing, or failed. Marking its window
+        /// read would clear everything in it without the operator ever having
+        /// been shown what was there.
+        case notReady(status: String)
+
+        package var errorDescription: String? {
+            switch self {
+            case let .notReady(status):
+                "This recap is \(status), not ready to acknowledge."
+            }
+        }
+    }
+
     /// Marks everything inside the recap's window read on the five `read_at`
     /// surfaces and stamps the recap's own `acknowledged_at` (first stamp wins).
     ///
@@ -73,14 +89,20 @@ package enum CatchUpQueries {
     /// `briefings` compares LOCAL calendar dates inclusively.
     ///
     /// Runs inside the caller's `write` block, which supplies the transaction the
-    /// Go path opens explicitly.
+    /// Go path opens explicitly. Throws `AcknowledgeError.notReady` for a recap
+    /// that is not `ready`, exactly as the Go path refuses one.
     package static func acknowledge(_ db: Database, recap: CatchUpRecap) throws {
+        guard recap.isReady else { throw AcknowledgeError.notReady(status: recap.status) }
         let from = recap.periodFrom
         let to = recap.periodTo
         let fromISO = Self.isoString(from)
         let toISO = Self.isoString(to)
         let fromDate = Self.localDateString(from)
-        let toDate = Self.localDateString(to)
+        // `to` is an EXCLUSIVE instant, so the last local DAY the window covers is
+        // the one containing to−1s: a window ending exactly on a local midnight
+        // (the `yesterday` preset) covers the previous day, and the briefing dated
+        // the new day must stay unread. The Go twin derives it the same way.
+        let toDate = Self.localDateString(to - 1)
 
         try db.execute(
             sql: """

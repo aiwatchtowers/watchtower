@@ -58,6 +58,14 @@ final class SidebarCountsViewModel {
         apply(counts)
     }
 
+    /// Reloads the counts on demand. The observation below only sees writes made
+    /// by THIS process, so a feature that shells out to the CLI (Catch-Up's
+    /// `catchup run`) asks for a refresh once its child process is done —
+    /// otherwise its badge keeps a stale count until the next in-process write.
+    func refresh() async {
+        await loadInitial()
+    }
+
     /// Begins observing the source tables and refreshes counts on each change.
     /// Idempotent — safe to call after `loadInitial()`.
     func startObserving() {
