@@ -433,15 +433,17 @@ final class ChatViewModel {
         """
 
     nonisolated private static func promptDeepLinksAndRestrictions(teamID: String, toolsAvailable: Bool) -> String {
-        // The second bullet must not promise a write tool the provider doesn't have —
-        // the no-tools variant restores the original wording verbatim (no proposal/write-tool language).
+        // The second bullet must promise neither a write tool nor a read tool the
+        // provider doesn't have: with no tools there is nothing "above" to reach
+        // the database through, and saying otherwise contradicts `noToolsBlock`
+        // earlier in the same prompt.
         let dataSourceBullet = toolsAvailable
             ? """
             - Your ONLY data source is the local database, reached through the tools above. \
             You cannot write directly — every write is a proposal through a write tool, executed only after the owner approves.
             """
             : """
-            - Your ONLY data source is the local database, reached through the tools above. \
+            - Your ONLY data source is this conversation — no tools are connected in this session. \
             Do not try to fetch from Slack, and do not try to reach the database any other way.
             """
 

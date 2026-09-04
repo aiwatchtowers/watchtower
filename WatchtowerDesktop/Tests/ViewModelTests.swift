@@ -751,6 +751,7 @@ final class ChatViewModelTests: XCTestCase {
         // session does not have.
         XCTAssertFalse(prompt.contains("list_messages"))
         XCTAssertFalse(prompt.contains("already connected"))
+        XCTAssertFalse(prompt.contains("tools above"))
         XCTAssertTrue(prompt.contains("Answer from the conversation"))
     }
 
