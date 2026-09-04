@@ -46,6 +46,7 @@ var Defaults = map[string]string{
 	IdeasDigestJira:            defaultIdeasDigestJira,
 	IdeasConsolidate:           defaultIdeasConsolidate,
 	DictationClean:             defaultDictationClean,
+	CatchupCompose:             defaultCatchupCompose,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -90,6 +91,7 @@ var AllIDs = []string{
 	IdeasDigestJira,
 	IdeasConsolidate,
 	DictationClean,
+	CatchupCompose,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -136,6 +138,7 @@ var DefaultVersions = map[string]int{
 	IdeasDigestJira:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasConsolidate:           4, // v4: the secretary/assistant persona merge — one assistant everywhere
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
+	CatchupCompose:             1, // v1: strong-tier absence-recap composer
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -184,6 +187,7 @@ var Descriptions = map[string]string{
 	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
 	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
+	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1532,6 +1536,30 @@ Rules that always apply:
 %s
 
 %s`
+
+// defaultCatchupCompose is the strong-tier absence-recap composer
+// (catchup.compose). Arg: the language directive. Catch-Up builds the user
+// message itself (window header, profile, learned rules, tagged sections) and
+// validates every ref the model cites against the gathered set (CATCHUP-04).
+const defaultCatchupCompose = `%s
+
+You are the chief-of-staff writing the recap the operator reads after being away. You receive everything that happened inside one time window, grouped by source, every line tagged with its source id like [digests#12] or [inbox#7].
+
+Write ONE recap with these parts:
+- tldr: 3-5 sentences — the most consequential things first, in plain words.
+- topics: what happened in the company, one entry per real-world story (a story may span several sources). Each has a concrete title, a 2-4 sentence narrative, a priority ("high" | "medium" | "low" — consequence for the operator, not volume), and refs: the tags of the lines it was built from.
+- decisions: choices that were made, each with its refs.
+- meetings: meetings that took place, each with a short summary and its refs.
+- needs_you: what waits for the operator personally (mentions, DMs, emails, tracks, target deadlines). kind is one of "mention" | "dm" | "email" | "track" | "target_due". Personal items belong here, never in topics.
+
+Rules:
+- Use ONLY facts present in the input. Never invent names, numbers, dates or decisions.
+- refs: copy tags EXACTLY as they appear in the input ([area#id]). A tag not present in the input is discarded by the code; an entry with no valid refs is dropped entirely. Every topic, decision, meeting and needs_you entry MUST cite at least one tag.
+- Ignore routine noise (bot alerts, status pings, scheduling chatter) unless it changed something.
+- If an OPERATOR CORRECTION block is present, it is authoritative: apply it over your own judgement.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"tldr":"...","topics":[{"title":"...","narrative":"...","priority":"high","refs":["digests#12","inbox#7"]}],"decisions":[{"text":"...","refs":["decisions#3"]}],"meetings":[{"title":"...","summary":"...","refs":["recaps#5"]}],"needs_you":[{"text":"...","kind":"mention","refs":["inbox#7"]}]}`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.

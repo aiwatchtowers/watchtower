@@ -54,6 +54,7 @@ const (
 	IdeasDigestJira            = "ideas.digest_jira"
 	IdeasConsolidate           = "ideas.consolidate"
 	DictationClean             = "dictation.clean"
+	CatchupCompose             = "catchup.compose"
 )
 
 // Store loads, caches, and persists prompt templates.

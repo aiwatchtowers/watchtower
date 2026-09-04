@@ -3,11 +3,13 @@ package digest
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"watchtower/internal/prompts"
 )
 
 func TestTierForSource(t *testing.T) {
-	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "catchup.peel", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean}
+	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean}
 	for _, src := range light {
 		if got := TierForSource(src); got != TierLight {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)
@@ -32,4 +34,6 @@ func TestTierForSource(t *testing.T) {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierStrong)
 		}
 	}
+
+	assert.Equal(t, TierStrong, TierForSource("catchup.compose"))
 }
