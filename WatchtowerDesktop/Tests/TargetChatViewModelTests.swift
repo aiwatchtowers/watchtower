@@ -1180,4 +1180,43 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
         XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
     }
+
+    // MARK: - Agent actions (AGENT-04): the target chat is an action surface
+
+    func testSystemPromptCarriesAgentActionsContractForTargetSurface() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
+        XCTAssertTrue(prompt.contains("=== AGENT ACTIONS ==="))
+        XCTAssertTrue(prompt.contains("create_jira_issue"))
+        XCTAssertFalse(prompt.contains("- create_target"), "TGT-BRIEF-01: no top-level task creation from a target chat")
+        XCTAssertTrue(prompt.contains("=== TASK ACTIONS ==="), "the block grammar is unchanged")
+        let ollama = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool, toolsAvailable: false)
+        XCTAssertFalse(ollama.contains("=== AGENT ACTIONS ==="))
+    }
+
+    func testSendPassesTargetToolModeWithContext() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        chat.inputText = "make a ticket"
+        chat.send()
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        let firstToolMode = try XCTUnwrap(mock.toolModes.first)
+        let mode = try XCTUnwrap(firstToolMode)
+        XCTAssertEqual(mode.surface, "target")
+        XCTAssertEqual(mode.contextType, "target")
+        XCTAssertEqual(mode.contextID, String(target.id))
+        XCTAssertEqual(chat.messages.last?.turnID, mode.turnID)
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.last?.turnID, mode.turnID)
+    }
 }

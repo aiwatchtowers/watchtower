@@ -126,6 +126,15 @@ final class TargetChatViewModel {
         actionCards.filter { $0.state == .pending }.count
     }
 
+    /// Proposal cards for this tab — the target chat is an action surface
+    /// alongside its block grammar (AGENT-04).
+    let actionFeed: AgentActionFeed
+
+    /// Provider kind is chosen app-wide for Discuss chats; the VM passes
+    /// `model: nil` and the CLI resolves the provider — so the only case
+    /// without tools is the app-wide Ollama provider.
+    var toolsAvailable: Bool { Constants.aiProviderID() != "ollama" }
+
     /// `conversationID` is the tab this VM speaks into. Finding or creating it is
     /// the container's job (`TargetAssistantViewModel` owns the target's tab
     /// list), so this VM only ever adopts a conversation that already exists.
@@ -134,15 +143,18 @@ final class TargetChatViewModel {
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
         conversationID: Int64,
-        aiService: (any AIServiceProtocol)? = nil
+        aiService: (any AIServiceProtocol)? = nil,
+        cliRunner: CLIRunnerProtocol? = nil
     ) {
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
+        self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
 
         loadConversation(id: conversationID)
         startMessageObservation()
+        if let conversationID = self.conversationID { actionFeed.start(conversationID: conversationID) }
     }
 
     /// Tears the VM's long-lived work down: the GRDB message observation and any
@@ -155,6 +167,7 @@ final class TargetChatViewModel {
         observationTask = nil
         streamTask?.cancel()
         streamTask = nil
+        actionFeed.stop()
     }
 
     /// Adopt the conversation the container resolved for this tab. A row that
@@ -223,6 +236,11 @@ final class TargetChatViewModel {
         streamTask?.cancel()
         inputText = ""
 
+        // Captured BEFORE appending this turn's user message, so it names the
+        // PREVIOUS user turn — the floor `actionFeed.outcomesBlock` reads from.
+        let previousOwnerMessageAt = messages.last { $0.role == .user }?.timestamp
+        let turnID = UUID().uuidString
+
         messages.append(ChatMessage(
             id: UUID(),
             role: .user,
@@ -241,9 +259,10 @@ final class TargetChatViewModel {
             role: .assistant,
             text: "",
             timestamp: Date(),
-            isStreaming: true
+            isStreaming: true,
+            turnID: turnID
         ))
-        startStream(prompt: prependQueuedFollowUps(to: text))
+        startStream(prompt: prependQueuedFollowUps(to: text), turnID: turnID, previousOwnerMessageAt: previousOwnerMessageAt)
     }
 
     /// Feed a follow-up turn back into the conversation. The text is shown as a
@@ -255,10 +274,11 @@ final class TargetChatViewModel {
             queuedFollowUps.append(text)
             return
         }
+        let turnID = UUID().uuidString
         messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
+            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID
         ))
-        startStream(prompt: text)
+        startStream(prompt: text, turnID: turnID, previousOwnerMessageAt: nil)
     }
 
     /// Drain the queue into `text`, so a decision taken mid-stream still reaches
@@ -276,32 +296,43 @@ final class TargetChatViewModel {
         guard !queuedFollowUps.isEmpty, !isStreaming else { return }
         let prompt = queuedFollowUps.joined(separator: "\n")
         queuedFollowUps.removeAll()
+        let turnID = UUID().uuidString
         messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
+            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID
         ))
-        startStream(prompt: prompt)
+        startStream(prompt: prompt, turnID: turnID, previousOwnerMessageAt: nil)
+    }
+
+    /// Per-turn context minted at send time, bundled into one parameter so
+    /// `executeStream` stays within the project's function-parameter-count
+    /// limit: the id every proposal/persisted row from this turn carries, and
+    /// the floor `actionFeed.outcomesBlock` reads from (nil on a follow-up
+    /// turn — there is no new owner message to floor from).
+    private struct TurnContext {
+        let turnID: String
+        let previousOwnerMessageAt: Date?
     }
 
     /// Spawn the streaming turn. Shared by `send()` and `sendFollowUp(_:)` —
     /// the caller is responsible for appending the user/system message and the
     /// empty assistant placeholder before calling this.
-    private func startStream(prompt: String) {
+    private func startStream(prompt: String, turnID: String, previousOwnerMessageAt: Date?) {
         isStreaming = true
         let currentSessionID = sessionID
-        let dbPath = dbManager.dbPool.path
         let dbPool = dbManager.dbPool
         let capturedTarget = target
         let capturedAIService = aiService
         let capturedConvID = conversationID
         let capturedDBManager = dbManager
+        let turn = TurnContext(turnID: turnID, previousOwnerMessageAt: previousOwnerMessageAt)
 
         streamTask = Task { [weak self] in
             await self?.executeStream(
                 text: prompt,
+                turn: turn,
                 currentSessionID: currentSessionID,
                 target: capturedTarget,
                 dbPool: dbPool,
-                dbPath: dbPath,
                 aiService: capturedAIService,
                 dbManager: capturedDBManager,
                 conversationID: capturedConvID
@@ -313,17 +344,31 @@ final class TargetChatViewModel {
 
     private func executeStream(
         text: String,
+        turn: TurnContext,
         currentSessionID: String?,
         target: Target,
         dbPool: DatabasePool,
-        dbPath: String,
         aiService: any AIServiceProtocol,
         dbManager: DatabaseManager,
         conversationID: Int64?
     ) async {
         let systemPrompt: String? = currentSessionID == nil
-            ? Self.buildSystemPrompt(target: target, dbPool: dbPool)
+            ? Self.buildSystemPrompt(target: target, dbPool: dbPool, toolsAvailable: toolsAvailable)
             : nil
+
+        // The target chat is an action surface (AGENT-04): a tool mode is sent
+        // only once the tab has a conversation to attach proposals to and the
+        // provider reaches the MCP server.
+        let toolMode: ChatToolMode?
+        if toolsAvailable, let conversationID {
+            toolMode = ChatToolMode(surface: "target", conversationID: conversationID, turnID: turn.turnID,
+                                    contextType: "target", contextID: String(target.id))
+        } else {
+            toolMode = nil
+        }
+        // Outcomes are injected only on resumed turns — a fresh turn has no
+        // prior assistant turn whose proposals could have been decided yet.
+        let outcomes = currentSessionID == nil ? nil : actionFeed.outcomesBlock(after: turn.previousOwnerMessageAt)
 
         // On the first turn the target context is in the system prompt. On a
         // resumed turn the CLI uses --resume and drops the system prompt entirely
@@ -332,10 +377,13 @@ final class TargetChatViewModel {
         // action contract with the message on every resumed turn: the assistant
         // never loses track of which target it is working on, sees the target's
         // current state, and can still emit valid watchtower-action blocks.
-        let effectivePrompt = currentSessionID == nil
-            ? text
-            : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
-                + "\(Self.taskActionsContract)\n\n\(text)"
+        let effectivePrompt: String = {
+            let base = currentSessionID == nil
+                ? text
+                : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
+                    + "\(Self.taskActionsContract)\n\n\(AgentToolsContract.promptBlock(surface: .target))\n\n\(text)"
+            return outcomes.map { "\($0)\n\n\(base)" } ?? base
+        }()
 
         var fullText = ""
         var streamFailed = false
@@ -344,8 +392,10 @@ final class TargetChatViewModel {
                 prompt: effectivePrompt,
                 systemPrompt: systemPrompt,
                 sessionID: currentSessionID,
-                dbPath: dbPath,
-                model: nil  // nil = the provider's resolved strong-tier model
+                dbPath: dbPool.path,
+                model: nil,  // nil = the provider's resolved strong-tier model
+                provider: nil,
+                toolMode: toolMode
             )
             var sawTurnComplete = false
             for try await event in stream {
@@ -396,7 +446,7 @@ final class TargetChatViewModel {
         // Persist the assistant turn BEFORE the run summary / warnings, so the
         // reloaded transcript reads in the same order the run happened.
         if !surfaced.displayText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: surfaced.displayText)
+            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: surfaced.displayText, turnID: turn.turnID)
         }
         for text in surfaced.systemMessages {
             appendSystemMessage(text)
@@ -481,12 +531,12 @@ final class TargetChatViewModel {
     // MARK: - Persistence helpers
 
     nonisolated private static func persistResponse(
-        dbManager: DatabaseManager, conversationID: Int64, text: String
+        dbManager: DatabaseManager, conversationID: Int64, text: String, turnID: String
     ) {
         do {
             try dbManager.dbPool.write { db in
                 try ChatMessageQueries.insert(
-                    db, conversationID: conversationID, role: "assistant", text: text
+                    db, conversationID: conversationID, role: "assistant", text: text, turnID: turnID
                 )
                 try ChatConversationQueries.touch(db, id: conversationID)
             }
@@ -657,17 +707,17 @@ final class TargetChatViewModel {
         if let idx = messages.indices.last, messages[idx].isStreaming {
             let partialText = messages[idx].text
             if !partialText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: partialText)
+                persistMessage(conversationID: convID, role: "assistant", text: partialText, turnID: messages[idx].turnID ?? "")
             }
             messages[idx].isStreaming = false
         }
     }
 
-    private func persistMessage(conversationID: Int64, role: String, text: String) {
+    private func persistMessage(conversationID: Int64, role: String, text: String, turnID: String = "") {
         do {
             try dbManager.dbPool.write { db in
                 _ = try ChatMessageQueries.insert(
-                    db, conversationID: conversationID, role: role, text: text
+                    db, conversationID: conversationID, role: role, text: text, turnID: turnID
                 )
             }
         } catch {
@@ -1000,7 +1050,8 @@ final class TargetChatViewModel {
         dbPool: DatabasePool,
         memoryChatEnabled: Bool = Constants.memorySurfacesChatEnabled(),
         memoryVaultDir: String? = Constants.memoryVaultDir(),
-        skillsDir: String? = SkillsCatalog.defaultDir()
+        skillsDir: String? = SkillsCatalog.defaultDir(),
+        toolsAvailable: Bool = true
     ) -> String {
         let ws: Workspace? = try? dbPool.read { db in
             try WorkspaceQueries.fetchWorkspace(db)
@@ -1035,6 +1086,8 @@ final class TargetChatViewModel {
         \(Self.watchActivityBlock(target: target, dbPool: dbPool))\(Self.labelsInUseBlock(dbPool: dbPool))
 
         \(memoryBlock)\(Self.taskActionsContract)
+
+        \(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")
 
         === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
         You have read-only tools over the user's OWN local Watchtower database. \

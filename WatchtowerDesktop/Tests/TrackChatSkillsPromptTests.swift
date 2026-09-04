@@ -59,4 +59,24 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
         XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
     }
+
+    /// AGENT-04: the track chat is draft-only — it must never carry a tool mode.
+    @MainActor
+    func testSendPassesNoToolMode() async throws {
+        try await dbManager.dbPool.write { db in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTable(db)
+        }
+        let track = try makeTrack()
+        let vm = TracksViewModel(dbManager: dbManager)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let chat = TrackChatViewModel(track: track, viewModel: vm, dbManager: dbManager, aiService: mock)
+
+        chat.inputText = "hello"
+        chat.send()
+        for _ in 0..<200 where chat.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
+
+        // AGENT-04: draft-only surfaces never send a tool mode.
+        XCTAssertEqual(mock.toolModes, [nil])
+    }
 }

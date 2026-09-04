@@ -42,13 +42,13 @@
 
 ## AGENT-04 — Draft-only surfaces see no tools
 
-**Status:** Planned (Phase B) — becomes Enforced when the Desktop tool-mode wiring and its guard tests land on this branch (plan Tasks 13 and 17); the Observable below is the contract those tasks implement.
+**Status:** Enforced
 
 **Observable:** Only the main AI Chat (`ChatViewModel`) and the target chat (`TargetChatViewModel`) pass a `toolMode` to `WatchtowerAIService`; situation, meeting, idea, track and setup chats call the convenience overloads that forward `toolMode: nil`, so their `ai query` never carries `--tools chat` and the model there never sees a write tool.
 
 **Why locked:** review-rules "The assistant & chat contracts": draft-only surfaces never act on the world. A copied VM that silently inherits the tool mode would give a draft-only surface an action path.
 
-**Test guards:** `WatchtowerDesktop/Tests/Core/WatchtowerAIServiceTests.swift` (`--tools` emitted only with a toolMode); the `toolModes == [nil]` assertions in the situation/meeting/idea/track VM test suites.
+**Test guards:** `WatchtowerDesktop/Tests/Core/WatchtowerAIServiceTests.swift` (`testBuildArgsWithoutToolModeNeverEmitsToolsFlag`, `testBuildArgsEmitsChatToolModeFlags`); `WatchtowerDesktop/Tests/ViewModelTests.swift` (`testSendPassesMainChatToolModeWithFreshTurnID`, `testOllamaSendsNoToolModeAndHonestPrompt`); `WatchtowerDesktop/Tests/TargetChatViewModelTests.swift` (`testSendPassesTargetToolModeWithContext`); and the `toolModes == [nil]` assertions in `SituationChatViewModelTests`, `MeetingChatViewModelTests`, `IdeaChatViewModelTests`, and `TrackChatSkillsPromptTests`.
 
 **Locked since:** 2026-09-04
 
@@ -67,3 +67,4 @@
 ## Changelog
 
 - 2026-09-04: file created with AGENT-01..05, all Enforced, by the agent-actions feature (sub-project 1 of the "Hermes inside Watchtower" initiative).
+- 2026-09-04: AGENT-04 flipped from Planned to Enforced with the Desktop tool-mode wiring.

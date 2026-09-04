@@ -40,6 +40,19 @@ package enum Constants {
         return chat
     }
 
+    /// The AI provider id (`ai.provider` in config.yaml), defaulting to
+    /// `"claude"` when unset. The target chat's `toolsAvailable` derives from
+    /// this — the only case a chat-mode call reaches no tools is the app-wide
+    /// Ollama provider (Ollama has no MCP tool support).
+    package nonisolated static func aiProviderID() -> String {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any],
+              let ai = yaml["ai"] as? [String: Any],
+              let provider = ai["provider"] as? String, !provider.isEmpty else { return "claude" }
+        return provider
+    }
+
     /// The memory vault directory for the active workspace
     /// (`<activeWorkspaceDir>/memory`), or nil when no workspace is active.
     /// The hot `map.md` lives directly under it.
