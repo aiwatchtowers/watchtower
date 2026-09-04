@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,6 +43,7 @@ func runActions(t *testing.T, args ...string) (string, error) {
 	actionsFlagStatus = ""
 	actionsFlagConversation = 0
 	actionsFlagSurface = ""
+	actionsFlagForce = false
 	return out.String(), err
 }
 
@@ -51,7 +53,7 @@ func TestActions_ApproveExecutesCreateTarget(t *testing.T) {
 		ArgsJSON: `{"text":"Call Vasya","reason":"r","due":"2026-09-05T16:00"}`, Reason: "r", Surface: "main"})
 	require.NoError(t, err)
 
-	out, err := runActions(t, "approve", "1", "--json")
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--json")
 	require.NoError(t, err)
 	var env struct {
 		OK        bool `json:"ok"`
@@ -71,7 +73,87 @@ func TestActions_ApproveExecutesCreateTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, targets, 1)
 	assert.Equal(t, "Call Vasya", targets[0].Text)
-	_ = id
+}
+
+// blockExecutingClaim makes Apply's claim UPDATE fail, which is the only way
+// to reach "the decision persisted but Apply errored" from the CLI.
+func blockExecutingClaim(t *testing.T, database *db.DB) {
+	t.Helper()
+	_, err := database.Exec(`CREATE TRIGGER block_executing BEFORE UPDATE OF status ON agent_actions
+		WHEN NEW.status = 'executing' BEGIN SELECT RAISE(ABORT, 'claim blocked'); END`)
+	require.NoError(t, err)
+}
+
+// Spec §8: exit 0 whenever the status change persisted, exit 1 only when
+// nothing did. An approve whose Apply then errors HAS persisted — reporting a
+// failed process for it would tell the Desktop the approval never happened.
+func TestActions_ApproveEnvelopeSurvivesAnApplyError(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+		ArgsJSON: `{"text":"x","reason":"r"}`, Reason: "r"})
+	require.NoError(t, err)
+	blockExecutingClaim(t, database)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, "the pending → approved flip committed → exit 0")
+	assert.Contains(t, out, `"applied_ok": false`)
+	assert.Contains(t, out, `"status": "approved"`)
+	assert.Contains(t, out, "claim blocked")
+
+	// The bare `apply` path persists nothing of its own, so its failure IS the
+	// outcome and must exit non-zero.
+	_, err = runActions(t, "apply", strconv.FormatInt(id, 10), "--json")
+	assert.Error(t, err)
+}
+
+// A row stranded in `executing` by an apply whose process died is refused, so
+// an external write is never re-sent on a guess; --force reclaims it.
+func TestActions_ApplyForceReclaimsAnInterruptedApply(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+		ArgsJSON: `{"text":"Call Vasya","reason":"r"}`, Reason: "r", Status: "executing"})
+	require.NoError(t, err)
+
+	_, err = runActions(t, "apply", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--force")
+
+	out, err := runActions(t, "apply", strconv.FormatInt(id, 10), "--force", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"applied_ok": true`)
+	assert.Contains(t, out, `"status": "applied"`)
+
+	targets, err := database.GetTargets(db.TargetFilter{})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+}
+
+// Spec §5 promises the CLI warns as the card does before an external retry.
+func TestActions_ApplyWarnsBeforeRetryingAnExternalAction(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_jira_issue", External: true,
+		ArgsJSON: `{"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`,
+		Status:   "failed", Error: "boom"})
+	require.NoError(t, err)
+
+	out, err := runActions(t, "apply", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"warning"`)
+	assert.Contains(t, out, "check Jira for a duplicate")
+
+	// The retry failed the same way (no Jira account), so the row is `failed`
+	// again — and the human face carries the same warning.
+	out, err = runActions(t, "apply", strconv.FormatInt(id, 10))
+	require.NoError(t, err)
+	assert.Contains(t, out, "check Jira for a duplicate")
+
+	// A local action's retry says nothing of the sort.
+	localID, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
+		ArgsJSON: `{"text":"x","reason":"r"}`, Status: "failed"})
+	require.NoError(t, err)
+	out, err = runActions(t, "apply", strconv.FormatInt(localID, 10), "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "check Jira")
 }
 
 func TestActions_RejectAndTerminalStates(t *testing.T) {

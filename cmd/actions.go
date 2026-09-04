@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -20,7 +19,14 @@ var (
 	actionsFlagStatus       string
 	actionsFlagConversation int64
 	actionsFlagSurface      string
+	actionsFlagForce        bool
 )
+
+// externalRetryWarning is what the card shows on a failed external row, said
+// on the CLI too (spec §5: "the CLI/card warn 'check Jira before retrying'").
+// An external retry re-sends the request; only the owner can tell whether the
+// first attempt got through before it failed.
+const externalRetryWarning = "Retrying re-sends the request — check Jira for a duplicate first."
 
 var actionsCmd = &cobra.Command{
 	Use:   "actions",
@@ -45,6 +51,8 @@ func init() {
 		actionsCmd.AddCommand(c)
 	}
 	actionsCmd.AddCommand(actionsTrustCmd)
+	actionsApplyCmd.Flags().BoolVar(&actionsFlagForce, "force", false,
+		"reclaim a row stranded in 'executing' by an interrupted apply")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
 	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target)")
@@ -86,6 +94,7 @@ type actionEnvelope struct {
 	Action    actionJSON `json:"action"`
 	AppliedOK bool       `json:"applied_ok"`
 	Error     string     `json:"error"`
+	Warning   string     `json:"warning,omitempty"`
 }
 
 func openActionsCmd() (*config.Config, *db.DB, *tools.Registry, error) {
@@ -168,6 +177,55 @@ func runActionsShow(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// decisionVerb turns the target status into the verb a refusal reads with
+// ("action #3 is applied, cannot approve it").
+func decisionVerb(to string) string {
+	switch to {
+	case "approved":
+		return "approve"
+	case "rejected":
+		return "reject"
+	default:
+		return to
+	}
+}
+
+// prepareApply runs the `apply` path's pre-checks against the row as it stands
+// and returns the warning the output carries. A row in `executing` was claimed
+// by an apply that never came back (a killed process): --force marks it failed
+// so the ordinary retry path accepts it, and without --force it is refused —
+// the other apply may still be running, and re-sending an external write on a
+// guess is exactly what the claim exists to prevent.
+func prepareApply(database *db.DB, id int64) (string, error) {
+	row, err := database.GetAgentAction(id)
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", fmt.Errorf("no action #%d", id)
+	}
+	if row.Status == "executing" {
+		if !actionsFlagForce {
+			return "", fmt.Errorf("action #%d is executing; pass --force to reclaim an interrupted apply", id)
+		}
+		ok, err := database.TransitionAgentAction(id, []string{"executing"}, "failed", "",
+			"reclaimed after an interrupted apply")
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("action #%d is no longer executing", id)
+		}
+		row.Status = "failed" // what the reclaim just made it
+	}
+	// A row that never reached `executing` provably never ran the tool, so
+	// only a failed one can have left a half-finished external write behind.
+	if row.External && row.Status == "failed" {
+		return externalRetryWarning, nil
+	}
+	return "", nil
+}
+
 // decideAndMaybeApply is approve/reject/apply's shared core. The status
 // change is the persisted outcome (exit 0 once it landed); execution is
 // reported separately through applied_ok/error — the recap_ok precedent —
@@ -182,42 +240,66 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		return err
 	}
 	defer database.Close()
-	if to != "" {
+	env := actionEnvelope{OK: true}
+	switch {
+	case to != "":
 		ok, err := database.TransitionAgentAction(id, from, to, "", "")
 		if err != nil {
 			return err
 		}
 		if !ok {
-			row, _ := database.GetAgentAction(id)
+			row, err := database.GetAgentAction(id)
+			if err != nil {
+				return err
+			}
 			if row == nil {
 				return fmt.Errorf("no action #%d", id)
 			}
-			return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, to)
+			return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, decisionVerb(to))
+		}
+	case execute:
+		if env.Warning, err = prepareApply(database, id); err != nil {
+			return err
 		}
 	}
-	env := actionEnvelope{OK: true}
 	var row *db.AgentAction
 	if execute {
 		row, err = reg.Apply(context.Background(), id)
-		if errors.Is(err, tools.ErrBadTransition) || errors.Is(err, tools.ErrNotFound) {
+		switch {
+		case err != nil && to == "":
+			// Nothing persisted on the bare `apply` path, so the failure IS
+			// the outcome: exit non-zero, no envelope.
 			return err
+		case err != nil:
+			// The decision above COMMITTED. Reporting a failed process for it
+			// would tell the Desktop the approve never happened (spec §8).
+			env.Error = err.Error()
+			if row, err = database.GetAgentAction(id); err != nil {
+				return err
+			}
+		default:
+			env.AppliedOK = row.Status == "applied"
+			env.Error = row.Error
 		}
-		if err != nil {
-			return err
-		}
-		env.AppliedOK = row.Status == "applied"
-		env.Error = row.Error
 	} else {
-		row, err = database.GetAgentAction(id)
-		if err != nil {
+		if row, err = database.GetAgentAction(id); err != nil {
 			return err
 		}
+	}
+	// GetAgentAction returns (nil, nil) for a row that is not there; nothing
+	// deletes agent_actions rows, but the by-id getter's contract is the same
+	// here as it is in the registry.
+	if row == nil {
+		return fmt.Errorf("no action #%d", id)
 	}
 	env.Action = toActionJSON(*row)
 	if actionsFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), env)
 	}
 	printAction(cmd.OutOrStdout(), *row)
+	if env.Warning != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "  warning: %s\n", env.Warning)
+	}
 	return nil
 }
 

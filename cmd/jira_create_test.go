@@ -40,9 +40,16 @@ func TestJiraCreate_ReadsDescriptionFile(t *testing.T) {
 	writeActionsConfig(t)
 	path := filepath.Join(t.TempDir(), "d.txt")
 	require.NoError(t, os.WriteFile(path, []byte("body"), 0o600))
-	// Still fails on the missing account, but AFTER the file was read — a
-	// missing file must be the first error when the path is wrong.
-	_, err := runJira(t, "create", "--project", "ABC", "--type", "Task", "--summary", "s", "--description-file", "/nonexistent")
+
+	// A readable file gets past the read and dies where every run without a
+	// connected site dies — which is what proves the file WAS read: an
+	// unreadable path never reaches the account lookup at all.
+	_, err := runJira(t, "create", "--project", "ABC", "--type", "Task", "--summary", "s", "--description-file", path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Jira site")
+	assert.NotContains(t, err.Error(), "description-file")
+
+	_, err = runJira(t, "create", "--project", "ABC", "--type", "Task", "--summary", "s", "--description-file", "/nonexistent")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "description-file")
 }
