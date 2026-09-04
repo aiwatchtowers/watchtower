@@ -102,13 +102,13 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) 
 
 	g, err := p.gather(from, to)
 	if err != nil {
-		return p.failRun(res, err), nil
+		return p.failRun(res, err)
 	}
 	// Coverage is how the recap admits what it could not see, so a failed read
 	// fails the row rather than reporting a zero the UI would show as a real gap.
 	res.Coverage.SlackTo, res.Coverage.StreamsTo, err = p.db.CatchupCoverage(from, to)
 	if err != nil {
-		return p.failRun(res, err), nil
+		return p.failRun(res, err)
 	}
 	// Counted before the prompt budget trims anything, so coverage reports the
 	// window's real meeting count (meetings are never trimmed anyway).
@@ -129,11 +129,11 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) 
 
 	raw, usage, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.compose"), system, user, "")
 	if err != nil {
-		return p.failRun(res, fmt.Errorf("composing catch-up recap: %w", err)), nil
+		return p.failRun(res, fmt.Errorf("composing catch-up recap: %w", err))
 	}
 	parsed, err := parseCompose(raw)
 	if err != nil {
-		return p.failRun(res, err), nil
+		return p.failRun(res, err)
 	}
 	body, rejected := validateBody(parsed, used.byRef)
 	res.RefsRejected = rejected
@@ -154,6 +154,11 @@ func (p *Pipeline) Acknowledge(recapID int64) error {
 // recap's window verbatim so the correction is applied to the same material.
 func (p *Pipeline) resolveRunWindow(opts RunOptions) (Window, error) {
 	if opts.RegenOfID > 0 {
+		// Mirrors the preset/custom exclusivity: a window the caller asked for
+		// would be silently ignored, so it is rejected instead.
+		if opts.Spec.Preset != "" || !opts.Spec.From.IsZero() || !opts.Spec.To.IsZero() {
+			return Window{}, fmt.Errorf("%w: a regen reuses its source recap's window; --preset/--from/--to are not allowed", ErrWindow)
+		}
 		src, err := p.db.GetCatchupRecap(opts.RegenOfID)
 		if err != nil {
 			return Window{}, err
@@ -249,12 +254,17 @@ func (p *Pipeline) finish(res RunResult, tldr string, body Body, u *digest.Usage
 
 // failRun records a content failure on the recap row. Whatever coverage was
 // computed before the failure is kept so the UI can explain the gap.
-func (p *Pipeline) failRun(res RunResult, cause error) RunResult {
+//
+// If that write itself fails the row is stuck at 'building' with no error on
+// it, so — the rule finish upholds — the caller is told with a Go error rather
+// than handed a "failed" result nothing backs.
+func (p *Pipeline) failRun(res RunResult, cause error) (RunResult, error) {
 	res.Status, res.Error = statusFailed, cause.Error()
 	if err := p.db.FailCatchupRecap(res.RecapID, jsonString(res.Coverage), cause.Error()); err != nil {
-		p.logf("catchup: marking recap %d failed: %v", res.RecapID, err)
+		return RunResult{RecapID: res.RecapID, Window: res.Window},
+			fmt.Errorf("recording catch-up recap %d as failed (%v): %w", res.RecapID, cause, err)
 	}
-	return res
+	return res, nil
 }
 
 // learnedPrefs renders the operator's catch-up learned rules for the compose

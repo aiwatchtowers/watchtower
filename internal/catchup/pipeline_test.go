@@ -22,22 +22,30 @@ import (
 // mockGenerator returns canned output and records that it was called. When fn is
 // set it is used to compute the response from the (system, user) messages so a
 // test can assert on what the pipeline actually sent; otherwise the static out
-// is returned.
+// is returned. err, when set, fails the call instead. source records the tier
+// tag the pipeline attached to the context.
 type mockGenerator struct {
 	out    string
+	err    error
 	fn     func(system, user string) string
 	called bool
 	calls  int
+	source string
 	mu     sync.Mutex
 }
 
-func (m *mockGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+func (m *mockGenerator) Generate(ctx context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
 	m.mu.Lock()
 	m.called = true
 	m.calls++
+	m.source, _ = digest.SourceFromContext(ctx)
 	fn := m.fn
 	out := m.out
+	err := m.err
 	m.mu.Unlock()
+	if err != nil {
+		return "", nil, "", err
+	}
 	if fn != nil {
 		out = fn(system, user)
 	}
@@ -109,6 +117,7 @@ func TestRun_ComposesAndPersists(t *testing.T) {
 	assert.Equal(t, 1, top.streamCalls)
 	assert.Equal(t, "ok", res.Coverage.Topup)
 	assert.Equal(t, 1900.0, res.Coverage.SlackTo)
+	assert.Equal(t, "catchup.compose", gen.source, "the compose call must carry its tier tag")
 	r, _ := d.GetCatchupRecap(res.RecapID)
 	assert.Equal(t, "quiet day", r.TLDR)
 	var body Body
@@ -157,6 +166,7 @@ func TestCatchup03_TopUpFailureStillProducesRecap(t *testing.T) {
 	assert.Contains(t, res.Coverage.TopupError, "digest lock held")
 	assert.Equal(t, 1, top.streamCalls, "stream top-up still attempted after the channel failure")
 	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "ready", r.Status, "the recap itself still lands ready")
 	assert.Contains(t, r.CoverageJSON, `"topup":"failed"`)
 }
 
@@ -198,6 +208,121 @@ func TestRun_AIFailureMarksRecapFailed(t *testing.T) {
 	r, _ := d.GetCatchupRecap(res.RecapID)
 	assert.Equal(t, "failed", r.Status)
 	assert.NotEmpty(t, r.Error)
+}
+
+func TestRun_GeneratorErrorMarksRecapFailed(t *testing.T) {
+	gen := &mockGenerator{err: errors.New("claude exited 1")}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err, "an AI failure is a row, not an error")
+	assert.Equal(t, "failed", res.Status)
+	assert.Contains(t, res.Error, "claude exited 1")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "failed", r.Status)
+	assert.Contains(t, r.Error, "claude exited 1")
+}
+
+// The window read has two error branches — the seven gather queries and the
+// coverage read — handled identically. Only gather is reachable in a test: every
+// table and column CatchupCoverage reads is also read by gather, which runs
+// first, so breaking one breaks both.
+func TestRun_GatherErrorMarksRecapFailed(t *testing.T) {
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	_, err := d.Exec(`DROP TABLE stream_digests`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err, "an unreadable window is a row, not an error")
+	assert.Equal(t, "failed", res.Status)
+	assert.False(t, gen.called, "no AI call on material we could not read")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "failed", r.Status)
+	assert.NotEmpty(t, r.Error)
+}
+
+// A recap that could not be written down is not a recap: Run reports the write
+// failure instead of a "ready" result nothing backs.
+func TestRun_FinishWriteFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	// tldr is written only by FinishCatchupRecap — the insert does not name it.
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN tldr TO tldr_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err)
+	assert.Empty(t, res.Status, "no status is claimed for a recap that was never persisted")
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM catchup_recaps WHERE id=?`, res.RecapID).Scan(&status))
+	assert.Equal(t, "building", status, "the row is stuck, and the caller is told")
+}
+
+// Same rule on the failure path: if the row cannot even be marked failed, the
+// caller hears about it rather than being handed a "failed" result.
+func TestRun_FailWriteFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{err: errors.New("claude exited 1")}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN error TO error_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude exited 1", "the cause survives in the write error")
+	assert.Empty(t, res.Status)
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM catchup_recaps WHERE id=?`, res.RecapID).Scan(&status))
+	assert.Equal(t, "building", status)
+}
+
+func TestRun_RecapRowInsertFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN period_from TO period_from_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err, "no row to record the failure on → the caller is told")
+	assert.Zero(t, res.RecapID)
+	assert.False(t, gen.called)
+}
+
+// The profile and the learned rules only personalise the recap; losing them
+// costs personalisation, not the recap.
+func TestRun_ProfileAndPrefsReadFailuresStillCompose(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	_, err := d.Exec(`DROP TABLE workspace`)
+	require.NoError(t, err)
+	_, err = d.Exec(`DROP TABLE inbox_learned_rules`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", res.Status)
+	assert.True(t, gen.called)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "quiet day", r.TLDR)
+}
+
+func TestRun_RegenMissingSourceIsAnError(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	_, err := p.Run(context.Background(), RunOptions{RegenOfID: 999})
+	require.Error(t, err)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM catchup_recaps`).Scan(&n))
+	assert.Equal(t, 0, n, "no row for a regen of a recap that does not exist")
+}
+
+func TestRun_RegenRejectsAnExplicitWindow(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	_, err := p.Run(context.Background(), RunOptions{RegenOfID: 999, Spec: WindowSpec{Preset: "today"}})
+	assert.ErrorIs(t, err, ErrWindow, "a regen reuses its source window; an explicit one is rejected, not ignored")
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM catchup_recaps`).Scan(&n))
+	assert.Equal(t, 0, n)
 }
 
 func TestRun_RegenReusesWindowAndSkipsTopUp(t *testing.T) {
