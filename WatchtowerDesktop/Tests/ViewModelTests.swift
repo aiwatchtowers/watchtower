@@ -716,6 +716,8 @@ final class ChatViewModelTests: XCTestCase {
         let prompt = try XCTUnwrap(firstSystemPrompt)
         XCTAssertTrue(prompt.contains("No tools are connected"))
         XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
+        XCTAssertFalse(prompt.contains("write tool"))
+        XCTAssertFalse(prompt.contains("proposal"))
     }
 
     func testBuildSystemPromptCarriesAgentActionsContract() throws {

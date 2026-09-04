@@ -367,7 +367,7 @@ final class ChatViewModel {
 
         return promptHeader(name: name, domain: domain, now: now, schema: schema, toolsAvailable: toolsAvailable)
             + toolsBlock
-            + promptDeepLinksAndRestrictions(teamID: teamID)
+            + promptDeepLinksAndRestrictions(teamID: teamID, toolsAvailable: toolsAvailable)
             + promptRules(teamID: teamID)
             + promptAppGuide()
     }
@@ -427,8 +427,20 @@ final class ChatViewModel {
         unavailable by design.
         """
 
-    nonisolated private static func promptDeepLinksAndRestrictions(teamID: String) -> String {
-        """
+    nonisolated private static func promptDeepLinksAndRestrictions(teamID: String, toolsAvailable: Bool) -> String {
+        // The second bullet must not promise a write tool the provider doesn't have —
+        // the no-tools variant restores the original wording verbatim (no proposal/write-tool language).
+        let dataSourceBullet = toolsAvailable
+            ? """
+            - Your ONLY data source is the local database, reached through the tools above. \
+            You cannot write directly — every write is a proposal through a write tool, executed only after the owner approves.
+            """
+            : """
+            - Your ONLY data source is the local database, reached through the tools above. \
+            Do not try to fetch from Slack, and do not try to reach the database any other way.
+            """
+
+        return """
         Deep link format:
           slack://channel?team=\(teamID)&id={channel_id}&message={ts}
           Example: ts "1740577800.000100" →
@@ -436,8 +448,7 @@ final class ChatViewModel {
 
         === IMPORTANT RESTRICTIONS ===
         - You have NO internet access. Do NOT call any Slack API, WebFetch, or WebSearch tools.
-        - Your ONLY data source is the local database, reached through the tools above. \
-        You cannot write directly — every write is a proposal through a write tool, executed only after the owner approves.
+        \(dataSourceBullet)
 
         """
     }
