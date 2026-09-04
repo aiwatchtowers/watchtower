@@ -370,14 +370,20 @@ func (db *DB) ListCatchupTargets(from, to float64, limit int) ([]CatchupItem, er
 
 // CatchupCoverage reports how far into the window the summaries actually reach:
 // the latest channel-digest period_to and the latest stream-digest period_to
-// inside [from, to] (0 when none).
+// among the digests OVERLAPPING [from, to] (0 when none).
+//
+// Same overlap predicate as the gather (ListCatchupDigests / ListCatchupStreams)
+// and the ack (AcknowledgeCatchupWindow), so all three agree on which summaries
+// the window owns. A digest produced by the run's own top-up stamps its
+// period_to with its own time.Now(), so a returned bound may sit slightly past
+// `to` — that is honest: coverage really does reach that far.
 func (db *DB) CatchupCoverage(from, to float64) (slackTo, streamsTo float64, err error) {
 	var s sql.NullFloat64
-	if err = db.QueryRow(`SELECT MAX(period_to) FROM digests WHERE type='channel' AND period_to > ? AND period_to <= ?`, from, to).Scan(&s); err != nil {
+	if err = db.QueryRow(`SELECT MAX(period_to) FROM digests WHERE type='channel' AND period_to > ? AND period_from < ?`, from, to).Scan(&s); err != nil {
 		return 0, 0, fmt.Errorf("catchup slack coverage: %w", err)
 	}
 	var st sql.NullString
-	if err = db.QueryRow(`SELECT MAX(period_to) FROM stream_digests WHERE period_to > ? AND period_to <= ?`, unixToISO(from), unixToISO(to)).Scan(&st); err != nil {
+	if err = db.QueryRow(`SELECT MAX(period_to) FROM stream_digests WHERE period_to > ? AND period_from < ?`, unixToISO(from), unixToISO(to)).Scan(&st); err != nil {
 		return 0, 0, fmt.Errorf("catchup streams coverage: %w", err)
 	}
 	if st.Valid {

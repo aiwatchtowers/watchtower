@@ -124,6 +124,14 @@ func (db *DB) LastAcknowledgedCatchupTo() (float64, error) {
 // AcknowledgeCatchupWindow marks everything inside [from, to] read on the five
 // read_at surfaces and stamps the recap acknowledged_at (first stamp wins).
 // Set-based, one transaction, idempotent (CATCHUP-01).
+//
+// The two summary surfaces (digests, stream_digests) use the OVERLAP predicate
+// `period_to > from AND period_from < to` — the exact predicate the gather uses
+// (ListCatchupDigests / ListCatchupStreams). It must stay that way: the run's
+// coverage top-up generates fresh digests that stamp their own period_to with
+// their own time.Now(), which routinely lands a second or two past the window's
+// `to`; a `period_to <= to` ack would cite such a digest in the recap and then
+// leave it unread forever, so the badge would lie.
 func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 	fromISO := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04:05Z")
 	toISO := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04:05Z")
@@ -139,8 +147,8 @@ func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 		q    string
 		args []any
 	}{
-		{`UPDATE digests SET read_at=` + now + ` WHERE read_at IS NULL AND period_to > ? AND period_to <= ?`, []any{from, to}},
-		{`UPDATE stream_digests SET read_at=` + now + ` WHERE read_at IS NULL AND period_to > ? AND period_to <= ?`, []any{fromISO, toISO}},
+		{`UPDATE digests SET read_at=` + now + ` WHERE read_at IS NULL AND type='channel' AND period_to > ? AND period_from < ?`, []any{from, to}},
+		{`UPDATE stream_digests SET read_at=` + now + ` WHERE read_at IS NULL AND period_to > ? AND period_from < ?`, []any{fromISO, toISO}},
 		{`UPDATE tracks SET read_at=` + now + `, has_updates=0 WHERE dismissed_at='' AND updated_at > ? AND updated_at <= ? AND (read_at IS NULL OR has_updates=1)`, []any{fromISO, toISO}},
 		{`UPDATE inbox_items SET read_at=` + now + ` WHERE read_at IS NULL AND created_at > ? AND created_at <= ?`, []any{fromISO, toISO}},
 		{`UPDATE briefings SET read_at=` + now + ` WHERE read_at IS NULL AND date >= ? AND date <= ?`, []any{fromDate, toDate}},

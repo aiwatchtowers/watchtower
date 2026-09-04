@@ -619,7 +619,12 @@ func TestRunCatchup_EmptyWindow(t *testing.T) {
 
 	resetCatchupRunFlags(t)
 	catchupRunFlagJSON = true
-	catchupRunFlagFrom = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	// A window that ended in the past on purpose: the top-up only fires when `to`
+	// is within 5 minutes of now, so this can never reach the real digest/stream
+	// pipelines (and through them a generator) whatever the DB happens to hold.
+	yesterday := time.Now().AddDate(0, 0, -1)
+	catchupRunFlagFrom = yesterday.Format(time.RFC3339)
+	catchupRunFlagTo = yesterday.Add(time.Hour).Format(time.RFC3339)
 
 	buf := new(bytes.Buffer)
 	catchupRunCmd.SetOut(buf)

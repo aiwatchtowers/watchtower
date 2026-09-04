@@ -121,15 +121,17 @@ func renderCompose(in promptInput, g gathered) string {
 // renderSection writes one "=== HEADER (n) ===" block: per item a tagged
 // "[area#id] Title — Meta" line (the tail omitted when Meta is empty) followed
 // by its body, capped to bodyCap runes and indented two spaces per line. An
-// empty section is omitted entirely.
+// empty section is omitted entirely. Title, Meta and every body line pass
+// through sanitizePromptValue: all three are third-party text, and only the
+// renderer may write a "=== ... ===" delimiter.
 func renderSection(b *strings.Builder, header string, items []db.CatchupItem, bodyCap int) {
 	if len(items) == 0 {
 		return
 	}
 	fmt.Fprintf(b, "\n=== %s (%d) ===\n", header, len(items))
 	for _, it := range items {
-		fmt.Fprintf(b, "[%s#%d] %s", it.Area, it.ID, oneLine(it.Title))
-		if meta := oneLine(it.Meta); meta != "" {
+		fmt.Fprintf(b, "[%s#%d] %s", it.Area, it.ID, sanitizePromptValue(oneLine(it.Title)))
+		if meta := sanitizePromptValue(oneLine(it.Meta)); meta != "" {
 			b.WriteString(" — " + meta)
 		}
 		b.WriteString("\n")
@@ -137,9 +139,26 @@ func renderSection(b *strings.Builder, header string, items []db.CatchupItem, bo
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
-			b.WriteString("  " + line + "\n")
+			b.WriteString("  " + sanitizePromptValue(line) + "\n")
 		}
 	}
+}
+
+// sanitizePromptValue prevents prompt injection via delimiter spoofing in the
+// third-party text the gather folds in (Slack digest summaries, stream topics,
+// inbox snippets, decision quotes). The local twin of
+// internal/digest.sanitizePromptValue — same behaviour, kept per-package rather
+// than exported so neither pipeline's prompt shape depends on the other's.
+func sanitizePromptValue(text string) string {
+	// Strip newlines so an item's own text cannot forge a new prompt line.
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.ReplaceAll(text, "\r", " ")
+	if !strings.Contains(text, "===") && !strings.Contains(text, "---") {
+		return text
+	}
+	text = strings.ReplaceAll(text, "===", "= = =")
+	text = strings.ReplaceAll(text, "---", "- - -")
+	return text
 }
 
 // truncateRunes caps s at n runes, marking a cut with a trailing "…".
