@@ -42,7 +42,7 @@
 
 ## AGENT-04 — Draft-only surfaces see no tools
 
-**Status:** Enforced
+**Status:** Planned (Phase B) — becomes Enforced when the Desktop tool-mode wiring and its guard tests land on this branch (plan Tasks 13 and 17); the Observable below is the contract those tasks implement.
 
 **Observable:** Only the main AI Chat (`ChatViewModel`) and the target chat (`TargetChatViewModel`) pass a `toolMode` to `WatchtowerAIService`; situation, meeting, idea, track and setup chats call the convenience overloads that forward `toolMode: nil`, so their `ai query` never carries `--tools chat` and the model there never sees a write tool.
 
