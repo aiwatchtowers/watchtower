@@ -606,9 +606,9 @@ func TestDbMigrate_SuccessfulMigration(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// --- catchup unread rollup with empty backlog ---
+// --- catchup over a window with nothing in it ---
 
-func TestRunCatchup_EmptyBacklog(t *testing.T) {
+func TestRunCatchup_EmptyWindow(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
 
@@ -617,17 +617,19 @@ func TestRunCatchup_EmptyBacklog(t *testing.T) {
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test-ws", Domain: "test-ws"}))
 	database.Close()
 
+	resetCatchupRunFlags(t)
 	catchupRunFlagJSON = true
-	defer func() { catchupRunFlagJSON = false }()
+	catchupRunFlagFrom = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 
 	buf := new(bytes.Buffer)
 	catchupRunCmd.SetOut(buf)
 
 	err = catchupRunCmd.RunE(catchupRunCmd, nil)
 	require.NoError(t, err)
-	// Catch-Up v2: an empty backlog creates no session and emits an empty
-	// themes array (the v1 counts/total_unread rollup shape is gone).
-	assert.Contains(t, buf.String(), "[]")
+	// An empty window is a real, ready recap with an empty body — the gather
+	// comes back empty and the pipeline returns before any AI call.
+	assert.Contains(t, buf.String(), `"status":"ready"`)
+	assert.Contains(t, buf.String(), `"topics":[]`)
 }
 
 // --- runDigestSummary with --hours ---
