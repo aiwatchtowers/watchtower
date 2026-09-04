@@ -26,7 +26,8 @@ final class TargetChatViewModelTests: XCTestCase {
         target: Target,
         vm: TargetsViewModel,
         manager: DatabaseManager,
-        aiService: any AIServiceProtocol = MockClaudeService()
+        aiService: any AIServiceProtocol = MockClaudeService(),
+        toolsAvailable: Bool = true
     ) throws -> TargetChatViewModel {
         let conversationID = try manager.dbPool.write { db -> Int64 in
             try ChatConversationQueries.ensureTable(db)
@@ -37,7 +38,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
         return TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
                                    conversationID: conversationID,
-                                   aiService: aiService)
+                                   aiService: aiService, toolsAvailable: toolsAvailable)
     }
 
     /// Synchronous DB helpers — inside an `async` test the trailing-closure
@@ -1218,5 +1219,29 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.messages.last?.turnID, mode.turnID)
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
         XCTAssertEqual(persisted.last?.turnID, mode.turnID)
+    }
+
+    /// `toolsAvailable` is injected per-VM at init (not re-read from
+    /// config.yaml on every turn), so a no-tools session — Ollama in
+    /// production — deterministically sends no tool mode and never
+    /// advertises the AGENT ACTIONS contract, regardless of the developer's
+    /// local config.
+    func testOllamaTargetChatSendsNoToolModeAndNoAgentActionsContract() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock, toolsAvailable: false)
+        chat.inputText = "make a ticket"
+        chat.send()
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(mock.toolModes, [nil])
+        let firstSystemPrompt = try XCTUnwrap(mock.systemPrompts.first)
+        let prompt = try XCTUnwrap(firstSystemPrompt)
+        XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
     }
 }

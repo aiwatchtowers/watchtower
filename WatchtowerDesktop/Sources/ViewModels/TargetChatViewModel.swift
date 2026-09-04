@@ -132,8 +132,10 @@ final class TargetChatViewModel {
 
     /// Provider kind is chosen app-wide for Discuss chats; the VM passes
     /// `model: nil` and the CLI resolves the provider — so the only case
-    /// without tools is the app-wide Ollama provider.
-    var toolsAvailable: Bool { Constants.aiProviderID() != "ollama" }
+    /// without tools is the app-wide Ollama provider. Resolved once at init
+    /// (the `memoryChatEnabled` injection precedent) rather than re-read from
+    /// config.yaml on every turn, so it stays a stable, test-injectable value.
+    let toolsAvailable: Bool
 
     /// `conversationID` is the tab this VM speaks into. Finding or creating it is
     /// the container's job (`TargetAssistantViewModel` owns the target's tab
@@ -144,13 +146,15 @@ final class TargetChatViewModel {
         dbManager: DatabaseManager,
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
-        cliRunner: CLIRunnerProtocol? = nil
+        cliRunner: CLIRunnerProtocol? = nil,
+        toolsAvailable: Bool = Constants.aiProviderID() != "ollama"
     ) {
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.aiService = aiService ?? WatchtowerAIService()
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
+        self.toolsAvailable = toolsAvailable
 
         loadConversation(id: conversationID)
         startMessageObservation()
@@ -381,7 +385,7 @@ final class TargetChatViewModel {
             let base = currentSessionID == nil
                 ? text
                 : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
-                    + "\(Self.taskActionsContract)\n\n\(AgentToolsContract.promptBlock(surface: .target))\n\n\(text)"
+                    + "\(Self.taskActionsContract)\n\n\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(text)"
             return outcomes.map { "\($0)\n\n\(base)" } ?? base
         }()
 
