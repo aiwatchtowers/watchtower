@@ -154,6 +154,36 @@ func TestCatchup01_AcknowledgeMarksWindowRead(t *testing.T) {
 }
 
 // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+//
+// `to` is an exclusive instant, so a window ending exactly on a local midnight
+// (what the `yesterday` preset resolves to) covers the day BEFORE it: the
+// briefing dated the day the window ends on must stay unread.
+func TestCatchup01_AcknowledgeMarksWindowReadMidnightTo(t *testing.T) {
+	d := openTestDB(t)
+	// Midnight in the RUNNING time zone: briefings.date is a local calendar date,
+	// so the fixture has to be built with the same conversion the store applies.
+	base := time.Unix(catchupWindowBase, 0).Local()
+	midnight := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())
+	from, to := float64(midnight.AddDate(0, 0, -1).Unix()), float64(midnight.Unix())
+
+	_, err := d.Exec(`INSERT INTO briefings (user_id, date) VALUES ('1:U0', ?), ('1:U0', ?)`,
+		midnight.AddDate(0, 0, -1).Format("2006-01-02"), midnight.Format("2006-01-02"))
+	require.NoError(t, err)
+
+	id, err := d.InsertCatchupRecap(from, to, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
+
+	var readAt *string
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM briefings WHERE date=?`,
+		midnight.AddDate(0, 0, -1).Format("2006-01-02")).Scan(&readAt))
+	assert.NotNil(t, readAt, "the day the window actually covers is marked read")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM briefings WHERE date=?`,
+		midnight.Format("2006-01-02")).Scan(&readAt))
+	assert.Nil(t, readAt, "the briefing for the day the window ENDS on stays unread")
+}
+
+// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
 func TestCatchup01_AcknowledgeIsIdempotent(t *testing.T) {
 	d := openTestDB(t)
 	from, to := float64(catchupWindowBase+1000), float64(catchupWindowBase+2000)
@@ -166,10 +196,18 @@ func TestCatchup01_AcknowledgeIsIdempotent(t *testing.T) {
 	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
 	first, err := d.GetCatchupRecap(id)
 	require.NoError(t, err)
+	assert.NotEmpty(t, first.AcknowledgedAt)
+
+	// Both acks land in the same wall-clock second, so an equal stamp would prove
+	// nothing: rewrite it to a sentinel only the `acknowledged_at IS NULL` guard
+	// could preserve (the Swift twin's technique).
+	_, err = d.Exec(`UPDATE catchup_recaps SET acknowledged_at='2020-06-01T00:00:00Z' WHERE id=?`, id)
+	require.NoError(t, err)
+
 	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
 	second, err := d.GetCatchupRecap(id)
 	require.NoError(t, err)
-	assert.Equal(t, first.AcknowledgedAt, second.AcknowledgedAt, "second ack keeps the first stamp")
+	assert.Equal(t, "2020-06-01T00:00:00Z", second.AcknowledgedAt, "second ack keeps the first stamp")
 	var readAt string
 	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests`).Scan(&readAt))
 	assert.Equal(t, "2020-01-01T00:00:00Z", readAt, "already-read rows keep their stamp")

@@ -142,10 +142,17 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) 
 
 // Acknowledge marks the recap's whole window read across every source surface
 // and stamps the recap itself acknowledged (CATCHUP-01).
+//
+// Only a 'ready' recap can be acknowledged: a building row's window may still
+// change nothing, and a failed one never told the operator what happened —
+// marking either one's window read would silently swallow everything in it.
 func (p *Pipeline) Acknowledge(recapID int64) error {
 	r, err := p.db.GetCatchupRecap(recapID)
 	if err != nil {
 		return err
+	}
+	if r.Status != statusReady {
+		return fmt.Errorf("catch-up recap %d is %s, not ready", recapID, r.Status)
 	}
 	return p.db.AcknowledgeCatchupWindow(recapID, r.PeriodFrom, r.PeriodTo)
 }

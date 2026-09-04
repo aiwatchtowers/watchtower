@@ -24,6 +24,39 @@ func TestResolveWindow_AutoFallback24h(t *testing.T) {
 	assert.Equal(t, now.Add(-24*time.Hour), w.From)
 }
 
+// An acknowledged window ending in the future (a custom window built ahead of
+// the clock, or a host clock that moved back) must not brick the auto window:
+// it falls back to the 24h default rather than erroring on every run.
+func TestResolveWindow_AutoIgnoresFutureAck(t *testing.T) {
+	now := time.Date(2026, 9, 4, 18, 30, 0, 0, time.Local)
+	w, err := ResolveWindow(WindowSpec{}, now, float64(now.Add(6*time.Hour).Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(-24*time.Hour), w.From, "a future ack falls back to the 24h default")
+	assert.Equal(t, now, w.To)
+
+	// An ack landing exactly on now is the same case: from must precede to.
+	w, err = ResolveWindow(WindowSpec{}, now, float64(now.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(-24*time.Hour), w.From)
+}
+
+// A custom window may not reach past now: `to` is clamped (nothing happened
+// there yet), `from` in the future is rejected outright.
+func TestResolveWindow_CustomFutureToClampsToNow(t *testing.T) {
+	now := time.Date(2026, 9, 4, 18, 30, 0, 0, time.Local)
+	from := now.Add(-2 * time.Hour)
+
+	w, err := ResolveWindow(WindowSpec{From: from, To: now.Add(48 * time.Hour)}, now, 0)
+	require.NoError(t, err)
+	assert.Equal(t, from, w.From)
+	assert.Equal(t, now, w.To, "a --to past now is clamped to now")
+
+	_, err = ResolveWindow(WindowSpec{From: now.Add(time.Hour)}, now, 0)
+	assert.ErrorIs(t, err, ErrWindow, "a --from in the future is an error")
+	_, err = ResolveWindow(WindowSpec{From: now.Add(time.Hour), To: now.Add(2 * time.Hour)}, now, 0)
+	assert.ErrorIs(t, err, ErrWindow, "a wholly future window is an error, not an empty recap")
+}
+
 func TestResolveWindow_Presets(t *testing.T) {
 	now := time.Date(2026, 9, 4, 18, 30, 0, 0, time.Local)
 	midnight := time.Date(2026, 9, 4, 0, 0, 0, 0, time.Local)

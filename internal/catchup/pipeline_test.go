@@ -352,9 +352,33 @@ func TestAcknowledge_UsesRecapWindow(t *testing.T) {
 	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
 	seedDigest(t, d, 1500, 1900)
 	id, _ := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, d.FinishCatchupRecap(id, "tl", `{"topics":[]}`, `{}`, "", 0, 0, 0))
 	require.NoError(t, p.Acknowledge(id))
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL`).Scan(&n))
 	assert.Equal(t, 1, n)
 	assert.Error(t, p.Acknowledge(999))
+}
+
+// "I'm caught up" on a recap that never finished would mark its whole window
+// read without ever having told the operator what was in it.
+func TestAcknowledge_RefusesUnfinishedRecap(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+
+	building, err := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	assert.ErrorContains(t, p.Acknowledge(building), "not ready")
+
+	failed, err := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.FailCatchupRecap(failed, `{}`, "boom"))
+	assert.ErrorContains(t, p.Acknowledge(failed), "not ready")
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Zero(t, n, "a refused acknowledge marks nothing read")
+	r, err := d.GetCatchupRecap(building)
+	require.NoError(t, err)
+	assert.Empty(t, r.AcknowledgedAt, "and never stamps the recap")
 }

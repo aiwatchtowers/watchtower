@@ -136,7 +136,11 @@ func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 	fromISO := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04:05Z")
 	toISO := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04:05Z")
 	fromDate := time.Unix(int64(from), 0).Local().Format("2006-01-02")
-	toDate := time.Unix(int64(to), 0).Local().Format("2006-01-02")
+	// `to` is an EXCLUSIVE instant, so the last local DAY the window covers is
+	// the one containing to−1s: a window ending exactly on a local midnight (the
+	// `yesterday` preset) covers the previous day, and the briefing dated the new
+	// day must stay unread.
+	toDate := time.Unix(int64(to)-1, 0).Local().Format("2006-01-02")
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("acknowledging catchup %d: %w", id, err)

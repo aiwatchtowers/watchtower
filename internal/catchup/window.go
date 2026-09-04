@@ -27,7 +27,10 @@ type Window struct {
 
 // ResolveWindow turns a spec into a concrete window. Auto: from the last
 // acknowledged recap's period_to (lastAckTo, unix seconds; 0 = none → now-24h)
-// to now. Presets use now's location for day boundaries.
+// to now. Presets use now's location for day boundaries. No resolved window
+// ever ends after now: a custom --to past now is clamped to it, a custom --from
+// past now is an error, and an acknowledged period_to past now falls back to the
+// 24h default instead of freezing the auto window.
 func ResolveWindow(spec WindowSpec, now time.Time, lastAckTo float64) (Window, error) {
 	custom := !spec.From.IsZero() || !spec.To.IsZero()
 	if spec.Preset != "" && custom {
@@ -60,13 +63,28 @@ func ResolveWindow(spec WindowSpec, now time.Time, lastAckTo float64) (Window, e
 		if w.From.IsZero() {
 			return Window{}, fmt.Errorf("%w: --from is required with --to", ErrWindow)
 		}
+		// A recap covers what already happened. An end past now is clamped —
+		// there is nothing to gather there and the recap would claim coverage it
+		// cannot have — while a start at or after now is a typo worth reporting
+		// rather than an empty document.
+		if w.To.After(now) {
+			w.To = now
+		}
+		if !w.From.Before(now) {
+			return Window{}, fmt.Errorf("%w: --from is in the future", ErrWindow)
+		}
 	default:
 		w.Source = "auto"
 		w.To = now
+		// An acknowledged window whose `to` sits at or past now (a custom window
+		// built ahead of the clock, a host clock that moved back) must not brick
+		// the default window forever: it falls back to the ordinary 24h start,
+		// exactly as "nothing acknowledged yet" does.
+		w.From = now.Add(-24 * time.Hour)
 		if lastAckTo > 0 {
-			w.From = time.Unix(int64(lastAckTo), 0).In(now.Location())
-		} else {
-			w.From = now.Add(-24 * time.Hour)
+			if ack := time.Unix(int64(lastAckTo), 0).In(now.Location()); ack.Before(now) {
+				w.From = ack
+			}
 		}
 	}
 	if !w.From.Before(w.To) {
