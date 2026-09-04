@@ -58,11 +58,19 @@ package enum CatchUpQueries {
     ///
     /// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md. The exact twin of Go's
     /// `AcknowledgeCatchupWindow`: the same six set-based statements in the same
-    /// order, the same `(from, to]` edges (`briefings` compares LOCAL calendar
-    /// dates inclusively, everything else the window bounds), each predicate
-    /// already excluding the rows it marked so a second ack is a no-op. Selection
-    /// is by **window**, never by the refs the compose call happened to cite — so
-    /// this must not be rebuilt on the per-id `MarkXRead` helpers.
+    /// order, the same edges, each predicate already excluding the rows it marked
+    /// so a second ack is a no-op. Selection is by **window**, never by the refs
+    /// the compose call happened to cite — so this must not be rebuilt on the
+    /// per-id `MarkXRead` helpers.
+    ///
+    /// The two summary surfaces (`digests`, `stream_digests`) use the OVERLAP
+    /// predicate `period_to > from AND period_from < to`, matching the Go gather
+    /// (`ListCatchupDigests`/`ListCatchupStreams`) exactly: a digest produced by
+    /// the run's own coverage top-up stamps its `period_to` with its own
+    /// `time.Now()`, landing a second or two past `to`, and a `period_to <= to`
+    /// ack would leave such a cited digest unread forever. `tracks` and
+    /// `inbox_items` compare a single instant, so they keep `(from, to]`;
+    /// `briefings` compares LOCAL calendar dates inclusively.
     ///
     /// Runs inside the caller's `write` block, which supplies the transaction the
     /// Go path opens explicitly.
@@ -77,14 +85,14 @@ package enum CatchUpQueries {
         try db.execute(
             sql: """
                 UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE read_at IS NULL AND period_to > ? AND period_to <= ?
+                WHERE read_at IS NULL AND type = 'channel' AND period_to > ? AND period_from < ?
                 """,
             arguments: [from, to]
         )
         try db.execute(
             sql: """
                 UPDATE stream_digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE read_at IS NULL AND period_to > ? AND period_to <= ?
+                WHERE read_at IS NULL AND period_to > ? AND period_from < ?
                 """,
             arguments: [fromISO, toISO]
         )

@@ -63,7 +63,8 @@ final class CatchUpViewModelTests: XCTestCase {
 
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
-        XCTAssertEqual(args[1], iso.string(from: from), "RFC 3339, the form `catchup run --from` parses")
+        iso.timeZone = TimeZone(identifier: "UTC")
+        XCTAssertEqual(args[1], iso.string(from: from), "RFC 3339 in UTC, the form `catchup run --from` parses")
         XCTAssertEqual(args[3], iso.string(from: to))
     }
 
@@ -155,6 +156,39 @@ final class CatchUpViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.selected?.id, older, "reload keeps the deliberate selection, not the newest")
         XCTAssertEqual(vm.selected?.isAcknowledged, true, "and re-points it at the refreshed row")
+    }
+
+    /// A build/regen arms a one-shot "select the newest row" so the pane follows
+    /// the recap the run is producing instead of staying on the previous one.
+    func testBuildSelectsTheNewestRecapOnNextApply() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let older = try await pool.write { db -> Int in
+            let older = try Self.insertRecap(db, from: 1000, to: 2000)
+            _ = try Self.insertRecap(db, from: 2000, to: 3000)
+            return older
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        await vm.reload()
+        vm.selected = vm.recaps.first { $0.id == older }
+        XCTAssertEqual(vm.selected?.id, older)
+
+        // `run` arms the flag and the CLI inserts its `building` row; the first
+        // poll after that is what this reload stands in for.
+        vm.markSelectNewestForTesting()
+        let newest = try await pool.write { db in
+            try Self.insertRecap(db, from: 3000, to: 4000, status: "building")
+        }
+        await vm.reload()
+        XCTAssertEqual(vm.selected?.id, newest, "the run's own row is selected")
+
+        // One-shot: an ordinary poll afterwards must not keep jumping.
+        vm.selected = vm.recaps.first { $0.id == older }
+        await vm.reload()
+        XCTAssertEqual(vm.selected?.id, older, "the flag is consumed — later reloads keep the selection")
     }
 
     // MARK: - Acknowledge

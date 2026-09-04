@@ -119,8 +119,19 @@ final class CatchUpQueriesTests: XCTestCase {
         let dbQueue = try TestDatabase.create()
         let recapID = try dbQueue.write { db -> Int64 in
             try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600)
+            // Straddles the window start — the gather cites it, so the ack marks it.
+            try TestDatabase.insertDigest(db, periodFrom: base + 500, periodTo: base + 1200)
+            // Produced by the run's own top-up: period_to carries its own now(),
+            // landing a second past the window's `to`.
+            try TestDatabase.insertDigest(db, periodFrom: base + 1900, periodTo: base + 2001)
             _ = try TestDatabase.insertStreamDigest(
                 db, periodFrom: "2027-01-15T12:25:00Z", periodTo: "2027-01-15T12:26:40Z"
+            )
+            _ = try TestDatabase.insertStreamDigest(
+                db, periodFrom: "2027-01-15T12:08:20Z", periodTo: "2027-01-15T12:20:00Z"
+            )
+            _ = try TestDatabase.insertStreamDigest(
+                db, periodFrom: "2027-01-15T12:31:40Z", periodTo: "2027-01-15T12:33:21Z"
             )
             let trackID = try TestDatabase.insertTrack(db, hasUpdates: true)
             try db.execute(
@@ -140,8 +151,16 @@ final class CatchUpQueriesTests: XCTestCase {
         try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
 
         try dbQueue.read { db in
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL"), 1)
-            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests WHERE read_at IS NOT NULL"), 1)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL"),
+                3,
+                "every digest overlapping the window — inside, straddling the start, and the top-up ending past `to`"
+            )
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests WHERE read_at IS NOT NULL"),
+                3,
+                "the same three overlap cases on the stream surface"
+            )
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE read_at IS NOT NULL AND has_updates = 0"),
                 1,
@@ -165,7 +184,15 @@ final class CatchUpQueriesTests: XCTestCase {
         let dbQueue = try TestDatabase.create()
         let recapID = try dbQueue.write { db -> Int64 in
             try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600, summary: "in")
+            // Starts at/after the window's `to` — no overlap, so no ack.
             try TestDatabase.insertDigest(db, periodFrom: base + 2500, periodTo: base + 2600, summary: "out")
+            // Overlaps the window, but a daily roll-up is not a catch-up surface.
+            try TestDatabase.insertDigest(
+                db, periodFrom: base + 1500, periodTo: base + 1600, type: "daily", summary: "daily"
+            )
+            _ = try TestDatabase.insertStreamDigest(
+                db, periodFrom: "2027-01-15T12:41:40Z", periodTo: "2027-01-15T12:43:20Z"
+            )
             let itemID = try TestDatabase.insertInboxItem(db)
             try db.execute(
                 sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?",
@@ -181,7 +208,14 @@ final class CatchUpQueriesTests: XCTestCase {
             let inRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE summary = 'in'")
             XCTAssertNotNil(inRead, "in-window digest read")
             let outRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE summary = 'out'")
-            XCTAssertNil(outRead, "digest past period_to stays unread")
+            XCTAssertNil(outRead, "digest starting after the window stays unread")
+            let dailyRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE summary = 'daily'")
+            XCTAssertNil(dailyRead, "a non-channel digest is not a catch-up surface")
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests WHERE read_at IS NOT NULL"),
+                0,
+                "stream digest starting after the window stays unread"
+            )
             XCTAssertEqual(
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items WHERE read_at IS NOT NULL"),
                 0,

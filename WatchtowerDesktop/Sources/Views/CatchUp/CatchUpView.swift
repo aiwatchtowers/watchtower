@@ -74,9 +74,14 @@ struct CatchUpView: View {
 
     private var windowBar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Every window control is disabled while a build runs: the window is
+            // already fixed for the run in flight, so changing it here would only
+            // desync the bar from the recap being produced.
             if rangeMode {
                 DatePicker("From", selection: $rangeFrom, displayedComponents: [.date, .hourAndMinute])
+                    .disabled(vm.isBuilding)
                 DatePicker("To", selection: $rangeTo, displayedComponents: [.date, .hourAndMinute])
+                    .disabled(vm.isBuilding)
             } else {
                 Picker("Window", selection: $vm.windowChoice) {
                     ForEach(CatchUpWindowChoice.presets, id: \.self) { choice in
@@ -85,6 +90,7 @@ struct CatchUpView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .disabled(vm.isBuilding)
             }
 
             autoCaption
@@ -93,6 +99,7 @@ struct CatchUpView: View {
                 Toggle("Range", isOn: $rangeMode)
                     .toggleStyle(.checkbox)
                     .font(.caption)
+                    .disabled(vm.isBuilding)
                 Spacer(minLength: 0)
                 if vm.isBuilding {
                     ProgressView().controlSize(.small)

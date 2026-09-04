@@ -50,9 +50,12 @@ enum CatchUpWindowChoice: Hashable {
     }
 
     /// RFC 3339 — what `catchup run --from/--to` parses (`catchup.ParseWindowTime`).
+    /// Pinned to UTC like its sibling `CatchUpQueries.isoFormatter`, so the offset
+    /// the CLI parses is stated explicitly rather than inherited from the host.
     private static let iso: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter
     }()
 }
@@ -74,6 +77,14 @@ final class CatchUpViewModel {
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+
+    /// One-shot: the next `apply` selects the newest recap instead of keeping the
+    /// current selection. Set when a CLI run starts (build / regen / feedback, all
+    /// of which can insert a row), consumed by the first `apply` that follows —
+    /// which is the poll that first sees the CLI's `building` row, so the operator
+    /// watches the recap they just asked for build itself. Ordinary polls keep the
+    /// selection put.
+    private var selectNewestOnNextApply = false
 
     /// Poll cadence while `catchup run` is building. GRDB ValueObservation cannot
     /// see writes from the separate CLI process, so the list needs a periodic
@@ -123,6 +134,14 @@ final class CatchUpViewModel {
             // would read as "you have never been caught up".
             print("CatchUp: autoWindowStart read failed (keeping previous): \(error)")
         }
+        // A run just started: jump to the newest row, which is the one it is
+        // producing. Without this the pane would keep rendering the previous recap
+        // for the whole build and the operator would have to find the new one.
+        if selectNewestOnNextApply, let newest = recaps.first {
+            selectNewestOnNextApply = false
+            selected = newest
+            return
+        }
         // Re-point the selection at the freshest copy of the selected row (so an
         // acknowledge or a finished build flips its state in place); fall back to
         // the newest recap when the selection is gone or nothing is selected yet.
@@ -131,6 +150,12 @@ final class CatchUpViewModel {
         } else {
             selected = recaps.first
         }
+    }
+
+    /// Test seam for the one-shot select-newest flag: the production setter is
+    /// `run`, which spawns a CLI process a unit test must not.
+    func markSelectNewestForTesting() {
+        selectNewestOnNextApply = true
     }
 
     private func startPolling() {
@@ -176,6 +201,11 @@ final class CatchUpViewModel {
     /// and an authoritative reload once the child process is done.
     /// `parseEnvelope` is false for commands that print plain text rather than
     /// the `--json` run envelope.
+    ///
+    /// All three callers can insert a recap row (feedback only when the comment is
+    /// a presentation correction), so all three arm `selectNewestOnNextApply`.
+    /// Arming it when no row lands is harmless: the newest recap is then the one
+    /// already selected.
     private func run(arguments: [String], failureLabel: String, parseEnvelope: Bool) {
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
@@ -183,6 +213,7 @@ final class CatchUpViewModel {
         }
         isBuilding = true
         error = nil
+        selectNewestOnNextApply = true
         startPolling()
 
         Task.detached {
