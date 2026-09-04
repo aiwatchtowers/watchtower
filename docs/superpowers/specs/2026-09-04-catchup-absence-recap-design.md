@@ -1,7 +1,7 @@
 # Catch-Up as an absence recap — design
 
 **Date:** 2026-09-04
-**Status:** approved in conversation (owner), pending spec review
+**Status:** approved in conversation (owner), pending spec review — corrected post-implementation (2026-09-04, Task 12): §9 model routing for `catchup.learn` and §5.2's targets `due_date` timezone, see `docs/inventory/catchup.md`
 **Supersedes:** `2026-06-20-catch-up-review-mode-design.md`, `2026-06-25-catchup-iterative-peel-design.md` (the review-session model)
 
 ## 1. Why
@@ -179,7 +179,7 @@ Eight window queries in `internal/db/catchup.go` (rewritten), each capped by
 | `decisions` | `ideas WHERE kind='decision'` with a mention whose `said_at` (or `created_at` when empty) is in window; latest quote + source | mention in window |
 | `inbox` | `inbox_items`: `item_class='actionable'`, `status IN ('pending','snoozed')`, with sender / channel names and permalink | `created_at` in window |
 | `tracks` | non-dismissed tracks (text, context snippet, priority, ownership) | `updated_at` in window |
-| `targets` | open targets (`status NOT IN ('done','dismissed')`) | `due_date` in window, or `due_date < to` (overdue) |
+| `targets` | open targets (`status NOT IN ('done','dismissed')`) | `due_date` in window, or `due_date < to` (overdue); `due_date` is `YYYY-MM-DDTHH:MM` **UTC** (the `targets.go` convention, not local), so the window bounds are converted to UTC for this comparison |
 
 Meetings are keyed on the recap's `created_at`, not the calendar event's time,
 because the calendar sync retains only ~24 h of past events while
@@ -334,7 +334,7 @@ Removed: `catchup.max_age_days` (the window replaces it), `catchup.caps.briefing
 (briefings are not a source; they are derived from the same material). Unknown
 legacy keys in an existing `config.yaml` are ignored by viper — no migration.
 
-Model routing: `catchup.compose` → strong tier; `catchup.learn` stays light.
+Model routing: `catchup.compose` → strong tier; `catchup.learn` stays strong (unchanged).
 `catchup.peel` / `catchup.expand` are removed from `digest.TierForSource` and
 the codex table.
 
