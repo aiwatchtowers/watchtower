@@ -53,12 +53,33 @@ final class AgentActionQueriesTests: XCTestCase {
     func testStateFlags() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            try TestDatabase.insertAgentAction(db, status: "failed", error: "boom")
+            try TestDatabase.insertAgentAction(db, turnID: "failed", status: "failed", error: "boom")
+            try TestDatabase.insertAgentAction(db, turnID: "executing", status: "executing")
+            try TestDatabase.insertAgentAction(db, turnID: "approved", status: "approved")
         }
-        let row = try queue.read { db in try AgentActionQueries.fetchByConversation(db, conversationID: 1) }[0]
-        XCTAssertTrue(row.canRetry)
-        XCTAssertFalse(row.isPending)
-        XCTAssertFalse(row.isTerminal)
-        XCTAssertEqual(row.error, "boom")
+        let rows = try queue.read { db in try AgentActionQueries.fetchByConversation(db, conversationID: 1) }
+        let byTurn = Dictionary(uniqueKeysWithValues: rows.map { ($0.turnID, $0) })
+
+        let failed = try XCTUnwrap(byTurn["failed"])
+        XCTAssertTrue(failed.canRetry)
+        XCTAssertFalse(failed.isPending)
+        XCTAssertFalse(failed.isTerminal)
+        XCTAssertFalse(failed.isExecuting)
+        XCTAssertEqual(failed.error, "boom")
+
+        // `Registry.Apply` claimed this row and is running the tool right now,
+        // in another process: nothing here is the owner's to decide.
+        let executing = try XCTUnwrap(byTurn["executing"])
+        XCTAssertTrue(executing.isExecuting)
+        XCTAssertFalse(executing.canRetry)
+        XCTAssertFalse(executing.isPending)
+        XCTAssertFalse(executing.isTerminal)
+
+        // Apply accepts `approved` too, so an approve whose CLI process died
+        // before the claim is retriable rather than a dead end.
+        let approved = try XCTUnwrap(byTurn["approved"])
+        XCTAssertTrue(approved.canRetry)
+        XCTAssertFalse(approved.isExecuting)
+        XCTAssertFalse(approved.isTerminal)
     }
 }

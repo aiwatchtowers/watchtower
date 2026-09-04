@@ -44,7 +44,8 @@ struct AgentActionCardView: View {
     private var statusLabel: String {
         switch action.status {
         case "pending": return "Awaiting your approval"
-        case "approved": return "Approved — executing"
+        case "approved": return "Approved"
+        case "executing": return "Executing…"
         case "applied": return "Done"
         case "rejected": return "Rejected"
         case "failed": return "Failed"
@@ -65,7 +66,10 @@ struct AgentActionCardView: View {
             if !action.error.isEmpty {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
-            if action.canRetry, action.external {
+            // Only a FAILED row can have left a half-finished external write:
+            // Apply claims the row before it runs the tool, so an `approved`
+            // one provably never reached Jira.
+            if action.status == "failed", action.external {
                 Text("Retrying re-sends the request — check Jira for a duplicate first.")
                     .font(.caption).foregroundStyle(.orange)
             }
@@ -102,13 +106,19 @@ struct AgentActionCardView: View {
     @ViewBuilder
     private var actions: some View {
         HStack {
-            if action.isPending {
-                Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
-                Button("Reject", action: onReject)
-            } else if action.canRetry {
-                Button("Retry", action: onRetry)
+            // A claimed row is being executed by another process: there is
+            // nothing the owner can decide about it until it lands.
+            if action.isExecuting {
+                ProgressView().controlSize(.small)
+            } else {
+                if action.isPending {
+                    Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
+                    Button("Reject", action: onReject)
+                } else if action.canRetry {
+                    Button("Retry", action: onRetry)
+                }
+                if inFlight { ProgressView().controlSize(.small) }
             }
-            if inFlight { ProgressView().controlSize(.small) }
         }
         .disabled(inFlight)
     }

@@ -1227,11 +1227,6 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(persisted.last?.turnID, mode.turnID)
     }
 
-    /// `toolsAvailable` is injected per-VM at init (not re-read from
-    /// config.yaml on every turn), so a no-tools session — Ollama in
-    /// production — deterministically sends no tool mode and never
-    /// advertises the AGENT ACTIONS contract, regardless of the developer's
-    /// local config.
     /// C1, target-chat half: the chat-mode MCP subprocess inserts the proposal
     /// on its own connection, so the turn boundary has to refetch.
     func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
@@ -1261,6 +1256,11 @@ final class TargetChatViewModelTests: XCTestCase {
                        "finishStream must refetch — the observation never sees the subprocess's insert")
     }
 
+    /// `toolsAvailable` is injected per-VM at init (not re-read from
+    /// config.yaml on every turn), so a no-tools session — Ollama in
+    /// production — deterministically sends no tool mode and never
+    /// advertises the AGENT ACTIONS contract, regardless of the developer's
+    /// local config.
     func testOllamaTargetChatSendsNoToolModeAndNoAgentActionsContract() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

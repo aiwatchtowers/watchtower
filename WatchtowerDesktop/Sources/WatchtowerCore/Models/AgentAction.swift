@@ -45,7 +45,12 @@ package struct AgentAction: FetchableRecord, Identifiable, Equatable, Sendable {
 
     package var isPending: Bool { status == "pending" }
     package var isTerminal: Bool { status == "applied" || status == "rejected" }
-    package var canRetry: Bool { status == "failed" }
+    /// `Registry.Apply`'s claim: the tool is running right now, in some other
+    /// process. Nothing on the card may act on the row while it holds.
+    package var isExecuting: Bool { status == "executing" }
+    /// `Registry.Apply` accepts `approved` as well as `failed`, so an approve
+    /// whose CLI process died before the claim is retriable, not a dead end.
+    package var canRetry: Bool { status == "failed" || status == "approved" }
 
     package var args: [String: Any] { Self.object(argsJSON) }
     package var result: [String: Any] { Self.object(resultJSON) }

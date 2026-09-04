@@ -77,12 +77,18 @@ package final class AgentActionFeed {
     /// One-shot refetch from disk. The only thing that can surface a row a
     /// subprocess wrote: called after every CLI call, on the poll, and by the
     /// chat VMs when a streamed turn ends.
+    ///
+    /// A read failure keeps the rows it already has — stale cards beat empty
+    /// ones — but says so: silently swallowing it leaves the owner looking at
+    /// a proposal list that stopped tracking reality with no sign of it.
     package func refresh() {
         guard let conversationID else { return }
-        if let rows = try? dbPool.read({ db in
-            try AgentActionQueries.fetchByConversation(db, conversationID: conversationID)
-        }) {
-            self.rows = rows
+        do {
+            rows = try dbPool.read { db in
+                try AgentActionQueries.fetchByConversation(db, conversationID: conversationID)
+            }
+        } catch {
+            lastError = error.localizedDescription
         }
     }
 
@@ -126,13 +132,22 @@ package final class AgentActionFeed {
 
     /// Outcomes decided or executed after `after`, rendered for the model.
     /// nil when there is no floor (first turn) or nothing changed.
+    ///
+    /// A read failure returns nil AND records the error rather than passing an
+    /// empty list off as "nothing was decided" — telling the model no decision
+    /// landed on a proposal the owner did approve is worse than saying nothing.
     package func outcomesBlock(after: Date?) -> String? {
         guard let after, let conversationID else { return nil }
         let floor = Self.timestampString(after)
-        let decided = (try? dbPool.read { db in
-            try AgentActionQueries.fetchDecidedAfter(db, conversationID: conversationID, after: floor)
-        }) ?? []
-        return AgentToolsContract.actionsSinceLastTurnBlock(decided)
+        do {
+            let decided = try dbPool.read { db in
+                try AgentActionQueries.fetchDecidedAfter(db, conversationID: conversationID, after: floor)
+            }
+            return AgentToolsContract.actionsSinceLastTurnBlock(decided)
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
     }
 
     package static func timestampString(_ date: Date) -> String {

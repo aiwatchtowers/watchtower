@@ -221,6 +221,36 @@ final class AgentActionFeedTests: XCTestCase {
         feed.stop()
     }
 
+    /// A read that FAILS is not a read that found nothing. `refresh` keeps the
+    /// cards it has and reports; `outcomesBlock` reports and returns nil rather
+    /// than telling the model nothing was decided on a proposal that was.
+    func testReadFailureIsReportedInsteadOfLookingLikeNothingHappened() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "a",
+                                               status: "applied", appliedAt: "2026-09-04T10:05:00Z")
+        }
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner())
+        feed.start(conversationID: 1)
+        await waitForRows(feed, count: 1)
+
+        // A failure no retry can fix: the table the feed reads is gone.
+        let otherPool = try DatabasePool(path: path)
+        try await otherPool.write { db in try db.execute(sql: "DROP TABLE agent_actions") }
+
+        feed.lastError = nil
+        feed.refresh()
+        XCTAssertEqual(feed.rows.count, 1, "a failed read must not empty the card list")
+        XCTAssertNotNil(feed.lastError, "a failed refresh must not pass for an up-to-date one")
+
+        feed.lastError = nil
+        let after = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-04T10:00:00Z"))
+        XCTAssertNil(feed.outcomesBlock(after: after))
+        XCTAssertNotNil(feed.lastError, "an unreadable outcome list must not read as 'nothing was decided'")
+        feed.stop()
+    }
+
     func testOutcomesBlockUsesTimestampFloor() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
