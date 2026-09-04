@@ -261,11 +261,17 @@ the window** on the five surfaces that carry `read_at`:
 
 | surface | predicate | write |
 |---|---|---|
-| `digests` | `period_to > from AND period_to <= to AND read_at IS NULL` | `read_at = now` |
-| `stream_digests` | same on ISO `period_to` | `read_at = now` |
+| `digests` | `type = 'channel' AND period_to > from AND period_from < to AND read_at IS NULL` | `read_at = now` |
+| `stream_digests` | same overlap on ISO `period_from`/`period_to` | `read_at = now` |
 | `tracks` | `updated_at` in window `AND dismissed_at = ''` | `read_at = now, has_updates = 0` |
 | `inbox_items` | `created_at` in window `AND read_at IS NULL` | `read_at = now` |
 | `briefings` | `date` between the window's local dates | `read_at = now` |
+
+The two summary surfaces use the same OVERLAP predicate as the gather (§5.2), not
+a `period_to <= to` containment: the run's own top-up (§5.1) writes digests whose
+`period_to` is their own `time.Now()`, landing just past `to`, and the recap cites
+them — a containment ack would leave a cited digest unread forever. `CatchupCoverage`
+reads the same overlap, so a reported reach may sit slightly past `to`.
 
 Set-based updates, one transaction, idempotent (`read_at IS NULL` /
 `has_updates` predicates; a second ack changes nothing). By **window**, not by
@@ -310,10 +316,16 @@ watchtower catchup show <recap-id>      # the document as text
 
 `run` prints the document as text, or with `--json` an envelope
 `{recap_id, status, period_from, period_to, coverage, refs_rejected, error}`
-plus the body. Exit code is non-zero only when no recap row could be created
-(config / DB errors); a `failed` recap exits 0 with `status: "failed"` so the
-Desktop reads the outcome from the row, not the exit code. `regen` is folded
-into `run`; the old `regen <theme-id>` subcommand goes away.
+plus the body. Exit code is non-zero when no recap row could be created (config /
+DB errors, an invalid window, a missing `--regen` source) **and** when the
+terminal write itself fails — a failed `FinishCatchupRecap`/`FailCatchupRecap`
+returns a Go error, and the row can then be left stuck at `status='building'`
+with no error recorded on it. Otherwise a *composed* recap that failed exits 0
+with `status: "failed"` so the Desktop reads the outcome from the row, not the
+exit code; `RunResult.Status` is never claimed as `ready`/`failed` unless that is
+what the row actually holds (see `docs/inventory/catchup.md`, implementation
+notes). `regen` is folded into `run`; the old `regen <theme-id>` subcommand goes
+away.
 
 ## 9. Config
 
