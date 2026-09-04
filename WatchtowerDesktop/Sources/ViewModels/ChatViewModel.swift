@@ -61,10 +61,24 @@ final class ChatViewModel {
     /// Callback to notify history that title/session changed
     var onConversationUpdated: ((Int64, String?, String?) -> Void)?
 
-    init(aiService: any AIServiceProtocol, dbManager: DatabaseManager, provider: AIProvider = .claude) {
+    /// Proposal cards for the bound conversation — the main chat is an
+    /// action surface (AGENT-04): write tools land here behind Approve.
+    let actionFeed: AgentActionFeed
+
+    /// Only CLI-backed providers reach the MCP server; Ollama has no tools,
+    /// so the prompt says so and no tool mode is sent.
+    var toolsAvailable: Bool { selectedProvider != .ollama }
+
+    init(
+        aiService: any AIServiceProtocol,
+        dbManager: DatabaseManager,
+        provider: AIProvider = .claude,
+        cliRunner: CLIRunnerProtocol? = nil
+    ) {
         self.aiService = aiService
         self.dbManager = dbManager
         self.selectedProvider = provider
+        self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
     }
 
     func switchProvider(_ provider: AIProvider) {
@@ -97,6 +111,7 @@ final class ChatViewModel {
             sessionID = conversation.sessionID
             loadMessages(conversationID: conversation.id)
             startMessageObservation()
+            actionFeed.start(conversationID: conversation.id)
         }
     }
 
@@ -106,13 +121,15 @@ final class ChatViewModel {
 
         streamTask?.cancel()
         inputText = ""
+        let previousOwnerMessageAt = messages.last { $0.role == .user }?.timestamp
+        let turnID = UUID().uuidString
         messages.append(ChatMessage(id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false))
 
         if let convID = conversationID {
             persistMessage(conversationID: convID, role: "user", text: text)
         }
 
-        messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true))
+        messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID))
         isStreaming = true
         responsePersistedOnCancel = false
 
@@ -126,20 +143,29 @@ final class ChatViewModel {
         let capturedConvID = conversationID
         let capturedDBManager = dbManager
         let capturedAIService = aiService
+        let capturedToolsAvailable = toolsAvailable
+        let toolMode = Self.makeToolMode(toolsAvailable: capturedToolsAvailable, conversationID: capturedConvID, turnID: turnID)
+        // Outcomes are injected only on resumed turns — a fresh turn has no
+        // prior assistant turn whose proposals could have been decided yet.
+        let outcomes = currentSessionID == nil ? nil : actionFeed.outcomesBlock(after: previousOwnerMessageAt)
+        let effectivePrompt = outcomes.map { "\($0)\n\n\(text)" } ?? text
 
         streamTask = Task { [weak self] in
-            let systemPrompt: String? = currentSessionID == nil ? Self.buildSystemPrompt(dbPool: dbPool) : nil
+            let systemPrompt: String? = currentSessionID == nil
+                ? Self.buildSystemPrompt(dbPool: dbPool, toolsAvailable: capturedToolsAvailable)
+                : nil
 
             var fullText = ""
             var newSessionID: String?
             do {
                 let stream = capturedAIService.stream(
-                    prompt: text,
+                    prompt: effectivePrompt,
                     systemPrompt: systemPrompt,
                     sessionID: currentSessionID,
                     dbPath: dbPath,
                     model: model,
-                    provider: provider
+                    provider: provider,
+                    toolMode: toolMode
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
@@ -176,7 +202,7 @@ final class ChatViewModel {
             // cancelStream() already persisted this same partial reply (see
             // `responsePersistedOnCancel`); skipping avoids a duplicate row.
             if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
-                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
+                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText, turnID: turnID)
             }
             if let sid = newSessionID, let convID = capturedConvID {
                 Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
@@ -191,6 +217,14 @@ final class ChatViewModel {
         if isFirstMessage, let convID = conversationID {
             onConversationUpdated?(convID, String(text.prefix(80)), nil)
         }
+    }
+
+    /// The main chat is an action surface only once it has a conversation to
+    /// attach proposals to (AGENT-04) and a provider that reaches the MCP
+    /// server (`toolsAvailable`); otherwise no tool mode is sent.
+    nonisolated private static func makeToolMode(toolsAvailable: Bool, conversationID: Int64?, turnID: String) -> ChatToolMode? {
+        guard toolsAvailable, let conversationID else { return nil }
+        return ChatToolMode(surface: "main", conversationID: conversationID, turnID: turnID)
     }
 
     private func updateLastMessage(_ text: String) {
@@ -211,9 +245,9 @@ final class ChatViewModel {
 
     // MARK: - Static persistence (works even if self is deallocated)
 
-    nonisolated private static func persistResponseStatic(dbManager: DatabaseManager, conversationID: Int64, text: String) {
+    nonisolated private static func persistResponseStatic(dbManager: DatabaseManager, conversationID: Int64, text: String, turnID: String) {
         _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(db, conversationID: conversationID, role: "assistant", text: text)
+            try ChatMessageQueries.insert(db, conversationID: conversationID, role: "assistant", text: text, turnID: turnID)
             try ChatConversationQueries.touch(db, id: conversationID)
         }
     }
@@ -232,7 +266,7 @@ final class ChatViewModel {
             // Save partial assistant response if non-empty
             let partialText = messages[idx].text
             if !partialText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: partialText)
+                persistMessage(conversationID: convID, role: "assistant", text: partialText, turnID: messages[idx].turnID ?? "")
                 // Tell the still-running stream Task's completion tail not to
                 // persist this reply again — cancellation is cooperative, so
                 // that tail keeps executing after this synchronous save.
@@ -251,6 +285,7 @@ final class ChatViewModel {
         sessionID = nil
         conversationID = nil
         errorMessage = nil
+        actionFeed.stop()
     }
 
     // MARK: - Observation
@@ -289,21 +324,21 @@ final class ChatViewModel {
         }
     }
 
-    private func persistMessage(conversationID: Int64, role: String, text: String) {
+    private func persistMessage(conversationID: Int64, role: String, text: String, turnID: String = "") {
         _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(db, conversationID: conversationID, role: role, text: text)
+            try ChatMessageQueries.insert(db, conversationID: conversationID, role: role, text: text, turnID: turnID)
         }
     }
 
     // MARK: - System Prompt
 
     // H2: static method avoids capturing self in GRDB closure
-    nonisolated static func buildSystemPrompt(dbPool: DatabasePool) -> String {
+    nonisolated static func buildSystemPrompt(dbPool: DatabasePool, toolsAvailable: Bool = true) -> String {
         do {
             return try dbPool.read { db in
                 let ws = try WorkspaceQueries.fetchWorkspace(db)
                 let schema = try Self.fetchSchema(db)
-                return Self.formatSystemPrompt(workspace: ws, schema: schema)
+                return Self.formatSystemPrompt(workspace: ws, schema: schema, toolsAvailable: toolsAvailable)
             }
         } catch {
             return "You are Watchtower, an AI assistant for Slack workspace analysis. Use the local Watchtower tools to answer questions."
@@ -312,7 +347,8 @@ final class ChatViewModel {
 
     nonisolated static func formatSystemPrompt(
         workspace ws: Workspace?,
-        schema: String
+        schema: String,
+        toolsAvailable: Bool = true
     ) -> String {
         let name = ws?.name ?? "unknown"
         let domain = ws?.domain ?? "unknown"
@@ -325,7 +361,12 @@ final class ChatViewModel {
             return fmt.string(from: Date())
         }()
 
-        return promptHeader(name: name, domain: domain, now: now, schema: schema)
+        let toolsBlock = toolsAvailable
+            ? AgentToolsContract.promptBlock(surface: .main) + "\n\n"
+            : ""
+
+        return promptHeader(name: name, domain: domain, now: now, schema: schema, toolsAvailable: toolsAvailable)
+            + toolsBlock
             + promptDeepLinksAndRestrictions(teamID: teamID)
             + promptRules(teamID: teamID)
             + promptAppGuide()
@@ -335,28 +376,35 @@ final class ChatViewModel {
         name: String,
         domain: String,
         now: String,
-        schema: String
+        schema: String,
+        toolsAvailable: Bool
     ) -> String {
-        """
+        let toolsSection = toolsAvailable
+            ? """
+            IMPORTANT: You MUST look things up with the tools below to answer every question.
+            You have NO pre-loaded data — the local database is your only source of truth.
+
+            === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+            - list_messages — search/list raw Slack messages by person, channel, and/or keyword, newest first. \
+            At least one of person/channel/query is required.
+            - list_people / get_person — people cards; list_tracks / get_track — work narratives.
+            - list_targets / get_target — the user's action items and goals.
+            - get_today_briefing / list_digests / get_digest — the daily briefing and AI summaries of Slack activity.
+            - list_jira_issues / get_jira_issue — synced Jira issues.
+            - list_transcripts / get_transcript — recorded meeting transcripts.
+            - list_upcoming_events — calendar events in the next N hours.
+            - memory_recall / memory_open / memory_map — the assistant's long-term memory, once it has been built.
+            Never ask for a database path; the data is already local and the tools are already connected.
+            """
+            : AgentToolsContract.noToolsBlock
+
+        return """
         You are Watchtower, an AI assistant that answers questions about a Slack workspace from its local database.
 
         Workspace: "\(name)" (domain: \(domain).slack.com)
         Current time: \(now)
 
-        IMPORTANT: You MUST look things up with the tools below to answer every question.
-        You have NO pre-loaded data — the local database is your only source of truth.
-
-        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-        - list_messages — search/list raw Slack messages by person, channel, and/or keyword, newest first. \
-        At least one of person/channel/query is required.
-        - list_people / get_person — people cards; list_tracks / get_track — work narratives.
-        - list_targets / get_target — the user's action items and goals.
-        - get_today_briefing / list_digests / get_digest — the daily briefing and AI summaries of Slack activity.
-        - list_jira_issues / get_jira_issue — synced Jira issues.
-        - list_transcripts / get_transcript — recorded meeting transcripts.
-        - list_upcoming_events — calendar events in the next N hours.
-        - memory_recall / memory_open / memory_map — the assistant's long-term memory, once it has been built.
-        Never ask for a database path; the data is already local and the tools are already connected.
+        \(toolsSection)
 
         There is no SQL tool and no shell — you cannot run database or shell commands of any kind. \
         The schema below documents the fields behind those tools; read it as reference, never as something to execute.
@@ -389,7 +437,7 @@ final class ChatViewModel {
         === IMPORTANT RESTRICTIONS ===
         - You have NO internet access. Do NOT call any Slack API, WebFetch, or WebSearch tools.
         - Your ONLY data source is the local database, reached through the tools above. \
-        Do not try to fetch from Slack, and do not try to reach the database any other way.
+        You cannot write directly — every write is a proposal through a write tool, executed only after the owner approves.
 
         """
     }
@@ -545,7 +593,7 @@ final class ChatViewModel {
             }
 
             if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
-                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText)
+                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText, turnID: "")
             }
             if let sid = newSessionID, let convID = capturedConvID {
                 Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
