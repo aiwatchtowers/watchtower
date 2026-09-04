@@ -30,20 +30,22 @@ type getActionArgs struct {
 func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding) {
 	for _, t := range reg.List(binding.Surface) {
 		tool := t
+		// v1's registry holds only write tools (spec §4): Register only
+		// requires InputSchema for AccessWrite, but the SDK's raw AddTool
+		// panics on a nil schema (go-sdk v1.6.1 mcp/server.go:242-248), so a
+		// read tool would crash the server at construction. Skip anything
+		// that isn't a write — reads stay plain internal/mcp tools until
+		// runtime B moves them into the registry, at which point this adapter
+		// grows a read branch against a guaranteed-non-nil schema.
+		if tool.Access != tools.AccessWrite {
+			continue
+		}
 		s.AddTool(&mcpsdk.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
 		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			raw := json.RawMessage(req.Params.Arguments)
-			if tool.Access != tools.AccessWrite {
-				out, err := tool.Execute(ctx, database, tools.Call{Args: raw, Binding: binding})
-				if err != nil {
-					return errResult(err.Error()), nil
-				}
-				res, _, err := jsonResult(out)
-				return res, err
-			}
 			rc, err := reg.Propose(ctx, tool.Name, raw, binding)
 			if err != nil {
 				var verr *tools.ValidationError

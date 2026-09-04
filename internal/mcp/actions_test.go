@@ -75,6 +75,22 @@ func TestChatMode_ListsWriteToolsPerSurface(t *testing.T) {
 	}
 }
 
+// A registered AccessRead tool has no InputSchema (Register only requires one
+// for AccessWrite) — the SDK's raw AddTool panics on a nil schema, so the
+// registry adapter must skip it rather than mount it. Construction must not
+// panic, and the tool must not appear on the chat surface.
+func TestChatMode_SkipsReadToolWithoutPanicking(t *testing.T) {
+	database := seedDB(t)
+	reg := tools.New(database)
+	if err := reg.Register(&tools.Tool{Name: "read_thing", Access: tools.AccessRead}); err != nil {
+		t.Fatal(err)
+	}
+	names := toolNames(t, newChatSession(t, database, reg, tools.Binding{Surface: "main"}))
+	if names["read_thing"] {
+		t.Fatalf("a read tool must not be mounted by the registry adapter: %v", names)
+	}
+}
+
 // AGENT-02: the developer-surface server never mounts a write tool.
 func TestAgent02_DevModeRegistersNoWriteTools(t *testing.T) {
 	names := toolNames(t, newTestSession(t, seedDB(t)))
