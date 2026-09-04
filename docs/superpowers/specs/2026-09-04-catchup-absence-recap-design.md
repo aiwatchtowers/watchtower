@@ -1,7 +1,7 @@
 # Catch-Up as an absence recap — design
 
 **Date:** 2026-09-04
-**Status:** approved in conversation (owner), pending spec review — corrected post-implementation (2026-09-04, Task 12): §9 model routing for `catchup.learn` and §5.2's targets `due_date` timezone, see `docs/inventory/catchup.md`
+**Status:** approved in conversation (owner), pending spec review — corrected post-implementation (2026-09-04, Task 12): §9 model routing for `catchup.learn` and §5.2's targets `due_date` timezone; corrected again after the final review round (2026-09-04): §3 window clamps, §5.1 stream-top-up locking, §5.2 targets predicate/ordering, §5.3 per-item caps. See `docs/inventory/catchup.md`
 **Supersedes:** `2026-06-20-catch-up-review-mode-design.md`, `2026-06-25-catchup-iterative-peel-design.md` (the review-session model)
 
 ## 1. Why
@@ -55,16 +55,21 @@ All timestamps below are Unix seconds (REAL) in Go; local time is used only to
 compute preset boundaries and to render labels.
 
 - **Auto** (no flags, the Desktop default): `from` = `period_to` of the most
-  recent recap with `acknowledged_at IS NOT NULL`; if none exists, `now − 24h`.
-  `to` = `now`. This is exactly what "I'm caught up" means: *up to date until T*.
+  recent recap with `acknowledged_at IS NOT NULL`; if none exists — or if that
+  `period_to` is not before `now` (a window acknowledged ahead of the clock)
+  — `now − 24h`. `to` = `now`. This is exactly what "I'm caught up" means: *up
+  to date until T*, and a future acknowledgement can never brick the default.
 - **Presets** (`--preset today|yesterday|3d|week`), local time:
   `today` = today 00:00 → now; `yesterday` = yesterday 00:00 → today 00:00;
   `3d` = now − 3×24h → now; `week` = now − 7×24h → now.
 - **Custom** (`--from`, `--to`): `YYYY-MM-DD` (local midnight) or RFC 3339.
-  `--to` defaults to `now`.
+  `--to` defaults to `now`; a `--to` later than `now` is clamped to it (a recap
+  covers what already happened), and a `--from` at or after `now` is rejected.
+  The Desktop range pickers carry the same bound (`in: ...Date()`).
 - Validation: `from < to`; a window longer than `maxWindowDays` (31, a code
   constant — not config) is rejected. Presets and custom are mutually
   exclusive with each other; `--regen` implies the source recap's window.
+  `--comment` is a `--regen` correction and is rejected without it.
 - Every run creates a **new** `catchup_recaps` row. Building the same window
   twice is allowed and produces two rows.
 
@@ -161,9 +166,16 @@ A gated-off pipeline is skipped silently; `coverage.topup = "skipped"` records
 that no top-up ran at all (window in the past, or both gates off). Any error is
 logged and recorded (`topup = "failed"`, `topup_error`) and
 the run continues on whatever coverage exists — **a top-up failure never fails
-the recap** (CATCHUP-03). No new locks: concurrent daemon runs are already
-guarded by `UNIQUE(channel_id, type, period_from, period_to)` and the digest
-cooldown; a collision just means one side finds nothing new to do.
+the recap** (CATCHUP-03).
+
+Locking is per half. The **channel-digest** half takes no new lock: concurrent
+daemon runs are already guarded by `UNIQUE(channel_id, type, period_from,
+period_to)` and the digest cooldown, so a collision just means one side finds
+nothing new to do. The **stream-digest** half takes the daemon's own
+`ideas.AcquireBackfillLock` (owner `"catchup"`, exactly as `phaseStreamDigests`
+does): it advances the shared stage-1 floors, so two concurrent miners would let
+one skip material the other consumed. Losing that lock is returned as an error
+and lands as `topup = "failed"` — the recap is still built (CATCHUP-03).
 
 ### 5.2 Gather
 
@@ -179,7 +191,7 @@ Eight window queries in `internal/db/catchup.go` (rewritten), each capped by
 | `decisions` | `ideas WHERE kind='decision'` with a mention whose `said_at` (or `created_at` when empty) is in window; latest quote + source | mention in window |
 | `inbox` | `inbox_items`: `item_class='actionable'`, `status IN ('pending','snoozed')`, with sender / channel names and permalink | `created_at` in window |
 | `tracks` | non-dismissed tracks (text, context snippet, priority, ownership) | `updated_at` in window |
-| `targets` | open targets (`status NOT IN ('done','dismissed')`) | `due_date` in window, or `due_date < to` (overdue); `due_date` is `YYYY-MM-DDTHH:MM` **UTC** (the `targets.go` convention, not local), so the window bounds are converted to UTC for this comparison |
+| `targets` | open targets (`status NOT IN ('done','dismissed')`) | `due_date >= from AND due_date <= to` (in-window, `from` inclusive) **or** `due_date < from` (already overdue); `due_date` is `YYYY-MM-DDTHH:MM` **UTC** (the `targets.go` convention, not local), so the window bounds are converted to UTC for this comparison. In-window rows are ordered ahead of the overdue backlog so the cap can never hide a deadline that fell during the absence |
 
 Meetings are keyed on the recap's `created_at`, not the calendar event's time,
 because the calendar sync retains only ~24 h of past events while
@@ -210,9 +222,11 @@ User message, in order:
    STREAMS`, `MEETINGS`, `DECISIONS`, `FOR YOU — INBOX`, `TRACKS UPDATED`,
    `TARGETS DUE`.
 
-Per-item text is trimmed (digest summary 400 chars + up to 5 topic lines,
-stream topic 200 chars, recap summary 600 chars + decisions/action items,
-decision essence 300 chars, inbox snippet 280 chars). The whole message is
+Per-item text is trimmed: each gathered row's WHOLE rendered body (the digest
+summary plus its up-to-5 topic lines, the stream's topic lines, the recap
+summary plus its decisions/action items, …) is capped in runes per area —
+digests 900, streams 600, meetings 800, decisions 300, inbox 280, tracks 280,
+targets 200 (`internal/catchup/prompt.go`). The whole message is
 bounded by `catchup.max_prompt_chars`; when over budget, trailing items are
 dropped list by list in the fixed order **streams → tracks → decisions →
 digests** until it fits. Inbox, targets and meetings are never trimmed. The
