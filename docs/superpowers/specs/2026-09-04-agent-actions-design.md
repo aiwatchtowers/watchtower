@@ -183,7 +183,8 @@ runtime B moves reads into the registry.
 | `reason` | string, required | shown on the card |
 
 Execute = the `watchtower remind` row shape: `level=day`,
-`period_start/end=today`, `status=todo`, `ownership=mine`, `due_date=due`,
+`period_start/end=today`, `status=todo`, `ownership=mine`,
+`due_date=due converted from owner-local to UTC (date-only unchanged)`,
 `source_type='chat'`, `source_id=<action id>`. Result `{target_id}`. Top-level
 only — sub-tasks stay on the block grammar (`create_child_target`).
 
