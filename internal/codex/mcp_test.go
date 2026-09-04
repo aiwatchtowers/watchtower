@@ -8,7 +8,7 @@ import (
 )
 
 func TestMcpWorkDir_CreatesConfig(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db")
+	tmpDir, err := mcpWorkDir("/tmp/test.db", nil)
 	if err != nil {
 		t.Fatalf("mcpWorkDir failed: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestMcpWorkDir_CreatesConfig(t *testing.T) {
 }
 
 func TestMcpWorkDir_DirectoryStructure(t *testing.T) {
-	tmpDir, err := mcpWorkDir("/tmp/test.db")
+	tmpDir, err := mcpWorkDir("/tmp/test.db", nil)
 	if err != nil {
 		t.Fatalf("mcpWorkDir failed: %v", err)
 	}

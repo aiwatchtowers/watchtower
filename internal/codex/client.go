@@ -18,7 +18,14 @@ type Client struct {
 	model    string
 	dbPath   string // path to SQLite database for MCP server
 	codexCmd string // path to codex binary
+	// mcpArgs are appended to `watchtower mcp --db-path <db>` — the chat
+	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
+	// passes through `ai query --tools chat`. Empty = the read-only dev server.
+	mcpArgs []string
 }
+
+// SetMCPArgs appends extra flags to the MCP server command (chat mode).
+func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 
 // NewClient creates a new AI client that invokes the Codex CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -69,7 +76,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// Set up MCP config if database path is provided.
 		var workDir string
 		if c.dbPath != "" {
-			tmpDir, mcpErr := mcpWorkDir(c.dbPath)
+			tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
 			if mcpErr != nil {
 				errCh <- mcpErr
 				return
@@ -169,7 +176,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	// Set up MCP config if database path is provided.
 	var workDir string
 	if c.dbPath != "" {
-		tmpDir, mcpErr := mcpWorkDir(c.dbPath)
+		tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
 		if mcpErr != nil {
 			return "", nil, mcpErr
 		}

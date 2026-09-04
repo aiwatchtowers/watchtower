@@ -78,7 +78,14 @@ type Client struct {
 	model     string
 	dbPath    string // path to SQLite database for MCP server
 	claudeCmd string // path to claude binary, default "claude"
+	// mcpArgs are appended to `watchtower mcp --db-path <db>` — the chat
+	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
+	// passes through `ai query --tools chat`. Empty = the read-only dev server.
+	mcpArgs []string
 }
+
+// SetMCPArgs appends extra flags to the MCP server command (chat mode).
+func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 
 // NewClient creates a new AI client that invokes the Claude Code CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -100,13 +107,13 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"-p", userMessage,
 		"--output-format", outputFormat,
 		"--model", c.model,
-		// Read-only allowlist: only the watchtower MCP server, which is read-only
-		// by construction — its stdio connection runs query_only (see cmd/mcp.go
-		// runMCP → SetReadOnly), so even a buggy handler cannot mutate the DB.
-		// Bash and any other tools are deliberately excluded — a prompt-injection
-		// payload in synced Slack/Jira content must not be able to run shell
-		// commands. The task-chat agent still changes targets ONLY via
-		// watchtower-action approval cards, never by writing to the DB directly.
+		// Allowlist: only the watchtower MCP server — read-only in dev mode; in
+		// chat mode its write tools only record proposals (see internal/tools),
+		// so the allowlist stays one entry. Bash and any other tools are
+		// deliberately excluded — a prompt-injection payload in synced
+		// Slack/Jira content must not be able to run shell commands. The
+		// task-chat agent still changes targets ONLY via watchtower-action
+		// approval cards, never by writing to the DB directly.
 		"--allowedTools", "mcp__watchtower",
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
@@ -151,11 +158,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 // exposing curated read-only tools (people, targets, tracks, digests, jira, and
 // raw message search) over stdio — no third-party npx package, no network.
 func (c *Client) buildMCPConfig() string {
+	args := append([]string{"mcp", "--db-path", c.dbPath}, c.mcpArgs...)
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
 			"watchtower": map[string]any{
 				"command": watchtowerBinary(),
-				"args":    []string{"mcp", "--db-path", c.dbPath},
+				"args":    args,
 			},
 		},
 	}

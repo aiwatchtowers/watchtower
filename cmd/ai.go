@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 
 	"watchtower/internal/config"
@@ -20,7 +21,12 @@ var (
 	aiFlagSessionID    string
 	aiFlagSystemPrompt string
 	aiFlagDBPath       string
-	aiFlagAllowedTools string
+	aiFlagTools        string
+	aiFlagSurface      string
+	aiFlagConversation int64
+	aiFlagTurn         string
+	aiFlagContextType  string
+	aiFlagContextID    string
 )
 
 var aiCmd = &cobra.Command{
@@ -74,7 +80,12 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "resume session (Claude only)")
 	aiQueryCmd.Flags().StringVar(&aiFlagSystemPrompt, "system-prompt", "", "system prompt")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
-	aiQueryCmd.Flags().StringVar(&aiFlagAllowedTools, "allowed-tools", "", "additional allowed tools (comma-separated)")
+	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
+	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target")
+	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
+	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
+	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")
+	aiQueryCmd.Flags().StringVar(&aiFlagContextID, "context-id", "", "chat context id")
 }
 
 func runAIQuery(_ *cobra.Command, args []string) error {
@@ -100,6 +111,11 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	}
 
 	aiClient := newAIClientWithModel(cfg, dbPath, aiFlagModel)
+	if aiFlagTools == "chat" {
+		if c, ok := aiClient.(mcpConfigurable); ok {
+			c.SetMCPArgs(chatMCPArgs())
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -261,4 +277,17 @@ func emitError(enc *json.Encoder, msg string) error {
 	_ = enc.Encode(aiStreamEvent{Type: "error", Error: msg})
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
 	return nil
+}
+
+// mcpConfigurable is implemented by the CLI-backed providers (claude, codex)
+// that relaunch this binary as an MCP server. Ollama has no tools at all, so
+// the flag is a no-op there — the Desktop already builds an honest prompt.
+type mcpConfigurable interface{ SetMCPArgs(extra []string) }
+
+func chatMCPArgs() []string {
+	args := []string{"--chat", "--surface", aiFlagSurface, "--conversation", strconv.FormatInt(aiFlagConversation, 10), "--turn", aiFlagTurn}
+	if aiFlagContextType != "" {
+		args = append(args, "--context-type", aiFlagContextType, "--context-id", aiFlagContextID)
+	}
+	return args
 }

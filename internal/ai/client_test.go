@@ -2,9 +2,11 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -411,4 +413,33 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
 	assert.Contains(t, err.Error(), "looks like plain text")
 	assert.Contains(t, err.Error(), "sha256:")
+}
+
+func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetMCPArgs([]string{"--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"})
+	cfg := c.buildMCPConfig()
+	var parsed struct {
+		Servers map[string]struct {
+			Args []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	got := parsed.Servers["watchtower"].Args
+	want := []string{"mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args := c.buildArgs("sys", "hi", "stream-json", "")
+	for _, a := range args {
+		if a == "--allowed-tools" {
+			t.Fatalf("legacy flag leaked into claude args")
+		}
+	}
 }
