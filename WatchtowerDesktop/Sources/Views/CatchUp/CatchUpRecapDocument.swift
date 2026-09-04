@@ -35,8 +35,9 @@ struct CatchUpRecapDocument: View {
             Divider()
             actionBar
         }
-        // Reset the correction field when switching to a different recap.
-        .id(recap.id)
+        // No `.id(recap.id)` here: it would reset the subtree's state but not
+        // this view's own `@State`. The caller applies it at the construction
+        // site instead, which resets both.
     }
 
     // MARK: - Header
@@ -80,11 +81,28 @@ struct CatchUpRecapDocument: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-        } else if recap.isReady && content.isEmpty {
+        } else if recap.isReady && bodyUnreadable {
+            Label("Recap body could not be read.", systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.orange)
+        } else if recap.isReady && content.isEmpty && recap.tldr.isEmpty {
             Text("Quiet — nothing happened in this window.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// `body_json` is present but unreadable. `decodedBody` is tolerant by design
+    /// — it hands back an EMPTY body on a decode failure — so without this the
+    /// document would render a corrupt payload as "Quiet", claiming nothing
+    /// happened while the operator was away. The tolerance stays in the model;
+    /// only the presentation distinguishes the two.
+    private var bodyUnreadable: Bool {
+        let raw = recap.bodyJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An absent body is genuinely quiet, not corrupt.
+        guard !raw.isEmpty, raw != "{}" else { return false }
+        guard let data = raw.data(using: .utf8) else { return true }
+        return (try? JSONDecoder().decode(CatchUpRecapBody.self, from: data)) == nil
     }
 
     // MARK: - Body sections
@@ -260,7 +278,9 @@ struct CatchUpTopicCard: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
                 Button("Send") { submit(rating: -1) }
-                    .disabled(comment.isEmpty)
+                    // A commented rating can trigger a whole-recap regen, so it
+                    // is gated on the same flag every other CLI trigger is.
+                    .disabled(comment.isEmpty || vm.isBuilding)
                     .help("Send as a correction — it teaches the source pipelines and may regenerate the recap")
             }
         }
@@ -288,6 +308,7 @@ struct CatchUpTopicCard: View {
             .help("Not helpful")
         }
         .font(.caption)
+        .disabled(vm.isBuilding)
     }
 
     private func submit(rating: Int) {

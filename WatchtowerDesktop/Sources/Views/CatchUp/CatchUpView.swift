@@ -159,7 +159,12 @@ struct CatchUpView: View {
     @ViewBuilder
     private var rightPane: some View {
         if let recap = vm.selected {
+            // Identity at the CONSTRUCTION site: `@State` storage is keyed here,
+            // not inside the view's own body, so an `.id` applied in there would
+            // reset the topic cards but leave the document's own correction
+            // field holding text typed against a different recap.
             CatchUpRecapDocument(recap: recap, vm: vm)
+                .id(recap.id)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "tray.and.arrow.down")

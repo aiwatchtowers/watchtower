@@ -156,7 +156,7 @@ final class CatchUpViewModel {
     /// itself, so the poll surfaces it while composing runs.
     func build() {
         run(arguments: ["catchup", "run", "--json"] + windowChoice.cliArguments,
-            failureLabel: "Catch-up failed")
+            failureLabel: "Catch-up failed", parseEnvelope: true)
     }
 
     /// Rebuilds the selected recap's window as a new row carrying `regen_of_id`,
@@ -167,10 +167,16 @@ final class CatchUpViewModel {
         if !comment.isEmpty {
             args.append(contentsOf: ["--comment", comment])
         }
-        run(arguments: args, failureLabel: "Regenerate failed")
+        run(arguments: args, failureLabel: "Regenerate failed", parseEnvelope: true)
     }
 
-    private func run(arguments: [String], failureLabel: String) {
+    /// Every CLI call this VM makes is a potential strong-tier AI run, so they
+    /// all share one lifecycle: `isBuilding` (which gates every trigger in the
+    /// UI, so a second click can't launch a second concurrent run), the 1 s poll,
+    /// and an authoritative reload once the child process is done.
+    /// `parseEnvelope` is false for commands that print plain text rather than
+    /// the `--json` run envelope.
+    private func run(arguments: [String], failureLabel: String, parseEnvelope: Bool) {
         guard let cliPath = Constants.findCLIPath() else {
             error = "Watchtower CLI not found"
             return
@@ -184,21 +190,25 @@ final class CatchUpViewModel {
             await MainActor.run {
                 self.isBuilding = false
                 self.stopPolling()
-                self.error = Self.failureMessage(result, label: failureLabel)
+                self.error = Self.failureMessage(
+                    result, label: failureLabel, parseEnvelope: parseEnvelope
+                )
                 // Authoritative load once the CLI has finished writing.
                 Task { await self.reload() }
             }
         }
     }
 
-    /// Records 👍/👎 on one topic (+ an optional comment, which derives learned
-    /// rules and may regenerate the whole recap as a new row).
+    /// Records 👍/👎 on one topic, plus an optional comment.
+    ///
+    /// A comment makes `catchup feedback` run the learning interpreter and, on a
+    /// presentation correction, a whole-recap regen — a strong-tier compose the
+    /// CLI performs SYNCHRONOUSLY, so this can take minutes and can insert a new
+    /// recap row. It therefore takes the same lifecycle as a build rather than
+    /// running unattended. Its output is plain text, not the run envelope, so
+    /// nothing is parsed out of stdout.
     func submitFeedback(topicIndex: Int, rating: Int, comment: String) {
         guard let recap = selected else { return }
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
         var args = [
             "catchup", "feedback", String(recap.id),
             "--topic", String(topicIndex),
@@ -207,34 +217,27 @@ final class CatchUpViewModel {
         if !comment.isEmpty {
             args.append(contentsOf: ["--comment", comment])
         }
-        Task.detached {
-            let result = await Self.runCLI(path: cliPath, arguments: args)
-            await MainActor.run {
-                if result.exitCode != 0 {
-                    self.error = result.stderr.isEmpty
-                        ? "Feedback failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(300))
-                }
-                // A correcting comment can have produced a regenerated recap —
-                // another process's write, so only an explicit reload shows it.
-                Task { await self.reload() }
-            }
-        }
+        run(arguments: args, failureLabel: "Feedback failed", parseEnvelope: false)
     }
 
     /// `catchup run` exits non-zero only on a Go-level error (an invalid window,
     /// a failed insert). A recap that was *composed* and failed exits 0 with
-    /// `"status":"failed"` in the envelope, so the JSON is inspected too —
-    /// otherwise a failed recap would report as a clean build.
-    nonisolated private static func failureMessage(
-        _ result: (exitCode: Int32, stdout: String, stderr: String), label: String
+    /// `"status":"failed"` in the envelope, so with `parseEnvelope` the JSON is
+    /// inspected too — otherwise a failed recap would report as a clean build.
+    /// Internal rather than private so the envelope rules are testable without
+    /// spawning the CLI.
+    nonisolated static func failureMessage(
+        _ result: (exitCode: Int32, stdout: String, stderr: String),
+        label: String,
+        parseEnvelope: Bool = true
     ) -> String? {
         if result.exitCode != 0 {
             return result.stderr.isEmpty
                 ? "\(label) (exit \(result.exitCode))"
                 : String(result.stderr.prefix(300))
         }
-        guard let data = result.stdout.data(using: .utf8),
+        guard parseEnvelope,
+              let data = result.stdout.data(using: .utf8),
               let envelope = try? JSONDecoder().decode(RunEnvelope.self, from: data),
               envelope.status == "failed" else {
             return nil

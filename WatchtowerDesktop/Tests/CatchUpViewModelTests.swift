@@ -87,6 +87,76 @@ final class CatchUpViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selected?.id, newest, "the newest recap is selected by default")
     }
 
+    // MARK: - CLI failure classification
+
+    /// `catchup run` exits 0 for a recap that composed and FAILED, reporting it
+    /// in the envelope instead — so exit code alone is not the verdict.
+    func testFailureMessageParsesExitZeroFailedEnvelope() {
+        let failed = CatchUpViewModel.failureMessage(
+            (exitCode: 0, stdout: #"{"status":"failed","error":"boom"}"#, stderr: ""),
+            label: "Catch-up failed"
+        )
+        XCTAssertEqual(failed, "boom", "a failed envelope surfaces its own error")
+
+        let ready = CatchUpViewModel.failureMessage(
+            (exitCode: 0, stdout: #"{"status":"ready"}"#, stderr: ""),
+            label: "Catch-up failed"
+        )
+        XCTAssertNil(ready, "a ready envelope is a clean run")
+
+        let crashed = CatchUpViewModel.failureMessage(
+            (exitCode: 1, stdout: "", stderr: "invalid --from"),
+            label: "Catch-up failed"
+        )
+        XCTAssertEqual(crashed, "invalid --from", "a Go-level error comes from stderr")
+
+        let plainText = CatchUpViewModel.failureMessage(
+            (exitCode: 0, stdout: "Recorded feedback on recap 3, topic 0.", stderr: ""),
+            label: "Catch-up failed"
+        )
+        XCTAssertNil(plainText, "non-JSON stdout on a clean exit is not an error")
+
+        // `catchup feedback` prints plain text, so its caller parses nothing —
+        // a stdout that happens to look like a failed envelope is still ignored.
+        let unparsed = CatchUpViewModel.failureMessage(
+            (exitCode: 0, stdout: #"{"status":"failed","error":"boom"}"#, stderr: ""),
+            label: "Feedback failed",
+            parseEnvelope: false
+        )
+        XCTAssertNil(unparsed)
+    }
+
+    // MARK: - Selection across reload
+
+    func testApplyKeepsSelectedRecapAcrossReload() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let older = try await pool.write { db -> Int in
+            let older = try Self.insertRecap(db, from: 1000, to: 2000)
+            _ = try Self.insertRecap(db, from: 2000, to: 3000)
+            return older
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        await vm.reload()
+        vm.selected = vm.recaps.first { $0.id == older }
+        XCTAssertEqual(vm.selected?.isAcknowledged, false)
+
+        // Another writer (the CLI, or the ack path) moves the selected row.
+        try await pool.write { db in
+            try db.execute(
+                sql: "UPDATE catchup_recaps SET acknowledged_at = ? WHERE id = ?",
+                arguments: ["2026-09-04T10:00:00Z", older]
+            )
+        }
+        await vm.reload()
+
+        XCTAssertEqual(vm.selected?.id, older, "reload keeps the deliberate selection, not the newest")
+        XCTAssertEqual(vm.selected?.isAcknowledged, true, "and re-points it at the refreshed row")
+    }
+
     // MARK: - Acknowledge
 
     func testAcknowledgeMarksWindowAndFlipsSelected() async throws {

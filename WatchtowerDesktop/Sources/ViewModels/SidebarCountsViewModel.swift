@@ -134,8 +134,10 @@ final class SidebarCountsViewModel {
             return try await dbPool.read { db -> Counts in
                 // A ready recap still waiting for "I'm caught up". Computed
                 // independently of the current user so the badge works even
-                // before a workspace user is resolved.
-                let waitingRecap = try CatchUpQueries.hasUnacknowledgedReady(db) ? 1 : 0
+                // before a workspace user is resolved, and tolerant of a
+                // pre-catchup_recaps schema like the reads below it.
+                let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
+                let waitingRecap = hasWaitingRecap ? 1 : 0
                 // Open situations, likewise independent of the current user.
                 let openSituations = try SituationQueries.openCount(db)
                 // Memory disputes, tolerant of a pre-memory schema.
