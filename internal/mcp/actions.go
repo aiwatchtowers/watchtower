@@ -45,8 +45,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
 		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-			raw := json.RawMessage(req.Params.Arguments)
-			rc, err := reg.Propose(ctx, tool.Name, raw, binding)
+			rc, err := reg.Propose(ctx, tool.Name, req.Params.Arguments, binding)
 			if err != nil {
 				var verr *tools.ValidationError
 				if errors.As(err, &verr) {
