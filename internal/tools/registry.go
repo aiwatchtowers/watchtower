@@ -354,7 +354,15 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	}}
 	result, execErr := t.Execute(ctx, r.db, call)
 	if execErr != nil {
-		return r.finishTransition(id, from, "failed", "", execErr.Error())
+		row, dbErr := r.finishTransition(id, from, "failed", "", execErr.Error())
+		if dbErr != nil {
+			// finishTransition's own CAS can lose a race too (something else
+			// moved the row out of `executing` while Execute was still
+			// running) — the caller must still learn what the tool itself
+			// failed on, not just that recording the failure didn't stick.
+			return nil, fmt.Errorf("recording failure %q: %w", execErr, dbErr)
+		}
+		return row, nil
 	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
@@ -396,6 +404,12 @@ func receiptFor(row *db.AgentAction) Receipt {
 		_ = json.Unmarshal([]byte(row.ResultJSON), &result)
 		rc.Result = result
 		rc.Message = fmt.Sprintf("Action #%d executed (%s).", row.ID, row.Tool)
+	case "executing", "approved", "pending":
+		// Not a failure — say so honestly instead of reporting "failed" with
+		// whatever error text the row happens to carry (e.g. a prior
+		// attempt's error, preserved through the executing claim for the
+		// audit trail, but not a fact about THIS status).
+		rc.Message = fmt.Sprintf("Action #%d is %s.", row.ID, row.Status)
 	default:
 		rc.Error = row.Error
 		rc.Message = fmt.Sprintf("Action #%d failed (%s): %s", row.ID, row.Tool, row.Error)

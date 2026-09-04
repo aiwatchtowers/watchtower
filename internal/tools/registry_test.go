@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -336,6 +337,42 @@ func TestAgent05_RejectDuringExecuteCannotStealTheClaim(t *testing.T) {
 	assert.Equal(t, "applied", row.Status)
 }
 
+// TestApply_ExecErrorSurvivesFinishTransitionFailure pins the fix for the
+// DB-error sub-path after Execute fails: finishTransition's own CAS can lose
+// a race too (something else moved the row out of `executing` while Execute
+// was still in flight), and before the fix that dropped Execute's own error
+// text entirely — the caller learned only the CAS mismatch, never what the
+// tool itself failed on. The wrapped error must carry both.
+func TestApply_ExecErrorSurvivesFinishTransitionFailure(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	require.NoError(t, reg.Register(&Tool{
+		Name: "raceaway", Description: "x", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
+			// Something else moves the row out of `executing` while this
+			// Execute call is still running, so Apply's own finishTransition
+			// CAS (executing -> failed) has nothing left to match.
+			ok, terr := database.TransitionAgentAction(call.ActionID, []string{"executing"}, "rejected", "", "")
+			require.NoError(t, terr)
+			require.True(t, ok)
+			return nil, errors.New("boom")
+		},
+	}))
+	rc, err := reg.Propose(context.Background(), "raceaway", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err)
+	_, err = database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
+	require.NoError(t, err)
+
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	assert.Nil(t, row)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "boom", "Execute's own error text must survive a finishTransition CAS failure")
+	assert.ErrorIs(t, err, ErrBadTransition)
+}
+
 // TestAgent05_ConcurrentApplyExecutesOnce is the guard the claim exists for:
 // two overlapping applies on one approved row must produce exactly one side
 // effect. The loser has to be refused BEFORE Execute, not after — a
@@ -528,6 +565,31 @@ func TestPropose_ExecuteTrustSurfacesRowWhenApplyErrors(t *testing.T) {
 	require.NoError(t, err, "the model must not be told a proposal failed to record when the row exists")
 	assert.NotZero(t, rc.ActionID, "the model must learn the action id even when execution failed")
 	assert.Equal(t, "failed", rc.Status)
+	assert.Equal(t, "boom", rc.Error)
+}
+
+// TestReceiptFor_NonTerminalStatusIsHonest pins the fix for receiptFor
+// mislabeling a row that is still in flight (or merely decided but not yet
+// executed) as "failed": a model reading such a receipt — reached only via
+// Propose's execute-trust fallback when Apply itself errored after the row
+// was raced into one of these statuses — must be told the row's actual
+// status, not a fabricated failure with an empty reason.
+func TestReceiptFor_NonTerminalStatusIsHonest(t *testing.T) {
+	for _, status := range []string{"executing", "approved", "pending"} {
+		row := &db.AgentAction{ID: 7, Tool: "echo", Status: status, Error: "leftover"}
+		rc := receiptFor(row)
+		assert.Equal(t, status, rc.Status)
+		assert.Equal(t, fmt.Sprintf("Action #7 is %s.", status), rc.Message)
+		assert.Empty(t, rc.Error, "a non-terminal status is not a failure; the receipt must not claim one")
+	}
+}
+
+// TestReceiptFor_FailedStatusStillReportsError guards that the honesty fix
+// above did not touch the genuinely-terminal "failed" wording.
+func TestReceiptFor_FailedStatusStillReportsError(t *testing.T) {
+	row := &db.AgentAction{ID: 9, Tool: "echo", Status: "failed", Error: "boom"}
+	rc := receiptFor(row)
+	assert.Equal(t, "Action #9 failed (echo): boom", rc.Message)
 	assert.Equal(t, "boom", rc.Error)
 }
 
