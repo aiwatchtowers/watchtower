@@ -3,6 +3,7 @@ package catchup
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"watchtower/internal/db"
 )
@@ -63,15 +64,17 @@ type promptInput struct {
 }
 
 // buildComposeUserMessage renders the compose user message and returns it with
-// the gathered set it actually rendered (indexed by ref). budget <= 0 means
-// unlimited; over budget, trailing items are dropped list by list in the fixed
+// the gathered set it actually rendered (indexed by ref). budget is a count of
+// CHARACTERS (runes, matching catchup.max_prompt_chars and the per-item caps —
+// a byte budget would over-trim Cyrillic content roughly twofold); <= 0 means
+// unlimited. Over budget, trailing items are dropped list by list in the fixed
 // order streams → tracks → decisions → digests until the message fits or those
 // four lists are empty — inbox, targets and meetings are never trimmed, so an
 // untrimmable message is returned over budget rather than looping forever.
 func buildComposeUserMessage(in promptInput, g gathered, budget int) (string, gathered) {
 	for {
 		msg := renderCompose(in, g)
-		if budget <= 0 || len(msg) <= budget || !dropLastItem(&g) {
+		if budget <= 0 || utf8.RuneCountInString(msg) <= budget || !dropLastItem(&g) {
 			g.index()
 			return msg, g
 		}

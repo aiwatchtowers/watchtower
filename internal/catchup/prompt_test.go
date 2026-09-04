@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 
@@ -43,31 +44,56 @@ func TestBuildComposeUserMessage_BudgetTrimOrder(t *testing.T) {
 	item := func(area string, id int) db.CatchupItem {
 		return db.CatchupItem{Area: area, ID: id, Title: "t", Body: big}
 	}
+	// Asymmetric on purpose (1 stream, 2 tracks): with a budget needing exactly
+	// two drops, streams-first empties Streams and leaves one track, while a
+	// tracks-first implementation would empty Tracks and leave the stream.
 	g := gathered{
 		Digests:   []db.CatchupItem{item("digests", 1), item("digests", 2)},
-		Streams:   []db.CatchupItem{item("streams", 1), item("streams", 2)},
+		Streams:   []db.CatchupItem{item("streams", 1)},
 		Decisions: []db.CatchupItem{item("decisions", 1)},
-		Tracks:    []db.CatchupItem{item("tracks", 1)},
+		Tracks:    []db.CatchupItem{item("tracks", 1), item("tracks", 2)},
 		Inbox:     []db.CatchupItem{item("inbox", 1)},
 		Targets:   []db.CatchupItem{item("targets", 1)},
 		Meetings:  []db.CatchupItem{item("recaps", 1)},
 	}
 	full, _ := buildComposeUserMessage(promptInput{}, g, 0)
-	// One dropped item shrinks the message by ~200 body chars + its line; a
-	// budget of full-550 needs three drops: streams#2, streams#1, tracks#1.
-	budget := len(full) - 550
+	// One dropped item shrinks the message by ~200 body chars + its line (plus
+	// its section header once the section empties): dropping streams#1 saves
+	// 251, tracks#2 another 216. A budget of full-400 therefore needs exactly
+	// those two drops — one is not enough, three are not required.
+	budget := utf8.RuneCountInString(full) - 400
 	msg, used := buildComposeUserMessage(promptInput{}, g, budget)
-	assert.LessOrEqual(t, len(msg), budget)
+	assert.LessOrEqual(t, utf8.RuneCountInString(msg), budget)
 	assert.Empty(t, used.Streams, "streams trimmed first")
-	assert.Empty(t, used.Tracks, "then tracks")
+	assert.Len(t, used.Tracks, 1, "then tracks, last item first")
 	assert.Len(t, used.Decisions, 1)
 	assert.Len(t, used.Digests, 2)
 	assert.Len(t, used.Inbox, 1, "inbox never trimmed")
 	assert.Len(t, used.Targets, 1)
 	assert.Len(t, used.Meetings, 1)
 	assert.NotContains(t, msg, "[streams#1]", "trimmed items leave the message")
+	assert.NotContains(t, msg, "[tracks#2]")
+	assert.Contains(t, msg, "[tracks#1]")
 	_, ok := used.byRef[refKey{"streams", 1}]
 	assert.False(t, ok, "trimmed items leave the index")
+}
+
+func TestBuildComposeUserMessage_BudgetCountsRunesNotBytes(t *testing.T) {
+	body := strings.Repeat("я", 200) // 200 runes, 400 bytes
+	g := gathered{
+		Digests: []db.CatchupItem{{Area: "digests", ID: 1, Title: "#разработка", Body: body}},
+		Streams: []db.CatchupItem{{Area: "streams", ID: 1, Title: "почта", Body: body}},
+		Tracks:  []db.CatchupItem{{Area: "tracks", ID: 1, Title: "трек", Body: body}},
+	}
+	full, _ := buildComposeUserMessage(promptInput{}, g, 0)
+	runes := utf8.RuneCountInString(full)
+	assert.Greater(t, len(full), runes, "fixture is multi-byte")
+
+	msg, used := buildComposeUserMessage(promptInput{}, g, runes)
+	assert.Equal(t, full, msg, "a message exactly at the rune budget is not trimmed")
+	assert.Len(t, used.Streams, 1)
+	assert.Len(t, used.Tracks, 1)
+	assert.Len(t, used.Digests, 1)
 }
 
 func TestBuildComposeUserMessage_PerItemTrim(t *testing.T) {
