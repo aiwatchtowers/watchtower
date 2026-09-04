@@ -2,79 +2,134 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-// MARK: - Catch-Up v2 review-mode ViewModel
+// MARK: - Catch-Up absence-recap ViewModel
 //
-// Drives the two-panel review UX. Themes/sessions live in the DB (written by
-// `watchtower catchup run`); the VM streams them in via a GRDB ValueObservation
-// on the active session's themes and lets the operator review one theme at a
-// time. Per-theme feedback / regen are delegated to the CLI; acknowledge and
-// snooze are direct DB writes via `CatchUpQueries`.
+// Drives the recap document UX: a list of persisted `catchup_recaps` rows on the
+// left, one rendered recap on the right. Building and regenerating are delegated
+// to `watchtower catchup run` (which owns the window resolution, the coverage
+// top-up and the compose call); acknowledge is a direct DB write via
+// `CatchUpQueries.acknowledge` — the Swift half of the CATCHUP-01 dual path.
+
+/// The window a build covers. `auto` is the default and passes no flags at all,
+/// leaving the CLI to resolve "since I was last caught up".
+enum CatchUpWindowChoice: Hashable {
+    case auto
+    case today
+    case yesterday
+    case threeDays
+    case week
+    case custom(from: Date, to: Date)
+
+    /// The presets offered by the segmented control, in order. `.custom` is
+    /// reached through the range pickers instead.
+    static let presets: [Self] = [.auto, .today, .yesterday, .threeDays, .week]
+
+    /// Window flags for `catchup run`. Auto is the *absence* of window flags —
+    /// passing one would override the last-acknowledged start the CLI computes.
+    var cliArguments: [String] {
+        switch self {
+        case .auto: []
+        case .today: ["--preset", "today"]
+        case .yesterday: ["--preset", "yesterday"]
+        case .threeDays: ["--preset", "3d"]
+        case .week: ["--preset", "week"]
+        case let .custom(from, to):
+            ["--from", Self.iso.string(from: from), "--to", Self.iso.string(from: to)]
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .auto: "Auto"
+        case .today: "Today"
+        case .yesterday: "Yesterday"
+        case .threeDays: "3 days"
+        case .week: "Week"
+        case .custom: "Range"
+        }
+    }
+
+    /// RFC 3339 — what `catchup run --from/--to` parses (`catchup.ParseWindowTime`).
+    private static let iso: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
 
 @MainActor
 @Observable
 final class CatchUpViewModel {
-    var session: CatchUpSession?
-    var themes: [CatchUpTheme] = []
-    var selected: CatchUpTheme?
-    var isLoading = false
+    var recaps: [CatchUpRecap] = []
+    var selected: CatchUpRecap?
+    /// True while a `catchup run` child process is alive (build or regen).
+    var isBuilding = false
     var error: String?
+    var windowChoice: CatchUpWindowChoice = .auto
+    /// Where the next auto window starts — `period_to` of the most recently
+    /// acknowledged recap, nil when nothing has been acknowledged yet. Reloaded
+    /// with the list, so acknowledging moves the caption immediately.
+    var autoWindowStart: Date?
 
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
     /// Poll cadence while `catchup run` is building. GRDB ValueObservation cannot
-    /// see writes from the separate CLI process, so the streaming list needs a
-    /// periodic reload to surface themes as the CLI persists them.
+    /// see writes from the separate CLI process, so the list needs a periodic
+    /// reload to surface the `building` row and its transition to ready/failed.
     private let pollInterval: Duration = .seconds(1)
 
     init(dbPool: DatabasePool) {
         self.dbPool = dbPool
     }
 
-    // MARK: - Session lifecycle
+    // MARK: - Loading
 
-    /// Starts a fresh review pass: runs `watchtower catchup run` (which writes the
-    /// session + themes to the DB), then begins observing so the list streams in
-    /// as expand completes.
-    func startSession() {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-        isLoading = true
-        error = nil
-        startObserving()
-        startPolling() // CLI runs in a separate process; observation can't see its writes.
-
-        Task.detached {
-            let result = await Self.runCLI(path: cliPath, arguments: ["catchup", "run"])
-            await MainActor.run {
-                self.isLoading = false
-                self.stopPolling()
-                if result.exitCode != 0 {
-                    self.error = result.stderr.isEmpty
-                        ? "Catch-up failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(300))
+    /// Observes the recap list. Idempotent — safe to call on every `onAppear`.
+    func startObserving() {
+        guard observationTask == nil else { return }
+        let pool = dbPool
+        observationTask = Task { [weak self] in
+            do {
+                for try await recaps in CatchUpQueries.observeRecaps().values(in: pool) {
+                    guard !Task.isCancelled, let self else { break }
+                    await self.apply(recaps)
                 }
-                // Authoritative final load once the CLI has finished writing.
-                Task { await self.reload() }
+            } catch {
+                await MainActor.run { self?.error = error.localizedDescription }
             }
         }
     }
 
-    /// One-shot reload of the active session's themes from disk, applied the same
-    /// way the observation does. Used by the build-time poll and the final load,
-    /// because the CLI's cross-process writes are invisible to ValueObservation.
+    /// One-shot reload from disk, applied exactly the way the observation does.
+    /// Used by the build-time poll, after a CLI run, and after acknowledging,
+    /// because cross-process writes are invisible to ValueObservation.
     func reload() async {
         do {
-            let themes = try await dbPool.read { db -> [CatchUpTheme] in
-                guard let session = try CatchUpQueries.fetchActiveSession(db) else { return [] }
-                return try CatchUpQueries.fetchThemes(db, sessionID: session.id)
-            }
-            await apply(themes: themes)
+            let recaps = try await dbPool.read { try CatchUpQueries.fetchRecaps($0) }
+            await apply(recaps)
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    private func apply(_ recaps: [CatchUpRecap]) async {
+        self.recaps = recaps
+        do {
+            autoWindowStart = try await dbPool.read { try CatchUpQueries.autoWindowStart($0) }
+        } catch {
+            // Keep the previous value on a transient read failure — blanking it
+            // would read as "you have never been caught up".
+            print("CatchUp: autoWindowStart read failed (keeping previous): \(error)")
+        }
+        // Re-point the selection at the freshest copy of the selected row (so an
+        // acknowledge or a finished build flips its state in place); fall back to
+        // the newest recap when the selection is gone or nothing is selected yet.
+        if let current = selected, let fresh = recaps.first(where: { $0.id == current.id }) {
+            selected = fresh
+        } else {
+            selected = recaps.first
         }
     }
 
@@ -95,253 +150,211 @@ final class CatchUpViewModel {
         pollTask = nil
     }
 
-    /// Observes the active session's themes. Updates `session`/`themes` live and
-    /// auto-selects the first pending theme when nothing is selected yet.
-    func startObserving() {
-        guard observationTask == nil else { return }
-        let dbPool = self.dbPool
-        observationTask = Task { [weak self] in
-            let observation = CatchUpQueries.observeActiveThemes()
-            do {
-                for try await themes in observation.values(in: dbPool) {
-                    guard !Task.isCancelled else { break }
-                    await self?.apply(themes: themes)
-                }
-            } catch {
-                await MainActor.run { self?.error = error.localizedDescription }
+    // MARK: - Build / regenerate
+
+    /// Builds a recap for the chosen window. The CLI inserts the `building` row
+    /// itself, so the poll surfaces it while composing runs.
+    func build() {
+        run(arguments: ["catchup", "run", "--json"] + windowChoice.cliArguments,
+            failureLabel: "Catch-up failed")
+    }
+
+    /// Rebuilds the selected recap's window as a new row carrying `regen_of_id`,
+    /// optionally steered by a correction. Also the Retry action on a failed recap.
+    func regenerate(comment: String) {
+        guard let recap = selected else { return }
+        var args = ["catchup", "run", "--json", "--regen", String(recap.id)]
+        if !comment.isEmpty {
+            args.append(contentsOf: ["--comment", comment])
+        }
+        run(arguments: args, failureLabel: "Regenerate failed")
+    }
+
+    private func run(arguments: [String], failureLabel: String) {
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
+            return
+        }
+        isBuilding = true
+        error = nil
+        startPolling()
+
+        Task.detached {
+            let result = await Self.runCLI(path: cliPath, arguments: arguments)
+            await MainActor.run {
+                self.isBuilding = false
+                self.stopPolling()
+                self.error = Self.failureMessage(result, label: failureLabel)
+                // Authoritative load once the CLI has finished writing.
+                Task { await self.reload() }
             }
         }
     }
 
-    private func apply(themes: [CatchUpTheme]) async {
-        self.themes = themes
-        do {
-            self.session = try await dbPool.read { db in try CatchUpQueries.fetchActiveSession(db) }
-        } catch {
-            // Keep the previous session on a transient read failure — nulling a
-            // live session here would blank the review UI mid-pass.
-            print("CatchUp: fetchActiveSession failed (keeping previous session): \(error)")
+    /// Records 👍/👎 on one topic (+ an optional comment, which derives learned
+    /// rules and may regenerate the whole recap as a new row).
+    func submitFeedback(topicIndex: Int, rating: Int, comment: String) {
+        guard let recap = selected else { return }
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
+            return
         }
-
-        // Re-point the selection at the freshest copy of the selected row, then
-        // auto-advance to the first pending theme when there is no live selection.
-        if let current = selected, let fresh = themes.first(where: { $0.id == current.id }) {
-            selected = fresh
+        var args = [
+            "catchup", "feedback", String(recap.id),
+            "--topic", String(topicIndex),
+            "--rating", rating >= 0 ? "up" : "down"
+        ]
+        if !comment.isEmpty {
+            args.append(contentsOf: ["--comment", comment])
         }
-        if selected == nil || !(selected?.isPending ?? false) {
-            selected = themes.first { $0.isPending }
+        Task.detached {
+            let result = await Self.runCLI(path: cliPath, arguments: args)
+            await MainActor.run {
+                if result.exitCode != 0 {
+                    self.error = result.stderr.isEmpty
+                        ? "Feedback failed (exit \(result.exitCode))"
+                        : String(result.stderr.prefix(300))
+                }
+                // A correcting comment can have produced a regenerated recap —
+                // another process's write, so only an explicit reload shows it.
+                Task { await self.reload() }
+            }
         }
     }
 
-    // MARK: - Per-theme actions
+    /// `catchup run` exits non-zero only on a Go-level error (an invalid window,
+    /// a failed insert). A recap that was *composed* and failed exits 0 with
+    /// `"status":"failed"` in the envelope, so the JSON is inspected too —
+    /// otherwise a failed recap would report as a clean build.
+    nonisolated private static func failureMessage(
+        _ result: (exitCode: Int32, stdout: String, stderr: String), label: String
+    ) -> String? {
+        if result.exitCode != 0 {
+            return result.stderr.isEmpty
+                ? "\(label) (exit \(result.exitCode))"
+                : String(result.stderr.prefix(300))
+        }
+        guard let data = result.stdout.data(using: .utf8),
+              let envelope = try? JSONDecoder().decode(RunEnvelope.self, from: data),
+              envelope.status == "failed" else {
+            return nil
+        }
+        return envelope.error.isEmpty ? label : String(envelope.error.prefix(300))
+    }
 
-    /// Acknowledges a theme: cascade mark-read over its refs, flip review_state to
-    /// reviewed, bump the session count, then advance selection to the next pending.
-    func acknowledge(_ theme: CatchUpTheme) async {
+    /// The two fields of `catchup run --json`'s envelope (`cmd/catchup.go`'s
+    /// `catchupRunEnvelope`) the UI reacts to. Both decode tolerantly so a future
+    /// envelope field, or an omitted one, never turns a readable run into a
+    /// decode failure.
+    private struct RunEnvelope: Decodable {
+        let status: String
+        let error: String
+
+        enum CodingKeys: String, CodingKey {
+            case status, error
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
+            error = try container.decodeIfPresent(String.self, forKey: .error) ?? ""
+        }
+    }
+
+    // MARK: - Acknowledge
+
+    /// "I'm caught up": marks the selected recap's whole window read across the
+    /// five `read_at` surfaces and stamps `acknowledged_at` (CATCHUP-01), then
+    /// reloads so the button flips to its label and the auto-window caption moves.
+    func acknowledge() async {
+        guard let recap = selected else { return }
         do {
             try await dbPool.write { db in
-                try CatchUpQueries.acknowledge(db, theme: theme)
+                try CatchUpQueries.acknowledge(db, recap: recap)
             }
-            advanceSelection(after: theme)
+            await reload()
         } catch {
             self.error = "Failed to acknowledge: \(error.localizedDescription)"
         }
     }
 
-    /// Snoozes a theme until the given date; it leaves the current pass.
-    func snooze(_ theme: CatchUpTheme, until: Date) async {
-        let stamp = Self.isoFormatter.string(from: until)
-        do {
-            try await dbPool.write { db in
-                try CatchUpQueries.setReview(db, id: theme.id, state: "snoozed", snoozeUntil: stamp)
-            }
-            advanceSelection(after: theme)
-        } catch {
-            self.error = "Failed to snooze: \(error.localizedDescription)"
-        }
-    }
-
-    /// Creates a target from the theme and links the theme back to it via
-    /// `task_id`. source_type is "manual" (the operator created it during review):
-    /// the targets.source_type CHECK has no 'catchup' value, and the theme→target
-    /// link lives on catchup_themes.task_id, so a target→theme backlink onto an
-    /// ephemeral session theme would add nothing.
-    func createTask(_ theme: CatchUpTheme) async {
-        let today = Self.dayFormatter.string(from: Date())
-        let text = theme.suggestedAction.isEmpty ? theme.title : theme.suggestedAction
-        do {
-            try await dbPool.write { db in
-                let taskID = try TargetQueries.create(
-                    db,
-                    text: text,
-                    intent: theme.title,
-                    periodStart: today,
-                    periodEnd: today,
-                    priority: theme.priority,
-                    sourceType: "manual",
-                    sourceID: ""
-                )
-                try CatchUpQueries.setTask(db, id: theme.id, taskID: taskID)
-            }
-        } catch {
-            self.error = "Failed to create task: \(error.localizedDescription)"
-        }
-    }
-
-    /// Records 👍/👎 (+ optional comment) via the CLI, which runs the learning
-    /// interpreter and derives targeted rules when a comment is present.
-    func submitFeedback(_ theme: CatchUpTheme, rating: Int, comment: String) {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-        var args = ["catchup", "feedback", String(theme.id), "--rating", rating >= 0 ? "up" : "down"]
-        if !comment.isEmpty {
-            args.append(contentsOf: ["--comment", comment])
-        }
-        Task.detached {
-            let result = await Self.runCLI(path: cliPath, arguments: args)
-            if result.exitCode != 0 {
-                await MainActor.run {
-                    self.error = result.stderr.isEmpty
-                        ? "Feedback failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(300))
-                }
-            }
-        }
-    }
-
-    /// Regenerates a single theme with an operator correction comment via the CLI;
-    /// the row is overwritten in place and picked up by the observation.
-    func regenerate(_ theme: CatchUpTheme, comment: String) {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-        var args = ["catchup", "regen", String(theme.id)]
-        if !comment.isEmpty {
-            args.append(contentsOf: ["--comment", comment])
-        }
-        Task.detached {
-            let result = await Self.runCLI(path: cliPath, arguments: args)
-            if result.exitCode != 0 {
-                await MainActor.run {
-                    self.error = result.stderr.isEmpty
-                        ? "Regenerate failed (exit \(result.exitCode))"
-                        : String(result.stderr.prefix(300))
-                }
-            }
-        }
-    }
-
     // MARK: - Inline source detail
 
-    // Read-only fetches backing the review pane's expandable source rows. They
-    // read the VM's own live `dbPool` (the same handle the theme stream uses), so
-    // a digest/track referenced by a theme always resolves — no separate
-    // DatabaseManager or observed list to be out of sync with.
+    // Read-only fetches backing the document's expandable source rows, one per
+    // ref area the Go gather emits (internal/db/catchup.go). They read the VM's
+    // own live `dbPool` — the same handle the recap list streams from — so a
+    // source cited by a recap always resolves against current data. nil means the
+    // row is gone (pruned, deleted), which the card renders as "no longer
+    // available".
 
-    /// Fetch a referenced digest by id for inline expansion. nil if the row is
-    /// gone (e.g. pruned after the theme snapshot).
     func digest(byID id: Int) -> Digest? {
         try? dbPool.read { try DigestQueries.fetchByID($0, id: id) }
     }
 
-    /// Fetch a referenced track by id for inline expansion. nil if the row is gone.
     func track(byID id: Int) -> Track? {
         try? dbPool.read { try TrackQueries.fetchByID($0, id: id) }
     }
 
-    // MARK: - Source metadata (dates + external links)
-
-    /// Resolves each ref's "when did this actually happen" date and an external
-    /// Slack link in one read, keyed by `CatchUpRef.compositeID` — a theme row's
-    /// own timestamps only say when the session was built, which loses the
-    /// operator's sense of time and urgency. A vanished source row is simply
-    /// absent from the map. Async so the pane's `.task` doesn't block the main
-    /// actor behind whatever the daemon is writing.
-    func sourceMeta(for refs: [CatchUpRef]) async -> [String: CatchUpSourceMeta] {
-        guard !refs.isEmpty else { return [:] }
-        return (try? await dbPool.read { db in
-            var meta: [String: CatchUpSourceMeta] = [:]
-            for ref in refs {
-                switch ref.area {
-                case "digests":
-                    if let digest = try DigestQueries.fetchByID(db, id: ref.id) {
-                        meta[ref.compositeID] = CatchUpSourceMeta(
-                            date: digest.periodTo > 0 ? Date(timeIntervalSince1970: digest.periodTo) : nil,
-                            url: Self.slackChannelURL(digest.channelID)
-                        )
-                    }
-                case "tracks":
-                    if let track = try TrackQueries.fetchByID(db, id: ref.id) {
-                        meta[ref.compositeID] = CatchUpSourceMeta(
-                            date: TimeFormatting.parseISO(track.updatedAt)
-                                ?? TimeFormatting.parseISO(track.createdAt),
-                            url: Self.slackChannelURL(track.decodedChannelIDs.first ?? "")
-                        )
-                    }
-                case "inbox":
-                    if let item = try InboxQueries.fetchByID(db, id: ref.id) {
-                        let ts = Double(item.messageTS) ?? 0
-                        meta[ref.compositeID] = CatchUpSourceMeta(
-                            date: ts > 0 ? Date(timeIntervalSince1970: ts) : nil,
-                            url: Self.slackMessageURL(for: item)
-                        )
-                    }
-                case "briefings":
-                    if let briefing = try BriefingQueries.fetchByID(db, id: ref.id) {
-                        meta[ref.compositeID] = CatchUpSourceMeta(
-                            date: TimeFormatting.parseISO(briefing.createdAt),
-                            url: nil
-                        )
-                    }
-                default:
-                    break
-                }
-            }
-            return meta
-        }) ?? [:]
+    func streamDigest(byID id: Int) -> StreamDigest? {
+        try? dbPool.read { try StreamDigestQueries.fetchByID($0, id: id) }
     }
 
-    /// Slack channel link via the generic slack.com/archives host — the
-    /// `IdeaDetailPane.mentionURL` precedent: no workspace domain or team id
-    /// needed. Channel ids are namespaced "<accountID>:C…" since migration
-    /// 00048; Slack wants the bare id. Static so the URL rules are testable
-    /// without a view or DB.
-    nonisolated static func slackChannelURL(_ channelID: String) -> URL? {
-        guard !channelID.isEmpty else { return nil }
-        return URL(string: "https://slack.com/archives/\(SlackAccountID.raw(channelID))")
+    func meetingRecap(byID id: Int) -> MeetingRecap? {
+        try? dbPool.read { try MeetingRecapQueries.fetchByID($0, id: id) }
+    }
+
+    func transcript(byID id: Int) -> MeetingTranscript? {
+        try? dbPool.read { try MeetingTranscriptQueries.fetch($0, id: Int64(id)) }
+    }
+
+    /// A decision ref resolves to its ledger row plus its mention trail — the
+    /// mentions are what make a one-line decision checkable.
+    func decision(byID id: Int) -> (idea: Idea, mentions: [IdeaMention])? {
+        try? dbPool.read { db -> (idea: Idea, mentions: [IdeaMention])? in
+            guard let idea = try IdeaQueries.fetchOne(db, id: id) else { return nil }
+            return (idea, try IdeaQueries.fetchMentions(db, ideaID: id))
+        }
+    }
+
+    func inboxItem(byID id: Int) -> InboxItem? {
+        try? dbPool.read { try InboxQueries.fetchByID($0, id: id) }
+    }
+
+    func target(byID id: Int) -> Target? {
+        try? dbPool.read { try TargetQueries.fetchByID($0, id: id) }
+    }
+
+    /// "from Ann in #eng" for an inbox source — the same caption the Go gather
+    /// builds (`ListCatchupInbox`'s `Meta`). Resolved here because the row
+    /// itself carries only namespaced Slack ids, which would read as noise.
+    /// Empty when neither side resolves.
+    func inboxOrigin(_ item: InboxItem) -> String {
+        guard let names = try? dbPool.read({ db -> (sender: String, channel: String) in
+            // fetchByID, not fetchDisplayName: the latter falls back to the raw
+            // id, and "from 1:U0A9" is worse than no attribution at all.
+            let sender = try UserQueries.fetchByID(db, id: item.senderUserID)?.bestName ?? ""
+            let channel = try ChannelQueries.fetchByID(db, id: item.channelID)?.name ?? ""
+            return (sender, channel)
+        }) else {
+            return ""
+        }
+
+        var parts: [String] = []
+        if !names.sender.isEmpty { parts.append("from \(names.sender)") }
+        if !names.channel.isEmpty { parts.append("in #\(names.channel)") }
+        return parts.joined(separator: " ")
     }
 
     /// Message deep link for an inbox source: the item's stored permalink when
-    /// present, else an archives link built from channel + message ts.
+    /// present, else an archives link built from channel + message ts. Channel
+    /// ids are namespaced "<accountID>:C…" since migration 00048; Slack wants the
+    /// bare id. Static so the URL rules are testable without a view or DB.
     nonisolated static func slackMessageURL(for item: InboxItem) -> URL? {
         if !item.permalink.isEmpty { return URL(string: item.permalink) }
         guard !item.channelID.isEmpty, !item.messageTS.isEmpty else { return nil }
         let ts = item.messageTS.replacingOccurrences(of: ".", with: "")
         return URL(string: "https://slack.com/archives/\(SlackAccountID.raw(item.channelID))/p\(ts)")
     }
-
-    // MARK: - Selection
-
-    /// Advances selection to the next pending theme after the given one (by
-    /// order), wrapping to the first pending if none follow.
-    private func advanceSelection(after theme: CatchUpTheme) {
-        let pending = themes.filter { $0.isPending && $0.id != theme.id }
-        selected = pending.first { $0.orderIdx > theme.orderIdx } ?? pending.first
-    }
-
-    // MARK: - Formatters
-
-    private static let isoFormatter = ISO8601DateFormatter()
-
-    private static let dayFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.timeZone = TimeZone(identifier: "UTC")
-        return fmt
-    }()
 
     // MARK: - CLI (detached, drains stdout+stderr concurrently)
 
@@ -391,12 +404,4 @@ final class CatchUpViewModel {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus, stdout, stderr)
     }
-}
-
-/// When a theme's underlying source happened and where to open it outside the
-/// app — drives the review pane's per-source date captions, the header's
-/// activity span, and the external Slack links.
-struct CatchUpSourceMeta: Equatable {
-    let date: Date?
-    let url: URL?
 }
