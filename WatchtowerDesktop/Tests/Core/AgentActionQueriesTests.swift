@@ -50,6 +50,22 @@ final class AgentActionQueriesTests: XCTestCase {
         }.isEmpty)
     }
 
+    /// A row decided/applied in the SAME second as the floor must still be
+    /// reported — the floor is a whole-second truncation of a sub-second
+    /// `Date` (`AgentActionFeed.timestampString`), so a decision landing
+    /// later within that same second, after the floor moment, must not be
+    /// excluded forever by every subsequent (later) floor.
+    func testFetchDecidedAfterIncludesASameSecondRow() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try TestDatabase.insertAgentAction(db, status: "applied", appliedAt: "2026-09-04T10:00:00Z")
+        }
+        let rows = try queue.read { db in
+            try AgentActionQueries.fetchDecidedAfter(db, conversationID: 1, after: "2026-09-04T10:00:00Z")
+        }
+        XCTAssertEqual(rows.map(\.status), ["applied"], "a same-second outcome is reported once more, not dropped forever")
+    }
+
     func testStateFlags() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
