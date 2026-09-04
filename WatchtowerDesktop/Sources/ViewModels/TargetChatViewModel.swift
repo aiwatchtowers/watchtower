@@ -370,9 +370,11 @@ final class TargetChatViewModel {
         } else {
             toolMode = nil
         }
-        // Outcomes are injected only on resumed turns — a fresh turn has no
-        // prior assistant turn whose proposals could have been decided yet.
-        let outcomes = currentSessionID == nil ? nil : actionFeed.outcomesBlock(after: turn.previousOwnerMessageAt)
+        // The floor is the PREVIOUS owner message, and it alone: a turn with no
+        // prior owner message has nothing to report anyway. Gating on the
+        // session id instead would silently exclude codex, which never emits
+        // one — unlike the context re-injection below, which is about --resume.
+        let outcomes = actionFeed.outcomesBlock(after: turn.previousOwnerMessageAt)
 
         // On the first turn the target context is in the system prompt. On a
         // resumed turn the CLI uses --resume and drops the system prompt entirely
@@ -1085,6 +1087,27 @@ final class TargetChatViewModel {
         let skillsSuffix = SkillsCatalog.promptBlock(contextType: "target", dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
+        // A provider without tools (Ollama) must not be handed a TOOLS section
+        // it cannot act on, nor a linking rule that sources ids from a tool
+        // call — it would spend the turn looking for `list_messages` and then
+        // ask the owner to connect it.
+        let toolsSection = toolsAvailable
+            ? """
+            === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
+            You have read-only tools over the user's OWN local Watchtower database. \
+            Use them to look things up instead of asking the user:
+            - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \
+            newest first. This is how you check what happened in Slack (it is already synced locally).
+            - list_targets / get_target — other targets and their links (resolve ids for link_target here).
+            - get_person / list_people — people cards; list_tracks / list_digests / list_jira_issues — work context.
+            - list_transcripts / get_transcript — recorded meeting transcripts.
+            \(ChatViewModel.noLiveSourcesRule)
+            """
+            : AgentToolsContract.noToolsBlock
+        let linkSourceRule = toolsAvailable
+            ? "\n- list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links"
+            : ""
+
         return """
         You are Watchtower, an AI assistant helping the user make progress on a specific \
         task (target) tracked in their workspace.
@@ -1097,15 +1120,7 @@ final class TargetChatViewModel {
 
         \(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")
 
-        === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-        You have read-only tools over the user's OWN local Watchtower database. \
-        Use them to look things up instead of asking the user:
-        - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \
-        newest first. This is how you check what happened in Slack (it is already synced locally).
-        - list_targets / get_target — other targets and their links (resolve ids for link_target here).
-        - get_person / list_people — people cards; list_tracks / list_digests / list_jira_issues — work context.
-        - list_transcripts / get_transcript — recorded meeting transcripts.
-        \(ChatViewModel.noLiveSourcesRule)
+        \(toolsSection)
 
         === WORKSPACE ===
         Slack team ID: \(teamID)
@@ -1130,8 +1145,7 @@ final class TargetChatViewModel {
 
         Rules:
         - Every referenced message MUST have a link
-        - Link text describes WHAT is linked, not "link" or "click here"
-        - list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links
+        - Link text describes WHAT is linked, not "link" or "click here"\(linkSourceRule)
         - NEVER link to a channel when the user asked for a specific message — resolve the actual ts first
 
         === RESPONSE STYLE ===

@@ -1278,5 +1278,9 @@ final class TargetChatViewModelTests: XCTestCase {
         let firstSystemPrompt = try XCTUnwrap(mock.systemPrompts.first)
         let prompt = try XCTUnwrap(firstSystemPrompt)
         XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
+        // I5: the TOOLS section must not promise read tools this session lacks.
+        XCTAssertFalse(prompt.contains("list_messages"))
+        XCTAssertFalse(prompt.contains("already connected"))
+        XCTAssertTrue(prompt.contains("No tools are connected"))
     }
 }

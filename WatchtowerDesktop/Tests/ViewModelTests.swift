@@ -747,6 +747,11 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
         XCTAssertFalse(prompt.contains("write tool"))
         XCTAssertFalse(prompt.contains("proposal"))
+        // I5: the WORKFLOW and LINKING sections must not name a tool this
+        // session does not have.
+        XCTAssertFalse(prompt.contains("list_messages"))
+        XCTAssertFalse(prompt.contains("already connected"))
+        XCTAssertTrue(prompt.contains("Answer from the conversation"))
     }
 
     func testBuildSystemPromptCarriesAgentActionsContract() throws {
@@ -778,6 +783,7 @@ final class ChatViewModelTests: XCTestCase {
         vm.send()
         for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
 
+        XCTAssertEqual(mock.prompts.first, "first", "the first turn has no floor, so it carries no block")
         let second = try XCTUnwrap(mock.prompts.last)
         XCTAssertTrue(second.hasPrefix("=== ACTIONS SINCE YOUR LAST MESSAGE ==="))
         XCTAssertTrue(second.contains("create_target: applied"))

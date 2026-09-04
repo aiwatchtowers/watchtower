@@ -92,6 +92,14 @@ package final class AgentActionFeed {
 
     package var pendingCount: Int { rows.filter(\.isPending).count }
 
+    /// Proposals whose turn has no message to hang a card under — a stream that
+    /// failed before any assistant text persisted leaves exactly this. Terminal
+    /// rows are dropped: they need no decision, so surfacing them would only be
+    /// noise. Static and pure so the two chat lists share one rule.
+    package static func unattached(rows: [AgentAction], messageTurnIDs: Set<String>) -> [AgentAction] {
+        rows.filter { !messageTurnIDs.contains($0.turnID) && !$0.isTerminal }
+    }
+
     package func approve(_ id: Int64) async {
         lastError = nil
         await run("approve", id: id)

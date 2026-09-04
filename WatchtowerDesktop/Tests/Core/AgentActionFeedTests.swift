@@ -192,6 +192,35 @@ final class AgentActionFeedTests: XCTestCase {
         XCTAssertEqual(feed.lastError, "boom", "the failure must not be cleared by the next row's run")
     }
 
+    /// I6: a stream that dies before any assistant text persists leaves its
+    /// proposals with no message to hang a card under. Those rows are still
+    /// actionable, so the list needs them; a decided one does not.
+    func testUnattachedFiltersByTurnAndTerminalStatus() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, turnID: "attached")
+            try TestDatabase.insertAgentAction(db, turnID: "orphan")
+            try TestDatabase.insertAgentAction(db, turnID: "orphan-applied", status: "applied")
+            try TestDatabase.insertAgentAction(db, turnID: "orphan-rejected", status: "rejected")
+            try TestDatabase.insertAgentAction(db, turnID: "orphan-failed", status: "failed")
+        }
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner())
+        feed.start(conversationID: 1)
+        await waitForRows(feed, count: 5)
+
+        XCTAssertEqual(
+            AgentActionFeed.unattached(rows: feed.rows, messageTurnIDs: ["attached"]).map(\.turnID),
+            ["orphan", "orphan-failed"]
+        )
+        XCTAssertEqual(AgentActionFeed.unattached(rows: feed.rows, messageTurnIDs: []).count, 3)
+        XCTAssertTrue(AgentActionFeed.unattached(
+            rows: feed.rows,
+            messageTurnIDs: ["attached", "orphan", "orphan-applied", "orphan-rejected", "orphan-failed"]
+        ).isEmpty)
+        feed.stop()
+    }
+
     func testOutcomesBlockUsesTimestampFloor() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }

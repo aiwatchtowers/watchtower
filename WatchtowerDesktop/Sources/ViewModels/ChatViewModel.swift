@@ -145,9 +145,10 @@ final class ChatViewModel {
         let capturedAIService = aiService
         let capturedToolsAvailable = toolsAvailable
         let toolMode = Self.makeToolMode(toolsAvailable: capturedToolsAvailable, conversationID: capturedConvID, turnID: turnID)
-        // Outcomes are injected only on resumed turns — a fresh turn has no
-        // prior assistant turn whose proposals could have been decided yet.
-        let outcomes = currentSessionID == nil ? nil : actionFeed.outcomesBlock(after: previousOwnerMessageAt)
+        // The floor is the PREVIOUS owner message, and it alone: a first turn
+        // has none, so the block is nil there anyway. Gating on the session id
+        // instead would silently exclude codex, which never emits one.
+        let outcomes = actionFeed.outcomesBlock(after: previousOwnerMessageAt)
         let effectivePrompt = outcomes.map { "\($0)\n\n\(text)" } ?? text
 
         streamTask = Task { [weak self] in
@@ -372,7 +373,7 @@ final class ChatViewModel {
         return promptHeader(name: name, domain: domain, now: now, schema: schema, toolsAvailable: toolsAvailable)
             + toolsBlock
             + promptDeepLinksAndRestrictions(teamID: teamID, toolsAvailable: toolsAvailable)
-            + promptRules(teamID: teamID)
+            + promptRules(teamID: teamID, toolsAvailable: toolsAvailable)
             + promptAppGuide()
     }
 
@@ -457,10 +458,20 @@ final class ChatViewModel {
         """
     }
 
-    nonisolated private static func promptRules(teamID: String) -> String {
-        """
+    nonisolated private static func promptRules(teamID: String, toolsAvailable: Bool) -> String {
+        // Neither section may name a tool the session does not have: an Ollama
+        // chat that is told to "start with list_messages" spends its turn
+        // hunting for a tool and then asks the user to connect it.
+        let lookupStep = toolsAvailable
+            ? "1. Look the data up with the tools above (start with list_messages for raw Slack traffic)"
+            : "1. Answer from the conversation; no tools are connected in this session"
+        let linkSourceRule = toolsAvailable
+            ? "\n- The tools return channel_id and ts for every message, so you can always build links"
+            : ""
+
+        return """
         === WORKFLOW ===
-        1. Look the data up with the tools above (start with list_messages for raw Slack traffic)
+        \(lookupStep)
         2. If results are empty or insufficient, broaden the lookup (wider filters, different keywords)
         3. Analyze the actual message content from the results
         4. Respond with insights, organized by channel or topic
@@ -475,8 +486,7 @@ final class ChatViewModel {
 
         Rules:
         - Every channel mention (#name) MUST be a link to that channel
-        - Every referenced message or thread MUST have a link with descriptive text in the user's language
-        - The tools return channel_id and ts for every message, so you can always build links
+        - Every referenced message or thread MUST have a link with descriptive text in the user's language\(linkSourceRule)
 
         === RESPONSE STYLE ===
         - Be concise and direct — give the answer, not the process

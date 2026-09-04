@@ -167,6 +167,7 @@ private struct ChatSplitView: View {
                                 .id(msg.id)
                             actionCards(for: msg)
                         }
+                        unattachedActionCards
 
                         if let error = chatVM.errorMessage {
                             Text(error)
@@ -280,14 +281,37 @@ private struct ChatSplitView: View {
                     .font(.caption)
             }
             ForEach(cards) { action in
-                AgentActionCardView(
-                    action: action,
-                    inFlight: chatVM.actionFeed.inFlight.contains(action.id),
-                    onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
-                    onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
-                    onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
-                )
+                agentActionCard(action)
             }
         }
+    }
+
+    /// Proposals whose turn never persisted a message — a stream that died
+    /// mid-turn. Without a slot of their own they would be unreachable.
+    @ViewBuilder
+    private var unattachedActionCards: some View {
+        let orphans = AgentActionFeed.unattached(
+            rows: chatVM.actionFeed.rows,
+            messageTurnIDs: Set(chatVM.messages.compactMap(\.turnID))
+        )
+        if !orphans.isEmpty {
+            Text("Proposals from an interrupted turn")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(orphans) { action in
+                agentActionCard(action)
+            }
+        }
+    }
+
+    private func agentActionCard(_ action: AgentAction) -> some View {
+        AgentActionCardView(
+            action: action,
+            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
+            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
+        )
     }
 }
