@@ -155,10 +155,11 @@ type Receipt struct {
   receipt carries `status=applied` plus the result (or the row lands `failed`
   and the receipt says so). Validation failure returns a tool error to the
   model and writes no row.
-- `Apply(id)`: allowed from `approved` and `failed` only; `applied` and
-  `rejected` are terminal; a second `Apply` on an `applied` row is an error
-  (AGENT-05). External retries are not idempotent — the CLI/card warn
-  "check Jira before retrying".
+- `Apply(id)`: allowed from `approved` and `failed` only, and it CLAIMS the row
+  (`approved|failed → executing`) before calling `Execute`; `applied` and
+  `rejected` are terminal, and a row already `executing` is refused, so a second
+  `Apply` never reaches the tool (AGENT-05). External retries are not
+  idempotent — the CLI/card warn "check Jira before retrying".
 - `SetTrust(tool, trust)`: `execute` on an `External` tool → error (AGENT-03).
   Unknown tool → error. Stored in `tool_trust`; absent row = `ask`.
 - `List(surface)`: tools whose `Surfaces` is empty or contains the surface.
@@ -269,8 +270,11 @@ CREATE TABLE tool_trust (
 );
 ```
 
-Status machine: `pending → approved → applied | failed`; `pending → rejected`;
-`failed → approved` (explicit retry) `→ applied | failed`. Terminal: `applied`,
+Status machine: `pending → approved → executing → applied | failed`;
+`pending → rejected`; `failed → executing` (explicit retry) `→ applied | failed`.
+`executing` is `Apply`'s claim, taken before the tool runs so two overlapping
+applies can never both execute (AGENT-05); a row left there by an interrupted
+apply is reclaimed with `watchtower actions apply --force`. Terminal: `applied`,
 `rejected`. Mirror into `schema.sql`, add both tables to `TestAllTablesExist`,
 regenerate the schema golden.
 
