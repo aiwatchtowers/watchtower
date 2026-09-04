@@ -253,7 +253,7 @@ CREATE TABLE agent_actions (
     context_id      TEXT    NOT NULL DEFAULT '',
     turn_id         TEXT    NOT NULL DEFAULT '',         -- Swift-generated UUID per send
     status          TEXT    NOT NULL DEFAULT 'pending'
-                    CHECK(status IN ('pending','approved','rejected','applied','failed')),
+                    CHECK(status IN ('pending','approved','rejected','applied','failed','executing')),
     trust_at_create TEXT    NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
     result_json     TEXT    NOT NULL DEFAULT '',
     error           TEXT    NOT NULL DEFAULT '',
