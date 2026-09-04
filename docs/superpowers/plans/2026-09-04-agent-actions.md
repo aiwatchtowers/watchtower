@@ -28,7 +28,7 @@
 ## File Structure
 
 **Go**
-- `internal/db/migrations/00061_agent_actions.sql` — `agent_actions` + `tool_trust` tables.
+- `internal/db/migrations/00062_agent_actions.sql` — `agent_actions` + `tool_trust` tables.
 - `internal/db/schema.sql` — mirror of both tables (AI-prompt schema).
 - `internal/db/agent_actions.go` — `AgentAction` row type, insert/get/list, conditional status transition, trust get/set.
 - `internal/tools/registry.go` — `Tool`, `Registry`, `Binding`, `Call`, `Receipt`, `Propose`, `Apply`, `SetTrust`, `List`.
@@ -61,7 +61,7 @@
 ### Task 1: Migration, schema mirror, DB layer
 
 **Files:**
-- Create: `internal/db/migrations/00061_agent_actions.sql`
+- Create: `internal/db/migrations/00062_agent_actions.sql`
 - Modify: `internal/db/schema.sql` (append after the `jira_comments` table), `internal/db/db_test.go:185`
 - Create: `internal/db/agent_actions.go`, `internal/db/agent_actions_test.go`
 
@@ -70,7 +70,7 @@
 
 - [ ] **Step 1: Write the migration**
 
-`internal/db/migrations/00061_agent_actions.sql`:
+`internal/db/migrations/00062_agent_actions.sql`:
 
 ```sql
 -- +goose Up
@@ -416,8 +416,8 @@ Run: `go test ./internal/db/ -run TestSchemaGolden -update && go test ./internal
 - [ ] **Step 7: Commit**
 
 ```bash
-git add internal/db/migrations/00061_agent_actions.sql internal/db/schema.sql internal/db/agent_actions.go internal/db/agent_actions_test.go internal/db/db_test.go internal/db/testdata
-git commit -m "feat(db): agent_actions + tool_trust tables and accessors (migration 00061)"
+git add internal/db/migrations/00062_agent_actions.sql internal/db/schema.sql internal/db/agent_actions.go internal/db/agent_actions_test.go internal/db/db_test.go internal/db/testdata
+git commit -m "feat(db): agent_actions + tool_trust tables and accessors (migration 00062)"
 ```
 
 (Confirm the golden snapshot path with `git status` before adding; it lives wherever `TestSchemaGolden -update` wrote it.)

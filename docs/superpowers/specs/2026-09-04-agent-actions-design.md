@@ -103,7 +103,7 @@ Components:
   --conversation <id> --turn <uuid> [--db-path]` opens the DB writable,
   mounts the same read tools plus the registry's tools filtered by surface, and
   `get_action`. Dev mode never calls the registry wiring.
-- **`agent_actions` + `tool_trust`** — goose migration `00061`. The proposal
+- **`agent_actions` + `tool_trust`** — goose migration `00062`. The proposal
   queue and the audit log are the same rows; rows are never deleted.
 - **Go executes.** Desktop never writes `agent_actions`. It calls
   `watchtower actions approve <id>` (flip + execute inline), `reject <id>`,
@@ -238,7 +238,7 @@ answer "did that ticket get created?" without guessing. Registered only by the
 By construction there is still no shell and no free HTTP for the model: only
 declared handlers. Sub-project 4's model-authored tools inherit `ask`.
 
-## 7. Schema — migration `00061_agent_actions.sql`
+## 7. Schema — migration `00062_agent_actions.sql`
 
 ```sql
 CREATE TABLE agent_actions (
