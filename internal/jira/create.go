@@ -1,7 +1,6 @@
 package jira
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -109,7 +108,7 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (Creat
 	if err != nil {
 		return CreatedIssue{}, fmt.Errorf("encoding create issue request: %w", err)
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue", bytes.NewReader(body))
+	resp, err := c.do(ctx, http.MethodPost, "/rest/api/3/issue", body)
 	if err != nil {
 		return CreatedIssue{}, err
 	}

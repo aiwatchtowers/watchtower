@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,8 +46,11 @@ func (c *Client) SetLogger(l *log.Logger) {
 }
 
 // do executes an authenticated HTTP request with automatic token refresh on 401
-// and backoff on 429 (max 3 retries).
-func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+// and backoff on 429 (max 3 retries). body is the raw request payload (nil for
+// no body); a fresh io.Reader is built from it on every attempt so a retry
+// after a 401 refresh re-sends the full body instead of an already-drained
+// reader (which would otherwise turn a transparent retry into an empty POST).
+func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	fullURL := c.baseURL + path
 
 	for attempt := 0; attempt <= 3; attempt++ {
@@ -59,7 +63,11 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader) (*
 			return nil, fmt.Errorf("getting access token: %w", err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
+		var rdr io.Reader
+		if body != nil {
+			rdr = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, rdr)
 		if err != nil {
 			return nil, err
 		}

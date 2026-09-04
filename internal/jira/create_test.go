@@ -111,6 +111,39 @@ func TestCreateIssue_401AfterRefreshIsAuthRevoked(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrAuthRevoked), "got %v", err)
 }
 
+// TestCreateIssue_RetriesWithFullBodyAfterRefresh pins a fix: Client.do used
+// to reuse the same io.Reader across retry attempts, so a 401 followed by a
+// successful token refresh replayed an already-drained reader on the retry —
+// Jira received an empty POST body (Content-Length: 0) and answered with a
+// confusing 400 instead of accepting the transparent retry. do() now takes
+// the body as []byte and builds a fresh reader per attempt.
+func TestCreateIssue_RetriesWithFullBodyAfterRefresh(t *testing.T) {
+	var bodies [][]byte
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"1","key":"ABC-9"}`))
+	}))
+	defer srv.Close()
+	stubTokenEndpoint(t)
+
+	c := makeTestClient(t, srv.URL)
+	created, err := c.CreateIssue(context.Background(), CreateIssueRequest{ProjectKey: "ABC", IssueType: "Task", Summary: "Retry me"})
+	require.NoError(t, err)
+	assert.Equal(t, "ABC-9", created.Key)
+
+	require.Len(t, bodies, 2)
+	assert.NotEmpty(t, bodies[1], "retry after refresh must resend the full request body")
+	assert.Equal(t, bodies[0], bodies[1])
+}
+
 func TestGetIssue_FetchesByKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/3/issue/ABC-7", r.URL.Path)
