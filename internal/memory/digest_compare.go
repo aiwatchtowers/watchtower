@@ -13,7 +13,7 @@ package memory
 // bound or watermark (MEM-05/MEM-14; the legacy pipeline stays authoritative
 // and byte-untouched until the compare wins the owner's hand-review, a later
 // slice). A per-channel render/read error is isolated (logged + counted), never
-// aborts the batch (the CATCHUP-03 "one bad theme never sinks the run" spirit).
+// aborts the batch (per-item isolation: one bad item never sinks the batch).
 
 import (
 	"context"

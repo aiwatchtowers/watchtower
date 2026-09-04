@@ -1,5 +1,7 @@
 # Catch-up: iterative peel-off outline — design
 
+> **Superseded** by `2026-09-04-catchup-absence-recap-design.md` (Catch-Up as an absence recap; the review-session model is retired).
+
 **Date:** 2026-06-25
 **Branch:** feature/catch-up-summarizer
 **Owner:** @Vadym

@@ -7,84 +7,67 @@ import WatchtowerTestSupport
 @MainActor
 final class SidebarCountsViewModelTests: XCTestCase {
 
-    /// catchUpTotalCount must be the sum of the four Catch-Up source counts:
-    /// digests + tracks + inbox + briefings (not targets/recommendations).
-    func testCatchUpTotalCountIsSumOfSourceCounts() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+    // MARK: - Catch-Up badge
+    //
+    // The badge is a single "there is a recap waiting for you" dot: one ready,
+    // unacknowledged `catchup_recaps` row, never a count of unread sources.
 
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        vm.unreadDigestCount = 3
-        vm.updatedTrackCount = 5
-        vm.inboxPendingCount = 2
-        vm.unreadBriefingCount = 4
-        // Counts that must NOT contribute to the Catch-Up badge.
-        vm.activeTaskCount = 99
-        vm.recommendationCount = 7
-
-        XCTAssertEqual(vm.catchUpTotalCount, 3 + 5 + 2 + 4)
+    nonisolated private static func insertRecap(
+        _ db: Database, status: String, acknowledgedAt: String? = nil
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO catchup_recaps (period_from, period_to, status, acknowledged_at)
+                VALUES (1000, 2000, ?, ?)
+                """,
+            arguments: [status, acknowledgedAt]
+        )
     }
 
-    func testCatchUpTotalCountIsZeroWhenNoUnread() throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        XCTAssertEqual(vm.catchUpTotalCount, 0)
-    }
-
-    /// With an active session, the Catch-Up badge counts its pending themes,
-    /// not the raw unread sum.
-    func testCatchUpTotalCountIsPendingThemesOfActiveSession() async throws {
+    func testCatchUpBadgeIsOneWhenReadyUnacknowledgedRecapExists() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
         try await manager.dbPool.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO catchup_sessions (id, created_at, status, total_themes, reviewed_count)
-                    VALUES (1, '2026-06-20T00:00:00Z', 'active', 4, 1)
-                    """
-            )
-            // 3 pending + 1 reviewed theme; badge must be 3.
-            for i in 1...3 {
-                try db.execute(
-                    sql: """
-                        INSERT INTO catchup_themes (session_id, order_idx, title, created_at, updated_at, review_state)
-                        VALUES (1, ?, ?, '2026-06-20T00:00:00Z', '2026-06-20T00:00:00Z', 'pending')
-                        """,
-                    arguments: [i, "Theme \(i)"]
-                )
-            }
-            try db.execute(
-                sql: """
-                    INSERT INTO catchup_themes (session_id, order_idx, title, created_at, updated_at, review_state)
-                    VALUES (1, 4, 'Reviewed', '2026-06-20T00:00:00Z', '2026-06-20T00:00:00Z', 'reviewed')
-                    """
-            )
+            try Self.insertRecap(db, status: "ready")
         }
 
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        // Unread sum would be non-zero too; pending-themes must win.
-        vm.unreadDigestCount = 99
         await vm.loadInitial()
+        // Unread source counts must not contribute to the Catch-Up badge anymore.
+        vm.unreadDigestCount = 99
 
-        XCTAssertEqual(vm.catchUpTotalCount, 3)
+        XCTAssertEqual(vm.unacknowledgedRecapCount, 1)
+        XCTAssertEqual(vm.catchUpTotalCount, 1)
     }
 
-    /// With no active session, the badge falls back to the unread source sum.
-    func testCatchUpTotalCountFallsBackToUnreadSumWithNoSession() async throws {
+    func testCatchUpBadgeIsZeroWhenAcknowledged() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
+        try await manager.dbPool.write { db in
+            try Self.insertRecap(db, status: "ready", acknowledgedAt: "2026-09-04T10:00:00Z")
+        }
+
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
-        vm.unreadDigestCount = 3
-        vm.updatedTrackCount = 5
-        vm.inboxPendingCount = 2
-        vm.unreadBriefingCount = 4
 
-        XCTAssertEqual(vm.catchUpTotalCount, 3 + 5 + 2 + 4)
+        XCTAssertEqual(vm.catchUpTotalCount, 0)
+    }
+
+    func testCatchUpBadgeIgnoresBuildingAndFailed() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try await manager.dbPool.write { db in
+            try Self.insertRecap(db, status: "building")
+            try Self.insertRecap(db, status: "failed")
+        }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        XCTAssertEqual(vm.catchUpTotalCount, 0, "only a finished recap asks to be read")
     }
 
     /// The Dashboard sidebar badge is the count of open situations — the Feed tab

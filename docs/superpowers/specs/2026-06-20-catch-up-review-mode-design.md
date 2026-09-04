@@ -1,5 +1,7 @@
 # Catch-Up v2 — Review Mode with Learning Feedback
 
+> **Superseded** by `2026-09-04-catchup-absence-recap-design.md` (Catch-Up as an absence recap; the review-session model is retired).
+
 **Date:** 2026-06-20
 **Status:** Design approved, ready for implementation plan
 **Owner:** Vadym

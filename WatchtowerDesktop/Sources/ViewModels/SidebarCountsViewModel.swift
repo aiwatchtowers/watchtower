@@ -27,24 +27,19 @@ final class SidebarCountsViewModel {
     /// Ideas & Decisions awaiting owner review — freshly proposed, or flagged.
     var ideasCount: Int = 0
 
-    /// Pending themes of the active Catch-Up review session, or nil when no
-    /// session is active. When present, it drives the Catch-Up badge.
-    var pendingThemeCount: Int?
+    /// 1 while a finished absence recap is still waiting for "I'm caught up",
+    /// 0 otherwise — one recap waiting is the whole signal, so this never counts
+    /// higher.
+    var unacknowledgedRecapCount: Int = 0
 
-    /// The Catch-Up badge: pending themes of the active review session when one
-    /// exists, otherwise the unread source sum (digests + tracks + inbox + briefings).
-    var catchUpTotalCount: Int {
-        if let pending = pendingThemeCount {
-            return pending
-        }
-        return unreadDigestCount + updatedTrackCount + inboxPendingCount + unreadBriefingCount
-    }
+    /// The Catch-Up badge. Deliberately NOT an unread-source sum: catch-up is an
+    /// on-demand document, and the only thing the tab has to announce is that a
+    /// recap is ready to read.
+    var catchUpTotalCount: Int { unacknowledgedRecapCount }
 
     /// The Digests sidebar badge — matches the Digests screen's own tab-header
     /// sum (`DigestListView.tabLabel`): Slack digests + Gmail/Jira stream
-    /// digests + unread ledger decisions. Deliberately distinct from
-    /// `catchUpTotalCount`, which keeps its own digests+tracks+inbox+briefings
-    /// meaning.
+    /// digests + unread ledger decisions.
     var digestsBadgeCount: Int {
         unreadDigestCount + unreadStreamCount + unreadDecisionCount
     }
@@ -63,6 +58,14 @@ final class SidebarCountsViewModel {
         apply(counts)
     }
 
+    /// Reloads the counts on demand. The observation below only sees writes made
+    /// by THIS process, so a feature that shells out to the CLI (Catch-Up's
+    /// `catchup run`) asks for a refresh once its child process is done —
+    /// otherwise its badge keeps a stale count until the next in-process write.
+    func refresh() async {
+        await loadInitial()
+    }
+
     /// Begins observing the source tables and refreshes counts on each change.
     /// Idempotent — safe to call after `loadInitial()`.
     func startObserving() {
@@ -73,7 +76,7 @@ final class SidebarCountsViewModel {
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
                 let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
-                              "stream_digests", "catchup_sessions", "catchup_themes",
+                              "stream_digests", "catchup_recaps",
                               "situations", "memory_dispute_flags", "ideas"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
@@ -113,7 +116,7 @@ final class SidebarCountsViewModel {
         var situationsCount: Int
         var memoryDisputedCount: Int
         var ideasCount: Int
-        var pendingThemeCount: Int?
+        var unacknowledgedRecapCount: Int
 
         static let zero = Self(
             updatedTrackCount: 0,
@@ -130,28 +133,19 @@ final class SidebarCountsViewModel {
             situationsCount: 0,
             memoryDisputedCount: 0,
             ideasCount: 0,
-            pendingThemeCount: nil
+            unacknowledgedRecapCount: 0
         )
-    }
-
-    /// Count of pending themes in the active Catch-Up session, or nil when no
-    /// session is active (badge then falls back to the unread source sum).
-    nonisolated private static func pendingThemeCount(_ db: Database) throws -> Int? {
-        guard let session = try CatchUpQueries.fetchActiveSession(db) else { return nil }
-        return try Int.fetchOne(
-            db,
-            sql: "SELECT COUNT(*) FROM catchup_themes WHERE session_id = ? AND review_state = 'pending'",
-            arguments: [session.id]
-        ) ?? 0
     }
 
     private func fetch() async -> Counts {
         do {
             return try await dbPool.read { db -> Counts in
-                // Pending themes of the active Catch-Up session, when one exists.
-                // Computed independently of the current user so the badge works
-                // even before a workspace user is resolved.
-                let activeThemeCount = try Self.pendingThemeCount(db)
+                // A ready recap still waiting for "I'm caught up". Computed
+                // independently of the current user so the badge works even
+                // before a workspace user is resolved, and tolerant of a
+                // pre-catchup_recaps schema like the reads below it.
+                let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
+                let waitingRecap = hasWaitingRecap ? 1 : 0
                 // Open situations, likewise independent of the current user.
                 let openSituations = try SituationQueries.openCount(db)
                 // Memory disputes, tolerant of a pre-memory schema.
@@ -165,7 +159,7 @@ final class SidebarCountsViewModel {
 
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
                     var zero = Counts.zero
-                    zero.pendingThemeCount = activeThemeCount
+                    zero.unacknowledgedRecapCount = waitingRecap
                     zero.situationsCount = openSituations
                     zero.memoryDisputedCount = disputed
                     zero.ideasCount = ideasForReview
@@ -208,7 +202,7 @@ final class SidebarCountsViewModel {
                     situationsCount: openSituations,
                     memoryDisputedCount: disputed,
                     ideasCount: ideasForReview,
-                    pendingThemeCount: activeThemeCount
+                    unacknowledgedRecapCount: waitingRecap
                 )
             }
         } catch {
@@ -232,6 +226,6 @@ final class SidebarCountsViewModel {
         situationsCount = c.situationsCount
         memoryDisputedCount = c.memoryDisputedCount
         ideasCount = c.ideasCount
-        pendingThemeCount = c.pendingThemeCount
+        unacknowledgedRecapCount = c.unacknowledgedRecapCount
     }
 }

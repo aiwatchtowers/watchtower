@@ -113,6 +113,23 @@ final class StreamDigestQueriesTests: XCTestCase {
         XCTAssertEqual(firstReadAt, secondReadAt)
     }
 
+    // MARK: - fetchByID
+
+    func testFetchByIDResolvesOneRowAndNilForUnknown() throws {
+        let db = try TestDatabase.create()
+        let id = try db.write { db -> Int64 in
+            _ = try TestDatabase.insertStreamDigest(db, source: "gmail", scope: "other")
+            return try TestDatabase.insertStreamDigest(db, source: "jira", scope: "PROJ")
+        }
+
+        let digest = try db.read { try StreamDigestQueries.fetchByID($0, id: Int(id)) }
+
+        XCTAssertEqual(digest?.id, Int(id))
+        XCTAssertEqual(digest?.source, "jira")
+        XCTAssertEqual(digest?.scope, "PROJ")
+        XCTAssertNil(try db.read { try StreamDigestQueries.fetchByID($0, id: 9999) })
+    }
+
     func testUnreadCountCountsOnlyUnreadRows() throws {
         let db = try TestDatabase.create()
         try db.write { db in

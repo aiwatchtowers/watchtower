@@ -633,7 +633,15 @@ final class AppState {
     }
 
     private func initCatchUp(dbPool: DatabasePool) {
-        catchUpViewModel = CatchUpViewModel(dbPool: dbPool)
+        let vm = CatchUpViewModel(dbPool: dbPool)
+        // Catch-Up builds recaps in a CLI child process, whose writes the sidebar's
+        // ValueObservation cannot see, so the badge is refreshed explicitly once a
+        // run (or an acknowledge) has finished. The counts VM is resolved at call
+        // time, not captured: with onboarding pending it is built later still.
+        vm.onRecapsChanged = { [weak self] in
+            await self?.sidebarCountsViewModel?.refresh()
+        }
+        catchUpViewModel = vm
     }
 
     private func initMemory(dbPool: DatabasePool) {

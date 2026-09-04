@@ -2,170 +2,213 @@ package db
 
 import (
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestCatchupStore_SessionAndThemeRoundTrip(t *testing.T) {
-	database, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	defer database.Close()
+// catchupWindowBase is 2027-01-15T12:00:00Z. Acknowledge fixtures hang off it
+// so the window sits at local midday in every time zone: AcknowledgeCatchupWindow
+// compares briefings.date against LOCAL dates, and a window straddling a local
+// midnight would need two dates instead of one.
+const catchupWindowBase = 1_800_014_400
 
-	// Create a session — starts in 'building'.
-	sessionID, err := database.CreateCatchupSession()
-	if err != nil {
-		t.Fatalf("CreateCatchupSession: %v", err)
-	}
-	if sessionID == 0 {
-		t.Fatal("expected non-zero session id")
-	}
-
-	// Insert a skeleton theme.
-	themeID, err := database.InsertCatchupTheme(CatchupTheme{
-		SessionID: sessionID,
-		OrderIdx:  0,
-		Title:     "Release coordination",
-		Priority:  "high",
-		RefsJSON:  `[{"area":"digest","id":7,"label":"eng digest"}]`,
-		GenState:  "skeleton",
-	})
-	if err != nil {
-		t.Fatalf("InsertCatchupTheme: %v", err)
-	}
-	if themeID == 0 {
-		t.Fatal("expected non-zero theme id")
-	}
-
-	// Update its expansion.
-	if err := database.UpdateCatchupThemeExpansion(themeID, "The team aligned on the cut.", "high", true, "Confirm the date", "ready"); err != nil {
-		t.Fatalf("UpdateCatchupThemeExpansion: %v", err)
-	}
-
-	// Set session totals.
-	if err := database.SetCatchupSessionTotals(sessionID, 1); err != nil {
-		t.Fatalf("SetCatchupSessionTotals: %v", err)
-	}
-
-	// GetCatchupTheme round-trips the fields.
-	theme, err := database.GetCatchupTheme(themeID)
-	if err != nil {
-		t.Fatalf("GetCatchupTheme: %v", err)
-	}
-	if theme.Title != "Release coordination" {
-		t.Errorf("title = %q, want %q", theme.Title, "Release coordination")
-	}
-	if theme.Narrative != "The team aligned on the cut." {
-		t.Errorf("narrative = %q, want expansion narrative", theme.Narrative)
-	}
-	if theme.Priority != "high" {
-		t.Errorf("priority = %q, want high", theme.Priority)
-	}
-	if !theme.NeedsYou {
-		t.Error("needs_you = false, want true")
-	}
-	if theme.SuggestedAction != "Confirm the date" {
-		t.Errorf("suggested_action = %q, want %q", theme.SuggestedAction, "Confirm the date")
-	}
-	if theme.GenState != "ready" {
-		t.Errorf("gen_state = %q, want ready", theme.GenState)
-	}
-	if theme.ReviewState != "pending" {
-		t.Errorf("review_state = %q, want pending", theme.ReviewState)
-	}
-	if theme.RefsJSON != `[{"area":"digest","id":7,"label":"eng digest"}]` {
-		t.Errorf("refs = %q, want round-tripped JSON", theme.RefsJSON)
-	}
-
-	// ListCatchupThemes returns it.
-	themes, err := database.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatalf("ListCatchupThemes: %v", err)
-	}
-	if len(themes) != 1 {
-		t.Fatalf("ListCatchupThemes returned %d themes, want 1", len(themes))
-	}
-	if themes[0].ID != themeID {
-		t.Errorf("listed theme id = %d, want %d", themes[0].ID, themeID)
-	}
-
-	// SetCatchupThemeReview + SetCatchupThemeTask persist.
-	if err := database.SetCatchupThemeReview(themeID, "reviewed", ""); err != nil {
-		t.Fatalf("SetCatchupThemeReview: %v", err)
-	}
-	if err := database.SetCatchupThemeTask(themeID, 42); err != nil {
-		t.Fatalf("SetCatchupThemeTask: %v", err)
-	}
-	theme, err = database.GetCatchupTheme(themeID)
-	if err != nil {
-		t.Fatalf("GetCatchupTheme after updates: %v", err)
-	}
-	if theme.ReviewState != "reviewed" {
-		t.Errorf("review_state = %q, want reviewed", theme.ReviewState)
-	}
-	if theme.TaskID != 42 {
-		t.Errorf("task_id = %d, want 42", theme.TaskID)
-	}
-
-	// IncrementReviewed bumps the session counter.
-	if err := database.IncrementReviewed(sessionID); err != nil {
-		t.Fatalf("IncrementReviewed: %v", err)
-	}
+// catchupISO renders a unix second the way the store's ISO comparisons expect.
+func catchupISO(unix int64) string {
+	return time.Unix(unix, 0).UTC().Format("2006-01-02T15:04:05Z")
 }
 
-func TestCatchupStore_ActiveSessionLifecycle(t *testing.T) {
-	database, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("opening db: %v", err)
-	}
-	defer database.Close()
+func TestCatchupRecapLifecycle(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	r, err := d.GetCatchupRecap(id)
+	require.NoError(t, err)
+	assert.Equal(t, "building", r.Status)
+	assert.Equal(t, 100.0, r.PeriodFrom)
 
-	// No sessions yet → nil.
-	got, err := database.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatalf("GetActiveCatchupSession (empty): %v", err)
-	}
-	if got != nil {
-		t.Fatalf("expected nil active session, got %+v", got)
-	}
+	require.NoError(t, d.FinishCatchupRecap(id, "tl;dr", `{"topics":[]}`, `{"topup":"ok"}`, "sonnet", 10, 5, 0.01))
+	r, err = d.GetCatchupRecap(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", r.Status)
+	assert.Equal(t, "tl;dr", r.TLDR)
+	assert.Equal(t, `{"topics":[]}`, r.BodyJSON)
+	assert.Equal(t, 10, r.InputTokens)
 
-	sessionID, err := database.CreateCatchupSession()
-	if err != nil {
-		t.Fatalf("CreateCatchupSession: %v", err)
-	}
+	id2, err := d.InsertCatchupRecap(100, 200, id)
+	require.NoError(t, err)
+	require.NoError(t, d.FailCatchupRecap(id2, `{"topup":"skipped"}`, "boom"))
+	r2, err := d.GetCatchupRecap(id2)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", r2.Status)
+	assert.Equal(t, "boom", r2.Error)
+	assert.Equal(t, id, r2.RegenOfID)
 
-	// 'building' counts as active (non-done/non-failed).
-	got, err = database.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatalf("GetActiveCatchupSession (building): %v", err)
-	}
-	if got == nil || got.ID != sessionID {
-		t.Fatalf("expected active session %d, got %+v", sessionID, got)
-	}
-	if got.Status != "building" {
-		t.Errorf("status = %q, want building", got.Status)
-	}
+	list, err := d.ListCatchupRecaps(10)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, id2, list[0].ID, "newest first")
 
-	// Flip to active via SetCatchupSessionStatus — still active.
-	if err := database.SetCatchupSessionStatus(sessionID, "active"); err != nil {
-		t.Fatalf("SetCatchupSessionStatus: %v", err)
-	}
-	got, err = database.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatalf("GetActiveCatchupSession (active): %v", err)
-	}
-	if got == nil || got.Status != "active" {
-		t.Fatalf("expected active status, got %+v", got)
-	}
+	_, err = d.GetCatchupRecap(999)
+	assert.Error(t, err)
+}
 
-	// CloseOpenCatchupSessions marks it done.
-	if err := database.CloseOpenCatchupSessions(); err != nil {
-		t.Fatalf("CloseOpenCatchupSessions: %v", err)
-	}
-	got, err = database.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatalf("GetActiveCatchupSession (after close): %v", err)
-	}
-	if got != nil {
-		t.Fatalf("expected nil active session after close, got %+v", got)
-	}
+func TestLastAcknowledgedCatchupTo(t *testing.T) {
+	d := openTestDB(t)
+	got, err := d.LastAcknowledgedCatchupTo()
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, got, "no recaps → 0")
+
+	a, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	b, err := d.InsertCatchupRecap(200, 300, 0)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE catchup_recaps SET acknowledged_at='2026-09-04T10:00:00Z' WHERE id=?`, a)
+	require.NoError(t, err)
+	got, err = d.LastAcknowledgedCatchupTo()
+	require.NoError(t, err)
+	assert.Equal(t, 200.0, got, "only acknowledged recaps count; b (%d) is unacknowledged", b)
+}
+
+// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+func TestCatchup01_AcknowledgeMarksWindowRead(t *testing.T) {
+	d := openTestDB(t)
+	from, to := float64(catchupWindowBase+1000), float64(catchupWindowBase+2000)
+
+	// in-window rows
+	in, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'in')`,
+		catchupWindowBase+1500, catchupWindowBase+1600)
+	require.NoError(t, err)
+	inID, err := in.LastInsertId()
+	require.NoError(t, err)
+	out, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'out')`,
+		catchupWindowBase+2500, catchupWindowBase+2600)
+	require.NoError(t, err)
+	outID, err := out.LastInsertId()
+	require.NoError(t, err)
+	// Straddles the window start: the gather cites it, so the ack must mark it.
+	straddle, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'straddle')`,
+		catchupWindowBase+500, catchupWindowBase+1200)
+	require.NoError(t, err)
+	straddleID, err := straddle.LastInsertId()
+	require.NoError(t, err)
+	// A top-up digest: generated by the run itself, so its period_to carries its
+	// own time.Now() and lands just past the window's `to`.
+	topup, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'topup')`,
+		catchupWindowBase+1900, catchupWindowBase+2001)
+	require.NoError(t, err)
+	topupID, err := topup.LastInsertId()
+	require.NoError(t, err)
+	// Non-channel digests are not a catch-up surface and must stay untouched.
+	daily, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'daily', 'daily')`,
+		catchupWindowBase+1500, catchupWindowBase+1600)
+	require.NoError(t, err)
+	dailyID, err := daily.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO stream_digests (source, account_id, period_from, period_to) VALUES ('gmail', 1, ?, ?), ('gmail', 1, ?, ?), ('gmail', 1, ?, ?)`,
+		catchupISO(catchupWindowBase+1500), catchupISO(catchupWindowBase+1600), // inside
+		catchupISO(catchupWindowBase+500), catchupISO(catchupWindowBase+1200), // straddles the start
+		catchupISO(catchupWindowBase+1900), catchupISO(catchupWindowBase+2001)) // top-up, ends past `to`
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO stream_digests (source, account_id, period_from, period_to) VALUES ('gmail', 1, ?, ?)`,
+		catchupISO(catchupWindowBase+2500), catchupISO(catchupWindowBase+2600))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO tracks (text, updated_at, has_updates, dismissed_at) VALUES ('t', ?, 1, '')`,
+		catchupISO(catchupWindowBase+1500))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES ('1:C1', '1500.0', '1:U1', 'mention', ?)`,
+		catchupISO(catchupWindowBase+1500))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO briefings (user_id, date) VALUES ('1:U0', ?)`,
+		time.Unix(catchupWindowBase+1500, 0).Local().Format("2006-01-02"))
+	require.NoError(t, err)
+
+	id, err := d.InsertCatchupRecap(from, to, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
+
+	var readAt *string
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests WHERE id=?`, inID).Scan(&readAt))
+	assert.NotNil(t, readAt, "in-window digest read")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests WHERE id=?`, straddleID).Scan(&readAt))
+	assert.NotNil(t, readAt, "digest straddling the window start read")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests WHERE id=?`, topupID).Scan(&readAt))
+	assert.NotNil(t, readAt, "top-up digest ending past `to` read — the recap cited it")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests WHERE id=?`, outID).Scan(&readAt))
+	assert.Nil(t, readAt, "outside-window digest untouched")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests WHERE id=?`, dailyID).Scan(&readAt))
+	assert.Nil(t, readAt, "non-channel digest untouched")
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM stream_digests WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 3, n, "in-window, straddling and top-up stream digests read; the one after the window is not")
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM tracks WHERE read_at IS NOT NULL AND has_updates = 0`).Scan(&n))
+	assert.Equal(t, 1, n)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 1, n)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM briefings WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 1, n)
+	r, err := d.GetCatchupRecap(id)
+	require.NoError(t, err)
+	assert.NotEmpty(t, r.AcknowledgedAt)
+}
+
+// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+//
+// `to` is an exclusive instant, so a window ending exactly on a local midnight
+// (what the `yesterday` preset resolves to) covers the day BEFORE it: the
+// briefing dated the day the window ends on must stay unread.
+func TestCatchup01_AcknowledgeMarksWindowReadMidnightTo(t *testing.T) {
+	d := openTestDB(t)
+	// Midnight in the RUNNING time zone: briefings.date is a local calendar date,
+	// so the fixture has to be built with the same conversion the store applies.
+	base := time.Unix(catchupWindowBase, 0).Local()
+	midnight := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())
+	from, to := float64(midnight.AddDate(0, 0, -1).Unix()), float64(midnight.Unix())
+
+	_, err := d.Exec(`INSERT INTO briefings (user_id, date) VALUES ('1:U0', ?), ('1:U0', ?)`,
+		midnight.AddDate(0, 0, -1).Format("2006-01-02"), midnight.Format("2006-01-02"))
+	require.NoError(t, err)
+
+	id, err := d.InsertCatchupRecap(from, to, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
+
+	var readAt *string
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM briefings WHERE date=?`,
+		midnight.AddDate(0, 0, -1).Format("2006-01-02")).Scan(&readAt))
+	assert.NotNil(t, readAt, "the day the window actually covers is marked read")
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM briefings WHERE date=?`,
+		midnight.Format("2006-01-02")).Scan(&readAt))
+	assert.Nil(t, readAt, "the briefing for the day the window ENDS on stays unread")
+}
+
+// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+func TestCatchup01_AcknowledgeIsIdempotent(t *testing.T) {
+	d := openTestDB(t)
+	from, to := float64(catchupWindowBase+1000), float64(catchupWindowBase+2000)
+
+	_, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, read_at) VALUES ('1:C1', ?, ?, 'channel', 'x', '2020-01-01T00:00:00Z')`,
+		catchupWindowBase+1500, catchupWindowBase+1600)
+	require.NoError(t, err)
+	id, err := d.InsertCatchupRecap(from, to, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
+	first, err := d.GetCatchupRecap(id)
+	require.NoError(t, err)
+	assert.NotEmpty(t, first.AcknowledgedAt)
+
+	// Both acks land in the same wall-clock second, so an equal stamp would prove
+	// nothing: rewrite it to a sentinel only the `acknowledged_at IS NULL` guard
+	// could preserve (the Swift twin's technique).
+	_, err = d.Exec(`UPDATE catchup_recaps SET acknowledged_at='2020-06-01T00:00:00Z' WHERE id=?`, id)
+	require.NoError(t, err)
+
+	require.NoError(t, d.AcknowledgeCatchupWindow(id, from, to))
+	second, err := d.GetCatchupRecap(id)
+	require.NoError(t, err)
+	assert.Equal(t, "2020-06-01T00:00:00Z", second.AcknowledgedAt, "second ack keeps the first stamp")
+	var readAt string
+	require.NoError(t, d.QueryRow(`SELECT read_at FROM digests`).Scan(&readAt))
+	assert.Equal(t, "2020-01-01T00:00:00Z", readAt, "already-read rows keep their stamp")
 }

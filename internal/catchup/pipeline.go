@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -13,509 +13,309 @@ import (
 	"watchtower/internal/prompts"
 )
 
-// Pipeline assembles a persisted catch-up review session: gather → peel (one
-// theme skeleton per round) → expand (per-theme narrative). Themes are written
-// incrementally so the UI streams them in via observation.
+// topUpFreshness is how close to now a window must end for the coverage top-up
+// to be worth running: an older window is already covered by the digests the
+// daemon wrote at the time.
+const topUpFreshness = 5 * time.Minute
+
+// catchupRulesLimit bounds the learned rules injected into the compose prompt.
+const catchupRulesLimit = 20
+
+// Recap statuses, mirroring catchup_recaps.status.
+const (
+	statusReady  = "ready"
+	statusFailed = "failed"
+)
+
+// TopUp is the coverage top-up seam: the two digest pipelines that feed a recap
+// window, refreshed just before it is read. The CLI wires the real pipelines;
+// tests inject fakes.
+type TopUp interface {
+	ChannelDigests(ctx context.Context) error
+	StreamDigests(ctx context.Context) error
+}
+
+// Pipeline builds one absence recap per window: top up the source digests,
+// gather everything the window produced, compose it into a single document and
+// persist it.
 type Pipeline struct {
-	db     *db.DB
-	cfg    *config.Config
-	gen    digest.Generator
-	logger *log.Logger
+	db          *db.DB
+	cfg         *config.Config
+	gen         digest.Generator
+	logger      *log.Logger
+	promptStore *prompts.Store
+	topUp       TopUp
+	now         func() time.Time
 }
 
-// New constructs a catch-up Pipeline.
+// New constructs a catch-up Pipeline reading the wall clock.
 func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) *Pipeline {
-	return &Pipeline{db: database, cfg: cfg, gen: gen, logger: logger}
+	return &Pipeline{db: database, cfg: cfg, gen: gen, logger: logger, now: time.Now}
 }
 
-// withLanguage appends the workspace response-language directive to a base
-// system prompt. Every catch-up AI call routes through this so the model
-// answers in the operator's configured language instead of defaulting to
-// English.
-func (p *Pipeline) withLanguage(base string) string {
-	return base + "\n\n" + prompts.Directive(p.cfg.Digest.Language)
+// SetPromptStore wires the operator-customisable prompt store.
+func (p *Pipeline) SetPromptStore(s *prompts.Store) { p.promptStore = s }
+
+// SetTopUp wires the coverage top-up seam. Without it the top-up is skipped.
+func (p *Pipeline) SetTopUp(t TopUp) { p.topUp = t }
+
+// RunOptions asks for one recap. RegenOfID > 0 regenerates an existing recap's
+// window with Correction applied over the model's own judgement.
+type RunOptions struct {
+	Spec       WindowSpec
+	RegenOfID  int64
+	Correction string
 }
 
-// gatheredSection is the (capped) unread set for one area.
-type gatheredSection struct {
-	area  string
-	items []db.UnreadItem
+// RunResult reports what one Run produced. Status is the persisted recap status
+// ("ready" | "failed"); Error carries the failure the row records.
+type RunResult struct {
+	RecapID      int64
+	Status       string
+	Window       Window
+	Coverage     Coverage
+	RefsRejected int
+	Error        string
 }
 
-// gatherResult is the full unread snapshot driving the peel pass. byRef indexes
-// every gathered item by (area, id) so peel refs can be validated and labeled.
-type gatherResult struct {
-	sections   []gatheredSection
-	byRef      map[refKey]db.UnreadItem
-	totalCount int
-}
-
-type refKey struct {
-	area string
-	id   int
-}
-
-// Run builds a new review session over the currently-unread items. It closes any
-// open session, gathers unread items, and—if anything is unread—creates a
-// session and runs the peel loop (one theme per round, expand dispatched
-// concurrently). When nothing is unread it returns (0, nil) and creates no
-// session. Returns the new session id.
-func (p *Pipeline) Run(ctx context.Context) (int64, error) {
-	if err := p.db.CloseOpenCatchupSessions(); err != nil {
-		return 0, err
-	}
-
-	g, err := p.gather()
-	if err != nil {
-		return 0, err
-	}
-	// Nothing unread → no session, no AI call.
-	if g.totalCount == 0 {
-		return 0, nil
-	}
-
-	sessionID, err := p.db.CreateCatchupSession()
-	if err != nil {
-		return 0, err
-	}
-
-	themes, leftover, stoppedClean, err := p.peel(ctx, sessionID, g)
-	if err != nil {
-		// A peel round errored before any theme was found: there is nothing to
-		// review. Mark the session failed so the UI can offer a retry.
-		if serr := p.db.SetCatchupSessionStatus(sessionID, "failed"); serr != nil {
-			p.logf("catchup: marking session %d failed: %v", sessionID, serr)
-		}
-		return sessionID, err
-	}
-	if err := p.db.SetCatchupSessionTotals(sessionID, len(themes)); err != nil {
-		return sessionID, err
-	}
-	// On a clean exit (model said done or the pool drained) the leftover pool is
-	// model-judged noise — mark it read so catch-up actually clears the backlog.
-	// On an error/safety-cap exit the leftover is unprocessed, so it is left
-	// untouched (still unread).
-	if stoppedClean {
-		p.markLeftoverRead(leftover)
-	}
-
-	if err := p.db.SetCatchupSessionStatus(sessionID, "active"); err != nil {
-		return sessionID, err
-	}
-	return sessionID, nil
-}
-
-// gather pulls compact unread records per area, applies caps, and indexes them
-// by (area, id) so the expand phase can resolve refs back to snippets.
-func (p *Pipeline) gather() (gatherResult, error) {
-	caps := p.cfg.Catchup.Caps
-	maxAge := p.cfg.Catchup.MaxAgeDays
-
-	dItems, dTotal, err := p.db.GetUnreadDigests(caps.Digests, maxAge)
-	if err != nil {
-		return gatherResult{}, err
-	}
-	tItems, tTotal, err := p.db.GetUnreadTracks(caps.Tracks, maxAge)
-	if err != nil {
-		return gatherResult{}, err
-	}
-	iItems, iTotal, err := p.db.GetUnreadInboxItems(caps.Inbox, maxAge)
-	if err != nil {
-		return gatherResult{}, err
-	}
-	bItems, bTotal, err := p.db.GetUnreadBriefings(caps.Briefings, maxAge)
-	if err != nil {
-		return gatherResult{}, err
-	}
-
-	sections := []gatheredSection{
-		{area: "digests", items: dItems},
-		{area: "tracks", items: tItems},
-		{area: "inbox", items: iItems},
-		{area: "briefings", items: bItems},
-	}
-
-	byRef := make(map[refKey]db.UnreadItem)
-	for _, s := range sections {
-		for _, it := range s.items {
-			byRef[refKey{area: s.area, id: it.ID}] = it
-		}
-	}
-
-	return gatherResult{
-		sections:   sections,
-		byRef:      byRef,
-		totalCount: dTotal + tTotal + iTotal + bTotal,
-	}, nil
-}
-
-// maxPeelRounds bounds the sequential peel loop. It is a runaway guard, not a
-// theme ceiling: the loop normally stops when the model returns {"done":true}.
-const maxPeelRounds = 25
-
-// peel runs the sequential peel-off loop. Each round sends the remaining unread
-// pool to the light model, which returns the single most important theme or
-// {"done":true}. A returned theme's refs are validated against the pool,
-// persisted as a skeleton, and its expand dispatched concurrently; the claimed
-// items are removed from the pool so the next round narrows.
+// Run builds and persists one recap.
 //
-// It returns the persisted themes (in discovery order), the leftover (unclaimed)
-// pool keys, and stoppedClean=true only when the loop ended via done or an empty
-// pool — so the caller may mark leftover read. fatal is non-nil ONLY when a
-// round errored before any theme was found, so the caller can fail the session.
-// All dispatched expands are awaited before peel returns (deferred wg.Wait).
-func (p *Pipeline) peel(ctx context.Context, sessionID int64, g gatherResult) (themes []db.CatchupTheme, leftover []refKey, stoppedClean bool, fatal error) {
-	prefs := p.catchupPrefs()
-	targets := p.targetsLine()
-
-	claimed := make(map[refKey]bool)
-
-	workers := p.cfg.AI.Workers
-	if workers <= 0 {
-		workers = config.DefaultAIWorkers
-	}
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
-	defer wg.Wait()
-
-	orderIdx := 0
-	for round := 0; round < maxPeelRounds; round++ {
-		sections := unclaimedSections(g.sections, claimed)
-		if sectionsEmpty(sections) {
-			stoppedClean = true
-			break
-		}
-
-		user := buildPeelUserMessage(sections, targets)
-		if prefs != "" {
-			user = prefs + "\n" + user
-		}
-		raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.peel"), p.withLanguage(peelSystemPrompt), user, "")
-		if err != nil {
-			p.logf("catchup: peel round %d AI error: %v", round, err)
-			if len(themes) == 0 {
-				fatal = fmt.Errorf("catchup peel: %w", err)
-			}
-			return themes, unclaimedKeys(g, claimed), false, fatal
-		}
-		parsed, err := parsePeel(raw)
-		if err != nil {
-			p.logf("catchup: peel round %d parse error: %v", round, err)
-			if len(themes) == 0 {
-				fatal = err
-			}
-			return themes, unclaimedKeys(g, claimed), false, fatal
-		}
-		if parsed.Done {
-			// Affirmative "only noise left" — the one signal that authorises
-			// clearing the leftover pool as read.
-			stoppedClean = true
-			break
-		}
-		if parsed.Theme == nil {
-			// Valid JSON but neither a theme nor done — a degenerate model
-			// response (e.g. `{}`, the legacy `{"themes":[...]}` shape), NOT an
-			// operator-judged "all noise" signal. Stop, keep themes so far, and
-			// leave the leftover UNREAD (like an error exit). Conflating this with
-			// done would silently mark the whole unread backlog read.
-			p.logf("catchup: peel round %d returned neither a theme nor done; stopping without clearing leftover", round)
-			break
-		}
-
-		refs := p.validatePeelRefs(parsed.Theme.Refs, g, claimed)
-		if len(refs) == 0 {
-			// The model produced a theme but none of its refs validated (unknown
-			// or already-claimed ids) — a misfire, not "the rest is noise". Stop
-			// without clearing the leftover so it stays unread (like an error exit).
-			p.logf("catchup: peel round %d returned a theme with no valid refs; stopping without clearing leftover", round)
-			break
-		}
-
-		refsJSON, err := json.Marshal(refs)
-		if err != nil {
-			return themes, unclaimedKeys(g, claimed), false, fmt.Errorf("encoding theme refs: %w", err)
-		}
-		t := db.CatchupTheme{
-			SessionID: sessionID,
-			OrderIdx:  orderIdx,
-			Title:     parsed.Theme.Title,
-			Priority:  normalizePriority(parsed.Theme.Priority, "medium"),
-			RefsJSON:  string(refsJSON),
-			GenState:  "skeleton",
-		}
-		id, err := p.db.InsertCatchupTheme(t)
-		if err != nil {
-			return themes, unclaimedKeys(g, claimed), false, fmt.Errorf("inserting peel theme: %w", err)
-		}
-		t.ID = id
-		themes = append(themes, t)
-		orderIdx++
-		for _, r := range refs {
-			claimed[refKey{area: r.Area, id: r.ID}] = true
-		}
-
-		// Dispatch expand concurrently so the narrative is written while the next
-		// peel round runs. Per-theme failure is isolated by expandOne
-		// (gen_state='failed'); it never aborts the run (CATCHUP-03).
-		wg.Add(1)
-		go func(theme db.CatchupTheme) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			_ = p.expandOne(ctx, theme, "", prefs)
-		}(t)
-	}
-
-	return themes, unclaimedKeys(g, claimed), stoppedClean, nil
-}
-
-// validatePeelRefs keeps only refs that are in the gathered snapshot and not yet
-// claimed by an earlier round, filling a fallback label when the model omits one.
-func (p *Pipeline) validatePeelRefs(refs []db.CatchupRef, g gatherResult, claimed map[refKey]bool) []db.CatchupRef {
-	out := make([]db.CatchupRef, 0, len(refs))
-	for _, r := range refs {
-		k := refKey{area: r.Area, id: r.ID}
-		item, ok := g.byRef[k]
-		if !ok {
-			p.logf("catchup: dropping peel ref to unknown item %s#%d", r.Area, r.ID)
-			continue
-		}
-		if claimed[k] {
-			p.logf("catchup: dropping peel ref to already-claimed item %s#%d", r.Area, r.ID)
-			continue
-		}
-		if r.Label == "" {
-			r.Label = refLabel(r.Area, item)
-		}
-		out = append(out, r)
-	}
-	return out
-}
-
-// unclaimedSections rebuilds per-area sections from the gathered snapshot minus
-// the claimed items, preserving the original area and item order.
-func unclaimedSections(src []gatheredSection, claimed map[refKey]bool) []gatheredSection {
-	out := make([]gatheredSection, 0, len(src))
-	for _, s := range src {
-		var items []db.UnreadItem
-		for _, it := range s.items {
-			if !claimed[refKey{area: s.area, id: it.ID}] {
-				items = append(items, it)
-			}
-		}
-		out = append(out, gatheredSection{area: s.area, items: items})
-	}
-	return out
-}
-
-// sectionsEmpty reports whether every section's item list is empty.
-func sectionsEmpty(sections []gatheredSection) bool {
-	for _, s := range sections {
-		if len(s.items) > 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// unclaimedKeys returns every gathered (area,id) not yet claimed by a theme.
-func unclaimedKeys(g gatherResult, claimed map[refKey]bool) []refKey {
-	out := make([]refKey, 0)
-	for k := range g.byRef {
-		if !claimed[k] {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-// expandOne runs the single-theme expand AI call and persists the result. On any
-// error (mark expanding, AI call, parse) it sets gen_state='failed' and logs.
-// An optional operator correction is appended to the prompt for regen.
-func (p *Pipeline) expandOne(ctx context.Context, theme db.CatchupTheme, comment, prefs string) error {
-	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, theme.Priority, theme.NeedsYou, theme.SuggestedAction, "expanding"); err != nil {
-		p.logf("catchup: marking theme %d expanding: %v", theme.ID, err)
-	}
-
-	sources := p.resolveExpandSources(theme)
-	user := buildExpandUserMessage(theme, sources, comment)
-	if prefs != "" {
-		user = prefs + "\n" + user
-	}
-	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.expand"), p.withLanguage(expandSystemPrompt), user, "")
+// It returns an error only when nothing was recorded for the operator to see:
+// an invalid window, a missing regen source, or a database write that failed —
+// and then the result carries only the recap id, if a row was created. Every
+// content failure (gather, AI call, unparseable output) is persisted on the row
+// as status='failed' and returned with a nil error, so a failed recap is
+// something the operator can look at and retry rather than a lost run.
+func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+	w, err := p.resolveRunWindow(opts)
 	if err != nil {
-		p.failTheme(theme, "expand AI call", err)
-		return fmt.Errorf("catchup expand theme %d: %w", theme.ID, err)
+		return RunResult{}, err
 	}
-	parsed, err := parseExpand(raw)
+	from, to := float64(w.From.Unix()), float64(w.To.Unix())
+	id, err := p.db.InsertCatchupRecap(from, to, opts.RegenOfID)
 	if err != nil {
-		p.failTheme(theme, "expand parse", err)
-		return fmt.Errorf("catchup expand theme %d: %w", theme.ID, err)
+		return RunResult{}, err
 	}
+	// The row is now 'building'; every path below either finishes or fails it.
+	res := RunResult{RecapID: id, Status: statusReady, Window: w}
+	res.Coverage = p.runTopUp(ctx, opts, w)
 
-	priority := normalizePriority(parsed.Priority, theme.Priority)
-	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, parsed.Narrative, priority, parsed.NeedsYou, parsed.SuggestedAction, "ready"); err != nil {
-		p.logf("catchup: writing expansion for theme %d: %v", theme.ID, err)
-		return fmt.Errorf("catchup write expansion theme %d: %w", theme.ID, err)
-	}
-	return nil
-}
-
-// failTheme marks a theme gen_state='failed' and logs the cause, best-effort.
-// Existing fields are preserved (priority must stay a valid CHECK value).
-func (p *Pipeline) failTheme(theme db.CatchupTheme, stage string, cause error) {
-	p.logf("catchup: theme %d %s failed: %v", theme.ID, stage, cause)
-	priority := normalizePriority(theme.Priority, "medium")
-	if err := p.db.UpdateCatchupThemeExpansion(theme.ID, theme.Narrative, priority, theme.NeedsYou, theme.SuggestedAction, "failed"); err != nil {
-		p.logf("catchup: marking theme %d failed: %v", theme.ID, err)
-	}
-}
-
-// normalizePriority returns p when it is a valid CHECK value, else fallback.
-func normalizePriority(p, fallback string) string {
-	switch p {
-	case "high", "medium", "low":
-		return p
-	default:
-		return fallback
-	}
-}
-
-// resolveExpandSources turns a theme's snapshot refs back into source records
-// (title + snippet) for the expand prompt. Refs whose items can no longer be
-// resolved are skipped, so a deleted source never aborts expansion.
-func (p *Pipeline) resolveExpandSources(theme db.CatchupTheme) []expandSource {
-	refs, err := parseRefs(theme.RefsJSON)
+	g, err := p.gather(from, to)
 	if err != nil {
-		p.logf("catchup: theme %d refs unparseable: %v", theme.ID, err)
-		return nil
+		return p.failRun(res, err)
 	}
-	var out []expandSource
-	for _, r := range refs {
-		title, snippet, err := p.db.FetchItemSnippet(r.Area, r.ID)
-		if err != nil {
-			p.logf("catchup: theme %d source %s#%d unavailable: %v", theme.ID, r.Area, r.ID, err)
-			if r.Label != "" {
-				out = append(out, expandSource{Area: r.Area, ID: r.ID, Title: r.Label})
-			}
-			continue
-		}
-		out = append(out, expandSource{Area: r.Area, ID: r.ID, Title: title, Snippet: snippet})
+	// Coverage is how the recap admits what it could not see, so a failed read
+	// fails the row rather than reporting a zero the UI would show as a real gap.
+	res.Coverage.SlackTo, res.Coverage.StreamsTo, err = p.db.CatchupCoverage(from, to)
+	if err != nil {
+		return p.failRun(res, err)
 	}
-	return out
+	// Counted before the prompt budget trims anything, so coverage reports the
+	// window's real meeting count (meetings are never trimmed anyway).
+	res.Coverage.Meetings = len(g.Meetings)
+
+	// Nothing happened in the window: a real, empty recap and no AI call.
+	if g.isEmpty() {
+		return p.finish(res, "", Body{}, nil)
+	}
+
+	profile, err := p.db.GetSecretaryProfile()
+	if err != nil {
+		p.logf("catchup: reading the operator profile failed, composing without it: %v", err)
+	}
+	in := promptInput{Window: w, Profile: profile, Prefs: p.learnedPrefs(), Correction: opts.Correction}
+	user, used := buildComposeUserMessage(in, g, p.cfg.Catchup.MaxPromptChars)
+	system := fmt.Sprintf(p.getPrompt(prompts.CatchupCompose), prompts.Directive(p.cfg.Digest.Language))
+
+	raw, usage, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.compose"), system, user, "")
+	if err != nil {
+		return p.failRun(res, fmt.Errorf("composing catch-up recap: %w", err))
+	}
+	parsed, err := parseCompose(raw)
+	if err != nil {
+		return p.failRun(res, err)
+	}
+	body, rejected := validateBody(parsed, used.byRef)
+	res.RefsRejected = rejected
+	return p.finish(res, parsed.TLDR, body, usage)
 }
 
-// RegenTheme re-runs the expand pass for a single theme with the operator's
-// comment appended as a correction, overwriting the row in place. The theme's
-// review_state is preserved (regen rebuilds only the catch-up layer).
-func (p *Pipeline) RegenTheme(ctx context.Context, themeID int64, comment string) error {
-	theme, err := p.db.GetCatchupTheme(themeID)
+// Acknowledge marks the recap's whole window read across every source surface
+// and stamps the recap itself acknowledged (CATCHUP-01).
+//
+// Only a 'ready' recap can be acknowledged: a building row's window may still
+// change nothing, and a failed one never told the operator what happened —
+// marking either one's window read would silently swallow everything in it.
+func (p *Pipeline) Acknowledge(recapID int64) error {
+	r, err := p.db.GetCatchupRecap(recapID)
 	if err != nil {
 		return err
 	}
-	// Unlike the batch fan-out, a regen is an explicit single-theme action: the
-	// caller (CLI/UI) must learn if it failed, so propagate the error.
-	return p.expandOne(ctx, *theme, comment, p.catchupPrefs())
+	if r.Status != statusReady {
+		return fmt.Errorf("catch-up recap %d is %s, not ready", recapID, r.Status)
+	}
+	return p.db.AcknowledgeCatchupWindow(recapID, r.PeriodFrom, r.PeriodTo)
 }
 
-// maxCatchupPrefs caps how many learned rules are injected into a prompt.
-const maxCatchupPrefs = 20
-
-// catchupPrefs loads the catchup-pipeline learned rules (derived from the
-// operator's review feedback) and formats them for the peel/expand prompts so
-// the model honors accumulated preferences. Best-effort: any error yields an
-// empty block so a rules-load failure never blocks a run.
-func (p *Pipeline) catchupPrefs() string {
-	rules, err := p.db.ListLearnedRulesByPipeline("catchup", maxCatchupPrefs)
+// resolveRunWindow picks the window this run covers. A regen reuses its source
+// recap's window verbatim so the correction is applied to the same material.
+func (p *Pipeline) resolveRunWindow(opts RunOptions) (Window, error) {
+	if opts.RegenOfID > 0 {
+		// Mirrors the preset/custom exclusivity: a window the caller asked for
+		// would be silently ignored, so it is rejected instead.
+		if opts.Spec.Preset != "" || !opts.Spec.From.IsZero() || !opts.Spec.To.IsZero() {
+			return Window{}, fmt.Errorf("%w: a regen reuses its source recap's window; --preset/--from/--to are not allowed", ErrWindow)
+		}
+		src, err := p.db.GetCatchupRecap(opts.RegenOfID)
+		if err != nil {
+			return Window{}, err
+		}
+		return Window{
+			From:   time.Unix(int64(src.PeriodFrom), 0),
+			To:     time.Unix(int64(src.PeriodTo), 0),
+			Source: "regen",
+		}, nil
+	}
+	lastAck, err := p.db.LastAcknowledgedCatchupTo()
 	if err != nil {
-		p.logf("catchup: learned preferences unavailable: %v", err)
+		p.logf("catchup: reading the last acknowledged window failed, falling back to the default start: %v", err)
+	}
+	return ResolveWindow(opts.Spec, p.now(), lastAck)
+}
+
+// runTopUp refreshes the digests feeding a still-open window so a recap asked
+// for right now sees what happened minutes ago. It never blocks the recap: a
+// failure is recorded in the coverage and the run continues (CATCHUP-03). A
+// regen, a window that already ended, and an unwired seam all skip it.
+func (p *Pipeline) runTopUp(ctx context.Context, opts RunOptions, w Window) Coverage {
+	cov := Coverage{Topup: "skipped"}
+	if opts.RegenOfID > 0 || p.topUp == nil || w.To.Before(p.now().Add(-topUpFreshness)) {
+		return cov
+	}
+	ran := false
+	var firstErr error
+	record := func(name string, err error) {
+		ran = true
+		if err == nil {
+			return
+		}
+		p.logf("catchup: %s top-up failed, recapping with the coverage on hand: %v", name, err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Both gates are independent: the stream top-up is attempted even when the
+	// channel one just failed.
+	if p.cfg.Digest.Enabled {
+		record("channel digest", p.topUp.ChannelDigests(ctx))
+	}
+	if p.cfg.Streams.Enabled {
+		record("stream digest", p.topUp.StreamDigests(ctx))
+	}
+	switch {
+	case firstErr != nil:
+		cov.Topup, cov.TopupError = "failed", firstErr.Error()
+	case ran:
+		cov.Topup = "ok"
+	}
+	return cov
+}
+
+// gather reads every source area for the window, capped per area.
+func (p *Pipeline) gather(from, to float64) (gathered, error) {
+	limits := p.cfg.Catchup.Caps
+	var g gathered
+	areas := []struct {
+		name  string
+		limit int
+		list  func(from, to float64, limit int) ([]db.CatchupItem, error)
+		dst   *[]db.CatchupItem
+	}{
+		{"digests", limits.Digests, p.db.ListCatchupDigests, &g.Digests},
+		{"streams", limits.Streams, p.db.ListCatchupStreams, &g.Streams},
+		{"meetings", limits.Meetings, p.db.ListCatchupMeetings, &g.Meetings},
+		{"decisions", limits.Decisions, p.db.ListCatchupDecisions, &g.Decisions},
+		{"inbox", limits.Inbox, p.db.ListCatchupInbox, &g.Inbox},
+		{"tracks", limits.Tracks, p.db.ListCatchupTracks, &g.Tracks},
+		{"targets", limits.Targets, p.db.ListCatchupTargets, &g.Targets},
+	}
+	for _, a := range areas {
+		items, err := a.list(from, to, a.limit)
+		if err != nil {
+			return gathered{}, fmt.Errorf("gathering %s: %w", a.name, err)
+		}
+		*a.dst = items
+	}
+	return g, nil
+}
+
+// finish persists a composed recap and flips the row to 'ready'. A write
+// failure is a Run error, never a "ready" result: nothing was recorded.
+func (p *Pipeline) finish(res RunResult, tldr string, body Body, u *digest.Usage) (RunResult, error) {
+	model, inTok, outTok, cost := usageFields(u)
+	if err := p.db.FinishCatchupRecap(res.RecapID, tldr, jsonString(body), jsonString(res.Coverage), model, inTok, outTok, cost); err != nil {
+		return RunResult{RecapID: res.RecapID, Window: res.Window}, err
+	}
+	return res, nil
+}
+
+// failRun records a content failure on the recap row. Whatever coverage was
+// computed before the failure is kept so the UI can explain the gap.
+//
+// If that write itself fails the row is stuck at 'building' with no error on
+// it, so — the rule finish upholds — the caller is told with a Go error rather
+// than handed a "failed" result nothing backs.
+func (p *Pipeline) failRun(res RunResult, cause error) (RunResult, error) {
+	res.Status, res.Error = statusFailed, cause.Error()
+	if err := p.db.FailCatchupRecap(res.RecapID, jsonString(res.Coverage), cause.Error()); err != nil {
+		return RunResult{RecapID: res.RecapID, Window: res.Window},
+			fmt.Errorf("recording catch-up recap %d as failed (%v): %w", res.RecapID, cause, err)
+	}
+	return res, nil
+}
+
+// learnedPrefs renders the operator's catch-up learned rules for the compose
+// prompt. Best-effort: a read failure costs personalisation, not the recap.
+func (p *Pipeline) learnedPrefs() string {
+	rules, err := p.db.ListLearnedRulesByPipeline("catchup", catchupRulesLimit)
+	if err != nil {
+		p.logf("catchup: reading learned preferences failed, composing without them: %v", err)
 		return ""
 	}
 	return digest.LearnedPreferencesBlock(rules)
 }
 
-// Acknowledge marks a theme reviewed and cascades mark-read over exactly the
-// items captured in its snapshot refs (digests/tracks/inbox/briefings). The
-// cascade is best-effort and idempotent: a per-item error is logged and skipped
-// (already-read or newly-arrived items are safely untouched). After the cascade
-// the theme's review_state becomes 'reviewed' and the session's reviewed_count
-// is incremented.
-func (p *Pipeline) Acknowledge(themeID int64) error {
-	theme, err := p.db.GetCatchupTheme(themeID)
-	if err != nil {
-		return err
-	}
-	alreadyReviewed := theme.ReviewState == "reviewed"
-	refs, err := parseRefs(theme.RefsJSON)
-	if err != nil {
-		p.logf("catchup: theme %d refs unparseable for ack: %v", themeID, err)
-		refs = nil
-	}
-
-	for _, r := range refs {
-		if err := p.markAreaRead(r.Area, r.ID); err != nil {
-			p.logf("catchup: theme %d ack mark-read %s#%d: %v", themeID, r.Area, r.ID, err)
+// getPrompt returns the operator-customised template when a prompt store is
+// wired, falling back to the built-in default.
+func (p *Pipeline) getPrompt(id string) string {
+	if p.promptStore != nil {
+		tmpl, _, err := p.promptStore.Get(id)
+		if err == nil {
+			return tmpl
 		}
+		p.logf("catchup: loading prompt %q failed, using the built-in default: %v", id, err)
 	}
-
-	if err := p.db.SetCatchupThemeReview(themeID, "reviewed", ""); err != nil {
-		return err
-	}
-	// Only count the first transition into 'reviewed' so re-acking a theme never
-	// pushes reviewed_count past total_themes (the "N of M reviewed" header).
-	if !alreadyReviewed {
-		if err := p.db.IncrementReviewed(theme.SessionID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// markAreaRead marks a single source item read in its own surface. Digests
-// cascade their decisions read (CATCHUP-01). Shared by Acknowledge and the peel
-// leftover-noise sweep. Returns an error for an unknown area.
-func (p *Pipeline) markAreaRead(area string, id int) error {
-	switch area {
-	case "digests":
-		return p.db.MarkDigestRead(id)
-	case "tracks":
-		return p.db.MarkTrackRead(id)
-	case "inbox":
-		return p.db.MarkInboxRead(id)
-	case "briefings":
-		return p.db.MarkBriefingRead(id)
-	default:
-		return fmt.Errorf("unknown area %q", area)
-	}
-}
-
-// markLeftoverRead marks the pool items the model judged noise (loop ended via
-// done/empty pool) read, so catch-up actually clears the backlog. Best-effort: a
-// per-item error is logged and skipped.
-func (p *Pipeline) markLeftoverRead(leftover []refKey) {
-	if len(leftover) > 0 {
-		p.logf("catchup: marking %d leftover items read (model-judged noise)", len(leftover))
-	}
-	for _, k := range leftover {
-		if err := p.markAreaRead(k.area, k.id); err != nil {
-			p.logf("catchup: leftover mark-read %s#%d: %v", k.area, k.id, err)
-		}
-	}
-}
-
-// targetsLine renders a read-only summary of active targets. Best-effort: any
-// error yields an empty line and never fails the run.
-func (p *Pipeline) targetsLine() string {
-	active, overdue, err := p.db.GetTargetCounts()
-	if err != nil {
-		p.logf("catchup: targets line unavailable: %v", err)
-		return ""
-	}
-	return fmt.Sprintf("%d active targets, %d overdue", active, overdue)
+	return prompts.Defaults[id]
 }
 
 func (p *Pipeline) logf(format string, args ...any) {
 	if p.logger != nil {
 		p.logger.Printf(format, args...)
 	}
+}
+
+// usageFields unpacks one Generate call's usage; a nil usage means zeros.
+func usageFields(u *digest.Usage) (model string, inTok, outTok int, cost float64) {
+	if u == nil {
+		return "", 0, 0, 0
+	}
+	return u.Model, u.InputTokens, u.OutputTokens, u.CostUSD
+}
+
+// jsonString marshals a recap body or coverage record. Both are plain structs
+// of strings, numbers and slices thereof, so marshalling cannot fail — the
+// briefing pipeline's json.Marshal precedent.
+func jsonString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
