@@ -113,8 +113,9 @@ func init() {
 // cliTopUp adapts the real digest + ideas pipelines to catchup.TopUp so a recap
 // asked for right now sees what happened minutes ago.
 type cliTopUp struct {
-	digests *digest.Pipeline
-	ideas   *ideas.Pipeline
+	digests      *digest.Pipeline
+	ideas        *ideas.Pipeline
+	workspaceDir string
 }
 
 func (c cliTopUp) ChannelDigests(ctx context.Context) error {
@@ -122,7 +123,19 @@ func (c cliTopUp) ChannelDigests(ctx context.Context) error {
 	return err
 }
 
-func (c cliTopUp) StreamDigests(ctx context.Context) error { return c.ideas.RunStreamDigests(ctx) }
+// StreamDigests runs the same pass the daemon's phaseStreamDigests runs, under
+// the SAME ideas backfill lock — the two advance the shared stage-1 floors, so
+// running them concurrently would let one skip material the other consumed.
+// Losing the lock is reported as an error, which the pipeline records as a
+// failed top-up while still building the recap (CATCHUP-03).
+func (c cliTopUp) StreamDigests(ctx context.Context) error {
+	release, err := ideas.AcquireBackfillLock(c.workspaceDir, "catchup")
+	if err != nil {
+		return fmt.Errorf("stream top-up skipped: %w", err)
+	}
+	defer release()
+	return c.ideas.RunStreamDigests(ctx)
+}
 
 // catchupPipeline loads config + DB and constructs a pooled-generator pipeline
 // with the coverage top-up wired to the real digest pipelines. It returns the
@@ -152,7 +165,7 @@ func catchupPipeline() (*catchup.Pipeline, *db.DB, func(), error) {
 	digestPipe := digest.New(database, cfg, gen, logger)
 	ideasPipe := ideas.New(database, cfg, gen, logger)
 	ideasPipe.SetPromptStore(prompts.New(database, nil))
-	p.SetTopUp(cliTopUp{digests: digestPipe, ideas: ideasPipe})
+	p.SetTopUp(cliTopUp{digests: digestPipe, ideas: ideasPipe, workspaceDir: cfg.WorkspaceDir()})
 
 	cleanup := func() {
 		closeGen()
@@ -242,6 +255,11 @@ func catchupRunOptions() (catchup.RunOptions, error) {
 	if catchupRunFlagTo != "" && catchupRunFlagFrom == "" {
 		return catchup.RunOptions{}, fmt.Errorf("--to requires --from")
 	}
+	// A correction only means something against a recap being redone; on a fresh
+	// run it would be silently dropped, so it is rejected like its siblings.
+	if catchupRunFlagComment != "" && catchupRunFlagRegen == 0 {
+		return catchup.RunOptions{}, fmt.Errorf("--comment is a correction for --regen: pass --regen <id> with it")
+	}
 
 	opts := catchup.RunOptions{Spec: catchup.WindowSpec{Preset: catchupRunFlagPreset}}
 	if catchupRunFlagFrom != "" {
@@ -297,7 +315,7 @@ func runCatchupFeedback(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	p, _, cleanup, err := catchupPipeline()
+	p, database, cleanup, err := catchupPipeline()
 	if err != nil {
 		return err
 	}
@@ -316,9 +334,25 @@ func runCatchupFeedback(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Recorded feedback on recap %d, topic %d.\n", recapID, catchupFeedbackTopic)
 	if regenID > 0 {
-		fmt.Fprintf(out, "Regenerated as recap %d.\n", regenID)
+		fmt.Fprintln(out, catchupRegenLine(database, regenID))
 	}
 	return nil
+}
+
+// catchupRegenLine reports what the feedback-triggered regeneration produced. A
+// content failure is persisted on the new row and returns no Go error, so the
+// row is read back: without this the CLI would announce a clean "Regenerated as
+// recap N" for a recap that failed to compose.
+func catchupRegenLine(database *db.DB, regenID int64) string {
+	r, err := database.GetCatchupRecap(regenID)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("Regenerated as recap %d — reading its status failed: %v", regenID, err)
+	case r.Status == "failed":
+		return fmt.Sprintf("Regenerated as recap %d — failed: %s", regenID, r.Error)
+	default:
+		return fmt.Sprintf("Regenerated as recap %d.", regenID)
+	}
 }
 
 func runCatchupList(cmd *cobra.Command, _ []string) error {
@@ -395,12 +429,17 @@ func renderRecapText(r db.CatchupRecap, body catchup.Body) string {
 	if line := catchupCoverageLine(r.CoverageJSON); line != "" {
 		fmt.Fprintln(&b, line)
 	}
-	if body.IsEmpty() {
-		fmt.Fprintln(&b, "\nQuiet — nothing happened in this window.")
-		return b.String()
-	}
+	// The TL;DR is the recap's answer, so it prints even when ref validation
+	// dropped every section; "Quiet" is reserved for a recap that says nothing at
+	// all — the same rule the Desktop document applies (CatchUpRecapDocument).
 	if r.TLDR != "" {
 		fmt.Fprintf(&b, "\n%s\n", r.TLDR)
+	}
+	if body.IsEmpty() {
+		if r.TLDR == "" {
+			fmt.Fprintln(&b, "\nQuiet — nothing happened in this window.")
+		}
+		return b.String()
 	}
 	renderRecapSections(&b, body)
 	return b.String()

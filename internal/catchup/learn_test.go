@@ -122,6 +122,31 @@ func TestSubmitTopicFeedback_PresentationCorrectionRegeneratesRecap(t *testing.T
 	assert.Contains(t, composeUser, "OPERATOR CORRECTION: the title is misleading")
 }
 
+// The regen is a second AI call that can fail on its own. It fails the way any
+// compose failure does — a persisted 'failed' row and NO Go error — so the
+// caller still gets the new recap's id and can report what it became (the CLI's
+// "Regenerated as recap N — failed: …" line).
+func TestSubmitTopicFeedback_FailedRegenerationStillReportsItsRecap(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	recapID := seedReadyRecap(t, d, seedDigest(t, d, 1500, 1900))
+	gen.fn = func(system, _ string) string {
+		if strings.HasPrefix(system, learnSystemPrompt) {
+			return `{"rules":[],"regenerate":true}`
+		}
+		return "not json"
+	}
+
+	newID, err := p.SubmitTopicFeedback(context.Background(), recapID, 0, -1, "the title is misleading")
+	require.NoError(t, err, "a failed compose is persisted, not returned")
+	require.Greater(t, newID, int64(0), "the operator is still told which recap to look at")
+
+	r, err := d.GetCatchupRecap(newID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", r.Status)
+	assert.NotEmpty(t, r.Error)
+}
+
 // Everything that would leave a feedback row pointing at nothing is rejected
 // before the first write.
 func TestSubmitTopicFeedback_InvalidTargetWritesNothing(t *testing.T) {

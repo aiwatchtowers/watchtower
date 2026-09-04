@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"watchtower/internal/catchup"
 	"watchtower/internal/db"
+	"watchtower/internal/ideas"
 )
 
 func TestCatchupCommandRegistered(t *testing.T) {
@@ -96,6 +99,7 @@ func TestCatchupRunFlagErrorsPrecedeTheDatabase(t *testing.T) {
 		{"to without from", func() { catchupRunFlagTo = "2026-09-02" }, "--from"},
 		{"unparseable from", func() { catchupRunFlagFrom = "last tuesday" }, "last tuesday"},
 		{"negative regen", func() { catchupRunFlagRegen = -1 }, "--regen"},
+		{"comment without regen", func() { catchupRunFlagComment = "shorter please" }, "--comment"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,6 +194,18 @@ func TestRenderRecapText_EmptyReadyBody(t *testing.T) {
 	assert.True(t, strings.HasPrefix(out, "Catch-Up "))
 	assert.Contains(t, out, "Quiet — nothing happened in this window.")
 	assert.NotContains(t, out, "What happened")
+}
+
+// Ref validation can drop every section of a composed recap (CATCHUP-04) while
+// the TL;DR still says what happened. That is not a quiet window, and the text
+// render must not claim it is — the Desktop document applies the same rule.
+func TestRenderRecapText_TLDRWithEmptyBody(t *testing.T) {
+	r := db.CatchupRecap{PeriodFrom: 1000, PeriodTo: 2000, Status: "ready", TLDR: "Two releases slipped a day."}
+
+	out := renderRecapText(r, catchup.Body{})
+
+	assert.Contains(t, out, "Two releases slipped a day.")
+	assert.NotContains(t, out, "Quiet", "a recap with a TL;DR is not a quiet window")
 }
 
 func TestRenderRecapText_Building(t *testing.T) {
@@ -294,6 +310,7 @@ func TestCatchupAck_MarksTheWindowRead(t *testing.T) {
 	outsideWindow := insertTestDigest(t, database, "C002", from-7200, from-3600)
 	recapID, err := database.InsertCatchupRecap(from, to, 0)
 	require.NoError(t, err)
+	require.NoError(t, database.FinishCatchupRecap(recapID, "tl", `{"topics":[]}`, `{"topup":"skipped"}`, "", 0, 0, 0))
 	require.NoError(t, database.Close())
 
 	buf := new(bytes.Buffer)
@@ -357,6 +374,66 @@ func TestCatchupShowAndList(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, recapID, rows[0].ID)
 	assert.Equal(t, "ready", rows[0].Status)
+}
+
+// The stream top-up shares the daemon's stage-1 floors, so it takes the same
+// ideas backfill lock. Losing it is an error the pipeline records as a failed
+// top-up (CATCHUP-03) — never a silent second miner.
+func TestCliTopUpStreamDigests_RespectsTheBackfillLock(t *testing.T) {
+	dir := t.TempDir()
+	release, err := ideas.AcquireBackfillLock(dir, "daemon")
+	require.NoError(t, err)
+	defer release()
+
+	// The lock is lost before the ideas pipeline is touched, so a nil one here
+	// also proves no mining happened.
+	err = cliTopUp{workspaceDir: dir}.StreamDigests(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stream top-up skipped")
+}
+
+// A feedback-triggered regeneration can compose and fail while returning no Go
+// error, so the line the CLI prints is read off the row rather than assumed.
+func TestCatchupRegenLine_ReportsWhatTheRegenerationBecame(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+
+	ok, err := database.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	require.NoError(t, database.FinishCatchupRecap(ok, "tl", `{"topics":[]}`, `{}`, "", 0, 0, 0))
+	assert.Equal(t, fmt.Sprintf("Regenerated as recap %d.", ok), catchupRegenLine(database, ok))
+
+	failed, err := database.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	require.NoError(t, database.FailCatchupRecap(failed, `{}`, "decoding catch-up recap: not json"))
+	line := catchupRegenLine(database, failed)
+	assert.Contains(t, line, fmt.Sprintf("recap %d", failed))
+	assert.Contains(t, line, "failed: decoding catch-up recap: not json")
+
+	assert.Contains(t, catchupRegenLine(database, 4242), "reading its status failed",
+		"an unreadable row is reported, never announced as a clean regeneration")
+}
+
+// An empty database is a normal state (nothing has been run yet), not an error:
+// the text form says so and --json emits an empty array rather than `null`.
+func TestCatchupList_EmptyDatabase(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	buf := new(bytes.Buffer)
+	catchupListCmd.SetOut(buf)
+	require.NoError(t, catchupListCmd.RunE(catchupListCmd, nil))
+	assert.Contains(t, buf.String(), "No catch-up recaps yet")
+
+	buf.Reset()
+	catchupListFlagJSON = true
+	defer func() { catchupListFlagJSON = false }()
+	require.NoError(t, catchupListCmd.RunE(catchupListCmd, nil))
+	assert.Equal(t, "[]", strings.TrimSpace(buf.String()), "--json emits an empty array, never null")
 }
 
 func TestCatchupFeedbackRequiresTopic(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -36,15 +37,26 @@ func (db *DB) ListCatchupDigests(from, to float64, limit int) ([]CatchupItem, er
 	}
 	// Topics are fetched only after the digest cursor is closed: the pool holds
 	// a single SQLite connection (db.Open sets MaxOpenConns(1)), so a nested
-	// query inside the row loop would deadlock waiting for itself.
+	// query inside the row loop would deadlock waiting for itself. One batched
+	// follow-up covers every digest — never one query per row.
+	ids := make([]int, len(out))
 	for i := range out {
-		topics, err := db.GetDigestTopics(out[i].ID)
-		if err != nil {
-			return nil, fmt.Errorf("loading topics for digest %d: %w", out[i].ID, err)
-		}
+		ids[i] = out[i].ID
+	}
+	topics, err := db.GetDigestTopicsByDigestIDs(ids)
+	if err != nil {
+		return nil, fmt.Errorf("loading topics for catchup digests: %w", err)
+	}
+	byDigest := make(map[int][]DigestTopic, len(out))
+	for _, t := range topics {
+		byDigest[t.DigestID] = append(byDigest[t.DigestID], t)
+	}
+	for i := range out {
 		var b strings.Builder
 		b.WriteString(out[i].Body)
-		for j, t := range topics {
+		// GetDigestTopicsByDigestIDs orders by (digest_id, idx), so each digest's
+		// slice is already in topic order and the first five are the first five.
+		for j, t := range byDigest[out[i].ID] {
 			if j >= 5 {
 				break
 			}
@@ -112,20 +124,23 @@ func (db *DB) ListCatchupStreams(from, to float64, limit int) ([]CatchupItem, er
 		if scope != "" {
 			it.Title += " · " + scope
 		}
-		it.Body = renderStreamTopics(topicsJSON)
+		it.Body = renderStreamTopics(it.ID, topicsJSON)
 		it.Meta = fmt.Sprintf("%s account %d · to %s", source, accountID, periodTo)
 		out = append(out, it)
 	}
 	return out, rows.Err()
 }
 
-// renderStreamTopics turns stream_digests.topics_json into "Title: summary" lines.
-func renderStreamTopics(topicsJSON string) string {
+// renderStreamTopics turns stream_digests.topics_json into "Title: summary"
+// lines. An unreadable payload costs this row its body, not the gather — but it
+// is logged with the row id rather than swallowed, the digests.go precedent.
+func renderStreamTopics(id int, topicsJSON string) string {
 	var topics []struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	}
 	if err := json.Unmarshal([]byte(topicsJSON), &topics); err != nil {
+		slog.Warn("catchup: unreadable stream digest topics JSON", "stream_digest_id", id, "err", err)
 		return ""
 	}
 	lines := make([]string, 0, len(topics))
@@ -174,7 +189,7 @@ func (db *DB) listCatchupRecaps(fromISO, toISO string, limit int) ([]CatchupItem
 		}
 		it.Area = "recaps"
 		it.Title = firstNonEmpty(eventTitle, transcriptTitle, "Meeting")
-		it.Body = renderRecapJSON(recapJSON)
+		it.Body = renderRecapJSON("recaps", it.ID, recapJSON)
 		it.Meta = "meeting · " + createdAt
 		out = append(out, it)
 	}
@@ -199,7 +214,7 @@ func (db *DB) listCatchupTranscripts(fromISO, toISO string, limit int) ([]Catchu
 			return nil, fmt.Errorf("scanning catchup transcript: %w", err)
 		}
 		it.Area = "transcripts"
-		it.Body = renderRecapJSON(summaryJSON)
+		it.Body = renderRecapJSON("transcripts", it.ID, summaryJSON)
 		it.Meta = "ad-hoc recording · " + createdAt
 		out = append(out, it)
 	}
@@ -217,14 +232,17 @@ func firstNonEmpty(vals ...string) string {
 }
 
 // renderRecapJSON renders a meeting recap (summary + key_decisions +
-// action_items, the internal/meeting RecapResult shape) as prompt text.
-func renderRecapJSON(raw string) string {
+// action_items, the internal/meeting RecapResult shape) as prompt text. area is
+// "recaps" or "transcripts" — the ref area the id belongs to, so an unreadable
+// payload names the row it came from instead of vanishing.
+func renderRecapJSON(area string, id int, raw string) string {
 	var r struct {
 		Summary      string   `json:"summary"`
 		KeyDecisions []string `json:"key_decisions"`
 		ActionItems  []string `json:"action_items"`
 	}
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		slog.Warn("catchup: unreadable meeting recap JSON", "area", area, "id", id, "err", err)
 		return ""
 	}
 	var b strings.Builder
@@ -341,6 +359,12 @@ func (db *DB) ListCatchupTracks(from, to float64, limit int) ([]CatchupItem, err
 // overdue at its start. targets.due_date is "YYYY-MM-DDTHH:MM" in UTC (the
 // targets.go convention — see GetTargetCounts/UnsnoozeExpiredTargets and the
 // Desktop writer in WatchtowerCore/Models/Target.swift), or "".
+//
+// The in-window arm is inclusive of `from` (a deadline landing exactly on the
+// window start belongs to the absence, and would otherwise match neither arm),
+// and in-window targets are ordered ahead of the overdue backlog: the cap is
+// what the operator actually sees, and a long-overdue tail must never push the
+// deadlines that fell during the absence out of the recap.
 func (db *DB) ListCatchupTargets(from, to float64, limit int) ([]CatchupItem, error) {
 	fromUTC := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04")
 	toUTC := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04")
@@ -348,8 +372,9 @@ func (db *DB) ListCatchupTargets(from, to float64, limit int) ([]CatchupItem, er
 		SELECT id, text, intent, due_date, status, priority
 		FROM targets
 		WHERE status NOT IN ('done','dismissed') AND due_date <> ''
-		  AND ((due_date > ? AND due_date <= ?) OR due_date < ?)
-		ORDER BY due_date ASC LIMIT ?`, fromUTC, toUTC, fromUTC, limit)
+		  AND ((due_date >= ? AND due_date <= ?) OR due_date < ?)
+		ORDER BY CASE WHEN due_date >= ? THEN 0 ELSE 1 END, due_date ASC LIMIT ?`,
+		fromUTC, toUTC, fromUTC, fromUTC, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup targets: %w", err)
 	}
@@ -387,7 +412,12 @@ func (db *DB) CatchupCoverage(from, to float64) (slackTo, streamsTo float64, err
 		return 0, 0, fmt.Errorf("catchup streams coverage: %w", err)
 	}
 	if st.Valid {
-		if ts, perr := time.Parse("2006-01-02T15:04:05Z", st.String); perr == nil {
+		ts, perr := time.Parse("2006-01-02T15:04:05Z", st.String)
+		if perr != nil {
+			// Coverage then reports "no stream summary at all" for a window that
+			// has one; the row is malformed, but the operator should hear why.
+			slog.Warn("catchup: unreadable stream digest period_to", "value", st.String, "err", perr)
+		} else {
 			streamsTo = float64(ts.Unix())
 		}
 	}

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,36 @@ func TestListCatchupDigests_WindowOverlapAndTopics(t *testing.T) {
 	assert.Contains(t, items[0].Body, "overlaps start")
 	assert.Contains(t, items[0].Body, "Deploy: shipped v2")
 	assert.Equal(t, "1:C1", items[0].ChannelID)
+}
+
+// The per-area cap is what bounds the compose prompt, so it must actually
+// truncate rather than being a hint the query ignores.
+func TestListCatchupDigests_CapTruncates(t *testing.T) {
+	d := openTestDB(t)
+	const limit = 3
+	for i := 0; i < limit+2; i++ {
+		_, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'x')`,
+			1000+i, 1100+i)
+		require.NoError(t, err)
+	}
+
+	items, err := d.ListCatchupDigests(1000, 2000, limit)
+	require.NoError(t, err)
+	assert.Len(t, items, limit, "the per-area cap bounds what the gather returns")
+}
+
+// A malformed topics_json costs the row its body, never the whole gather.
+func TestListCatchupStreams_UnreadableTopicsJSON(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO stream_digests (source, account_id, period_from, period_to, topics_json)
+		VALUES ('gmail', 1, '1970-01-01T00:20:00Z', '1970-01-01T00:30:00Z', 'not json')`)
+	require.NoError(t, err)
+
+	items, err := d.ListCatchupStreams(1000, 2000, 10)
+	require.NoError(t, err, "an unreadable payload is not a gather failure")
+	require.Len(t, items, 1)
+	assert.Empty(t, items[0].Body)
+	assert.Equal(t, "gmail", items[0].Title, "the row itself still reaches the recap")
 }
 
 func TestListCatchupStreams(t *testing.T) {
@@ -201,6 +232,34 @@ func TestListCatchupTracksAndTargets(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, targets, 2)
 	assert.ElementsMatch(t, []string{"Due in window", "Overdue"}, []string{targets[0].Title, targets[1].Title})
+}
+
+// The overdue backlog is unbounded in practice, so it must never crowd the
+// deadlines that fell during the absence out of a capped gather — and a target
+// due exactly on the window start belongs to the window, not to neither arm.
+func TestListCatchupTargets_InWindowOutranksOverdue(t *testing.T) {
+	d := openTestDB(t)
+	const limit = 3
+	// The window unix 1000..2000 is 00:16..00:33 UTC.
+	for i := 0; i < limit+1; i++ {
+		_, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, status, priority, due_date)
+			VALUES (?, '1969-12-31', '1969-12-31', 'todo', 'high', ?)`,
+			fmt.Sprintf("Overdue %d", i), fmt.Sprintf("1969-12-31T0%d:00", i))
+		require.NoError(t, err)
+	}
+	_, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, status, priority, due_date) VALUES
+		('Due in window', '1970-01-01', '1970-01-01', 'todo', 'high', '1970-01-01T00:20'),
+		('Due exactly at from', '1970-01-01', '1970-01-01', 'todo', 'high', '1970-01-01T00:16')`)
+	require.NoError(t, err)
+
+	items, err := d.ListCatchupTargets(1000, 2000, limit)
+	require.NoError(t, err)
+	require.Len(t, items, limit)
+	titles := []string{items[0].Title, items[1].Title, items[2].Title}
+	assert.Contains(t, titles, "Due in window", "an overdue backlog past the cap must not hide an in-window deadline")
+	assert.Contains(t, titles, "Due exactly at from", "a deadline landing exactly on the window start is in-window")
+	assert.Equal(t, "Due exactly at from", items[0].Title, "in-window first, earliest due date first")
+	assert.Equal(t, "Due in window", items[1].Title)
 }
 
 func TestCatchupCoverage(t *testing.T) {
