@@ -18,7 +18,7 @@ import (
 type createTargetArgs struct {
 	Text     string `json:"text" jsonschema:"the task title, imperative, at most 200 characters"`
 	Intent   string `json:"intent,omitempty" jsonschema:"why it matters / the desired outcome"`
-	Due      string `json:"due,omitempty" jsonschema:"owner-local due date: YYYY-MM-DD or YYYY-MM-DDTHH:MM; a reminder is a task with a due"`
+	Due      string `json:"due,omitempty" jsonschema:"owner-local time (YYYY-MM-DD or YYYY-MM-DDTHH:MM); converted to UTC on save; a reminder is a task with a due"`
 	Priority string `json:"priority,omitempty" jsonschema:"high | medium | low (default medium)"`
 	Reason   string `json:"reason" jsonschema:"one sentence: why you propose this, shown to the owner"`
 }
@@ -49,6 +49,24 @@ func validDue(due string) bool {
 	}
 	_, err := time.Parse(layout, due)
 	return err == nil
+}
+
+// ownerLocalDueToUTC converts the model's owner-local due datetime into the
+// UTC convention every reader of targets.due_date already expects
+// (cmd/remind.go's parseRemindWhen, NotifyDueTargets, nextstep.go, and the
+// Swift Target.parseDueDate/formatDueDate pair). The CLI process runs on the
+// owner's machine — the chat-mode MCP server is spawned by the Desktop with
+// the owner's inherited TZ — so time.Local IS the owner's zone. A date-only
+// due is day-granular (NotifyDueTargets) and is stored verbatim.
+func ownerLocalDueToUTC(due string) (string, error) {
+	if due == "" || len(due) == len("2006-01-02") {
+		return due, nil
+	}
+	t, err := time.ParseInLocation("2006-01-02T15:04", due, time.Local)
+	if err != nil {
+		return "", fmt.Errorf("parsing due %q as owner-local time: %w", due, err)
+	}
+	return t.UTC().Format("2006-01-02T15:04"), nil
 }
 
 // NewCreateTarget builds the create_target write tool: a new top-level task
@@ -95,6 +113,10 @@ func NewCreateTarget() *Tool {
 			if priority == "" {
 				priority = "medium"
 			}
+			due, err := ownerLocalDueToUTC(a.Due)
+			if err != nil {
+				return nil, fmt.Errorf("converting due date: %w", err)
+			}
 			today := time.Now().UTC().Format("2006-01-02")
 			id, err := d.CreateTarget(db.Target{
 				Text:        strings.TrimSpace(a.Text),
@@ -105,7 +127,7 @@ func NewCreateTarget() *Tool {
 				Status:      "todo",
 				Priority:    priority,
 				Ownership:   "mine",
-				DueDate:     a.Due,
+				DueDate:     due,
 				SourceType:  "chat",
 				// Prefixed like the existing `chat` writer's `target:<id>`
 				// (TargetsViewModel.createChild): one source_type, several id

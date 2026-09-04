@@ -250,6 +250,52 @@ func TestApply_FailureLandsFailedAndIsRetriable(t *testing.T) {
 	assert.Empty(t, row.Error)
 }
 
+// TestApply_ClaimPreservesPriorErrorUntilFinish pins the fix for the claim
+// wiping a failed row's error text: `approved|failed → executing` used to
+// write error="" unconditionally, so a process that died mid-execute left an
+// `executing` row with no trace of the failure that led to the retry — the
+// audit trail (agent_actions rows are never deleted) lost the very thing it
+// exists to keep. The claim must carry the row's existing error through
+// until the new outcome overwrites it.
+func TestApply_ClaimPreservesPriorErrorUntilFinish(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	calls := 0
+	var errorWhileExecuting string
+	schema, _ := jsonschema.For[echoArgs](nil)
+	require.NoError(t, reg.Register(&Tool{
+		Name: "retry", Description: "x", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
+			calls++
+			row, err := database.GetAgentAction(call.ActionID)
+			require.NoError(t, err)
+			errorWhileExecuting = row.Error
+			if calls == 1 {
+				return nil, errors.New("boom")
+			}
+			return map[string]any{"ok": true}, nil
+		},
+	}))
+	rc, _ := reg.Propose(context.Background(), "retry", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	_, _ = database.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
+
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "boom", row.Error)
+	assert.Empty(t, errorWhileExecuting, "the first attempt has no prior failure to preserve")
+
+	// Retry: while the second Execute runs, the row is `executing` and must
+	// still read the PRIOR failure's error, not "" — the claim UPDATE must
+	// not wipe it ahead of the new outcome.
+	row, err = reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", row.Status)
+	assert.Empty(t, row.Error, "a successful retry clears the old error")
+	assert.Equal(t, "boom", errorWhileExecuting, "the claim must preserve the prior failure's error while executing")
+}
+
 // TestAgent05_RejectDuringExecuteCannotStealTheClaim pins the other half of
 // the claim: once Apply has moved the row to `executing`, a decision that
 // lands while Execute is in flight (the owner hitting Reject in the Desktop)
@@ -447,6 +493,42 @@ func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {
 	row, _ := database.GetAgentAction(rc.ActionID)
 	assert.Equal(t, "execute", row.TrustAtCreate)
 	assert.NotEmpty(t, row.DecidedAt)
+}
+
+// TestPropose_ExecuteTrustSurfacesRowWhenApplyErrors pins the fix for the
+// execute-trust path returning a bare Receipt{} when Apply itself errors
+// after the row was already inserted: the model must still learn the action
+// id (and the row's own terminal status/error) instead of being told nothing
+// was recorded, which risks a duplicate re-propose. Racing the row out of
+// `executing` from inside Execute forces Apply's own finishTransition CAS to
+// fail — a real (if rare) way for Apply to return an error while the row
+// still exists.
+func TestPropose_ExecuteTrustSurfacesRowWhenApplyErrors(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	require.NoError(t, reg.Register(&Tool{
+		Name: "stolen", Description: "x", InputSchema: schema, Access: AccessWrite,
+		Validate: func(context.Context, *db.DB, json.RawMessage) error { return nil },
+		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
+			// Simulate another process finishing the row out from under this
+			// Apply before its own finishTransition runs: Apply's claim left
+			// it `executing`, so this direct write is what a concurrent actor
+			// would have to do to race it away.
+			ok, terr := database.TransitionAgentAction(call.ActionID, []string{"executing"}, "failed", "", "boom")
+			require.NoError(t, terr)
+			require.True(t, ok)
+			return nil, errors.New("boom")
+		},
+	}))
+	require.NoError(t, reg.SetTrust("stolen", TrustExecute))
+
+	rc, err := reg.Propose(context.Background(), "stolen", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{})
+	require.NoError(t, err, "the model must not be told a proposal failed to record when the row exists")
+	assert.NotZero(t, rc.ActionID, "the model must learn the action id even when execution failed")
+	assert.Equal(t, "failed", rc.Status)
+	assert.Equal(t, "boom", rc.Error)
 }
 
 func TestList_FiltersBySurface(t *testing.T) {

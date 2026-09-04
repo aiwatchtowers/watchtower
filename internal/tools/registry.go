@@ -291,6 +291,13 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		}
 		applied, err := r.Apply(ctx, id)
 		if err != nil {
+			// The row exists even though Apply itself could not finish the
+			// transition (a rare DB-level race) — the model must still learn
+			// the action id and the row's own status, not be told the
+			// proposal was never recorded, which risks a duplicate re-propose.
+			if row, rerr := r.db.GetAgentAction(id); rerr == nil && row != nil {
+				return receiptFor(row), nil
+			}
 			return Receipt{}, err
 		}
 		return receiptFor(applied), nil
@@ -324,7 +331,12 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	if row.Status != "approved" && row.Status != "failed" {
 		return nil, fmt.Errorf("%w: #%d is %s", ErrBadTransition, id, row.Status)
 	}
-	claimed, err := r.db.TransitionAgentAction(id, []string{"approved", "failed"}, "executing", "", "")
+	// Carry the row's existing error through the claim: TransitionAgentAction
+	// writes error unconditionally, so claiming `failed → executing` with ""
+	// would wipe a prior failure's text before the retry has even started —
+	// the audit trail (rows are never deleted) would lose the very thing it
+	// exists to keep if the retry then died mid-execute.
+	claimed, err := r.db.TransitionAgentAction(id, []string{"approved", "failed"}, "executing", "", row.Error)
 	if err != nil {
 		return nil, err
 	}
