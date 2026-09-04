@@ -1253,6 +1253,29 @@ package enum TestDatabase {
         read_at      TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
+    CREATE TABLE IF NOT EXISTS agent_actions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool            TEXT    NOT NULL,
+        external        INTEGER NOT NULL DEFAULT 0,
+        args_json       TEXT    NOT NULL,
+        reason          TEXT    NOT NULL DEFAULT '',
+        surface         TEXT    NOT NULL DEFAULT '',
+        conversation_id INTEGER NOT NULL DEFAULT 0,
+        context_type    TEXT    NOT NULL DEFAULT '',
+        context_id      TEXT    NOT NULL DEFAULT '',
+        turn_id         TEXT    NOT NULL DEFAULT '',
+        status          TEXT    NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','applied','failed')),
+        trust_at_create TEXT    NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
+        result_json     TEXT    NOT NULL DEFAULT '',
+        error           TEXT    NOT NULL DEFAULT '',
+        created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        decided_at      TEXT    NOT NULL DEFAULT '',
+        applied_at      TEXT    NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS tool_trust (
+        tool       TEXT PRIMARY KEY,
+        trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
     """
 
     // MARK: - Briefing Fixtures
@@ -2023,6 +2046,33 @@ package enum TestDatabase {
                 """,
             arguments: [cloudID, siteURL, siteName, label, status, error, enabled, createdAt]
         )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertAgentAction(
+        _ db: Database,
+        tool: String = "create_target",
+        external: Bool = false,
+        argsJSON: String = #"{"text":"Call Vasya","reason":"r"}"#,
+        reason: String = "r",
+        surface: String = "main",
+        conversationID: Int64 = 1,
+        turnID: String = "turn-1",
+        status: String = "pending",
+        resultJSON: String = "",
+        error: String = "",
+        createdAt: String = "2026-09-04T10:00:00Z",
+        decidedAt: String = "",
+        appliedAt: String = ""
+    ) throws -> Int64 {
+        try db.execute(sql: """
+            INSERT INTO agent_actions
+                (tool, external, args_json, reason, surface, conversation_id, turn_id, status,
+                 result_json, error, created_at, decided_at, applied_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [tool, external, argsJSON, reason, surface, conversationID, turnID, status,
+                             resultJSON, error, createdAt, decidedAt, appliedAt])
         return db.lastInsertedRowID
     }
 
