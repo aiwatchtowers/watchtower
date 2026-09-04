@@ -5,268 +5,228 @@ import WatchtowerTestSupport
 
 final class CatchUpQueriesTests: XCTestCase {
 
-    // MARK: - Helpers
+    // MARK: - Fixtures
 
-    private func insertSession(
+    /// 2027-01-15T12:00:00Z — the same base the Go guard uses
+    /// (`internal/db/catchup_store_test.go::catchupWindowBase`). Windows hang off
+    /// a mid-day instant so the briefing predicate's LOCAL date cannot flip a day
+    /// in any time zone the suite runs in.
+    private let base: Double = 1_800_014_400
+
+    private func insertRecap(
         _ db: Database,
-        status: String = "active",
-        totalThemes: Int = 0,
-        reviewedCount: Int = 0
+        from: Double,
+        to: Double,
+        status: String = "ready",
+        ack: String? = nil
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO catchup_sessions (created_at, status, total_themes, reviewed_count)
+                INSERT INTO catchup_recaps (period_from, period_to, status, acknowledged_at)
                 VALUES (?, ?, ?, ?)
                 """,
-            arguments: ["2026-06-20T00:00:00Z", status, totalThemes, reviewedCount]
+            arguments: [from, to, status, ack]
         )
         return db.lastInsertedRowID
     }
 
-    private func insertTheme(
-        _ db: Database,
-        sessionID: Int64,
-        orderIdx: Int = 0,
-        title: String = "Theme",
-        narrative: String = "Narrative",
-        priority: String = "medium",
-        needsYou: Bool = false,
-        suggestedAction: String = "",
-        refs: String = "[]",
-        genState: String = "ready",
-        reviewState: String = "pending"
-    ) throws -> Int64 {
-        try db.execute(
-            sql: """
-                INSERT INTO catchup_themes
-                    (session_id, order_idx, title, narrative, priority, needs_you,
-                     suggested_action, refs, gen_state, review_state, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-            arguments: [
-                sessionID, orderIdx, title, narrative, priority, needsYou ? 1 : 0,
-                suggestedAction, refs, genState, reviewState,
-                "2026-06-20T00:00:00Z", "2026-06-20T00:00:00Z"
-            ]
-        )
-        return db.lastInsertedRowID
+    /// `briefings.date` is a LOCAL calendar date, so the fixture is derived with
+    /// the same conversion the implementation applies to the window bounds.
+    private func localDate(_ unix: Double) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date(timeIntervalSince1970: unix))
+    }
+
+    private func fetchRecap(_ dbQueue: DatabaseQueue, _ id: Int64) throws -> CatchUpRecap {
+        try XCTUnwrap(try dbQueue.read { try CatchUpQueries.fetchRecap($0, id: Int(id)) })
     }
 
     // MARK: - Fetch
 
-    func testFetchActiveSession() throws {
+    func testFetchRecapsNewestFirstAndFetchRecap() throws {
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
-            _ = try insertSession(db, status: "done")
-            _ = try insertSession(db, status: "active", totalThemes: 4, reviewedCount: 1)
+        let ids = try dbQueue.write { db -> [Int64] in
+            let older = try insertRecap(db, from: base, to: base + 1000, status: "ready")
+            let newer = try insertRecap(db, from: base + 1000, to: base + 2000, status: "building")
+            return [older, newer]
         }
 
-        let session = try dbQueue.read { db in
-            try CatchUpQueries.fetchActiveSession(db)
-        }
-        XCTAssertNotNil(session)
-        XCTAssertEqual(session?.status, "active")
-        XCTAssertEqual(session?.totalThemes, 4)
-        XCTAssertEqual(session?.reviewedCount, 1)
+        let recaps = try dbQueue.read { try CatchUpQueries.fetchRecaps($0) }
+        XCTAssertEqual(recaps.map(\.id), [Int(ids[1]), Int(ids[0])], "newest first")
+        XCTAssertTrue(recaps[0].isBuilding)
+        XCTAssertTrue(recaps[1].isReady)
+        XCTAssertFalse(recaps[1].isAcknowledged)
+
+        XCTAssertEqual(try dbQueue.read { try CatchUpQueries.fetchRecaps($0, limit: 1) }.count, 1)
+
+        let one = try fetchRecap(dbQueue, ids[0])
+        XCTAssertEqual(one.periodFrom, base)
+        XCTAssertEqual(one.periodTo, base + 1000)
+        XCTAssertNil(one.regenOfID)
+        XCTAssertNil(one.acknowledgedAt)
+        XCTAssertTrue(one.decodedBody.isEmpty, "default body_json '{}' decodes to an empty body")
+
+        XCTAssertNil(try dbQueue.read { try CatchUpQueries.fetchRecap($0, id: 9999) })
     }
 
-    func testFetchActiveSessionNilWhenNoneActive() throws {
+    func testAutoWindowStartUsesLastAcknowledged() throws {
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
-            _ = try insertSession(db, status: "done")
-        }
-        let session = try dbQueue.read { db in
-            try CatchUpQueries.fetchActiveSession(db)
-        }
-        XCTAssertNil(session)
-    }
-
-    func testFetchThemesParsesRefs() throws {
-        let dbQueue = try TestDatabase.create()
-        let sessionID = try dbQueue.write { db -> Int64 in
-            let sid = try insertSession(db)
-            _ = try insertTheme(
-                db, sessionID: sid, orderIdx: 1, title: "Second"
-            )
-            _ = try insertTheme(
-                db, sessionID: sid, orderIdx: 0, title: "First", needsYou: true,
-                refs: ##"[{"area":"inbox","id":7,"label":"Ping from Alice"},{"area":"digest","id":3,"label":"#general"}]"##
-            )
-            return sid
-        }
-
-        let themes = try dbQueue.read { db in
-            try CatchUpQueries.fetchThemes(db, sessionID: Int(sessionID))
-        }
-        XCTAssertEqual(themes.count, 2)
-        // Ordered by order_idx.
-        XCTAssertEqual(themes[0].title, "First")
-        XCTAssertEqual(themes[1].title, "Second")
-        XCTAssertTrue(themes[0].needsYou)
-
-        let refs = themes[0].decodedRefs
-        XCTAssertEqual(refs.count, 2)
-        XCTAssertEqual(refs[0].area, "inbox")
-        XCTAssertEqual(refs[0].id, 7)
-        XCTAssertEqual(refs[0].label, "Ping from Alice")
-        XCTAssertEqual(refs[1].area, "digest")
-        XCTAssertEqual(refs[1].id, 3)
-    }
-
-    // MARK: - Acknowledge cascade
-
-    func testAcknowledgeCascadesMarkReadAndFlipsReviewState() throws {
-        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
-        let dbQueue = try TestDatabase.create()
-        let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
-            try TestDatabase.insertWorkspace(db)
-            try TestDatabase.insertChannel(db)
-            try TestDatabase.insertUser(db)
-            // One referenced inbox item (id 1) and one unreferenced (id 2).
-            try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000100")
-            try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000200")
-
-            let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)
-            let themeID = try insertTheme(
-                db, sessionID: sid,
-                refs: #"[{"area":"inbox","id":1,"label":"Ping"}]"#
-            )
-            return (sid, themeID)
-        }
-
-        let theme = try dbQueue.read { db in
-            try CatchUpQueries.fetchThemes(db, sessionID: Int(ctx.sid)).first { $0.id == Int(ctx.themeID) }
-        }
-        let unwrapped = try XCTUnwrap(theme)
+        XCTAssertNil(try dbQueue.read { try CatchUpQueries.autoWindowStart($0) }, "no recaps → nil")
 
         try dbQueue.write { db in
-            try CatchUpQueries.acknowledge(db, theme: unwrapped)
+            // Latest period_to overall, but never acknowledged.
+            _ = try insertRecap(db, from: base, to: base + 5000)
         }
+        XCTAssertNil(
+            try dbQueue.read { try CatchUpQueries.autoWindowStart($0) },
+            "an unacknowledged recap does not move the boundary"
+        )
+
+        try dbQueue.write { db in
+            _ = try insertRecap(db, from: base, to: base + 1000, ack: "2027-01-15T12:20:00Z")
+            _ = try insertRecap(db, from: base, to: base + 3000, ack: "2027-01-15T12:50:00Z")
+        }
+        let start = try dbQueue.read { try CatchUpQueries.autoWindowStart($0) }
+        XCTAssertEqual(start?.timeIntervalSince1970, base + 3000)
+    }
+
+    func testHasUnacknowledgedReady() throws {
+        let dbQueue = try TestDatabase.create()
+        XCTAssertFalse(try dbQueue.read { try CatchUpQueries.hasUnacknowledgedReady($0) }, "no recaps")
+
+        try dbQueue.write { db in
+            _ = try insertRecap(db, from: base, to: base + 1000, status: "building")
+            _ = try insertRecap(db, from: base, to: base + 1000, status: "ready", ack: "2027-01-15T12:20:00Z")
+        }
+        XCTAssertFalse(
+            try dbQueue.read { try CatchUpQueries.hasUnacknowledgedReady($0) },
+            "still building, or already acknowledged, does not count"
+        )
+
+        try dbQueue.write { db in
+            _ = try insertRecap(db, from: base + 1000, to: base + 2000, status: "ready")
+        }
+        XCTAssertTrue(try dbQueue.read { try CatchUpQueries.hasUnacknowledgedReady($0) })
+    }
+
+    // MARK: - Acknowledge (window-scoped mark-read)
+
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    func testAcknowledgeMarksWindowReadOnFiveSurfaces() throws {
+        let dbQueue = try TestDatabase.create()
+        let recapID = try dbQueue.write { db -> Int64 in
+            try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600)
+            _ = try TestDatabase.insertStreamDigest(
+                db, periodFrom: "2027-01-15T12:25:00Z", periodTo: "2027-01-15T12:26:40Z"
+            )
+            let trackID = try TestDatabase.insertTrack(db, hasUpdates: true)
+            try db.execute(
+                sql: "UPDATE tracks SET updated_at = ? WHERE id = ?",
+                arguments: ["2027-01-15T12:25:00Z", trackID]
+            )
+            let itemID = try TestDatabase.insertInboxItem(db)
+            try db.execute(
+                sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?",
+                arguments: ["2027-01-15T12:25:00Z", itemID]
+            )
+            try TestDatabase.insertBriefing(db, date: localDate(base + 1500))
+            return try insertRecap(db, from: base + 1000, to: base + 2000)
+        }
+
+        let recap = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
 
         try dbQueue.read { db in
-            // Referenced inbox item is read; the other stays unread.
-            let item1Read: String? = try String.fetchOne(
-                db, sql: "SELECT read_at FROM inbox_items WHERE id = 1"
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests WHERE read_at IS NOT NULL"), 1)
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE read_at IS NOT NULL AND has_updates = 0"),
+                1,
+                "tracks are marked read and lose their update flag"
             )
-            XCTAssertNotNil(item1Read)
-            XCTAssertFalse((item1Read ?? "").isEmpty)
-            let item2Read: String? = try String.fetchOne(
-                db, sql: "SELECT read_at FROM inbox_items WHERE id = 2"
-            )
-            XCTAssertTrue((item2Read ?? "").isEmpty)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items WHERE read_at IS NOT NULL"), 1)
+            XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM briefings WHERE read_at IS NOT NULL"), 1)
 
-            // Theme review_state flipped to reviewed.
-            let reviewState = try String.fetchOne(
-                db, sql: "SELECT review_state FROM catchup_themes WHERE id = ?", arguments: [ctx.themeID]
+            let ack = try String.fetchOne(
+                db, sql: "SELECT acknowledged_at FROM catchup_recaps WHERE id = ?", arguments: [recapID]
             )
-            XCTAssertEqual(reviewState, "reviewed")
-
-            // Session reviewed_count incremented.
-            let reviewed = try Int.fetchOne(
-                db, sql: "SELECT reviewed_count FROM catchup_sessions WHERE id = ?", arguments: [ctx.sid]
-            )
-            XCTAssertEqual(reviewed, 1)
+            XCTAssertNotNil(ack, "the recap stamps its own acknowledged_at")
         }
+
+        let reloaded = try fetchRecap(dbQueue, recapID)
+        XCTAssertTrue(reloaded.isAcknowledged)
     }
 
-    func testAcknowledgeDoesNotCascadeToDecisionReads() throws {
-        // Decisions moved to the consolidated ideas ledger (decisions-split,
-        // 2026-08-12) — the Swift-only Decisions feed this digest->decision_reads
-        // cascade used to protect no longer exists. See docs/inventory/catchup.md
-        // CATCHUP-01 changelog: the Go path (Pipeline.Acknowledge) still cascades;
-        // only the Swift path was retired.
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    func testAcknowledgeLeavesItemsOutsideWindowUnread() throws {
         let dbQueue = try TestDatabase.create()
-        let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
-            try TestDatabase.insertWorkspace(db)
-            try TestDatabase.insertChannel(db)
-            // Digest id 1 carries two decisions.
-            try TestDatabase.insertDigest(
-                db, decisions: #"[{"text":"a"},{"text":"b"}]"#
+        let recapID = try dbQueue.write { db -> Int64 in
+            try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600, summary: "in")
+            try TestDatabase.insertDigest(db, periodFrom: base + 2500, periodTo: base + 2600, summary: "out")
+            let itemID = try TestDatabase.insertInboxItem(db)
+            try db.execute(
+                sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?",
+                arguments: ["2027-01-15T13:00:00Z", itemID]
             )
-            let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)
-            let themeID = try insertTheme(
-                db, sessionID: sid,
-                refs: #"[{"area":"digests","id":1,"label":"D"}]"#
-            )
-            return (sid, themeID)
+            return try insertRecap(db, from: base + 1000, to: base + 2000)
         }
 
-        let theme = try dbQueue.read { db in
-            try CatchUpQueries.fetchThemes(db, sessionID: Int(ctx.sid)).first { $0.id == Int(ctx.themeID) }
-        }
-        try dbQueue.write { db in
-            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(theme))
-        }
+        let recap = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
 
         try dbQueue.read { db in
-            // The digest itself is still marked read...
-            let digestRead: String? = try String.fetchOne(
-                db, sql: "SELECT read_at FROM digests WHERE id = 1"
+            let inRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE summary = 'in'")
+            XCTAssertNotNil(inRead, "in-window digest read")
+            let outRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests WHERE summary = 'out'")
+            XCTAssertNil(outRead, "digest past period_to stays unread")
+            XCTAssertEqual(
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items WHERE read_at IS NOT NULL"),
+                0,
+                "inbox item created after the window stays unread"
             )
-            XCTAssertNotNil(digestRead)
-            XCTAssertFalse((digestRead ?? "").isEmpty)
-
-            // ...but no decision_reads rows are inserted for it anymore.
-            let read = try Int.fetchOne(
-                db, sql: "SELECT COUNT(*) FROM decision_reads WHERE digest_id = 1"
-            )
-            XCTAssertEqual(read, 0)
         }
     }
 
-    func testAcknowledgeReviewedCountIsIdempotent() throws {
-        // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    func testAcknowledgeIsIdempotent() throws {
         let dbQueue = try TestDatabase.create()
-        let ctx = try dbQueue.write { db -> (sid: Int64, themeID: Int64) in
-            let sid = try insertSession(db, totalThemes: 1, reviewedCount: 0)
-            let themeID = try insertTheme(db, sessionID: sid, refs: "[]")
-            return (sid, themeID)
+        let recapID = try dbQueue.write { db -> Int64 in
+            try TestDatabase.insertDigest(db, periodFrom: base + 1500, periodTo: base + 1600)
+            try db.execute(sql: "UPDATE digests SET read_at = '2020-01-01T00:00:00Z'")
+            return try insertRecap(db, from: base + 1000, to: base + 2000)
         }
 
-        // First ack: pending → reviewed, count becomes 1.
-        let pending = try dbQueue.read { db in
-            try CatchUpQueries.fetchTheme(db, id: Int(ctx.themeID))
-        }
+        let recap = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
+        XCTAssertNotNil(
+            try dbQueue.read {
+                try String.fetchOne($0, sql: "SELECT acknowledged_at FROM catchup_recaps WHERE id = ?", arguments: [recapID])
+            }
+        )
+
+        // Both acks land in the same wall-clock second, so an equal stamp would
+        // prove nothing: rewrite it to a sentinel the second ack could only keep
+        // if its `acknowledged_at IS NULL` guard holds.
         try dbQueue.write { db in
-            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(pending))
-        }
-
-        // Re-ack with the now-reviewed row: count must not advance past 1.
-        let reviewed = try dbQueue.read { db in
-            try CatchUpQueries.fetchTheme(db, id: Int(ctx.themeID))
-        }
-        try dbQueue.write { db in
-            try CatchUpQueries.acknowledge(db, theme: try XCTUnwrap(reviewed))
-        }
-
-        let count = try dbQueue.read { db in
-            try Int.fetchOne(
-                db, sql: "SELECT reviewed_count FROM catchup_sessions WHERE id = ?", arguments: [ctx.sid]
+            try db.execute(
+                sql: "UPDATE catchup_recaps SET acknowledged_at = '2020-06-01T00:00:00Z' WHERE id = ?",
+                arguments: [recapID]
             )
         }
-        XCTAssertEqual(count, 1, "re-acking a reviewed theme must not double-count")
-    }
 
-    func testSetReviewAndSetTask() throws {
-        let dbQueue = try TestDatabase.create()
-        let themeID = try dbQueue.write { db -> Int64 in
-            let sid = try insertSession(db)
-            return try insertTheme(db, sessionID: sid)
-        }
-
-        try dbQueue.write { db in
-            try CatchUpQueries.setReview(db, id: Int(themeID), state: "snoozed", snoozeUntil: "2026-07-01T00:00:00Z")
-            try CatchUpQueries.setTask(db, id: Int(themeID), taskID: 99)
-        }
+        let acknowledged = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: acknowledged) }
 
         try dbQueue.read { db in
-            let row = try Row.fetchOne(
-                db, sql: "SELECT review_state, snooze_until, task_id FROM catchup_themes WHERE id = ?",
-                arguments: [themeID]
+            let stamp = try String.fetchOne(
+                db, sql: "SELECT acknowledged_at FROM catchup_recaps WHERE id = ?", arguments: [recapID]
             )
-            XCTAssertEqual(row?["review_state"], "snoozed")
-            XCTAssertEqual(row?["snooze_until"], "2026-07-01T00:00:00Z")
-            XCTAssertEqual(row?["task_id"], 99)
+            XCTAssertEqual(stamp, "2020-06-01T00:00:00Z", "second ack keeps the first stamp")
+            let digestRead = try String.fetchOne(db, sql: "SELECT read_at FROM digests")
+            XCTAssertEqual(digestRead, "2020-01-01T00:00:00Z", "already-read rows keep their stamp")
         }
     }
 }

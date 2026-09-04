@@ -18,4 +18,11 @@ package enum MeetingRecapQueries {
             .filter(Column("transcript_id") == transcriptID)
             .fetchOne(db)
     }
+
+    /// One recap by row id — how a Catch-Up recap resolves a `meetings` ref.
+    package static func fetchByID(_ db: Database, id: Int) throws -> MeetingRecap? {
+        try MeetingRecap
+            .filter(Column("id") == id)
+            .fetchOne(db)
+    }
 }

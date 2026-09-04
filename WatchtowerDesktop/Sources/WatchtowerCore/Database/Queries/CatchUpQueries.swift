@@ -1,110 +1,151 @@
 import Foundation
 import GRDB
 
-/// DB access for Catch-Up v2 review sessions and themes. Mirrors the Go store
-/// (internal/db/catchup_store.go) for reads, and the Go `Pipeline.Acknowledge`
-/// cascade (internal/catchup/pipeline.go) for the per-theme mark-read.
+/// DB access for Catch-Up absence recaps. Reads mirror the Go store
+/// (`internal/db/catchup_store.go`); `acknowledge` is the Swift half of the
+/// CATCHUP-01 dual path — the Desktop "I'm caught up" button writes the shared
+/// DB directly and never calls the CLI, so its SQL must stay the exact twin of
+/// Go's `AcknowledgeCatchupWindow`.
 package enum CatchUpQueries {
 
     // MARK: - Fetch
 
-    /// The newest non-done / non-failed session, or nil when there is none.
-    package static func fetchActiveSession(_ db: Database) throws -> CatchUpSession? {
-        try CatchUpSession.fetchOne(
+    /// Newest recaps first (the Go `ListCatchupRecaps` order).
+    package static func fetchRecaps(_ db: Database, limit: Int = 50) throws -> [CatchUpRecap] {
+        try CatchUpRecap.fetchAll(
             db,
-            sql: """
-                SELECT * FROM catchup_sessions
-                WHERE status IN ('building','active')
-                ORDER BY id DESC LIMIT 1
-                """
+            sql: "SELECT * FROM catchup_recaps ORDER BY id DESC LIMIT ?",
+            arguments: [limit]
         )
     }
 
-    /// All themes of a session in display (order_idx) order.
-    package static func fetchThemes(_ db: Database, sessionID: Int) throws -> [CatchUpTheme] {
-        try CatchUpTheme.fetchAll(
+    package static func fetchRecap(_ db: Database, id: Int) throws -> CatchUpRecap? {
+        try CatchUpRecap.fetchOne(db, sql: "SELECT * FROM catchup_recaps WHERE id = ?", arguments: [id])
+    }
+
+    /// Reactive observation of the recap list — a CLI run inserting or finishing
+    /// a row pushes straight into the Desktop list.
+    package static func observeRecaps(limit: Int = 50) -> ValueObservation<ValueReducers.Fetch<[CatchUpRecap]>> {
+        ValueObservation.tracking { db in try fetchRecaps(db, limit: limit) }
+    }
+
+    /// Start of the next **auto** window: `period_to` of the most recently
+    /// acknowledged recap, or nil when nothing has been acknowledged yet (the
+    /// caller then falls back to `now − 24h`, as `catchup run` does). Mirrors Go
+    /// `LastAcknowledgedCatchupTo`, which reports the same "none" case as 0.
+    package static func autoWindowStart(_ db: Database) throws -> Date? {
+        let to = try Double.fetchOne(
             db,
-            sql: "SELECT * FROM catchup_themes WHERE session_id = ? ORDER BY order_idx, id",
-            arguments: [sessionID]
+            sql: "SELECT MAX(period_to) FROM catchup_recaps WHERE acknowledged_at IS NOT NULL"
         )
+        guard let to else { return nil }
+        return Date(timeIntervalSince1970: to)
     }
 
-    package static func fetchTheme(_ db: Database, id: Int) throws -> CatchUpTheme? {
-        try CatchUpTheme.fetchOne(db, sql: "SELECT * FROM catchup_themes WHERE id = ?", arguments: [id])
+    /// Whether a finished recap is still waiting for "I'm caught up" — the
+    /// sidebar badge condition.
+    package static func hasUnacknowledgedReady(_ db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: "SELECT EXISTS(SELECT 1 FROM catchup_recaps WHERE status = 'ready' AND acknowledged_at IS NULL)"
+        ) ?? false
     }
 
-    /// Reactive observation of the active session's themes (the streaming list).
-    /// Emits an empty array when no session is active.
-    package static func observeActiveThemes() -> ValueObservation<ValueReducers.Fetch<[CatchUpTheme]>> {
-        ValueObservation.tracking { db in
-            guard let session = try fetchActiveSession(db) else { return [] }
-            return try fetchThemes(db, sessionID: session.id)
-        }
-    }
+    // MARK: - Acknowledge (window-scoped mark-read)
 
-    // MARK: - Review state
-
-    package static func setReview(_ db: Database, id: Int, state: String, snoozeUntil: String) throws {
-        try db.execute(
-            sql: """
-                UPDATE catchup_themes
-                SET review_state = ?, snooze_until = ?,
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [state, snoozeUntil, id]
-        )
-    }
-
-    package static func setTask(_ db: Database, id: Int, taskID: Int) throws {
-        try db.execute(
-            sql: """
-                UPDATE catchup_themes
-                SET task_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [taskID, id]
-        )
-    }
-
-    // MARK: - Acknowledge (cascade mark-read over refs)
-
-    /// Cascades mark-read over the theme's snapshot refs, flips the theme to
-    /// 'reviewed', and bumps the session's reviewed_count. Mirrors the Go
-    /// `Pipeline.Acknowledge`: only the captured refs are cleared (snapshot by ID),
-    /// unknown areas are skipped, and the mark-read calls are idempotent.
+    /// Marks everything inside the recap's window read on the five `read_at`
+    /// surfaces and stamps the recap's own `acknowledged_at` (first stamp wins).
     ///
-    /// Unlike the Go path, this does NOT cascade a referenced digest to its
-    /// embedded decisions' `decision_reads` rows: decisions now live in the
-    /// consolidated ideas ledger (`kind = 'decision'`), tracked via `seen_at`,
-    /// not via a digest's raw JSON — the Swift-only Decisions feed this
-    /// cascade used to protect no longer exists (decisions-split, 2026-08-12;
-    /// see docs/inventory/catchup.md CATCHUP-01 changelog).
-    package static func acknowledge(_ db: Database, theme: CatchUpTheme) throws {
-        for ref in theme.decodedRefs {
-            switch ref.area {
-            case "digests":
-                try DigestQueries.markDigestRead(db, id: ref.id)
-            case "tracks":
-                try TrackQueries.markRead(db, id: ref.id)
-            case "inbox":
-                try InboxQueries.markRead(db, id: ref.id)
-            case "briefings":
-                try BriefingQueries.markRead(db, id: ref.id)
-            default:
-                break
-            }
-        }
+    /// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md. The exact twin of Go's
+    /// `AcknowledgeCatchupWindow`: the same six set-based statements in the same
+    /// order, the same `(from, to]` edges (`briefings` compares LOCAL calendar
+    /// dates inclusively, everything else the window bounds), each predicate
+    /// already excluding the rows it marked so a second ack is a no-op. Selection
+    /// is by **window**, never by the refs the compose call happened to cite — so
+    /// this must not be rebuilt on the per-id `MarkXRead` helpers.
+    ///
+    /// Runs inside the caller's `write` block, which supplies the transaction the
+    /// Go path opens explicitly.
+    package static func acknowledge(_ db: Database, recap: CatchUpRecap) throws {
+        let from = recap.periodFrom
+        let to = recap.periodTo
+        let fromISO = Self.isoString(from)
+        let toISO = Self.isoString(to)
+        let fromDate = Self.localDateString(from)
+        let toDate = Self.localDateString(to)
 
-        let wasReviewed = theme.isReviewed
-        try setReview(db, id: theme.id, state: "reviewed", snoozeUntil: "")
-        // Only count the first transition into 'reviewed' so re-acking a theme
-        // never pushes reviewed_count past total_themes.
-        if !wasReviewed {
-            try db.execute(
-                sql: "UPDATE catchup_sessions SET reviewed_count = reviewed_count + 1 WHERE id = ?",
-                arguments: [theme.sessionID]
-            )
-        }
+        try db.execute(
+            sql: """
+                UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE read_at IS NULL AND period_to > ? AND period_to <= ?
+                """,
+            arguments: [from, to]
+        )
+        try db.execute(
+            sql: """
+                UPDATE stream_digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE read_at IS NULL AND period_to > ? AND period_to <= ?
+                """,
+            arguments: [fromISO, toISO]
+        )
+        try db.execute(
+            sql: """
+                UPDATE tracks SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'), has_updates = 0
+                WHERE dismissed_at = '' AND updated_at > ? AND updated_at <= ?
+                  AND (read_at IS NULL OR has_updates = 1)
+                """,
+            arguments: [fromISO, toISO]
+        )
+        try db.execute(
+            sql: """
+                UPDATE inbox_items SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE read_at IS NULL AND created_at > ? AND created_at <= ?
+                """,
+            arguments: [fromISO, toISO]
+        )
+        try db.execute(
+            sql: """
+                UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE read_at IS NULL AND date >= ? AND date <= ?
+                """,
+            arguments: [fromDate, toDate]
+        )
+        try db.execute(
+            sql: """
+                UPDATE catchup_recaps
+                SET acknowledged_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE id = ? AND acknowledged_at IS NULL
+                """,
+            arguments: [recap.id]
+        )
+    }
+
+    // MARK: - Window-bound formatting
+
+    /// UTC `yyyy-MM-ddTHH:mm:ssZ` — the form Go writes into the ISO timestamp
+    /// columns (`time.Unix(...).UTC().Format("2006-01-02T15:04:05Z")`).
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+
+    private static func isoString(_ unix: Double) -> String {
+        // Go truncates to whole seconds via int64(); match it, so a fractional
+        // window bound can never round the boundary a second the wrong way.
+        Self.isoFormatter.string(from: Date(timeIntervalSince1970: unix.rounded(.towardZero)))
+    }
+
+    /// `yyyy-MM-dd` in the CURRENT time zone: `briefings.date` is a local calendar
+    /// date and Go formats the window bounds with `.Local()`. Built per call so a
+    /// time-zone change mid-session cannot leave a stale zone cached.
+    private static func localDateString(_ unix: Double) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: Date(timeIntervalSince1970: unix.rounded(.towardZero)))
     }
 }
