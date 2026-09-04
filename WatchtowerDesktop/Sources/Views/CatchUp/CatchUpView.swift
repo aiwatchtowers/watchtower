@@ -3,195 +3,175 @@ import WatchtowerCore
 
 // MARK: - CatchUpView
 //
-// Catch-Up v2 — two-panel master-detail review UX. The left column streams the
-// active session's themes (CatchUpThemeRow) as expand completes; the right pane
-// (CatchUpReviewPane) is the rich single-theme review screen with the action
-// bar. The operator reviews one theme at a time; Done cascades mark-read and
-// auto-advances to the next pending theme.
+// Catch-Up is an absence recap: pick a window on the left, build it, read the
+// resulting document on the right. The left column keeps the window bar plus the
+// history of recaps; the right pane renders whichever one is selected.
 struct CatchUpView: View {
     @Bindable var vm: CatchUpViewModel
-    @Environment(AppState.self) private var appState
+
+    /// Custom-range mode. View-local on purpose: it only decides WHICH control
+    /// edits `vm.windowChoice`, and the choice itself — the state that has to
+    /// survive navigation — lives on the ViewModel.
+    @State private var rangeMode = false
+    @State private var rangeFrom = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+    @State private var rangeTo = Date()
 
     var body: some View {
-        content
-            .onAppear { vm.startObserving() }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if let error = vm.error, vm.themes.isEmpty {
-            errorState(error)
-        } else if vm.isLoading && vm.themes.isEmpty {
-            loadingState
-        } else if vm.themes.isEmpty {
-            emptyState
-        } else {
-            HSplitView {
-                themeList
-                    .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
-                reviewPane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        HSplitView {
+            leftColumn
+                .frame(minWidth: 260, idealWidth: 300, maxWidth: 380)
+            rightPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            vm.startObserving()
+            // Restore the range controls from a choice that survived navigation.
+            if case let .custom(from, to) = vm.windowChoice {
+                rangeMode = true
+                rangeFrom = from
+                rangeTo = to
             }
         }
     }
 
-    // MARK: - Left: streaming theme list
+    // MARK: - Left column
 
-    private var themeList: some View {
+    private var leftColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
-            progressHeader
+            // A banner, not a full-screen state: a failed build must not hide the
+            // older recaps, which stay perfectly readable.
+            if let error = vm.error {
+                errorBanner(error)
+                Divider()
+            }
+            windowBar
             Divider()
-            // Plain ScrollView of buttons, not a List: the sidebar list style
-            // rides an NSVisualEffectView that samples the desktop wallpaper
-            // behind the window, so its selection fill reads as a wallpaper
-            // tint no opaque SwiftUI background can cure (TargetsListView
-            // precedent).
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(vm.themes) { theme in
-                            themeRow(theme)
-                                .id(theme.id)
-                        }
+            recapList
+        }
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+            Spacer(minLength: 0)
+            Button {
+                vm.error = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .font(.caption)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.12))
+    }
+
+    private var windowBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if rangeMode {
+                DatePicker("From", selection: $rangeFrom, displayedComponents: [.date, .hourAndMinute])
+                DatePicker("To", selection: $rangeTo, displayedComponents: [.date, .hourAndMinute])
+            } else {
+                Picker("Window", selection: $vm.windowChoice) {
+                    ForEach(CatchUpWindowChoice.presets, id: \.self) { choice in
+                        Text(choice.title).tag(choice)
                     }
                 }
-                // Selection also advances programmatically (Done cascades to
-                // the next pending theme), so follow it into view.
-                .onChange(of: vm.selected?.id) { _, id in
-                    guard let id else { return }
-                    withAnimation { proxy.scrollTo(id, anchor: .center) }
-                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-        }
-    }
 
-    private func themeRow(_ theme: CatchUpTheme) -> some View {
-        let isSelected = vm.selected?.id == theme.id
-        return Button {
-            vm.selected = theme
-        } label: {
-            CatchUpThemeRow(theme: theme)
-                .padding(.horizontal, 12)
-                // CatchUpThemeRow already pads 4 vertically; 4 more matches the
-                // 8-point density of the Targets rows.
-                .padding(.vertical, 4)
-                .background(
-                    isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 6)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
+            autoCaption
 
-    @ViewBuilder
-    private var progressHeader: some View {
-        if let session = vm.session {
             HStack(spacing: 8) {
-                Text("\(session.reviewedCount) of \(session.totalThemes) reviewed")
+                Toggle("Range", isOn: $rangeMode)
+                    .toggleStyle(.checkbox)
                     .font(.caption)
-                    .fontWeight(.medium)
                 Spacer(minLength: 0)
-                Button {
-                    vm.startSession()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+                if vm.isBuilding {
+                    ProgressView().controlSize(.small)
                 }
-                .buttonStyle(.borderless)
-                .help("Start review")
-                .disabled(vm.isLoading)
+                Button("Build recap") { vm.build() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(vm.isBuilding)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+        }
+        .padding(10)
+        .onChange(of: rangeMode) { _, on in
+            vm.windowChoice = on ? .custom(from: rangeFrom, to: rangeTo) : .auto
+        }
+        .onChange(of: rangeFrom) { _, _ in applyRange() }
+        .onChange(of: rangeTo) { _, _ in applyRange() }
+    }
+
+    /// Where an auto build would start. Nothing acknowledged yet means the CLI
+    /// falls back to the last 24 hours, so the caption says so rather than
+    /// leaving the window a mystery.
+    @ViewBuilder
+    private var autoCaption: some View {
+        if vm.windowChoice == .auto {
+            Text(vm.autoWindowStart.map { "since \(TimeFormatting.shortDateTime(from: $0))" }
+                 ?? "since 24 hours ago")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
-    // MARK: - Right: review pane
+    private func applyRange() {
+        guard rangeMode else { return }
+        vm.windowChoice = .custom(from: rangeFrom, to: rangeTo)
+    }
+
+    private var recapList: some View {
+        // Plain ScrollView of buttons, not a List: the sidebar list style rides
+        // an NSVisualEffectView that samples the desktop wallpaper behind the
+        // window, so its selection fill reads as a wallpaper tint no opaque
+        // SwiftUI background can cure (TargetsListView precedent).
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(vm.recaps) { recap in
+                    Button {
+                        vm.selected = recap
+                    } label: {
+                        CatchUpRecapRow(recap: recap)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(
+                                vm.selected?.id == recap.id ? Color.accentColor.opacity(0.1) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Right pane
 
     @ViewBuilder
-    private var reviewPane: some View {
-        if let theme = vm.selected {
-            CatchUpReviewPane(theme: theme, vm: vm, onOpenSource: openSource)
+    private var rightPane: some View {
+        if let recap = vm.selected {
+            CatchUpRecapDocument(recap: recap, vm: vm)
         } else {
             VStack(spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.green)
-                Text("All themes reviewed")
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.secondary)
+                Text("No recaps yet")
                     .font(.title3)
-                Text("Nothing left in this pass.")
+                Text("Pick a window and build one.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    // MARK: - Source navigation
-    //
-    // Digests and tracks expand inline under their source row inside the review
-    // pane (handled by CatchUpReviewPane). Only briefings and inbox — which have
-    // no inline renderer — route here to switch the sidebar destination. Ref areas
-    // are persisted plural by the Go pipeline.
-    private func openSource(_ ref: CatchUpRef) {
-        switch ref.area {
-        case "briefings":
-            appState.navigateToBriefing(ref.id)
-        case "inbox":
-            appState.selectedDestination = .inbox
-        default:
-            break
-        }
-    }
-
-    // MARK: - States
-
-    private var loadingState: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Clustering everything you missed into themes…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "checkmark.circle")
-                .font(.system(size: 40))
-                .foregroundStyle(.green)
-            Text("All caught up")
-                .font(.title3)
-            Text("Start a review to cluster everything you missed into themes.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Start review") { vm.startSession() }
-                .disabled(vm.isLoading)
-                .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
-    }
-
-    private func errorState(_ message: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 40))
-                .foregroundStyle(.orange)
-            Text("Catch-up failed")
-                .font(.title3)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Button("Try again") { vm.startSession() }
-                .disabled(vm.isLoading)
-                .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 }

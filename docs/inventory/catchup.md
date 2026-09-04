@@ -15,7 +15,7 @@
 
 **What it is.** Catch-up is an on-demand absence recap: one persisted document per time window answering "what did the company do while I was away." A run (`watchtower catchup run`) resolves a window — **auto** (from the most recently *acknowledged* recap's `period_to`, or `now − 24h` when none exists), a **preset** (`today`/`yesterday`/`3d`/`week`, local time), or **custom** `--from`/`--to` — capped at 31 days and rejected when `from` does not precede `to`. When the window's `to` is within 5 minutes of now, the run first **tops up** coverage by calling the same channel-digest and Gmail/Jira stream-digest pipelines the daemon already runs (`digest.Pipeline.RunChannelDigestsOnly`, `ideas.Pipeline.RunStreamDigests`), gated by their own feature flags; a gated-off or already-past window skips the top-up (`coverage.topup = "skipped"`), and a failing top-up is recorded but never fails the run (CATCHUP-03). The pipeline then **gathers** eight window-scoped areas — channel digests, Gmail/Jira stream digests, meeting recaps, ad-hoc transcript summaries, decisions, actionable inbox items, updated tracks, and due/overdue targets — each capped by `catchup.caps.*`, and renders them into one strong-tier `catchup.compose` call (source tag `catchup.compose`; the system prompt always carries `prompts.Directive(digest.language)`, CATCHUP-02). Go validates every `[area#id]` ref the model cites against the gathered set before persisting: an unknown ref is dropped and counted, and an item left with zero valid refs is dropped outright (CATCHUP-04). An empty gather short-circuits to a `ready`, empty-bodied recap with no AI call. Every run inserts a **new** `catchup_recaps` row (migration 00061); nothing is edited in place except by an explicit `--regen <id>`, which rebuilds the *same* window as a new row carrying `regen_of_id`. A single **"I'm caught up"** action marks the whole window read across five `read_at` surfaces — `digests`, `stream_digests`, `tracks`, `inbox_items`, `briefings` — in one transaction, idempotently (CATCHUP-01). Per-topic 👍/👎 with a comment still derives learned rules for the source pipelines (`catchup feedback`), and a presentation-correction comment triggers a whole-recap regen.
 
-**Two implementations, one behavior.** As before the rewrite, the acknowledge logic exists **twice**: Go (`Pipeline.Acknowledge`, CLI `catchup ack`) and Swift (`CatchUpQueries.acknowledge(recap:)`, the Desktop "I'm caught up" button, which writes the shared DB directly and never calls Go). Every contract below that mentions acknowledge must hold on **both** paths; guard lists pair the Go and Swift tests deliberately. The Swift-side guards for the rewritten window ack are not written yet — a later task (Task 13) adds `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift`; they are cited below as planned, marked "(Swift path, Task 13)".
+**Two implementations, one behavior.** As before the rewrite, the acknowledge logic exists **twice**: Go (`Pipeline.Acknowledge`, CLI `catchup ack`) and Swift (`CatchUpQueries.acknowledge(recap:)`, the Desktop "I'm caught up" button, which writes the shared DB directly and never calls Go). Every contract below that mentions acknowledge must hold on **both** paths; guard lists pair the Go and Swift tests deliberately.
 
 **Implementation notes (constrain future edits to `internal/db/catchup.go`).**
 - The DB pool has `MaxOpenConns(1)` (`db.Open`): a query issued inside an open `rows` loop deadlocks against itself. `ListCatchupDigests` therefore drains its digest-row cursor fully before issuing the per-digest `GetDigestTopics` follow-up query; any future per-row enrichment in this file must keep the same two-pass shape.
@@ -28,7 +28,7 @@
 
 ## CATCHUP-01 — Caught up once here, read everywhere
 
-**Status:** Enforced (Go path); Swift path guards planned, Task 13
+**Status:** Enforced (Go + Swift paths)
 
 **Observable:** Acknowledging a recap (`Pipeline.Acknowledge` / CLI `catchup ack`, or the Desktop's "I'm caught up" button writing the shared DB directly) marks read everything **inside its window** on the five `read_at` surfaces — `digests` (`period_to` in `(from, to]`), `stream_digests` (same, ISO `period_to`), `tracks` (`updated_at` in `(from, to]` and not dismissed; also clears `has_updates`), `inbox_items` (`created_at` in `(from, to]`), `briefings` (`date` between the window's local dates) — plus stamps the recap's own `acknowledged_at` (first stamp wins). All six writes run in one transaction, set-based. Items outside the window are left untouched, and a second ack changes nothing (every predicate already excludes the rows it marked). Selection is by **window**, not by the refs the compose call happened to cite: an item the model dropped for lacking a valid ref, or content the AI simply never mentioned, still gets marked read — "caught up" means "up to date until T," not "reviewed everything the AI surfaced."
 
@@ -37,9 +37,9 @@
 **Test guards:**
 - `internal/db/catchup_store_test.go::TestCatchup01_AcknowledgeMarksWindowRead`
 - `internal/db/catchup_store_test.go::TestCatchup01_AcknowledgeIsIdempotent`
-- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeMarksWindowReadOnFiveSurfaces` (Swift path, Task 13)
-- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeLeavesItemsOutsideWindowUnread` (Swift path, Task 13)
-- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeIsIdempotent` (Swift path, Task 13)
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeMarksWindowReadOnFiveSurfaces`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeLeavesItemsOutsideWindowUnread`
+- `WatchtowerDesktop/Tests/Core/CatchUpQueriesTests.swift::testAcknowledgeIsIdempotent`
 
 **Locked since:** 2026-09-04
 
