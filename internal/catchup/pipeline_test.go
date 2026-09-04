@@ -2,12 +2,16 @@ package catchup
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
-	"strconv"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -17,769 +21,364 @@ import (
 
 // mockGenerator returns canned output and records that it was called. When fn is
 // set it is used to compute the response from the (system, user) messages so a
-// test can return different output for the outline vs expand passes (or for a
-// regen correction); otherwise the static out is returned.
+// test can assert on what the pipeline actually sent; otherwise the static out
+// is returned. err, when set, fails the call instead. source records the tier
+// tag the pipeline attached to the context.
 type mockGenerator struct {
 	out    string
+	err    error
 	fn     func(system, user string) string
 	called bool
 	calls  int
+	source string
 	mu     sync.Mutex
 }
 
-func (m *mockGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+func (m *mockGenerator) Generate(ctx context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
 	m.mu.Lock()
 	m.called = true
 	m.calls++
+	m.source, _ = digest.SourceFromContext(ctx)
 	fn := m.fn
 	out := m.out
+	err := m.err
 	m.mu.Unlock()
+	if err != nil {
+		return "", nil, "", err
+	}
 	if fn != nil {
 		out = fn(system, user)
 	}
 	return out, &digest.Usage{}, "", nil
 }
 
-func newCfg() *config.Config {
-	c := &config.Config{}
-	c.Catchup.Caps = config.CatchupCaps{Digests: 40, Tracks: 20, Inbox: 30, Briefings: 5}
-	return c
-}
-
 func testLogger() *log.Logger {
 	return log.New(log.Writer(), "", 0)
 }
 
-// seedDigestPeriod hands out a unique period per seeded digest so repeated calls
-// in one test do not collide on the (channel_id, type, period_from, period_to)
-// UNIQUE constraint. Ids still autoincrement from 1 within each fresh test DB.
-var seedDigestPeriod atomic.Int64
-
-func seedUnreadDigest(t *testing.T, d *db.DB) {
-	t.Helper()
-	n := seedDigestPeriod.Add(1)
-	if _, err := d.Exec(
-		`INSERT INTO digests (channel_id, period_from, period_to, type, summary, read_at)
-		 VALUES ('C1', ?, ?, 'channel', 'something happened', NULL)`, n, n+1); err != nil {
-		t.Fatal(err)
-	}
+type fakeTopUp struct {
+	channelCalls, streamCalls int
+	channelErr, streamErr     error
 }
 
-// expandOK is a generic successful expand response for tests that do not assert
-// on narrative content. It omits priority so the skeleton priority is preserved
-// (normalizePriority falls back to the theme's value on an empty string).
-const expandOK = `{"narrative":"x","needs_you":false,"suggested_action":""}`
+func (f *fakeTopUp) ChannelDigests(context.Context) error { f.channelCalls++; return f.channelErr }
+func (f *fakeTopUp) StreamDigests(context.Context) error  { f.streamCalls++; return f.streamErr }
 
-// peelScript returns a mock fn that emits the given theme JSONs one per peel
-// round (in order) and then {"done":true}; every non-peel (expand) call returns
-// the supplied expand JSON. Round counting is safe because the peel loop is
-// sequential and expand calls take the else branch.
-func peelScript(expand string, themesJSON ...string) func(system, user string) string {
-	round := 0
-	return func(system, _ string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			i := round
-			round++
-			if i < len(themesJSON) {
-				return themesJSON[i]
-			}
-			return `{"done":true}`
-		}
-		return expand
-	}
+func newCfg() *config.Config {
+	c := &config.Config{}
+	c.Catchup.Caps = config.CatchupCaps{Digests: 40, Streams: 10, Meetings: 10, Decisions: 10, Inbox: 30, Tracks: 20, Targets: 10}
+	c.Catchup.MaxPromptChars = 120000
+	c.Digest.Enabled = true
+	c.Streams.Enabled = true
+	c.Digest.Language = "Russian"
+	return c
 }
 
-func TestCatchup10_RunCreatesSessionWithSkeletonThemes(t *testing.T) {
+func newPipeline(t *testing.T, gen *mockGenerator, top *fakeTopUp) (*Pipeline, *db.DB) {
 	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	gen := &mockGenerator{fn: peelScript(expandOK,
-		`{"theme":{"title":"First theme","priority":"high","refs":[{"area":"digests","id":1,"label":"channel digest C1"}]}}`,
-		`{"theme":{"title":"Second theme","priority":"low","refs":[{"area":"digests","id":2,"label":"d2"}]}}`,
-	)}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !gen.called {
-		t.Fatal("peel generator not called for non-empty backlog")
-	}
-	if sessionID == 0 {
-		t.Fatal("expected a non-zero session id")
-	}
-
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess == nil || sess.ID != sessionID {
-		t.Fatalf("active session = %+v, want id %d", sess, sessionID)
-	}
-	if sess.TotalThemes != 2 {
-		t.Fatalf("total_themes = %d, want 2", sess.TotalThemes)
-	}
-
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) != 2 {
-		t.Fatalf("got %d themes, want 2", len(themes))
-	}
-	if themes[0].Title != "First theme" || themes[0].OrderIdx != 0 {
-		t.Fatalf("theme[0] = %+v", themes[0])
-	}
-	if themes[1].Title != "Second theme" || themes[1].OrderIdx != 1 {
-		t.Fatalf("theme[1] = %+v", themes[1])
-	}
-	if themes[0].Priority != "high" {
-		t.Fatalf("theme[0] priority = %q, want high", themes[0].Priority)
-	}
-	// Refs round-trip from the outline JSON.
-	refs, err := decodeRefs(themes[0].RefsJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(refs) != 1 || refs[0].Area != "digests" || refs[0].ID != 1 {
-		t.Fatalf("theme[0] refs = %+v", refs)
-	}
-}
-
-func TestCatchup11_ZeroUnreadCreatesNoSession(t *testing.T) {
-	d := db.OpenTestDB(t)
-	gen := &mockGenerator{out: `{"themes":[]}`}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gen.called {
-		t.Fatal("generator must not be called when nothing is unread")
-	}
-	if sessionID != 0 {
-		t.Fatalf("expected no session (0), got %d", sessionID)
-	}
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess != nil {
-		t.Fatalf("expected no session created, got %+v", sess)
-	}
-}
-
-func decodeRefs(raw string) ([]db.CatchupRef, error) {
-	return parseRefs(raw)
-}
-
-func TestCatchup12_PeelInjectsLearnedPreferences(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d)
-	// A catchup-pipeline rule derived from prior feedback must reach the prompt,
-	// otherwise the learning loop is write-only.
-	if err := d.UpsertLearnedRule(db.InboxLearnedRule{
-		Pipeline: "catchup", RuleType: "source_mute",
-		ScopeKey: "catchup:topic:standup-noise", Weight: -1.0,
-		Source: "explicit_feedback", EvidenceCount: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var peelUser string
-	gen := &mockGenerator{fn: func(system, user string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			peelUser = user
-			return `{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`
-		}
-		return expandOK
-	}}
-	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(peelUser, "LEARNED PREFERENCES") {
-		t.Fatalf("peel prompt missing preferences header; got:\n%s", peelUser)
-	}
-	if !strings.Contains(peelUser, "catchup:topic:standup-noise") {
-		t.Fatalf("peel prompt missing learned rule scope; got:\n%s", peelUser)
-	}
-}
-
-// TestCatchup13_PromptsCarryLanguageDirective enforces the architectural
-// invariant that every operator-facing catch-up AI call (outline + expand)
-// carries the workspace language directive. Without it the model silently
-// answers in English regardless of the configured digest.language.
-func TestCatchup13_PromptsCarryLanguageDirective(t *testing.T) {
-	// BEHAVIOR CATCHUP-02 — see docs/inventory/catchup.md
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d)
-
-	cfg := newCfg()
-	cfg.Digest.Language = "Ukrainian"
-
-	var mu sync.Mutex
-	var systems []string
-	peelRound := 0
-	gen := &mockGenerator{fn: func(system, _ string) string {
-		mu.Lock()
-		systems = append(systems, system)
-		mu.Unlock()
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			mu.Lock()
-			i := peelRound
-			peelRound++
-			mu.Unlock()
-			if i == 0 {
-				return `{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`
-			}
-			return `{"done":true}`
-		}
-		return expandOK
-	}}
-	if _, err := New(d, cfg, gen, testLogger()).Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(systems) == 0 {
-		t.Fatal("no AI calls captured")
-	}
-	var sawPeel bool
-	for _, s := range systems {
-		if strings.HasPrefix(s, peelSystemPrompt) {
-			sawPeel = true
-		}
-		if !prompts.HasDirective(s) {
-			t.Fatalf("catch-up system prompt missing language directive:\n%s", s)
-		}
-		if !strings.Contains(s, "Ukrainian") {
-			t.Fatalf("catch-up system prompt does not honour configured language:\n%s", s)
-		}
-	}
-	// The peel prompt specifically must carry the directive (CATCHUP-02): it is
-	// the call that regressed to English before this invariant was pinned.
-	if !sawPeel {
-		t.Fatal("expected at least one peel-prompt AI call carrying the language directive")
-	}
-}
-
-// TestCatchup14_AcknowledgeMarksDigestDecisionsRead locks the end-to-end
-// behaviour that reviewing a catch-up theme clears the decisions of its source
-// digests, not just the digests themselves — otherwise decisions seen via
-// catch-up linger in the Decisions feed's unread count.
-func TestCatchup14_AcknowledgeMarksDigestDecisionsRead(t *testing.T) {
-	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
-	d := db.OpenTestDB(t)
-
-	digestID, err := d.UpsertDigest(db.Digest{
-		ChannelID: "C1", Type: "channel", PeriodFrom: 1, PeriodTo: 2,
-		Summary:   "s",
-		Decisions: `[{"text":"a"},{"text":"b"}]`,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	sid, err := d.CreateCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	themeID, err := d.InsertCatchupTheme(db.CatchupTheme{
-		SessionID: sid, Title: "T", Priority: "high", GenState: "ready",
-		RefsJSON: `[{"area":"digests","id":` + strconv.FormatInt(digestID, 10) + `,"label":"x"}]`,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := New(d, newCfg(), &mockGenerator{}, testLogger()).Acknowledge(themeID); err != nil {
-		t.Fatal(err)
-	}
-
-	var read int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, digestID).Scan(&read); err != nil {
-		t.Fatal(err)
-	}
-	if read != 2 {
-		t.Fatalf("decision_reads for digest = %d, want 2 (both decisions read via catch-up ack)", read)
-	}
-}
-
-func TestCatchup24_AcknowledgeReviewedCountIsIdempotent(t *testing.T) {
-	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
-	d := db.OpenTestDB(t)
-	sid, err := d.CreateCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tid, err := d.InsertCatchupTheme(db.CatchupTheme{
-		SessionID: sid, Title: "T", Priority: "medium", RefsJSON: "[]", GenState: "ready",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	p := New(d, newCfg(), &mockGenerator{}, testLogger())
-	if err := p.Acknowledge(tid); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Acknowledge(tid); err != nil {
-		t.Fatal(err)
-	}
-
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess == nil || sess.ReviewedCount != 1 {
-		t.Fatalf("reviewed_count = %v, want 1 (re-ack must not double-count)", sess)
-	}
-}
-
-func TestCatchup25_RegenThemePropagatesExpandFailure(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d)
-	// Peel produces a theme; every expand returns garbage so it fails to parse.
-	gen := &mockGenerator{fn: peelScript("not json at all",
-		`{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`,
-	)}
 	p := New(d, newCfg(), gen, testLogger())
-	sessionID, err := p.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A user-initiated regen must surface the failure, not report success.
-	if err := p.RegenTheme(context.Background(), themes[0].ID, "fix it"); err == nil {
-		t.Fatal("RegenTheme must return an error when the expand call fails")
-	}
+	p.SetTopUp(top)
+	p.now = func() time.Time { return time.Unix(2000, 0) }
+	return p, d
 }
 
-// twoDigestThemes is a peel script yielding two themes (Alpha, Beta), each
-// referencing a distinct seeded digest, then done. Callers seed two digests.
-func twoDigestThemes(expand string) func(system, user string) string {
-	return peelScript(expand,
-		`{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`,
-		`{"theme":{"title":"Beta","priority":"low","refs":[{"area":"digests","id":2,"label":"d2"}]}}`,
-	)
+func seedDigest(t *testing.T, d *db.DB, from, to float64) int64 {
+	res, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary) VALUES ('1:C1', ?, ?, 'channel', 'shipped v2')`, from, to)
+	require.NoError(t, err)
+	id, _ := res.LastInsertId()
+	return id
 }
 
-func TestCatchup20_ExpandFillsNarrativesAndActivatesSession(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	gen := &mockGenerator{fn: twoDigestThemes(
-		`{"narrative":"expanded story","priority":"high","needs_you":true,"suggested_action":"reply soon"}`,
-	)}
+const composeOK = `{"tldr":"quiet day","topics":[{"title":"Ship","narrative":"v2 shipped","priority":"high","refs":["digests#%d"]}],"decisions":[],"meetings":[],"needs_you":[]}`
 
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) != 2 {
-		t.Fatalf("got %d themes, want 2", len(themes))
-	}
-	for _, th := range themes {
-		if th.GenState != "ready" {
-			t.Fatalf("theme %d gen_state = %q, want ready", th.ID, th.GenState)
-		}
-		if th.Narrative != "expanded story" {
-			t.Fatalf("theme %d narrative = %q, want expanded story", th.ID, th.Narrative)
-		}
-		if th.Priority != "high" {
-			t.Fatalf("theme %d priority = %q, want high", th.ID, th.Priority)
-		}
-		if !th.NeedsYou {
-			t.Fatalf("theme %d needs_you = false, want true", th.ID)
-		}
-		if th.SuggestedAction != "reply soon" {
-			t.Fatalf("theme %d suggested_action = %q", th.ID, th.SuggestedAction)
-		}
-	}
-
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess == nil || sess.Status != "active" {
-		t.Fatalf("session = %+v, want status active", sess)
-	}
+func TestRun_EmptyWindowMakesNoAICall(t *testing.T) {
+	gen := &mockGenerator{out: "{}"}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0), To: time.Unix(1500, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", res.Status)
+	assert.False(t, gen.called)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "ready", r.Status)
+	assert.Contains(t, r.BodyJSON, `"topics":[]`, "an empty recap still persists a well-formed body")
+	assert.Equal(t, "skipped", res.Coverage.Topup, "window in the past → no top-up")
 }
 
-func TestCatchup21_PerThemeExpandFailureDoesNotFailRun(t *testing.T) {
-	// BEHAVIOR CATCHUP-03 — see docs/inventory/catchup.md
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	var expandCalls, peelRound int
+func TestRun_ComposesAndPersists(t *testing.T) {
+	top := &fakeTopUp{}
 	gen := &mockGenerator{}
-	gen.fn = func(system, _ string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			// peel is sequential, so peelRound needs no lock.
-			r := peelRound
-			peelRound++
-			switch r {
-			case 0:
-				return `{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`
-			case 1:
-				return `{"theme":{"title":"Beta","priority":"low","refs":[{"area":"digests","id":2,"label":"d2"}]}}`
-			default:
-				return `{"done":true}`
-			}
-		}
-		gen.mu.Lock()
-		expandCalls++
-		n := expandCalls
-		gen.mu.Unlock()
-		// The first expand call returns garbage (parse failure) → that theme fails;
-		// the other still expands. Which theme fails is non-deterministic (expands
-		// run concurrently) but exactly one of two does.
-		if n == 1 {
-			return "not json at all"
-		}
-		return `{"narrative":"good story","priority":"medium","needs_you":false,"suggested_action":""}`
-	}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatalf("Run must not fail on a per-theme expand error: %v", err)
-	}
-
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var failed, ready int
-	for _, th := range themes {
-		switch th.GenState {
-		case "failed":
-			failed++
-		case "ready":
-			ready++
-		}
-	}
-	if failed != 1 || ready != 1 {
-		t.Fatalf("got failed=%d ready=%d, want 1 and 1 (themes=%+v)", failed, ready, themes)
-	}
-
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess == nil || sess.Status != "active" {
-		t.Fatalf("session = %+v, want status active", sess)
-	}
+	p, d := newPipeline(t, gen, top)
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}}) // To = now(2000) → fresh → top-up runs
+	require.NoError(t, err)
+	assert.Equal(t, "ready", res.Status)
+	assert.Equal(t, 1, top.channelCalls)
+	assert.Equal(t, 1, top.streamCalls)
+	assert.Equal(t, "ok", res.Coverage.Topup)
+	assert.Equal(t, 1900.0, res.Coverage.SlackTo)
+	assert.Equal(t, "catchup.compose", gen.source, "the compose call must carry its tier tag")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "quiet day", r.TLDR)
+	var body Body
+	require.NoError(t, json.Unmarshal([]byte(r.BodyJSON), &body))
+	require.Len(t, body.Topics, 1)
+	assert.Equal(t, "1:C1", body.Topics[0].Refs[0].Label, "no channels row → the id is the title")
 }
 
-func TestCatchup22_RegenThemeOverwritesNarrativeWithCorrection(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	peelRound := 0
-	gen := &mockGenerator{fn: func(system, user string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			r := peelRound
-			peelRound++
-			switch r {
-			case 0:
-				return `{"theme":{"title":"Alpha","priority":"high","refs":[{"area":"digests","id":1,"label":"d1"}]}}`
-			case 1:
-				return `{"theme":{"title":"Beta","priority":"low","refs":[{"area":"digests","id":2,"label":"d2"}]}}`
-			default:
-				return `{"done":true}`
-			}
-		}
-		if strings.Contains(user, "OPERATOR CORRECTION") {
-			return `{"narrative":"corrected story","priority":"low","needs_you":false,"suggested_action":"none"}`
-		}
-		return `{"narrative":"original story","priority":"high","needs_you":true,"suggested_action":"reply"}`
-	}}
-
-	p := New(d, newCfg(), gen, testLogger())
-	sessionID, err := p.Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) == 0 {
-		t.Fatal("no themes produced")
-	}
-	target := themes[0]
-	other := themes[1]
-	if target.Narrative != "original story" {
-		t.Fatalf("pre-regen narrative = %q, want original story", target.Narrative)
-	}
-
-	if err := p.RegenTheme(context.Background(), target.ID, "be more concise"); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := d.GetCatchupTheme(target.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Narrative != "corrected story" {
-		t.Fatalf("post-regen narrative = %q, want corrected story", got.Narrative)
-	}
-	if got.GenState != "ready" {
-		t.Fatalf("post-regen gen_state = %q, want ready", got.GenState)
-	}
-	if got.ReviewState != "pending" {
-		t.Fatalf("post-regen review_state = %q, want pending (preserved)", got.ReviewState)
-	}
-
-	// The other theme is untouched by a targeted regen.
-	otherGot, err := d.GetCatchupTheme(other.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if otherGot.Narrative != "original story" {
-		t.Fatalf("other theme narrative = %q, want original story (untouched)", otherGot.Narrative)
-	}
+func TestRun_AutoWindowStartsAtLastAck(t *testing.T) {
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	prev, _ := d.InsertCatchupRecap(100, 1700, 0)
+	require.NoError(t, d.AcknowledgeCatchupWindow(prev, 100, 1700))
+	res, err := p.Run(context.Background(), RunOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1700), res.Window.From.Unix())
+	assert.Equal(t, int64(2000), res.Window.To.Unix())
+	assert.Equal(t, "auto", res.Window.Source)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, 1700.0, r.PeriodFrom, "the resolved window is what the row records")
+	assert.Equal(t, 2000.0, r.PeriodTo)
 }
 
-// TestCatchup26_PeelExtractsMoreThanEightThemes proves the old 3–8 ceiling is
-// gone: ten unread digests, each its own theme, all ten survive.
-func TestCatchup26_PeelExtractsMoreThanEightThemes(t *testing.T) {
-	d := db.OpenTestDB(t)
-	for i := 0; i < 10; i++ {
-		seedUnreadDigest(t, d) // ids 1..10
-	}
-	themesJSON := make([]string, 10)
-	for i := 0; i < 10; i++ {
-		themesJSON[i] = `{"theme":{"title":"T` + strconv.Itoa(i+1) +
-			`","priority":"medium","refs":[{"area":"digests","id":` + strconv.Itoa(i+1) + `}]}}`
-	}
-	gen := &mockGenerator{fn: peelScript(expandOK, themesJSON...)}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) != 10 {
-		t.Fatalf("got %d themes, want 10 (no artificial ceiling)", len(themes))
-	}
+// BEHAVIOR CATCHUP-02 — see docs/inventory/catchup.md
+func TestCatchup02_ComposePromptCarriesLanguageDirective(t *testing.T) {
+	var system string
+	gen := &mockGenerator{fn: func(s, _ string) string { system = s; return `{"tldr":"","topics":[]}` }}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	_, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Contains(t, system, prompts.Directive("Russian"))
 }
 
-// TestCatchup27_DoneMarksLeftoverRead — when the model signals done with items
-// still in the pool, those leftover items are marked read (noise auto-clear).
-func TestCatchup27_DoneMarksLeftoverRead(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1 -> themed
-	seedUnreadDigest(t, d) // id=2 -> leftover noise
-	gen := &mockGenerator{fn: peelScript(expandOK,
-		`{"theme":{"title":"Only one","priority":"high","refs":[{"area":"digests","id":1}]}}`,
-	)}
-
-	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// digest id=2 was never themed; a clean (done) exit must mark it read.
-	var leftoverRead int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM digests WHERE id = 2 AND read_at IS NOT NULL`).Scan(&leftoverRead); err != nil {
-		t.Fatal(err)
-	}
-	if leftoverRead != 1 {
-		t.Fatal("leftover digest id=2 should be marked read after a done exit")
-	}
-	// The themed digest id=1 stays unread — it is cleared only when the operator
-	// acknowledges its theme.
-	var themedUnread int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM digests WHERE id = 1 AND read_at IS NULL`).Scan(&themedUnread); err != nil {
-		t.Fatal(err)
-	}
-	if themedUnread != 1 {
-		t.Fatal("themed digest id=1 should stay unread until its theme is acknowledged")
-	}
+// BEHAVIOR CATCHUP-03 — see docs/inventory/catchup.md
+func TestCatchup03_TopUpFailureStillProducesRecap(t *testing.T) {
+	top := &fakeTopUp{channelErr: errors.New("digest lock held")}
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, top)
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", res.Status)
+	assert.Equal(t, "failed", res.Coverage.Topup)
+	assert.Contains(t, res.Coverage.TopupError, "digest lock held")
+	assert.Equal(t, 1, top.streamCalls, "stream top-up still attempted after the channel failure")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "ready", r.Status, "the recap itself still lands ready")
+	assert.Contains(t, r.CoverageJSON, `"topup":"failed"`)
 }
 
-// TestCatchup28_SafetyCapLeavesLeftoverUnread — if the loop never sees done and
-// hits the round cap, leftover stays unread (unprocessed, not noise).
-func TestCatchup28_SafetyCapLeavesLeftoverUnread(t *testing.T) {
-	d := db.OpenTestDB(t)
-	// Seed more digests than the cap; the script claims one fresh id per round and
-	// never says done, so the cap stops the loop with items still unclaimed.
-	n := maxPeelRounds + 5
-	for i := 0; i < n; i++ {
-		seedUnreadDigest(t, d)
-	}
-	gen := &mockGenerator{fn: func(system, user string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			id := firstID(user)
-			return `{"theme":{"title":"t","priority":"low","refs":[{"area":"digests","id":` + strconv.Itoa(id) + `}]}}`
-		}
-		return expandOK
-	}}
-
-	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	// A safety-cap exit marks nothing read: every seeded digest stays unread
-	// (the themed ones await ack, the unclaimed leftover is untouched).
-	_, total, err := d.GetUnreadDigests(200, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != n {
-		t.Fatalf("unread digests after safety-cap exit = %d, want %d (nothing marked read)", total, n)
-	}
+func TestRun_TopUpRespectsFeatureGates(t *testing.T) {
+	top := &fakeTopUp{}
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, top)
+	p.cfg.Digest.Enabled = false
+	p.cfg.Streams.Enabled = false
+	seedDigest(t, d, 1500, 1900)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, 0, top.channelCalls+top.streamCalls)
+	assert.Equal(t, "skipped", res.Coverage.Topup)
 }
 
-// firstID returns the first [id=N] in a peel user message.
-func firstID(user string) int {
-	const marker = "[id="
-	i := strings.Index(user, marker)
-	if i < 0 {
-		return 0
-	}
-	rest := user[i+len(marker):]
-	j := strings.IndexByte(rest, ']')
-	if j < 0 {
-		return 0
-	}
-	n, _ := strconv.Atoi(rest[:j])
-	return n
+// BEHAVIOR CATCHUP-04 — see docs/inventory/catchup.md
+func TestCatchup04_InventedRefsAreDroppedNotPersisted(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(`{"tldr":"x","topics":[{"title":"real","narrative":"n","priority":"low","refs":["digests#%d","digests#4242"]},{"title":"ghost","narrative":"n","priority":"low","refs":["inbox#77"]}],"decisions":[{"text":"d","refs":["decisions#1"]}]}`, id)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, 3, res.RefsRejected)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.NotContains(t, r.BodyJSON, "4242")
+	assert.NotContains(t, r.BodyJSON, "ghost")
+	assert.Contains(t, r.BodyJSON, `"decisions":[]`)
 }
 
-// TestCatchup29_MidLoopPeelErrorKeepsEarlierThemes — a parse failure on round 2
-// keeps round 1's theme and leaves the session usable (not failed). Leftover is
-// NOT marked read on an error exit.
-func TestCatchup29_MidLoopPeelErrorKeepsEarlierThemes(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	peelRound := 0
-	gen := &mockGenerator{fn: func(system, _ string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			peelRound++
-			if peelRound == 1 {
-				return `{"theme":{"title":"Kept","priority":"high","refs":[{"area":"digests","id":1}]}}`
-			}
-			return `not json at all` // round 2 fails -> stop, keep theme 1
-		}
-		return expandOK
-	}}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatalf("partial peel must not fail Run: %v", err)
-	}
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess == nil || sess.ID != sessionID {
-		t.Fatalf("expected an active session, got %+v", sess)
-	}
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) != 1 || themes[0].Title != "Kept" {
-		t.Fatalf("themes = %+v, want one 'Kept'", themes)
-	}
-	// leftover (id=2) NOT marked read on an error exit.
-	_, total, err := d.GetUnreadDigests(40, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total == 0 {
-		t.Fatal("leftover should remain unread on error exit")
-	}
+func TestRun_AIFailureMarksRecapFailed(t *testing.T) {
+	gen := &mockGenerator{out: "not json"}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err, "a failed recap is a row, not an error")
+	assert.Equal(t, "failed", res.Status)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "failed", r.Status)
+	assert.NotEmpty(t, r.Error)
 }
 
-// TestCatchup34_DegenerateRoundDoesNotClearUnthemedPool — a peel round that
-// returns valid-but-degenerate JSON (a parseable object that is neither a theme
-// nor done, e.g. `{}`) must NOT be treated as a clean "all noise" signal: with
-// zero themes produced, the whole gathered pool must stay unread. Guards the
-// data-loss path where a degenerate light-model response silently marked the
-// operator's entire backlog read.
-func TestCatchup34_DegenerateRoundDoesNotClearUnthemedPool(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	// Round 0 returns a parseable object with neither theme nor done.
-	gen := &mockGenerator{fn: peelScript(expandOK, `{}`)}
-
-	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_, total, err := d.GetUnreadDigests(40, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("degenerate round produced zero themes; pool must stay unread, got unread=%d want 2", total)
-	}
+func TestRun_GeneratorErrorMarksRecapFailed(t *testing.T) {
+	gen := &mockGenerator{err: errors.New("claude exited 1")}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err, "an AI failure is a row, not an error")
+	assert.Equal(t, "failed", res.Status)
+	assert.Contains(t, res.Error, "claude exited 1")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "failed", r.Status)
+	assert.Contains(t, r.Error, "claude exited 1")
 }
 
-// TestCatchup35_AllInvalidRefsDoesNotClearPool — a theme whose refs are all
-// unknown ids (model misfire) yields len(refs)==0; that must stop WITHOUT
-// clearing the leftover, not silently mark the whole pool read.
-func TestCatchup35_AllInvalidRefsDoesNotClearPool(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d) // id=1
-	seedUnreadDigest(t, d) // id=2
-	// Round 0 returns a theme referencing a nonexistent id only.
-	gen := &mockGenerator{fn: peelScript(expandOK,
-		`{"theme":{"title":"Bogus","priority":"high","refs":[{"area":"digests","id":999}]}}`,
-	)}
-
-	sessionID, err := New(d, newCfg(), gen, testLogger()).Run(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	themes, err := d.ListCatchupThemes(sessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(themes) != 0 {
-		t.Fatalf("a theme with no valid refs must not be persisted; got %d themes", len(themes))
-	}
-	_, total, err := d.GetUnreadDigests(40, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("all-invalid-refs misfire must not clear the pool; got unread=%d want 2", total)
-	}
+// The window read has two error branches — the seven gather queries and the
+// coverage read — handled identically. Only gather is reachable in a test: every
+// table and column CatchupCoverage reads is also read by gather, which runs
+// first, so breaking one breaks both.
+func TestRun_GatherErrorMarksRecapFailed(t *testing.T) {
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	_, err := d.Exec(`DROP TABLE stream_digests`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err, "an unreadable window is a row, not an error")
+	assert.Equal(t, "failed", res.Status)
+	assert.False(t, gen.called, "no AI call on material we could not read")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "failed", r.Status)
+	assert.NotEmpty(t, r.Error)
 }
 
-// TestCatchup33_ZeroThemesWithErrorFailsSession — the first peel round errors
-// before any theme is found => the session is marked failed (no active session).
-func TestCatchup33_ZeroThemesWithErrorFailsSession(t *testing.T) {
-	d := db.OpenTestDB(t)
-	seedUnreadDigest(t, d)
-	gen := &mockGenerator{fn: func(system, _ string) string {
-		if strings.HasPrefix(system, peelSystemPrompt) {
-			return `totally broken` // round 1 unparseable, zero themes so far
-		}
-		return expandOK
-	}}
+// A recap that could not be written down is not a recap: Run reports the write
+// failure instead of a "ready" result nothing backs.
+func TestRun_FinishWriteFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	// tldr is written only by FinishCatchupRecap — the insert does not name it.
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN tldr TO tldr_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err)
+	assert.Empty(t, res.Status, "no status is claimed for a recap that was never persisted")
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM catchup_recaps WHERE id=?`, res.RecapID).Scan(&status))
+	assert.Equal(t, "building", status, "the row is stuck, and the caller is told")
+}
 
-	if _, err := New(d, newCfg(), gen, testLogger()).Run(context.Background()); err == nil {
-		t.Fatal("expected error when the first peel round fails with zero themes")
-	}
-	// A failed session is not active.
-	sess, err := d.GetActiveCatchupSession()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess != nil {
-		t.Fatalf("expected no active session (failed), got %+v", sess)
-	}
+// Same rule on the failure path: if the row cannot even be marked failed, the
+// caller hears about it rather than being handed a "failed" result.
+func TestRun_FailWriteFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{err: errors.New("claude exited 1")}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN error TO error_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude exited 1", "the cause survives in the write error")
+	assert.Empty(t, res.Status)
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM catchup_recaps WHERE id=?`, res.RecapID).Scan(&status))
+	assert.Equal(t, "building", status)
+}
+
+func TestRun_RecapRowInsertFailureIsAnError(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	_, err := d.Exec(`ALTER TABLE catchup_recaps RENAME COLUMN period_from TO period_from_x`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.Error(t, err, "no row to record the failure on → the caller is told")
+	assert.Zero(t, res.RecapID)
+	assert.False(t, gen.called)
+}
+
+// The profile and the learned rules only personalise the recap; losing them
+// costs personalisation, not the recap.
+func TestRun_ProfileAndPrefsReadFailuresStillCompose(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	id := seedDigest(t, d, 1500, 1900)
+	gen.out = fmt.Sprintf(composeOK, id)
+	_, err := d.Exec(`DROP TABLE workspace`)
+	require.NoError(t, err)
+	_, err = d.Exec(`DROP TABLE inbox_learned_rules`)
+	require.NoError(t, err)
+	res, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{From: time.Unix(1000, 0)}})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", res.Status)
+	assert.True(t, gen.called)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, "quiet day", r.TLDR)
+}
+
+func TestRun_RegenMissingSourceIsAnError(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	_, err := p.Run(context.Background(), RunOptions{RegenOfID: 999})
+	require.Error(t, err)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM catchup_recaps`).Scan(&n))
+	assert.Equal(t, 0, n, "no row for a regen of a recap that does not exist")
+}
+
+func TestRun_RegenRejectsAnExplicitWindow(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	_, err := p.Run(context.Background(), RunOptions{RegenOfID: 999, Spec: WindowSpec{Preset: "today"}})
+	assert.ErrorIs(t, err, ErrWindow, "a regen reuses its source window; an explicit one is rejected, not ignored")
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM catchup_recaps`).Scan(&n))
+	assert.Equal(t, 0, n)
+}
+
+func TestRun_RegenReusesWindowAndSkipsTopUp(t *testing.T) {
+	top := &fakeTopUp{}
+	var user string
+	gen := &mockGenerator{fn: func(_, u string) string { user = u; return `{"tldr":"","topics":[]}` }}
+	p, d := newPipeline(t, gen, top)
+	seedDigest(t, d, 1500, 1900)
+	orig, _ := d.InsertCatchupRecap(1200, 1950, 0)
+	res, err := p.Run(context.Background(), RunOptions{RegenOfID: orig, Correction: "less about deploys"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1200), res.Window.From.Unix())
+	assert.Equal(t, int64(1950), res.Window.To.Unix())
+	assert.Equal(t, 0, top.channelCalls)
+	assert.Contains(t, user, "OPERATOR CORRECTION: less about deploys")
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Equal(t, orig, r.RegenOfID)
+}
+
+func TestRun_InvalidWindowIsAnError(t *testing.T) {
+	p, _ := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	_, err := p.Run(context.Background(), RunOptions{Spec: WindowSpec{Preset: "fortnight"}})
+	assert.ErrorIs(t, err, ErrWindow)
+}
+
+func TestAcknowledge_UsesRecapWindow(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+	id, _ := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, d.FinishCatchupRecap(id, "tl", `{"topics":[]}`, `{}`, "", 0, 0, 0))
+	require.NoError(t, p.Acknowledge(id))
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Equal(t, 1, n)
+	assert.Error(t, p.Acknowledge(999))
+}
+
+// "I'm caught up" on a recap that never finished would mark its whole window
+// read without ever having told the operator what was in it.
+func TestAcknowledge_RefusesUnfinishedRecap(t *testing.T) {
+	p, d := newPipeline(t, &mockGenerator{}, &fakeTopUp{})
+	seedDigest(t, d, 1500, 1900)
+
+	building, err := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	assert.ErrorContains(t, p.Acknowledge(building), "not ready")
+
+	failed, err := d.InsertCatchupRecap(1000, 2000, 0)
+	require.NoError(t, err)
+	require.NoError(t, d.FailCatchupRecap(failed, `{}`, "boom"))
+	assert.ErrorContains(t, p.Acknowledge(failed), "not ready")
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM digests WHERE read_at IS NOT NULL`).Scan(&n))
+	assert.Zero(t, n, "a refused acknowledge marks nothing read")
+	r, err := d.GetCatchupRecap(building)
+	require.NoError(t, err)
+	assert.Empty(t, r.AcknowledgedAt, "and never stamps the recap")
 }

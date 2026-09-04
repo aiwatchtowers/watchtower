@@ -7,212 +7,161 @@ import (
 	"time"
 )
 
-// CatchupSession represents one Catch-Up v2 review run.
-type CatchupSession struct {
-	ID            int64
-	CreatedAt     string
-	Status        string
-	TotalThemes   int
-	ReviewedCount int
-}
-
-// CatchupRef points at a single unread source item driving a theme's cascade.
+// CatchupRef points at one source row a recap item was built from.
 type CatchupRef struct {
 	Area  string `json:"area"`
 	ID    int    `json:"id"`
 	Label string `json:"label"`
 }
 
-// CatchupTheme is one cross-source theme, persisted incrementally as fan-out
-// expansion completes.
-type CatchupTheme struct {
-	ID, SessionID                                                 int64
-	OrderIdx                                                      int
-	Title, Narrative, Priority                                    string
-	NeedsYou                                                      bool
-	SuggestedAction, RefsJSON, GenState, ReviewState, SnoozeUntil string
-	TaskID                                                        int64
-	CreatedAt, UpdatedAt                                          string
+// CatchupRecap is one persisted absence recap (catchup_recaps row).
+type CatchupRecap struct {
+	ID                     int64
+	PeriodFrom, PeriodTo   float64
+	Status                 string
+	TLDR                   string
+	BodyJSON, CoverageJSON string
+	Error                  string
+	RegenOfID              int64
+	AcknowledgedAt         string
+	Model                  string
+	InputTokens            int
+	OutputTokens           int
+	CostUSD                float64
+	CreatedAt, UpdatedAt   string
 }
 
-// CreateCatchupSession inserts a new session in status='building' and returns its id.
-func (db *DB) CreateCatchupSession() (int64, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := db.Exec(`
-		INSERT INTO catchup_sessions (created_at, status)
-		VALUES (?, 'building')
-	`, now)
+const catchupRecapCols = `id, period_from, period_to, status, tldr, body_json, coverage_json, error,
+	COALESCE(regen_of_id, 0), COALESCE(acknowledged_at, ''), model, input_tokens, output_tokens, cost_usd, created_at, updated_at`
+
+func scanCatchupRecap(s interface{ Scan(...any) error }) (*CatchupRecap, error) {
+	var r CatchupRecap
+	err := s.Scan(&r.ID, &r.PeriodFrom, &r.PeriodTo, &r.Status, &r.TLDR, &r.BodyJSON, &r.CoverageJSON, &r.Error,
+		&r.RegenOfID, &r.AcknowledgedAt, &r.Model, &r.InputTokens, &r.OutputTokens, &r.CostUSD, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
-		return 0, fmt.Errorf("creating catchup session: %w", err)
+		return nil, err
+	}
+	return &r, nil
+}
+
+// InsertCatchupRecap creates a recap row in status='building'. regenOfID links a
+// regenerated recap to the one it corrects (0 = none).
+func (db *DB) InsertCatchupRecap(from, to float64, regenOfID int64) (int64, error) {
+	var regen any
+	if regenOfID > 0 {
+		regen = regenOfID
+	}
+	res, err := db.Exec(`INSERT INTO catchup_recaps (period_from, period_to, status, regen_of_id) VALUES (?, ?, 'building', ?)`, from, to, regen)
+	if err != nil {
+		return 0, fmt.Errorf("creating catchup recap: %w", err)
 	}
 	return res.LastInsertId()
 }
 
-// SetCatchupSessionStatus updates a session's status.
-func (db *DB) SetCatchupSessionStatus(id int64, status string) error {
-	_, err := db.Exec(`UPDATE catchup_sessions SET status=? WHERE id=?`, status, id)
+// FinishCatchupRecap persists a successful compose and flips status to 'ready'.
+func (db *DB) FinishCatchupRecap(id int64, tldr, bodyJSON, coverageJSON, model string, inTok, outTok int, cost float64) error {
+	_, err := db.Exec(`UPDATE catchup_recaps SET status='ready', tldr=?, body_json=?, coverage_json=?, model=?,
+		input_tokens=?, output_tokens=?, cost_usd=?, error='', updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`,
+		tldr, bodyJSON, coverageJSON, model, inTok, outTok, cost, id)
 	if err != nil {
-		return fmt.Errorf("setting catchup session status: %w", err)
+		return fmt.Errorf("finishing catchup recap %d: %w", id, err)
 	}
 	return nil
 }
 
-// SetCatchupSessionTotals records the theme count produced by the outline phase.
-func (db *DB) SetCatchupSessionTotals(id int64, totalThemes int) error {
-	_, err := db.Exec(`UPDATE catchup_sessions SET total_themes=? WHERE id=?`, totalThemes, id)
+// FailCatchupRecap records a compose/parse failure; whatever coverage was
+// computed before the failure is kept for the UI.
+func (db *DB) FailCatchupRecap(id int64, coverageJSON, errMsg string) error {
+	_, err := db.Exec(`UPDATE catchup_recaps SET status='failed', coverage_json=?, error=?,
+		updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`, coverageJSON, errMsg, id)
 	if err != nil {
-		return fmt.Errorf("setting catchup session totals: %w", err)
+		return fmt.Errorf("failing catchup recap %d: %w", id, err)
 	}
 	return nil
 }
 
-// IncrementReviewed bumps the session's reviewed_count by one.
-func (db *DB) IncrementReviewed(sessionID int64) error {
-	_, err := db.Exec(`UPDATE catchup_sessions SET reviewed_count = reviewed_count + 1 WHERE id=?`, sessionID)
-	if err != nil {
-		return fmt.Errorf("incrementing reviewed count: %w", err)
-	}
-	return nil
-}
-
-// GetActiveCatchupSession returns the newest session that is not done/failed,
-// or nil when there is none.
-func (db *DB) GetActiveCatchupSession() (*CatchupSession, error) {
-	var s CatchupSession
-	err := db.QueryRow(`
-		SELECT id, created_at, status, total_themes, reviewed_count
-		FROM catchup_sessions
-		WHERE status NOT IN ('done','failed')
-		ORDER BY id DESC LIMIT 1
-	`).Scan(&s.ID, &s.CreatedAt, &s.Status, &s.TotalThemes, &s.ReviewedCount)
+// GetCatchupRecap returns one recap or a wrapped sql.ErrNoRows.
+func (db *DB) GetCatchupRecap(id int64) (*CatchupRecap, error) {
+	r, err := scanCatchupRecap(db.QueryRow(`SELECT `+catchupRecapCols+` FROM catchup_recaps WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, fmt.Errorf("catchup recap %d: %w", id, err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getting active catchup session: %w", err)
+		return nil, fmt.Errorf("getting catchup recap %d: %w", id, err)
 	}
-	return &s, nil
+	return r, nil
 }
 
-// InsertCatchupTheme inserts a skeleton theme row and returns its id. Defaults
-// are applied for empty priority/gen_state so callers may pass partial rows.
-func (db *DB) InsertCatchupTheme(t CatchupTheme) (int64, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
-	priority := t.Priority
-	if priority == "" {
-		priority = "medium"
-	}
-	genState := t.GenState
-	if genState == "" {
-		genState = "skeleton"
-	}
-	refs := t.RefsJSON
-	if refs == "" {
-		refs = "[]"
-	}
-	res, err := db.Exec(`
-		INSERT INTO catchup_themes
-			(session_id, order_idx, title, narrative, priority, needs_you,
-			 suggested_action, refs, gen_state, review_state, snooze_until,
-			 task_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0, ?, ?)
-	`, t.SessionID, t.OrderIdx, t.Title, t.Narrative, priority, boolToInt(t.NeedsYou),
-		t.SuggestedAction, refs, genState, now, now)
+// ListCatchupRecaps returns the newest recaps first.
+func (db *DB) ListCatchupRecaps(limit int) ([]CatchupRecap, error) {
+	rows, err := db.Query(`SELECT `+catchupRecapCols+` FROM catchup_recaps ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
-		return 0, fmt.Errorf("inserting catchup theme: %w", err)
-	}
-	return res.LastInsertId()
-}
-
-// UpdateCatchupThemeExpansion writes the expand-phase output for one theme.
-func (db *DB) UpdateCatchupThemeExpansion(id int64, narrative, priority string, needsYou bool, suggestedAction, genState string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(`
-		UPDATE catchup_themes
-		SET narrative=?, priority=?, needs_you=?, suggested_action=?, gen_state=?, updated_at=?
-		WHERE id=?
-	`, narrative, priority, boolToInt(needsYou), suggestedAction, genState, now, id)
-	if err != nil {
-		return fmt.Errorf("updating catchup theme expansion: %w", err)
-	}
-	return nil
-}
-
-// GetCatchupTheme returns a single theme by id.
-func (db *DB) GetCatchupTheme(id int64) (*CatchupTheme, error) {
-	var t CatchupTheme
-	var needsYou int
-	err := db.QueryRow(`
-		SELECT id, session_id, order_idx, title, narrative, priority, needs_you,
-		       suggested_action, refs, gen_state, review_state, snooze_until,
-		       task_id, created_at, updated_at
-		FROM catchup_themes WHERE id=?
-	`, id).Scan(&t.ID, &t.SessionID, &t.OrderIdx, &t.Title, &t.Narrative, &t.Priority,
-		&needsYou, &t.SuggestedAction, &t.RefsJSON, &t.GenState, &t.ReviewState,
-		&t.SnoozeUntil, &t.TaskID, &t.CreatedAt, &t.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("getting catchup theme: %w", err)
-	}
-	t.NeedsYou = needsYou != 0
-	return &t, nil
-}
-
-// ListCatchupThemes returns all themes for a session ordered by order_idx.
-func (db *DB) ListCatchupThemes(sessionID int64) ([]CatchupTheme, error) {
-	rows, err := db.Query(`
-		SELECT id, session_id, order_idx, title, narrative, priority, needs_you,
-		       suggested_action, refs, gen_state, review_state, snooze_until,
-		       task_id, created_at, updated_at
-		FROM catchup_themes WHERE session_id=?
-		ORDER BY order_idx, id
-	`, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("listing catchup themes: %w", err)
+		return nil, fmt.Errorf("listing catchup recaps: %w", err)
 	}
 	defer rows.Close()
-	var out []CatchupTheme
+	var out []CatchupRecap
 	for rows.Next() {
-		var t CatchupTheme
-		var needsYou int
-		if err := rows.Scan(&t.ID, &t.SessionID, &t.OrderIdx, &t.Title, &t.Narrative,
-			&t.Priority, &needsYou, &t.SuggestedAction, &t.RefsJSON, &t.GenState,
-			&t.ReviewState, &t.SnoozeUntil, &t.TaskID, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scanning catchup theme: %w", err)
+		r, err := scanCatchupRecap(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning catchup recap: %w", err)
 		}
-		t.NeedsYou = needsYou != 0
-		out = append(out, t)
+		out = append(out, *r)
 	}
 	return out, rows.Err()
 }
 
-// SetCatchupThemeReview updates a theme's review_state and snooze_until.
-func (db *DB) SetCatchupThemeReview(id int64, reviewState, snoozeUntil string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(`
-		UPDATE catchup_themes SET review_state=?, snooze_until=?, updated_at=? WHERE id=?
-	`, reviewState, snoozeUntil, now, id)
+// LastAcknowledgedCatchupTo returns period_to of the most recently acknowledged
+// recap (the "I'm caught up until T" boundary), or 0 when none exists.
+func (db *DB) LastAcknowledgedCatchupTo() (float64, error) {
+	var to sql.NullFloat64
+	err := db.QueryRow(`SELECT MAX(period_to) FROM catchup_recaps WHERE acknowledged_at IS NOT NULL`).Scan(&to)
 	if err != nil {
-		return fmt.Errorf("setting catchup theme review: %w", err)
+		return 0, fmt.Errorf("reading last acknowledged catchup: %w", err)
 	}
-	return nil
+	return to.Float64, nil
 }
 
-// SetCatchupThemeTask links a theme to a created target.
-func (db *DB) SetCatchupThemeTask(id int64, taskID int64) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.Exec(`UPDATE catchup_themes SET task_id=?, updated_at=? WHERE id=?`, taskID, now, id)
+// AcknowledgeCatchupWindow marks everything inside [from, to] read on the five
+// read_at surfaces and stamps the recap acknowledged_at (first stamp wins).
+// Set-based, one transaction, idempotent (CATCHUP-01).
+//
+// The two summary surfaces (digests, stream_digests) use the OVERLAP predicate
+// `period_to > from AND period_from < to` — the exact predicate the gather uses
+// (ListCatchupDigests / ListCatchupStreams). It must stay that way: the run's
+// coverage top-up generates fresh digests that stamp their own period_to with
+// their own time.Now(), which routinely lands a second or two past the window's
+// `to`; a `period_to <= to` ack would cite such a digest in the recap and then
+// leave it unread forever, so the badge would lie.
+func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
+	fromISO := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04:05Z")
+	toISO := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04:05Z")
+	fromDate := time.Unix(int64(from), 0).Local().Format("2006-01-02")
+	// `to` is an EXCLUSIVE instant, so the last local DAY the window covers is
+	// the one containing to−1s: a window ending exactly on a local midnight (the
+	// `yesterday` preset) covers the previous day, and the briefing dated the new
+	// day must stay unread.
+	toDate := time.Unix(int64(to)-1, 0).Local().Format("2006-01-02")
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("setting catchup theme task: %w", err)
+		return fmt.Errorf("acknowledging catchup %d: %w", id, err)
 	}
-	return nil
-}
-
-// CloseOpenCatchupSessions marks any building/active session as done. Called
-// before starting a new run so only one session is ever active at a time.
-func (db *DB) CloseOpenCatchupSessions() error {
-	_, err := db.Exec(`UPDATE catchup_sessions SET status='done' WHERE status IN ('building','active')`)
-	if err != nil {
-		return fmt.Errorf("closing open catchup sessions: %w", err)
+	defer func() { _ = tx.Rollback() }()
+	now := `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`UPDATE digests SET read_at=` + now + ` WHERE read_at IS NULL AND type='channel' AND period_to > ? AND period_from < ?`, []any{from, to}},
+		{`UPDATE stream_digests SET read_at=` + now + ` WHERE read_at IS NULL AND period_to > ? AND period_from < ?`, []any{fromISO, toISO}},
+		{`UPDATE tracks SET read_at=` + now + `, has_updates=0 WHERE dismissed_at='' AND updated_at > ? AND updated_at <= ? AND (read_at IS NULL OR has_updates=1)`, []any{fromISO, toISO}},
+		{`UPDATE inbox_items SET read_at=` + now + ` WHERE read_at IS NULL AND created_at > ? AND created_at <= ?`, []any{fromISO, toISO}},
+		{`UPDATE briefings SET read_at=` + now + ` WHERE read_at IS NULL AND date >= ? AND date <= ?`, []any{fromDate, toDate}},
+		{`UPDATE catchup_recaps SET acknowledged_at=` + now + `, updated_at=` + now + ` WHERE id=? AND acknowledged_at IS NULL`, []any{id}},
 	}
-	return nil
+	for _, s := range stmts {
+		if _, err := tx.Exec(s.q, s.args...); err != nil {
+			return fmt.Errorf("acknowledging catchup %d: %w", id, err)
+		}
+	}
+	return tx.Commit()
 }

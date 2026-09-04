@@ -10,6 +10,12 @@ package enum StreamDigestQueries {
         )
     }
 
+    /// One digest by row id — how a Catch-Up recap resolves a `streams` ref (the
+    /// ref area the Go gather emits for `stream_digests`).
+    package static func fetchByID(_ db: Database, id: Int) throws -> StreamDigest? {
+        try StreamDigest.fetchOne(db, sql: "SELECT * FROM stream_digests WHERE id = ?", arguments: [id])
+    }
+
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(
             sql: "UPDATE stream_digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL",

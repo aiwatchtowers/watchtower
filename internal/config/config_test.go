@@ -71,9 +71,10 @@ func TestLoad_DefaultValues(t *testing.T) {
 	assert.Equal(t, DefaultSyncThreads, cfg.Sync.SyncThreads)
 	assert.Equal(t, DefaultSyncOnWake, cfg.Sync.SyncOnWake)
 
-	// Catch-up gather caps feed the peel-off pool; raised so peel sees the real
-	// unread backlog instead of an arbitrarily truncated slice.
-	assert.Equal(t, CatchupCaps{Digests: 150, Tracks: 80, Inbox: 120, Briefings: 20}, cfg.Catchup.Caps)
+	// Catch-up gather caps bound how many window items per area feed one
+	// absence-recap compose call.
+	assert.Equal(t, CatchupCaps{Digests: 150, Streams: 40, Meetings: 20, Decisions: 40, Inbox: 120, Tracks: 80, Targets: 40}, cfg.Catchup.Caps)
+	assert.Equal(t, 120000, cfg.Catchup.MaxPromptChars)
 
 	assert.Equal(t, DefaultTranscriptAudioRetentionDays, cfg.Transcripts.AudioRetentionDays)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultFor_KnownKey(t *testing.T) {
@@ -142,6 +143,15 @@ func TestDictationCleanPromptRegistered(t *testing.T) {
 	if strings.HasPrefix(rendered, "-") {
 		t.Fatalf("template must not begin with '-' (claude CLI argv gotcha)")
 	}
+}
+
+func TestCatchupComposePromptRegistered(t *testing.T) {
+	tmpl, ok := Defaults[CatchupCompose]
+	require.True(t, ok)
+	assert.Contains(t, tmpl, `"needs_you"`)
+	assert.Contains(t, AllIDs, CatchupCompose)
+	assert.Equal(t, 1, DefaultVersions[CatchupCompose])
+	assert.Equal(t, 1, strings.Count(tmpl, "%s"), "one placeholder: the language directive")
 }
 
 // contains checks if a slice contains a string value.

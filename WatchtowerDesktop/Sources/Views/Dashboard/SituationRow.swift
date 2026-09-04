@@ -4,7 +4,7 @@ import WatchtowerCore
 // MARK: - SituationRow
 //
 // One row in the Dashboard's master list (left of the split). Mirrors the
-// visual language of CatchUpThemeRow: priority dot + title + kind badge, with
+// visual language of CatchUpRecapRow: priority dot + title + kind badge, with
 // a trailing relative timestamp.
 struct SituationRow: View {
     let situation: Situation

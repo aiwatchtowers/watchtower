@@ -17,8 +17,8 @@ CREATE INDEX idx_calendar_events_end ON calendar_events(end_time)
 index	idx_calendar_events_start
 CREATE INDEX idx_calendar_events_start ON calendar_events(start_time)
 
-index	idx_catchup_themes_session
-CREATE INDEX idx_catchup_themes_session ON catchup_themes(session_id, order_idx)
+index	idx_catchup_recaps_ack
+CREATE INDEX idx_catchup_recaps_ack ON catchup_recaps(acknowledged_at, period_to DESC)
 
 index	idx_channels_is_archived
 CREATE INDEX idx_channels_is_archived ON channels(is_archived)
@@ -416,32 +416,24 @@ synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT ''
 , ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '')
 
-table	catchup_sessions
-CREATE TABLE catchup_sessions (
+table	catchup_recaps
+CREATE TABLE catchup_recaps (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-created_at TEXT NOT NULL,
-status TEXT NOT NULL CHECK(status IN ('building','active','done','failed')),
-total_themes INTEGER NOT NULL DEFAULT 0,
-reviewed_count INTEGER NOT NULL DEFAULT 0
-)
-
-table	catchup_themes
-CREATE TABLE catchup_themes (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-session_id INTEGER NOT NULL REFERENCES catchup_sessions(id) ON DELETE CASCADE,
-order_idx INTEGER NOT NULL DEFAULT 0,
-title TEXT NOT NULL DEFAULT '',
-narrative TEXT NOT NULL DEFAULT '',
-priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
-needs_you INTEGER NOT NULL DEFAULT 0,
-suggested_action TEXT NOT NULL DEFAULT '',
-refs TEXT NOT NULL DEFAULT '[]',
-gen_state TEXT NOT NULL DEFAULT 'skeleton' CHECK(gen_state IN ('skeleton','expanding','ready','failed')),
-review_state TEXT NOT NULL DEFAULT 'pending' CHECK(review_state IN ('pending','reviewed','snoozed')),
-snooze_until TEXT NOT NULL DEFAULT '',
-task_id INTEGER NOT NULL DEFAULT 0,
-created_at TEXT NOT NULL,
-updated_at TEXT NOT NULL
+period_from REAL NOT NULL,
+period_to REAL NOT NULL,
+status TEXT NOT NULL CHECK(status IN ('building','ready','failed')),
+tldr TEXT NOT NULL DEFAULT '',
+body_json TEXT NOT NULL DEFAULT '{}',
+coverage_json TEXT NOT NULL DEFAULT '{}',
+error TEXT NOT NULL DEFAULT '',
+regen_of_id INTEGER REFERENCES catchup_recaps(id) ON DELETE SET NULL,
+acknowledged_at TEXT,
+model TEXT NOT NULL DEFAULT '',
+input_tokens INTEGER NOT NULL DEFAULT 0,
+output_tokens INTEGER NOT NULL DEFAULT 0,
+cost_usd REAL NOT NULL DEFAULT 0,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
 table	channel_settings
@@ -1780,29 +1772,23 @@ END
 17	ical_uid	TEXT	notnull=1	dflt=''	pk=0
 18	conference_url	TEXT	notnull=1	dflt=''	pk=0
 
-## catchup_sessions
+## catchup_recaps
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	created_at	TEXT	notnull=1	dflt=NULL	pk=0
-2	status	TEXT	notnull=1	dflt=NULL	pk=0
-3	total_themes	INTEGER	notnull=1	dflt=0	pk=0
-4	reviewed_count	INTEGER	notnull=1	dflt=0	pk=0
-
-## catchup_themes
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	session_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	order_idx	INTEGER	notnull=1	dflt=0	pk=0
-3	title	TEXT	notnull=1	dflt=''	pk=0
-4	narrative	TEXT	notnull=1	dflt=''	pk=0
-5	priority	TEXT	notnull=1	dflt='medium'	pk=0
-6	needs_you	INTEGER	notnull=1	dflt=0	pk=0
-7	suggested_action	TEXT	notnull=1	dflt=''	pk=0
-8	refs	TEXT	notnull=1	dflt='[]'	pk=0
-9	gen_state	TEXT	notnull=1	dflt='skeleton'	pk=0
-10	review_state	TEXT	notnull=1	dflt='pending'	pk=0
-11	snooze_until	TEXT	notnull=1	dflt=''	pk=0
-12	task_id	INTEGER	notnull=1	dflt=0	pk=0
-13	created_at	TEXT	notnull=1	dflt=NULL	pk=0
-14	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+1	period_from	REAL	notnull=1	dflt=NULL	pk=0
+2	period_to	REAL	notnull=1	dflt=NULL	pk=0
+3	status	TEXT	notnull=1	dflt=NULL	pk=0
+4	tldr	TEXT	notnull=1	dflt=''	pk=0
+5	body_json	TEXT	notnull=1	dflt='{}'	pk=0
+6	coverage_json	TEXT	notnull=1	dflt='{}'	pk=0
+7	error	TEXT	notnull=1	dflt=''	pk=0
+8	regen_of_id	INTEGER	notnull=0	dflt=NULL	pk=0
+9	acknowledged_at	TEXT	notnull=0	dflt=NULL	pk=0
+10	model	TEXT	notnull=1	dflt=''	pk=0
+11	input_tokens	INTEGER	notnull=1	dflt=0	pk=0
+12	output_tokens	INTEGER	notnull=1	dflt=0	pk=0
+13	cost_usd	REAL	notnull=1	dflt=0	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+15	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## channel_settings
 0	channel_id	TEXT	notnull=0	dflt=NULL	pk=1

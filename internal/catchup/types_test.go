@@ -1,33 +1,65 @@
 package catchup
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
 
-func TestParsePeel_Theme(t *testing.T) {
-	raw := "```json\n{\"theme\":{\"title\":\"Payments\",\"priority\":\"high\",\"refs\":[{\"area\":\"digests\",\"id\":1,\"label\":\"C1\"}]}}\n```"
-	got, err := parsePeel(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Done {
-		t.Fatal("expected Done=false")
-	}
-	if got.Theme == nil || got.Theme.Title != "Payments" || got.Theme.Priority != "high" {
-		t.Fatalf("theme = %+v", got.Theme)
-	}
-	if len(got.Theme.Refs) != 1 || got.Theme.Refs[0].Area != "digests" || got.Theme.Refs[0].ID != 1 {
-		t.Fatalf("refs = %+v", got.Theme.Refs)
-	}
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
+)
+
+func TestParseCompose_TolerantOfFences(t *testing.T) {
+	raw := "```json\n{\"tldr\":\"x\",\"topics\":[{\"title\":\"T\",\"narrative\":\"n\",\"priority\":\"high\",\"refs\":[\"digests#1\"]}]}\n```"
+	res, err := parseCompose(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "x", res.TLDR)
+	require.Len(t, res.Topics, 1)
+	assert.Equal(t, []string{"digests#1"}, res.Topics[0].Refs)
 }
 
-func TestParsePeel_Done(t *testing.T) {
-	got, err := parsePeel(`{"done": true}`)
-	if err != nil {
-		t.Fatal(err)
+func TestValidateBody_DropsInventedRefsAndEmptyEntries(t *testing.T) {
+	known := map[refKey]db.CatchupItem{
+		{"digests", 1}: {Area: "digests", ID: 1, Title: "#eng"},
+		{"inbox", 7}:   {Area: "inbox", ID: 7, Title: "mention"},
 	}
-	if !got.Done {
-		t.Fatal("expected Done=true")
+	res := composeResult{
+		Topics: []rawTopic{
+			{Title: "ok", Narrative: "n", Priority: "urgent", Refs: []string{"digests#1", "digests#999", "garbage"}},
+			{Title: "ghost", Narrative: "n", Priority: "low", Refs: []string{"tracks#5"}},
+		},
+		Decisions: []rawEntry{{Text: "d", Refs: []string{"decisions#2"}}},
+		NeedsYou:  []rawNeed{{Text: "ping", Kind: "poke", Refs: []string{"inbox#7"}}},
 	}
-	if got.Theme != nil {
-		t.Fatalf("expected nil theme, got %+v", got.Theme)
-	}
+	body, rejected := validateBody(res, known)
+	require.Len(t, body.Topics, 1)
+	assert.Equal(t, "medium", body.Topics[0].Priority, "unknown priority → medium")
+	assert.Equal(t, []db.CatchupRef{{Area: "digests", ID: 1, Label: "#eng"}}, body.Topics[0].Refs, "label filled from the gathered item")
+	assert.Empty(t, body.Decisions, "entry with no valid refs is dropped")
+	require.Len(t, body.NeedsYou, 1)
+	assert.Equal(t, "mention", body.NeedsYou[0].Kind, "unknown kind → mention")
+	assert.Equal(t, 4, rejected, "digests#999, garbage, tracks#5, decisions#2")
+}
+
+func TestBodyIsEmptyAndRoundTrip(t *testing.T) {
+	assert.True(t, Body{}.IsEmpty())
+	b := Body{Topics: []Topic{{Title: "t", Refs: []db.CatchupRef{{Area: "digests", ID: 1}}}}}
+	assert.False(t, b.IsEmpty())
+	raw, err := json.Marshal(b)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"needs_you":[]`, "arrays marshal as [] not null")
+	var back Body
+	require.NoError(t, json.Unmarshal(raw, &back))
+	assert.Equal(t, b.Topics[0].Title, back.Topics[0].Title)
+}
+
+func TestParseRefTag(t *testing.T) {
+	k, ok := parseRefTag("[inbox#12]")
+	assert.True(t, ok)
+	assert.Equal(t, refKey{"inbox", 12}, k)
+	_, ok = parseRefTag("inbox#x")
+	assert.False(t, ok)
+	_, ok = parseRefTag("briefings#1")
+	assert.False(t, ok, "not a recap area")
 }

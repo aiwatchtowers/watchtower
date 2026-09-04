@@ -1,4 +1,6 @@
 import XCTest
+import GRDB
+import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 final class MeetingRecapTests: XCTestCase {
@@ -41,5 +43,21 @@ final class MeetingRecapTests: XCTestCase {
         let parsed = try XCTUnwrap(recap.parsed)
         XCTAssertEqual(parsed.summary, "s")
         XCTAssertTrue(parsed.keyDecisions.isEmpty)
+    }
+
+    // MARK: - fetchByID
+
+    func test_fetchByIDResolvesOneRowAndNilForUnknown() throws {
+        let db = try TestDatabase.create()
+        let id = try db.write { db -> Int64 in
+            try TestDatabase.insertMeetingRecap(db, sourceText: "other")
+            try TestDatabase.insertMeetingRecap(db, sourceText: "wanted")
+            return db.lastInsertedRowID
+        }
+
+        let recap = try db.read { try MeetingRecapQueries.fetchByID($0, id: Int(id)) }
+
+        XCTAssertEqual(recap?.sourceText, "wanted")
+        XCTAssertNil(try db.read { try MeetingRecapQueries.fetchByID($0, id: 9999) })
     }
 }
