@@ -42,6 +42,7 @@ final class DatabaseManager: Sendable {
             try ChatConversationQueries.ensureTable(db)
             try ChatConversationQueries.ensureContextColumns(db)
             try ChatMessageQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTurnIDColumn(db)
         }
     }
 

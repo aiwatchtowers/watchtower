@@ -8,6 +8,7 @@ struct ChatMessage: Identifiable, Equatable {
     var text: String
     var timestamp: Date
     var isStreaming: Bool
+    var turnID: String?
 
     enum Role: Equatable {
         case user

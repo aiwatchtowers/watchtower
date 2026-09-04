@@ -9,12 +9,23 @@ enum ChatMessageQueries {
                 conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
                 role TEXT NOT NULL,
                 text TEXT NOT NULL,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                turn_id TEXT NOT NULL DEFAULT ''
             )
         """)
         try db.execute(sql: """
             CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)
         """)
+    }
+
+    /// `turn_id` joins a persisted assistant message to the agent_actions rows
+    /// proposed during that turn (the Desktop-generated UUID passed to
+    /// `ai query --turn`). Guarded ALTER, the `ensureContextColumns` precedent.
+    static func ensureTurnIDColumn(_ db: Database) throws {
+        let columns = try db.columns(in: "chat_messages").map(\.name)
+        if !columns.contains("turn_id") {
+            try db.execute(sql: "ALTER TABLE chat_messages ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''")
+        }
     }
 
     static func fetchByConversation(_ db: Database, conversationID: Int64) throws -> [ChatMessageRecord] {
@@ -28,11 +39,11 @@ enum ChatMessageQueries {
     }
 
     @discardableResult
-    static func insert(_ db: Database, conversationID: Int64, role: String, text: String) throws -> Int64 {
+    static func insert(_ db: Database, conversationID: Int64, role: String, text: String, turnID: String = "") throws -> Int64 {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
-            INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, ?, ?, ?)
-        """, arguments: [conversationID, role, text, now])
+            INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id) VALUES (?, ?, ?, ?, ?)
+        """, arguments: [conversationID, role, text, now, turnID])
         return db.lastInsertedRowID
     }
 
