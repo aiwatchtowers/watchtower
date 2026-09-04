@@ -53,3 +53,18 @@ func TestJiraCreate_ReadsDescriptionFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "description-file")
 }
+
+func TestRenderJiraCreateResult_WithoutWarning(t *testing.T) {
+	envelope, lines := renderJiraCreateResult(map[string]any{"key": "ABC-1", "url": "https://x/browse/ABC-1"})
+	assert.Equal(t, map[string]any{"ok": true, "key": "ABC-1", "url": "https://x/browse/ABC-1"}, envelope)
+	assert.Equal(t, []string{"Created ABC-1 — https://x/browse/ABC-1"}, lines)
+}
+
+func TestRenderJiraCreateResult_WithWarningSurfacesOnBothFaces(t *testing.T) {
+	res := map[string]any{"key": "ABC-1", "url": "https://x/browse/ABC-1", "warning": "created, but the local mirror was not updated: boom"}
+	envelope, lines := renderJiraCreateResult(res)
+	assert.Equal(t, "created, but the local mirror was not updated: boom", envelope["warning"])
+	assert.Equal(t, true, envelope["ok"])
+	require.Len(t, lines, 2)
+	assert.Equal(t, "Warning: created, but the local mirror was not updated: boom", lines[1])
+}

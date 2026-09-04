@@ -227,6 +227,40 @@ func TestGetAction_ReturnsRowAndNotFound(t *testing.T) {
 	}
 }
 
+// TestGetAction_ScopedToBindingConversation pins the fix for get_action
+// leaking existence across conversations: a session bound to conversation 3
+// must get the same not-found error for a row belonging to conversation 2 as
+// it would for an id that never existed, so a model that invents an id learns
+// nothing about another conversation's proposal. conversation_id 0 (a
+// CLI-only install, spec §12) stays unscoped — nothing in this app is
+// multi-tenant below the single owner, and TestChatMode_ValidationErrorIsToolErrorWithoutRow
+// already binds with no conversation.
+func TestGetAction_ScopedToBindingConversation(t *testing.T) {
+	database := seedDB(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"x"}`, Reason: "r", ConversationID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 3})
+	res, _ := other.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	if !res.IsError {
+		t.Fatalf("expected a not-found error for a row from a different conversation, got %s", textContent(t, res))
+	}
+
+	unbound := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
+	res, _ = unbound.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	if res.IsError {
+		t.Fatalf("a binding with no conversation must still see every row: %s", textContent(t, res))
+	}
+
+	same := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main", ConversationID: 2})
+	res, _ = same.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	if res.IsError {
+		t.Fatalf("a binding matching the row's conversation must see it: %s", textContent(t, res))
+	}
+}
+
 func TestListJiraProjects_GroupsByAccount(t *testing.T) {
 	database := seedDB(t)
 	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})

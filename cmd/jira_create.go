@@ -76,9 +76,27 @@ func runJiraCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	res := out.(map[string]any)
+	envelope, lines := renderJiraCreateResult(res)
 	if jiraCreateFlagJSON {
-		return writeJSON(cmd.OutOrStdout(), map[string]any{"ok": true, "key": res["key"], "url": res["url"]})
+		return writeJSON(cmd.OutOrStdout(), envelope)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Created %s — %s\n", res["key"], res["url"])
+	for _, line := range lines {
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+	}
 	return nil
+}
+
+// renderJiraCreateResult builds the JSON envelope and human-readable lines for
+// a create_jira_issue result. The tool's Execute may set result["warning"]
+// when the issue was created on Jira but the local mirror upsert failed
+// (jira.go's mirrorCreatedIssue) — both output faces must carry it, or the
+// CLI reports unconditional success while the local mirror is stale.
+func renderJiraCreateResult(res map[string]any) (map[string]any, []string) {
+	envelope := map[string]any{"ok": true, "key": res["key"], "url": res["url"]}
+	lines := []string{fmt.Sprintf("Created %s — %s", res["key"], res["url"])}
+	if warning, _ := res["warning"].(string); warning != "" {
+		envelope["warning"] = warning
+		lines = append(lines, "Warning: "+warning)
+	}
+	return envelope, lines
 }

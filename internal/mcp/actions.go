@@ -67,7 +67,12 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if err != nil {
 			return errResult("getting action: " + err.Error()), nil, nil
 		}
-		if row == nil {
+		// A binding with no conversation (conversation_id 0: a CLI-only
+		// install, spec §12, or a dev/test session with none bound) sees every
+		// row; otherwise a row from a different conversation answers the same
+		// not-found error as a missing row, so the model cannot learn that an
+		// id it invented belongs to someone else's chat.
+		if row == nil || (binding.ConversationID != 0 && row.ConversationID != binding.ConversationID) {
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
 		return jsonResult(newActionView(*row))
