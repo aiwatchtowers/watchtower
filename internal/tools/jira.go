@@ -40,8 +40,14 @@ type createJiraIssueArgs struct {
 func ResolveJiraAccount(d *db.DB, id int64) (db.JiraAccount, error) {
 	if id > 0 {
 		a, err := d.GetJiraAccount(id)
-		if err != nil {
+		// Only a genuine miss is the model's mistake. A failed lookup told as
+		// "no Jira account #N" sends the model (and the owner reading the
+		// failed row) after a typo that is not there.
+		if errors.Is(err, db.ErrJiraAccountNotFound) {
 			return db.JiraAccount{}, &ValidationError{Msg: fmt.Sprintf("no Jira account #%d", id)}
+		}
+		if err != nil {
+			return db.JiraAccount{}, fmt.Errorf("looking up Jira account #%d: %w", id, err)
 		}
 		if a.Status == "removed" || !a.Enabled {
 			return db.JiraAccount{}, &ValidationError{Msg: fmt.Sprintf("Jira account #%d is not enabled", id)}
@@ -101,6 +107,22 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 		Priority: priority, Labels: string(labels), Components: "[]", FixVersions: "[]",
 		CreatedAt: f.Created, UpdatedAt: f.Updated, RawJSON: string(raw), SyncedAt: now,
 	}
+}
+
+// mirrorCreatedIssue copies a freshly created issue into the local jira_issues
+// mirror and returns the warning the result should carry, "" on success. The
+// issue already exists in Jira by the time this runs, so nothing here may fail
+// the action — but the owner still gets told the mirror is stale, and the next
+// sync pass refreshes it either way.
+func mirrorCreatedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, accountID int64, key string) string {
+	issue, err := client.GetIssue(ctx, key)
+	if err != nil {
+		return "created, but the local mirror was not updated: " + err.Error()
+	}
+	if err := d.UpsertJiraIssue(issueRow(accountID, issue)); err != nil {
+		return "created, but the local mirror was not updated: " + err.Error()
+	}
+	return ""
 }
 
 // NewCreateJiraIssue builds the create_jira_issue write tool — the first
@@ -165,17 +187,22 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 				Summary: strings.TrimSpace(a.Summary), Description: a.Description, Labels: a.Labels, Priority: a.Priority,
 			})
 			if err != nil {
+				// The package has no logger, so a failed side-write rides the
+				// error it accompanies rather than vanishing (§9 swallowed
+				// error): the owner must know the account was NOT marked.
 				if errors.Is(err, jira.ErrAuthRevoked) {
-					_ = d.SetJiraAccountAuthState(account.ID, "revoked", err.Error())
+					if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
+						return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
+					}
 				}
 				return nil, err
 			}
 			url := strings.TrimRight(account.SiteURL, "/") + "/browse/" + created.Key
-			// Best effort: a fetch failure must not fail an issue that exists.
-			if issue, gerr := client.GetIssue(ctx, created.Key); gerr == nil {
-				_ = d.UpsertJiraIssue(issueRow(account.ID, issue))
+			result := map[string]any{"key": created.Key, "url": url}
+			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, created.Key); warning != "" {
+				result["warning"] = warning
 			}
-			return map[string]any{"key": created.Key, "url": url}, nil
+			return result, nil
 		},
 	}
 }

@@ -55,7 +55,7 @@ func TestCreateTarget_ExecuteMatchesRemindShape(t *testing.T) {
 	assert.Equal(t, "mine", row.Ownership)
 	assert.Equal(t, "2026-09-05T16:00", row.DueDate)
 	assert.Equal(t, "chat", row.SourceType)
-	assert.Equal(t, "42", row.SourceID)
+	assert.Equal(t, "action:42", row.SourceID, "the chat source_type carries several id spaces; each id says which")
 	assert.Equal(t, row.PeriodStart, row.PeriodEnd)
 }
 

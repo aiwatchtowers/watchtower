@@ -17,10 +17,17 @@ type fakeJira struct {
 	created   []jira.CreateIssueRequest
 	createErr error
 	key       string
+	// onCreate runs after the request is recorded and before CreateIssue
+	// returns — the seam a test needs to break a table the executor writes
+	// AFTER the Jira call has already left the machine.
+	onCreate func()
 }
 
 func (f *fakeJira) CreateIssue(_ context.Context, req jira.CreateIssueRequest) (jira.CreatedIssue, error) {
 	f.created = append(f.created, req)
+	if f.onCreate != nil {
+		f.onCreate()
+	}
 	if f.createErr != nil {
 		return jira.CreatedIssue{}, f.createErr
 	}
@@ -108,6 +115,45 @@ func TestCreateJiraIssue_AuthRevokedMarksAccount(t *testing.T) {
 	assert.Equal(t, "revoked", acct.Status)
 }
 
+// The revoked marking is a side write on the auth-revoked path (spec §12). It
+// has no logger to fall back on, so its failure rides the error it accompanies
+// instead of leaving the owner with an account that looks fine.
+func TestCreateJiraIssue_RevokedRecordingFailureRidesTheError(t *testing.T) {
+	database := openDB(t)
+	seedJira(t, database)
+	fake := &fakeJira{createErr: jira.ErrAuthRevoked}
+	fake.onCreate = func() {
+		_, derr := database.Exec(`DROP TABLE jira_accounts`)
+		require.NoError(t, derr)
+	}
+	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })
+	_, err := tool.Execute(context.Background(), database, Call{Args: json.RawMessage(
+		`{"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`)})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, jira.ErrAuthRevoked), "the primary Jira error must survive the wrap")
+	assert.Contains(t, err.Error(), "recording the revoked state failed")
+}
+
+// The issue exists in Jira the moment CreateIssue returns, so a failure to
+// mirror it locally can never fail the action — but it must not be invisible
+// either: the result carries the warning, and the next sync fixes the mirror.
+func TestCreateJiraIssue_MirrorFailureWarnsOnASuccessfulResult(t *testing.T) {
+	database := openDB(t)
+	seedJira(t, database)
+	fake := &fakeJira{key: "ABC-7"}
+	fake.onCreate = func() {
+		_, derr := database.Exec(`DROP TABLE jira_issues`)
+		require.NoError(t, derr)
+	}
+	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })
+	out, err := tool.Execute(context.Background(), database, Call{Args: json.RawMessage(
+		`{"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`)})
+	require.NoError(t, err)
+	res := out.(map[string]any)
+	assert.Equal(t, "ABC-7", res["key"])
+	assert.Contains(t, res["warning"], "the local mirror was not updated")
+}
+
 func TestCreateJiraIssue_APIErrorSurfacesMessage(t *testing.T) {
 	database := openDB(t)
 	seedJira(t, database)
@@ -141,4 +187,24 @@ func TestResolveJiraAccount_SingleDefaultAndAmbiguity(t *testing.T) {
 	a, err = ResolveJiraAccount(database, first)
 	require.NoError(t, err)
 	assert.Equal(t, first, a.ID)
+}
+
+// A lookup that FAILS is not a lookup that found nothing: only the miss is the
+// model's mistake, and only the miss may come back as a ValidationError the
+// model is shown verbatim (review-rules §9, absent-vs-error).
+func TestResolveJiraAccount_LookupFailureIsNotAValidationError(t *testing.T) {
+	database := openDB(t)
+	id := seedJira(t, database)
+
+	var verr *ValidationError
+	_, err := ResolveJiraAccount(database, id+999)
+	require.ErrorAs(t, err, &verr, "a missing account IS the model's mistake")
+
+	_, derr := database.Exec(`DROP TABLE jira_accounts`)
+	require.NoError(t, derr)
+	_, err = ResolveJiraAccount(database, id)
+	require.Error(t, err)
+	assert.False(t, errors.As(err, &verr), "a broken lookup must not be reported as a missing account")
+	assert.NotContains(t, err.Error(), "no Jira account")
+	assert.Contains(t, err.Error(), "looking up Jira account")
 }

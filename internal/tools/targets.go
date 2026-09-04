@@ -107,7 +107,10 @@ func NewCreateTarget() *Tool {
 				Ownership:   "mine",
 				DueDate:     a.Due,
 				SourceType:  "chat",
-				SourceID:    strconv.FormatInt(call.ActionID, 10),
+				// Prefixed like the existing `chat` writer's `target:<id>`
+				// (TargetsViewModel.createChild): one source_type, several id
+				// spaces, so each id says which one it belongs to.
+				SourceID: "action:" + strconv.FormatInt(call.ActionID, 10),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("creating target: %w", err)
