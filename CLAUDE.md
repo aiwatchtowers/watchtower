@@ -146,12 +146,12 @@
 
 ### Agent Actions — tool registry + controlled writes (2026-09-04)
 - `internal/tools/` is the core tool **registry** (`Propose`/`Apply`/`SetTrust`/`List`); `internal/mcp/actions.go`'s `WithRegistry` chat-mode option is one **adapter** over it — a Go-owned tool loop for HTTP providers ("runtime B", mandatory follow-up below) will be a second adapter, not a rewrite.
-- Two MCP entry points: `watchtower mcp` (dev mode, DEV-01, stays read-only/`query_only=ON`, no write tool, no `get_action`) vs `watchtower mcp --chat` (chat mode, launched only by the Desktop's `ai query --tools chat`, mounts the registry's write tools plus `get_action`).
+- Two MCP entry points: `watchtower mcp` (dev mode, DEV-01, stays read-only/`query_only=ON`, no write tool, no `get_action`) vs `watchtower mcp --chat` (chat mode, launched only by the Desktop's `ai query --tools chat`, mounts the registry's write tools plus `get_action`) — chat mode's connection is **writable**, but only so the registry can record proposals: no read tool writes on it (AGENT-06).
 - A write tool never touches its target on propose: `Registry.Propose` records one `agent_actions` row (`pending`); `Registry.Apply` executes exactly once, only from `approved`/`failed` (`applied`/`rejected` are terminal). Trust is per-tool, never global — `ask` by default, `execute` opt-in via `watchtower actions trust`; an `External: true` tool can never be set to `execute`.
 - The first two tools: `create_target` (main AI Chat only — the target chat's mandate forbids creating work outside its vertical line, TGT-BRIEF-01 axis 3) and `create_jira_issue` (main chat + target chat, `External`, always behind Approve even with `execute` trust elsewhere).
 - CLI: `watchtower actions list|show|approve|reject|apply|trust|tools`; `watchtower jira create --project --type --summary [--description-file] [--label]… [--priority] [--json]` is the CLI face of `create_jira_issue`.
 - Desktop (Phase B): a shared `AgentActionFeed` will drive per-conversation proposal cards (`AgentActionCardView`, Approve/Reject/Retry); the main and target chat VMs generate a `turn_id` per send and pass `--tools chat --surface … --conversation --turn`, while draft-only VMs (situation/meeting/idea/track/setup) stay on `toolMode: nil` (AGENT-04).
-- Contracts: `docs/inventory/agent-actions.md` (AGENT-01..05 — the model never writes, dev surface untouched, external tools never auto-execute, draft-only surfaces see no tools, apply exactly once).
+- Contracts: `docs/inventory/agent-actions.md` (AGENT-01..06 — the model never writes, dev surface untouched, external tools never auto-execute, draft-only surfaces see no tools, apply exactly once, chat mode is writable only for proposals).
 - **Mandatory follow-up (runtime B):** a Go-owned tool loop for OpenAI-compatible HTTP providers dispatching registry tools in-process; the existing `internal/mcp` read tools migrate into the registry once it lands.
 
 ---

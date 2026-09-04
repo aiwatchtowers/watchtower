@@ -247,6 +247,8 @@ Chat with AI about your workspace. The bot can query your Slack database to answ
 - Chat history sidebar (toggle with button or Cmd+N for new chat)
 - Bot can generate Slack deep links to specific messages
 
+**Write tools (proposals):** the assistant can propose changes as well as answer — `create_target` (a new task or reminder) and `create_jira_issue` (a ticket on a connected Jira site). A write tool never does anything by itself: calling it records a proposal and shows a card in the chat saying what it wants to do and why. Nothing happens until you press Approve; Reject discards it, and a failed action can be retried from the same card. Settings → Assistant tools lists every write tool with an "Execute without approval" switch — off by default, so each call asks. The switch is locked off for tools that write outside this Mac (`create_jira_issue`), which therefore always need your click. Proposals left over from an interrupted turn are gathered at the bottom of the chat, so nothing is stranded without a decision. The target chat's Discuss tab works the same way, alongside its own task-edit cards.
+
 ### Tracks
 Auto-generated narrative summaries of ongoing initiatives and projects across your Slack workspace. Tracks are created and updated automatically by the AI pipeline — they group related digest topics into living stories that evolve over time.
 
