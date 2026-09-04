@@ -118,18 +118,21 @@ type DashboardConfig struct {
 	MaxComposeSignals int `mapstructure:"max_compose_signals"` // max uncomposed signals considered per compose cycle (default: 200)
 }
 
-// CatchupConfig controls the on-demand unread summarizer.
+// CatchupConfig controls the on-demand absence recap.
 type CatchupConfig struct {
-	MaxAgeDays int         `mapstructure:"max_age_days"`
-	Caps       CatchupCaps `mapstructure:"caps"`
+	Caps           CatchupCaps `mapstructure:"caps"`
+	MaxPromptChars int         `mapstructure:"max_prompt_chars"` // whole compose user message budget (default: 120000)
 }
 
-// CatchupCaps bounds how many unread items per area feed the AI rollup.
+// CatchupCaps bounds how many window items per area feed the compose call.
 type CatchupCaps struct {
 	Digests   int `mapstructure:"digests"`
-	Tracks    int `mapstructure:"tracks"`
+	Streams   int `mapstructure:"streams"`
+	Meetings  int `mapstructure:"meetings"`
+	Decisions int `mapstructure:"decisions"`
 	Inbox     int `mapstructure:"inbox"`
-	Briefings int `mapstructure:"briefings"`
+	Tracks    int `mapstructure:"tracks"`
+	Targets   int `mapstructure:"targets"`
 }
 
 // TracksConfig holds settings for the tracks extraction pipeline.
@@ -442,11 +445,14 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
-	v.SetDefault("catchup.max_age_days", 30)
 	v.SetDefault("catchup.caps.digests", 150)
-	v.SetDefault("catchup.caps.tracks", 80)
+	v.SetDefault("catchup.caps.streams", 40)
+	v.SetDefault("catchup.caps.meetings", 20)
+	v.SetDefault("catchup.caps.decisions", 40)
 	v.SetDefault("catchup.caps.inbox", 120)
-	v.SetDefault("catchup.caps.briefings", 20)
+	v.SetDefault("catchup.caps.tracks", 80)
+	v.SetDefault("catchup.caps.targets", 40)
+	v.SetDefault("catchup.max_prompt_chars", 120000)
 	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
 	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
 	v.SetDefault("calendar.history_days", DefaultCalendarHistoryDays)
