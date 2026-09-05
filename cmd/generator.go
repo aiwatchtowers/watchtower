@@ -4,13 +4,16 @@ import (
 	"log"
 	"path/filepath"
 
+	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
+	"watchtower/internal/tools"
 )
 
 // validateModel is a no-op kept for call-site compatibility.
@@ -76,6 +79,49 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 		return ollama.NewClient(model, cfg.AI.OllamaURL)
 	default:
 		return ai.NewClient(model, dbPath, cfg.ClaudePath)
+	}
+}
+
+// newQueryClient builds the ai.Provider for `watchtower ai query`. On a
+// tool-bearing chat surface (--tools chat) it wires tools two ways: claude/codex
+// get the MCP-args set on their client (the subprocess MCP path); the ollama
+// provider gets the runtime-B in-process tool loop (agentloop) instead, since it
+// has no subprocess. It returns a cleanup to run after the query drains (closing
+// the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
+func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
+	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
+	noop := func() {}
+	if aiFlagTools != "chat" {
+		return client, noop, nil
+	}
+	if c, ok := client.(mcpConfigurable); ok {
+		c.SetMCPArgs(chatMCPArgs())
+		return client, noop, nil
+	}
+	if cfg.AI.Provider == "ollama" {
+		model := aiFlagModel
+		if model == "" {
+			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+		}
+		database, err := db.Open(dbPath)
+		if err != nil {
+			return nil, noop, err
+		}
+		reg := buildToolRegistry(cfg, database)
+		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, chatBinding()), func() { _ = database.Close() }, nil
+	}
+	return client, noop, nil
+}
+
+// chatBinding assembles the runtime-B proposal binding from the `ai query`
+// chat flags — the same surface/conversation/turn the MCP path passes as args.
+func chatBinding() tools.Binding {
+	return tools.Binding{
+		Surface:        aiFlagSurface,
+		ConversationID: aiFlagConversation,
+		ContextType:    aiFlagContextType,
+		ContextID:      aiFlagContextID,
+		TurnID:         aiFlagTurn,
 	}
 }
 

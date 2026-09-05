@@ -54,6 +54,30 @@ func TestNewAIClientProviderSwitch(t *testing.T) {
 	}
 }
 
+// Runtime B: the ollama provider on a tool-bearing chat surface (--tools chat)
+// is wired to the in-process agent loop; without it, the plain ollama client.
+func TestNewQueryClientOllamaToolWiring(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "t.db")
+	cfg := &config.Config{AI: config.AIConfig{Provider: "ollama"}}
+
+	oldTools := aiFlagTools
+	oldModel := aiFlagModel
+	aiFlagModel = "llama"
+	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
+
+	aiFlagTools = "chat"
+	client, cleanup, err := newQueryClient(cfg, dbPath)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.Equal(t, "*agentloop.Client", fmt.Sprintf("%T", client), "ollama + --tools chat gets the runtime-B loop")
+
+	aiFlagTools = ""
+	plain, cleanup2, err := newQueryClient(cfg, dbPath)
+	require.NoError(t, err)
+	defer cleanup2()
+	assert.Equal(t, "*ollama.Client", fmt.Sprintf("%T", plain), "ollama without tools stays the plain client")
+}
+
 // TestProviderOverrideDoesNotInheritConfiguredModels goes through the REAL
 // override path: config.Load (which snapshots ConfiguredProvider) followed by
 // applyProviderOverride mutating cfg.AI.Provider — the exact sequence every
