@@ -137,3 +137,25 @@ func (db *DB) MarkReactionCommandSkipped(id int64, reason string) error {
 	}
 	return nil
 }
+
+// ListSyncedJiraProjectKeys returns the distinct Jira project keys across all
+// connected sites, sorted. Used as a grounding hint when a reaction command
+// composes a create_jira_issue proposal (the model must pick a real project).
+func (db *DB) ListSyncedJiraProjectKeys() ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT project_key FROM jira_sync_state
+		WHERE project_key != '' ORDER BY project_key`)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira project keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning jira project key: %w", err)
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}

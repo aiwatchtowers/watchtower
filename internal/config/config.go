@@ -105,6 +105,13 @@ type StreamsConfig struct {
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between stream digest runs (default: 6)
 }
 
+// ReactionCommandsConfig controls the reaction-commands pipeline (the owner
+// drives Watchtower by reacting in Slack). Default OFF — dark until validated.
+type ReactionCommandsConfig struct {
+	Enabled       bool `mapstructure:"enabled"`        // enable reaction-command detection (default: false)
+	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls (default: 6)
+}
+
 // FeedConfig holds settings for the dashboard feed publisher (internal/feed).
 type FeedConfig struct {
 	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
@@ -371,6 +378,7 @@ type Config struct {
 	Inbox           InboxConfig                 `mapstructure:"inbox"`
 	Ideas           IdeasConfig                 `mapstructure:"ideas"`
 	Streams         StreamsConfig               `mapstructure:"streams"`
+	ReactionCommands ReactionCommandsConfig     `mapstructure:"reaction_commands"`
 	Feed            FeedConfig                  `mapstructure:"feed"`
 	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
 	Tracks          TracksConfig                `mapstructure:"tracks"`
@@ -437,6 +445,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ideas.max_prompt_chars", DefaultIdeasMaxPromptChars)
 	v.SetDefault("streams.enabled", DefaultStreamsEnabled)
 	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
+	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
+	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("feed.enabled", true)
 	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
 	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
