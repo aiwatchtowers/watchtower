@@ -260,8 +260,10 @@ func init() {
 	jiraCmd.PersistentFlags().Int64Var(&jiraFlagAccount, "account", 0,
 		"Jira account id to operate on (default: the single enabled account)")
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
+	jiraLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
+	jiraAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
@@ -492,11 +494,12 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 
 	jiraCfg := resolveJiraOAuthConfig()
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen})
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -570,10 +573,11 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 
 	jiraCfg := resolveJiraOAuthConfig()
 	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen})
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}

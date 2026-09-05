@@ -9,10 +9,9 @@ import WatchtowerCore
 /// so the accounts list and any in-flight connect survive navigating away from
 /// Settings. Deliberate structural copy of `SlackAccountsViewModel` (house
 /// pattern) — `jira add`/`jira login` are browser-consent flows like
-/// `slack add`/`slack login`. Unlike those, the Jira CLI has no `--app-return`
-/// flag yet, so consent finishes in the system browser instead of returning
-/// into the app's WKWebView; closing that divergence is pending an owner
-/// decision.
+/// `slack add`/`slack login`, both passing `--app-return` so the OAuth success
+/// page redirects to watchtower-auth:// and macOS brings the app back to the
+/// foreground when consent finishes.
 @MainActor
 @Observable
 final class JiraAccountsViewModel {
@@ -59,7 +58,7 @@ final class JiraAccountsViewModel {
     /// from a spawned process, so the sheet lets the user name the site up
     /// front.
     static func addArgs(label: String, site: String = "") -> [String] {
-        var args = ["jira", "add"]
+        var args = ["jira", "add", "--app-return"]
         if !label.isEmpty {
             args.append(contentsOf: ["--label", label])
         }
@@ -81,7 +80,7 @@ final class JiraAccountsViewModel {
     /// Builds the `jira login` args for re-consenting an existing account.
     /// Pure and side-effect-free.
     static func loginArgs(for account: JiraAccount) -> [String] {
-        ["jira", "login", "--account", String(account.id)]
+        ["jira", "login", "--account", String(account.id), "--app-return"]
     }
 
     /// Re-consents `account` via `watchtower jira login --account <id>` — same
