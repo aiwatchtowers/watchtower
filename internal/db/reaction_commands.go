@@ -159,3 +159,27 @@ func (db *DB) ListSyncedJiraProjectKeys() ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// ListRecentReactionCommands returns the most recent ledger rows, newest first,
+// for the CLI to show what the poll has done.
+func (db *DB) ListRecentReactionCommands(limit int) ([]ReactionCommand, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.Query(`SELECT id, account_id, channel_id, message_ts, emoji, status, action_id, error
+		FROM reaction_commands ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing recent reaction commands: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReactionCommand
+	for rows.Next() {
+		var c ReactionCommand
+		if err := rows.Scan(&c.ID, &c.AccountID, &c.ChannelID, &c.MessageTS, &c.Emoji, &c.Status, &c.ActionID, &c.Error); err != nil {
+			return nil, fmt.Errorf("scanning reaction command: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

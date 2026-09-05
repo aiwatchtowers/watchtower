@@ -30,6 +30,7 @@ import (
 	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
+	"watchtower/internal/reactioncmd"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -79,6 +80,7 @@ type Daemon struct {
 	feedPipe            *feed.Pipeline
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
+	reactionCmdPipe     *reactioncmd.Pipeline
 	calendarSyncers     []*calendar.Syncer
 	calDAVSyncers       []*caldav.Syncer
 	gmailSyncers        []*gmail.Syncer
@@ -92,6 +94,7 @@ type Daemon struct {
 	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
+	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
 }
 
@@ -146,6 +149,12 @@ func (d *Daemon) SetInboxPipeline(p *inbox.Pipeline) {
 // by the independently-gated stage-1 stream digests phase, phaseStreamDigests).
 func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
 	d.ideasPipe = p
+}
+
+// SetReactionCommandsPipeline sets the reaction-commands pipeline (owner drives
+// Watchtower by reacting in Slack; gated by reaction_commands.enabled).
+func (d *Daemon) SetReactionCommandsPipeline(p *reactioncmd.Pipeline) {
+	d.reactionCmdPipe = p
 }
 
 // HasIdeasPipeline reports whether an ideas.Pipeline is wired — cmd/sync.go's
@@ -348,6 +357,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseInbox(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeas(ctx)
+	d.phaseReactionCommands(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
 	d.phaseBriefing(ctx)
@@ -982,6 +992,40 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 		d.saveLastStreams()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
 		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+	})
+}
+
+// phaseReactionCommands polls each connected Slack account's reactions.list for
+// owner reactions whose emoji is in the dictionary and dispatches them as
+// agent-actions. Gated by reaction_commands.enabled (FEAT-01: off = zero API
+// calls), throttled by reaction_commands.interval_hours. Detection is
+// idempotent (the ledger, REACT-03), so an in-memory throttle is enough — a
+// restart simply re-polls and re-dispatches nothing already seen.
+func (d *Daemon) phaseReactionCommands(ctx context.Context) {
+	if !d.config.ReactionCommands.Enabled {
+		return
+	}
+	if d.reactionCmdPipe == nil {
+		return
+	}
+	interval := time.Duration(d.config.ReactionCommands.IntervalHours) * time.Hour
+	if d.config.ReactionCommands.IntervalHours <= 0 {
+		interval = time.Duration(config.DefaultReactionCommandsIntervalHours) * time.Hour
+	}
+	now := time.Now()
+	if !d.lastReactionCmd.IsZero() && now.Sub(d.lastReactionCmd) < interval {
+		return
+	}
+
+	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
+		dispatched, err := d.reactionCmdPipe.Run(ctx)
+		if err != nil {
+			d.logger.Printf("reaction-commands error: %v", err)
+		} else if dispatched > 0 {
+			d.logger.Printf("reaction-commands: dispatched %d", dispatched)
+		}
+		d.lastReactionCmd = now
+		return pipelineRunStats{items: dispatched, err: err}
 	})
 }
 

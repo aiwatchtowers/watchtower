@@ -369,33 +369,33 @@ type MemoryFocusConfig struct {
 }
 
 type Config struct {
-	ActiveWorkspace string                      `mapstructure:"active_workspace"`
-	Workspaces      map[string]*WorkspaceConfig `mapstructure:"workspaces"`
-	AI              AIConfig                    `mapstructure:"ai"`
-	Sync            SyncConfig                  `mapstructure:"sync"`
-	Digest          DigestConfig                `mapstructure:"digest"`
-	Briefing        BriefingConfig              `mapstructure:"briefing"`
-	Inbox           InboxConfig                 `mapstructure:"inbox"`
-	Ideas           IdeasConfig                 `mapstructure:"ideas"`
-	Streams         StreamsConfig               `mapstructure:"streams"`
-	ReactionCommands ReactionCommandsConfig     `mapstructure:"reaction_commands"`
-	Feed            FeedConfig                  `mapstructure:"feed"`
-	Dashboard       DashboardConfig             `mapstructure:"dashboard"`
-	Tracks          TracksConfig                `mapstructure:"tracks"`
-	People          PeopleConfig                `mapstructure:"people"`
-	Calendar        CalendarConfig              `mapstructure:"calendar"`
-	Gmail           GmailConfig                 `mapstructure:"gmail"`
-	Imap            ImapConfig                  `mapstructure:"imap"`
-	Jira            JiraConfig                  `mapstructure:"jira"`
-	Analysis        AnalysisConfig              `mapstructure:"analysis"`
-	DayPlan         DayPlanConfig               `mapstructure:"day_plan"`
-	Memory          MemoryConfig                `mapstructure:"memory"`
-	Targets         TargetsConfig               `mapstructure:"targets"`
-	Transcripts     TranscriptsConfig           `mapstructure:"transcripts"`
-	Catchup         CatchupConfig               `mapstructure:"catchup"`
-	DB              DBConfig                    `mapstructure:"db"`
-	ClaudePath      string                      `mapstructure:"claude_path"`
-	CodexPath       string                      `mapstructure:"codex_path"`
+	ActiveWorkspace  string                      `mapstructure:"active_workspace"`
+	Workspaces       map[string]*WorkspaceConfig `mapstructure:"workspaces"`
+	AI               AIConfig                    `mapstructure:"ai"`
+	Sync             SyncConfig                  `mapstructure:"sync"`
+	Digest           DigestConfig                `mapstructure:"digest"`
+	Briefing         BriefingConfig              `mapstructure:"briefing"`
+	Inbox            InboxConfig                 `mapstructure:"inbox"`
+	Ideas            IdeasConfig                 `mapstructure:"ideas"`
+	Streams          StreamsConfig               `mapstructure:"streams"`
+	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
+	Feed             FeedConfig                  `mapstructure:"feed"`
+	Dashboard        DashboardConfig             `mapstructure:"dashboard"`
+	Tracks           TracksConfig                `mapstructure:"tracks"`
+	People           PeopleConfig                `mapstructure:"people"`
+	Calendar         CalendarConfig              `mapstructure:"calendar"`
+	Gmail            GmailConfig                 `mapstructure:"gmail"`
+	Imap             ImapConfig                  `mapstructure:"imap"`
+	Jira             JiraConfig                  `mapstructure:"jira"`
+	Analysis         AnalysisConfig              `mapstructure:"analysis"`
+	DayPlan          DayPlanConfig               `mapstructure:"day_plan"`
+	Memory           MemoryConfig                `mapstructure:"memory"`
+	Targets          TargetsConfig               `mapstructure:"targets"`
+	Transcripts      TranscriptsConfig           `mapstructure:"transcripts"`
+	Catchup          CatchupConfig               `mapstructure:"catchup"`
+	DB               DBConfig                    `mapstructure:"db"`
+	ClaudePath       string                      `mapstructure:"claude_path"`
+	CodexPath        string                      `mapstructure:"codex_path"`
 }
 
 // DBConfig captures database-runtime state that the binary tracks across
