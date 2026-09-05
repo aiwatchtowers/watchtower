@@ -41,6 +41,11 @@ const (
 	DefaultStreamsEnabled       = true
 	DefaultStreamsIntervalHours = 6
 
+	// Reaction-commands defaults (owner drives Watchtower via Slack reactions).
+	// OFF by default — dark until validated end-to-end.
+	DefaultReactionCommandsEnabled       = false
+	DefaultReactionCommandsIntervalHours = 6
+
 	// Tracks and people pipelines
 	DefaultTracksEnabled          = true
 	DefaultTracksMinMsgs          = 3
