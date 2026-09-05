@@ -196,8 +196,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         continuation.finish()
     }
 
-    /// Parse a JSON line from `watchtower ai query` output.
-    private func parseLine(_ line: String, accumulatedText: inout String) -> StreamEvent? {
+    /// Parse a JSON line from `watchtower ai query` output. Package-visible so
+    /// the reset/accumulation contract can be unit-tested without a subprocess.
+    package func parseLine(_ line: String, accumulatedText: inout String) -> StreamEvent? {
         guard let data = line.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = json["type"] as? String else {
@@ -210,6 +211,11 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                 accumulatedText += text
                 return .text(text)
             }
+        case "reset":
+            // A tool call interrupted the turn — drop the pre-tool preamble so
+            // the final turnComplete carries only the post-tool answer.
+            accumulatedText = ""
+            return .reset
         case "session_id":
             if let sid = json["session_id"] as? String {
                 return .sessionID(sid)

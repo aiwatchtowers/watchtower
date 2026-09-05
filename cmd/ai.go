@@ -123,9 +123,15 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	systemPrompt := aiFlagSystemPrompt
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
-	// Drain text channel (main stream)
-	for text := range textCh {
-		_ = enc.Encode(aiStreamEvent{Type: "text", Text: text})
+	// Drain text channel (main stream). A tool-boundary chunk becomes a "reset"
+	// event so the desktop drops the pre-tool preamble and renders only the
+	// answer that follows the tool call.
+	for chunk := range textCh {
+		if chunk.ToolBoundary {
+			_ = enc.Encode(aiStreamEvent{Type: "reset"})
+			continue
+		}
+		_ = enc.Encode(aiStreamEvent{Type: "text", Text: chunk.Text})
 	}
 
 	// Drain session ID (at most one value)

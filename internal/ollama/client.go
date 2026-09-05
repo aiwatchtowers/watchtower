@@ -81,8 +81,8 @@ func buildMessages(systemPrompt, userMessage string) []chatMessage {
 
 // Query sends a streaming request and returns channels for text chunks, errors,
 // and session ID (always empty for Ollama — no session support).
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 64)
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 
@@ -128,8 +128,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 }
 
 // streamSSE reads an SSE chat-completions stream and forwards each delta's
-// text to textCh until "[DONE]", the stream ends, or ctx is cancelled.
-func streamSSE(ctx context.Context, body io.Reader, textCh chan<- string, errCh chan<- error) {
+// text to textCh until "[DONE]", the stream ends, or ctx is cancelled. Ollama's
+// chat surface has no tools, so it never emits a tool-boundary chunk.
+func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk, errCh chan<- error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -151,7 +152,7 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- string, errCh 
 			continue
 		}
 		select {
-		case textCh <- chunk.Choices[0].Delta.Content:
+		case textCh <- ai.StreamChunk{Text: chunk.Choices[0].Delta.Content}:
 		case <-ctx.Done():
 			errCh <- ctx.Err()
 			return

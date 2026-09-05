@@ -63,8 +63,8 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) []string {
 
 // Query sends a streaming request via the Codex CLI and returns channels
 // for text chunks, errors, and the session ID (always empty for Codex).
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 64)
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 
@@ -141,10 +141,23 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				return
 			}
 
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble and starts the answer fresh from what
+			// follows the tool (the ai.Client tool_use precedent).
+			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
+				select {
+				case textCh <- ai.StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+
 			// Stream agent_message content as it arrives.
 			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
 				select {
-				case textCh <- event.Item.MessageText():
+				case textCh <- ai.StreamChunk{Text: event.Item.MessageText()}:
 				case <-ctx.Done():
 					_ = cmd.Wait()
 					errCh <- ctx.Err()

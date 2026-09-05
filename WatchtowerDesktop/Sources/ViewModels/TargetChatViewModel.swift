@@ -418,6 +418,12 @@ final class TargetChatViewModel {
                     fullText = text
                     sawTurnComplete = true
                     updateLastMessage(fullText)
+                case .reset:
+                    // A tool call interrupted the turn — drop the pre-tool
+                    // preamble so it never glues onto the post-tool answer.
+                    fullText = ""
+                    sawTurnComplete = false
+                    updateLastMessage("")
                 case .sessionID(let sid):
                     handleSessionID(sid)
                 case .done:

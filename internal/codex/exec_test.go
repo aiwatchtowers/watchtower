@@ -110,7 +110,7 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 
 	var got strings.Builder
 	for chunk := range textCh {
-		got.WriteString(chunk)
+		got.WriteString(chunk.Text)
 	}
 	// Drain the rest.
 	if err := <-errCh; err != nil {

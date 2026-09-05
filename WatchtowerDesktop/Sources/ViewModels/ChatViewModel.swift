@@ -183,6 +183,12 @@ final class ChatViewModel {
                         fullText = text
                         sawTurnComplete = true
                         self?.updateLastMessage(fullText)
+                    case .reset:
+                        // A tool call interrupted the turn — drop the pre-tool
+                        // preamble so it never glues onto the post-tool answer.
+                        fullText = ""
+                        sawTurnComplete = false
+                        self?.updateLastMessage("")
                     case .sessionID(let sid):
                         newSessionID = sid
                         self?.sessionID = sid
@@ -603,6 +609,12 @@ final class ChatViewModel {
                         fullText = text
                         sawTurnComplete = true
                         self?.updateLastMessage(fullText)
+                    case .reset:
+                        // A tool call interrupted the turn — drop the pre-tool
+                        // preamble so it never glues onto the post-tool answer.
+                        fullText = ""
+                        sawTurnComplete = false
+                        self?.updateLastMessage("")
                     case .sessionID(let sid):
                         newSessionID = sid
                         self?.sessionID = sid
