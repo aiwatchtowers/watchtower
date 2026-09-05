@@ -33,9 +33,10 @@ func TestListReactionCommandMap_OmitsDisabled(t *testing.T) {
 	assert.NotContains(t, m, "ticket")
 }
 
-// TestRecordNewReactionCommands_Idempotent pins REACT-03: re-polling the same
-// owner reactions never re-dispatches — only genuinely new ones come back.
-func TestRecordNewReactionCommands_Idempotent(t *testing.T) {
+// TestFilterUnseenReactionCommands_Idempotent pins REACT-03: once a command is
+// recorded (a terminal outcome), a re-poll of the same reactions filters it out
+// so it never re-dispatches; genuinely new reactions still come through.
+func TestFilterUnseenReactionCommands_Idempotent(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
 
@@ -44,59 +45,74 @@ func TestRecordNewReactionCommands_Idempotent(t *testing.T) {
 		{AccountID: 1, ChannelID: "1:C1", MessageTS: "222.2", Emoji: "ticket"},
 	}
 
-	fresh, err := d.RecordNewReactionCommands(cands)
+	unseen, err := d.FilterUnseenReactionCommands(1, cands)
 	require.NoError(t, err)
-	assert.Len(t, fresh, 2, "first poll records both")
-	for _, f := range fresh {
-		assert.NotZero(t, f.ID)
-		assert.Equal(t, "pending", f.Status)
-	}
+	assert.Len(t, unseen, 2, "first poll sees both as new")
 
-	// Second poll with the identical set: nothing new.
-	again, err := d.RecordNewReactionCommands(cands)
+	// Record a terminal outcome for both, then re-poll: nothing new.
+	for _, u := range unseen {
+		require.NoError(t, d.InsertReactionCommand(u, "dispatched", 7, ""))
+	}
+	again, err := d.FilterUnseenReactionCommands(1, cands)
 	require.NoError(t, err)
-	assert.Empty(t, again, "re-poll re-dispatches nothing")
+	assert.Empty(t, again, "recorded commands are filtered out")
 
 	// A genuinely new reaction is the only thing returned.
 	cands = append(cands, OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "333.3", Emoji: "white_check_mark"})
-	third, err := d.RecordNewReactionCommands(cands)
+	third, err := d.FilterUnseenReactionCommands(1, cands)
 	require.NoError(t, err)
 	require.Len(t, third, 1)
 	assert.Equal(t, "333.3", third[0].MessageTS)
 }
 
-func TestRecordNewReactionCommands_Empty(t *testing.T) {
+// TestFilterUnseen_TransientLeavesRetriable pins the transient-retry contract:
+// a candidate NOT recorded (a transient dispatch failure) stays unseen and is
+// returned again on the next poll.
+func TestFilterUnseen_TransientLeavesRetriable(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
-	fresh, err := d.RecordNewReactionCommands(nil)
+	cands := []OwnerReaction{{AccountID: 1, ChannelID: "1:C1", MessageTS: "111.1", Emoji: "white_check_mark"}}
+
+	first, err := d.FilterUnseenReactionCommands(1, cands)
 	require.NoError(t, err)
-	assert.Empty(t, fresh)
+	require.Len(t, first, 1)
+	// Simulate a transient failure: DO NOT record it.
+	second, err := d.FilterUnseenReactionCommands(1, cands)
+	require.NoError(t, err)
+	assert.Len(t, second, 1, "an unrecorded (transient) command retries")
 }
 
-func TestMarkReactionCommand_StatusTransitions(t *testing.T) {
+func TestFilterUnseenReactionCommands_Empty(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+	unseen, err := d.FilterUnseenReactionCommands(1, nil)
+	require.NoError(t, err)
+	assert.Empty(t, unseen)
+}
+
+func TestInsertReactionCommand_RecordsStatus(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
 
-	fresh, err := d.RecordNewReactionCommands([]OwnerReaction{
-		{AccountID: 1, ChannelID: "1:C1", MessageTS: "111.1", Emoji: "white_check_mark"},
-		{AccountID: 1, ChannelID: "1:C1", MessageTS: "222.2", Emoji: "ticket"},
-	})
-	require.NoError(t, err)
-	require.Len(t, fresh, 2)
-
-	require.NoError(t, d.MarkReactionCommandDispatched(fresh[0].ID, 42))
-	require.NoError(t, d.MarkReactionCommandFailed(fresh[1].ID, "boom"))
+	require.NoError(t, d.InsertReactionCommand(
+		OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "111.1", Emoji: "white_check_mark"}, "dispatched", 42, ""))
+	require.NoError(t, d.InsertReactionCommand(
+		OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "222.2", Emoji: "ticket"}, "failed", 0, "boom"))
 
 	var status string
 	var actionID int64
-	require.NoError(t, d.QueryRow(`SELECT status, action_id FROM reaction_commands WHERE id = ?`,
-		fresh[0].ID).Scan(&status, &actionID))
+	require.NoError(t, d.QueryRow(`SELECT status, action_id FROM reaction_commands WHERE message_ts = '111.1'`).Scan(&status, &actionID))
 	assert.Equal(t, "dispatched", status)
 	assert.Equal(t, int64(42), actionID)
 
 	var errText string
-	require.NoError(t, d.QueryRow(`SELECT status, error FROM reaction_commands WHERE id = ?`,
-		fresh[1].ID).Scan(&status, &errText))
+	require.NoError(t, d.QueryRow(`SELECT status, error FROM reaction_commands WHERE message_ts = '222.2'`).Scan(&status, &errText))
 	assert.Equal(t, "failed", status)
 	assert.Equal(t, "boom", errText)
+
+	// INSERT OR IGNORE: a duplicate key is a no-op, not an error.
+	require.NoError(t, d.InsertReactionCommand(
+		OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "111.1", Emoji: "white_check_mark"}, "dispatched", 99, ""))
+	require.NoError(t, d.QueryRow(`SELECT action_id FROM reaction_commands WHERE message_ts = '111.1'`).Scan(&actionID))
+	assert.Equal(t, int64(42), actionID, "duplicate insert ignored, original kept")
 }

@@ -3,6 +3,7 @@ package reactioncmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -102,24 +103,32 @@ func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[st
 		return 0, nil
 	}
 
+	byKey := make(map[string]candidate, len(cands))
 	owned := make([]db.OwnerReaction, 0, len(cands))
 	for _, c := range cands {
+		byKey[ledgerKey(c.ChannelID, c.MessageTS, c.Emoji)] = c
 		owned = append(owned, db.OwnerReaction{
 			AccountID: c.AccountID, ChannelID: c.ChannelID, MessageTS: c.MessageTS, Emoji: c.Emoji,
 		})
 	}
-	fresh, err := p.db.RecordNewReactionCommands(owned)
+	// Only reactions not already in the ledger are dispatched; a transient
+	// failure below is NOT recorded, so it stays unseen and retries next poll.
+	unseen, err := p.db.FilterUnseenReactionCommands(acct.AccountID, owned)
 	if err != nil {
-		return 0, fmt.Errorf("recording reaction commands: %w", err)
+		return 0, fmt.Errorf("filtering reaction commands: %w", err)
 	}
 
-	byKey := make(map[string]candidate, len(cands))
-	for _, c := range cands {
-		byKey[ledgerKey(c.ChannelID, c.MessageTS, c.Emoji)] = c
-	}
 	dispatched := 0
-	for _, row := range fresh {
-		if p.dispatch(ctx, row, byKey[ledgerKey(row.ChannelID, row.MessageTS, row.Emoji)]) {
+	for _, u := range unseen {
+		c := byKey[ledgerKey(u.ChannelID, u.MessageTS, u.Emoji)]
+		status, actionID, detail, record := p.dispatch(ctx, c)
+		if !record {
+			continue // transient — leave unseen so the next poll retries
+		}
+		if err := p.db.InsertReactionCommand(u, status, actionID, detail); err != nil {
+			p.logf("reaction-commands: recording %s outcome for %s: %v", status, u.Emoji, err)
+		}
+		if status == "dispatched" {
 			dispatched++
 		}
 	}
@@ -130,48 +139,60 @@ func ledgerKey(channelID, ts, emoji string) string {
 	return channelID + "\x00" + ts + "\x00" + emoji
 }
 
-// dispatch composes and proposes one command's action. Every outcome updates
-// the ledger row (dispatched/failed/skipped) so a command is never retried —
-// there is no undo/redo channel (REACT-05). Returns true when an agent-action
-// row was produced.
-func (p *Pipeline) dispatch(ctx context.Context, row db.ReactionCommand, c candidate) bool {
+// dispatch composes and proposes one command's action. It returns the terminal
+// ledger status to record (dispatched/skipped/failed), the agent-action id (0
+// unless dispatched), a detail string, and record=false for a TRANSIENT failure
+// that must NOT be recorded — leaving the reaction unseen so the next poll
+// retries it instead of burning it permanently.
+func (p *Pipeline) dispatch(ctx context.Context, c candidate) (status string, actionID int64, detail string, record bool) {
 	if c.Mapping.Kind != "builtin_tool" || c.Mapping.Tool == "" {
-		_ = p.db.MarkReactionCommandSkipped(row.ID, "emoji maps to no built-in tool")
-		return false
+		return "skipped", 0, "emoji maps to no built-in tool", true
 	}
 	tool, ok := p.registry.Get(c.Mapping.Tool)
 	if !ok {
-		_ = p.db.MarkReactionCommandSkipped(row.ID, "tool not registered: "+c.Mapping.Tool)
-		return false
+		return "skipped", 0, "tool not registered: " + c.Mapping.Tool, true
 	}
-	args, err := p.compose(ctx, c)
+	args, transient, err := p.compose(ctx, c)
 	if err != nil {
-		_ = p.db.MarkReactionCommandFailed(row.ID, "compose: "+err.Error())
-		return false
+		if transient {
+			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, c.Mapping.Tool, err)
+			return "", 0, "", false
+		}
+		return "failed", 0, "compose: " + err.Error(), true
 	}
 	// Surface "reaction" keeps these proposals out of any chat conversation;
 	// the External-never-auto-execute rule (AGENT-03) and per-tool trust are
 	// enforced inside Propose, so a create_jira_issue reaction always lands as
 	// a pending proposal even if create_target is execute-trusted.
-	binding := tools.Binding{Surface: "reaction", ContextType: "reaction", ContextID: fmt.Sprintf("%d", row.ID)}
+	binding := tools.Binding{Surface: "reaction", ContextType: "reaction"}
 	receipt, err := p.registry.Propose(ctx, tool.Name, args, binding)
 	if err != nil {
-		_ = p.db.MarkReactionCommandFailed(row.ID, "propose: "+err.Error())
-		return false
+		// A ValidationError is terminal — the model's args cannot pass the
+		// tool's schema/semantics, and re-composing the same message would only
+		// spend AI budget to fail again. Any other Propose error (a DB write
+		// failure) is transient: don't record, retry next poll.
+		var ve *tools.ValidationError
+		if errors.As(err, &ve) {
+			return "failed", 0, "propose: " + err.Error(), true
+		}
+		p.logf("reaction-commands: transient propose failure for :%s:, will retry: %v", c.Emoji, err)
+		return "", 0, "", false
 	}
-	if err := p.db.MarkReactionCommandDispatched(row.ID, receipt.ActionID); err != nil {
-		p.logf("reaction-commands: mark dispatched #%d: %v", row.ID, err)
-	}
-	return true
+	return "dispatched", receipt.ActionID, "", true
 }
 
 // compose runs the one AI call that turns the reacted message into the tool's
-// argument JSON.
-func (p *Pipeline) compose(ctx context.Context, c candidate) (json.RawMessage, error) {
+// argument JSON. transient=true means the generator itself failed (provider
+// down / timeout) and the caller should retry later rather than record a
+// terminal failure; a reply that arrived but carried no JSON is terminal.
+func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessage, transient bool, err error) {
 	system, _ := p.getPrompt(prompts.ReactionCommand)
 	var jiraProjects []string
 	if c.Mapping.Tool == "create_jira_issue" {
-		jiraProjects, _ = p.db.ListSyncedJiraProjectKeys()
+		if jiraProjects, err = p.db.ListSyncedJiraProjectKeys(); err != nil {
+			p.logf("reaction-commands: listing jira projects (composing without them): %v", err)
+			jiraProjects = nil
+		}
 	}
 	var threadLines []string
 	if c.ThreadTS != "" {
@@ -182,13 +203,13 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (json.RawMessage, e
 
 	reply, _, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	obj, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return nil, fmt.Errorf("no JSON object in reply: %w", err)
+		return nil, false, fmt.Errorf("no JSON object in reply: %w", err)
 	}
-	return json.RawMessage(obj), nil
+	return json.RawMessage(obj), false, nil
 }
 
 // threadContext returns a few surrounding thread messages for grounding.
@@ -197,6 +218,7 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (json.RawMessage, e
 func (p *Pipeline) threadContext(c candidate) []string {
 	msgs, err := p.db.GetThreadReplies(c.ChannelID, c.ThreadTS)
 	if err != nil {
+		p.logf("reaction-commands: thread context for :%s: unavailable (composing without it): %v", c.Emoji, err)
 		return nil
 	}
 	const maxLines = 10

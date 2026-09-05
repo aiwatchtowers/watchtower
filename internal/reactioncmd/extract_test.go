@@ -59,6 +59,16 @@ func TestExtractOwnerReactions_IgnoresOtherUsersReaction(t *testing.T) {
 	assert.Empty(t, extractOwnerReactions(items, "UOWNER", testDict(), 1))
 }
 
+func TestExtractOwnerReactions_ExcludesEmptyUsers(t *testing.T) {
+	// With Full=true the Users list is authoritative; an empty list is NOT
+	// attributed to the owner (a phantom command would be worse than a miss).
+	items := []slack.ReactedItem{
+		msgItem("C1", "111.1", "UAUTHOR", "x", "",
+			slack.ItemReaction{Name: "white_check_mark", Users: nil}),
+	}
+	assert.Empty(t, extractOwnerReactions(items, "UOWNER", testDict(), 1))
+}
+
 func TestExtractOwnerReactions_IgnoresNonMessageItems(t *testing.T) {
 	items := []slack.ReactedItem{{
 		Item:      slack.Item{Type: "file", Channel: "C1"},

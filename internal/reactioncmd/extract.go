@@ -69,14 +69,15 @@ func extractOwnerReactions(items []slack.ReactedItem, ownerRawID string, dict ma
 	return out
 }
 
-// reactorIsOwner reports whether the owner is among a reaction's users. With
-// reactions.list's Full param the users array is populated; when it is empty
-// (older Slack payloads), the item was returned BECAUSE the owner reacted to
-// it, so an empty list still means the owner.
+// reactorIsOwner reports whether the owner is among a reaction's users.
+// ListUserReactions sets Full=true, so the users array is authoritative. An
+// item is returned because the owner reacted to it with SOME emoji, but its
+// Reactions array carries every emoji on the message — including ones other
+// people placed. So an emoji whose Users list does not contain the owner is
+// NOT the owner's, even on a message the owner reacted to; an empty/unknown
+// list is excluded rather than attributed to the owner, since this predicate
+// gates a write and a phantom command is worse than a missed one.
 func reactorIsOwner(users []string, ownerRawID string) bool {
-	if len(users) == 0 {
-		return true
-	}
 	for _, u := range users {
 		if u == ownerRawID {
 			return true

@@ -58,82 +58,56 @@ func (db *DB) ListReactionCommandMap() (map[string]ReactionCommandMapping, error
 	return out, rows.Err()
 }
 
-// RecordNewReactionCommands inserts each candidate into the ledger and returns
-// ONLY the ones that were newly recorded (status 'pending'). The UNIQUE key
-// makes this the idempotency guard (REACT-03): a candidate already in the
-// ledger inserts nothing and is not returned, so re-polling reactions.list
-// never re-dispatches a command already seen.
-func (db *DB) RecordNewReactionCommands(candidates []OwnerReaction) ([]ReactionCommand, error) {
+// FilterUnseenReactionCommands returns the candidates for one account that are
+// NOT already in the ledger. Recording is deferred to InsertReactionCommand on
+// a TERMINAL outcome, so a candidate whose dispatch fails transiently (the AI
+// provider was briefly down) is never recorded and the next poll retries it —
+// while a dispatched or terminally-failed one stays recorded and is filtered
+// out here forever (REACT-03: a succeeded command never re-dispatches).
+func (db *DB) FilterUnseenReactionCommands(accountID int64, candidates []OwnerReaction) ([]OwnerReaction, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	tx, err := db.Begin()
+	rows, err := db.Query(`SELECT channel_id, message_ts, emoji FROM reaction_commands
+		WHERE account_id = ?`, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("begin reaction command insert: %w", err)
+		return nil, fmt.Errorf("loading reaction command ledger: %w", err)
 	}
-	defer tx.Rollback()
+	defer rows.Close()
 
-	var fresh []ReactionCommand
+	seen := map[string]bool{}
+	for rows.Next() {
+		var ch, ts, emoji string
+		if err := rows.Scan(&ch, &ts, &emoji); err != nil {
+			return nil, fmt.Errorf("scanning reaction command key: %w", err)
+		}
+		seen[ch+"\x00"+ts+"\x00"+emoji] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating reaction command ledger: %w", err)
+	}
+
+	var out []OwnerReaction
 	for _, c := range candidates {
-		res, err := tx.Exec(`INSERT OR IGNORE INTO reaction_commands
-			(account_id, channel_id, message_ts, emoji) VALUES (?, ?, ?, ?)`,
-			c.AccountID, c.ChannelID, c.MessageTS, c.Emoji)
-		if err != nil {
-			return nil, fmt.Errorf("inserting reaction command: %w", err)
+		if !seen[c.ChannelID+"\x00"+c.MessageTS+"\x00"+c.Emoji] {
+			out = append(out, c)
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return nil, fmt.Errorf("reaction command rows affected: %w", err)
-		}
-		if n == 0 {
-			continue // already in the ledger — idempotent skip
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("reaction command last insert id: %w", err)
-		}
-		fresh = append(fresh, ReactionCommand{
-			ID: id, AccountID: c.AccountID, ChannelID: c.ChannelID,
-			MessageTS: c.MessageTS, Emoji: c.Emoji, Status: "pending",
-		})
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit reaction command insert: %w", err)
-	}
-	return fresh, nil
+	return out, nil
 }
 
-// MarkReactionCommandDispatched records that the command produced an
-// agent-action (the proposal row, or an applied row under execute trust).
-func (db *DB) MarkReactionCommandDispatched(id, actionID int64) error {
-	_, err := db.Exec(`UPDATE reaction_commands SET status = 'dispatched', action_id = ?
-		WHERE id = ?`, actionID, id)
+// InsertReactionCommand records one command's TERMINAL outcome in the ledger
+// (status dispatched|skipped|failed). The UNIQUE key still guards a double
+// insert (a re-poll that raced a prior insert is a no-op via INSERT OR IGNORE),
+// so this stays idempotent even though FilterUnseenReactionCommands already
+// filtered the candidate once.
+func (db *DB) InsertReactionCommand(c OwnerReaction, status string, actionID int64, errMsg string) error {
+	_, err := db.Exec(`INSERT OR IGNORE INTO reaction_commands
+		(account_id, channel_id, message_ts, emoji, status, action_id, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		c.AccountID, c.ChannelID, c.MessageTS, c.Emoji, status, actionID, errMsg)
 	if err != nil {
-		return fmt.Errorf("marking reaction command dispatched: %w", err)
-	}
-	return nil
-}
-
-// MarkReactionCommandFailed records that dispatch failed. The row stays in the
-// ledger (never retried automatically — there is no undo/redo channel), so a
-// transient failure is not re-attempted every poll; the owner re-reacts to try
-// again only after the row is cleared, which v1 does not expose.
-func (db *DB) MarkReactionCommandFailed(id int64, reason string) error {
-	_, err := db.Exec(`UPDATE reaction_commands SET status = 'failed', error = ?
-		WHERE id = ?`, reason, id)
-	if err != nil {
-		return fmt.Errorf("marking reaction command failed: %w", err)
-	}
-	return nil
-}
-
-// MarkReactionCommandSkipped records a command that matched no enabled mapping
-// or could not be built (missing context). It stays skipped, not retried.
-func (db *DB) MarkReactionCommandSkipped(id int64, reason string) error {
-	_, err := db.Exec(`UPDATE reaction_commands SET status = 'skipped', error = ?
-		WHERE id = ?`, reason, id)
-	if err != nil {
-		return fmt.Errorf("marking reaction command skipped: %w", err)
+		return fmt.Errorf("inserting reaction command: %w", err)
 	}
 	return nil
 }

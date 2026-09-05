@@ -75,10 +75,16 @@ New daemon phase **`phaseReactionCommands`**:
 ### Freshness caveat, made explicit
 
 `reactions.list` closes the "old message" gap for **detection**, but the reacted message's *content*
-(and its thread) must still be readable to build context. For a message already synced, it is in
-the DB. For a message outside the sync window, the phase fetches the message and its thread on demand via the
-existing Slack client's thread-fetch path (conversations.replies) — bounded, best-effort;
-a fetch failure defers the command (leave it out of the ledger) rather than producing a thin brief.
+(and its thread) must still be readable to build context. In v1 the reacted message's **text comes
+from the `reactions.list` response itself** (`Full=true`), so the headline content is always present
+regardless of message age; **thread context is a best-effort read from the local DB**
+(`GetThreadReplies`) and simply thins to nothing for a thread outside the sync window. A live
+`conversations.replies` fetch for out-of-window threads is a documented follow-on, not v1.
+
+Transient-vs-terminal dispatch (v1): a candidate is written to the ledger only on a **terminal**
+outcome (dispatched / unmapped / model produced unusable args). A **transient** failure — the AI
+provider was briefly down during compose, or a DB write blipped — is *not* recorded, so the reaction
+stays unseen and the next poll retries it, rather than being burned permanently by a momentary outage.
 
 ## 6. Processing a command — the pipeline
 
@@ -91,9 +97,9 @@ new owner reaction (emoji ∈ dictionary)
 gather context: reacted message + thread + channel + linked Jira keys + people
         │        (reuse composer / get_task_context building blocks)
         ▼
-compose action args  ── AI pass (strong tier) for verbs that need a brief
-        │              (:task:/:track: compose a title+intent from the thread;
-        │               :idea: a one-liner; :brief: a summary; :later: no AI)
+compose action args  ── AI pass (light tier, reactioncmd.command) for verbs
+        │              that need a brief (:task:/:track: title+intent from the
+        │              thread; :idea: a one-liner; :brief: a summary; :later: no AI)
         ▼
 agent-actions registry
         │

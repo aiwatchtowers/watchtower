@@ -3,6 +3,7 @@ package reactioncmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 
@@ -16,6 +17,8 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/tools"
 )
+
+var errBoom = errors.New("provider down")
 
 type mockGenerator struct {
 	mu     sync.Mutex
@@ -170,6 +173,38 @@ func TestReactionCmd_ComposeFailureMarksFailed(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT status, error FROM reaction_commands`).Scan(&status, &errText))
 	assert.Equal(t, "failed", status)
 	assert.Contains(t, errText, "compose")
+}
+
+// TestReactionCmd_TransientFailureRetries pins the transient-vs-terminal
+// contract: a generator error (provider down) is NOT recorded in the ledger, so
+// a later poll retries and succeeds — the reaction is not burned by an outage.
+func TestReactionCmd_TransientFailureRetries(t *testing.T) {
+	database := db.OpenTestDB(t)
+	gen := &mockGenerator{err: errBoom}
+	items := []slack.ReactedItem{
+		msgItem("C1", "111.1", "UAUTHOR", "handle the deploy", "",
+			slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}}),
+	}
+	p := newTestPipeline(t, database, gen, items)
+
+	n, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "transient failure dispatches nothing")
+
+	var ledgerRows int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM reaction_commands`).Scan(&ledgerRows))
+	assert.Equal(t, 0, ledgerRows, "a transient failure is NOT recorded in the ledger")
+
+	// The provider recovers; the same reaction now succeeds.
+	gen.mu.Lock()
+	gen.err = nil
+	gen.out = `{"text":"Handle the deploy","reason":"owner flagged it"}`
+	gen.mu.Unlock()
+
+	n2, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n2, "the retry succeeds")
+	assert.Equal(t, 1, countAgentActions(t, database, "pending"))
 }
 
 func TestReactionCmd_NoDictionaryIsNoOp(t *testing.T) {
