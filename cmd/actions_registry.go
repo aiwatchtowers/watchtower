@@ -24,9 +24,10 @@ func jiraClientFactory(cfg *config.Config) tools.JiraClientFactory {
 	}
 }
 
-// buildToolRegistry is the ONE place the assistant's write tools are
-// assembled — shared by `mcp --chat`, `actions …` and `jira create`, so the
-// three entry points can never disagree about what exists.
+// buildToolRegistry is the ONE place the assistant's tools are assembled —
+// shared by `mcp --chat`, `actions …`, `jira create` and the runtime-B
+// `ai query --tools chat` ollama loop, so the entry points can never disagree
+// about what exists.
 func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	reg := tools.New(database)
 	for _, t := range []*tools.Tool{

@@ -47,6 +47,26 @@ func TestGetSituation_ReturnsDetail(t *testing.T) {
 	assert.Contains(t, string(b), `"signals":`)
 }
 
+// An unknown status is a model-facing ValidationError, not a silent empty list.
+func TestListSituations_RejectsUnknownStatus(t *testing.T) {
+	reg := New(openDB(t))
+	require.NoError(t, reg.Register(NewListSituations()))
+
+	_, err := reg.CallRead(context.Background(), "list_situations", json.RawMessage(`{"status":"in_progress"}`))
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+}
+
+// An ill-formed since date is rejected, not concatenated into a malformed bound.
+func TestListSituations_RejectsBadSince(t *testing.T) {
+	reg := New(openDB(t))
+	require.NoError(t, reg.Register(NewListSituations()))
+
+	_, err := reg.CallRead(context.Background(), "list_situations", json.RawMessage(`{"since":"last week"}`))
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+}
+
 // get_situation on a missing id returns an error the loop feeds back to the model.
 func TestGetSituation_NotFound(t *testing.T) {
 	database := openDB(t)

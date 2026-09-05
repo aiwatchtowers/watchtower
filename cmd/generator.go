@@ -89,16 +89,11 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 // has no subprocess. It returns a cleanup to run after the query drains (closing
 // the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
-	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
 	noop := func() {}
-	if aiFlagTools != "chat" {
-		return client, noop, nil
-	}
-	if c, ok := client.(mcpConfigurable); ok {
-		c.SetMCPArgs(chatMCPArgs())
-		return client, noop, nil
-	}
-	if cfg.AI.Provider == "ollama" {
+	// Runtime B: the ollama provider on a tool-bearing chat surface gets the
+	// in-process loop — it has no MCP subprocess. Handled first so we never build
+	// (and discard) a plain ollama client, nor resolve the model twice.
+	if aiFlagTools == "chat" && cfg.AI.Provider == "ollama" {
 		model := aiFlagModel
 		if model == "" {
 			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -108,21 +103,23 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 			return nil, noop, err
 		}
 		reg := buildToolRegistry(cfg, database)
-		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, chatBinding()), func() { _ = database.Close() }, nil
+		binding := tools.Binding{
+			Surface:        aiFlagSurface,
+			ConversationID: aiFlagConversation,
+			ContextType:    aiFlagContextType,
+			ContextID:      aiFlagContextID,
+			TurnID:         aiFlagTurn,
+		}
+		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding), func() { _ = database.Close() }, nil
+	}
+
+	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
+	if aiFlagTools == "chat" {
+		if c, ok := client.(mcpConfigurable); ok {
+			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
+		}
 	}
 	return client, noop, nil
-}
-
-// chatBinding assembles the runtime-B proposal binding from the `ai query`
-// chat flags — the same surface/conversation/turn the MCP path passes as args.
-func chatBinding() tools.Binding {
-	return tools.Binding{
-		Surface:        aiFlagSurface,
-		ConversationID: aiFlagConversation,
-		ContextType:    aiFlagContextType,
-		ContextID:      aiFlagContextID,
-		TurnID:         aiFlagTurn,
-	}
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.

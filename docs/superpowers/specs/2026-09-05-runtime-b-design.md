@@ -116,10 +116,17 @@ for i := 0; i < maxIterations; i++ {
 ```
 dispatch(call):
     tool, ok := registry.Get(call.name)
-    if !ok:                      → tool-result JSON {"error":"unknown tool"}
-    if tool.Access == write:     → registry.Propose(ctx, name, args, binding) → Receipt JSON
-    if tool.Access == read:      → registry.CallRead(ctx, name, args)        → data JSON
+    if !ok:                       → tool-result JSON {"error":"unknown tool"}
+    if tool not visible on surface → tool-result JSON {"error":"not available on this surface"}
+    if tool.Access == write:      → registry.Propose(ctx, name, args, binding) → Receipt JSON
+    if tool.Access == read:       → registry.CallRead(ctx, name, args)        → data JSON
 ```
+
+`Registry.Get` is surface-blind (it resolves by name), so dispatch re-applies
+the same `len(Surfaces)==0 || contains(Surfaces, surface)` boundary `buildTools`
+uses to advertise. Without it, a model on the `target` surface could name a
+main-only tool (`create_target`, TGT-BRIEF-01 axis 3) and reach `Propose`; the
+MCP adapter gets this boundary for free because it mounts only `List(surface)`.
 
 - **Write** → `Propose`. With trust `ask` (default) this records a `pending`
   `agent_actions` row and returns a receipt telling the model the action awaits
@@ -177,9 +184,10 @@ snake-case view struct, no behaviour duplicated).
 
 Same as agent-actions: **main AI Chat** and **target chat** only. The loop is
 built only when `--tools chat` is present, which only these two VMs pass
-(AGENT-04). `registry.List(surface)` already scopes `create_target` to `{main}`
-and `create_jira_issue` to `{main, target}`; the read tools are unscoped (visible
-on both).
+(AGENT-04). `registry.List(surface)` scopes `create_target` to `{main}` and
+`create_jira_issue` to `{main, target}` for advertising, and `dispatch` enforces
+the same scope at call time (§3.3) so the scope is a real boundary, not just an
+advertisement; the read tools are unscoped (visible on both).
 
 ## 7. Error handling
 

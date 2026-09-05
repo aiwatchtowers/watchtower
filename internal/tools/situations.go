@@ -6,11 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
 	"watchtower/internal/db"
 )
+
+// situationStatuses are the values list_situations accepts, matching the MCP
+// list_situations handler's enum.
+var situationStatuses = []string{"open", "done", "dismissed", "converted", "stale", "snoozed"}
 
 type listSituationsArgs struct {
 	Status string `json:"status,omitempty" jsonschema:"filter by status: open|done|dismissed|converted|stale|snoozed (default open)"`
@@ -82,9 +88,16 @@ func NewListSituations() *Tool {
 			status := a.Status
 			if status == "" {
 				status = "open"
+			} else if !slices.Contains(situationStatuses, status) {
+				// Without this an unknown status silently matches no rows; the model
+				// must learn it passed a bad value, not get an empty list.
+				return nil, &ValidationError{Msg: "status must be one of: open, done, dismissed, converted, stale, snoozed"}
 			}
 			var since string
 			if a.Since != "" {
+				if _, err := time.Parse("2006-01-02", a.Since); err != nil {
+					return nil, &ValidationError{Msg: `since must be a date in YYYY-MM-DD form`}
+				}
 				since = a.Since + "T00:00:00Z"
 			}
 			situations, err := d.ListSituations(db.SituationFilter{Status: status, SinceISO: since, Limit: a.Limit})

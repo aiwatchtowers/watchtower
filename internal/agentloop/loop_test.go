@@ -121,6 +121,41 @@ func TestLoop_MaxIterationsCap(t *testing.T) {
 	assert.Equal(t, 3, *calls, "the loop stops exactly at the cap")
 }
 
+// A tool named but not visible on the binding's surface is refused at dispatch
+// (never proposed), matching the MCP adapter's mount boundary — create_target is
+// main-only, so a target-surface call must not reach Propose.
+func TestLoop_OutOfSurfaceToolRejected(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"create_target": tools.NewCreateTarget()}}
+	srv, _ := scriptedServer(t, toolCallResp("create_target", `{"text":"x","reason":"y"}`), finalResp("done"))
+	c := clientWith(reg, srv.URL)
+	c.binding = tools.Binding{Surface: "target"} // create_target is {main}
+
+	text, _, err := c.run(context.Background(), "", "make a target")
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	assert.Empty(t, reg.proposed, "a main-only tool must not be proposed from the target surface")
+}
+
+// When the cap is hit with partial content, the answer is marked truncated
+// rather than presented as complete.
+func TestLoop_MaxIterationsCapMarksTruncation(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
+	// Every turn emits content AND a tool call, so it loops to the cap with
+	// non-empty lastContent.
+	withContent := oaResponse{Choices: []oaChoice{{Message: oaMessage{
+		Role: "assistant", Content: "partial progress",
+		ToolCalls: []oaToolCall{{ID: "c1", Type: "function", Function: oaFunction{Name: "list_situations", Arguments: `{}`}}},
+	}}}}
+	srv, _ := scriptedServer(t, withContent)
+	c := clientWith(reg, srv.URL)
+	c.maxIter = 2
+
+	text, _, err := c.run(context.Background(), "", "loop")
+	require.NoError(t, err)
+	assert.Contains(t, text, "partial progress")
+	assert.Contains(t, text, "tool-call limit", "truncated output must be flagged")
+}
+
 // A non-200 from the model endpoint fails the run (a transport error, unlike a
 // tool error which is fed back).
 func TestLoop_ModelEndpointErrorFailsRun(t *testing.T) {

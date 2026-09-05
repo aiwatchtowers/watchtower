@@ -17,9 +17,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/ollama"
 	"watchtower/internal/tools"
 )
 
@@ -52,7 +54,7 @@ type Client struct {
 // surface/conversation/turn a proposal is bound to.
 func NewClient(model, baseURL string, reg *tools.Registry, b tools.Binding) *Client {
 	if baseURL == "" {
-		baseURL = "http://localhost:11434"
+		baseURL = ollama.DefaultBaseURL
 	}
 	return &Client{
 		model:   model,
@@ -134,8 +136,11 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string) (str
 		}
 	}
 
+	// The cap is reached only while the model is still emitting tool calls, so
+	// whatever text it last produced is mid-work — flag it as truncated rather
+	// than present it as a finished answer.
 	if lastContent != "" {
-		return lastContent, usage, nil
+		return lastContent + "\n\n(Note: I reached the tool-call limit before finishing.)", usage, nil
 	}
 	return "I couldn't complete that within the tool-call limit.", usage, nil
 }
@@ -146,14 +151,22 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string) (str
 // the turn.
 func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
 	name := call.Function.Name
-	args := json.RawMessage(call.Function.Arguments)
-	if len(args) == 0 || !json.Valid(args) {
-		args = json.RawMessage(`{}`)
-	}
 	t, ok := c.reg.Get(name)
 	if !ok {
 		return errJSON("unknown tool " + name)
 	}
+	// A model may name a tool it was never offered on this surface (buildTools
+	// advertises only List(surface)). Get is surface-blind, so enforce the same
+	// boundary the MCP adapter gets for free by mounting only List(surface) —
+	// without it a target-surface call could reach a main-only tool like
+	// create_target (TGT-BRIEF-01 axis 3).
+	if len(t.Surfaces) > 0 && !slices.Contains(t.Surfaces, c.binding.Surface) {
+		return errJSON("tool " + name + " is not available on this surface")
+	}
+	// Pass the raw arguments through: Propose and CallRead both normalise an
+	// empty body and reject invalid JSON with a model-facing message, so a
+	// pre-coercion here would only hide that message from the model.
+	args := json.RawMessage(call.Function.Arguments)
 	switch t.Access {
 	case tools.AccessWrite:
 		rc, err := c.reg.Propose(ctx, name, args, c.binding)
@@ -178,9 +191,14 @@ func (c *Client) buildTools() []oaTool {
 	for _, t := range list {
 		var params json.RawMessage
 		if t.InputSchema != nil {
-			if b, err := json.Marshal(t.InputSchema); err == nil {
-				params = b
+			b, err := json.Marshal(t.InputSchema)
+			if err != nil {
+				// A schema that cannot render (practically impossible — Register
+				// already Resolved it) would advertise the tool with no parameters,
+				// inviting invented args. Skip it rather than offer it half-formed.
+				continue
 			}
+			params = b
 		}
 		out = append(out, oaTool{Type: "function", Function: oaToolDef{
 			Name: t.Name, Description: t.Description, Parameters: params,
