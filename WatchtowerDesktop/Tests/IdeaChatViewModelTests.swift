@@ -87,6 +87,8 @@ final class IdeaChatViewModelTests: XCTestCase {
         XCTAssertEqual(mock.prompts.first, "what's the risk here?")
         XCTAssertEqual(vm.messages.last?.text, "Draft reply")
         XCTAssertEqual(vm.messages.first?.text, "what's the risk here?")
+        // AGENT-04: draft-only surfaces never send a tool mode.
+        XCTAssertEqual(mock.toolModes, [nil])
     }
 
     /// A resumed turn drops the system prompt (the CLI uses --resume), so the

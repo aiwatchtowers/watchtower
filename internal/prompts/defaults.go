@@ -46,6 +46,7 @@ var Defaults = map[string]string{
 	IdeasDigestJira:            defaultIdeasDigestJira,
 	IdeasConsolidate:           defaultIdeasConsolidate,
 	DictationClean:             defaultDictationClean,
+	ReactionCommand:            defaultReactionCommand,
 	CatchupCompose:             defaultCatchupCompose,
 }
 
@@ -91,6 +92,7 @@ var AllIDs = []string{
 	IdeasDigestJira,
 	IdeasConsolidate,
 	DictationClean,
+	ReactionCommand,
 	CatchupCompose,
 }
 
@@ -138,6 +140,7 @@ var DefaultVersions = map[string]int{
 	IdeasDigestJira:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasConsolidate:           4, // v4: the secretary/assistant persona merge — one assistant everywhere
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
+	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
 }
 
@@ -187,6 +190,7 @@ var Descriptions = map[string]string{
 	IdeasDigestJira:            "Ideas: mine ideas & decisions from changed Jira issues (stage 1, light tier)",
 	IdeasConsolidate:           "Ideas: consolidate stage-1 material into the registry (stage 2, strong tier; code disposes)",
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
+	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
 	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
 }
 
@@ -1577,3 +1581,20 @@ JSON contract: {"markdown": "..."}`, true
 		return "", false
 	}
 }
+
+// defaultReactionCommand is the light-tier prompt that turns the Slack message
+// the owner reacted to into the argument JSON for one agent-action tool. The
+// user message names the tool, describes its arguments, and carries the
+// message + thread context; the model returns ONLY that tool's arguments.
+const defaultReactionCommand = `You turn a Slack message the owner flagged (by reacting to it) into the arguments for ONE Watchtower action.
+
+The user message tells you:
+- WHICH action to build and what each of its arguments means.
+- The Slack message the owner reacted to, plus any thread context and available facts.
+
+Rules:
+- Output ONLY a single JSON object whose keys are the action's arguments. No prose, no markdown fences, no explanation.
+- Base every field on the message and thread. Do NOT invent facts, names, dates, projects, or numbers that are not present.
+- Write the title/summary as a concise, imperative line — what the owner would want done about this message.
+- Always include a "reason": one sentence, why this action is proposed, phrased for the owner to read.
+- If a required argument cannot be grounded in the provided context, still return your best JSON; the caller validates it.`

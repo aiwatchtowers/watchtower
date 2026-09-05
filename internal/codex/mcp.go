@@ -4,15 +4,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // mcpWorkDir creates a temporary directory with a .codex/config.toml that
 // configures the watchtower MCP server — the watchtower binary itself run as
 // `watchtower mcp --db-path <db>`, exposing curated read-only tools over stdio
-// (no third-party npx package, no network). The caller must remove the returned
-// directory when done (typically via defer os.RemoveAll).
+// (no third-party npx package, no network). extra appends further flags to the
+// server command — the chat mode flags (--chat --surface … --conversation …
+// --turn …) the Desktop passes through `ai query --tools chat`; pass nil for
+// the read-only dev server. The caller must remove the returned directory when
+// done (typically via defer os.RemoveAll).
 // Returns the path to the temp directory and any error.
-func mcpWorkDir(dbPath string) (string, error) {
+func mcpWorkDir(dbPath string, extra []string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "codex-mcp-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir for codex MCP config: %w", err)
@@ -24,10 +29,13 @@ func mcpWorkDir(dbPath string) (string, error) {
 		return "", fmt.Errorf("creating .codex dir: %w", err)
 	}
 
-	configContent := fmt.Sprintf(`[mcp_servers.watchtower]
-command = %q
-args = ["mcp", "--db-path", %q]
-`, watchtowerBinary(), dbPath)
+	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, strconv.Quote(a))
+	}
+	configContent := fmt.Sprintf("[mcp_servers.watchtower]\ncommand = %q\nargs = [%s]\n",
+		watchtowerBinary(), strings.Join(quoted, ", "))
 
 	configPath := filepath.Join(codexDir, "config.toml")
 	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {

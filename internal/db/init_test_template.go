@@ -20,11 +20,13 @@ func InitTestTemplate() error {
 	if openMemoryHook != nil {
 		return nil // already initialised
 	}
-	ddl, gooseRows, feedStateRows, err := extractTemplateDDL()
+	ddl, gooseRows, feedStateRows, reactionMapRows, err := extractTemplateDDL()
 	if err != nil {
 		return err
 	}
-	openMemoryHook = func() (*DB, error) { return buildCloneDB(ddl, gooseRows, feedStateRows) }
+	openMemoryHook = func() (*DB, error) {
+		return buildCloneDB(ddl, gooseRows, feedStateRows, reactionMapRows)
+	}
 	return nil
 }
 
@@ -36,23 +38,34 @@ type feedStateRow struct {
 	bootstrapCutoff string
 }
 
+// reactionMapRow is one migration-seeded reaction_command_map row (00063) — the
+// default emoji dictionary. Carried into clones like feedStateRow, since DDL
+// extraction drops the INSERTed seed.
+type reactionMapRow struct {
+	emoji     string
+	kind      string
+	tool      string
+	handlerID int64
+	enabled   int64
+}
+
 // extractTemplateDDL migrates a throw-away in-memory DB and returns the DDL
 // statements, goose version rows, and migration-seeded feed_state rows needed
 // to clone that schema cheaply.
-func extractTemplateDDL() (ddl []string, gooseRows [][2]int64, feedStateRows []feedStateRow, err error) {
+func extractTemplateDDL() (ddl []string, gooseRows [][2]int64, feedStateRows []feedStateRow, reactionMapRows []reactionMapRow, err error) {
 	sqlDB, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("opening template DB: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("opening template DB: %w", err)
 	}
 	sqlDB.SetMaxOpenConns(1)
 	defer sqlDB.Close()
 
 	tmpl := &DB{DB: sqlDB}
 	if err := tmpl.setPragmas(); err != nil {
-		return nil, nil, nil, fmt.Errorf("template pragmas: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("template pragmas: %w", err)
 	}
 	if err := tmpl.migrate(); err != nil {
-		return nil, nil, nil, fmt.Errorf("template migrations: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("template migrations: %w", err)
 	}
 
 	// Extract DDL for all user objects except FTS5 shadow tables and
@@ -70,66 +83,85 @@ func extractTemplateDDL() (ddl []string, gooseRows [][2]int64, feedStateRows []f
 		  AND name != 'goose_db_version'
 		ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name`)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("querying template DDL: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("querying template DDL: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var stmt string
 		if err := rows.Scan(&stmt); err != nil {
-			return nil, nil, nil, fmt.Errorf("scanning DDL: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("scanning DDL: %w", err)
 		}
 		ddl = append(ddl, stmt)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("iterating DDL: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("iterating DDL: %w", err)
 	}
 
 	// Extract goose version rows.
 	vrows, err := sqlDB.Query(`SELECT version_id, is_applied FROM goose_db_version ORDER BY id`)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("querying goose rows: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("querying goose rows: %w", err)
 	}
 	defer vrows.Close()
 
 	for vrows.Next() {
 		var vid, applied int64
 		if err := vrows.Scan(&vid, &applied); err != nil {
-			return nil, nil, nil, fmt.Errorf("scanning goose row: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("scanning goose row: %w", err)
 		}
 		gooseRows = append(gooseRows, [2]int64{vid, applied})
 	}
 	if err := vrows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("iterating goose rows: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("iterating goose rows: %w", err)
 	}
 
 	// Extract migration-seeded feed_state rows (00014 seeds the singleton
 	// bootstrap_cutoff row; DDL extraction alone would lose it).
 	frows, err := sqlDB.Query(`SELECT id, bootstrap_cutoff FROM feed_state ORDER BY id`)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("querying feed_state rows: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("querying feed_state rows: %w", err)
 	}
 	defer frows.Close()
 
 	for frows.Next() {
 		var r feedStateRow
 		if err := frows.Scan(&r.id, &r.bootstrapCutoff); err != nil {
-			return nil, nil, nil, fmt.Errorf("scanning feed_state row: %w", err)
+			return nil, nil, nil, nil, fmt.Errorf("scanning feed_state row: %w", err)
 		}
 		feedStateRows = append(feedStateRows, r)
 	}
 	if err := frows.Err(); err != nil {
-		return nil, nil, nil, fmt.Errorf("iterating feed_state rows: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("iterating feed_state rows: %w", err)
 	}
 
-	return ddl, gooseRows, feedStateRows, nil
+	// Extract migration-seeded reaction_command_map rows (00063 seeds the
+	// default emoji dictionary; DDL extraction alone would lose it).
+	rrows, err := sqlDB.Query(`SELECT emoji, kind, tool, handler_id, enabled FROM reaction_command_map ORDER BY emoji`)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("querying reaction_command_map rows: %w", err)
+	}
+	defer rrows.Close()
+
+	for rrows.Next() {
+		var r reactionMapRow
+		if err := rrows.Scan(&r.emoji, &r.kind, &r.tool, &r.handlerID, &r.enabled); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("scanning reaction_command_map row: %w", err)
+		}
+		reactionMapRows = append(reactionMapRows, r)
+	}
+	if err := rrows.Err(); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("iterating reaction_command_map rows: %w", err)
+	}
+
+	return ddl, gooseRows, feedStateRows, reactionMapRows, nil
 }
 
 // buildCloneDB creates a fresh in-memory DB whose schema matches the migrated
 // template by replaying ddl in a single transaction, then seeding
 // goose_db_version so that goose.Up() on the clone is a no-op, plus the
 // migration-seeded feed_state rows.
-func buildCloneDB(ddl []string, gooseRows [][2]int64, feedStateRows []feedStateRow) (*DB, error) {
+func buildCloneDB(ddl []string, gooseRows [][2]int64, feedStateRows []feedStateRow, reactionMapRows []reactionMapRow) (*DB, error) {
 	dst, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("opening clone DB: %w", err)
@@ -184,6 +216,17 @@ func buildCloneDB(ddl []string, gooseRows [][2]int64, feedStateRows []feedStateR
 			tx.Rollback() //nolint:errcheck
 			dst.Close()
 			return nil, fmt.Errorf("inserting feed_state row: %w", err)
+		}
+	}
+
+	for _, row := range reactionMapRows {
+		if _, err := tx.Exec(
+			`INSERT INTO reaction_command_map (emoji, kind, tool, handler_id, enabled) VALUES (?, ?, ?, ?, ?)`,
+			row.emoji, row.kind, row.tool, row.handlerID, row.enabled,
+		); err != nil {
+			tx.Rollback() //nolint:errcheck
+			dst.Close()
+			return nil, fmt.Errorf("inserting reaction_command_map row: %w", err)
 		}
 	}
 

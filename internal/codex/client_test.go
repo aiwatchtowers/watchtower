@@ -1,6 +1,9 @@
 package codex
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +88,20 @@ func assertNotContains(t *testing.T, args []string, unwanted string) {
 			t.Errorf("args %v should not contain %q", args, unwanted)
 			return
 		}
+	}
+}
+
+func TestMCPWorkDir_WritesExtraArgs(t *testing.T) {
+	dir, err := mcpWorkDir("/tmp/w.db", []string{"--chat", "--surface", "target"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	b, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `args = ["mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "target"]`) {
+		t.Fatalf("config.toml = %s", b)
 	}
 }

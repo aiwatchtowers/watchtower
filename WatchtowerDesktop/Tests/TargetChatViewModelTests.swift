@@ -26,7 +26,8 @@ final class TargetChatViewModelTests: XCTestCase {
         target: Target,
         vm: TargetsViewModel,
         manager: DatabaseManager,
-        aiService: any AIServiceProtocol = MockClaudeService()
+        aiService: any AIServiceProtocol = MockClaudeService(),
+        toolsAvailable: Bool = true
     ) throws -> TargetChatViewModel {
         let conversationID = try manager.dbPool.write { db -> Int64 in
             try ChatConversationQueries.ensureTable(db)
@@ -37,7 +38,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
         return TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
                                    conversationID: conversationID,
-                                   aiService: aiService)
+                                   aiService: aiService, toolsAvailable: toolsAvailable)
     }
 
     /// Synchronous DB helpers — inside an `async` test the trailing-closure
@@ -45,6 +46,12 @@ final class TargetChatViewModelTests: XCTestCase {
     /// autoclosure cannot await; a sync function pins the sync overload.
     private func fetchTargetRow(_ manager: DatabaseManager, id: Int) throws -> Target? {
         try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
+
+    private func fetchConversationID(_ manager: DatabaseManager, targetID: Int) throws -> Int64? {
+        try manager.dbPool.read { db in
+            try ChatConversationQueries.fetchByContext(db, type: "target", id: String(targetID))?.id
+        }
     }
 
     private func ensureChatTables(_ manager: DatabaseManager) throws {
@@ -1179,5 +1186,101 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))
         XCTAssertEqual(withEmptyDir, withNoDir, "no skills must leave the prompt byte-identical")
+    }
+
+    // MARK: - Agent actions (AGENT-04): the target chat is an action surface
+
+    func testSystemPromptCarriesAgentActionsContractForTargetSurface() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try manager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
+        XCTAssertTrue(prompt.contains("=== AGENT ACTIONS ==="))
+        XCTAssertTrue(prompt.contains("create_jira_issue"))
+        XCTAssertFalse(prompt.contains("- create_target"), "TGT-BRIEF-01: no top-level task creation from a target chat")
+        XCTAssertTrue(prompt.contains("=== TASK ACTIONS ==="), "the block grammar is unchanged")
+        let ollama = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool, toolsAvailable: false)
+        XCTAssertFalse(ollama.contains("=== AGENT ACTIONS ==="))
+    }
+
+    func testSendPassesTargetToolModeWithContext() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        chat.inputText = "make a ticket"
+        chat.send()
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        let firstToolMode = try XCTUnwrap(mock.toolModes.first)
+        let mode = try XCTUnwrap(firstToolMode)
+        XCTAssertEqual(mode.surface, "target")
+        XCTAssertEqual(mode.contextType, "target")
+        XCTAssertEqual(mode.contextID, String(target.id))
+        XCTAssertEqual(chat.messages.last?.turnID, mode.turnID)
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.last?.turnID, mode.turnID)
+    }
+
+    /// C1, target-chat half: the chat-mode MCP subprocess inserts the proposal
+    /// on its own connection, so the turn boundary has to refetch.
+    func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService(events: [.text("ok"), .done]))
+        let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
+        // An earlier row through the app's own pool proves the observation is live.
+        try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: convID, turnID: "earlier")
+        for _ in 0..<50 where chat.actionFeed.rows.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(chat.actionFeed.rows.count, 1)
+
+        chat.inputText = "file a ticket"
+        chat.send()
+        let turnID = try XCTUnwrap(chat.messages.last?.turnID)
+        // Synchronous: the main actor must not yield before the row exists.
+        let otherPool = try DatabasePool(path: path)
+        try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(chat.actionFeed.cards(forTurn: turnID).count, 1,
+                       "finishStream must refetch — the observation never sees the subprocess's insert")
+    }
+
+    /// `toolsAvailable` is injected per-VM at init (not re-read from
+    /// config.yaml on every turn), so a no-tools session — Ollama in
+    /// production — deterministically sends no tool mode and never
+    /// advertises the AGENT ACTIONS contract, regardless of the developer's
+    /// local config.
+    func testOllamaTargetChatSendsNoToolModeAndNoAgentActionsContract() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try ensureChatTables(manager)
+        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock, toolsAvailable: false)
+        chat.inputText = "make a ticket"
+        chat.send()
+        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(mock.toolModes, [nil])
+        let firstSystemPrompt = try XCTUnwrap(mock.systemPrompts.first)
+        let prompt = try XCTUnwrap(firstSystemPrompt)
+        XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
+        // I5: the TOOLS section must not promise read tools this session lacks.
+        XCTAssertFalse(prompt.contains("list_messages"))
+        XCTAssertFalse(prompt.contains("already connected"))
+        XCTAssertTrue(prompt.contains("No tools are connected"))
     }
 }

@@ -18,7 +18,14 @@ type Client struct {
 	model    string
 	dbPath   string // path to SQLite database for MCP server
 	codexCmd string // path to codex binary
+	// mcpArgs are appended to `watchtower mcp --db-path <db>` — the chat
+	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
+	// passes through `ai query --tools chat`. Empty = the read-only dev server.
+	mcpArgs []string
 }
+
+// SetMCPArgs appends extra flags to the MCP server command (chat mode).
+func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 
 // NewClient creates a new AI client that invokes the Codex CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -56,8 +63,8 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) []string {
 
 // Query sends a streaming request via the Codex CLI and returns channels
 // for text chunks, errors, and the session ID (always empty for Codex).
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 64)
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan ai.StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 
@@ -69,7 +76,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// Set up MCP config if database path is provided.
 		var workDir string
 		if c.dbPath != "" {
-			tmpDir, mcpErr := mcpWorkDir(c.dbPath)
+			tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
 			if mcpErr != nil {
 				errCh <- mcpErr
 				return
@@ -134,10 +141,23 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				return
 			}
 
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble and starts the answer fresh from what
+			// follows the tool (the ai.Client tool_use precedent).
+			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
+				select {
+				case textCh <- ai.StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+
 			// Stream agent_message content as it arrives.
 			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
 				select {
-				case textCh <- event.Item.MessageText():
+				case textCh <- ai.StreamChunk{Text: event.Item.MessageText()}:
 				case <-ctx.Done():
 					_ = cmd.Wait()
 					errCh <- ctx.Err()
@@ -169,7 +189,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	// Set up MCP config if database path is provided.
 	var workDir string
 	if c.dbPath != "" {
-		tmpDir, mcpErr := mcpWorkDir(c.dbPath)
+		tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
 		if mcpErr != nil {
 			return "", nil, mcpErr
 		}

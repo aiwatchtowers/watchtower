@@ -21,6 +21,15 @@ func TestIsInvalidGrant(t *testing.T) {
 		{"json invalid_grant", `{"error":"invalid_grant","error_description":"refresh token is invalid"}`, true},
 		{"raw body fallback", `invalid_grant`, true},
 		{"non-json wrapper", `<html>invalid_grant</html>`, true},
+		// Atlassian's other revoked-grant shape: a 403 unauthorized_client whose
+		// description says the refresh token itself is invalid. Observed live as
+		// {"error":"unauthorized_client","error_description":"refresh_token is invalid"}.
+		{"unauthorized_client refresh invalid", `{"error":"unauthorized_client","error_description":"refresh_token is invalid"}`, true},
+		{"unauthorized_client refresh invalid spaced", `{"error":"unauthorized_client","error_description":"refresh token is invalid"}`, true},
+		{"raw refresh_token is invalid", `refresh_token is invalid`, true},
+		// A bare unauthorized_client without the refresh-token signal is a client
+		// misconfiguration (wrong client_id/secret), not a revoked grant.
+		{"unauthorized_client misconfig", `{"error":"unauthorized_client","error_description":"client authentication failed"}`, false},
 		{"unrelated oauth error", `{"error":"invalid_scope"}`, false},
 		{"server error", `{"error":"server_error"}`, false},
 		{"rate limited", `{"message":"too many requests"}`, false},

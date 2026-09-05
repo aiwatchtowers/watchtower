@@ -189,7 +189,12 @@ func (r *REPL) runAIQuery(question string) {
 
 	var fullResponse strings.Builder
 	for chunk := range textCh {
-		fullResponse.WriteString(chunk)
+		if chunk.ToolBoundary {
+			// Drop the pre-tool preamble; keep only the post-tool answer.
+			fullResponse.Reset()
+			continue
+		}
+		fullResponse.WriteString(chunk.Text)
 	}
 
 	// Clear "Thinking..." line.

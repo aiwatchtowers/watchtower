@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
 	"watchtower/internal/skills"
+	"watchtower/internal/tools"
 )
 
 var mcpCmd = &cobra.Command{
@@ -25,11 +26,25 @@ Add it to Claude Code with:
 	RunE: runMCP,
 }
 
-var mcpFlagDBPath string
+var (
+	mcpFlagDBPath       string
+	mcpFlagChat         bool
+	mcpFlagSurface      string
+	mcpFlagConversation int64
+	mcpFlagTurn         string
+	mcpFlagContextType  string
+	mcpFlagContextID    string
+)
 
 func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
+	mcpCmd.Flags().BoolVar(&mcpFlagChat, "chat", false, "assistant chat mode: mount write tools as proposals (never for external clients)")
+	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target")
+	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
+	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
+	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
+	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
@@ -54,14 +69,27 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	// The MCP surface is read-only; enforce it at the connection level so even
-	// a buggy handler cannot write. Must run after Open (migrations need writes).
-	if err := database.SetReadOnly(); err != nil {
-		return fmt.Errorf("enforcing read-only: %w", err)
-	}
-
 	opts := []internalmcp.ServerOption{
 		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
+	}
+	if mcpFlagChat {
+		// Chat mode: the connection stays writable ONLY so the registry can
+		// record proposals (agent_actions) — the tools themselves still never
+		// write domain data on propose (AGENT-01). Dev mode below keeps the
+		// query_only fence (AGENT-02 / DEV-01).
+		if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
+			return fmt.Errorf("--surface must be main or target")
+		}
+		opts = append(opts, internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
+			Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: mcpFlagTurn,
+			ContextType: mcpFlagContextType, ContextID: mcpFlagContextID,
+		}))
+	} else {
+		// The MCP surface is read-only; enforce it at the connection level so even
+		// a buggy handler cannot write. Must run after Open (migrations need writes).
+		if err := database.SetReadOnly(); err != nil {
+			return fmt.Errorf("enforcing read-only: %w", err)
+		}
 	}
 	if cfg.Memory.Enabled {
 		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))

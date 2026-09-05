@@ -307,6 +307,11 @@ final class OnboardingChatViewModel {
                         messages[idx].text = fullText
                     }
                     sawTurnComplete = true
+                case .reset:
+                    if let idx = messages.indices.last {
+                        messages[idx].text = ""
+                    }
+                    sawTurnComplete = false
                 case .sessionID(let sid):
                     self.sessionID = sid
                 case .done:
@@ -441,7 +446,8 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): contextText += chunk
                 case .turnComplete(let text): contextText = text
-                case .sessionID, .done: break
+                // Internal context generation has no tools, so no reset arrives.
+                case .reset, .sessionID, .done: break
                 }
             }
         } catch {
@@ -682,7 +688,8 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): text += chunk
                 case .turnComplete(let full): text = full
-                case .sessionID, .done: break
+                // Internal context generation has no tools, so no reset arrives.
+                case .reset, .sessionID, .done: break
                 }
             }
         } catch {

@@ -508,6 +508,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	inboxPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetInboxPipeline(inboxPipe)
 	wireIdeasPipeline(d, database, cfg, gen, logger)
+	wireReactionCommandsPipeline(d, database, cfg, gen, logger)
 	wireMemoryPipeline(d, database, cfg, logger)
 	d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, logger))
 	customTracksPipe := customtracks.New(database, gen, cfg.Digest.Language, logger)

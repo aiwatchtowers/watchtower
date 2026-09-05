@@ -6,6 +6,12 @@ import (
 	"fmt"
 )
 
+// ErrJiraAccountNotFound is what GetJiraAccount wraps when no row matches, so
+// a caller can tell "that account does not exist" from "the lookup failed"
+// (the memory/skills ErrNotFound precedent). Relabelling every getter error as
+// "no such account" is the one wrong answer: it reports a broken DB as a typo.
+var ErrJiraAccountNotFound = errors.New("jira account not found")
+
 // JiraAccount is one connected Atlassian site (jira_accounts, migration
 // 00049). Site-scoped jira_* rows reference it via account_id.
 type JiraAccount struct {
@@ -89,8 +95,9 @@ func (db *DB) GetJiraAccount(id int64) (JiraAccount, error) {
 		Scan(&a.ID, &a.CloudID, &a.SiteURL, &a.SiteName, &a.Label,
 			&a.Status, &a.Error, &a.Enabled, &a.MemoryJiraLastExtractedTS, &a.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		// A mistyped --account must not surface the stdlib sentinel.
-		return JiraAccount{}, fmt.Errorf("jira account %d not found (see 'watchtower jira accounts')", id)
+		// A mistyped --account must not surface the stdlib sentinel — but it
+		// must not lose the distinction either, hence ErrJiraAccountNotFound.
+		return JiraAccount{}, fmt.Errorf("%w: #%d (see 'watchtower jira accounts')", ErrJiraAccountNotFound, id)
 	}
 	if err != nil {
 		return JiraAccount{}, fmt.Errorf("getting jira account %d: %w", id, err)

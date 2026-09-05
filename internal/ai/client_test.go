@@ -2,9 +2,11 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -199,7 +201,7 @@ printf '{"type":"result","subtype":"success","result":"Hello world!","session_id
 
 	var result strings.Builder
 	for chunk := range textCh {
-		result.WriteString(chunk)
+		result.WriteString(chunk.Text)
 	}
 
 	err := <-errCh
@@ -208,6 +210,48 @@ printf '{"type":"result","subtype":"success","result":"Hello world!","session_id
 
 	sid := <-sidCh
 	assert.Equal(t, "sess-abc", sid)
+}
+
+// A tool call mid-turn must surface as a boundary chunk, and the "let me check
+// first" preamble streamed before it must not glue onto the post-tool answer —
+// the desktop bug where "I need to check…first.Да, могу…" rendered as one line.
+func TestQuery_ToolUseSignalsBoundaryAndDropsPreamble(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"I need to check the projects first."}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"list_jira_projects","input":{}}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Here is the answer."}]}}\n'
+printf '{"type":"result","subtype":"success","result":"Here is the answer.","session_id":"sess-1"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hi", "")
+
+	var chunks []StreamChunk
+	// Replay the consumer's reset-on-boundary contract (cmd/ai.go → desktop).
+	var visible strings.Builder
+	sawBoundary := false
+	for chunk := range textCh {
+		chunks = append(chunks, chunk)
+		if chunk.ToolBoundary {
+			sawBoundary = true
+			visible.Reset()
+			continue
+		}
+		visible.WriteString(chunk.Text)
+	}
+
+	require.NoError(t, <-errCh)
+	assert.True(t, sawBoundary, "a tool_use event must emit a boundary chunk")
+	assert.Equal(t, "Here is the answer.", visible.String(),
+		"the pre-tool preamble must be dropped, not glued to the answer")
+	// The preamble did reach the stream (so live UI can show it), but as its own
+	// chunk before the boundary — never concatenated with the answer.
+	require.GreaterOrEqual(t, len(chunks), 3)
+	assert.Equal(t, "I need to check the projects first.", chunks[0].Text)
+	assert.True(t, chunks[1].ToolBoundary)
 }
 
 func TestQuery_StreamingIgnoresNonTextEvents(t *testing.T) {
@@ -225,7 +269,7 @@ printf '{"type":"result","subtype":"success","result":"response","session_id":"s
 
 	var result strings.Builder
 	for chunk := range textCh {
-		result.WriteString(chunk)
+		result.WriteString(chunk.Text)
 	}
 
 	err := <-errCh
@@ -364,7 +408,7 @@ printf '{broken json\n'
 
 	var result strings.Builder
 	for chunk := range textCh {
-		result.WriteString(chunk)
+		result.WriteString(chunk.Text)
 	}
 
 	err := <-errCh
@@ -387,7 +431,7 @@ printf '\n'
 
 	var result strings.Builder
 	for chunk := range textCh {
-		result.WriteString(chunk)
+		result.WriteString(chunk.Text)
 	}
 
 	err := <-errCh
@@ -411,4 +455,33 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
 	assert.Contains(t, err.Error(), "looks like plain text")
 	assert.Contains(t, err.Error(), "sha256:")
+}
+
+func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetMCPArgs([]string{"--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"})
+	cfg := c.buildMCPConfig()
+	var parsed struct {
+		Servers map[string]struct {
+			Args []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	got := parsed.Servers["watchtower"].Args
+	want := []string{"mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args := c.buildArgs("sys", "hi", "stream-json", "")
+	for _, a := range args {
+		if a == "--allowed-tools" {
+			t.Fatalf("legacy flag leaked into claude args")
+		}
+	}
 }

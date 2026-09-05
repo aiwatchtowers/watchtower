@@ -371,6 +371,46 @@ func (c *Client) GetMessageReactions(ctx context.Context, channelID, timestamp s
 	return item.Reactions, nil
 }
 
+// maxReactionListPages bounds ListUserReactions so a heavy reactor's history
+// can never spin the poll forever; 20 pages × 100 = the 2000 most recent
+// reactions, far past the dictionary emojis a single poll cares about.
+const maxReactionListPages = 20
+
+// ListUserReactions returns the items the given user has reacted to
+// (reactions.list, Tier 3), across all pages up to maxReactionListPages. Full
+// is set so each message item carries its ts. userID is the RAW Slack user id
+// (no account prefix). This is the reaction-command detection source: called
+// under the owner's own token, it enumerates exactly the owner's reactions
+// regardless of message age.
+func (c *Client) ListUserReactions(ctx context.Context, userID string) ([]slack.ReactedItem, error) {
+	var out []slack.ReactedItem
+	params := slack.NewListReactionsParameters()
+	params.User = userID
+	params.Full = true
+	params.Count = 100
+	for page := 1; page <= maxReactionListPages; page++ {
+		params.Page = page
+		var (
+			items  []slack.ReactedItem
+			paging *slack.Paging
+		)
+		err := c.doRequest(ctx, Tier3, func() error {
+			c.logf("slack API: reactions.list user=%s page=%d", userID, page)
+			var err error
+			items, paging, err = c.api.ListReactionsContext(ctx, params)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if paging == nil || page >= paging.Pages || len(items) == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
 // APIStats returns per-tier request counts and total 429 retry count.
 func (c *Client) APIStats() (counts map[int]int, retries int) {
 	return c.rateLimiter.Stats()
