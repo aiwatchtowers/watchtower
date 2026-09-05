@@ -158,14 +158,20 @@ Registered in the registry for the loop (MCP handlers stay as they are):
 
 - `list_situations` — the dashboard situations, filterable by status/`since`
   (over `db.ListSituations`).
-- `get_situation` — one situation with its signals (the `situations.go` MCP
-  assembly, called over the same queries).
-- `get_task_context` — one Jira key → ticket + linked Slack threads + people +
-  decisions (`taskcontext.go`'s resolver over its `db.*` queries).
+- `get_situation` — one situation with its signals (over `db.GetSituation` +
+  `db.ListSituationSignals`).
 
-These are the highest-value context walkers for "turn this into a target"
-prompts, which is the Ollama assistant's main job on the main/target surfaces.
-The set is a starting point; adding another read tool is one `Register` call.
+**`get_task_context` was cut from this slice.** Unlike the two above (a single
+`db.*` query behind a trivial field-copy projection), its MCP handler is ~330
+lines of thread/people/decision assembly private to `internal/mcp`, and
+`internal/tools` cannot reuse it without an import cycle (mcp already imports
+tools). Adapting it thinly is not possible; extracting the assembly into a shared
+package is a real refactor that belongs to the full read-tool migration slice, not
+here. The two situation tools are the highest-value context walkers for "turn
+this into a target" prompts, which is the Ollama assistant's main job on the
+main/target surfaces. Adding another read tool is one `Register` call; the two
+situation tools' projection lives in `internal/tools/situations.go` (a small
+snake-case view struct, no behaviour duplicated).
 
 ## 6. Surfaces
 
@@ -220,9 +226,10 @@ only under `--tools chat`.
 
 ## 10. Follow-ups (later slices)
 
-- Full migration of the remaining `internal/mcp` read tools into the registry;
-  MCP becomes a thin lister over the registry (removes the temporary two-face
-  read tools).
+- Full migration of the remaining `internal/mcp` read tools into the registry
+  (including `get_task_context`, cut from slice 1 for the import-cycle reason in
+  §5); MCP becomes a thin lister over the registry (removes the temporary
+  two-face read tools).
 - Cloud API-key providers (OpenAI / Anthropic direct HTTP) as chat providers.
 - A streamed "calling tool X" event for the Desktop.
 - The remaining agent-actions §14 follow-ups (codex posture, Jira-issue→target
