@@ -185,6 +185,7 @@ func TestAllTablesExist(t *testing.T) {
 		"ideas", "idea_mentions", "stream_digests", "jira_comments",
 		"catchup_recaps",
 		"agent_actions", "tool_trust",
+		"reaction_command_map", "reaction_commands",
 	}
 
 	for _, table := range expectedTables {
