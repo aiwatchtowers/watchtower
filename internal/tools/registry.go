@@ -132,6 +132,7 @@ func (e *ValidationError) Error() string { return e.Msg }
 var (
 	ErrUnknownTool     = errors.New("unknown tool")
 	ErrNotWritable     = errors.New("tool is not a write tool")
+	ErrNotReadable     = errors.New("tool is not a read tool")
 	ErrExternalExecute = errors.New("an external tool can never be trusted to execute without approval")
 	ErrBadTransition   = errors.New("action is not in an applicable state")
 	ErrNotFound        = errors.New("action not found")
@@ -307,6 +308,31 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it in this chat before "+
 			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name),
 	}, nil
+}
+
+// CallRead runs a read tool's Execute and returns its data. It is the runtime-B
+// in-process read path (the Go tool loop for HTTP providers) — the read twin of
+// Propose. It writes NO agent_actions row: a read is not a proposal. A write
+// tool is refused with ErrNotReadable, so the proposal flow can never be
+// bypassed by calling a write through the read path.
+func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage) (any, error) {
+	t, ok := r.tools[name]
+	if !ok {
+		return nil, ErrUnknownTool
+	}
+	if t.Access != AccessRead {
+		return nil, ErrNotReadable
+	}
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	if !json.Valid(args) {
+		return nil, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if err := t.validateSchema(args); err != nil {
+		return nil, err
+	}
+	return t.Execute(ctx, r.db, Call{Args: args})
 }
 
 // Apply executes an approved (or previously failed) row exactly once and

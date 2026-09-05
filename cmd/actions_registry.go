@@ -32,6 +32,11 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	for _, t := range []*tools.Tool{
 		tools.NewCreateTarget(),
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
+		// Read tools for the runtime-B in-process loop. The MCP chat-mode adapter
+		// skips read-access tools (AGENT-01), so these are invisible to claude/
+		// codex, which reach the equivalent MCP handlers instead.
+		tools.NewListSituations(),
+		tools.NewGetSituation(),
 	} {
 		if err := reg.Register(t); err != nil {
 			panic("tool registry: " + err.Error())
