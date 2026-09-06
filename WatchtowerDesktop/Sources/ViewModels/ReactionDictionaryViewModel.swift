@@ -14,7 +14,7 @@ package enum ReactionDictionaryTools {
         "create_track",
         "create_idea",
         "remind_me",
-        "brief_context",
+        "brief_context"
     ]
 }
 
