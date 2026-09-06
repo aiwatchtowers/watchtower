@@ -33,6 +33,7 @@ func ReadTools() []*Tool {
 		NewGetTranscript(),
 		NewListMessages(),
 		NewFindExperts(),
+		NewGetTaskContext(),
 	}
 }
 

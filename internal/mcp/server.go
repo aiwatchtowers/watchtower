@@ -11,10 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
-	"strconv"
-	"strings"
-	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -43,39 +39,6 @@ func listLimit(n int) int {
 		return maxListLimit
 	}
 	return n
-}
-
-// validateEnum returns an error message when value is not one of allowed.
-// An empty value means "no filter" and is always valid.
-func validateEnum(field, value string, allowed ...string) string {
-	if value == "" || slices.Contains(allowed, value) {
-		return ""
-	}
-	return fmt.Sprintf("invalid %s %q: must be one of %s", field, value, strings.Join(allowed, "|"))
-}
-
-// firstError returns the first non-empty message, or "".
-func firstError(msgs ...string) string {
-	for _, m := range msgs {
-		if m != "" {
-			return m
-		}
-	}
-	return ""
-}
-
-// dateBound validates a YYYY-MM-DD filter date and widens it to an ISO8601
-// bound for created_at comparison ("" passes through as "no filter"). Used by
-// the remaining list_messages handler; the migrated read tools carry their own
-// copy in internal/tools.
-func dateBound(date, field, timeSuffix string) (bound, errMsg string) {
-	if date == "" {
-		return "", ""
-	}
-	if _, err := time.Parse("2006-01-02", date); err != nil {
-		return "", "invalid " + field + " date " + strconv.Quote(date) + ": must be YYYY-MM-DD"
-	}
-	return date + timeSuffix, ""
 }
 
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
@@ -157,7 +120,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 		srv.registry = tools.NewReadRegistry(database)
 	}
 
-	registerTaskContext(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
 	// Read tools that have moved into the registry (list_situations/get_situation

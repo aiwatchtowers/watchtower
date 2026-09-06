@@ -1,18 +1,17 @@
-package mcp
+package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
-
-	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
 )
 
-// Per-section caps keep the dossier context-window-sized. A dossier that
-// blows the window is worse than a partial one: the agent silently loses the
-// tail, usually the recent material.
+// Per-section caps keep the dossier context-window-sized. A dossier that blows
+// the window is worse than a partial one: the agent silently loses the tail,
+// usually the recent material.
 const (
 	taskContextMaxComments = 30
 	taskContextMaxThreads  = 8
@@ -51,9 +50,9 @@ type taskMessage struct {
 	Permalink string `json:"permalink,omitempty"`
 }
 
-// taskThread is a linked Slack conversation. jira_slack_links names one
-// message; the value is the discussion around it, so the tool resolves the
-// message to its thread and returns the replies.
+// taskThread is a linked Slack conversation. jira_slack_links names one message;
+// the value is the discussion around it, so the tool resolves the message to its
+// thread and returns the replies.
 type taskThread struct {
 	ChannelID   string        `json:"channel_id"`
 	ChannelName string        `json:"channel,omitempty"`
@@ -76,8 +75,8 @@ type taskDecision struct {
 }
 
 // taskContext is the dossier. Every section but the issue is omitempty: a
-// section with nothing in it is absent, never an empty array, so the agent
-// can tell "nothing found" from "not looked for".
+// section with nothing in it is absent, never an empty array, so the agent can
+// tell "nothing found" from "not looked for".
 type taskContext struct {
 	Issue     taskIssue      `json:"issue"`
 	Comments  []taskComment  `json:"comments,omitempty"`
@@ -88,55 +87,59 @@ type taskContext struct {
 	Notes     []string       `json:"notes,omitempty"`
 }
 
-func registerTaskContext(s *mcpsdk.Server, database *db.DB) {
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
+// NewGetTaskContext assembles everything Watchtower knows about a Jira issue: the
+// ticket, its comments, the linked Slack threads, meetings that mentioned it,
+// recorded decisions, and the people involved.
+func NewGetTaskContext() *Tool {
+	return &Tool{
 		Name: "get_task_context",
 		Description: "Assemble everything Watchtower knows about a Jira issue: the ticket and its " +
 			"comments, the Slack threads where it was discussed, meetings that mentioned it, " +
 			"recorded decisions, and the people involved. Use before starting work on a ticket — " +
 			"it carries the context the ticket text does not.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getTaskContextArgs) (*mcpsdk.CallToolResult, any, error) {
-		key := strings.TrimSpace(args.Key)
-		if key == "" {
-			return errResult("key is required, e.g. PROJ-123"), nil, nil
-		}
+		InputSchema: mustSchema[getTaskContextArgs]("get_task_context"),
+		Access:      AccessRead,
+		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+			var args getTaskContextArgs
+			if err := json.Unmarshal(call.Args, &args); err != nil {
+				return nil, &ValidationError{Msg: "invalid arguments"}
+			}
+			key := strings.TrimSpace(args.Key)
+			if key == "" {
+				return nil, &ValidationError{Msg: "key is required, e.g. PROJ-123"}
+			}
 
-		issue, err := database.GetJiraIssueByKey(key)
-		if err != nil {
-			return errResult("loading issue: " + err.Error()), nil, nil
-		}
-		if issue == nil {
-			return errResult("no issue with key " + key), nil, nil
-		}
+			issue, err := d.GetJiraIssueByKey(key)
+			if err != nil {
+				return nil, fmt.Errorf("loading issue: %w", err)
+			}
+			if issue == nil {
+				return nil, fmt.Errorf("no issue with key %s", key)
+			}
 
-		out := taskContext{Issue: taskIssue{
-			Key:         issue.Key,
-			Summary:     issue.Summary,
-			Description: issue.DescriptionText,
-			Status:      issue.Status,
-			IssueType:   issue.IssueType,
-			Priority:    issue.Priority,
-			Assignee:    issue.AssigneeDisplayName,
-			Reporter:    issue.ReporterDisplayName,
-			SprintName:  issue.SprintName,
-			UpdatedAt:   issue.UpdatedAt,
-		}}
-		people := newPersonSet()
-		people.add(issue.AssigneeDisplayName)
-		people.add(issue.ReporterDisplayName)
+			out := taskContext{Issue: taskIssue{
+				Key: issue.Key, Summary: issue.Summary, Description: issue.DescriptionText,
+				Status: issue.Status, IssueType: issue.IssueType, Priority: issue.Priority,
+				Assignee: issue.AssigneeDisplayName, Reporter: issue.ReporterDisplayName,
+				SprintName: issue.SprintName, UpdatedAt: issue.UpdatedAt,
+			}}
+			people := newPersonSet()
+			people.add(issue.AssigneeDisplayName)
+			people.add(issue.ReporterDisplayName)
 
-		out.Comments, out.Notes = collectTaskComments(database, key, people, out.Notes)
-		out.Threads, out.Notes = collectTaskThreads(database, key, people, out.Notes)
-		out.Meetings, out.Notes = collectTaskMeetings(database, key, out.Notes)
-		out.Decisions, out.Notes = collectTaskDecisions(database, key, out.Notes)
-		out.People = people.list()
+			out.Comments, out.Notes = collectTaskComments(d, key, people, out.Notes)
+			out.Threads, out.Notes = collectTaskThreads(d, key, people, out.Notes)
+			out.Meetings, out.Notes = collectTaskMeetings(d, key, out.Notes)
+			out.Decisions, out.Notes = collectTaskDecisions(d, key, out.Notes)
+			out.People = people.list()
 
-		return jsonResult(out)
-	})
+			return out, nil
+		},
+	}
 }
 
-func collectTaskComments(database *db.DB, key string, people *personSet, notes []string) ([]taskComment, []string) {
-	rows, err := database.GetJiraCommentsByIssueKey(key, taskContextMaxComments)
+func collectTaskComments(d *db.DB, key string, people *personSet, notes []string) ([]taskComment, []string) {
+	rows, err := d.GetJiraCommentsByIssueKey(key, taskContextMaxComments)
 	if err != nil {
 		return nil, append(notes, "jira comments unavailable: "+err.Error())
 	}
@@ -151,8 +154,8 @@ func collectTaskComments(database *db.DB, key string, people *personSet, notes [
 	return out, notes
 }
 
-func collectTaskThreads(database *db.DB, key string, people *personSet, notes []string) ([]taskThread, []string) {
-	links, err := database.GetJiraSlackLinksByIssue(key)
+func collectTaskThreads(d *db.DB, key string, people *personSet, notes []string) ([]taskThread, []string) {
+	links, err := d.GetJiraSlackLinksByIssue(key)
 	if err != nil {
 		return nil, append(notes, "linked slack threads unavailable: "+err.Error())
 	}
@@ -167,14 +170,14 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 		if l.ChannelID == "" || l.MessageTS == "" {
 			continue
 		}
-		anchors, err := database.GetMessagesByTS(l.ChannelID, []string{l.MessageTS})
+		anchors, err := d.GetMessagesByTS(l.ChannelID, []string{l.MessageTS})
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("linked message unavailable for %s|%s: %v", l.ChannelID, l.MessageTS, err))
 			continue
 		}
 		if len(anchors) == 0 {
-			// Genuinely nothing to show — the linked message was never
-			// synced (or was since deleted). Not a failure, so no note.
+			// The linked message was never synced (or was since deleted). Not a
+			// failure, so no note.
 			continue
 		}
 		anchor := anchors[0]
@@ -189,7 +192,7 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 		seen[dedupeKey] = true
 
 		var thread taskThread
-		thread, notes = buildTaskThread(database, l.ChannelID, threadTS, anchor, people, notes)
+		thread, notes = buildTaskThread(d, l.ChannelID, threadTS, anchor, people, notes)
 		out = append(out, thread)
 	}
 	return out, notes
@@ -197,24 +200,20 @@ func collectTaskThreads(database *db.DB, key string, people *personSet, notes []
 
 // buildTaskThread renders one resolved anchor message into a taskThread: it
 // fetches the thread's replies, falls back to the anchor alone if that read
-// fails, caps the reply count (keeping the linked message plus the most
-// recent replies — see truncateThreadReplies — never the oldest ones,
-// which per the file header would silently drop the recent material a
-// reader most needs), resolves the channel name, and records every sender
-// in people.
-func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Message, people *personSet, notes []string) (taskThread, []string) {
-	// GetThreadReplies is parent-inclusive (its own doc comment, and its
-	// SQL matches ts = threadTS OR thread_ts = threadTS) and orders
-	// chronologically — so it already carries the anchor exactly once,
-	// in place. Prepending the anchor separately would duplicate it,
-	// out of order, at index 0.
-	msgs, err := database.GetThreadReplies(channelID, threadTS)
+// fails, caps the reply count (keeping the linked message plus the most recent
+// replies — never the oldest ones), resolves the channel name, and records every
+// sender in people.
+func buildTaskThread(d *db.DB, channelID, threadTS string, anchor db.Message, people *personSet, notes []string) (taskThread, []string) {
+	// GetThreadReplies is parent-inclusive (its SQL matches ts = threadTS OR
+	// thread_ts = threadTS) and orders chronologically — so it already carries
+	// the anchor exactly once, in place. Prepending the anchor separately would
+	// duplicate it, out of order, at index 0.
+	msgs, err := d.GetThreadReplies(channelID, threadTS)
 	if err != nil {
-		// Degrade, don't fabricate: a thread rendered with only its
-		// anchor message is indistinguishable from "nobody replied" —
-		// the note is what tells the caller this shape is incomplete,
-		// not authoritative. The anchor is the one message we already
-		// know exists, so it's still worth surfacing alone.
+		// Degrade, don't fabricate: a thread rendered with only its anchor is
+		// indistinguishable from "nobody replied" — the note is what tells the
+		// caller this shape is incomplete. The anchor is the one message we know
+		// exists, so it is still worth surfacing alone.
 		notes = append(notes, fmt.Sprintf("thread replies unavailable for %s|%s: %v", channelID, threadTS, err))
 		msgs = []db.Message{anchor}
 	}
@@ -227,11 +226,11 @@ func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Mess
 	}
 
 	thread := taskThread{ChannelID: channelID}
-	if ch, err := database.GetChannelByID(channelID); err == nil && ch != nil {
+	if ch, err := d.GetChannelByID(channelID); err == nil && ch != nil {
 		thread.ChannelName = ch.Name
 	}
 	for _, m := range msgs {
-		name, err := database.UserNameByID(m.UserID)
+		name, err := d.UserNameByID(m.UserID)
 		if err != nil || name == "" {
 			name = m.UserID
 		}
@@ -244,14 +243,12 @@ func buildTaskThread(database *db.DB, channelID, threadTS string, anchor db.Mess
 }
 
 // truncateThreadReplies keeps the linked (anchor) message plus the newest
-// maxKept-1 replies, in chronological order — never the oldest maxKept,
-// which would silently drop the recent material a reader needs most to see
-// what was actually decided. msgs must already be ordered ascending by time
-// (as GetThreadReplies returns them) and is assumed to contain a message
-// whose TS equals anchorTS (GetThreadReplies is parent-inclusive, so the
-// anchor is always one of its rows) — if that assumption ever breaks, this
-// falls back to just the newest maxKept. Returns the kept slice and how many
-// were dropped.
+// maxKept-1 replies, in chronological order — never the oldest maxKept, which
+// would silently drop the recent material a reader needs most. msgs must already
+// be ordered ascending by time and is assumed to contain a message whose TS
+// equals anchorTS (GetThreadReplies is parent-inclusive); if that assumption
+// breaks, this falls back to just the newest maxKept. Returns the kept slice and
+// how many were dropped.
 func truncateThreadReplies(msgs []db.Message, anchorTS string, maxKept int) (kept []db.Message, dropped int) {
 	if len(msgs) <= maxKept || maxKept <= 0 {
 		return msgs, 0
@@ -260,8 +257,7 @@ func truncateThreadReplies(msgs []db.Message, anchorTS string, maxKept int) (kep
 	recent := msgs[len(msgs)-recentCount:]
 	for _, m := range recent {
 		if m.TS == anchorTS {
-			// The anchor is already inside the recent window — no need to
-			// prepend it separately.
+			// The anchor is already inside the recent window.
 			return recent, len(msgs) - len(recent)
 		}
 	}
@@ -275,16 +271,14 @@ func truncateThreadReplies(msgs []db.Message, anchorTS string, maxKept int) (kep
 	return kept, len(msgs) - len(kept)
 }
 
-func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMeeting, []string) {
-	hits, err := database.SearchTranscripts(key, taskContextMaxMeetings)
+func collectTaskMeetings(d *db.DB, key string, notes []string) ([]taskMeeting, []string) {
+	hits, err := d.SearchTranscripts(key, taskContextMaxMeetings)
 	if err != nil {
 		return nil, append(notes, "meeting search unavailable: "+err.Error())
 	}
 	out := make([]taskMeeting, 0, len(hits))
 	for _, h := range hits {
-		out = append(out, taskMeeting{
-			TranscriptID: h.ID, Title: h.Title, CreatedAt: h.CreatedAt, Snippet: h.Snippet,
-		})
+		out = append(out, taskMeeting{TranscriptID: h.ID, Title: h.Title, CreatedAt: h.CreatedAt, Snippet: h.Snippet})
 	}
 	if len(out) == 0 {
 		return nil, notes
@@ -292,22 +286,18 @@ func collectTaskMeetings(database *db.DB, key string, notes []string) ([]taskMee
 	return out, notes
 }
 
-func collectTaskDecisions(database *db.DB, key string, notes []string) ([]taskDecision, []string) {
-	// idea_mentions stores a bare issue key as the ref for source='jira'
-	// (see how mentions are validated and written in the consolidate op
-	// handlers, internal/ideas/consolidate.go), and (source, ref) is
-	// indexed (migration 00051) — ListIdeasByMentionRef
-	// joins on it directly, so a decision is found regardless of how large
-	// the registry has grown.
-	ideas, err := database.ListIdeasByMentionRef("jira", key, taskContextMaxIdeas)
+func collectTaskDecisions(d *db.DB, key string, notes []string) ([]taskDecision, []string) {
+	// idea_mentions stores a bare issue key as the ref for source='jira', and
+	// (source, ref) is indexed (migration 00051) — ListIdeasByMentionRef joins
+	// on it directly, so a decision is found regardless of registry size.
+	ideas, err := d.ListIdeasByMentionRef("jira", key, taskContextMaxIdeas)
 	if err != nil {
 		return nil, append(notes, "registry unavailable: "+err.Error())
 	}
 	out := make([]taskDecision, 0, len(ideas))
 	for _, idea := range ideas {
 		out = append(out, taskDecision{
-			ID: idea.ID, Kind: idea.Kind, Title: idea.Title,
-			Essence: idea.Essence, Status: idea.Status,
+			ID: idea.ID, Kind: idea.Kind, Title: idea.Title, Essence: idea.Essence, Status: idea.Status,
 		})
 	}
 	if len(out) == 0 {

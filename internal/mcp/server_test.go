@@ -297,7 +297,3 @@ func TestListLimitClamp(t *testing.T) {
 		}
 	}
 }
-
-// contains is a shorthand used across the tool tests. (It lived in the old
-// situations_test.go, deleted when list_situations moved into the registry.)
-func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
