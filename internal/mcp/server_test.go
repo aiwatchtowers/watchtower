@@ -279,21 +279,3 @@ func TestNoToolMutatesDatabase(t *testing.T) {
 		}
 	}
 }
-
-// TestListLimitClamp: 0/negative falls back to the default, oversized requests
-// are capped so one tool call cannot dump an entire table into an LLM context.
-func TestListLimitClamp(t *testing.T) {
-	cases := []struct{ in, want int }{
-		{0, defaultListLimit},
-		{-5, defaultListLimit},
-		{10, 10},
-		{maxListLimit, maxListLimit},
-		{maxListLimit + 1, maxListLimit},
-		{100000, maxListLimit},
-	}
-	for _, c := range cases {
-		if got := listLimit(c.in); got != c.want {
-			t.Errorf("listLimit(%d) = %d, want %d", c.in, got, c.want)
-		}
-	}
-}

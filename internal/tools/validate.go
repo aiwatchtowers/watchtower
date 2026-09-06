@@ -6,7 +6,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
+
+// mustSchema builds the input schema for a read tool's args, panicking on the
+// impossible failure — a tool author's struct that jsonschema cannot describe is
+// a build-time bug, not a runtime condition.
+func mustSchema[T any](tool string) *jsonschema.Schema {
+	schema, err := jsonschema.For[T](nil)
+	if err != nil {
+		panic(tool + " schema: " + err.Error())
+	}
+	return schema
+}
 
 // validateEnum returns a model-facing *ValidationError when value is neither
 // empty nor one of allowed. Empty means "no filter" and is always valid. The

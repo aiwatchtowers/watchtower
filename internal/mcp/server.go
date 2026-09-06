@@ -21,25 +21,11 @@ import (
 // version is reported to MCP clients in the server handshake.
 const version = "0.1.0"
 
-// defaultListLimit applies to list_ tools when the caller left limit unset;
-// maxListLimit caps explicit requests, so a single tool call can never dump an
-// entire table into an LLM context window.
-const (
-	defaultListLimit = 50
-	maxListLimit     = 200
-)
-
-// listLimit applies defaultListLimit when the caller passed 0 (unbounded) and
-// clamps oversized requests to maxListLimit.
-func listLimit(n int) int {
-	switch {
-	case n <= 0:
-		return defaultListLimit
-	case n > maxListLimit:
-		return maxListLimit
-	}
-	return n
-}
+// maxListLimit caps a memory tool's explicit request so a single call can never
+// dump an entire table into an LLM context window. (The migrated read tools
+// carry their own clamp in internal/tools/limit.go; only memory.go still uses
+// this one.)
+const maxListLimit = 200
 
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
@@ -64,10 +50,11 @@ type Server struct {
 	// load_skill tool then reports skills as unavailable.
 	skillsDir string
 
-	// registry sources the assistant's tools. Both modes set it: dev mode
-	// (WithRegistryReads) mounts only its read tools; chat mode (WithRegistry)
-	// also mounts the write tools + get_action and stamps proposals with the
-	// binding. mountWrites is the switch between the two — false on the dev
+	// registry sources the assistant's tools. Both modes have one: dev mode
+	// passes none, so NewServer builds a read-only registry (NewReadRegistry) and
+	// leaves mountWrites false — only read tools mount; chat mode (WithRegistry)
+	// sets it with the write tools + get_action and mountWrites true, stamping
+	// proposals with the binding. mountWrites is the switch — false on the dev
 	// surface, so it never sees a write tool (AGENT-02).
 	registry    *tools.Registry
 	binding     tools.Binding
@@ -122,10 +109,10 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
-	// Read tools that have moved into the registry (list_situations/get_situation
-	// so far) mount from here instead of a per-domain register* handler; the
-	// registry is the single source both server modes and the runtime-B loop
-	// share. mountWrites gates the write tools + get_action to chat mode.
+	// Every pure-db read tool now lives in the registry (tools.ReadTools) and
+	// mounts from here instead of a per-domain register* handler — the registry
+	// is the single source both server modes and the runtime-B loop share.
+	// mountWrites gates the write tools + get_action to chat mode.
 	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites)
 
 	return srv

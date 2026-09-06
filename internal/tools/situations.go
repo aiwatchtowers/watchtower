@@ -6,10 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
-	"time"
-
-	"github.com/google/jsonschema-go/jsonschema"
 
 	"watchtower/internal/db"
 )
@@ -21,7 +17,7 @@ var situationStatuses = []string{"open", "done", "dismissed", "converted", "stal
 type listSituationsArgs struct {
 	Status string `json:"status,omitempty" jsonschema:"filter by status: open|done|dismissed|converted|stale|snoozed (default open)"`
 	Since  string `json:"since,omitempty" jsonschema:"only situations with a signal on/after this date (YYYY-MM-DD)"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"max results, 0 = default 50"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 }
 
 type getSituationArgs struct {
@@ -70,35 +66,29 @@ func viewOf(s *db.DashboardSituation) situationView {
 // thin adapter over db.ListSituations, registered for the runtime-B tool loop
 // (the MCP list_situations handler stays as it is until the full migration).
 func NewListSituations() *Tool {
-	schema, err := jsonschema.For[listSituationsArgs](nil)
-	if err != nil {
-		panic("list_situations schema: " + err.Error())
-	}
 	return &Tool{
 		Name: "list_situations",
 		Description: "List the assistant's situations — clustered stories from Slack, Jira, mail and " +
 			"calendar that need the owner's attention. Use to answer 'what is going on' or 'what changed'.",
-		InputSchema: schema,
+		InputSchema: mustSchema[listSituationsArgs]("list_situations"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listSituationsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
+			// An unknown status must be a model-facing error, not a silent
+			// empty match. Empty is valid and defaults to open below.
+			if err := validateEnum("status", a.Status, situationStatuses...); err != nil {
+				return nil, err
+			}
 			status := a.Status
 			if status == "" {
 				status = "open"
-			} else if !slices.Contains(situationStatuses, status) {
-				// Without this an unknown status silently matches no rows; the model
-				// must learn it passed a bad value, not get an empty list.
-				return nil, &ValidationError{Msg: "status must be one of: open, done, dismissed, converted, stale, snoozed"}
 			}
-			var since string
-			if a.Since != "" {
-				if _, err := time.Parse("2006-01-02", a.Since); err != nil {
-					return nil, &ValidationError{Msg: `since must be a date in YYYY-MM-DD form`}
-				}
-				since = a.Since + "T00:00:00Z"
+			since, err := dateBound(a.Since, "since", "T00:00:00Z")
+			if err != nil {
+				return nil, err
 			}
 			situations, err := d.ListSituations(db.SituationFilter{Status: status, SinceISO: since, Limit: listLimit(a.Limit)})
 			if err != nil {
@@ -116,15 +106,11 @@ func NewListSituations() *Tool {
 // NewGetSituation is the read tool fetching one situation with its member
 // signals — a thin adapter over db.GetSituation + db.ListSituationSignals.
 func NewGetSituation() *Tool {
-	schema, err := jsonschema.For[getSituationArgs](nil)
-	if err != nil {
-		panic("get_situation schema: " + err.Error())
-	}
 	return &Tool{
 		Name: "get_situation",
 		Description: "Fetch one situation by id: the assistant's card (why it matters, summary, chronology) " +
 			"plus the member messages it was built from.",
-		InputSchema: schema,
+		InputSchema: mustSchema[getSituationArgs]("get_situation"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getSituationArgs

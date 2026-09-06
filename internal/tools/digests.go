@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
-
 	"watchtower/internal/db"
 )
 
@@ -30,17 +28,6 @@ func parseSince(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse(time.RFC3339, s)
-}
-
-// mustSchema builds the input schema for a read tool's args, panicking on the
-// impossible failure — a tool author's struct that jsonschema cannot describe is
-// a build-time bug, not a runtime condition.
-func mustSchema[T any](tool string) *jsonschema.Schema {
-	schema, err := jsonschema.For[T](nil)
-	if err != nil {
-		panic(tool + " schema: " + err.Error())
-	}
-	return schema
 }
 
 // NewGetTodayBriefing returns today's daily briefing (null when it has not been

@@ -77,6 +77,41 @@ func TestListTranscripts_EventIDFilter(t *testing.T) {
 	assert.NotContains(t, got, "Hallway chat")
 }
 
+// A plain listing is newest-first.
+func TestListTranscripts_NewestFirst(t *testing.T) {
+	d, _ := seedTranscriptsDB(t)
+	var rows []transcriptRow
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, transcriptsRegistry(t, d), "list_transcripts", `{}`)), &rows))
+	require.Len(t, rows, 3)
+	assert.Equal(t, "Hallway chat", rows[0].Title, "2026-07-10, newest")
+	assert.Equal(t, "Roadmap Sync recording", rows[1].Title, "2026-07-05")
+	assert.Equal(t, "Ad-hoc brainstorm", rows[2].Title, "2026-07-01, oldest")
+}
+
+// A from/to window includes only transcripts recorded inside it.
+func TestListTranscripts_DateFilter(t *testing.T) {
+	d, _ := seedTranscriptsDB(t)
+	got := callReadString(t, transcriptsRegistry(t, d), "list_transcripts", `{"from":"2026-07-03","to":"2026-07-07"}`)
+	assert.Contains(t, got, "Roadmap Sync recording")
+	assert.NotContains(t, got, "Ad-hoc brainstorm", "07-01 is before the window")
+	assert.NotContains(t, got, "Hallway chat", "07-10 is after the window")
+}
+
+// A query that matches nothing returns an empty JSON array, not null.
+func TestListTranscripts_QueryNoMatchReturnsEmpty(t *testing.T) {
+	d, _ := seedTranscriptsDB(t)
+	got := callReadString(t, transcriptsRegistry(t, d), "list_transcripts", `{"query":"zzznomatchzzz"}`)
+	assert.Equal(t, "[]", got)
+}
+
+// A query hit on an event-linked transcript resolves the linked event's title.
+func TestListTranscripts_QueryResolvesEventTitle(t *testing.T) {
+	d, _ := seedTranscriptsDB(t)
+	got := callReadString(t, transcriptsRegistry(t, d), "list_transcripts", `{"query":"roadmap"}`)
+	assert.Contains(t, got, "Roadmap Sync recording")
+	assert.Contains(t, got, `"event_title":"Roadmap Sync"`)
+}
+
 func TestListTranscripts_BadDateErrors(t *testing.T) {
 	d, _ := seedTranscriptsDB(t)
 	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "list_transcripts", json.RawMessage(`{"from":"July"}`))

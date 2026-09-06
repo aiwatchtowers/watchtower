@@ -15,8 +15,9 @@ import (
 // WithRegistry turns the server into the assistant's chat-mode server: the
 // registry's tools visible on binding.Surface are mounted — reads dispatch
 // through CallRead, writes become proposals stamped with binding — and
-// get_action is registered. The developer-surface server uses WithRegistryReads
-// instead (AGENT-02): no write tools, no get_action.
+// get_action is registered. The developer-surface server passes no registry, so
+// NewServer builds a read-only one (tools.NewReadRegistry) with mountWrites
+// false: no write tools, no get_action (AGENT-02).
 func WithRegistry(reg *tools.Registry, binding tools.Binding) ServerOption {
 	return func(srv *Server) {
 		srv.registry = reg

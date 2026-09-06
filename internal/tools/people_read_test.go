@@ -90,6 +90,37 @@ func TestListPeople_EmptyIsArray(t *testing.T) {
 	assert.Equal(t, "[]", got)
 }
 
+// list_people threads the limit through: limit=1 returns exactly one row.
+func TestListPeople_Limit(t *testing.T) {
+	d := openDB(t)
+	seedPersonCard(t, d, "U1", "alice", "Alice", "one")
+	seedPersonCard(t, d, "U2", "bob", "Bob", "two")
+
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, peopleRegistry(t, d), "list_people", `{"limit":1}`)), &rows))
+	assert.Len(t, rows, 1)
+}
+
+// An empty calendar is a JSON array, not an error.
+func TestListUpcomingEvents_EmptyIsArray(t *testing.T) {
+	got := callReadString(t, peopleRegistry(t, openDB(t)), "list_upcoming_events", `{}`)
+	assert.Equal(t, "[]", got)
+}
+
+// list_upcoming_events threads the limit through: two events in-window, limit=1
+// returns one row.
+func TestListUpcomingEvents_Limit(t *testing.T) {
+	d := openDB(t)
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal1", Name: "Primary"}))
+	now := time.Now().UTC()
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{ID: "e1", CalendarID: "cal1", Title: "One", StartTime: now.Add(time.Hour).Format(time.RFC3339), EndTime: now.Add(2 * time.Hour).Format(time.RFC3339)}))
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{ID: "e2", CalendarID: "cal1", Title: "Two", StartTime: now.Add(3 * time.Hour).Format(time.RFC3339), EndTime: now.Add(4 * time.Hour).Format(time.RFC3339)}))
+
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, peopleRegistry(t, d), "list_upcoming_events", `{"limit":1}`)), &rows))
+	assert.Len(t, rows, 1)
+}
+
 // The 48h window includes an event 1h out and excludes one 100h out.
 func TestListUpcomingEvents_Window(t *testing.T) {
 	d := openDB(t)
