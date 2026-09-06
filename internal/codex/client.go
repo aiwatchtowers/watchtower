@@ -143,7 +143,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
 			// drops the pre-tool preamble and starts the answer fresh from what
-			// follows the tool (the ai.Client tool_use precedent).
+			// follows the tool (the ai.Client tool_use precedent). Codex wraps one
+			// item across item.started/updated/completed, so a single tool call
+			// fires a boundary per stage — deliberately unfiltered by stage, since
+			// it is idempotent: each extra boundary just re-clears an
+			// already-empty accumulator on the consumer side.
 			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
 				select {
 				case textCh <- ai.StreamChunk{ToolBoundary: true}:
