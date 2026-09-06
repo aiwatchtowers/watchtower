@@ -653,3 +653,161 @@ func TestHandleErrorNilError(t *testing.T) {
 	// Should not panic on nil error
 	c.handleError(Tier2, nil)
 }
+
+func TestGetChannelReadCursor(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"channel": map[string]any{
+				"id":        "C001",
+				"name":      "general",
+				"last_read": "1700000009.000100",
+			},
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	cursor, err := c.GetChannelReadCursor(context.Background(), "C001")
+	require.NoError(t, err)
+	assert.Equal(t, "1700000009.000100", cursor)
+}
+
+func TestGetChannelReadCursorError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "channel_not_found",
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	cursor, err := c.GetChannelReadCursor(context.Background(), "CBAD")
+	assert.Error(t, err)
+	assert.Empty(t, cursor)
+	assert.Contains(t, err.Error(), "channel_not_found")
+}
+
+func TestGetMessageReactions(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/reactions.get", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"type":    "message",
+			"channel": "C001",
+			"message": map[string]any{
+				"type": "message",
+				"ts":   "1700000001.000000",
+				"reactions": []map[string]any{
+					{"name": "thumbsup", "count": 2, "users": []string{"U001", "U002"}},
+					{"name": "eyes", "count": 1, "users": []string{"U003"}},
+				},
+			},
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	reactions, err := c.GetMessageReactions(context.Background(), "C001", "1700000001.000000")
+	require.NoError(t, err)
+	require.Len(t, reactions, 2)
+	assert.Equal(t, "thumbsup", reactions[0].Name)
+	assert.Equal(t, 2, reactions[0].Count)
+	assert.Equal(t, []string{"U001", "U002"}, reactions[0].Users)
+	assert.Equal(t, "eyes", reactions[1].Name)
+}
+
+func TestGetMessageReactionsError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/reactions.get", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "message_not_found",
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	reactions, err := c.GetMessageReactions(context.Background(), "C001", "1700000001.000000")
+	assert.Error(t, err)
+	assert.Nil(t, reactions)
+	assert.Contains(t, err.Error(), "message_not_found")
+}
+
+func TestListUserReactions(t *testing.T) {
+	callCount := atomic.Int32{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/reactions.list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		page := callCount.Add(1)
+
+		var items []map[string]any
+		if page == 1 {
+			items = []map[string]any{
+				{
+					"type":    "message",
+					"channel": "C001",
+					"message": map[string]any{
+						"type":      "message",
+						"ts":        "1700000001.000000",
+						"reactions": []map[string]any{{"name": "thumbsup", "count": 1, "users": []string{"U001"}}},
+					},
+				},
+			}
+		} else {
+			items = []map[string]any{
+				{
+					"type":    "message",
+					"channel": "C002",
+					"message": map[string]any{
+						"type":      "message",
+						"ts":        "1700000002.000000",
+						"reactions": []map[string]any{{"name": "eyes", "count": 1, "users": []string{"U001"}}},
+					},
+				},
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":    true,
+			"items": items,
+			"paging": map[string]any{
+				"count": 100,
+				"total": 2,
+				"page":  int(page),
+				"pages": 2,
+			},
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	items, err := c.ListUserReactions(context.Background(), "U001")
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	assert.Equal(t, "C001", items[0].Channel)
+	assert.Equal(t, "1700000001.000000", items[0].Message.Timestamp)
+	require.Len(t, items[0].Reactions, 1)
+	assert.Equal(t, "thumbsup", items[0].Reactions[0].Name)
+	assert.Equal(t, "C002", items[1].Channel)
+	assert.Equal(t, int32(2), callCount.Load())
+}
+
+func TestListUserReactionsError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/reactions.list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":    false,
+			"error": "user_not_found",
+		})
+	})
+
+	c := newUnlimitedTestClient(t, mux)
+	items, err := c.ListUserReactions(context.Background(), "UBAD")
+	assert.Error(t, err)
+	assert.Nil(t, items)
+	assert.Contains(t, err.Error(), "user_not_found")
+}

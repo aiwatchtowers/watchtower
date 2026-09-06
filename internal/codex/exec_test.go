@@ -125,6 +125,45 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 	}
 }
 
+// A tool call mid-turn must emit a boundary chunk, and the "let me check first"
+// preamble streamed before it must not glue onto the post-tool answer — the
+// codex mirror of ai.Client's TestQuery_ToolUseSignalsBoundaryAndDropsPreamble.
+// The tool item is streamed across its item.started/completed lifecycle to pin
+// that the per-stage boundary fire stays idempotent.
+func TestQuery_ToolBoundaryDropsPreamble(t *testing.T) {
+	stdout := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Let me check first."}}`,
+		`{"type":"item.started","item":{"type":"mcp_tool_call","id":"t1"}}`,
+		`{"type":"item.completed","item":{"type":"mcp_tool_call","id":"t1"}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Here is the answer."}}`,
+	}, "\n")
+	bin := fakeCodexScript(t, stdout, "", 0)
+
+	c := NewClient("gpt-5.4", "", bin)
+	textCh, errCh, _ := c.Query(context.Background(), "", "user", "")
+
+	// Replay the consumer's reset-on-boundary contract (cmd/ai.go → desktop).
+	var visible strings.Builder
+	boundaries := 0
+	for chunk := range textCh {
+		if chunk.ToolBoundary {
+			boundaries++
+			visible.Reset()
+			continue
+		}
+		visible.WriteString(chunk.Text)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("Query error: %v", err)
+	}
+	if boundaries == 0 {
+		t.Fatal("a mcp_tool_call item must emit at least one boundary chunk")
+	}
+	if got := visible.String(); got != "Here is the answer." {
+		t.Errorf("pre-tool preamble not dropped; got %q", got)
+	}
+}
+
 func TestQuery_ErrorEvent(t *testing.T) {
 	stdout := `{"type":"error","error":{"message":"rate limited"}}`
 	bin := fakeCodexScript(t, stdout, "", 0)

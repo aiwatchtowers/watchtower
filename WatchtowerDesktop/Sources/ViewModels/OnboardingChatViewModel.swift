@@ -446,8 +446,10 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): contextText += chunk
                 case .turnComplete(let text): contextText = text
-                // Internal context generation has no tools, so no reset arrives.
-                case .reset, .sessionID, .done: break
+                // A tool call (e.g. Codex's built-in command_execution) drops the
+                // pre-tool preamble so it never glues onto the generated context.
+                case .reset: contextText = ""
+                case .sessionID, .done: break
                 }
             }
         } catch {
@@ -688,8 +690,10 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): text += chunk
                 case .turnComplete(let full): text = full
-                // Internal context generation has no tools, so no reset arrives.
-                case .reset, .sessionID, .done: break
+                // A tool call (e.g. Codex's built-in command_execution) drops the
+                // pre-tool preamble so it never corrupts the extracted JSON.
+                case .reset: text = ""
+                case .sessionID, .done: break
                 }
             }
         } catch {
