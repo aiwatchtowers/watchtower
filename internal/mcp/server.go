@@ -85,11 +85,14 @@ type Server struct {
 	// load_skill tool then reports skills as unavailable.
 	skillsDir string
 
-	// registry + binding are set only by the chat-mode server (cmd/mcp.go
-	// --chat): the registry's write tools and get_action are mounted, and
-	// every proposal is stamped with the binding. nil in dev mode — AGENT-02.
-	registry *tools.Registry
-	binding  tools.Binding
+	// registry sources the assistant's tools. Both modes set it: dev mode
+	// (WithRegistryReads) mounts only its read tools; chat mode (WithRegistry)
+	// also mounts the write tools + get_action and stamps proposals with the
+	// binding. mountWrites is the switch between the two — false on the dev
+	// surface, so it never sees a write tool (AGENT-02).
+	registry    *tools.Registry
+	binding     tools.Binding
+	mountWrites bool
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -130,6 +133,13 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	for _, opt := range opts {
 		opt(srv)
 	}
+	// Dev mode supplies no registry: build the read-only one so the migrated
+	// read tools mount. Chat mode's WithRegistry already set a registry (with
+	// write tools) and mountWrites=true. Either way the migrated reads dispatch
+	// through the registry, not a per-domain handler.
+	if srv.registry == nil {
+		srv.registry = tools.NewReadRegistry(database)
+	}
 
 	registerTargets(srv.s, database)
 	registerDigests(srv.s, database)
@@ -138,14 +148,15 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerMessages(srv.s, database)
 	registerTranscripts(srv.s, database)
 	registerIdeas(srv.s, database)
-	registerSituations(srv.s, database)
 	registerTaskContext(srv.s, database)
 	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
-	if srv.registry != nil {
-		registerRegistry(srv.s, database, srv.registry, srv.binding)
-	}
+	// Read tools that have moved into the registry (list_situations/get_situation
+	// so far) mount from here instead of a per-domain register* handler; the
+	// registry is the single source both server modes and the runtime-B loop
+	// share. mountWrites gates the write tools + get_action to chat mode.
+	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites)
 
 	return srv
 }

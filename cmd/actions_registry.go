@@ -30,15 +30,15 @@ func jiraClientFactory(cfg *config.Config) tools.JiraClientFactory {
 // about what exists.
 func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	reg := tools.New(database)
-	for _, t := range []*tools.Tool{
+	regTools := []*tools.Tool{
 		tools.NewCreateTarget(),
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
-		// Read tools for the runtime-B in-process loop. The MCP chat-mode adapter
-		// skips read-access tools (AGENT-01), so these are invisible to claude/
-		// codex, which reach the equivalent MCP handlers instead.
-		tools.NewListSituations(),
-		tools.NewGetSituation(),
-	} {
+	}
+	// Every migrated read tool. Chat mode dispatches these through the registry's
+	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts
+	// the same list via tools.NewReadRegistry.
+	regTools = append(regTools, tools.ReadTools()...)
+	for _, t := range regTools {
 		if err := reg.Register(t); err != nil {
 			panic("tool registry: " + err.Error())
 		}
