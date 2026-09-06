@@ -21,6 +21,8 @@ func ReadTools() []*Tool {
 		NewGetIdea(),
 		NewListTargets(),
 		NewGetTarget(),
+		NewListJiraIssues(),
+		NewGetJiraIssue(),
 	}
 }
 

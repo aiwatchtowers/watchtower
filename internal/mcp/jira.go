@@ -8,51 +8,11 @@ import (
 	"watchtower/internal/db"
 )
 
-type listJiraIssuesArgs struct {
-	Project  string `json:"project,omitempty" jsonschema:"Jira project key, e.g. ABC"`
-	Status   string `json:"status,omitempty" jsonschema:"exact status name, e.g. 'In Progress'"`
-	Assignee string `json:"assignee,omitempty" jsonschema:"assignee Jira account id"`
-	Limit    int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
-}
-
-type getJiraIssueArgs struct {
-	Key string `json:"key" jsonschema:"Jira issue key, e.g. ABC-123"`
-}
-
+// registerJira mounts list_jira_projects — the last Jira read still living in
+// internal/mcp. list_jira_issues/get_jira_issue moved into the registry
+// (internal/tools/jira_read.go); this one is HEAVY (raw aggregation SQL + the
+// jiraProjectsView assembly below) and migrates in the heavy phase.
 func registerJira(s *mcpsdk.Server, database *db.DB) {
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_jira_issues",
-		Description: "List synced Jira issues, optionally filtered by project, status, or assignee account id.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args listJiraIssuesArgs) (*mcpsdk.CallToolResult, any, error) {
-		issues, err := database.GetJiraIssues(db.JiraIssueFilter{
-			ProjectKey:        args.Project,
-			Status:            args.Status,
-			AssigneeAccountID: args.Assignee,
-			Limit:             listLimit(args.Limit),
-		})
-		if err != nil {
-			return errResult("listing jira issues: " + err.Error()), nil, nil
-		}
-		return jsonListResult(issues)
-	})
-
-	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "get_jira_issue",
-		Description: "Get a single Jira issue by key, including full fields.",
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getJiraIssueArgs) (*mcpsdk.CallToolResult, any, error) {
-		issue, err := database.GetJiraIssueByKey(args.Key)
-		if err != nil {
-			return errResult("getting jira issue: " + err.Error()), nil, nil
-		}
-		// GetJiraIssueByKey does not filter soft-deleted rows (unlike
-		// GetJiraIssues); treat a tombstoned issue as not-found so the read
-		// model stays consistent across the two tools.
-		if issue == nil || issue.IsDeleted {
-			return errResult("no jira issue with key " + args.Key), nil, nil
-		}
-		return jsonResult(issue)
-	})
-
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name: "list_jira_projects",
 		Description: "List the connected Jira accounts and their synced projects, with the issue types seen in " +
