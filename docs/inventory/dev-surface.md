@@ -123,15 +123,15 @@ internal/tools/{taskcontext,experts,situations}.go` (expected: no match).
 Every candidate carries an `Evidence []expertEvidence` list where each entry
 has a `kind`, a `count`, and a resolvable `ref` (a Slack `channel|ts` pair, a
 Jira key, or an email) — never a bare score with no way to check it. The
-response ships `expertWeights` (`internal/mcp/experts.go`'s package-level
+response ships `expertWeights` (`internal/tools/experts.go`'s package-level
 map: `messages: 1.0`, `thread: 1.5`, `jira: 2.0`, `code: 2.5`) so the caller
 can see exactly what produced the ranking, not just trust it. An unmatched
 git author passed via the `emails` argument is returned in
 `UnmatchedEmails`, never silently dropped from the response.
 
 **Test guards:**
-- `internal/mcp/experts_test.go::TestFindExpertsRanksByEvidenceAndAlwaysCitesIt`
-- `internal/mcp/experts_test.go::TestFindExpertsReportsUnmatchedEmails`
+- `internal/tools/experts_test.go::TestFindExperts_RanksByEvidenceAndCitesIt`
+- `internal/tools/experts_test.go::TestFindExperts_ReportsUnmatchedEmails`
 
 **Locked since:** 2026-08-09
 
