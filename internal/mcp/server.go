@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -60,6 +62,20 @@ func firstError(msgs ...string) string {
 		}
 	}
 	return ""
+}
+
+// dateBound validates a YYYY-MM-DD filter date and widens it to an ISO8601
+// bound for created_at comparison ("" passes through as "no filter"). Used by
+// the remaining list_messages handler; the migrated read tools carry their own
+// copy in internal/tools.
+func dateBound(date, field, timeSuffix string) (bound, errMsg string) {
+	if date == "" {
+		return "", ""
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return "", "invalid " + field + " date " + strconv.Quote(date) + ": must be YYYY-MM-DD"
+	}
+	return date + timeSuffix, ""
 }
 
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
@@ -142,7 +158,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	}
 
 	registerMessages(srv.s, database)
-	registerTranscripts(srv.s, database)
 	registerTaskContext(srv.s, database)
 	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
