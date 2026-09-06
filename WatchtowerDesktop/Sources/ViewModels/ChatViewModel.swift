@@ -170,14 +170,25 @@ final class ChatViewModel {
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
-                    guard let self else { break }
-                    self.applyStreamEvent(
+                    // State mutation is self-independent so a view model
+                    // deallocated mid-stream still drains to completion and the
+                    // persist tail saves the whole reply; only the UI-facing
+                    // effects are gated on a live self.
+                    let effect = Self.applyStreamEvent(
                         event,
                         fullText: &fullText,
                         sawTurnComplete: &sawTurnComplete,
-                        newSessionID: &newSessionID,
-                        conversationID: capturedConvID
+                        newSessionID: &newSessionID
                     )
+                    if let visible = effect.visibleText {
+                        self?.updateLastMessage(visible)
+                    }
+                    if let sid = effect.sessionID {
+                        self?.sessionID = sid
+                        if let convID = capturedConvID {
+                            self?.onConversationUpdated?(convID, nil, sid)
+                        }
+                    }
                 }
             } catch {
                 if !Task.isCancelled {
@@ -194,16 +205,28 @@ final class ChatViewModel {
         }
     }
 
-    /// Applies one streamed event to the in-flight turn's local state. Shared by
-    /// the send() and welcome-message streams (identical handling). A `.reset`
-    /// drops the pre-tool preamble so it never glues onto the post-tool answer.
-    private func applyStreamEvent(
+    /// A side effect the stream loop applies to `self` only while the view model
+    /// is still alive (updating the UI, publishing the session id). Kept separate
+    /// from the state mutation below so those effects can be skipped without
+    /// stopping the loop.
+    struct StreamEffect: Equatable {
+        var visibleText: String?
+        var sessionID: String?
+    }
+
+    /// Folds one streamed event into the turn's local state and returns the side
+    /// effects for a live view model. Static/pure so a view model deallocated
+    /// mid-stream never truncates the turn: the loop keeps draining, `fullText`/
+    /// `newSessionID` keep accumulating, and the static persist tail still saves
+    /// the whole reply (the surviving-navigation contract). A `.reset` drops the
+    /// pre-tool preamble so it never glues onto the post-tool answer. Shared by
+    /// the send() and welcome-message streams (identical handling).
+    nonisolated static func applyStreamEvent(
         _ event: StreamEvent,
         fullText: inout String,
         sawTurnComplete: inout Bool,
-        newSessionID: inout String?,
-        conversationID: Int64?
-    ) {
+        newSessionID: inout String?
+    ) -> StreamEffect {
         switch event {
         case .text(let chunk):
             if sawTurnComplete {
@@ -212,23 +235,20 @@ final class ChatViewModel {
             } else {
                 fullText += chunk
             }
-            updateLastMessage(fullText)
+            return StreamEffect(visibleText: fullText)
         case .turnComplete(let text):
             fullText = text
             sawTurnComplete = true
-            updateLastMessage(fullText)
+            return StreamEffect(visibleText: fullText)
         case .reset:
             fullText = ""
             sawTurnComplete = false
-            updateLastMessage("")
+            return StreamEffect(visibleText: "")
         case .sessionID(let sid):
             newSessionID = sid
-            sessionID = sid
-            if let convID = conversationID {
-                onConversationUpdated?(convID, nil, sid)
-            }
+            return StreamEffect(sessionID: sid)
         case .done:
-            break
+            return StreamEffect()
         }
     }
 
@@ -630,14 +650,25 @@ final class ChatViewModel {
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
-                    guard let self else { break }
-                    self.applyStreamEvent(
+                    // State mutation is self-independent so a view model
+                    // deallocated mid-stream still drains to completion and the
+                    // persist tail saves the whole reply; only the UI-facing
+                    // effects are gated on a live self.
+                    let effect = Self.applyStreamEvent(
                         event,
                         fullText: &fullText,
                         sawTurnComplete: &sawTurnComplete,
-                        newSessionID: &newSessionID,
-                        conversationID: capturedConvID
+                        newSessionID: &newSessionID
                     )
+                    if let visible = effect.visibleText {
+                        self?.updateLastMessage(visible)
+                    }
+                    if let sid = effect.sessionID {
+                        self?.sessionID = sid
+                        if let convID = capturedConvID {
+                            self?.onConversationUpdated?(convID, nil, sid)
+                        }
+                    }
                 }
             } catch {
                 if !Task.isCancelled {
