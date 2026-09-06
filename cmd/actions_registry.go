@@ -33,6 +33,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewCreateTarget(),
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
 		tools.NewCreateTrack(),
+		tools.NewCreateIdea(),
 	} {
 		if err := reg.Register(t); err != nil {
 			panic("tool registry: " + err.Error())
