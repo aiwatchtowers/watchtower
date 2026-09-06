@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,4 +64,28 @@ func TestGetJiraIssue_TombstoneIsNotFound(t *testing.T) {
 	_, err := jiraReadRegistry(t, d).CallRead(context.Background(), "get_jira_issue", json.RawMessage(`{"key":"ABC-9"}`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no jira issue with key ABC-9")
+}
+
+// list_jira_projects groups synced projects and their issue types per account.
+func TestListJiraProjects_GroupsByAccount(t *testing.T) {
+	d := openDB(t)
+	acct, err := d.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, 'ABC', 'x', 2)`, acct)
+	require.NoError(t, err)
+	for _, it := range []string{"Task", "Bug", "Task"} {
+		require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
+			AccountID: acct, Key: "ABC-" + it + "1", ID: "ABC-" + it + "1", ProjectKey: "ABC", Summary: "s", IssueType: it,
+			Status: "To Do", StatusCategory: "new", Labels: "[]", Components: "[]", FixVersions: "[]",
+			CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", SyncedAt: "2026-01-01T00:00:00Z",
+		}))
+	}
+	reg := New(d)
+	require.NoError(t, reg.Register(NewListJiraProjects()))
+
+	got := callReadString(t, reg, "list_jira_projects", `{}`)
+	assert.Contains(t, got, `"account_id":`+strconv.FormatInt(acct, 10))
+	assert.Contains(t, got, `"project_key":"ABC"`)
+	assert.Contains(t, got, `"Bug"`)
+	assert.Contains(t, got, `"Task"`)
 }

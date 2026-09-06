@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -270,32 +269,5 @@ func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 	res, _ = same.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 	if res.IsError {
 		t.Fatalf("a binding matching the row's conversation must see it: %s", textContent(t, res))
-	}
-}
-
-func TestListJiraProjects_GroupsByAccount(t *testing.T) {
-	database := seedDB(t)
-	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, 'ABC', 'x', 2)`, acct); err != nil {
-		t.Fatal(err)
-	}
-	for _, it := range []string{"Task", "Bug", "Task"} {
-		key := "ABC-" + it + "1"
-		if err := database.UpsertJiraIssue(db.JiraIssue{AccountID: acct, Key: key, ProjectKey: "ABC", Summary: "s", IssueType: it,
-			Status: "To Do", StatusCategory: "new", Labels: "[]", Components: "[]", FixVersions: "[]",
-			CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cs := newTestSession(t, database)
-	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_jira_projects"})
-	out := textContent(t, res)
-	for _, want := range []string{`"account_id": ` + strconv.FormatInt(acct, 10), `"project_key": "ABC"`, `"Bug"`, `"Task"`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("list_jira_projects output missing %s:\n%s", want, out)
-		}
 	}
 }
