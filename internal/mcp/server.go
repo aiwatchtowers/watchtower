@@ -141,7 +141,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 		srv.registry = tools.NewReadRegistry(database)
 	}
 
-	registerPeople(srv.s, database)
 	registerMessages(srv.s, database)
 	registerTranscripts(srv.s, database)
 	registerTaskContext(srv.s, database)

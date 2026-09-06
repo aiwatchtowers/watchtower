@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -19,6 +21,10 @@ type listTracksArgs struct {
 	Priority  string `json:"priority,omitempty" jsonschema:"filter by priority: high|medium|low"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
+}
+
+type getPersonArgs struct {
+	Query string `json:"query" jsonschema:"Slack user id (U…) or a person's name (username, display or real name, partial match)"`
 }
 
 type getTrackArgs struct {
@@ -50,6 +56,59 @@ func NewListPeople() *Tool {
 				cards = []db.PeopleCard{}
 			}
 			return cards, nil
+		},
+	}
+}
+
+// NewGetPerson fetches the latest people card for a person by Slack user id or
+// name: an exact user-id hit first, then a name search with ambiguity handling
+// (LLM clients rarely know Slack ids).
+func NewGetPerson() *Tool {
+	return &Tool{
+		Name:        "get_person",
+		Description: "Get the latest people card for a person by Slack user id or name.",
+		InputSchema: mustSchema[getPersonArgs]("get_person"),
+		Access:      AccessRead,
+		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+			var a getPersonArgs
+			if err := json.Unmarshal(call.Args, &a); err != nil {
+				return nil, &ValidationError{Msg: "invalid arguments"}
+			}
+			card, err := d.GetLatestPeopleCard(a.Query)
+			if err != nil {
+				return nil, fmt.Errorf("getting person: %w", err)
+			}
+			if card != nil {
+				return card, nil
+			}
+			users, err := d.SearchUsersByName(a.Query, 10)
+			if err != nil {
+				return nil, fmt.Errorf("searching users: %w", err)
+			}
+			var cards []*db.PeopleCard
+			var carded []db.User
+			for _, u := range users {
+				c, err := d.GetLatestPeopleCard(u.ID)
+				if err != nil {
+					return nil, fmt.Errorf("getting person: %w", err)
+				}
+				if c != nil {
+					cards = append(cards, c)
+					carded = append(carded, u)
+				}
+			}
+			switch len(cards) {
+			case 0:
+				return nil, fmt.Errorf("no people card for %s", strconv.Quote(a.Query))
+			case 1:
+				return cards[0], nil
+			default:
+				opts := make([]string, 0, len(carded))
+				for _, u := range carded {
+					opts = append(opts, u.ID+" ("+u.Name+")")
+				}
+				return nil, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(a.Query), strings.Join(opts, ", "))
+			}
 		},
 	}
 }

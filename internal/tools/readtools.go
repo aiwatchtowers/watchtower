@@ -25,6 +25,7 @@ func ReadTools() []*Tool {
 		NewGetJiraIssue(),
 		NewListJiraProjects(),
 		NewListPeople(),
+		NewGetPerson(),
 		NewListTracks(),
 		NewGetTrack(),
 		NewListUpcomingEvents(),

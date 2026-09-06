@@ -15,10 +15,43 @@ import (
 func peopleRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range []*Tool{NewListPeople(), NewListTracks(), NewGetTrack(), NewListUpcomingEvents()} {
+	for _, tool := range []*Tool{NewListPeople(), NewGetPerson(), NewListTracks(), NewGetTrack(), NewListUpcomingEvents()} {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg
+}
+
+func seedPersonCard(t *testing.T, d *db.DB, id, name, realName, summary string) {
+	t.Helper()
+	require.NoError(t, d.UpsertUser(db.User{ID: id, Name: name, RealName: realName}))
+	_, err := d.UpsertPeopleCard(db.PeopleCard{UserID: id, Summary: summary, Status: "active", PeriodFrom: 1, PeriodTo: 2})
+	require.NoError(t, err)
+}
+
+func TestGetPerson_NotFound(t *testing.T) {
+	_, err := peopleRegistry(t, openDB(t)).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"U_NOBODY"}`))
+	require.Error(t, err)
+}
+
+// An LLM client rarely knows Slack ids — get_person resolves by partial name.
+func TestGetPerson_ByName(t *testing.T) {
+	d := openDB(t)
+	seedPersonCard(t, d, "U100", "alice", "Alice Smith", "drives launches")
+
+	got := callReadString(t, peopleRegistry(t, d), "get_person", `{"query":"Alice"}`)
+	assert.Contains(t, got, "drives launches")
+}
+
+// Several name matches → an ambiguity error listing the candidate ids.
+func TestGetPerson_AmbiguousName(t *testing.T) {
+	d := openDB(t)
+	seedPersonCard(t, d, "U101", "alice.a", "Alice Anderson", "card U101")
+	seedPersonCard(t, d, "U102", "alice.b", "Alice Brown", "card U102")
+
+	_, err := peopleRegistry(t, d).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"alice"}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "U101")
+	assert.Contains(t, err.Error(), "U102")
 }
 
 func TestListTracks_FiltersAndRejectsBadEnum(t *testing.T) {
