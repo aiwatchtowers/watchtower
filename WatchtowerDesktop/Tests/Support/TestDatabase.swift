@@ -1269,6 +1269,18 @@ package enum TestDatabase {
         tool       TEXT PRIMARY KEY,
         trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
+    CREATE TABLE IF NOT EXISTS reminders (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id  INTEGER NOT NULL DEFAULT 0,
+        message_ref TEXT    NOT NULL DEFAULT '',
+        note        TEXT    NOT NULL DEFAULT '',
+        remind_at   TEXT    NOT NULL,
+        status      TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','done','dismissed')),
+        created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        done_at     TEXT    NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
     """
 
     // MARK: - Briefing Fixtures

@@ -28,4 +28,14 @@ package enum AgentActionQueries {
             ORDER BY created_at ASC, id ASC
             """, arguments: [conversationID, after, after])
     }
+
+    /// Every non-terminal proposal across every conversation, newest first —
+    /// the action strip's feed (STRIP-A: all surfaces, not just reaction).
+    package static func fetchStrip(_ db: Database) throws -> [AgentAction] {
+        try AgentAction.fetchAll(db, sql: """
+            SELECT * FROM agent_actions
+            WHERE status IN ('pending','approved','failed','executing')
+            ORDER BY created_at DESC, id DESC
+            """)
+    }
 }

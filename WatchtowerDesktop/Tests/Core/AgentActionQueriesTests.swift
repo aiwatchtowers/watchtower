@@ -98,4 +98,20 @@ final class AgentActionQueriesTests: XCTestCase {
         XCTAssertFalse(approved.isExecuting)
         XCTAssertFalse(approved.isTerminal)
     }
+
+    /// STRIP-A: the strip aggregates non-terminal proposals across every
+    /// conversation (not scoped to one), newest-created first.
+    func testFetchStripReturnsNonTerminalAcrossConversations() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "pending-1", status: "pending", createdAt: "2026-09-04T10:00:00Z")
+            try TestDatabase.insertAgentAction(db, conversationID: 2, turnID: "approved-1", status: "approved", createdAt: "2026-09-04T11:00:00Z")
+            try TestDatabase.insertAgentAction(db, conversationID: 3, turnID: "failed-1", status: "failed", createdAt: "2026-09-04T09:00:00Z")
+            try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "executing-1", status: "executing", createdAt: "2026-09-04T12:00:00Z")
+            try TestDatabase.insertAgentAction(db, conversationID: 2, turnID: "applied-1", status: "applied", createdAt: "2026-09-04T13:00:00Z")
+            try TestDatabase.insertAgentAction(db, conversationID: 3, turnID: "rejected-1", status: "rejected", createdAt: "2026-09-04T14:00:00Z")
+        }
+        let rows = try queue.read { db in try AgentActionQueries.fetchStrip(db) }
+        XCTAssertEqual(rows.map(\.turnID), ["executing-1", "approved-1", "pending-1", "failed-1"], "newest created_at first, terminal statuses excluded")
+    }
 }
