@@ -32,11 +32,14 @@ struct SlackConnectionDetail: View {
     @State private var showSlackDisconnectConfirm = false
     @State private var showAddSlackAccountSheet = false
     @State private var slackAccountPendingRemoval: SlackAccount?
+    @State private var newReactionEmoji = ""
+    @State private var newReactionTool = ReactionDictionaryTools.all[0]
 
     var body: some View {
         Form {
             workspaceSection
             slackAccountsSection
+            reactionDictionarySection
         }
         .formStyle(.grouped)
         .padding(.horizontal)
@@ -244,6 +247,81 @@ struct SlackConnectionDetail: View {
                 "Disconnects the workspace. Already-synced messages, digests, and "
                     + "situations stay in Watchtower."
             )
+        }
+    }
+
+    /// Reaction commands section — the emoji-to-tool dictionary
+    /// (`reaction_command_map`, migration 00063) the owner drives Watchtower
+    /// with by reacting to a Slack message. The feature itself ships OFF; this
+    /// editor lets the owner curate the dictionary regardless, so it's ready
+    /// the moment they enable it.
+    private var reactionDictionarySection: some View {
+        Section("Reaction commands") {
+            if let vm = appState.reactionDictionaryViewModel {
+                if vm.mappings.isEmpty {
+                    Text("No reaction commands configured.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.mappings) { mapping in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(":\(mapping.emoji):")
+                                Text(mapping.tool)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let trust = vm.trustFor(tool: mapping.tool) {
+                                Text(trust)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Toggle("Enabled", isOn: Binding(
+                                get: { mapping.enabled },
+                                set: { newValue in
+                                    Task { await vm.setEnabled(emoji: mapping.emoji, enabled: newValue) }
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            Button("Remove") {
+                                Task { await vm.delete(emoji: mapping.emoji) }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                if let err = vm.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                HStack {
+                    TextField("emoji short-name (e.g. white_check_mark)", text: $newReactionEmoji)
+                    Picker("Tool", selection: $newReactionTool) {
+                        ForEach(ReactionDictionaryTools.all, id: \.self) { tool in
+                            Text(tool).tag(tool)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 180)
+                    Button("Add mapping") {
+                        let emoji = newReactionEmoji.trimmingCharacters(in: .whitespaces)
+                        guard !emoji.isEmpty else { return }
+                        Task { await vm.upsert(emoji: emoji, tool: newReactionTool) }
+                        newReactionEmoji = ""
+                    }
+                    .disabled(newReactionEmoji.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

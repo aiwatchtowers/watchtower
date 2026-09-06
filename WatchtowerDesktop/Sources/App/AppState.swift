@@ -191,6 +191,11 @@ final class AppState {
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
 
+    /// Reaction Dictionary ViewModel (Settings → Slack "Reaction commands"
+    /// editor) — persists across tab switches like its sibling account VMs
+    /// above.
+    private(set) var reactionDictionaryViewModel: ReactionDictionaryViewModel?
+
     /// Dashboard action strip (pending agent-action proposals + due reminders)
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
@@ -622,6 +627,7 @@ final class AppState {
         initGoogleAccounts(dbPool: manager.dbPool)
         initSlackAccounts(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
+        initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -707,6 +713,12 @@ final class AppState {
         // here, the same point the sibling VM gets its pool, so per-issue
         // links resolve from the DB instead of the frozen config keys.
         JiraConfigHelper.configure(dbPool: dbPool)
+    }
+
+    func initReactionDictionary(dbPool: DatabasePool) {
+        let vm = ReactionDictionaryViewModel(dbPool: dbPool)
+        vm.refresh()
+        reactionDictionaryViewModel = vm
     }
 
     func initActionStrip(dbPool: DatabasePool) {

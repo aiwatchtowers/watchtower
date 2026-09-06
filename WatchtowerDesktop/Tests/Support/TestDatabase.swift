@@ -1269,6 +1269,16 @@ package enum TestDatabase {
         tool       TEXT PRIMARY KEY,
         trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
+    CREATE TABLE IF NOT EXISTS reaction_command_map (
+        emoji      TEXT PRIMARY KEY,
+        kind       TEXT    NOT NULL DEFAULT 'builtin_tool'
+                   CHECK(kind IN ('builtin_tool','agent')),
+        tool       TEXT    NOT NULL DEFAULT '',
+        handler_id INTEGER NOT NULL DEFAULT 0,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
     CREATE TABLE IF NOT EXISTS reminders (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         account_id  INTEGER NOT NULL DEFAULT 0,
@@ -2079,6 +2089,35 @@ package enum TestDatabase {
             """, arguments: [tool, external, argsJSON, reason, surface, conversationID, turnID, status,
                              resultJSON, error, createdAt, decidedAt, appliedAt])
         return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertReactionCommandMapping(
+        _ db: Database,
+        emoji: String,
+        kind: String = "builtin_tool",
+        tool: String = "",
+        handlerID: Int64 = 0,
+        enabled: Bool = true,
+        createdAt: String = "2026-09-05T00:00:00Z"
+    ) throws -> String {
+        try db.execute(sql: """
+            INSERT INTO reaction_command_map
+                (emoji, kind, tool, handler_id, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [emoji, kind, tool, handlerID, enabled, createdAt, createdAt])
+        return emoji
+    }
+
+    package static func insertToolTrust(
+        _ db: Database,
+        tool: String,
+        trust: String,
+        updatedAt: String = "2026-09-05T00:00:00Z"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO tool_trust (tool, trust, updated_at) VALUES (?, ?, ?)
+            """, arguments: [tool, trust, updatedAt])
     }
 
     package static func insertGoogleAccount(
