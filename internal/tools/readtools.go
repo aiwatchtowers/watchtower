@@ -31,6 +31,7 @@ func ReadTools() []*Tool {
 		NewListUpcomingEvents(),
 		NewListTranscripts(),
 		NewGetTranscript(),
+		NewListMessages(),
 	}
 }
 
