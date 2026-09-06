@@ -164,7 +164,11 @@ func (p *Pipeline) dispatch(ctx context.Context, c candidate) (status string, ac
 	// the External-never-auto-execute rule (AGENT-03) and per-tool trust are
 	// enforced inside Propose, so a create_jira_issue reaction always lands as
 	// a pending proposal even if create_target is execute-trusted.
-	binding := tools.Binding{Surface: "reaction", ContextType: "reaction"}
+	binding := tools.Binding{
+		Surface:     "reaction",
+		ContextType: "reaction",
+		ContextID:   c.ChannelID + "@" + c.MessageTS, // REACT-02: real message ref for reminders/brief
+	}
 	receipt, err := p.registry.Propose(ctx, tool.Name, args, binding)
 	if err != nil {
 		// A ValidationError is terminal — the model's args cannot pass the

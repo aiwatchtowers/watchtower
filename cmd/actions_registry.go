@@ -34,6 +34,8 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
 		tools.NewCreateTrack(),
 		tools.NewCreateIdea(),
+		tools.NewRemindMe(),
+		tools.NewBriefContext(),
 	} {
 		if err := reg.Register(t); err != nil {
 			panic("tool registry: " + err.Error())
