@@ -170,34 +170,14 @@ final class ChatViewModel {
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
-                    switch event {
-                    case .text(let chunk):
-                        if sawTurnComplete {
-                            fullText = chunk
-                            sawTurnComplete = false
-                        } else {
-                            fullText += chunk
-                        }
-                        self?.updateLastMessage(fullText)
-                    case .turnComplete(let text):
-                        fullText = text
-                        sawTurnComplete = true
-                        self?.updateLastMessage(fullText)
-                    case .reset:
-                        // A tool call interrupted the turn — drop the pre-tool
-                        // preamble so it never glues onto the post-tool answer.
-                        fullText = ""
-                        sawTurnComplete = false
-                        self?.updateLastMessage("")
-                    case .sessionID(let sid):
-                        newSessionID = sid
-                        self?.sessionID = sid
-                        if let convID = capturedConvID {
-                            self?.onConversationUpdated?(convID, nil, sid)
-                        }
-                    case .done:
-                        break
-                    }
+                    guard let self else { break }
+                    self.applyStreamEvent(
+                        event,
+                        fullText: &fullText,
+                        sawTurnComplete: &sawTurnComplete,
+                        newSessionID: &newSessionID,
+                        conversationID: capturedConvID
+                    )
                 }
             } catch {
                 if !Task.isCancelled {
@@ -205,17 +185,71 @@ final class ChatViewModel {
                 }
             }
 
-            // Always persist the response, even if self is gone — unless
-            // cancelStream() already persisted this same partial reply (see
-            // `responsePersistedOnCancel`); skipping avoids a duplicate row.
-            if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
-                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText, turnID: turnID)
-            }
-            if let sid = newSessionID, let convID = capturedConvID {
-                Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
-            }
-
+            Self.persistTurnTail(
+                dbManager: capturedDBManager, conversationID: capturedConvID,
+                text: fullText, turnID: turnID, sessionID: newSessionID,
+                alreadyPersisted: self?.responsePersistedOnCancel == true
+            )
             self?.finishStream()
+        }
+    }
+
+    /// Applies one streamed event to the in-flight turn's local state. Shared by
+    /// the send() and welcome-message streams (identical handling). A `.reset`
+    /// drops the pre-tool preamble so it never glues onto the post-tool answer.
+    private func applyStreamEvent(
+        _ event: StreamEvent,
+        fullText: inout String,
+        sawTurnComplete: inout Bool,
+        newSessionID: inout String?,
+        conversationID: Int64?
+    ) {
+        switch event {
+        case .text(let chunk):
+            if sawTurnComplete {
+                fullText = chunk
+                sawTurnComplete = false
+            } else {
+                fullText += chunk
+            }
+            updateLastMessage(fullText)
+        case .turnComplete(let text):
+            fullText = text
+            sawTurnComplete = true
+            updateLastMessage(fullText)
+        case .reset:
+            fullText = ""
+            sawTurnComplete = false
+            updateLastMessage("")
+        case .sessionID(let sid):
+            newSessionID = sid
+            sessionID = sid
+            if let convID = conversationID {
+                onConversationUpdated?(convID, nil, sid)
+            }
+        case .done:
+            break
+        }
+    }
+
+    /// Persists a finished turn's assistant reply and session id. Always runs,
+    /// even if the view model is gone — but skips the reply when cancelStream()
+    /// already persisted this same partial reply (`alreadyPersisted`), which
+    /// avoids a duplicate row.
+    nonisolated private static func persistTurnTail(
+        dbManager: DatabaseManager,
+        conversationID: Int64?,
+        text: String,
+        turnID: String,
+        sessionID: String?,
+        alreadyPersisted: Bool
+    ) {
+        guard let convID = conversationID else { return }
+        if !text.isEmpty, !alreadyPersisted {
+            persistResponseStatic(dbManager: dbManager, conversationID: convID, text: text, turnID: turnID)
+        }
+        if let sid = sessionID {
+            persistSessionStatic(dbManager: dbManager, conversationID: convID, sessionID: sid)
         }
     }
 
@@ -596,34 +630,14 @@ final class ChatViewModel {
                 )
                 var sawTurnComplete = false
                 for try await event in stream {
-                    switch event {
-                    case .text(let chunk):
-                        if sawTurnComplete {
-                            fullText = chunk
-                            sawTurnComplete = false
-                        } else {
-                            fullText += chunk
-                        }
-                        self?.updateLastMessage(fullText)
-                    case .turnComplete(let text):
-                        fullText = text
-                        sawTurnComplete = true
-                        self?.updateLastMessage(fullText)
-                    case .reset:
-                        // A tool call interrupted the turn — drop the pre-tool
-                        // preamble so it never glues onto the post-tool answer.
-                        fullText = ""
-                        sawTurnComplete = false
-                        self?.updateLastMessage("")
-                    case .sessionID(let sid):
-                        newSessionID = sid
-                        self?.sessionID = sid
-                        if let convID = capturedConvID {
-                            self?.onConversationUpdated?(convID, nil, sid)
-                        }
-                    case .done:
-                        break
-                    }
+                    guard let self else { break }
+                    self.applyStreamEvent(
+                        event,
+                        fullText: &fullText,
+                        sawTurnComplete: &sawTurnComplete,
+                        newSessionID: &newSessionID,
+                        conversationID: capturedConvID
+                    )
                 }
             } catch {
                 if !Task.isCancelled {
