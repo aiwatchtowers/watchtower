@@ -158,7 +158,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	}
 
 	registerTaskContext(srv.s, database)
-	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
 	// Read tools that have moved into the registry (list_situations/get_situation

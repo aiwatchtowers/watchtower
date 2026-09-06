@@ -32,6 +32,7 @@ func ReadTools() []*Tool {
 		NewListTranscripts(),
 		NewGetTranscript(),
 		NewListMessages(),
+		NewFindExperts(),
 	}
 }
 
