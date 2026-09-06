@@ -39,12 +39,15 @@ func isInvalidGrant(body []byte) bool {
 		if resp.Error == "invalid_grant" {
 			return true
 		}
-		if resp.Error == "unauthorized_client" && refreshTokenInvalid(resp.Description) {
-			return true
-		}
+		// The other revoked-grant shape keys on the decoded description ONLY.
+		// A bare unauthorized_client (client misconfiguration) is deliberately
+		// not revoked, and we never prose-scan the whole body once it decoded
+		// cleanly — a misconfiguration's free text could otherwise be misread
+		// as a revocation and force a needless re-login.
+		return resp.Error == "unauthorized_client" && refreshTokenInvalid(resp.Description)
 	}
-	s := string(body)
-	return strings.Contains(s, "invalid_grant") || refreshTokenInvalid(s)
+	// Non-JSON error body (a proxy/WAF page): fall back to the canonical token.
+	return strings.Contains(string(body), "invalid_grant")
 }
 
 // refreshTokenInvalid reports whether text carries Atlassian's "the refresh

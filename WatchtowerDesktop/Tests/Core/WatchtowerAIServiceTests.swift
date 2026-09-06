@@ -87,4 +87,27 @@ final class WatchtowerAIServiceTests: XCTestCase {
         let mode = ChatToolMode(surface: "main", conversationID: 3, turnID: "x")
         XCTAssertEqual(mode.cliArgs, ["--tools", "chat", "--surface", "main", "--conversation", "3", "--turn", "x"])
     }
+
+    // MARK: - parseLine reset contract (the pre-tool preamble fix)
+
+    /// A "reset" event clears the accumulator and surfaces `.reset`, so the
+    /// pre-tool preamble ("I need to check…first.") is dropped and never glues
+    /// onto the post-tool answer streamed after it.
+    func testParseLineResetClearsAccumulatorAndEmitsReset() {
+        let service = WatchtowerAIService()
+        var acc = ""
+
+        _ = service.parseLine(#"{"type":"text","text":"I need to check first."}"#, accumulatedText: &acc)
+        XCTAssertEqual(acc, "I need to check first.")
+
+        let ev = service.parseLine(#"{"type":"reset"}"#, accumulatedText: &acc)
+        guard case .reset = ev else {
+            return XCTFail("expected .reset, got \(String(describing: ev))")
+        }
+        XCTAssertEqual(acc, "", "the preamble must be discarded on reset")
+
+        // Text after the reset rebuilds the answer from scratch.
+        _ = service.parseLine(#"{"type":"text","text":"Here is the answer."}"#, accumulatedText: &acc)
+        XCTAssertEqual(acc, "Here is the answer.")
+    }
 }

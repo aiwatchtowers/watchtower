@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -195,6 +197,26 @@ func TestRefreshToken_InvalidGrantIsAuthRevoked(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrAuthRevoked))
 }
 
+// The other revoked-grant shape Atlassian returns for a dead refresh token: a
+// 403 unauthorized_client whose description names the refresh token as invalid.
+// It must reach the caller as ErrAuthRevoked exactly like invalid_grant, or the
+// account stays green with its Re-login button hidden while every call 403s.
+func TestRefreshToken_UnauthorizedClientRefreshInvalidIsAuthRevoked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"unauthorized_client","error_description":"refresh_token is invalid"}`))
+	}))
+	defer srv.Close()
+
+	prev := jiraTokenEndpoint
+	jiraTokenEndpoint = srv.URL
+	defer func() { jiraTokenEndpoint = prev }()
+
+	_, err := RefreshToken(context.Background(), JiraOAuthConfig{}, "rt")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrAuthRevoked))
+}
+
 func TestRefreshToken_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{not json`))
@@ -262,6 +284,109 @@ func TestFetchAccessibleResources_BadJSON(t *testing.T) {
 
 func TestGetOpenBrowserFunc_NotNil(t *testing.T) {
 	assert.NotNil(t, getOpenBrowserFunc())
+}
+
+// syncTestBuffer is a mutex-guarded buffer so the Login goroutine can write the
+// authorize URL while the test reads it.
+type syncTestBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncTestBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncTestBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// runLoginCaptureSuccessBody drives a full Login(opts) with a mocked token
+// endpoint and browser, POSTing the OAuth callback back to the loopback server,
+// and returns the HTML body served on the success page. The slack.TestLogin_
+// AppReturn_SuccessPageRedirects analog on Jira's plain-HTTP loopback flow.
+func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
+	t.Helper()
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	prev := jiraTokenEndpoint
+	jiraTokenEndpoint = tokenSrv.URL
+	defer func() { jiraTokenEndpoint = prev }()
+
+	out := &syncTestBuffer{}
+	opts.SkipBrowserOpen = true // print the authorize URL instead of opening a browser
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := Login(context.Background(), JiraOAuthConfig{ClientID: "cid", ClientSecret: "s"}, out, opts)
+		resultCh <- err
+	}()
+
+	var authorizeURL string
+	require.Eventually(t, func() bool {
+		s := out.String()
+		idx := strings.Index(s, "https://")
+		if idx == -1 {
+			return false
+		}
+		end := strings.IndexAny(s[idx:], "\n ")
+		if end == -1 {
+			return false
+		}
+		authorizeURL = s[idx : idx+end]
+		return authorizeURL != ""
+	}, 3*time.Second, 10*time.Millisecond)
+
+	parsed, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	redirectURI := parsed.Query().Get("redirect_uri")
+	require.NotEmpty(t, state)
+	require.NotEmpty(t, redirectURI)
+
+	cbURL, err := url.Parse(redirectURI)
+	require.NoError(t, err)
+	q := cbURL.Query()
+	q.Set("code", "test-auth-code")
+	q.Set("state", state)
+	cbURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, cbURL.String(), nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	select {
+	case err := <-resultCh:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Login did not complete in time")
+	}
+	return string(body)
+}
+
+// With AppReturn set, the success page must send the browser back to the app
+// via the watchtower-auth:// scheme (the slack/gmail app-return precedent).
+func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
+	body := runLoginCaptureSuccessBody(t, LoginOptions{AppReturn: true})
+	assert.Contains(t, body, "watchtower-auth://connected")
+}
+
+// Without it the page just self-closes and never touches the app scheme, so a
+// plain browser consent is byte-for-byte the pre-feature behaviour.
+func TestLogin_NoAppReturn_SuccessPageIsPlain(t *testing.T) {
+	body := runLoginCaptureSuccessBody(t, LoginOptions{})
+	assert.NotContains(t, body, "watchtower-auth://")
 }
 
 // Sanity-check that exchangeCode marshals payloads in JSON (not form-encoded).

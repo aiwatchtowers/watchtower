@@ -189,8 +189,8 @@ func watchtowerBinary() string {
 // for text chunks, errors, and the session ID. The sessionIDCh receives at most
 // one value — the session ID from the "result" event — enabling multi-turn
 // conversations via --resume. Pass a non-empty sessionID to resume an existing session.
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 64)
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 
@@ -249,13 +249,27 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 				sidCh <- event.SessionID
 			}
 
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble (including any text in this very event)
+			// and starts the visible answer fresh from what follows the tool.
+			if event.hasToolUse() {
+				select {
+				case textCh <- StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+				continue
+			}
+
 			text := event.extractText()
 			if text == "" {
 				continue
 			}
 
 			select {
-			case textCh <- text:
+			case textCh <- StreamChunk{Text: text}:
 			case <-ctx.Done():
 				// CommandContext handles killing the process; just reap it.
 				_ = cmd.Wait()
@@ -355,6 +369,20 @@ func (e *streamEvent) extractText() string {
 	// Note: "result" events contain the full response but we skip them
 	// to avoid duplicating text already streamed via "assistant" events.
 	return ""
+}
+
+// hasToolUse reports whether an assistant event carries a tool_use content
+// block — the marker that the model paused the turn to call a tool.
+func (e *streamEvent) hasToolUse() bool {
+	if e.Type != "assistant" || e.Message == nil {
+		return false
+	}
+	for _, c := range e.Message.Content {
+		if c.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 // limitedWriter wraps an io.Writer and stops writing after limit bytes.

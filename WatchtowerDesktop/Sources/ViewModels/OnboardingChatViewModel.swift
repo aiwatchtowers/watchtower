@@ -307,6 +307,11 @@ final class OnboardingChatViewModel {
                         messages[idx].text = fullText
                     }
                     sawTurnComplete = true
+                case .reset:
+                    if let idx = messages.indices.last {
+                        messages[idx].text = ""
+                    }
+                    sawTurnComplete = false
                 case .sessionID(let sid):
                     self.sessionID = sid
                 case .done:
@@ -441,6 +446,9 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): contextText += chunk
                 case .turnComplete(let text): contextText = text
+                // A tool call (e.g. Codex's built-in command_execution) drops the
+                // pre-tool preamble so it never glues onto the generated context.
+                case .reset: contextText = ""
                 case .sessionID, .done: break
                 }
             }
@@ -682,6 +690,9 @@ final class OnboardingChatViewModel {
                 switch event {
                 case .text(let chunk): text += chunk
                 case .turnComplete(let full): text = full
+                // A tool call (e.g. Codex's built-in command_execution) drops the
+                // pre-tool preamble so it never corrupts the extracted JSON.
+                case .reset: text = ""
                 case .sessionID, .done: break
                 }
             }

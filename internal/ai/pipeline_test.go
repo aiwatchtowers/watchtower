@@ -387,7 +387,7 @@ func TestIntegrationEndToEndStreaming(t *testing.T) {
 
 	var result strings.Builder
 	for chunk := range textCh {
-		result.WriteString(chunk)
+		result.WriteString(chunk.Text)
 	}
 
 	err := <-errCh

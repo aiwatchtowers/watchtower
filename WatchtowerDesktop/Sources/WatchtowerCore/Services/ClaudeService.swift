@@ -3,6 +3,9 @@ import Foundation
 package enum StreamEvent {
     case text(String)         // streaming delta (append)
     case turnComplete(String) // full turn text (replace — only last turn shown)
+    case reset                // a tool call interrupted the turn: discard the
+                              // text shown so far (pre-tool preamble) and rebuild
+                              // the visible answer from the deltas that follow
     case sessionID(String)
     case done
 }
