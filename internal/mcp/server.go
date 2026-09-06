@@ -141,7 +141,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 		srv.registry = tools.NewReadRegistry(database)
 	}
 
-	registerTargets(srv.s, database)
 	registerPeople(srv.s, database)
 	registerJira(srv.s, database)
 	registerMessages(srv.s, database)

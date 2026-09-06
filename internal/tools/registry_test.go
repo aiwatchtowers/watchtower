@@ -235,6 +235,19 @@ func TestCallRead_UnknownTool(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnknownTool)
 }
 
+// A no-arg read call arrives as absent, empty, or literal null (an MCP client
+// with no arguments) — all mean "no filters" and must reach Execute, not trip
+// the object-schema validation. list_situations has all-optional args, so a
+// no-arg call is legitimate.
+func TestCallRead_NoArgsNormalizedToEmptyObject(t *testing.T) {
+	reg := New(openDB(t))
+	require.NoError(t, reg.Register(NewListSituations()))
+	for _, args := range []string{``, `null`, `{}`} {
+		_, err := reg.CallRead(context.Background(), "list_situations", json.RawMessage(args))
+		require.NoError(t, err, "args %q must be accepted", args)
+	}
+}
+
 // Spec §4: schema validation runs BEFORE the tool's own semantic Validate, so
 // a call missing a required argument is rejected even by a tool that would
 // have accepted it — and no row is written.

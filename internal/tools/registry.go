@@ -10,6 +10,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -331,7 +332,11 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	if t.Access != AccessRead {
 		return nil, ErrNotReadable
 	}
-	if len(args) == 0 {
+	// A parameterless call arrives as absent, empty, or literal null (an MCP
+	// client with no arguments, e.g. `ls.Call(name, nil)`); all mean "no
+	// filters", so normalize to an empty object before the object schema runs —
+	// otherwise a bare read tool would reject its own no-arg call.
+	if len(args) == 0 || string(bytes.TrimSpace(args)) == "null" {
 		args = json.RawMessage(`{}`)
 	}
 	if !json.Valid(args) {

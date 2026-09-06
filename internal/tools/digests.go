@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -81,8 +80,8 @@ func NewListDigests() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			if a.Type != "" && !slices.Contains([]string{"channel", "daily", "weekly"}, a.Type) {
-				return nil, &ValidationError{Msg: fmt.Sprintf("invalid type %q: must be one of channel|daily|weekly", a.Type)}
+			if err := validateEnum("type", a.Type, "channel", "daily", "weekly"); err != nil {
+				return nil, err
 			}
 			var fromUnix float64
 			if a.Since != "" {

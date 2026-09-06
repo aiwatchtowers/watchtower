@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"watchtower/internal/db"
 )
@@ -45,11 +44,11 @@ func NewListIdeas() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			if a.Kind != "" && !slices.Contains(ideaKinds, a.Kind) {
-				return nil, &ValidationError{Msg: fmt.Sprintf("invalid kind %q: must be one of idea|decision|note", a.Kind)}
-			}
-			if a.Status != "" && !slices.Contains(ideaStatuses, a.Status) {
-				return nil, &ValidationError{Msg: fmt.Sprintf("invalid status %q: must be one of %v", a.Status, ideaStatuses)}
+			if err := firstErr(
+				validateEnum("kind", a.Kind, ideaKinds...),
+				validateEnum("status", a.Status, ideaStatuses...),
+			); err != nil {
+				return nil, err
 			}
 			ideas, err := d.ListIdeas(db.IdeaFilter{Kind: a.Kind, Status: a.Status, Query: a.Query, Limit: listLimit(a.Limit)})
 			if err != nil {

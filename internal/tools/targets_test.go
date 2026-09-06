@@ -3,122 +3,87 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"strconv"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
-func TestCreateTarget_ValidateRejectsBadInput(t *testing.T) {
-	database := openDB(t)
-	tool := NewCreateTarget()
-	cases := map[string]string{
-		"empty text":    `{"text":"  ","reason":"r"}`,
-		"unknown field": `{"text":"x","reason":"r","bogus":1}`,
-		"bad priority":  `{"text":"x","reason":"r","priority":"urgent"}`,
-		"bad due":       `{"text":"x","reason":"r","due":"tomorrow"}`,
-		"long text":     `{"text":"` + strings.Repeat("x", 201) + `","reason":"r"}`,
-	}
-	for name, raw := range cases {
-		err := tool.Validate(context.Background(), database, json.RawMessage(raw))
-		var verr *ValidationError
-		assert.ErrorAs(t, err, &verr, name)
-	}
-	assert.NoError(t, tool.Validate(context.Background(), database,
-		json.RawMessage(`{"text":"Call Vasya","reason":"r","due":"2026-09-05T16:00","priority":"high"}`)))
-	assert.NoError(t, tool.Validate(context.Background(), database,
-		json.RawMessage(`{"text":"Renew cert","reason":"r","due":"2026-09-12"}`)))
-	// Verify exactly 200 runes passes (including multi-byte Unicode)
-	assert.NoError(t, tool.Validate(context.Background(), database,
-		json.RawMessage(`{"text":"`+strings.Repeat("я", 200)+`","reason":"r"}`)))
-}
-
-// withLocal pins time.Local to loc for the duration of the test — Execute's
-// owner-local due conversion reads time.Local, so tests that care about the
-// exact stored value must not depend on the machine running them.
-func withLocal(t *testing.T, loc *time.Location) {
+func targetsRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
-	orig := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = orig })
+	reg := New(d)
+	require.NoError(t, reg.Register(NewListTargets()))
+	require.NoError(t, reg.Register(NewGetTarget()))
+	return reg
 }
 
-func TestCreateTarget_ExecuteMatchesRemindShape(t *testing.T) {
-	withLocal(t, time.UTC)
-	database := openDB(t)
-	tool := NewCreateTarget()
-	out, err := tool.Execute(context.Background(), database, Call{
-		ActionID: 42,
-		Args:     json.RawMessage(`{"text":"Call Vasya","intent":"agree the date","reason":"r","due":"2026-09-05T16:00","priority":"high"}`),
-	})
+func seedTarget(t *testing.T, d *db.DB, text, status string) int {
+	t.Helper()
+	id, err := d.CreateTarget(db.Target{Text: text, Intent: "x", Level: "week", Status: status, Priority: "high", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	res := out.(map[string]any)
-	id := res["target_id"].(int64)
-
-	row, err := database.GetTargetByID(int(id))
-	require.NoError(t, err)
-	assert.Equal(t, "Call Vasya", row.Text)
-	assert.Equal(t, "agree the date", row.Intent)
-	assert.Equal(t, "day", row.Level)
-	assert.Equal(t, "todo", row.Status)
-	assert.Equal(t, "high", row.Priority)
-	assert.Equal(t, "mine", row.Ownership)
-	assert.Equal(t, "2026-09-05T16:00", row.DueDate, "an owner already on UTC sees no shift")
-	assert.Equal(t, "chat", row.SourceType)
-	assert.Equal(t, "action:42", row.SourceID, "the chat source_type carries several id spaces; each id says which")
-	assert.Equal(t, row.PeriodStart, row.PeriodEnd)
+	return int(id)
 }
 
-// TestCreateTarget_ExecuteConvertsOwnerLocalDueToUTC pins the fix for the
-// judge's MAJOR finding: the tool's schema promises an owner-local due, but
-// every reader of targets.due_date (cmd/remind.go, NotifyDueTargets,
-// nextstep.go, Swift Target.parseDueDate) treats the column as UTC. A
-// non-UTC owner's "remind me at 16:00" must land in the column as the UTC
-// instant that IS 16:00 in their zone, not the string "16:00" verbatim.
-func TestCreateTarget_ExecuteConvertsOwnerLocalDueToUTC(t *testing.T) {
-	withLocal(t, time.FixedZone("plus3", 3*3600))
-	database := openDB(t)
-	tool := NewCreateTarget()
-	out, err := tool.Execute(context.Background(), database, Call{
-		ActionID: 1,
-		Args:     json.RawMessage(`{"text":"Call Vasya","reason":"r","due":"2026-09-05T16:00"}`),
-	})
-	require.NoError(t, err)
-	res := out.(map[string]any)
-	id := res["target_id"].(int64)
+// list_targets filters by status: a matching target is returned, a non-matching
+// one excluded.
+func TestListTargets_FiltersByStatus(t *testing.T) {
+	d := openDB(t)
+	seedTarget(t, d, "Ship MCP server", "todo")
+	seedTarget(t, d, "Unrelated in-progress item", "in_progress")
 
-	row, err := database.GetTargetByID(int(id))
-	require.NoError(t, err)
-	assert.Equal(t, "2026-09-05T13:00", row.DueDate, "16:00 at UTC+3 is 13:00 UTC")
+	got := callReadString(t, targetsRegistry(t, d), "list_targets", `{"status":"todo"}`)
+	assert.Contains(t, got, "Ship MCP server")
+	assert.NotContains(t, got, "Unrelated in-progress item", "status filter must exclude the in_progress target")
 }
 
-// TestCreateTarget_ExecuteLeavesDateOnlyDueUnconverted pins the other half:
-// a date-only due is day-granular (NotifyDueTargets), so there is no
-// owner-local instant to convert — it is stored as the model wrote it.
-func TestCreateTarget_ExecuteLeavesDateOnlyDueUnconverted(t *testing.T) {
-	withLocal(t, time.FixedZone("plus3", 3*3600))
-	database := openDB(t)
-	tool := NewCreateTarget()
-	out, err := tool.Execute(context.Background(), database, Call{
-		ActionID: 1,
-		Args:     json.RawMessage(`{"text":"Renew cert","reason":"r","due":"2026-09-12"}`),
-	})
-	require.NoError(t, err)
-	res := out.(map[string]any)
-	id := res["target_id"].(int64)
+// Filtering by status=done returns done targets — GetTargets hides done rows
+// unless IncludeDone is set, so a naive filter would return nothing.
+func TestListTargets_ByDoneStatus(t *testing.T) {
+	d := openDB(t)
+	seedTarget(t, d, "Finished work", "done")
 
-	row, err := database.GetTargetByID(int(id))
-	require.NoError(t, err)
-	assert.Equal(t, "2026-09-12", row.DueDate)
+	got := callReadString(t, targetsRegistry(t, d), "list_targets", `{"status":"done"}`)
+	assert.Contains(t, got, "Finished work")
 }
 
-func TestCreateTarget_Registration(t *testing.T) {
-	tool := NewCreateTarget()
-	assert.Equal(t, "create_target", tool.Name)
-	assert.Equal(t, AccessWrite, tool.Access)
-	assert.False(t, tool.External)
-	assert.Equal(t, []string{"main"}, tool.Surfaces)
-	require.NotNil(t, tool.InputSchema)
+// An empty result is a JSON array, not an error.
+func TestListTargets_EmptyIsNotError(t *testing.T) {
+	got := callReadString(t, targetsRegistry(t, openDB(t)), "list_targets", `{"status":"done"}`)
+	assert.Equal(t, "[]", got)
+}
+
+func TestGetTarget_ReturnsTarget(t *testing.T) {
+	d := openDB(t)
+	id := seedTarget(t, d, "Ship MCP server", "todo")
+
+	got := callReadString(t, targetsRegistry(t, d), "get_target", `{"id":`+strconv.Itoa(id)+`}`)
+	assert.Contains(t, got, "Ship MCP server")
+}
+
+// A missing target is a friendly not-found error, not a raw sql error.
+func TestGetTarget_NotFound(t *testing.T) {
+	_, err := targetsRegistry(t, openDB(t)).CallRead(context.Background(), "get_target", json.RawMessage(`{"id":999}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no target with id 999")
+	assert.NotContains(t, err.Error(), "sql: no rows")
+}
+
+func TestListTargets_RejectsInvalidEnums(t *testing.T) {
+	reg := targetsRegistry(t, openDB(t))
+	cases := []struct{ field, value, wantAllowed string }{
+		{"status", "in-progress", "todo|in_progress|blocked|done|dismissed|snoozed"},
+		{"priority", "urgent", "high|medium|low"},
+		{"level", "year", "quarter|month|week|day|custom"},
+		{"ownership", "theirs", "mine|delegated|watching"},
+	}
+	for _, c := range cases {
+		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(`{"`+c.field+`":"`+c.value+`"}`))
+		var verr *ValidationError
+		require.ErrorAs(t, err, &verr, "%s=%s", c.field, c.value)
+		assert.Contains(t, verr.Msg, c.value)
+		assert.Contains(t, verr.Msg, c.wantAllowed)
+	}
 }

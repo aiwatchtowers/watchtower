@@ -19,6 +19,8 @@ func ReadTools() []*Tool {
 		NewGetDigest(),
 		NewListIdeas(),
 		NewGetIdea(),
+		NewListTargets(),
+		NewGetTarget(),
 	}
 }
 
