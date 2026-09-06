@@ -100,7 +100,7 @@ func NewListSituations() *Tool {
 				}
 				since = a.Since + "T00:00:00Z"
 			}
-			situations, err := d.ListSituations(db.SituationFilter{Status: status, SinceISO: since, Limit: a.Limit})
+			situations, err := d.ListSituations(db.SituationFilter{Status: status, SinceISO: since, Limit: listLimit(a.Limit)})
 			if err != nil {
 				return nil, fmt.Errorf("listing situations: %w", err)
 			}

@@ -14,6 +14,9 @@ func ReadTools() []*Tool {
 	return []*Tool{
 		NewListSituations(),
 		NewGetSituation(),
+		NewGetTodayBriefing(),
+		NewListDigests(),
+		NewGetDigest(),
 	}
 }
 

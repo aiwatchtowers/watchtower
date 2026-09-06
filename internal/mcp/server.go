@@ -142,7 +142,6 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	}
 
 	registerTargets(srv.s, database)
-	registerDigests(srv.s, database)
 	registerPeople(srv.s, database)
 	registerJira(srv.s, database)
 	registerMessages(srv.s, database)
