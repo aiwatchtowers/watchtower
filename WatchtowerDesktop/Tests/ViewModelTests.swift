@@ -508,7 +508,7 @@ final class ChatViewModelTests: XCTestCase {
             dbPath: String?,
             model: String?,
             provider: String?,
-            extraAllowedTools: [String]
+            toolMode: ChatToolMode?
         ) -> AsyncThrowingStream<StreamEvent, Error> {
             AsyncThrowingStream { continuation in
                 Task {
@@ -665,6 +665,135 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(schema.contains("CREATE TABLE"))
         XCTAssertTrue(schema.contains("workspace"))
         XCTAssertTrue(schema.contains("messages"))
+    }
+
+    // MARK: - Agent actions (AGENT-04: main chat as an action surface)
+
+    private func makeConversation() throws -> ChatConversation {
+        try dbManager.dbPool.write { db in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTurnIDColumn(db)
+            return try ChatConversationQueries.create(db, title: "t")
+        }
+    }
+
+    @MainActor
+    func testSendPassesMainChatToolModeWithFreshTurnID() async throws {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager)
+        vm.bind(to: try makeConversation())
+        vm.inputText = "hello"
+        vm.send()
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        let firstToolMode = try XCTUnwrap(mock.toolModes.first)
+        let mode = try XCTUnwrap(firstToolMode)
+        XCTAssertEqual(mode.surface, "main")
+        XCTAssertEqual(mode.conversationID, vm.conversationID)
+        XCTAssertFalse(mode.turnID.isEmpty)
+        XCTAssertNil(mode.contextType)
+        // The persisted assistant row carries the same turn id.
+        let convID = try XCTUnwrap(vm.conversationID)
+        let records = try await dbManager.dbPool.read { db in
+            try ChatMessageQueries.fetchByConversation(db, conversationID: convID)
+        }
+        XCTAssertEqual(records.last?.role, "assistant")
+        XCTAssertEqual(records.last?.turnID, mode.turnID)
+        XCTAssertEqual(vm.messages.last?.turnID, mode.turnID)
+    }
+
+    /// C1: proposals are inserted mid-turn by the `watchtower mcp --chat`
+    /// SUBPROCESS, on a connection the app's ValueObservation cannot see. The
+    /// turn boundary is where they have to appear.
+    @MainActor
+    func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager)
+        let conv = try makeConversation()
+        // An earlier row, through the app's own pool: waiting for it proves the
+        // observation is live, so what follows measures the hook and not a race
+        // with the observation's first fetch.
+        try TestDatabase.insertAgentActionSync(dbManager.dbPool, conversationID: conv.id, turnID: "earlier")
+        vm.bind(to: conv)
+        for _ in 0..<50 where vm.actionFeed.rows.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(vm.actionFeed.rows.count, 1)
+
+        vm.inputText = "make me a task"
+        vm.send()
+        let turnID = try XCTUnwrap(vm.messages.last?.turnID)
+        // Synchronous on purpose: the main actor must not yield between send()
+        // and this write, or the stream could finish before the row exists.
+        let otherPool = try DatabasePool(path: dbPath)
+        try TestDatabase.insertAgentActionSync(otherPool, conversationID: conv.id, turnID: turnID)
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(vm.actionFeed.cards(forTurn: turnID).count, 1,
+                       "finishStream must refetch — the observation never sees the subprocess's insert")
+    }
+
+    @MainActor
+    func testOllamaSendsNoToolModeAndHonestPrompt() async throws {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager, provider: .ollama)
+        vm.bind(to: try makeConversation())
+        vm.inputText = "hello"
+        vm.send()
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertEqual(mock.toolModes, [nil])
+        let firstSystemPrompt = try XCTUnwrap(mock.systemPrompts.first)
+        let prompt = try XCTUnwrap(firstSystemPrompt)
+        XCTAssertTrue(prompt.contains("No tools are connected"))
+        XCTAssertFalse(prompt.contains("=== AGENT ACTIONS ==="))
+        XCTAssertFalse(prompt.contains("write tool"))
+        XCTAssertFalse(prompt.contains("proposal"))
+        // I5: the WORKFLOW and LINKING sections must not name a tool this
+        // session does not have.
+        XCTAssertFalse(prompt.contains("list_messages"))
+        XCTAssertFalse(prompt.contains("already connected"))
+        XCTAssertFalse(prompt.contains("tools above"))
+        XCTAssertTrue(prompt.contains("Answer from the conversation"))
+    }
+
+    func testBuildSystemPromptCarriesAgentActionsContract() throws {
+        try dbManager.dbPool.write { db in try TestDatabase.insertWorkspace(db) }
+        let prompt = ChatViewModel.buildSystemPrompt(dbPool: dbManager.dbPool)
+        XCTAssertTrue(prompt.contains("=== AGENT ACTIONS ==="))
+        XCTAssertTrue(prompt.contains("create_target"))
+        XCTAssertTrue(prompt.contains("every write is a proposal"))
+        XCTAssertFalse(prompt.contains("never write"), "the old blanket restriction is reworded")
+        XCTAssertTrue(prompt.contains("There is no SQL tool and no shell"))
+    }
+
+    @MainActor
+    func testResumedTurnPrependsOutcomesSinceLastMessage() async throws {
+        let mock = MockClaudeService(eventSequence: [[.sessionID("s1"), .text("a"), .done], [.text("b"), .done]])
+        let vm = ChatViewModel(aiService: mock, dbManager: dbManager)
+        let conv = try makeConversation()
+        vm.bind(to: conv)
+        vm.inputText = "first"
+        vm.send()
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        // A proposal from that turn got applied after the owner's first message.
+        let applied = AgentActionFeed.timestampString(Date().addingTimeInterval(60))
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertAgentAction(db, conversationID: conv.id, status: "applied", resultJSON: #"{"target_id":5}"#, appliedAt: applied)
+        }
+        vm.inputText = "second"
+        vm.send()
+        for _ in 0..<50 where vm.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+
+        XCTAssertEqual(mock.prompts.first, "first", "the first turn has no floor, so it carries no block")
+        let second = try XCTUnwrap(mock.prompts.last)
+        XCTAssertTrue(second.hasPrefix("=== ACTIONS SINCE YOUR LAST MESSAGE ==="))
+        XCTAssertTrue(second.contains("create_target: applied"))
+        XCTAssertTrue(second.hasSuffix("second"))
+        // The stored owner message is the bare text.
+        let records = try await dbManager.dbPool.read { db in
+            try ChatMessageQueries.fetchByConversation(db, conversationID: conv.id)
+        }
+        XCTAssertEqual(records.filter { $0.role == "user" }.map(\.text), ["first", "second"])
     }
 }
 

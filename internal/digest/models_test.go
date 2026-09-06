@@ -9,7 +9,7 @@ import (
 )
 
 func TestTierForSource(t *testing.T) {
-	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean}
+	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand}
 	for _, src := range light {
 		if got := TierForSource(src); got != TierLight {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)

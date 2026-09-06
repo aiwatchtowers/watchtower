@@ -21,6 +21,22 @@ func TestIsInvalidGrant(t *testing.T) {
 		{"json invalid_grant", `{"error":"invalid_grant","error_description":"refresh token is invalid"}`, true},
 		{"raw body fallback", `invalid_grant`, true},
 		{"non-json wrapper", `<html>invalid_grant</html>`, true},
+		// Atlassian's other revoked-grant shape: a 403 unauthorized_client whose
+		// description says the refresh token itself is invalid. Observed live as
+		// {"error":"unauthorized_client","error_description":"refresh_token is invalid"}.
+		{"unauthorized_client refresh invalid", `{"error":"unauthorized_client","error_description":"refresh_token is invalid"}`, true},
+		{"unauthorized_client refresh invalid spaced", `{"error":"unauthorized_client","error_description":"refresh token is invalid"}`, true},
+		// A bare unauthorized_client without the refresh-token signal is a client
+		// misconfiguration (wrong client_id/secret), not a revoked grant.
+		{"unauthorized_client misconfig", `{"error":"unauthorized_client","error_description":"client authentication failed"}`, false},
+		// A cleanly-decoded response is trusted by its structured error: once it
+		// decodes, the description alone decides, never a whole-body prose scan —
+		// so a misconfiguration whose prose happens to mention an invalid refresh
+		// token is NOT misread as a revocation.
+		{"decoded misconfig with refresh-token prose", `{"error":"invalid_client","error_description":"the refresh token is invalid for this client"}`, false},
+		// Prose only triggers a revoke via the non-JSON fallback, which matches
+		// the canonical invalid_grant token, not free-text refresh-token phrasing.
+		{"raw refresh_token prose is not a revoke", `refresh_token is invalid`, false},
 		{"unrelated oauth error", `{"error":"invalid_scope"}`, false},
 		{"server error", `{"error":"server_error"}`, false},
 		{"rate limited", `{"message":"too many requests"}`, false},

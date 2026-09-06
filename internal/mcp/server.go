@@ -17,6 +17,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // version is reported to MCP clients in the server handshake.
@@ -83,6 +84,12 @@ type Server struct {
 	// (WorkspaceDir()/skills); empty when no workspace was resolved — the
 	// load_skill tool then reports skills as unavailable.
 	skillsDir string
+
+	// registry + binding are set only by the chat-mode server (cmd/mcp.go
+	// --chat): the registry's write tools and get_action are mounted, and
+	// every proposal is stamped with the binding. nil in dev mode — AGENT-02.
+	registry *tools.Registry
+	binding  tools.Binding
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -136,6 +143,9 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
+	if srv.registry != nil {
+		registerRegistry(srv.s, database, srv.registry, srv.binding)
+	}
 
 	return srv
 }

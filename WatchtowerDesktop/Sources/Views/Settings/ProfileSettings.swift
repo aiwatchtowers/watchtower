@@ -43,6 +43,7 @@ struct ProfileSettings: View {
                 // covers the profile fields only, which the card's footer
                 // states explicitly.
                 SkillsSettingsSection()
+                AssistantToolsSettingsSection()
                 onboardingSection
             }
         }

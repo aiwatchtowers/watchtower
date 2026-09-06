@@ -86,6 +86,8 @@ final class SituationChatViewModelTests: XCTestCase {
         XCTAssertEqual(mock.prompts.first, "скажи им, что откатим завтра")
         XCTAssertEqual(vm.messages.last?.text, "Черновик ответа")
         XCTAssertEqual(vm.messages.first?.text, "скажи им, что откатим завтра")
+        // AGENT-04: draft-only surfaces never send a tool mode.
+        XCTAssertEqual(mock.toolModes, [nil])
     }
 
     /// A resumed turn drops the system prompt (the CLI uses --resume), so the

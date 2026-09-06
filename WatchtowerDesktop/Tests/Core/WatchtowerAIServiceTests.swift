@@ -15,7 +15,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: "codex",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertEqual(args, ["ai", "query", "hello", "--provider", "codex"])
@@ -29,7 +29,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertFalse(args.contains("--provider"))
@@ -43,7 +43,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: nil,
             provider: "",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertFalse(args.contains("--provider"))
@@ -57,9 +57,57 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: nil,
             model: "gpt-5.4",
             provider: "codex",
-            extraAllowedTools: []
+            toolMode: nil
         )
 
         XCTAssertEqual(args, ["ai", "query", "hello", "--model", "gpt-5.4", "--provider", "codex"])
+    }
+
+    func testBuildArgsEmitsChatToolModeFlags() {
+        let mode = ChatToolMode(surface: "target", conversationID: 7, turnID: "t1", contextType: "target", contextID: "42")
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: nil, sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
+        )
+        XCTAssertEqual(args, ["ai", "query", "hi", "--db-path", "/tmp/w.db",
+                              "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
+                              "--context-type", "target", "--context-id", "42"])
+    }
+
+    /// AGENT-04: no toolMode → no --tools flag, ever. And the retired
+    /// --allowed-tools flag is gone for good.
+    func testBuildArgsWithoutToolModeNeverEmitsToolsFlag() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: "s", sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude", toolMode: nil
+        )
+        XCTAssertFalse(args.contains("--tools"))
+        XCTAssertFalse(args.contains("--allowed-tools"))
+    }
+
+    func testChatToolModeMainOmitsContext() {
+        let mode = ChatToolMode(surface: "main", conversationID: 3, turnID: "x")
+        XCTAssertEqual(mode.cliArgs, ["--tools", "chat", "--surface", "main", "--conversation", "3", "--turn", "x"])
+    }
+
+    // MARK: - parseLine reset contract (the pre-tool preamble fix)
+
+    /// A "reset" event clears the accumulator and surfaces `.reset`, so the
+    /// pre-tool preamble ("I need to check…first.") is dropped and never glues
+    /// onto the post-tool answer streamed after it.
+    func testParseLineResetClearsAccumulatorAndEmitsReset() {
+        let service = WatchtowerAIService()
+        var acc = ""
+
+        _ = service.parseLine(#"{"type":"text","text":"I need to check first."}"#, accumulatedText: &acc)
+        XCTAssertEqual(acc, "I need to check first.")
+
+        let ev = service.parseLine(#"{"type":"reset"}"#, accumulatedText: &acc)
+        guard case .reset = ev else {
+            return XCTFail("expected .reset, got \(String(describing: ev))")
+        }
+        XCTAssertEqual(acc, "", "the preamble must be discarded on reset")
+
+        // Text after the reset rebuilds the answer from scratch.
+        _ = service.parseLine(#"{"type":"text","text":"Here is the answer."}"#, accumulatedText: &acc)
+        XCTAssertEqual(acc, "Here is the answer.")
     }
 }

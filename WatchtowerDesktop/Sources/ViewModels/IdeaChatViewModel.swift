@@ -167,6 +167,10 @@ final class IdeaChatViewModel {
                     fullText = text
                     sawTurnComplete = true
                     updateLastMessage(fullText)
+                case .reset:
+                    fullText = ""
+                    sawTurnComplete = false
+                    updateLastMessage("")
                 case .sessionID(let sid):
                     handleSessionID(sid)
                 case .done:

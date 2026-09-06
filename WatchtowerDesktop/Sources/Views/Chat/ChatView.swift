@@ -165,7 +165,9 @@ private struct ChatSplitView: View {
                         ForEach(chatVM.messages) { msg in
                             MessageBubble(message: msg)
                                 .id(msg.id)
+                            actionCards(for: msg)
                         }
+                        unattachedActionCards
 
                         if let error = chatVM.errorMessage {
                             Text(error)
@@ -175,10 +177,18 @@ private struct ChatSplitView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                         }
+                        if let err = chatVM.actionFeed.lastError {
+                            Text(err).font(.caption).foregroundStyle(.red)
+                        }
                     }
                     .padding()
                 }
                 .onChange(of: chatVM.messages.count) {
+                    if let last = chatVM.messages.last {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+                .onChange(of: chatVM.actionFeed.rows.count) {
                     if let last = chatVM.messages.last {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
@@ -257,5 +267,51 @@ private struct ChatSplitView: View {
             chatVM.send()
         }
         .buttonStyle(.bordered)
+    }
+
+    /// Proposal cards attached to one turn — only a message with a turn id
+    /// gets a card slot (a streaming placeholder's turn id lives in memory,
+    /// so cards created mid-stream still attach to it).
+    @ViewBuilder
+    private func actionCards(for msg: ChatMessage) -> some View {
+        if let turn = msg.turnID {
+            let cards = chatVM.actionFeed.cards(forTurn: turn)
+            if cards.filter(\.isPending).count >= 2 {
+                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
+                    .font(.caption)
+            }
+            ForEach(cards) { action in
+                agentActionCard(action)
+            }
+        }
+    }
+
+    /// Proposals whose turn never persisted a message — a stream that died
+    /// mid-turn. Without a slot of their own they would be unreachable.
+    @ViewBuilder
+    private var unattachedActionCards: some View {
+        let orphans = AgentActionFeed.unattached(
+            rows: chatVM.actionFeed.rows,
+            messageTurnIDs: Set(chatVM.messages.compactMap(\.turnID))
+        )
+        if !orphans.isEmpty {
+            Text("Proposals from an interrupted turn")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(orphans) { action in
+                agentActionCard(action)
+            }
+        }
+    }
+
+    private func agentActionCard(_ action: AgentAction) -> some View {
+        AgentActionCardView(
+            action: action,
+            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
+            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
+        )
     }
 }

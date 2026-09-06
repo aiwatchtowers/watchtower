@@ -104,4 +104,20 @@ final class MeetingChatViewModelTests: XCTestCase {
         }
         XCTAssertEqual(count, 1)
     }
+
+    /// AGENT-04: the meeting chat is draft-only — it must never carry a tool mode.
+    func testSendPassesNoToolMode() async throws {
+        let transcript = try loadTranscript()
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let vm = MeetingChatViewModel(
+            transcript: transcript, recapContent: nil,
+            dbManager: dbManager, aiService: mock)
+
+        vm.inputText = "what did we decide?"
+        vm.send()
+        for _ in 0..<200 where vm.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
+
+        // AGENT-04: draft-only surfaces never send a tool mode.
+        XCTAssertEqual(mock.toolModes, [nil])
+    }
 }

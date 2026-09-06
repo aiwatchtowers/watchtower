@@ -205,6 +205,21 @@ var registry = []Feature{
 		Enabled:   func(cfg *config.Config) bool { return cfg.Ideas.Enabled },
 	},
 	{
+		ID:          "reaction-commands",
+		Title:       "Reaction Commands",
+		Description: "Drive Watchtower by reacting in Slack: a reaction whose emoji is in your dictionary gathers the message's context and brings back a task, Jira issue, or other action for your review. Medium AI use — one compose call per new reaction command. Slack stays read-only.",
+		Tagline:     "React in Slack, get a task with full context",
+		Benefits: []string{
+			"Turn any Slack message into a task by reacting to it",
+			"Watchtower gathers the full thread context for you",
+			"An emoji dictionary you control, no leaving Slack",
+		},
+		Icon:      "face.smiling",
+		ConfigKey: "reaction_commands.enabled",
+		Cost:      CostMedium,
+		Enabled:   func(cfg *config.Config) bool { return cfg.ReactionCommands.Enabled },
+	},
+	{
 		ID:          "memory",
 		Title:       "Memory",
 		Description: "Builds and maintains a durable long-term memory vault — people, projects, and beliefs — from what the rest of Watchtower observes, so later answers, drafts, and briefings have real context instead of starting cold. Off by default. Medium AI use for the core pipeline; the sources and surfaces below are further switches within it. Feeds the daily Briefing and Day Plan.",

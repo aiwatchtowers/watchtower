@@ -126,7 +126,9 @@ contracts did NOT move:
   side-effects (belief evidence, learned rules), never actions.
 - **Action surfaces** (target/task chat, setup panels): the assistant acts on local state, but
   ONLY through the proposal→Approve gate — nothing is written until the owner approves
-  (execute-mode directives ride the same single-writer executor, per TGT-BRIEF-03).
+  (execute-mode directives ride the same single-writer executor, per TGT-BRIEF-03), or through
+  the tool registry's proposal path (`agent_actions`, AGENT-01..05) — both land behind Approve;
+  a draft-only surface must never receive `toolMode` (AGENT-04).
 
 Rules: a new chat surface must consciously pick ONE of the two capability contracts — never
 inherit one by copying a sibling VM. A change that gives a draft-only surface any action

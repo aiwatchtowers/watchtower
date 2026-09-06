@@ -47,6 +47,11 @@ call list. `list_transcripts` — a pre-existing tool this branch extended with
 an optional `query` argument (`db.SearchTranscripts`) — is exercised with
 both its bare and `query` forms.
 
+The chat-mode server (`watchtower mcp --chat`, launched only by the Desktop's
+`ai query --tools chat`) is a separate entry point governed by AGENT-01/02
+(`agent-actions.md`); it mounts write tools that record proposals and is never
+registered for external clients.
+
 **Known gap (pre-existing, not introduced or closed by this branch):** the
 explicit call list in `TestNoToolMutatesDatabase` still omits four tools
 added in earlier features — `list_messages`, `get_transcript`, `list_ideas`,
@@ -182,6 +187,10 @@ match) — and by code review against this contract.
 
 ## Changelog
 
+- 2026-09-04: DEV-01's Observable gains a paragraph noting the chat-mode MCP
+  server (`--chat`) as a separate entry point governed by AGENT-01/02
+  (`docs/inventory/agent-actions.md`); no contract semantics, guard tests, or
+  gates on this surface changed.
 - 2026-08-09: file created with 5 contracts (DEV-01..05), all Enforced.
   Introduced by the Developer Surface feature (spec
   `docs/superpowers/specs/2026-08-09-dev-knowledge-base-design.md`), which

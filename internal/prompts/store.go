@@ -54,6 +54,7 @@ const (
 	IdeasDigestJira            = "ideas.digest_jira"
 	IdeasConsolidate           = "ideas.consolidate"
 	DictationClean             = "dictation.clean"
+	ReactionCommand            = "reactioncmd.command"
 	CatchupCompose             = "catchup.compose"
 )
 

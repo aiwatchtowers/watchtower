@@ -1,4 +1,10 @@
 # sqlite_master
+index	idx_agent_actions_conversation
+CREATE INDEX idx_agent_actions_conversation ON agent_actions(conversation_id, created_at)
+
+index	idx_agent_actions_status
+CREATE INDEX idx_agent_actions_status ON agent_actions(status)
+
 index	idx_briefings_user_date
 CREATE INDEX idx_briefings_user_date ON briefings(user_id, date DESC)
 
@@ -215,6 +221,9 @@ CREATE INDEX idx_prompt_history_prompt ON prompt_history(prompt_id)
 index	idx_prompt_history_version
 CREATE INDEX idx_prompt_history_version ON prompt_history(prompt_id, version)
 
+index	idx_reaction_commands_status
+CREATE INDEX idx_reaction_commands_status ON reaction_commands(status)
+
 index	idx_reactions_message
 CREATE INDEX idx_reactions_message ON reactions(channel_id, message_ts)
 
@@ -312,6 +321,30 @@ CREATE INDEX idx_users_is_stub ON users(is_stub)
 
 index	idx_users_name
 CREATE INDEX idx_users_name ON users(name)
+
+table	agent_actions
+CREATE TABLE agent_actions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+tool TEXT NOT NULL,
+external INTEGER NOT NULL DEFAULT 0,
+args_json TEXT NOT NULL,
+reason TEXT NOT NULL DEFAULT '',
+surface TEXT NOT NULL DEFAULT '',
+conversation_id INTEGER NOT NULL DEFAULT 0,
+context_type TEXT NOT NULL DEFAULT '',
+context_id TEXT NOT NULL DEFAULT '',
+turn_id TEXT NOT NULL DEFAULT '',
+-- `executing` is the claim Apply takes before it runs the tool, so two
+-- overlapping applies can never both perform the write (AGENT-05).
+status TEXT NOT NULL DEFAULT 'pending'
+CHECK(status IN ('pending','approved','rejected','applied','failed','executing')),
+trust_at_create TEXT NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
+result_json TEXT NOT NULL DEFAULT '',
+error TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+decided_at TEXT NOT NULL DEFAULT '',
+applied_at TEXT NOT NULL DEFAULT ''
+)
 
 table	briefings
 CREATE TABLE briefings (
@@ -1236,6 +1269,33 @@ language TEXT NOT NULL DEFAULT '', -- '' = auto-detect, 'en', 'ru', etc.
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , customized INTEGER NOT NULL DEFAULT 0)
 
+table	reaction_command_map
+CREATE TABLE reaction_command_map (
+emoji TEXT PRIMARY KEY,
+kind TEXT NOT NULL DEFAULT 'builtin_tool'
+CHECK(kind IN ('builtin_tool','agent')),
+tool TEXT NOT NULL DEFAULT '',
+handler_id INTEGER NOT NULL DEFAULT 0,
+enabled INTEGER NOT NULL DEFAULT 1,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
+table	reaction_commands
+CREATE TABLE reaction_commands (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+account_id INTEGER NOT NULL,
+channel_id TEXT NOT NULL,
+message_ts TEXT NOT NULL,
+emoji TEXT NOT NULL,
+status TEXT NOT NULL DEFAULT 'pending'
+CHECK(status IN ('pending','dispatched','skipped','failed')),
+action_id INTEGER NOT NULL DEFAULT 0,
+error TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+UNIQUE(account_id, channel_id, message_ts, emoji)
+)
+
 table	reactions
 CREATE TABLE reactions (
 channel_id TEXT NOT NULL,
@@ -1366,6 +1426,13 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 notified_at TEXT NOT NULL DEFAULT '',
 next_step TEXT NOT NULL DEFAULT '',
 next_step_at TEXT NOT NULL DEFAULT ''
+)
+
+table	tool_trust
+CREATE TABLE tool_trust (
+tool TEXT PRIMARY KEY,
+trust TEXT NOT NULL CHECK(trust IN ('ask','execute')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
 table	track_events
@@ -1651,6 +1718,25 @@ WHERE NEW.text != '' AND NEW.is_deleted = 0;
 END
 
 # table_info
+## agent_actions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	tool	TEXT	notnull=1	dflt=NULL	pk=0
+2	external	INTEGER	notnull=1	dflt=0	pk=0
+3	args_json	TEXT	notnull=1	dflt=NULL	pk=0
+4	reason	TEXT	notnull=1	dflt=''	pk=0
+5	surface	TEXT	notnull=1	dflt=''	pk=0
+6	conversation_id	INTEGER	notnull=1	dflt=0	pk=0
+7	context_type	TEXT	notnull=1	dflt=''	pk=0
+8	context_id	TEXT	notnull=1	dflt=''	pk=0
+9	turn_id	TEXT	notnull=1	dflt=''	pk=0
+10	status	TEXT	notnull=1	dflt='pending'	pk=0
+11	trust_at_create	TEXT	notnull=1	dflt='ask'	pk=0
+12	result_json	TEXT	notnull=1	dflt=''	pk=0
+13	error	TEXT	notnull=1	dflt=''	pk=0
+14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+15	decided_at	TEXT	notnull=1	dflt=''	pk=0
+16	applied_at	TEXT	notnull=1	dflt=''	pk=0
+
 ## briefings
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	workspace_id	TEXT	notnull=1	dflt=''	pk=0
@@ -2469,6 +2555,26 @@ END
 4	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 5	customized	INTEGER	notnull=1	dflt=0	pk=0
 
+## reaction_command_map
+0	emoji	TEXT	notnull=0	dflt=NULL	pk=1
+1	kind	TEXT	notnull=1	dflt='builtin_tool'	pk=0
+2	tool	TEXT	notnull=1	dflt=''	pk=0
+3	handler_id	INTEGER	notnull=1	dflt=0	pk=0
+4	enabled	INTEGER	notnull=1	dflt=1	pk=0
+5	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+6	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## reaction_commands
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	account_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	channel_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	message_ts	TEXT	notnull=1	dflt=NULL	pk=0
+4	emoji	TEXT	notnull=1	dflt=NULL	pk=0
+5	status	TEXT	notnull=1	dflt='pending'	pk=0
+6	action_id	INTEGER	notnull=1	dflt=0	pk=0
+7	error	TEXT	notnull=1	dflt=''	pk=0
+8	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## reactions
 0	channel_id	TEXT	notnull=1	dflt=NULL	pk=1
 1	message_ts	TEXT	notnull=1	dflt=NULL	pk=2
@@ -2575,6 +2681,11 @@ END
 24	notified_at	TEXT	notnull=1	dflt=''	pk=0
 25	next_step	TEXT	notnull=1	dflt=''	pk=0
 26	next_step_at	TEXT	notnull=1	dflt=''	pk=0
+
+## tool_trust
+0	tool	TEXT	notnull=0	dflt=NULL	pk=1
+1	trust	TEXT	notnull=1	dflt=NULL	pk=0
+2	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## track_events
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

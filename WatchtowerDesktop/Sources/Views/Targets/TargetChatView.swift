@@ -158,6 +158,14 @@ struct TargetChatPane: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
+            if let err = chatVM.actionFeed.lastError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 6)
+            }
         }
         .background(Color(.controlBackgroundColor).opacity(0.4))
     }
@@ -311,7 +319,9 @@ struct TargetChatPane: View {
                                 )
                             }
                         }
+                        agentActionCards(for: msg)
                     }
+                    unattachedAgentActionCards
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
                 .padding(.horizontal, 14)
@@ -320,7 +330,55 @@ struct TargetChatPane: View {
             .onChange(of: chatVM.messages.count) { scrollToBottom(proxy) }
             .onChange(of: chatVM.messages.last?.text) { scrollToBottom(proxy) }
             .onChange(of: chatVM.actionCards.count) { scrollToBottom(proxy) }
+            .onChange(of: chatVM.actionFeed.rows.count) { scrollToBottom(proxy) }
         }
+    }
+
+    /// Agent-tool proposal cards attached to one turn — the same
+    /// `AgentActionFeed` contract as the main chat, added after the existing
+    /// `TargetActionCardView` cards for the message so both proposal kinds
+    /// interleave in turn order rather than one hiding behind the other.
+    @ViewBuilder
+    private func agentActionCards(for msg: ChatMessage) -> some View {
+        if let turn = msg.turnID {
+            let cards = chatVM.actionFeed.cards(forTurn: turn)
+            if cards.filter(\.isPending).count >= 2 {
+                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
+                    .font(.caption)
+            }
+            ForEach(cards) { action in
+                agentActionCard(action)
+            }
+        }
+    }
+
+    /// Proposals whose turn never persisted a message — a stream that died
+    /// mid-turn. Without a slot of their own they would be unreachable.
+    @ViewBuilder
+    private var unattachedAgentActionCards: some View {
+        let orphans = AgentActionFeed.unattached(
+            rows: chatVM.actionFeed.rows,
+            messageTurnIDs: Set(chatVM.messages.compactMap(\.turnID))
+        )
+        if !orphans.isEmpty {
+            Text("Proposals from an interrupted turn")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(orphans) { action in
+                agentActionCard(action)
+            }
+        }
+    }
+
+    private func agentActionCard(_ action: AgentAction) -> some View {
+        AgentActionCardView(
+            action: action,
+            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
+            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
+        )
     }
 
     private let bottomAnchor = "chat-bottom"

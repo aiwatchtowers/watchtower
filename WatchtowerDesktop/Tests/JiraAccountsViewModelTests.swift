@@ -45,12 +45,12 @@ final class JiraAccountsViewModelTests: XCTestCase {
 
     func testAddArgsWithLabel() {
         let args = JiraAccountsViewModel.addArgs(label: "Client")
-        XCTAssertEqual(args, ["jira", "add", "--label", "Client"])
+        XCTAssertEqual(args, ["jira", "add", "--app-return", "--label", "Client"])
     }
 
     func testAddArgsWithoutLabelOmitsFlag() {
         let args = JiraAccountsViewModel.addArgs(label: "")
-        XCTAssertEqual(args, ["jira", "add"])
+        XCTAssertEqual(args, ["jira", "add", "--app-return"])
         XCTAssertFalse(args.contains("--label"))
     }
 
@@ -58,12 +58,12 @@ final class JiraAccountsViewModelTests: XCTestCase {
     // one: the CLI's picker reads stdin, which the spawned Process never wires.
     func testAddArgsWithSite() {
         let args = JiraAccountsViewModel.addArgs(label: "Client", site: "acme.atlassian.net")
-        XCTAssertEqual(args, ["jira", "add", "--label", "Client", "--site", "acme.atlassian.net"])
+        XCTAssertEqual(args, ["jira", "add", "--app-return", "--label", "Client", "--site", "acme.atlassian.net"])
     }
 
     func testAddArgsWithSiteOnly() {
         let args = JiraAccountsViewModel.addArgs(label: "", site: "acme.atlassian.net")
-        XCTAssertEqual(args, ["jira", "add", "--site", "acme.atlassian.net"])
+        XCTAssertEqual(args, ["jira", "add", "--app-return", "--site", "acme.atlassian.net"])
     }
 
     func testAddArgsWithoutSiteOmitsFlag() {
@@ -84,7 +84,7 @@ final class JiraAccountsViewModelTests: XCTestCase {
         let account = JiraAccount(row: Row(["id": 7]))
         XCTAssertEqual(
             JiraAccountsViewModel.loginArgs(for: account),
-            ["jira", "login", "--account", "7"]
+            ["jira", "login", "--account", "7", "--app-return"]
         )
     }
 

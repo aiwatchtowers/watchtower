@@ -3,6 +3,9 @@ import Foundation
 package enum StreamEvent {
     case text(String)         // streaming delta (append)
     case turnComplete(String) // full turn text (replace — only last turn shown)
+    case reset                // a tool call interrupted the turn: discard the
+                              // text shown so far (pre-tool preamble) and rebuild
+                              // the visible answer from the deltas that follow
     case sessionID(String)
     case done
 }
@@ -15,7 +18,7 @@ package protocol AIServiceProtocol: Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -33,7 +36,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: nil,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -51,7 +54,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: model,
             provider: nil,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -73,7 +76,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: model,
             provider: provider,
-            extraAllowedTools: []
+            toolMode: nil
         )
     }
 
@@ -82,7 +85,7 @@ extension AIServiceProtocol {
         systemPrompt: String?,
         sessionID: String?,
         dbPath: String?,
-        extraAllowedTools: [String]
+        toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,
@@ -91,7 +94,7 @@ extension AIServiceProtocol {
             dbPath: dbPath,
             model: nil,
             provider: nil,
-            extraAllowedTools: extraAllowedTools
+            toolMode: toolMode
         )
     }
 }

@@ -1542,3 +1542,62 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
+
+CREATE TABLE IF NOT EXISTS agent_actions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool            TEXT    NOT NULL,
+    external        INTEGER NOT NULL DEFAULT 0,
+    args_json       TEXT    NOT NULL,
+    reason          TEXT    NOT NULL DEFAULT '',
+    surface         TEXT    NOT NULL DEFAULT '',
+    conversation_id INTEGER NOT NULL DEFAULT 0,
+    context_type    TEXT    NOT NULL DEFAULT '',
+    context_id      TEXT    NOT NULL DEFAULT '',
+    turn_id         TEXT    NOT NULL DEFAULT '',
+    -- `executing` is the claim Apply takes before it runs the tool, so two
+    -- overlapping applies can never both perform the write (AGENT-05).
+    status          TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','approved','rejected','applied','failed','executing')),
+    trust_at_create TEXT    NOT NULL DEFAULT 'ask' CHECK(trust_at_create IN ('ask','execute')),
+    result_json     TEXT    NOT NULL DEFAULT '',
+    error           TEXT    NOT NULL DEFAULT '',
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    decided_at      TEXT    NOT NULL DEFAULT '',
+    applied_at      TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
+
+CREATE TABLE IF NOT EXISTS tool_trust (
+    tool       TEXT PRIMARY KEY,
+    trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- Reaction commands (migration 00063): the owner drives Watchtower by reacting
+-- in Slack. See docs/superpowers/specs/2026-09-05-reaction-commands-design.md.
+CREATE TABLE IF NOT EXISTS reaction_command_map (
+    emoji      TEXT PRIMARY KEY,
+    kind       TEXT    NOT NULL DEFAULT 'builtin_tool'
+               CHECK(kind IN ('builtin_tool','agent')),
+    tool       TEXT    NOT NULL DEFAULT '',
+    handler_id INTEGER NOT NULL DEFAULT 0,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS reaction_commands (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    channel_id TEXT    NOT NULL,
+    message_ts TEXT    NOT NULL,
+    emoji      TEXT    NOT NULL,
+    status     TEXT    NOT NULL DEFAULT 'pending'
+               CHECK(status IN ('pending','dispatched','skipped','failed')),
+    action_id  INTEGER NOT NULL DEFAULT 0,
+    error      TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(account_id, channel_id, message_ts, emoji)
+);
+CREATE INDEX IF NOT EXISTS idx_reaction_commands_status ON reaction_commands(status);

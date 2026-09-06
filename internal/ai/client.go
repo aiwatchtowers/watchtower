@@ -78,7 +78,14 @@ type Client struct {
 	model     string
 	dbPath    string // path to SQLite database for MCP server
 	claudeCmd string // path to claude binary, default "claude"
+	// mcpArgs are appended to `watchtower mcp --db-path <db>` — the chat
+	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
+	// passes through `ai query --tools chat`. Empty = the read-only dev server.
+	mcpArgs []string
 }
+
+// SetMCPArgs appends extra flags to the MCP server command (chat mode).
+func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 
 // NewClient creates a new AI client that invokes the Claude Code CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -100,13 +107,13 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"-p", userMessage,
 		"--output-format", outputFormat,
 		"--model", c.model,
-		// Read-only allowlist: only the watchtower MCP server, which is read-only
-		// by construction — its stdio connection runs query_only (see cmd/mcp.go
-		// runMCP → SetReadOnly), so even a buggy handler cannot mutate the DB.
-		// Bash and any other tools are deliberately excluded — a prompt-injection
-		// payload in synced Slack/Jira content must not be able to run shell
-		// commands. The task-chat agent still changes targets ONLY via
-		// watchtower-action approval cards, never by writing to the DB directly.
+		// Allowlist: only the watchtower MCP server — read-only in dev mode; in
+		// chat mode its write tools only record proposals (see internal/tools),
+		// so the allowlist stays one entry. Bash and any other tools are
+		// deliberately excluded — a prompt-injection payload in synced
+		// Slack/Jira content must not be able to run shell commands. The
+		// task-chat agent still changes targets ONLY via watchtower-action
+		// approval cards, never by writing to the DB directly.
 		"--allowedTools", "mcp__watchtower",
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
@@ -151,11 +158,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 // exposing curated read-only tools (people, targets, tracks, digests, jira, and
 // raw message search) over stdio — no third-party npx package, no network.
 func (c *Client) buildMCPConfig() string {
+	args := append([]string{"mcp", "--db-path", c.dbPath}, c.mcpArgs...)
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
 			"watchtower": map[string]any{
 				"command": watchtowerBinary(),
-				"args":    []string{"mcp", "--db-path", c.dbPath},
+				"args":    args,
 			},
 		},
 	}
@@ -181,8 +189,8 @@ func watchtowerBinary() string {
 // for text chunks, errors, and the session ID. The sessionIDCh receives at most
 // one value — the session ID from the "result" event — enabling multi-turn
 // conversations via --resume. Pass a non-empty sessionID to resume an existing session.
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 64)
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan StreamChunk, 64)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 
@@ -241,13 +249,27 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 				sidCh <- event.SessionID
 			}
 
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble (including any text in this very event)
+			// and starts the visible answer fresh from what follows the tool.
+			if event.hasToolUse() {
+				select {
+				case textCh <- StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+				continue
+			}
+
 			text := event.extractText()
 			if text == "" {
 				continue
 			}
 
 			select {
-			case textCh <- text:
+			case textCh <- StreamChunk{Text: text}:
 			case <-ctx.Done():
 				// CommandContext handles killing the process; just reap it.
 				_ = cmd.Wait()
@@ -347,6 +369,20 @@ func (e *streamEvent) extractText() string {
 	// Note: "result" events contain the full response but we skip them
 	// to avoid duplicating text already streamed via "assistant" events.
 	return ""
+}
+
+// hasToolUse reports whether an assistant event carries a tool_use content
+// block — the marker that the model paused the turn to call a tool.
+func (e *streamEvent) hasToolUse() bool {
+	if e.Type != "assistant" || e.Message == nil {
+		return false
+	}
+	for _, c := range e.Message.Content {
+		if c.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 // limitedWriter wraps an io.Writer and stops writing after limit bytes.

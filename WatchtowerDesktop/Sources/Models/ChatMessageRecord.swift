@@ -7,6 +7,7 @@ struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable {
     let role: String
     let text: String
     let createdAt: Double
+    let turnID: String
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -14,6 +15,7 @@ struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable {
         case role
         case text
         case createdAt = "created_at"
+        case turnID = "turn_id"
     }
 
     func toChatMessage() -> ChatMessage {
@@ -27,7 +29,8 @@ struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable {
             role: msgRole,
             text: text,
             timestamp: Date(timeIntervalSince1970: createdAt),
-            isStreaming: false
+            isStreaming: false,
+            turnID: turnID.isEmpty ? nil : turnID
         )
     }
 }
