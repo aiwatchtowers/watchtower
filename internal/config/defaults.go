@@ -29,6 +29,10 @@ const (
 	DefaultInboxLookbackDays      = 7
 	DefaultInboxMaxTriageMessages = 600
 	DefaultInboxMaxAwarenessCards = 3
+	// DefaultInboxSituationsEnabled gates the dashboard situations compose +
+	// situation-card stages. OFF by default — a deliberate mute of the
+	// expensive AI clustering; triage/detectors/inbox_items keep running.
+	DefaultInboxSituationsEnabled = false
 	DefaultFeedMeetingLeadMinutes = 30
 
 	// Ideas & decisions registry defaults
