@@ -18,6 +18,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Ideas & Decisions Registry | [ideas.md](ideas.md) | `internal/ideas/`, `internal/db/ideas.go`, `internal/jira/sync.go` (bounded comment sync), `internal/daemon/daemon.go` (`phaseIdeas`), `internal/mcp/ideas.go`, `cmd/ideas.go`, `WatchtowerDesktop/Sources/Views/Ideas/`, `WatchtowerDesktop/Sources/Database/Queries/IdeaQueries.swift` |
 | Developer Surface | [dev-surface.md](dev-surface.md) | `internal/mcp/` (`taskcontext.go`, `experts.go`, `situations.go`), `internal/devpack/`, `cmd/integrate.go` |
 | Agent actions | [agent-actions.md](agent-actions.md) | `internal/tools/`, `internal/db/agent_actions.go`, `internal/mcp/actions.go`, `cmd/actions.go`, `cmd/mcp.go` (`--chat`), `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/`, `WatchtowerDesktop/Sources/Views/Chat/AgentActionCardView.swift` |
+| Reaction Commands + Inbox Action Strip | [reaction-commands.md](reaction-commands.md) | `internal/reactioncmd/`, `internal/db/reaction_commands.go`, `internal/db/reminders.go`, `cmd/reaction_commands.go`, `WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift` |
 
 (Other modules will be added as their inventories are written.)
 
