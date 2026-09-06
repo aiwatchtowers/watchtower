@@ -23,6 +23,10 @@ func ReadTools() []*Tool {
 		NewGetTarget(),
 		NewListJiraIssues(),
 		NewGetJiraIssue(),
+		NewListPeople(),
+		NewListTracks(),
+		NewGetTrack(),
+		NewListUpcomingEvents(),
 	}
 }
 
