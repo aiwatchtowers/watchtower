@@ -29,13 +29,19 @@ package enum AgentActionQueries {
             """, arguments: [conversationID, after, after])
     }
 
-    /// Every non-terminal proposal across every conversation, newest first —
-    /// the action strip's feed (STRIP-A: all surfaces, not just reaction).
-    package static func fetchStrip(_ db: Database) throws -> [AgentAction] {
+    /// Every non-terminal proposal across every conversation, newest first,
+    /// PLUS a bounded tail of recently applied/rejected rows (`decided_at >=
+    /// terminalSince`, an RFC3339 UTC string) so an execute-trust tool's
+    /// result — `brief_context` above all, which never has a non-terminal
+    /// state to be caught in — actually surfaces on the strip instead of
+    /// vanishing the instant it auto-applies (spec §4.1). Non-terminal rows
+    /// sort first, then the terminal tail, newest-first within each group.
+    package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
             WHERE status IN ('pending','approved','failed','executing')
-            ORDER BY created_at DESC, id DESC
-            """)
+               OR (status IN ('applied','rejected') AND decided_at >= ?)
+            ORDER BY (status IN ('applied','rejected')) ASC, created_at DESC, id DESC
+            """, arguments: [terminalSince])
     }
 }

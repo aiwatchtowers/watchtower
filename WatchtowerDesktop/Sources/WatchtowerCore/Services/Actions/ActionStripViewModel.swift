@@ -35,10 +35,12 @@ package final class ActionStripViewModel {
     /// daemon phase) wrote.
     package func refresh() {
         lastError = nil
-        let now = ISO8601DateFormatter().string(from: Date())
+        let formatter = ISO8601DateFormatter()
+        let now = formatter.string(from: Date())
+        let terminalSince = formatter.string(from: Date().addingTimeInterval(-24 * 3600))
         do {
             (actionRows, reminderRows) = try dbPool.read { db in
-                (try AgentActionQueries.fetchStrip(db), try ReminderQueries.fetchDue(db, nowUTC: now))
+                (try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince), try ReminderQueries.fetchDue(db, nowUTC: now))
             }
         } catch {
             lastError = error.localizedDescription

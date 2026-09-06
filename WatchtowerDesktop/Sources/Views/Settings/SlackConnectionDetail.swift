@@ -310,12 +310,12 @@ struct SlackConnectionDetail: View {
                     .labelsHidden()
                     .frame(width: 180)
                     Button("Add mapping") {
-                        let emoji = newReactionEmoji.trimmingCharacters(in: .whitespaces)
+                        let emoji = Self.normalizedEmojiShortName(newReactionEmoji)
                         guard !emoji.isEmpty else { return }
                         Task { await vm.upsert(emoji: emoji, tool: newReactionTool) }
                         newReactionEmoji = ""
                     }
-                    .disabled(newReactionEmoji.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(Self.normalizedEmojiShortName(newReactionEmoji).isEmpty)
                 }
             } else {
                 Text("Loading...")
@@ -323,6 +323,12 @@ struct SlackConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Strips whitespace and surrounding `:` so a pasted `:eyes:` becomes the
+    /// bare `eyes` Slack's `reactions.list` actually returns.
+    private static func normalizedEmojiShortName(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: ":"))
     }
 
     private func slackAccountStatusColor(_ account: SlackAccount) -> Color {

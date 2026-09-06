@@ -1,8 +1,10 @@
 import Foundation
 import GRDB
 
-/// One `reminders` row — a reaction-command-created follow-up. Go owns writes
-/// (`watchtower reminders …`); the Desktop only reads. Mirrors `internal/db/reminders.go`.
+/// One `reminders` row — a reaction-command-created follow-up. Rows are
+/// created by the `remind_me` agent-actions tool (Go, `internal/tools/remind.go`);
+/// Done/Snooze are Swift-owned direct GRDB writes (`ReminderQueries.markDone`/
+/// `snooze`, a dual-path — the `inbox_feedback` precedent). Mirrors `internal/db/reminders.go`.
 package struct Reminder: FetchableRecord, Identifiable, Equatable, Sendable {
     package let id: Int64
     package let accountID: Int64
