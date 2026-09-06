@@ -34,6 +34,7 @@ package final class ActionStripViewModel {
     /// surface a row a subprocess (CLI action commands, the reaction-command
     /// daemon phase) wrote.
     package func refresh() {
+        lastError = nil
         let now = ISO8601DateFormatter().string(from: Date())
         do {
             (actionRows, reminderRows) = try dbPool.read { db in
@@ -45,6 +46,7 @@ package final class ActionStripViewModel {
     }
 
     package func markReminderDone(_ id: Int64) {
+        lastError = nil
         do {
             try dbPool.write { try ReminderQueries.markDone($0, id: id) }
             refresh()
@@ -54,6 +56,7 @@ package final class ActionStripViewModel {
     }
 
     package func snoozeReminder(_ id: Int64, until: String) {
+        lastError = nil
         do {
             try dbPool.write { try ReminderQueries.snooze($0, id: id, until: until) }
             refresh()
@@ -64,28 +67,35 @@ package final class ActionStripViewModel {
 
     package func approve(_ id: Int64) async {
         await actionFeed.approve(id)
-        adoptFeedError()
         refresh()
+        adoptFeedError()
     }
 
     package func reject(_ id: Int64) async {
         await actionFeed.reject(id)
-        adoptFeedError()
         refresh()
+        adoptFeedError()
     }
 
     package func retry(_ id: Int64) async {
         await actionFeed.retry(id)
-        adoptFeedError()
         refresh()
+        adoptFeedError()
     }
 
     /// `actionFeed` tracks its own `lastError` (envelope errors, process
     /// failures); a bare "call it and move on" would swallow that from
-    /// anything observing only the strip's own `lastError`.
+    /// anything observing only the strip's own `lastError`. Runs AFTER
+    /// `refresh()`, which clears `lastError` on entry — otherwise refresh's
+    /// own reset would immediately wipe the error this just adopted. Synced
+    /// unconditionally when `refresh()` itself succeeded (not just when
+    /// non-nil): a later successful call where the feed's own error cleared
+    /// back to nil must clear the strip's copy too, not leave it stuck on a
+    /// stale failure. Guarded on `lastError == nil` so a genuine `refresh()`
+    /// read failure (the strip's own DB read, unrelated to the feed) is never
+    /// overwritten by a stale/absent feed error.
     private func adoptFeedError() {
-        if let feedError = actionFeed.lastError {
-            lastError = feedError
-        }
+        guard lastError == nil else { return }
+        lastError = actionFeed.lastError
     }
 }

@@ -92,4 +92,26 @@ final class ActionStripViewModelTests: XCTestCase {
         XCTAssertNil(vm.lastError)
         XCTAssertTrue(vm.actionRows.isEmpty, "an applied (terminal) row must drop out of fetchStrip's non-terminal filter")
     }
+
+    /// Regression for the sticky-error review finding: a failed CLI call must
+    /// not leave `lastError` stuck forever — a later SUCCESSFUL call must
+    /// clear it back to nil. `FakeCLIRunner.shouldThrow` is a `var`, so one
+    /// runner instance models "the CLI failed once, then worked" by toggling
+    /// it between the two calls.
+    func testApproveClearsAPriorErrorOnSubsequentSuccess() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, status: "pending") }
+        struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
+        let runner = FakeCLIRunner(error: Boom())
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
+        vm.refresh()
+
+        await vm.approve(id)
+        XCTAssertEqual(vm.lastError, "boom", "a failed CLI call must surface on the strip's own lastError")
+
+        runner.shouldThrow = nil
+        await vm.approve(id)
+        XCTAssertNil(vm.lastError, "a later successful call must clear the earlier failure, not leave it sticky")
+    }
 }
