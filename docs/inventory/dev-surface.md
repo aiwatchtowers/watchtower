@@ -32,6 +32,18 @@ calling `SetReadOnly()` on the same database before wiring the test server,
 so a handler that tried to write fails in tests the same way it would in
 production.
 
+Since the read-tool migration (2026-09-06), the pure-`db` read tools no longer
+live in per-domain `internal/mcp` handlers: they are `tools.Tool{Access:
+AccessRead}` entries in the registry (`internal/tools`, listed by
+`tools.ReadTools()`), dispatched through `Registry.CallRead` — which runs the
+tool's `Execute` and records **no** `agent_actions` row (a read is not a
+proposal). Dev mode builds a read-only registry (`tools.NewReadRegistry`) so
+`NewServer` mounts these reads from the one registry both server modes and the
+runtime-B loop share; the `query_only=ON` fence above is unchanged and still the
+real enforcement. `memory_map`/`memory_open`/`memory_recall` and `load_skill`
+stay plain `internal/mcp` handlers for now (they need vault/skills dependencies
+and, for memory, carry the documented telemetry-write exception).
+
 `TestAllToolsAreReadOnly` is a **naming-convention lint only** — it checks
 that every registered tool name starts with `list_`/`get_` or appears in an
 explicit `readVerbs` allow-list (`memory_map`, `memory_open`,
@@ -80,14 +92,16 @@ a way for an external agent session to mutate the product's data.
 
 **Status:** Enforced
 
-**Observable:** `get_task_context` (`internal/mcp/taskcontext.go`),
-`find_experts` (`internal/mcp/experts.go`), and `list_situations`/
-`get_situation` (`internal/mcp/situations.go`) are mechanical SQL plus plain
+**Observable:** `get_task_context` (`internal/tools/taskcontext.go`),
+`find_experts` (`internal/tools/experts.go`), and `list_situations`/
+`get_situation` (`internal/tools/situations.go`) are mechanical SQL plus plain
 Go arithmetic (`find_experts`'s recency-decayed scoring). None calls a
 `digest.Generator`, loads a prompt, or shells out to `claude`/`codex`.
 Interpretation happens in the consumer's own coding agent, on the consumer's
 own tokens — which is also what keeps this surface free at Watchtower's
-expense-side.
+expense-side. (These read tools moved from `internal/mcp` into the registry in
+the 2026-09-06 read-tool migration; `internal/tools` still imports no AI/prompt
+package.)
 
 **Why locked:** A tool on this surface that needed a model call would be the
 wrong tool for this layer — it would tie a "give me the facts" call to an AI
@@ -97,7 +111,7 @@ inside an agent session) cannot afford.
 **Test guards:** no dedicated guard test; enforced by code review — none of
 `taskcontext.go`, `experts.go`, or `situations.go` imports an AI/prompt
 package, checkable with `grep -l "internal/ai\|internal/prompts"
-internal/mcp/{taskcontext,experts,situations}.go` (expected: no match).
+internal/tools/{taskcontext,experts,situations}.go` (expected: no match).
 
 **Locked since:** 2026-08-09
 
@@ -187,6 +201,14 @@ match) — and by code review against this contract.
 
 ## Changelog
 
+- 2026-09-06: read-tool migration — every pure-`db` read tool moved from
+  per-domain `internal/mcp` handlers into the `internal/tools` registry
+  (`tools.ReadTools()`), dispatched through `Registry.CallRead`; `internal/mcp`
+  became a thin lister over it. DEV-01's and DEV-02's Observables were updated to
+  point at `internal/tools` and to note that dev-mode reads are now
+  registry-sourced. No contract semantics, guard tests, or gates changed — the
+  `query_only=ON` fence and `TestNoToolMutatesDatabase` are the same. `memory_*`
+  and `load_skill` stay in `internal/mcp` pending a later slice.
 - 2026-09-04: DEV-01's Observable gains a paragraph noting the chat-mode MCP
   server (`--chat`) as a separate entry point governed by AGENT-01/02
   (`docs/inventory/agent-actions.md`); no contract semantics, guard tests, or
