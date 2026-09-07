@@ -10,6 +10,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,14 @@ func (r *Registry) Register(t *Tool) error {
 	}
 	if t.Access == AccessWrite && (t.InputSchema == nil || t.Validate == nil || t.Execute == nil) {
 		return fmt.Errorf("register: write tool %q needs InputSchema, Validate and Execute", t.Name)
+	}
+	// A read tool is mounted over MCP with the raw AddTool path, which panics on
+	// a nil schema (go-sdk mcp/server.go:242-248); a parameterless read tool
+	// therefore carries an explicit empty-object schema. Execute is what a read
+	// runs (CallRead never calls the write-only Validate). Required here so a bad
+	// tool is caught at construction, not by a runtime panic on the MCP path.
+	if t.Access == AccessRead && (t.InputSchema == nil || t.Execute == nil) {
+		return fmt.Errorf("register: read tool %q needs InputSchema and Execute", t.Name)
 	}
 	if err := t.resolveSchema(); err != nil {
 		return fmt.Errorf("register: tool %q has an unusable InputSchema: %w", t.Name, err)
@@ -323,7 +332,11 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	if t.Access != AccessRead {
 		return nil, ErrNotReadable
 	}
-	if len(args) == 0 {
+	// A parameterless call arrives as absent, empty, or literal null (an MCP
+	// client with no arguments, e.g. `ls.Call(name, nil)`); all mean "no
+	// filters", so normalize to an empty object before the object schema runs —
+	// otherwise a bare read tool would reject its own no-arg call.
+	if len(args) == 0 || string(bytes.TrimSpace(args)) == "null" {
 		args = json.RawMessage(`{}`)
 	}
 	if !json.Valid(args) {

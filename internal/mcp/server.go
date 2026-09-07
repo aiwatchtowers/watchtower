@@ -11,8 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
-	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -23,44 +21,11 @@ import (
 // version is reported to MCP clients in the server handshake.
 const version = "0.1.0"
 
-// defaultListLimit applies to list_ tools when the caller left limit unset;
-// maxListLimit caps explicit requests, so a single tool call can never dump an
-// entire table into an LLM context window.
-const (
-	defaultListLimit = 50
-	maxListLimit     = 200
-)
-
-// listLimit applies defaultListLimit when the caller passed 0 (unbounded) and
-// clamps oversized requests to maxListLimit.
-func listLimit(n int) int {
-	switch {
-	case n <= 0:
-		return defaultListLimit
-	case n > maxListLimit:
-		return maxListLimit
-	}
-	return n
-}
-
-// validateEnum returns an error message when value is not one of allowed.
-// An empty value means "no filter" and is always valid.
-func validateEnum(field, value string, allowed ...string) string {
-	if value == "" || slices.Contains(allowed, value) {
-		return ""
-	}
-	return fmt.Sprintf("invalid %s %q: must be one of %s", field, value, strings.Join(allowed, "|"))
-}
-
-// firstError returns the first non-empty message, or "".
-func firstError(msgs ...string) string {
-	for _, m := range msgs {
-		if m != "" {
-			return m
-		}
-	}
-	return ""
-}
+// maxListLimit caps a memory tool's explicit request so a single call can never
+// dump an entire table into an LLM context window. (The migrated read tools
+// carry their own clamp in internal/tools/limit.go; only memory.go still uses
+// this one.)
+const maxListLimit = 200
 
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
@@ -85,11 +50,15 @@ type Server struct {
 	// load_skill tool then reports skills as unavailable.
 	skillsDir string
 
-	// registry + binding are set only by the chat-mode server (cmd/mcp.go
-	// --chat): the registry's write tools and get_action are mounted, and
-	// every proposal is stamped with the binding. nil in dev mode — AGENT-02.
-	registry *tools.Registry
-	binding  tools.Binding
+	// registry sources the assistant's tools. Both modes have one: dev mode
+	// passes none, so NewServer builds a read-only registry (NewReadRegistry) and
+	// leaves mountWrites false — only read tools mount; chat mode (WithRegistry)
+	// sets it with the write tools + get_action and mountWrites true, stamping
+	// proposals with the binding. mountWrites is the switch — false on the dev
+	// surface, so it never sees a write tool (AGENT-02).
+	registry    *tools.Registry
+	binding     tools.Binding
+	mountWrites bool
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -130,22 +99,21 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	for _, opt := range opts {
 		opt(srv)
 	}
+	// Dev mode supplies no registry: build the read-only one so the migrated
+	// read tools mount. Chat mode's WithRegistry already set a registry (with
+	// write tools) and mountWrites=true. Either way the migrated reads dispatch
+	// through the registry, not a per-domain handler.
+	if srv.registry == nil {
+		srv.registry = tools.NewReadRegistry(database)
+	}
 
-	registerTargets(srv.s, database)
-	registerDigests(srv.s, database)
-	registerPeople(srv.s, database)
-	registerJira(srv.s, database)
-	registerMessages(srv.s, database)
-	registerTranscripts(srv.s, database)
-	registerIdeas(srv.s, database)
-	registerSituations(srv.s, database)
-	registerTaskContext(srv.s, database)
-	registerExperts(srv.s, database)
 	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
 	registerSkills(srv.s, srv.skillsDir)
-	if srv.registry != nil {
-		registerRegistry(srv.s, database, srv.registry, srv.binding)
-	}
+	// Every pure-db read tool now lives in the registry (tools.ReadTools) and
+	// mounts from here instead of a per-domain register* handler — the registry
+	// is the single source both server modes and the runtime-B loop share.
+	// mountWrites gates the write tools + get_action to chat mode.
+	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites)
 
 	return srv
 }

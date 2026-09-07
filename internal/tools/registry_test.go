@@ -159,9 +159,29 @@ func TestPropose_UnknownOrReadToolRejected(t *testing.T) {
 
 	// A read tool is registered but can never be proposed — the proposal flow
 	// exists for writes only.
-	require.NoError(t, reg.Register(&Tool{Name: "read_thing", Description: "x", Access: AccessRead}))
-	_, err = reg.Propose(context.Background(), "read_thing", json.RawMessage(`{}`), Binding{})
+	var executed []Call
+	require.NoError(t, reg.Register(newPeekTool(t, &executed)))
+	_, err = reg.Propose(context.Background(), "peek", json.RawMessage(`{}`), Binding{})
 	assert.ErrorIs(t, err, ErrNotWritable)
+}
+
+// A read tool is mounted over MCP with the raw AddTool path, which panics on a
+// nil schema (go-sdk mcp/server.go:242-248); it also has nothing to run without
+// an Execute. Register rejects both so the panic and the nil-Execute crash are
+// impossible by construction, not by reviewer vigilance.
+func TestRegister_ReadToolNeedsSchemaAndExecute(t *testing.T) {
+	reg := New(openDB(t))
+	run := func(context.Context, *db.DB, Call) (any, error) { return nil, nil }
+	schema, err := jsonschema.For[peekArgs](nil)
+	require.NoError(t, err)
+
+	err = reg.Register(&Tool{Name: "no_schema", Access: AccessRead, Execute: run})
+	require.Error(t, err, "a read tool with a nil InputSchema must be rejected")
+
+	err = reg.Register(&Tool{Name: "no_execute", Access: AccessRead, InputSchema: schema})
+	require.Error(t, err, "a read tool with no Execute has nothing to run")
+
+	require.NoError(t, reg.Register(&Tool{Name: "ok", Access: AccessRead, InputSchema: schema, Execute: run}))
 }
 
 // CallRead is the runtime-B read path: it runs a read tool's Execute and returns
@@ -213,6 +233,19 @@ func TestCallRead_UnknownTool(t *testing.T) {
 	reg := New(openDB(t))
 	_, err := reg.CallRead(context.Background(), "nope", json.RawMessage(`{}`))
 	assert.ErrorIs(t, err, ErrUnknownTool)
+}
+
+// A no-arg read call arrives as absent, empty, or literal null (an MCP client
+// with no arguments) — all mean "no filters" and must reach Execute, not trip
+// the object-schema validation. list_situations has all-optional args, so a
+// no-arg call is legitimate.
+func TestCallRead_NoArgsNormalizedToEmptyObject(t *testing.T) {
+	reg := New(openDB(t))
+	require.NoError(t, reg.Register(NewListSituations()))
+	for _, args := range []string{``, `null`, `{}`} {
+		_, err := reg.CallRead(context.Background(), "list_situations", json.RawMessage(args))
+		require.NoError(t, err, "args %q must be accepted", args)
+	}
 }
 
 // Spec §4: schema validation runs BEFORE the tool's own semantic Validate, so

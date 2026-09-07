@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -44,6 +43,13 @@ func chatRegistry(t *testing.T, database *db.DB) *tools.Registry {
 	})); err != nil {
 		t.Fatal(err)
 	}
+	// The migrated read tools mount on the chat surface too (dispatched through
+	// the registry's read branch) — mirrors production buildToolRegistry.
+	for _, rt := range tools.ReadTools() {
+		if err := reg.Register(rt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return reg
 }
 
@@ -75,19 +81,24 @@ func TestChatMode_ListsWriteToolsPerSurface(t *testing.T) {
 	}
 }
 
-// A registered AccessRead tool has no InputSchema (Register only requires one
-// for AccessWrite) — the SDK's raw AddTool panics on a nil schema, so the
-// registry adapter must skip it rather than mount it. Construction must not
-// panic, and the tool must not appear on the chat surface.
-func TestChatMode_SkipsReadToolWithoutPanicking(t *testing.T) {
+// The registry adapter mounts a read tool through the read branch and dispatches
+// it via CallRead: it appears on the chat surface and returns data, not an error.
+// (Register guarantees a non-nil schema, so the raw AddTool path cannot panic.)
+func TestChatMode_MountsReadToolViaRegistry(t *testing.T) {
 	database := seedDB(t)
-	reg := tools.New(database)
-	if err := reg.Register(&tools.Tool{Name: "read_thing", Access: tools.AccessRead}); err != nil {
+	if _, err := database.CreateSituation(db.DashboardSituation{Title: "Deploy broke", Status: "open"}); err != nil {
 		t.Fatal(err)
 	}
-	names := toolNames(t, newChatSession(t, database, reg, tools.Binding{Surface: "main"}))
-	if names["read_thing"] {
-		t.Fatalf("a read tool must not be mounted by the registry adapter: %v", names)
+	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
+	if !toolNames(t, cs)["list_situations"] {
+		t.Fatalf("a read tool must be mounted on the chat surface")
+	}
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_situations"})
+	if err != nil {
+		t.Fatalf("call list_situations: %v", err)
+	}
+	if res.IsError || !strings.Contains(textContent(t, res), "Deploy broke") {
+		t.Fatalf("list_situations via registry = %s", textContent(t, res))
 	}
 }
 
@@ -258,32 +269,5 @@ func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 	res, _ = same.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 	if res.IsError {
 		t.Fatalf("a binding matching the row's conversation must see it: %s", textContent(t, res))
-	}
-}
-
-func TestListJiraProjects_GroupsByAccount(t *testing.T) {
-	database := seedDB(t)
-	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, 'ABC', 'x', 2)`, acct); err != nil {
-		t.Fatal(err)
-	}
-	for _, it := range []string{"Task", "Bug", "Task"} {
-		key := "ABC-" + it + "1"
-		if err := database.UpsertJiraIssue(db.JiraIssue{AccountID: acct, Key: key, ProjectKey: "ABC", Summary: "s", IssueType: it,
-			Status: "To Do", StatusCategory: "new", Labels: "[]", Components: "[]", FixVersions: "[]",
-			CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", SyncedAt: "2026-01-01T00:00:00Z"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cs := newTestSession(t, database)
-	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_jira_projects"})
-	out := textContent(t, res)
-	for _, want := range []string{`"account_id": ` + strconv.FormatInt(acct, 10), `"project_key": "ABC"`, `"Bug"`, `"Task"`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("list_jira_projects output missing %s:\n%s", want, out)
-		}
 	}
 }

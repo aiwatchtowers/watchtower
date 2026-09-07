@@ -13,13 +13,16 @@ import (
 )
 
 // WithRegistry turns the server into the assistant's chat-mode server: the
-// registry's tools visible on binding.Surface are mounted, write calls become
-// proposals stamped with binding, and get_action is registered. The
-// developer-surface server never passes this option (AGENT-02).
+// registry's tools visible on binding.Surface are mounted — reads dispatch
+// through CallRead, writes become proposals stamped with binding — and
+// get_action is registered. The developer-surface server passes no registry, so
+// NewServer builds a read-only one (tools.NewReadRegistry) with mountWrites
+// false: no write tools, no get_action (AGENT-02).
 func WithRegistry(reg *tools.Registry, binding tools.Binding) ServerOption {
 	return func(srv *Server) {
 		srv.registry = reg
 		srv.binding = binding
+		srv.mountWrites = true
 	}
 }
 
@@ -27,17 +30,33 @@ type getActionArgs struct {
 	ID int64 `json:"id" jsonschema:"the action id from a write tool's receipt"`
 }
 
-func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding) {
+// registerRegistry mounts the registry's tools visible on binding.Surface. Read
+// tools always mount (dispatched through CallRead, which records no proposal).
+// Write tools and get_action mount only when mountWrites is set (chat mode) —
+// dev mode passes false, so the developer surface never sees a write tool.
+func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool) {
 	for _, t := range reg.List(binding.Surface) {
 		tool := t
-		// v1's registry holds only write tools (spec §4): Register only
-		// requires InputSchema for AccessWrite, but the SDK's raw AddTool
-		// panics on a nil schema (go-sdk v1.6.1 mcp/server.go:242-248), so a
-		// read tool would crash the server at construction. Skip anything
-		// that isn't a write — reads stay plain internal/mcp tools until
-		// runtime B moves them into the registry, at which point this adapter
-		// grows a read branch against a guaranteed-non-nil schema.
-		if tool.Access != tools.AccessWrite {
+		if tool.Access == tools.AccessRead {
+			s.AddTool(&mcpsdk.Tool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: tool.InputSchema,
+			}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments)
+				if err != nil {
+					var verr *tools.ValidationError
+					if errors.As(err, &verr) {
+						return errResult(verr.Msg), nil
+					}
+					return errResult(err.Error()), nil
+				}
+				res, _, jerr := jsonResult(data)
+				return res, jerr
+			})
+			continue
+		}
+		if !mountWrites {
 			continue
 		}
 		s.AddTool(&mcpsdk.Tool{
@@ -56,6 +75,10 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 			res, _, err := jsonResult(rc)
 			return res, err
 		})
+	}
+
+	if !mountWrites {
+		return
 	}
 
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
