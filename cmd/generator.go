@@ -4,13 +4,16 @@ import (
 	"log"
 	"path/filepath"
 
+	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
+	"watchtower/internal/tools"
 )
 
 // validateModel is a no-op kept for call-site compatibility.
@@ -77,6 +80,46 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 	default:
 		return ai.NewClient(model, dbPath, cfg.ClaudePath)
 	}
+}
+
+// newQueryClient builds the ai.Provider for `watchtower ai query`. On a
+// tool-bearing chat surface (--tools chat) it wires tools two ways: claude/codex
+// get the MCP-args set on their client (the subprocess MCP path); the ollama
+// provider gets the runtime-B in-process tool loop (agentloop) instead, since it
+// has no subprocess. It returns a cleanup to run after the query drains (closing
+// the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
+func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
+	noop := func() {}
+	// Runtime B: the ollama provider on a tool-bearing chat surface gets the
+	// in-process loop — it has no MCP subprocess. Handled first so we never build
+	// (and discard) a plain ollama client, nor resolve the model twice.
+	if aiFlagTools == "chat" && cfg.AI.Provider == "ollama" {
+		model := aiFlagModel
+		if model == "" {
+			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+		}
+		database, err := db.Open(dbPath)
+		if err != nil {
+			return nil, noop, err
+		}
+		reg := buildToolRegistry(cfg, database)
+		binding := tools.Binding{
+			Surface:        aiFlagSurface,
+			ConversationID: aiFlagConversation,
+			ContextType:    aiFlagContextType,
+			ContextID:      aiFlagContextID,
+			TurnID:         aiFlagTurn,
+		}
+		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding), func() { _ = database.Close() }, nil
+	}
+
+	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
+	if aiFlagTools == "chat" {
+		if c, ok := client.(mcpConfigurable); ok {
+			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
+		}
+	}
+	return client, noop, nil
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.

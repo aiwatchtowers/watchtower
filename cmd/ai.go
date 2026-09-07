@@ -110,12 +110,11 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		dbPath = cfg.DBPath()
 	}
 
-	aiClient := newAIClientWithModel(cfg, dbPath, aiFlagModel)
-	if aiFlagTools == "chat" {
-		if c, ok := aiClient.(mcpConfigurable); ok {
-			c.SetMCPArgs(chatMCPArgs())
-		}
+	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
+	if err != nil {
+		return emitError(enc, fmt.Sprintf("preparing tools: %v", err))
 	}
+	defer cleanup()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

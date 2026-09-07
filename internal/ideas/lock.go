@@ -138,7 +138,18 @@ func (h *lockHeartbeat) beat() {
 		return
 	}
 	refreshed := lockContents(h.owner)
-	if err := os.WriteFile(h.path, []byte(refreshed), 0o644); err != nil {
+	// Write-then-rename so a concurrent BackfillLockFresh reader (the daemon
+	// polling while a CLI holder heartbeats) never observes a truncated,
+	// half-written lock file — os.WriteFile truncates in place, opening a window
+	// where the reader parses empty contents and wrongly judges the lock stale.
+	// rename is atomic on POSIX: the reader sees either the old file or the new
+	// one, never a partial one.
+	tmp := fmt.Sprintf("%s.%d.tmp", h.path, os.Getpid())
+	if err := os.WriteFile(tmp, []byte(refreshed), 0o644); err != nil {
+		return // keep the old own; retry next tick
+	}
+	if err := os.Rename(tmp, h.path); err != nil {
+		_ = os.Remove(tmp)
 		return // keep the old own; retry next tick
 	}
 	h.own = refreshed

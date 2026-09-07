@@ -61,6 +61,25 @@ func newLooseTool(t *testing.T) *Tool {
 	}
 }
 
+type peekArgs struct {
+	Query string `json:"query"`
+}
+
+// newPeekTool is a read tool whose Execute returns fixed data and records the
+// calls it saw, so a test can assert a read went through without a proposal row.
+func newPeekTool(t *testing.T, executed *[]Call) *Tool {
+	t.Helper()
+	schema, err := jsonschema.For[peekArgs](nil)
+	require.NoError(t, err)
+	return &Tool{
+		Name: "peek", Description: "test read tool", InputSchema: schema, Access: AccessRead,
+		Execute: func(_ context.Context, _ *db.DB, call Call) (any, error) {
+			*executed = append(*executed, call)
+			return map[string]any{"found": float64(2)}, nil
+		},
+	}
+}
+
 func openDB(t *testing.T) *db.DB {
 	t.Helper()
 	database, err := db.Open(filepath.Join(t.TempDir(), "t.db"))
@@ -143,6 +162,57 @@ func TestPropose_UnknownOrReadToolRejected(t *testing.T) {
 	require.NoError(t, reg.Register(&Tool{Name: "read_thing", Description: "x", Access: AccessRead}))
 	_, err = reg.Propose(context.Background(), "read_thing", json.RawMessage(`{}`), Binding{})
 	assert.ErrorIs(t, err, ErrNotWritable)
+}
+
+// CallRead is the runtime-B read path: it runs a read tool's Execute and returns
+// the data, writing NO agent_actions row (a read is not a proposal).
+func TestCallRead_ReturnsDataAndWritesNoRow(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newPeekTool(t, &executed)))
+
+	data, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":"x"}`))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"found": float64(2)}, data)
+	require.Len(t, executed, 1)
+	assert.JSONEq(t, `{"query":"x"}`, string(executed[0].Args))
+
+	rows, _ := database.ListAgentActions(db.AgentActionFilter{})
+	assert.Empty(t, rows, "a read must not record a proposal row")
+}
+
+// CallRead refuses a write tool — writes only ever go through Propose, so the
+// proposal flow can never be bypassed by calling a write as if it were a read.
+func TestCallRead_RefusesWriteTool(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
+
+	_, err := reg.CallRead(context.Background(), "echo", json.RawMessage(`{"text":"hi"}`))
+	assert.ErrorIs(t, err, ErrNotReadable)
+	assert.Empty(t, executed, "a write tool must never Execute through the read path")
+}
+
+// CallRead validates args against the tool's schema before Execute; a bad call
+// is a model-facing ValidationError and the tool never runs.
+func TestCallRead_ValidatesSchema(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newPeekTool(t, &executed)))
+
+	_, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":123}`))
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Empty(t, executed)
+}
+
+func TestCallRead_UnknownTool(t *testing.T) {
+	reg := New(openDB(t))
+	_, err := reg.CallRead(context.Background(), "nope", json.RawMessage(`{}`))
+	assert.ErrorIs(t, err, ErrUnknownTool)
 }
 
 // Spec §4: schema validation runs BEFORE the tool's own semantic Validate, so
