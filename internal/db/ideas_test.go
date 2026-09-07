@@ -1376,3 +1376,18 @@ func TestIdeas_SetIdeasFloorsNoWorkspaceRow(t *testing.T) {
 		t.Fatal("SetIdeasFloors: want an error with no workspace row, got nil")
 	}
 }
+
+func TestCreateManualIdea_ActiveOwner(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateManualIdea("idea", "Ship the strip", "inbox as an action queue")
+	if err != nil || id == 0 {
+		t.Fatalf("create: id=%d err=%v", id, err)
+	}
+	got, err := d.GetIdea(id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != "active" || got.Source != "owner" {
+		t.Fatalf("want active/owner, got %s/%s", got.Status, got.Source)
+	}
+}

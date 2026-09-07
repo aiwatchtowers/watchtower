@@ -32,6 +32,9 @@ type situationCardResult struct {
 // pipeline. Only a ListSituationsNeedingCards or SetSituationCard
 // persistence failure returns an error.
 func (p *Pipeline) runSituationCards(ctx context.Context, currentUserID string) (int, error) {
+	if p.cfg == nil || !p.cfg.Inbox.Situations.Enabled {
+		return 0, nil
+	}
 	situations, err := p.db.ListSituationsNeedingCards()
 	if err != nil {
 		return 0, fmt.Errorf("listing situations needing cards: %w", err)
