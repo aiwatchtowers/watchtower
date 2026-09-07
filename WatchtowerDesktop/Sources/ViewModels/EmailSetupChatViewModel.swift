@@ -223,6 +223,10 @@ final class EmailSetupChatViewModel {
                     fullText = text
                     sawTurnComplete = true
                     updateLastMessage(fullText)
+                case .reset:
+                    fullText = ""
+                    sawTurnComplete = false
+                    updateLastMessage("")
                 case .sessionID(let sid):
                     sessionID = sid
                 case .done:

@@ -207,6 +207,10 @@ final class CalendarSetupChatViewModel {
                     fullText = text
                     sawTurnComplete = true
                     updateLastMessage(fullText)
+                case .reset:
+                    fullText = ""
+                    sawTurnComplete = false
+                    updateLastMessage("")
                 case .sessionID(let sid):
                     sessionID = sid
                 case .done:

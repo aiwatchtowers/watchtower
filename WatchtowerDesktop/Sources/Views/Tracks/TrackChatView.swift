@@ -180,6 +180,10 @@ final class TrackChatViewModel {
                     fullText = text
                     sawTurnComplete = true
                     updateLastMessage(fullText)
+                case .reset:
+                    fullText = ""
+                    sawTurnComplete = false
+                    updateLastMessage("")
                 case .sessionID(let sid):
                     newSessionID = sid
                     handleSessionID(sid)

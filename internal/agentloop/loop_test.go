@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/tools"
 )
 
@@ -77,11 +78,29 @@ func TestLoop_ToolCallThenFinalAnswer(t *testing.T) {
 	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
 	srv, calls := scriptedServer(t, toolCallResp("list_situations", `{}`), finalResp("here is what is going on"))
 
-	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "sys", "what is going on")
+	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "sys", "what is going on", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "here is what is going on", text)
 	assert.Equal(t, []string{"list_situations"}, reg.reads)
 	assert.Equal(t, 2, *calls, "one tool round then the answer")
+}
+
+// A tool round emits an ai.StreamChunk{ToolBoundary: true} before the tools run,
+// then the final answer as a Text chunk — matching claude/codex, so a consumer
+// discards any pre-tool text and starts the visible answer fresh after the last
+// boundary.
+func TestLoop_EmitsToolBoundaryBeforeFinalAnswer(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
+	srv, _ := scriptedServer(t, toolCallResp("list_situations", `{}`), finalResp("here it is"))
+
+	var chunks []ai.StreamChunk
+	_, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "go", func(ch ai.StreamChunk) { chunks = append(chunks, ch) })
+	require.NoError(t, err)
+	require.Len(t, chunks, 2, "one boundary for the tool round, then the answer")
+	assert.True(t, chunks[0].ToolBoundary, "the tool round emits a boundary first")
+	assert.Empty(t, chunks[0].Text, "a boundary chunk carries no text")
+	assert.Equal(t, "here it is", chunks[1].Text, "the final answer follows as a text chunk")
+	assert.False(t, chunks[1].ToolBoundary)
 }
 
 // A write tool call goes through Propose, never Execute; the loop then finishes.
@@ -89,7 +108,7 @@ func TestLoop_WriteToolGoesThroughPropose(t *testing.T) {
 	reg := &fakeReg{tools: map[string]*tools.Tool{"create_target": tools.NewCreateTarget()}}
 	srv, _ := scriptedServer(t, toolCallResp("create_target", `{"text":"do it","reason":"because"}`), finalResp("proposed"))
 
-	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "remember to do it")
+	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "remember to do it", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "proposed", text)
 	assert.Equal(t, []string{"create_target"}, reg.proposed)
@@ -101,7 +120,7 @@ func TestLoop_ToolErrorFedBackNotFatal(t *testing.T) {
 	reg := &fakeReg{tools: map[string]*tools.Tool{}}
 	srv, calls := scriptedServer(t, toolCallResp("nope", `{}`), finalResp("recovered"))
 
-	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "go")
+	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "go", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "recovered", text)
 	assert.Equal(t, 2, *calls)
@@ -115,7 +134,7 @@ func TestLoop_MaxIterationsCap(t *testing.T) {
 	c := clientWith(reg, srv.URL)
 	c.maxIter = 3
 
-	text, _, err := c.run(context.Background(), "", "loop")
+	text, _, err := c.run(context.Background(), "", "loop", nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, text, "cap must still return some text, never hang")
 	assert.Equal(t, 3, *calls, "the loop stops exactly at the cap")
@@ -130,7 +149,7 @@ func TestLoop_OutOfSurfaceToolRejected(t *testing.T) {
 	c := clientWith(reg, srv.URL)
 	c.binding = tools.Binding{Surface: "target"} // create_target is {main}
 
-	text, _, err := c.run(context.Background(), "", "make a target")
+	text, _, err := c.run(context.Background(), "", "make a target", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "done", text)
 	assert.Empty(t, reg.proposed, "a main-only tool must not be proposed from the target surface")
@@ -150,7 +169,7 @@ func TestLoop_MaxIterationsCapMarksTruncation(t *testing.T) {
 	c := clientWith(reg, srv.URL)
 	c.maxIter = 2
 
-	text, _, err := c.run(context.Background(), "", "loop")
+	text, _, err := c.run(context.Background(), "", "loop", nil)
 	require.NoError(t, err)
 	assert.Contains(t, text, "partial progress")
 	assert.Contains(t, text, "tool-call limit", "truncated output must be flagged")
@@ -164,7 +183,7 @@ func TestLoop_ModelEndpointErrorFailsRun(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, _, err := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, srv.URL).run(context.Background(), "", "hi")
+	_, _, err := clientWith(&fakeReg{tools: map[string]*tools.Tool{}}, srv.URL).run(context.Background(), "", "hi", nil)
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "500") || strings.Contains(err.Error(), "boom"))
 }

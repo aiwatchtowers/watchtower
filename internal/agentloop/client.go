@@ -66,39 +66,49 @@ func NewClient(model, baseURL string, reg *tools.Registry, b tools.Binding) *Cli
 	}
 }
 
-// Query runs the loop and streams the final answer as one chunk. Intermediate
-// tool activity is not streamed; write proposals surface through the Desktop's
-// AgentActionFeed (the agent_actions rows Propose records).
-func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan string, <-chan error, <-chan string) {
-	textCh := make(chan string, 1)
+// Query runs the loop and streams the assistant turn. Each round that makes a
+// tool call emits an ai.StreamChunk{ToolBoundary: true} before the tools run —
+// so a consumer that showed any pre-tool text discards it and starts the visible
+// answer fresh from the text after the last boundary, matching claude/codex
+// (ai.StreamChunk's contract). The final answer is streamed as one Text chunk;
+// write proposals still surface through the Desktop's AgentActionFeed.
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan ai.StreamChunk, 8)
 	errCh := make(chan error, 1)
 	sidCh := make(chan string, 1)
 	go func() {
 		defer close(textCh)
 		defer close(errCh)
 		defer close(sidCh)
-		text, _, err := c.run(ctx, systemPrompt, userMessage)
-		if err != nil {
+		if _, _, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch }); err != nil {
 			errCh <- err
-			return
-		}
-		if text != "" {
-			textCh <- text
 		}
 	}()
 	return textCh, errCh, sidCh
 }
 
-// QuerySync runs the loop and returns the final answer.
+// QuerySync runs the loop and returns the final answer (no streaming, so no
+// boundary emission).
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
-	return c.run(ctx, systemPrompt, userMessage)
+	return c.run(ctx, systemPrompt, userMessage, nil)
 }
 
 // run is the tool loop. It calls the model, dispatches any tool calls against
 // the registry, feeds the results back, and returns the first assistant turn
 // that makes no tool call. It always terminates: the iteration cap returns the
-// last textual content the model produced.
-func (c *Client) run(ctx context.Context, systemPrompt, userMessage string) (string, *ai.Usage, error) {
+// last textual content the model produced. emit (nil for the sync path)
+// receives a ToolBoundary chunk before each tool round and the final Text chunk.
+func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit func(ai.StreamChunk)) (string, *ai.Usage, error) {
+	emitText := func(s string) {
+		if emit != nil && s != "" {
+			emit(ai.StreamChunk{Text: s})
+		}
+	}
+	emitBoundary := func() {
+		if emit != nil {
+			emit(ai.StreamChunk{ToolBoundary: true})
+		}
+	}
 	msgs := make([]oaMessage, 0, 4)
 	if systemPrompt != "" {
 		msgs = append(msgs, oaMessage{Role: "system", Content: systemPrompt})
@@ -123,8 +133,13 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string) (str
 			lastContent = strings.TrimSpace(m.Content)
 		}
 		if len(m.ToolCalls) == 0 {
+			emitText(lastContent)
 			return lastContent, usage, nil
 		}
+		// This turn makes a tool call, so any text it carried was pre-tool
+		// reasoning — signal the boundary so the consumer starts the visible
+		// answer fresh from what follows (ai.StreamChunk contract).
+		emitBoundary()
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
 			msgs = append(msgs, oaMessage{
@@ -140,9 +155,13 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string) (str
 	// whatever text it last produced is mid-work — flag it as truncated rather
 	// than present it as a finished answer.
 	if lastContent != "" {
-		return lastContent + "\n\n(Note: I reached the tool-call limit before finishing.)", usage, nil
+		capped := lastContent + "\n\n(Note: I reached the tool-call limit before finishing.)"
+		emitText(capped)
+		return capped, usage, nil
 	}
-	return "I couldn't complete that within the tool-call limit.", usage, nil
+	const note = "I couldn't complete that within the tool-call limit."
+	emitText(note)
+	return note, usage, nil
 }
 
 // dispatch runs one tool call against the registry and returns the JSON string

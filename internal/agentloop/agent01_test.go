@@ -34,7 +34,7 @@ func TestRuntimeB_WriteToolRecordsProposalOnly(t *testing.T) {
 		binding: tools.Binding{Surface: "main", ConversationID: 5, TurnID: "t1"}, maxIter: 6,
 	}
 
-	text, _, err := c.run(context.Background(), "", "remember to ship it")
+	text, _, err := c.run(context.Background(), "", "remember to ship it", nil)
 	require.NoError(t, err)
 	assert.Contains(t, text, "approval")
 
