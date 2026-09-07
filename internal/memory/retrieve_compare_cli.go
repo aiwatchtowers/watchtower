@@ -21,8 +21,8 @@ import (
 // become available before Task 13).
 const retrieveCompareQuerySample = 30
 
-// defaultRecallLimit mirrors internal/mcp's own unexported defaultRecallLimit
-// (10) without importing internal/mcp — internal/mcp already imports
+// defaultRecallLimit mirrors internal/tools's own unexported defaultRecallLimit
+// (10) without importing internal/tools — internal/tools already imports
 // internal/memory, so the reverse import would be a package cycle; see
 // maxRevisionCompareLimit's comment below for why local duplication is the
 // house pattern for these package-cycle-avoiding mirrors.
