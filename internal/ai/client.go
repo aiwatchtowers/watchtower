@@ -115,6 +115,11 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // watchtower server.
 func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServers = s }
 
+// ExternalServersForTest exposes the registered external MCP servers for
+// tests outside this package (e.g. cmd's chat-wiring tests) — the field
+// itself stays unexported since nothing else needs to read it back.
+func (c *Client) ExternalServersForTest() []ExternalMCPServer { return c.externalServers }
+
 // NewClient creates a new AI client that invokes the Claude Code CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
 // server is attached so the AI can query the database directly.

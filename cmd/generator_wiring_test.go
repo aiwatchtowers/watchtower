@@ -9,7 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/externalmcp"
 	"watchtower/internal/providers"
 )
 
@@ -76,6 +79,80 @@ func TestNewQueryClientOllamaToolWiring(t *testing.T) {
 	require.NoError(t, err)
 	defer cleanup2()
 	assert.Equal(t, "*ollama.Client", fmt.Sprintf("%T", plain), "ollama without tools stays the plain client")
+}
+
+// TestNewQueryClientWiresEnabledExternalConnections seeds one enabled
+// external_connections row plus its secret file, runs the claude chat-mode
+// wiring, and asserts the built ai.Client carries exactly that one
+// ExternalMCPServer with decoded args + env.
+func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "claude"}}
+	dbPath := cfg.DBPath()
+
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	connID, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name:    "trello",
+		Kind:    "stdio",
+		Command: "npx",
+		Args:    []string{"-y", "trello-mcp"},
+		Enabled: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), connID).Save(&externalmcp.Secret{
+		Env: map[string]string{"TRELLO_TOKEN": "abc"},
+	}))
+	require.NoError(t, database.Close())
+
+	oldTools, oldModel := aiFlagTools, aiFlagModel
+	aiFlagTools = "chat"
+	aiFlagModel = ""
+	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
+
+	client, cleanup, err := newQueryClient(cfg, dbPath)
+	require.NoError(t, err)
+	defer cleanup()
+
+	c, ok := client.(*ai.Client)
+	require.True(t, ok, "claude provider must build *ai.Client, got %T", client)
+
+	servers := c.ExternalServersForTest()
+	require.Len(t, servers, 1)
+	assert.Equal(t, "trello", servers[0].Name)
+	assert.Equal(t, "stdio", servers[0].Kind)
+	assert.Equal(t, "npx", servers[0].Command)
+	assert.Equal(t, []string{"-y", "trello-mcp"}, servers[0].Args)
+	assert.Equal(t, map[string]string{"TRELLO_TOKEN": "abc"}, servers[0].Env)
+}
+
+// TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully makes
+// sure a chat-mode client still builds cleanly (zero external servers, no
+// error) when the DB has no external_connections rows at all — the common
+// case for every install today.
+func TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "claude"}}
+	dbPath := cfg.DBPath()
+
+	// Force the DB (and its migrated schema) to exist without seeding any
+	// external_connections row.
+	database, err := db.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	oldTools, oldModel := aiFlagTools, aiFlagModel
+	aiFlagTools = "chat"
+	aiFlagModel = ""
+	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
+
+	client, cleanup, err := newQueryClient(cfg, dbPath)
+	require.NoError(t, err)
+	defer cleanup()
+
+	c, ok := client.(*ai.Client)
+	require.True(t, ok, "claude provider must build *ai.Client, got %T", client)
+	assert.Empty(t, c.ExternalServersForTest())
 }
 
 // TestProviderOverrideDoesNotInheritConfiguredModels goes through the REAL

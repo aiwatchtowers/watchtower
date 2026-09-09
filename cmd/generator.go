@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/externalmcp"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
@@ -118,8 +119,56 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		if c, ok := client.(mcpConfigurable); ok {
 			c.SetMCPArgs(chatMCPArgs()) // claude/codex reach tools via the MCP subprocess
 		}
+		if c, ok := client.(externalMCPConfigurable); ok {
+			c.SetExternalMCPServers(loadExternalMCPServers(cfg, dbPath))
+		}
 	}
 	return client, noop, nil
+}
+
+// loadExternalMCPServers reads the owner's enabled external MCP connections
+// ("Quick Connections") plus their per-connection secrets, and maps them into
+// the ai.Client DTO shape. These are optional extras layered on top of native
+// chat: a DB-open error or a ListEnabledExternalConnections error is logged
+// and yields zero external servers (chat keeps working with only its built-in
+// tools); a per-connection secret-load error is logged and just skips that
+// one connection, so one owner's corrupted secret file can't take down every
+// other connection's tools.
+func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPServer {
+	database, err := db.Open(dbPath)
+	if err != nil {
+		log.Printf("external MCP: opening database: %v", err)
+		return nil
+	}
+	defer func() { _ = database.Close() }()
+
+	conns, err := database.ListEnabledExternalConnections()
+	if err != nil {
+		log.Printf("external MCP: listing enabled connections: %v", err)
+		return nil
+	}
+
+	var servers []ai.ExternalMCPServer
+	for _, c := range conns {
+		server := ai.ExternalMCPServer{
+			Name:    c.Name,
+			Kind:    c.Kind,
+			Command: c.Command,
+			Args:    c.Args,
+			URL:     c.URL,
+		}
+		secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID).Load()
+		if err != nil {
+			log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
+			continue
+		}
+		if secret != nil {
+			server.Env = secret.Env
+			server.Headers = secret.Headers
+		}
+		servers = append(servers, server)
+	}
+	return servers
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.
