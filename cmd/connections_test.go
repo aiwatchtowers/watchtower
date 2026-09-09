@@ -169,6 +169,27 @@ func TestConnections_AddRejectsUnsafeName(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid")
 }
 
+func TestConnections_AddRejectsReservedName(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+
+	// "watchtower" collides with the built-in MCP server key in
+	// buildMCPConfig (map key collision) — rejected case-insensitively.
+	_, err := runConnections(t, "", "add", "--name", "watchtower", "--kind", "stdio", "--command", "npx")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved")
+
+	_, err = runConnections(t, "", "add", "--name", "Watchtower", "--kind", "stdio", "--command", "npx")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved")
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	assert.Empty(t, conns, "a rejected reserved name must create no row")
+}
+
 func TestConnections_AddHTTPWithoutSecretStdinCreatesNoSecretFile(t *testing.T) {
 	cfg := writeConnectionsConfig(t)
 	out, err := runConnections(t, "", "add", "--name", "Web-Tool", "--kind", "http", "--url", "https://example.com/mcp")

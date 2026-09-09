@@ -6,6 +6,7 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -160,6 +161,9 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	if !connectionNamePattern.MatchString(name) {
 		return fmt.Errorf("--name %q is invalid: must match %s (letters, digits, underscore, hyphen only)",
 			name, connectionNamePattern.String())
+	}
+	if strings.EqualFold(name, "watchtower") {
+		return fmt.Errorf(`--name "watchtower" is reserved (the built-in MCP server); choose another name`)
 	}
 	switch kind {
 	case "stdio":
