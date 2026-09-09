@@ -1,9 +1,14 @@
 # Quick Connections — owner-managed external MCP servers
 
 **Date:** 2026-09-09
-**Status:** Draft — pending owner review
+**Status:** Approved (owner, 2026-09-09)
 **Scope (v1):** Tier 2 only (read-only external MCP tools in chat). Tier 3
 (the pipeline bridge) is specified as a Future direction, NOT built here.
+
+**Owner decisions (2026-09-09):** (1) accept the residual exfiltration risk in
+v1 — read-only, per-connection consent, documented; (2) support both transports
+— remote http/SSE and local stdio; (3) offer external tools on the main **and**
+target chats (i.e. every tool-mode chat); (4) store connections in a DB table.
 
 ## 1. Overview
 
@@ -99,19 +104,23 @@ model even if a stale config entry lingered. The existing `--disallowedTools`
 wall (Bash/WebFetch/Read/…) is untouched.
 
 ### 4.4 Transport — remote-preferred
-Both stdio and http are supported, but the **recommended** path is a remote
-http/SSE endpoint (e.g. Atlassian's hosted Rovo MCP for Confluence). Rationale:
-a local `npx`/binary child spawned by the app is a TCC-prompt risk (project
-P0 — a child process probing the filesystem can trigger a Files-&-Folders
-prompt attributed to Watchtower). stdio children inherit the same CWD pinning
-to `os.TempDir()` the chat already uses, and the Settings UI warns when adding
-a stdio connection. **[OWNER DECISION 1:** ship both, or remote-only in v1?]**
+Both stdio and http are supported (owner decision). The **recommended** path
+for the user is a remote http/SSE endpoint (e.g. Atlassian's hosted Rovo MCP
+for Confluence), because a local `npx`/binary child spawned by the app is a
+TCC-prompt risk (project P0 — a child process probing the filesystem can
+trigger a Files-&-Folders prompt attributed to Watchtower). stdio children
+inherit the same CWD pinning to `os.TempDir()` the chat already uses, and the
+Settings UI shows a security note when adding a stdio connection.
 
 ### 4.5 Surfaces
-External tools are offered on the **main AI Chat only** in v1. Draft-only chats
-(situation / meeting / idea) carry `toolMode: nil` today and see no tools; the
-target chat has its own tightly-scoped mandate. Widening later is additive.
-**[OWNER DECISION 2:** main chat only, or also the target chat?]**
+External tools are offered on every **tool-mode** chat — today the main AI Chat
+and the target chat (both send `--tools chat`). This falls out naturally: only
+tool-mode chats reach `buildMCPConfig` with chat servers, so merging external
+connections there reaches exactly main + target and no one else. Draft-only
+chats (situation / meeting / idea) carry `toolMode: nil`, never enter tool mode,
+and therefore see no tools — external or otherwise — with no extra filtering
+needed. If a future surface should be excluded despite being tool-mode, gate on
+the `--surface` value; not required in v1.
 
 ## 5. Security posture — the central tension
 
@@ -136,12 +145,10 @@ What it does **not** fully contain (stated honestly for the review):
   steer the model to call `search_trello("<secret from context>")`, sending
   data outward through the query. Read-only shrinks the blast radius (no
   third-party writes) but does not zero the exfiltration surface.
-- Mitigation posture for v1: accept the residual risk as the owner's explicit
-  per-connection choice, keep it to the main chat, and document it. A harder
-  control (e.g. routing external calls through a Go-owned loop that can strip
-  or confirm arguments) rides on runtime B. **[OWNER DECISION 3:** accept the
-  residual exfiltration risk per-connection in v1, or hold Quick Connections
-  until runtime B can mediate the calls?]**
+- Mitigation posture for v1 (owner-accepted): treat the residual risk as the
+  owner's explicit per-connection choice, keep external tools read-only, and
+  document it. A harder control (e.g. routing external calls through a Go-owned
+  loop that can strip or confirm arguments) rides on runtime B.
 
 ## 6. Why read-only in v1
 
@@ -177,15 +184,14 @@ via GRDB (the Settings-editor precedent), then triggers one chat-config refresh.
 - Registry CRUD + status transitions.
 - Allowlist gate: a disabled connection contributes no `mcp__` token.
 
-## 9. Open decisions for owner review
+## 9. Resolved decisions (owner, 2026-09-09)
 
-1. **Transport** — ship both stdio + remote http, or remote-only in v1? (§4.4)
-2. **Surfaces** — main chat only, or also the target chat? (§4.5)
-3. **Residual exfiltration risk** — accept per-connection in v1 (read-only,
-   main chat, documented), or hold the whole feature until runtime B can
-   mediate external calls? (§5) — *this is the load-bearing one.*
-4. **Storage** — DB table (as specced, consistent with `*_accounts`) vs a
-   plain config-file list. DB recommended.
+1. **Transport** — both stdio + remote http/SSE. (§4.4)
+2. **Surfaces** — every tool-mode chat = main + target. (§4.5)
+3. **Residual exfiltration risk** — accepted per-connection in v1 (read-only,
+   explicit consent, documented). (§5)
+4. **Storage** — DB table `external_connections`, consistent with `*_accounts`.
+   (§4.1)
 
 ## 10. Future — Tier 3, the pipeline bridge (NOT in this spec)
 
