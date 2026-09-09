@@ -94,9 +94,13 @@ final class ExternalConnectionsViewModel {
         secretJSON: String?
     ) async {
         let hasSecret = secretJSON?.isEmpty == false
+        var stdin: String?
+        if hasSecret, let secretJSON {
+            stdin = secretJSON + "\n"
+        }
         await runManagementCommand(
             args: Self.addArgs(name: name, kind: kind, command: command, args: args, url: url, hasSecret: hasSecret),
-            stdin: hasSecret ? secretJSON! + "\n" : nil,
+            stdin: stdin,
             failurePrefix: "Add failed"
         )
     }
@@ -158,9 +162,12 @@ final class ExternalConnectionsViewModel {
     ) {
         if result.exitCode == 0 {
             error = nil
+            // No DaemonManager.restart() here — Quick Connections feed
+            // nothing in the daemon; `cmd/generator.go` reads the
+            // external_connections table fresh on every `ai query`, so a
+            // restart would be a redundant daemon bounce copied from
+            // SlackAccountsViewModel (where the daemon does own live sync).
             refresh()
-            // Re-wire the daemon so the connection change takes effect now.
-            Task { await DaemonManager.restart() }
         } else {
             error = result.stderr.isEmpty
                 ? "\(failurePrefix) (exit \(result.exitCode))"
