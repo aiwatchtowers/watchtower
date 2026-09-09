@@ -34,7 +34,7 @@ enum JoinMeetingAction {
         recordingSupported: Bool = SystemAudioRecorder.isSupported,
         openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) async {
-        guard let url = event.conferenceLink else { return }
+        guard let url = event.joinURL else { return }
         guard openURL(url) else {
             // LaunchServices refused (broken default-browser registration, …):
             // the user never joined, so don't start recording a meeting they

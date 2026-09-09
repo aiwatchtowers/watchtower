@@ -17,6 +17,19 @@ package enum CalendarQueries {
 
     // MARK: - Fetch Events
 
+    /// Every CalendarEvent-building query selects through this: all
+    /// `calendar_events` columns plus `account_email`, resolved from the
+    /// owning Google account via `calendar_id` → `calendar_calendars` →
+    /// `google_accounts`. LEFT JOINs so events on CalDAV/ICS calendars
+    /// (`account_id IS NULL`) still return, just with a NULL `account_email`.
+    /// Feeds `CalendarEvent.joinURL`'s Google Meet `authuser` hint.
+    private static let selectWithAccountEmail = """
+        SELECT calendar_events.*, google_accounts.email AS account_email
+        FROM calendar_events
+        LEFT JOIN calendar_calendars ON calendar_calendars.id = calendar_events.calendar_id
+        LEFT JOIN google_accounts ON google_accounts.id = calendar_calendars.account_id
+        """
+
     package static func fetchTodayEvents(_ db: Database) throws -> [CalendarEvent] {
         let cal = Calendar.current
         let startOfDay = cal.startOfDay(for: Date())
@@ -36,9 +49,9 @@ package enum CalendarQueries {
         try CalendarEvent.fetchAll(
             db,
             sql: """
-                SELECT * FROM calendar_events
-                WHERE start_time <= ? AND end_time >= ?
-                ORDER BY start_time ASC
+                \(selectWithAccountEmail)
+                WHERE calendar_events.start_time <= ? AND calendar_events.end_time >= ?
+                ORDER BY calendar_events.start_time ASC
                 """,
             arguments: [iso8601(to), iso8601(from)]
         )
@@ -49,9 +62,9 @@ package enum CalendarQueries {
         return try CalendarEvent.fetchOne(
             db,
             sql: """
-                SELECT * FROM calendar_events
-                WHERE start_time > ? AND is_all_day = 0
-                ORDER BY start_time ASC
+                \(selectWithAccountEmail)
+                WHERE calendar_events.start_time > ? AND calendar_events.is_all_day = 0
+                ORDER BY calendar_events.start_time ASC
                 LIMIT 1
                 """,
             arguments: [now]
@@ -64,7 +77,7 @@ package enum CalendarQueries {
     ) throws -> CalendarEvent? {
         try CalendarEvent.fetchOne(
             db,
-            sql: "SELECT * FROM calendar_events WHERE id = ?",
+            sql: "\(selectWithAccountEmail) WHERE calendar_events.id = ?",
             arguments: [id]
         )
     }

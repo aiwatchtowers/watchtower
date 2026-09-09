@@ -105,7 +105,11 @@ final class JoinMeetingActionTests: XCTestCase {
 
     /// `CalendarEvent` has only `init(row:)` — build the fixture from a
     /// dictionary Row, mirroring `CalendarEventRowViewTests.makeEvent`.
-    private func makeEvent(id: String = "ev1", conferenceURL: String) -> CalendarEvent {
+    private func makeEvent(
+        id: String = "ev1",
+        conferenceURL: String,
+        accountEmail: String? = nil
+    ) -> CalendarEvent {
         let row: Row = [
             "id": id,
             "calendar_id": "cal1",
@@ -124,7 +128,8 @@ final class JoinMeetingActionTests: XCTestCase {
             "conference_url": conferenceURL,
             "raw_json": "{}",
             "synced_at": "",
-            "updated_at": ""
+            "updated_at": "",
+            "account_email": accountEmail
         ]
         return CalendarEvent(row: row)
     }
@@ -169,6 +174,54 @@ final class JoinMeetingActionTests: XCTestCase {
         XCTAssertNil(makeEvent(conferenceURL: "https://").conferenceLink)
     }
 
+    // MARK: - joinURL (Google Meet authuser hint)
+
+    /// A Google Meet link with a known owning account gets `?authuser=<email>`
+    /// so the browser lands on the work account, not its default profile.
+    func testJoinURLAppendsAuthuserForMeet() {
+        let url = makeEvent(
+            conferenceURL: "https://meet.google.com/abc-defg-hij",
+            accountEmail: "vadym@work.com"
+        ).joinURL
+        XCTAssertEqual(url, URL(string: "https://meet.google.com/abc-defg-hij?authuser=vadym@work.com"))
+    }
+
+    /// No owning account (CalDAV/ICS calendar, or an un-joined query) → the
+    /// Meet link is opened verbatim; we have no account to hint.
+    func testJoinURLUnchangedForMeetWithoutAccount() {
+        let raw = URL(string: "https://meet.google.com/abc-defg-hij")
+        XCTAssertEqual(makeEvent(conferenceURL: "https://meet.google.com/abc-defg-hij").joinURL, raw)
+        XCTAssertEqual(
+            makeEvent(conferenceURL: "https://meet.google.com/abc-defg-hij", accountEmail: "   ").joinURL,
+            raw, "a blank account email must not produce authuser=")
+    }
+
+    /// Only Meet understands `authuser` — Zoom/Teams/Webex are opened verbatim
+    /// even when the owning account is known.
+    func testJoinURLUnchangedForNonMeet() {
+        XCTAssertEqual(
+            makeEvent(conferenceURL: "https://company.zoom.us/j/123", accountEmail: "vadym@work.com").joinURL,
+            URL(string: "https://company.zoom.us/j/123"))
+        XCTAssertEqual(
+            makeEvent(conferenceURL: "https://teams.microsoft.com/l/meetup-join/x", accountEmail: "vadym@work.com").joinURL,
+            URL(string: "https://teams.microsoft.com/l/meetup-join/x"))
+    }
+
+    /// A Meet link that already carries `authuser` is left untouched — never
+    /// doubled.
+    func testJoinURLKeepsExistingAuthuser() {
+        let url = makeEvent(
+            conferenceURL: "https://meet.google.com/abc-defg-hij?authuser=1",
+            accountEmail: "vadym@work.com"
+        ).joinURL
+        XCTAssertEqual(url, URL(string: "https://meet.google.com/abc-defg-hij?authuser=1"))
+    }
+
+    /// A malformed/absent link stays nil through `joinURL` — no Join, no crash.
+    func testJoinURLNilWhenNoLink() {
+        XCTAssertNil(makeEvent(conferenceURL: "", accountEmail: "vadym@work.com").joinURL)
+    }
+
     // MARK: - Join action
 
     /// Idle recorder + default (absent) auto-record preference → the link
@@ -190,6 +243,26 @@ final class JoinMeetingActionTests: XCTestCase {
         guard case .recording = center.phase else {
             return XCTFail("expected .recording, got \(center.phase)")
         }
+    }
+
+    /// End to end: joining a Meet event whose owning account is known opens the
+    /// account-hinted URL, not the raw one.
+    func testJoinOpensAuthuserHintedURLForMeet() async throws {
+        let recorder = JoinFakeRecorder()
+        let center = makeCenter(recorder: recorder, defaults: try isolatedDefaults())
+        let event = makeEvent(
+            id: "evt-meet",
+            conferenceURL: "https://meet.google.com/abc-defg-hij",
+            accountEmail: "vadym@work.com"
+        )
+
+        var opened: [URL] = []
+        await JoinMeetingAction.join(
+            event: event, center: center, defaults: try isolatedDefaults(),
+            recordingSupported: true
+        ) { opened.append($0); return true }
+
+        XCTAssertEqual(opened, [URL(string: "https://meet.google.com/abc-defg-hij?authuser=vadym@work.com")])
     }
 
     /// A recording already in flight (another event) must never be interrupted
