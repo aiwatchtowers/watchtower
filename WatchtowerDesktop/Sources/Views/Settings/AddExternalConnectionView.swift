@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for adding a new Quick Connection (owner-managed external MCP
 /// server), presented from Settings → Quick Connections. Mirrors
@@ -8,6 +9,12 @@ import SwiftUI
 ///
 /// A connection is always created disabled — `ExternalConnectionsViewModel`
 /// enforces that via the CLI, this sheet has no enable toggle of its own.
+///
+/// The secret is entered as key/value rows (environment variables for a stdio
+/// server, headers for an http one) and serialized by
+/// `ExternalConnectionSecretBuilder`; it still reaches the CLI via stdin only
+/// (QC-03). Arguments go through `CommandArgsTokenizer`, so a quoted path with
+/// a space survives as one argument.
 struct AddExternalConnectionView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -19,7 +26,9 @@ struct AddExternalConnectionView: View {
     @State private var command = ""
     @State private var argsText = ""
     @State private var url = ""
-    @State private var secretJSON = ""
+    @State private var secretPairs: [SecretPair] = []
+
+    private var isHTTP: Bool { kind == "http" }
 
     private var canAdd: Bool {
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
@@ -52,8 +61,12 @@ struct AddExternalConnectionView: View {
             if kind == "stdio" {
                 TextField("Command", text: $command, prompt: Text("e.g. npx"))
                     .textFieldStyle(.roundedBorder)
-                TextField("Arguments (space-separated, optional)", text: $argsText, prompt: Text("e.g. -y trello-mcp"))
-                    .textFieldStyle(.roundedBorder)
+                TextField(
+                    "Arguments (optional, quote a value containing spaces)",
+                    text: $argsText,
+                    prompt: Text("e.g. -y trello-mcp")
+                )
+                .textFieldStyle(.roundedBorder)
 
                 Text(
                     "Watchtower will run this command as a local subprocess whenever the "
@@ -68,13 +81,7 @@ struct AddExternalConnectionView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                TextField("Secret (JSON, optional)", text: $secretJSON, prompt: Text(#"{"env":{"API_KEY":"..."}}"#))
-                    .textFieldStyle(.roundedBorder)
-                Text("Stored in a 0600 file, never on the command line. Shape: {\"env\":{...}} or {\"headers\":{...}}.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            secretEditor
 
             Spacer()
 
@@ -101,7 +108,41 @@ struct AddExternalConnectionView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 440)
+    }
+
+    /// Kind-adaptive key/value rows: env vars for stdio, headers for http.
+    private var secretEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(isHTTP ? "Headers (optional)" : "Environment variables (optional)")
+                .font(.subheadline)
+            ForEach($secretPairs) { $pair in
+                HStack {
+                    TextField(
+                        isHTTP ? "Header" : "Variable",
+                        text: $pair.key,
+                        prompt: Text(isHTTP ? "Authorization" : "API_KEY")
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    SecureField("Value", text: $pair.value, prompt: Text("value"))
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        secretPairs.removeAll { $0.id == pair.id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove row")
+                }
+            }
+            Button(isHTTP ? "Add header" : "Add variable") {
+                secretPairs.append(SecretPair())
+            }
+            .buttonStyle(.plain)
+            Text("Stored in a 0600 file, never on the command line.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func add() {
@@ -109,8 +150,11 @@ struct AddExternalConnectionView: View {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let trimmedCommand = command.trimmingCharacters(in: .whitespaces)
         let trimmedURL = url.trimmingCharacters(in: .whitespaces)
-        let trimmedSecret = secretJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-        let args = argsText.split(separator: " ").map(String.init)
+        let args = CommandArgsTokenizer.tokenize(argsText)
+        let secretJSON = ExternalConnectionSecretBuilder.json(
+            kind: kind,
+            pairs: secretPairs.map { (key: $0.key, value: $0.value) }
+        )
 
         Task {
             await vm.addConnection(
@@ -119,11 +163,20 @@ struct AddExternalConnectionView: View {
                 command: trimmedCommand,
                 args: args,
                 url: trimmedURL,
-                secretJSON: trimmedSecret.isEmpty ? nil : trimmedSecret
+                secretJSON: secretJSON
             )
             if vm.error == nil {
                 dismiss()
             }
         }
     }
+}
+
+/// One key/value row of the secret editor — an environment variable for a
+/// stdio server, a header for an http one. Identity is per row so removing
+/// one never shifts a neighbour's binding.
+private struct SecretPair: Identifiable {
+    let id = UUID()
+    var key = ""
+    var value = ""
 }
