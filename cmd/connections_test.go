@@ -34,6 +34,25 @@ func writeConnectionsConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
+// writeConnectionsConfigWithProvider is the writeConnectionsConfig precedent,
+// but stamps ai.provider so ConfiguredProviderID() resolves to a specific
+// value — used to exercise warnIfProviderIgnoresConnections under codex/ollama.
+func writeConnectionsConfigWithProvider(t *testing.T, provider string) *config.Config {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configYAML := "active_workspace: test\nai:\n  provider: " + provider + "\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	return cfg
+}
+
 // runConnections executes the real "connections" command tree via rootCmd,
 // the actions_test.go/runActions precedent, feeding stdin (if any) through
 // rootCmd so it reaches InOrStdin() on the dispatched child command.
@@ -47,6 +66,30 @@ func runConnections(t *testing.T, stdin string, args ...string) (string, error) 
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	rootCmd.SetIn(nil)
+	resetConnectionsFlags()
+	return out.String(), err
+}
+
+// runConnectionsSplit is runConnections with stdout and stderr captured in
+// SEPARATE buffers, so a test can prove WHICH stream a line landed on — the
+// combined buffer above cannot tell a stderr warning from a stdout one.
+func runConnectionsSplit(t *testing.T, stdin string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var outBuf, errBuf bytes.Buffer
+	rootCmd.SetOut(&outBuf)
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetIn(strings.NewReader(stdin))
+	rootCmd.SetArgs(append([]string{"connections"}, args...))
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	rootCmd.SetIn(nil)
+	resetConnectionsFlags()
+	return outBuf.String(), errBuf.String(), err
+}
+
+// resetConnectionsFlags clears the package-level cobra flag vars between
+// invocations (the pflag-singleton gotcha shared by every connections test).
+func resetConnectionsFlags() {
 	connectionsFlagJSON = false
 	connectionsAddFlagName = ""
 	connectionsAddFlagKind = ""
@@ -54,7 +97,6 @@ func runConnections(t *testing.T, stdin string, args ...string) (string, error) 
 	connectionsAddFlagArgs = nil
 	connectionsAddFlagURL = ""
 	connectionsAddFlagSecretStdin = false
-	return out.String(), err
 }
 
 func TestConnections_AddListEnableDisableRemove(t *testing.T) {
@@ -188,6 +230,96 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 	conns, err := database.ListExternalConnections()
 	require.NoError(t, err)
 	assert.Empty(t, conns, "a rejected reserved name must create no row")
+}
+
+// TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
+// honesty warning: codex/ollama chats never wire external connections
+// (codex.Client has no SetExternalMCPServers, ollama routes through runtime
+// B), so enabling a connection under either is inert. The warning must not
+// block the enable — the row still ends up Enabled either way.
+func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+
+			out, err := runConnections(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
+			require.NoError(t, err, out)
+
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			conns, err := database.ListExternalConnections()
+			require.NoError(t, err)
+			require.Len(t, conns, 1)
+			idArg := strconv.FormatInt(conns[0].ID, 10)
+
+			// Re-run for "enable" with SPLIT stdout/stderr buffers so this
+			// assertion only sees the enable output (not the add warning above)
+			// AND can prove which stream the warning landed on.
+			stdout, stderr, err := runConnectionsSplit(t, "", "enable", idArg)
+			require.NoError(t, err, stdout+stderr)
+
+			enabledConn, err := database.GetExternalConnection(conns[0].ID)
+			require.NoError(t, err)
+			assert.True(t, enabledConn.Enabled, "enable must still succeed regardless of provider")
+
+			if tt.wantWarning {
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "My-Server")
+				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
+			} else {
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
+			}
+		})
+	}
+}
+
+// TestConnectionsAdd_WarnsUnderNonClaudeProvider mirrors the enable case for
+// "connections add" — non-claude warns (row still created disabled, as
+// always), claude stays silent.
+func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+
+			stdout, stderr, err := runConnectionsSplit(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
+			require.NoError(t, err, stdout+stderr)
+
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			conns, err := database.ListExternalConnections()
+			require.NoError(t, err)
+			require.Len(t, conns, 1)
+			assert.False(t, conns[0].Enabled, "add must still create the row disabled regardless of provider")
+
+			if tt.wantWarning {
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "My-Server")
+				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
+			} else {
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
+			}
+		})
+	}
 }
 
 func TestConnections_AddHTTPWithoutSecretStdinCreatesNoSecretFile(t *testing.T) {
