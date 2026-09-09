@@ -66,6 +66,30 @@ func runConnections(t *testing.T, stdin string, args ...string) (string, error) 
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
 	rootCmd.SetIn(nil)
+	resetConnectionsFlags()
+	return out.String(), err
+}
+
+// runConnectionsSplit is runConnections with stdout and stderr captured in
+// SEPARATE buffers, so a test can prove WHICH stream a line landed on — the
+// combined buffer above cannot tell a stderr warning from a stdout one.
+func runConnectionsSplit(t *testing.T, stdin string, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var outBuf, errBuf bytes.Buffer
+	rootCmd.SetOut(&outBuf)
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetIn(strings.NewReader(stdin))
+	rootCmd.SetArgs(append([]string{"connections"}, args...))
+	err = rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	rootCmd.SetIn(nil)
+	resetConnectionsFlags()
+	return outBuf.String(), errBuf.String(), err
+}
+
+// resetConnectionsFlags clears the package-level cobra flag vars between
+// invocations (the pflag-singleton gotcha shared by every connections test).
+func resetConnectionsFlags() {
 	connectionsFlagJSON = false
 	connectionsAddFlagName = ""
 	connectionsAddFlagKind = ""
@@ -73,7 +97,6 @@ func runConnections(t *testing.T, stdin string, args ...string) (string, error) 
 	connectionsAddFlagArgs = nil
 	connectionsAddFlagURL = ""
 	connectionsAddFlagSecretStdin = false
-	return out.String(), err
 }
 
 func TestConnections_AddListEnableDisableRemove(t *testing.T) {
@@ -238,22 +261,23 @@ func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
 			require.Len(t, conns, 1)
 			idArg := strconv.FormatInt(conns[0].ID, 10)
 
-			// Re-run for "enable" in a fresh buffer (runConnections allocates
-			// its own bytes.Buffer per call) so this assertion only sees the
-			// enable output, not whatever "add" above also warned about.
-			out, err = runConnections(t, "", "enable", idArg)
-			require.NoError(t, err, out)
+			// Re-run for "enable" with SPLIT stdout/stderr buffers so this
+			// assertion only sees the enable output (not the add warning above)
+			// AND can prove which stream the warning landed on.
+			stdout, stderr, err := runConnectionsSplit(t, "", "enable", idArg)
+			require.NoError(t, err, stdout+stderr)
 
 			enabledConn, err := database.GetExternalConnection(conns[0].ID)
 			require.NoError(t, err)
 			assert.True(t, enabledConn.Enabled, "enable must still succeed regardless of provider")
 
 			if tt.wantWarning {
-				assert.Contains(t, out, "only")
-				assert.Contains(t, out, "claude")
-				assert.Contains(t, out, "My-Server")
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "My-Server")
+				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
 			} else {
-				assert.NotContains(t, out, "warning")
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
 			}
 		})
 	}
@@ -275,8 +299,8 @@ func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
 
-			out, err := runConnections(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
-			require.NoError(t, err, out)
+			stdout, stderr, err := runConnectionsSplit(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
+			require.NoError(t, err, stdout+stderr)
 
 			database, err := db.Open(cfg.DBPath())
 			require.NoError(t, err)
@@ -287,11 +311,12 @@ func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
 			assert.False(t, conns[0].Enabled, "add must still create the row disabled regardless of provider")
 
 			if tt.wantWarning {
-				assert.Contains(t, out, "only")
-				assert.Contains(t, out, "claude")
-				assert.Contains(t, out, "My-Server")
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "My-Server")
+				assert.NotContains(t, stdout, "warning", "the warning belongs on stderr, never stdout")
 			} else {
-				assert.NotContains(t, out, "warning")
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
 			}
 		})
 	}
