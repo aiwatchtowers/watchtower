@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -185,11 +186,15 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 			if path, err := writeMCPConfigTempFile(mcpConfig); err == nil {
 				c.mcpConfigTempPath = path
 				args = append(args, "--mcp-config", path)
+			} else {
+				// On a temp-file write failure, --mcp-config is omitted rather
+				// than falling back to inline JSON: the whole point of this path
+				// is that the secret must never reach argv, so a degraded chat
+				// (no external MCP servers, and no built-in watchtower read
+				// tools either, this call) beats a leaked secret. Logged so the
+				// degradation isn't silent.
+				log.Printf("warning: failed to write mcp-config temp file, omitting --mcp-config (built-in tools unavailable this call): %v", err)
 			}
-			// On a temp-file write failure, --mcp-config is omitted rather
-			// than falling back to inline JSON: the whole point of this path
-			// is that the secret must never reach argv, so a degraded chat
-			// (no external MCP servers this call) beats a leaked secret.
 		} else {
 			args = append(args, "--mcp-config", mcpConfig)
 		}

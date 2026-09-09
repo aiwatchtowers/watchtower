@@ -551,6 +551,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 	}})
 	args := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
+	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
 	if strings.Contains(strings.Join(args, " "), "secret123") {
 		t.Fatal("secret leaked into argv")
 	}

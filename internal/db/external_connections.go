@@ -39,10 +39,9 @@ func scanExternalConnection(scanner interface{ Scan(dest ...any) error }) (Exter
 	if err != nil {
 		return ExternalConnection{}, err
 	}
-	if argsJSON != "" {
-		if err := json.Unmarshal([]byte(argsJSON), &c.Args); err != nil {
-			return ExternalConnection{}, fmt.Errorf("decoding args_json: %w", err)
-		}
+	// args_json is NOT NULL DEFAULT '[]' — never empty, so no guard needed.
+	if err := json.Unmarshal([]byte(argsJSON), &c.Args); err != nil {
+		return ExternalConnection{}, fmt.Errorf("decoding args_json: %w", err)
 	}
 	return c, nil
 }
