@@ -59,7 +59,7 @@ struct ConnectionsSettings: View {
         case .email: EmailConnectionDetail()
         case .calendar: CalendarConnectionDetail()
         case .jira: JiraConnectionDetail()
-        case .quickConnections: QuickConnectionsDetail(config: config)
+        case .quickConnections: QuickConnectionsDetail()
         }
     }
 

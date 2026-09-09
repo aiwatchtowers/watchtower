@@ -9,7 +9,11 @@ import WatchtowerCore
 /// `slackAccountsSection`.
 struct QuickConnectionsDetail: View {
     @Environment(AppState.self) private var appState
-    @Bindable var config: ConfigService
+    /// The provider the chat actually runs on — read from config.yaml (the
+    /// value Go and the chat launcher use), never the Settings editor's
+    /// unsaved in-memory pick, so an unsaved switch cannot silence the
+    /// caption while the chat is still on another provider.
+    @State private var providerID = "claude"
     @State private var showAddConnectionSheet = false
     @State private var connectionPendingRemoval: ExternalConnection?
 
@@ -20,11 +24,12 @@ struct QuickConnectionsDetail: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
+        .onAppear { providerID = Constants.aiProviderID() }
     }
 
     private var quickConnectionsSection: some View {
         Section("Quick Connections") {
-            if let notice = QuickConnectionsProviderNotice.caption(forProvider: config.aiProvider ?? "claude") {
+            if let notice = QuickConnectionsProviderNotice.caption(forProvider: providerID) {
                 Label(notice, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
