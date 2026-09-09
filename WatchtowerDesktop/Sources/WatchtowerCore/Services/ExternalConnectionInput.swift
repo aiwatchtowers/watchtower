@@ -1,5 +1,17 @@
 import Foundation
 
+/// Errors from the add-sheet input helpers, surfaced to the owner instead of
+/// being folded into an "absent" result.
+public enum ExternalConnectionInputError: Error, Equatable {
+    /// The secret map could not be encoded as JSON. Not expected for a map of
+    /// strings; kept distinct from "no secret" so an encoder problem can never
+    /// masquerade as the owner having entered nothing.
+    case secretEncodingFailed
+    /// The arguments field opens a quote it never closes. A shell would refuse
+    /// the line; we tell the owner instead of passing an empty argument.
+    case unclosedQuote
+}
+
 /// Builds the secret JSON a Quick Connection pipes to
 /// `watchtower connections add --secret-stdin`. Field names match Go's
 /// `externalmcp.Secret` verbatim (`env` for a stdio server, `headers` for an
@@ -10,7 +22,9 @@ public enum ExternalConnectionSecretBuilder {
     /// Returns the JSON string, or nil when no row with a non-empty key
     /// survives (⇒ the caller sends no secret at all). Keys are trimmed;
     /// values are passed through untouched so a secret is never mangled.
-    public static func json(kind: String, pairs: [(key: String, value: String)]) -> String? {
+    /// Duplicate keys: the last row wins. Throws only when encoding fails —
+    /// deliberately distinct from the nil "no secret" result.
+    public static func json(kind: String, pairs: [(key: String, value: String)]) throws -> String? {
         var map: [String: String] = [:]
         for pair in pairs {
             let key = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21,17 +35,24 @@ public enum ExternalConnectionSecretBuilder {
         let field = kind == "http" ? "headers" : "env"
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode([field: map]),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+        let data = try encoder.encode([field: map])
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ExternalConnectionInputError.secretEncodingFailed
+        }
         return text
     }
 }
 
 /// Shell-like tokenizer for the add-sheet's arguments field: whitespace splits
 /// tokens unless inside single or double quotes, so a quoted path containing a
-/// space stays one argument. Quoting only — no backslash escapes (YAGNI).
+/// space stays one argument. Explicit empty quotes (`""`) yield one empty
+/// argument, as in a shell. Any Unicode whitespace separates tokens — a
+/// non-breaking space included, unlike in a shell, since a pasted NBSP in a
+/// text field is almost always accidental. Quoting only — no backslash
+/// escapes (YAGNI).
+/// Throws `unclosedQuote` when a quote is opened and never closed.
 public enum CommandArgsTokenizer {
-    public static func tokenize(_ text: String) -> [String] {
+    public static func tokenize(_ text: String) throws -> [String] {
         var tokens: [String] = []
         var current = ""
         var quote: Character?
@@ -56,6 +77,9 @@ public enum CommandArgsTokenizer {
                 current.append(ch)
                 inToken = true
             }
+        }
+        if quote != nil {
+            throw ExternalConnectionInputError.unclosedQuote
         }
         if inToken {
             tokens.append(current)

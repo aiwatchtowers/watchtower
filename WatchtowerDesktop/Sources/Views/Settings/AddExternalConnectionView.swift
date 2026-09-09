@@ -13,8 +13,11 @@ import WatchtowerCore
 /// The secret is entered as key/value rows (environment variables for a stdio
 /// server, headers for an http one) and serialized by
 /// `ExternalConnectionSecretBuilder`; it still reaches the CLI via stdin only
-/// (QC-03). Arguments go through `CommandArgsTokenizer`, so a quoted path with
-/// a space survives as one argument.
+/// (QC-03). Switching Kind keeps the typed rows and only relabels the section
+/// — the same key/value pairs are sent as env vars or headers accordingly.
+/// Arguments go through `CommandArgsTokenizer`, so a quoted path with a space
+/// survives as one argument; an unclosed quote is reported to the owner
+/// instead of silently becoming an empty argument.
 struct AddExternalConnectionView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -27,6 +30,9 @@ struct AddExternalConnectionView: View {
     @State private var argsText = ""
     @State private var url = ""
     @State private var secretPairs: [SecretPair] = []
+    /// Local validation failure (quoting, secret encoding) — distinct from the
+    /// view model's CLI error so the two never overwrite each other.
+    @State private var inputError: String?
 
     private var isHTTP: Bool { kind == "http" }
 
@@ -100,6 +106,12 @@ struct AddExternalConnectionView: View {
                 .disabled(!canAdd || vm?.isBusy == true)
             }
 
+            if let inputError {
+                Text(inputError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             if let err = vm?.error {
                 Text(err)
                     .font(.caption)
@@ -111,30 +123,39 @@ struct AddExternalConnectionView: View {
         .frame(width: 440)
     }
 
-    /// Kind-adaptive key/value rows: env vars for stdio, headers for http.
+    /// Kind-adaptive key/value rows: env vars for stdio, headers for http. The
+    /// row list scrolls past a few entries so the Add button never leaves the
+    /// screen. Row fields bind through `binding(for:_:)` (lookup by id) rather
+    /// than `ForEach($secretPairs)`, so removing a row from its own button can
+    /// never leave a live binding pointing at a shifted element.
     private var secretEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(isHTTP ? "Headers (optional)" : "Environment variables (optional)")
                 .font(.subheadline)
-            ForEach($secretPairs) { $pair in
-                HStack {
-                    TextField(
-                        isHTTP ? "Header" : "Variable",
-                        text: $pair.key,
-                        prompt: Text(isHTTP ? "Authorization" : "API_KEY")
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    SecureField("Value", text: $pair.value, prompt: Text("value"))
-                        .textFieldStyle(.roundedBorder)
-                    Button {
-                        secretPairs.removeAll { $0.id == pair.id }
-                    } label: {
-                        Image(systemName: "minus.circle")
+            ScrollView {
+                VStack(spacing: 6) {
+                    ForEach(secretPairs) { pair in
+                        HStack {
+                            TextField(
+                                isHTTP ? "Header" : "Variable",
+                                text: binding(for: pair.id, \.key),
+                                prompt: Text(isHTTP ? "Authorization" : "API_KEY")
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            SecureField("Value", text: binding(for: pair.id, \.value), prompt: Text("value"))
+                                .textFieldStyle(.roundedBorder)
+                            Button {
+                                secretPairs.removeAll { $0.id == pair.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove row")
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .help("Remove row")
                 }
             }
+            .frame(maxHeight: 180)
             Button(isHTTP ? "Add header" : "Add variable") {
                 secretPairs.append(SecretPair())
             }
@@ -145,16 +166,42 @@ struct AddExternalConnectionView: View {
         }
     }
 
+    /// A binding to one field of the row with `id`, resolved by lookup on
+    /// every access. A binding whose row has since been removed reads "" and
+    /// writes nowhere — no crash, no write into a neighbouring row.
+    private func binding(for id: UUID, _ keyPath: WritableKeyPath<SecretPair, String>) -> Binding<String> {
+        Binding(
+            get: { secretPairs.first { $0.id == id }?[keyPath: keyPath] ?? "" },
+            set: { newValue in
+                if let index = secretPairs.firstIndex(where: { $0.id == id }) {
+                    secretPairs[index][keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
     private func add() {
         guard let vm else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let trimmedCommand = command.trimmingCharacters(in: .whitespaces)
         let trimmedURL = url.trimmingCharacters(in: .whitespaces)
-        let args = CommandArgsTokenizer.tokenize(argsText)
-        let secretJSON = ExternalConnectionSecretBuilder.json(
-            kind: kind,
-            pairs: secretPairs.map { (key: $0.key, value: $0.value) }
-        )
+
+        let args: [String]
+        let secretJSON: String?
+        do {
+            args = try CommandArgsTokenizer.tokenize(argsText)
+            secretJSON = try ExternalConnectionSecretBuilder.json(
+                kind: kind,
+                pairs: secretPairs.map { (key: $0.key, value: $0.value) }
+            )
+        } catch ExternalConnectionInputError.unclosedQuote {
+            inputError = "Arguments contain a quote that is never closed."
+            return
+        } catch {
+            inputError = "Could not encode the secret: \(error.localizedDescription)"
+            return
+        }
+        inputError = nil
 
         Task {
             await vm.addConnection(
