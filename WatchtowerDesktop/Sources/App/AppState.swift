@@ -191,6 +191,11 @@ final class AppState {
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
 
+    /// External Connections ("Quick Connections") ViewModel — persists across
+    /// tab switches so an in-flight add/remove survives navigating away from
+    /// the Settings window.
+    private(set) var externalConnectionsViewModel: ExternalConnectionsViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -618,6 +623,7 @@ final class AppState {
         initGoogleAccounts(dbPool: manager.dbPool)
         initSlackAccounts(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
+        initExternalConnections(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -702,6 +708,12 @@ final class AppState {
         // here, the same point the sibling VM gets its pool, so per-issue
         // links resolve from the DB instead of the frozen config keys.
         JiraConfigHelper.configure(dbPool: dbPool)
+    }
+
+    func initExternalConnections(dbPool: DatabasePool) {
+        let vm = ExternalConnectionsViewModel(dbPool: dbPool)
+        vm.refresh()
+        externalConnectionsViewModel = vm
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

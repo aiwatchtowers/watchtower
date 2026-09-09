@@ -94,6 +94,22 @@ func assertFlagValue(t *testing.T, args []string, flag, value string) {
 	t.Errorf("flag %s not found in args %v", flag, args)
 }
 
+// flagValue returns the token immediately following flag in args, failing
+// the test if the flag is absent or has no following value.
+func flagValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			t.Fatalf("flag %s has no value", flag)
+		}
+	}
+	t.Fatalf("flag %s not found in args %v", flag, args)
+	return ""
+}
+
 func TestBuildArgs_WithDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
 	args := c.buildArgs("system prompt", "user message", "text", "")
@@ -476,6 +492,48 @@ func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
 	}
 }
 
+func TestBuildMCPConfig_MergesExternalServers(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Args: []string{"-y", "trello-mcp"},
+		Env: map[string]string{"K": "v"},
+	}})
+	var parsed struct {
+		Servers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+			URL     string            `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed.Servers["watchtower"]; !ok {
+		t.Fatal("watchtower server missing")
+	}
+	tr, ok := parsed.Servers["trello"]
+	if !ok || tr.Command != "npx" || tr.Env["K"] != "v" {
+		t.Fatalf("trello = %+v", tr)
+	}
+}
+
+func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
+	args := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
+}
+
+func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	// no SetExternalMCPServers call
+	got := c.buildMCPConfig()
+	if strings.Contains(got, "trello") || strings.Count(got, "\"command\"") != 1 {
+		t.Fatalf("expected single watchtower server, got %s", got)
+	}
+}
+
 func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	args := c.buildArgs("sys", "hi", "stream-json", "")
@@ -483,5 +541,35 @@ func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 		if a == "--allowed-tools" {
 			t.Fatalf("legacy flag leaked into claude args")
 		}
+	}
+}
+
+func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
+	}})
+	args := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
+	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
+	if strings.Contains(strings.Join(args, " "), "secret123") {
+		t.Fatal("secret leaked into argv")
+	}
+	// when a secret is present the value is a path to an existing 0600 file
+	fi, err := os.Stat(val)
+	if err != nil {
+		t.Fatalf("mcp-config not a file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", fi.Mode().Perm())
+	}
+}
+
+func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config")
+	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
+		t.Fatalf("expected inline JSON, got %q", val)
 	}
 }

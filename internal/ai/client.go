@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -73,6 +74,20 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 	return nil, fmt.Errorf("unexpected claude CLI output format: %s", claude.DescribeOutput(trimmed))
 }
 
+// ExternalMCPServer is a plain DTO describing an owner-added external MCP
+// server to merge into the chat config and tool allowlist. It mirrors the
+// shape of db.ExternalConnection without importing internal/db, keeping
+// internal/ai free of a DB dependency.
+type ExternalMCPServer struct {
+	Name    string // becomes the mcpServers key and the mcp__<Name> allow token
+	Kind    string // "stdio" | "http"
+	Command string
+	Args    []string
+	URL     string
+	Env     map[string]string
+	Headers map[string]string
+}
+
 // Client wraps the Claude Code CLI for AI queries.
 type Client struct {
 	model     string
@@ -82,10 +97,29 @@ type Client struct {
 	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
 	// passes through `ai query --tools chat`. Empty = the read-only dev server.
 	mcpArgs []string
+	// externalServers are owner-added external MCP servers (Quick Connections)
+	// merged into the mcp-config JSON and the --allowedTools allowlist
+	// alongside the built-in watchtower server. Empty = today's behavior.
+	externalServers []ExternalMCPServer
+	// mcpConfigTempPath is set by buildArgs when hasSecret() is true — the
+	// mcp-config JSON (which then contains a secret Env/Header value) is
+	// written to this 0600 temp file instead of argv, and the caller (Query/
+	// QuerySync) removes it once the subprocess has been reaped.
+	mcpConfigTempPath string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
+
+// SetExternalMCPServers registers owner-added external MCP servers to merge
+// into the chat's mcp-config and tool allowlist alongside the built-in
+// watchtower server.
+func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServers = s }
+
+// ExternalServersForTest exposes the registered external MCP servers for
+// tests outside this package (e.g. cmd's chat-wiring tests) — the field
+// itself stays unexported since nothing else needs to read it back.
+func (c *Client) ExternalServersForTest() []ExternalMCPServer { return c.externalServers }
 
 // NewClient creates a new AI client that invokes the Claude Code CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -107,14 +141,15 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		"-p", userMessage,
 		"--output-format", outputFormat,
 		"--model", c.model,
-		// Allowlist: only the watchtower MCP server — read-only in dev mode; in
-		// chat mode its write tools only record proposals (see internal/tools),
-		// so the allowlist stays one entry. Bash and any other tools are
-		// deliberately excluded — a prompt-injection payload in synced
-		// Slack/Jira content must not be able to run shell commands. The
-		// task-chat agent still changes targets ONLY via watchtower-action
-		// approval cards, never by writing to the DB directly.
-		"--allowedTools", "mcp__watchtower",
+		// Allowlist: the watchtower MCP server — read-only in dev mode; in
+		// chat mode its write tools only record proposals (see internal/tools) —
+		// plus one mcp__<Name> token per owner-added external server (Quick
+		// Connections). Bash and any other built-in tools are deliberately
+		// excluded — a prompt-injection payload in synced Slack/Jira content
+		// must not be able to run shell commands. The task-chat agent still
+		// changes targets ONLY via watchtower-action approval cards, never by
+		// writing to the DB directly.
+		"--allowedTools", c.allowedToolsFlag(),
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
 		// so it tries the call, gets a silent headless rejection, and then asks
@@ -143,7 +178,26 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	}
 	if c.dbPath != "" {
 		mcpConfig := c.buildMCPConfig()
-		args = append(args, "--mcp-config", mcpConfig)
+		if c.hasSecret() {
+			// A secret (Env/Headers) must never sit in argv — it's visible to
+			// every other process on the box via `ps`. Write the config to a
+			// 0600 temp file instead and pass its path; the caller removes the
+			// file once the subprocess no longer needs it (after cmd.Wait()).
+			if path, err := writeMCPConfigTempFile(mcpConfig); err == nil {
+				c.mcpConfigTempPath = path
+				args = append(args, "--mcp-config", path)
+			} else {
+				// On a temp-file write failure, --mcp-config is omitted rather
+				// than falling back to inline JSON: the whole point of this path
+				// is that the secret must never reach argv, so a degraded chat
+				// (no external MCP servers, and no built-in watchtower read
+				// tools either, this call) beats a leaked secret. Logged so the
+				// degradation isn't silent.
+				log.Printf("warning: failed to write mcp-config temp file, omitting --mcp-config (built-in tools unavailable this call): %v", err)
+			}
+		} else {
+			args = append(args, "--mcp-config", mcpConfig)
+		}
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
@@ -153,25 +207,103 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	return args
 }
 
-// buildMCPConfig generates a JSON string for the watchtower MCP server config.
-// The server is the watchtower binary itself (`watchtower mcp --db-path <db>`),
-// exposing curated read-only tools (people, targets, tracks, digests, jira, and
-// raw message search) over stdio — no third-party npx package, no network.
+// hasSecret reports whether any external server carries a non-empty Env or
+// Headers map — the signal that the mcp-config JSON must not be passed
+// inline on argv (visible to every other process on the box via `ps`).
+func (c *Client) hasSecret() bool {
+	for _, s := range c.externalServers {
+		if len(s.Env) > 0 || len(s.Headers) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
+// returns its path. Called only when hasSecret() is true.
+func writeMCPConfigTempFile(config string) (string, error) {
+	f, err := os.CreateTemp("", "wt-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if _, err := f.WriteString(config); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+// allowedToolsFlag builds the --allowedTools value: the built-in watchtower
+// server plus one mcp__<Name> token per external server, in slice order
+// (deterministic — no external servers means byte-identical to today).
+func (c *Client) allowedToolsFlag() string {
+	tools := "mcp__watchtower"
+	for _, s := range c.externalServers {
+		tools += ",mcp__" + s.Name
+	}
+	return tools
+}
+
+// buildMCPConfig generates a JSON string for the chat's MCP server config.
+// The watchtower server is the watchtower binary itself
+// (`watchtower mcp --db-path <db>`), exposing curated read-only tools
+// (people, targets, tracks, digests, jira, and raw message search) over
+// stdio — no third-party npx package, no network. Owner-added external
+// servers (Quick Connections) are merged in alongside it, one entry per
+// server: stdio servers run a local command, http servers point at a URL.
 func (c *Client) buildMCPConfig() string {
 	args := append([]string{"mcp", "--db-path", c.dbPath}, c.mcpArgs...)
-	cfg := map[string]any{
-		"mcpServers": map[string]any{
-			"watchtower": map[string]any{
-				"command": watchtowerBinary(),
-				"args":    args,
-			},
+	servers := map[string]any{
+		"watchtower": map[string]any{
+			"command": watchtowerBinary(),
+			"args":    args,
 		},
+	}
+	for _, s := range c.externalServers {
+		servers[s.Name] = externalServerConfig(s)
+	}
+	cfg := map[string]any{
+		"mcpServers": servers,
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return "{}"
 	}
 	return string(data)
+}
+
+// externalServerConfig renders one owner-added external MCP server into its
+// mcp-config entry shape. Empty env/headers maps are omitted from the JSON.
+func externalServerConfig(s ExternalMCPServer) map[string]any {
+	if s.Kind == "http" {
+		entry := map[string]any{
+			"type": "http",
+			"url":  s.URL,
+		}
+		if len(s.Headers) > 0 {
+			entry["headers"] = s.Headers
+		}
+		return entry
+	}
+	entry := map[string]any{
+		"command": s.Command,
+		"args":    s.Args,
+	}
+	if len(s.Env) > 0 {
+		entry["env"] = s.Env
+	}
+	return entry
 }
 
 // watchtowerBinary is the path used to relaunch this binary as an MCP server.
@@ -200,6 +332,15 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(sidCh)
 
 		args := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		// buildArgs may have written the mcp-config to a 0600 temp file
+		// (secret present) and recorded its path — clean it up once this
+		// goroutine returns. Every path below reaches its return only after
+		// the subprocess has been started and reaped via cmd.Wait(), or never
+		// started at all, so the file is never removed while the subprocess
+		// could still be reading it.
+		if c.mcpConfigTempPath != "" {
+			defer os.Remove(c.mcpConfigTempPath)
+		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 		cmd.Cancel = func() error {
@@ -297,6 +438,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
 	args := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	// buildArgs may have written the mcp-config to a 0600 temp file (secret
+	// present) and recorded its path — clean it up on every return path.
+	// cmd.Output() below blocks until the subprocess exits, so by the time
+	// this defer runs the subprocess can no longer be reading the file.
+	if c.mcpConfigTempPath != "" {
+		defer os.Remove(c.mcpConfigTempPath)
+	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
