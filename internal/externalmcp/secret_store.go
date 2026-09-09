@@ -1,3 +1,6 @@
+// Package externalmcp stores the per-connection secret (env vars for stdio
+// servers, headers for http servers) backing an owner-added Quick Connection
+// as its own 0600 file, never in the database or on argv.
 package externalmcp
 
 import (
