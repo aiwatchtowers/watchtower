@@ -34,7 +34,7 @@ enum ConnectionStatusLogic {
 }
 
 enum ConnectionService: String, CaseIterable, Identifiable {
-    case slack, google, email, calendar, jira
+    case slack, google, email, calendar, jira, quickConnections
     var id: String { rawValue }
 
     var label: String {
@@ -44,6 +44,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .email: "Email"
         case .calendar: "Calendar"
         case .jira: "Jira"
+        case .quickConnections: "Quick Connections"
         }
     }
 
@@ -54,6 +55,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .email: "envelope"
         case .calendar: "calendar"
         case .jira: "checklist"
+        case .quickConnections: "bolt.horizontal.circle"
         }
     }
 }

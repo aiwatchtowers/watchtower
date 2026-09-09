@@ -32,6 +32,7 @@ struct ConnectionsSettings: View {
             appState.emailAccountsViewModel?.refresh()
             appState.calendarAccountsViewModel?.refresh()
             appState.googleAccountsViewModel?.refresh()
+            appState.externalConnectionsViewModel?.refresh()
         }
     }
 
@@ -58,6 +59,7 @@ struct ConnectionsSettings: View {
         case .email: EmailConnectionDetail()
         case .calendar: CalendarConnectionDetail()
         case .jira: JiraConnectionDetail()
+        case .quickConnections: QuickConnectionsDetail()
         }
     }
 
@@ -70,6 +72,7 @@ struct ConnectionsSettings: View {
         case .email: appState.emailAccountsViewModel?.accounts.count ?? 0
         case .calendar: appState.calendarAccountsViewModel?.accounts.count ?? 0
         case .jira: appState.jiraAccountsViewModel?.accounts.count ?? 0
+        case .quickConnections: appState.externalConnectionsViewModel?.connections.count ?? 0
         }
     }
 
@@ -90,6 +93,9 @@ struct ConnectionsSettings: View {
         case .jira:
             guard let vm = appState.jiraAccountsViewModel else { return .notConfigured }
             return ConnectionStatusLogic.enabledFilteredStatus(vm.accounts.map { ($0.isOK, $0.enabled) })
+        case .quickConnections:
+            guard let vm = appState.externalConnectionsViewModel else { return .notConfigured }
+            return ConnectionStatusLogic.enabledFilteredStatus(vm.connections.map { ($0.isOK, $0.enabled) })
         }
     }
 }
