@@ -129,7 +129,7 @@ never accumulates ambient noise the owner didn't ask for.
 SELECTs. Every mutation a strip card triggers (Approve/Reject/Retry, Done,
 Snooze) writes to the backing `agent_actions` or `reminders` row directly
 (via `AgentActionFeed`/`ReminderQueries`); there is no strip-local table
-(migration 00064 adds only `reminders` — no "strip" or "feed" table exists).
+(migration 00065 adds only `reminders` — no "strip" or "feed" table exists).
 
 **Why locked:** A separate strip-owned store would create a second source of
 truth for state that already lives on the agent-action/reminder row, risking
