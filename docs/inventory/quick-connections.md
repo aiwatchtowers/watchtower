@@ -40,6 +40,10 @@
 
 **Locked since:** 2026-09-09
 
+## Known v1 limitation
+
+External connections are only wired for the claude provider (`*ai.Client.SetExternalMCPServers`, dispatched from `cmd/generator.go`'s `newQueryClient` via the `externalMCPConfigurable` type-assert) — the codex provider and the ollama/runtime-B in-process tool loop have no equivalent wiring, so a configured Quick Connection is silently ignored on those providers.
+
 ## Changelog
 
 - 2026-09-09: file created with QC-01..03, all Enforced, by the Quick Connections feature (Tier 2 of the connection taxonomy in `docs/superpowers/specs/2026-09-09-quick-connections-external-mcp-design.md`). Tier 3 (the pipeline bridge) is specced but not built — no contract yet.
