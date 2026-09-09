@@ -100,6 +100,11 @@ type Client struct {
 	// merged into the mcp-config JSON and the --allowedTools allowlist
 	// alongside the built-in watchtower server. Empty = today's behavior.
 	externalServers []ExternalMCPServer
+	// mcpConfigTempPath is set by buildArgs when hasSecret() is true — the
+	// mcp-config JSON (which then contains a secret Env/Header value) is
+	// written to this 0600 temp file instead of argv, and the caller (Query/
+	// QuerySync) removes it once the subprocess has been reaped.
+	mcpConfigTempPath string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -167,7 +172,22 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	}
 	if c.dbPath != "" {
 		mcpConfig := c.buildMCPConfig()
-		args = append(args, "--mcp-config", mcpConfig)
+		if c.hasSecret() {
+			// A secret (Env/Headers) must never sit in argv — it's visible to
+			// every other process on the box via `ps`. Write the config to a
+			// 0600 temp file instead and pass its path; the caller removes the
+			// file once the subprocess no longer needs it (after cmd.Wait()).
+			if path, err := writeMCPConfigTempFile(mcpConfig); err == nil {
+				c.mcpConfigTempPath = path
+				args = append(args, "--mcp-config", path)
+			}
+			// On a temp-file write failure, --mcp-config is omitted rather
+			// than falling back to inline JSON: the whole point of this path
+			// is that the secret must never reach argv, so a degraded chat
+			// (no external MCP servers this call) beats a leaked secret.
+		} else {
+			args = append(args, "--mcp-config", mcpConfig)
+		}
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
@@ -175,6 +195,43 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 	return args
+}
+
+// hasSecret reports whether any external server carries a non-empty Env or
+// Headers map — the signal that the mcp-config JSON must not be passed
+// inline on argv (visible to every other process on the box via `ps`).
+func (c *Client) hasSecret() bool {
+	for _, s := range c.externalServers {
+		if len(s.Env) > 0 || len(s.Headers) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
+// returns its path. Called only when hasSecret() is true.
+func writeMCPConfigTempFile(config string) (string, error) {
+	f, err := os.CreateTemp("", "wt-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if _, err := f.WriteString(config); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // allowedToolsFlag builds the --allowedTools value: the built-in watchtower
@@ -265,6 +322,15 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(sidCh)
 
 		args := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		// buildArgs may have written the mcp-config to a 0600 temp file
+		// (secret present) and recorded its path — clean it up once this
+		// goroutine returns. Every path below reaches its return only after
+		// the subprocess has been started and reaped via cmd.Wait(), or never
+		// started at all, so the file is never removed while the subprocess
+		// could still be reading it.
+		if c.mcpConfigTempPath != "" {
+			defer os.Remove(c.mcpConfigTempPath)
+		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 		cmd.Cancel = func() error {
@@ -362,6 +428,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
 	args := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	// buildArgs may have written the mcp-config to a 0600 temp file (secret
+	// present) and recorded its path — clean it up on every return path.
+	// cmd.Output() below blocks until the subprocess exits, so by the time
+	// this defer runs the subprocess can no longer be reading the file.
+	if c.mcpConfigTempPath != "" {
+		defer os.Remove(c.mcpConfigTempPath)
+	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)

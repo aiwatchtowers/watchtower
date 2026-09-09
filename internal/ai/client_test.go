@@ -94,6 +94,22 @@ func assertFlagValue(t *testing.T, args []string, flag, value string) {
 	t.Errorf("flag %s not found in args %v", flag, args)
 }
 
+// flagValue returns the token immediately following flag in args, failing
+// the test if the flag is absent or has no following value.
+func flagValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			t.Fatalf("flag %s has no value", flag)
+		}
+	}
+	t.Fatalf("flag %s not found in args %v", flag, args)
+	return ""
+}
+
 func TestBuildArgs_WithDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
 	args := c.buildArgs("system prompt", "user message", "text", "")
@@ -525,5 +541,34 @@ func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 		if a == "--allowed-tools" {
 			t.Fatalf("legacy flag leaked into claude args")
 		}
+	}
+}
+
+func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
+	}})
+	args := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
+	if strings.Contains(strings.Join(args, " "), "secret123") {
+		t.Fatal("secret leaked into argv")
+	}
+	// when a secret is present the value is a path to an existing 0600 file
+	fi, err := os.Stat(val)
+	if err != nil {
+		t.Fatalf("mcp-config not a file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", fi.Mode().Perm())
+	}
+}
+
+func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config")
+	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
+		t.Fatalf("expected inline JSON, got %q", val)
 	}
 }
