@@ -24,6 +24,26 @@ func jiraClientFactory(cfg *config.Config) tools.JiraClientFactory {
 	}
 }
 
+// jiraConnectFactory builds the per-account board client + board analyzer
+// connect_jira_board needs, the way runJiraBoards/runJiraBoardsAnalyze do: the
+// account's token file, the resolved OAuth client, and an AI provider for the
+// board profile.
+func jiraConnectFactory(cfg *config.Config, database *db.DB) tools.JiraConnectFactory {
+	return func(account db.JiraAccount) (tools.JiraConnect, error) {
+		store := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID)
+		if !store.Exists() {
+			return tools.JiraConnect{}, fmt.Errorf("jira account #%d has no token; run 'watchtower jira login --account %d'", account.ID, account.ID)
+		}
+		if account.CloudID == "" {
+			return tools.JiraConnect{}, fmt.Errorf("jira account #%d has no cloud id; run 'watchtower jira login --account %d'", account.ID, account.ID)
+		}
+		client := jira.NewClient(account.CloudID, resolveJiraOAuthConfig(), store)
+		analyzer := jira.NewBoardAnalyzer(client, database, newAIClient(cfg, cfg.DBPath()), account.ID)
+		analyzer.SetLanguage(cfg.Digest.Language)
+		return tools.JiraConnect{Client: client, Profiler: analyzer}, nil
+	}
+}
+
 // buildToolRegistry is the ONE place the assistant's write tools are
 // assembled — shared by `mcp --chat`, `actions …` and `jira create`, so the
 // three entry points can never disagree about what exists.
@@ -32,6 +52,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	for _, t := range []*tools.Tool{
 		tools.NewCreateTarget(),
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
+		tools.NewConnectJiraBoard(jiraConnectFactory(cfg, database)),
 		tools.NewCreateTrack(),
 		tools.NewCreateIdea(),
 		tools.NewRemindMe(),

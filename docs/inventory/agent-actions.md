@@ -32,11 +32,11 @@
 
 **Status:** Enforced
 
-**Observable:** `Registry.SetTrust(tool, execute)` returns `ErrExternalExecute` for a tool with `External: true` (`create_jira_issue`); `watchtower actions trust` surfaces that error; the Settings toggle is disabled for external tools.
+**Observable:** `Registry.SetTrust(tool, execute)` returns `ErrExternalExecute` for a tool with `External: true` (`create_jira_issue`, `connect_jira_board`); `watchtower actions trust` surfaces that error; the Settings toggle is disabled for external tools.
 
-**Why locked:** An external write cannot be undone by the app. The owner's click is the only thing standing between a model mistake and a ticket in a shared tracker.
+**Why locked:** An external write cannot be undone by the app. The owner's click is the only thing standing between a model mistake and a ticket in a shared tracker — or, for `connect_jira_board`, a board selected against the live site and pulled into every digest.
 
-**Test guards:** `internal/tools/registry_test.go` `TestAgent03_ExternalToolCannotBeExecuteTrust`; `cmd/actions_test.go` `TestActions_TrustAndTools`.
+**Test guards:** `internal/tools/registry_test.go` `TestAgent03_ExternalToolCannotBeExecuteTrust`; `internal/tools/jira_board_test.go` `TestConnectJiraBoard_ExternalCannotBeExecuteTrust`; `cmd/actions_test.go` `TestActions_TrustAndTools`.
 
 **Locked since:** 2026-09-04
 
@@ -83,4 +83,5 @@
 - 2026-09-04: file created with AGENT-01..05, all Enforced, by the agent-actions feature (sub-project 1 of the "Hermes inside Watchtower" initiative).
 - 2026-09-04: AGENT-04 flipped from Planned to Enforced with the Desktop tool-mode wiring.
 - 2026-09-04: AGENT-06 added (Enforced) — the read tools are now guarded on the WRITABLE chat-mode connection, not just the dev `query_only` one. AGENT-01's wording corrected from "byte-count-identical" to "row-count-identical (`countRows` over `guardTables`)", which is what the guard actually asserts.
+- 2026-09-09: `connect_jira_board` added — a second `External` write tool (main AI Chat only, like `create_target`) that starts watching a Jira board. `Propose` records a pending `agent_actions` row and selects nothing; `Apply` (once, through the AGENT-05 claim) fetches the site's live boards, matches the owner's `project_key` (+ optional `board_name`, ambiguity is an error not an arbitrary pick), upserts the row and `SetJiraBoardSelected` — the connect. Issue sync is left to the next `phaseJiraSync` cycle (`Syncer.Sync` re-reads `GetJiraSelectedBoards` each pass); the inline `BoardAnalyzer` profile is **best-effort** — a failure warns on an otherwise-applied action rather than failing the connect (the `mirrorCreatedIssue` precedent), since the daemon's auto-refresh only re-profiles boards that already have a profile. Deliberately does NOT require the project to be synced (`Validate` skips the `projectSynced` check `create_jira_issue` keeps) — connecting an un-watched project is the point. AGENT-03 extended with it; no new numbered contract.
 - 2026-09-04 (local review round 1): AGENT-05 gains the **claim state**. `Registry.Apply` now CASes `approved|failed → executing` before calling `Execute`, then `executing → applied|failed`; migration 00062's CHECK carries `executing` (the migration is unreleased, so it was amended in place). Before this, `Apply` was check-then-execute-then-CAS: two overlapping applies both passed the read check and both executed, and the loser's `ErrBadTransition` arrived after its Jira POST. `TestApply_LostRaceDuringExecuteReturnsBadTransition` — which pinned that lossy behaviour as intent — is reworked into `TestAgent05_RejectDuringExecuteCannotStealTheClaim` under the new semantics, and AGENT-05 finally carries `TestAgentNN_`-named guards. AGENT-06's Observable narrowed to what its guard asserts (the shared call list), with the memory-telemetry exception stated explicitly as DEV-01 does.
