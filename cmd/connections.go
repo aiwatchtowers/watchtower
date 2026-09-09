@@ -304,9 +304,14 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 	out := cmd.OutOrStdout()
 	if enabled {
 		fmt.Fprintf(out, "Connection %d enabled.\n", id)
+		// Best-effort name lookup for the warning only: the enable already
+		// succeeded, so a failed read must not hide the provider warning -
+		// fall back to the id rather than swallow it.
+		label := strconv.FormatInt(id, 10)
 		if conn, err := database.GetExternalConnection(id); err == nil {
-			warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
+			label = conn.Name
 		}
+		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
 	}
