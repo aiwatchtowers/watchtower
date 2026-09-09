@@ -518,6 +518,71 @@ func TestBuildMCPConfig_MergesExternalServers(t *testing.T) {
 	}
 }
 
+// TestBuildMCPConfig_HTTPServerShape is a characterization guard: it pins the
+// http-transport entry shape externalServerConfig already emits
+// ({"type":"http","url":...,"headers":...}), asserting no stdio keys
+// (command/args/env) leak into it and that the allowlist still gains the
+// mcp__<name> token like the stdio path.
+func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "acme", Kind: "http", URL: "https://acme.example/mcp",
+		Headers: map[string]string{"Authorization": "Bearer tok"},
+	}})
+	var parsed struct {
+		Servers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+			Command *string           `json:"command"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	acme, ok := parsed.Servers["acme"]
+	if !ok {
+		t.Fatal("acme server missing")
+	}
+	if acme.Type != "http" {
+		t.Fatalf("type = %q, want http", acme.Type)
+	}
+	if acme.URL != "https://acme.example/mcp" {
+		t.Fatalf("url = %q", acme.URL)
+	}
+	if !reflect.DeepEqual(acme.Headers, map[string]string{"Authorization": "Bearer tok"}) {
+		t.Fatalf("headers = %v", acme.Headers)
+	}
+	if acme.Command != nil {
+		t.Fatalf("command = %v, want nil (no stdio keys on an http entry)", acme.Command)
+	}
+
+	args := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
+}
+
+// TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders pins that an http server with
+// no headers emits no "headers" key at all, rather than an empty object.
+func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "acme", Kind: "http", URL: "https://acme.example/mcp",
+	}})
+	var parsed struct {
+		Servers map[string]map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	acme, ok := parsed.Servers["acme"]
+	if !ok {
+		t.Fatal("acme server missing")
+	}
+	if _, ok := acme["headers"]; ok {
+		t.Fatalf("headers key present with empty Headers map: %v", acme)
+	}
+}
+
 func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
