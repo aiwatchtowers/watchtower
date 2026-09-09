@@ -1269,6 +1269,19 @@ package enum TestDatabase {
         tool       TEXT PRIMARY KEY,
         trust      TEXT NOT NULL CHECK(trust IN ('ask','execute')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
+    CREATE TABLE IF NOT EXISTS external_connections (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        name       TEXT    NOT NULL UNIQUE,
+        kind       TEXT    NOT NULL DEFAULT 'stdio'
+                   CHECK(kind IN ('stdio','http')),
+        command    TEXT    NOT NULL DEFAULT '',
+        args_json  TEXT    NOT NULL DEFAULT '[]',
+        url        TEXT    NOT NULL DEFAULT '',
+        enabled    INTEGER NOT NULL DEFAULT 0,
+        status     TEXT    NOT NULL DEFAULT 'ok',
+        error      TEXT    NOT NULL DEFAULT '',
+        created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
     """
 
     // MARK: - Briefing Fixtures
