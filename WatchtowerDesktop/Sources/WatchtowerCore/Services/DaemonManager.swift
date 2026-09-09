@@ -4,6 +4,11 @@ import Foundation
 @Observable
 package final class DaemonManager {
     package var isRunning = false
+    /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
+    /// no heartbeat file exists yet (no sync has run since the daemon shipped
+    /// this file) — read it through `SyncProgress.isSyncing`, never through
+    /// `active` alone.
+    package var syncProgress: SyncProgress?
     package var lastSyncTime: Date?
     package var watchtowerPath: String?
     package var errorMessage: String?
@@ -37,6 +42,38 @@ package final class DaemonManager {
 
     package func checkStatus() {
         isRunning = Self.isDaemonRunning()
+        syncProgress = Self.readSyncProgress()
+    }
+
+    /// Reads the active workspace's sync heartbeat. Scoped to the active
+    /// workspace (not a scan of every workspace dir, unlike the PID check):
+    /// another workspace's stale heartbeat would misreport this one's state.
+    nonisolated package static func readSyncProgress() -> SyncProgress? {
+        guard let dir = Constants.activeWorkspaceDir(),
+              let data = FileManager.default.contents(atPath: "\(dir)/sync_progress.json")
+        else { return nil }
+        return try? JSONDecoder().decode(SyncProgress.self, from: data)
+    }
+
+    /// Asks the running daemon to sync now (SIGUSR1 via the CLI) instead of
+    /// waiting for its next poll. Does nothing useful without a daemon — the
+    /// CLI exits non-zero, which lands in `errorMessage` — because the daemon
+    /// holds an exclusive lock on syncing.
+    package func syncNow() async {
+        resolvePathIfNeeded()
+        guard let path = watchtowerPath else {
+            errorMessage = "watchtower binary not found in PATH"
+            return
+        }
+        do {
+            let status = try await Self.runProcess(path: path, arguments: ["sync", "--now"])
+            errorMessage = status == 0 ? nil : "Failed to request a sync (exit code \(status))"
+            if status == 0 {
+                checkStatus()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     // C4 fix: async to avoid blocking main thread

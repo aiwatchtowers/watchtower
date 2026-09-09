@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WatchtowerCore
 
 /// Menu-bar tray content: status line + the only actions the tray offers
 /// (open the desktop window, open Settings, quit Watchtower completely —
@@ -12,8 +13,12 @@ struct TrayMenuView: View {
     var body: some View {
         TrayMenuContent(
             isRunning: appState.daemonManager.isRunning,
+            syncProgress: appState.daemonManager.syncProgress,
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
+            syncNowAction: {
+                Task { await appState.daemonManager.syncNow() }
+            },
             quickCaptureAction: {
                 // Same "become regular" move as Open Watchtower: the Quick
                 // Capture window is a real window and needs a Dock icon /
@@ -55,25 +60,37 @@ struct TrayMenuView: View {
 /// testable view.
 struct TrayMenuContent: View {
     let isRunning: Bool
+    let syncProgress: SyncProgress?
     let daemonError: String?
     let cliStoreError: String?
+    let syncNowAction: () -> Void
     let quickCaptureAction: () -> Void
     let openAction: () -> Void
     let settingsAction: () -> Void
 
-    static func statusText(isRunning: Bool) -> String {
-        isRunning ? "Syncing in background" : "Sync daemon not running"
+    /// What the daemon is doing, not merely whether its process exists — the
+    /// old line said "Syncing in background" whenever the process was alive,
+    /// including the hours it spent between syncs or stuck inside one.
+    static func statusText(isRunning: Bool, syncProgress: SyncProgress?, now: Date = Date()) -> String {
+        guard isRunning else { return "Sync daemon not running" }
+        guard let syncProgress, syncProgress.isSyncing(now: now) else {
+            return "Daemon running · idle"
+        }
+        return "Syncing: \(syncProgress.summary)"
     }
 
     var body: some View {
         Group {
-            Text(Self.statusText(isRunning: isRunning))
+            Text(Self.statusText(isRunning: isRunning, syncProgress: syncProgress))
             if let daemonError {
                 Text("Daemon: \(daemonError)")
             }
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
             }
+            Divider()
+            Button("Sync Now", action: syncNowAction)
+                .disabled(!isRunning)
             Divider()
             Button("New Voice Idea", action: quickCaptureAction)
             Divider()

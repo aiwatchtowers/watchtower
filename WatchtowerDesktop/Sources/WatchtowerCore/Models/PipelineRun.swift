@@ -41,6 +41,7 @@ package struct PipelineRun: Decodable, FetchableRecord, Identifiable {
 
     package var pipelineTitle: String {
         switch pipeline {
+        case "slack-sync": return "Slack Sync"
         case "digests": return "Digests"
         case "tracks": return "Tracks"
         case "people": return "People Cards"
@@ -50,6 +51,7 @@ package struct PipelineRun: Decodable, FetchableRecord, Identifiable {
 
     package var pipelineIcon: String {
         switch pipeline {
+        case "slack-sync": return "arrow.triangle.2.circlepath"
         case "digests": return "doc.text.magnifyingglass"
         case "tracks": return "checklist"
         case "people": return "person.2.circle"
