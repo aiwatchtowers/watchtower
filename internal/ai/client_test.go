@@ -476,6 +476,48 @@ func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
 	}
 }
 
+func TestBuildMCPConfig_MergesExternalServers(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Args: []string{"-y", "trello-mcp"},
+		Env: map[string]string{"K": "v"},
+	}})
+	var parsed struct {
+		Servers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+			URL     string            `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed.Servers["watchtower"]; !ok {
+		t.Fatal("watchtower server missing")
+	}
+	tr, ok := parsed.Servers["trello"]
+	if !ok || tr.Command != "npx" || tr.Env["K"] != "v" {
+		t.Fatalf("trello = %+v", tr)
+	}
+}
+
+func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
+	args := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
+}
+
+func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	// no SetExternalMCPServers call
+	got := c.buildMCPConfig()
+	if strings.Contains(got, "trello") || strings.Count(got, "\"command\"") != 1 {
+		t.Fatalf("expected single watchtower server, got %s", got)
+	}
+}
+
 func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	args := c.buildArgs("sys", "hi", "stream-json", "")
