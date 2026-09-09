@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,13 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 )
+
+// connectionNamePattern constrains --name to characters that are safe to
+// comma-join into --allowedTools as mcp__<Name> (see buildArgs in
+// internal/ai/client.go): an unconstrained name could inject an extra
+// allowlist token (e.g. a comma) or otherwise break the server-key↔token
+// match used to gate which external tools the model may call.
+var connectionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // connectionsCmd is the parent for the "Quick Connections" external MCP
 // server family: add/list/enable/disable/remove, the slack.go account
@@ -148,6 +156,10 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 
 	if name == "" {
 		return fmt.Errorf("--name is required")
+	}
+	if !connectionNamePattern.MatchString(name) {
+		return fmt.Errorf("--name %q is invalid: must match %s (letters, digits, underscore, hyphen only)",
+			name, connectionNamePattern.String())
 	}
 	switch kind {
 	case "stdio":

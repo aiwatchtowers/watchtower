@@ -62,7 +62,7 @@ func TestConnections_AddListEnableDisableRemove(t *testing.T) {
 
 	secretJSON := `{"env":{"API_KEY":"s3cr3t"},"headers":{"X-Token":"tok"}}`
 	out, err := runConnections(t, secretJSON,
-		"add", "--name", "My Server", "--kind", "stdio",
+		"add", "--name", "My-Server", "--kind", "stdio",
 		"--command", "npx", "--arg", "-y", "--arg", "some-mcp-server",
 		"--secret-stdin")
 	require.NoError(t, err, out)
@@ -77,7 +77,7 @@ func TestConnections_AddListEnableDisableRemove(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, conns, 1)
 	added := conns[0]
-	assert.Equal(t, "My Server", added.Name)
+	assert.Equal(t, "My-Server", added.Name)
 	assert.Equal(t, "stdio", added.Kind)
 	assert.Equal(t, "npx", added.Command)
 	assert.Equal(t, []string{"-y", "some-mcp-server"}, added.Args)
@@ -104,7 +104,7 @@ func TestConnections_AddListEnableDisableRemove(t *testing.T) {
 	// list --json contains the name
 	out, err = runConnections(t, "", "list", "--json")
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "My Server")
+	assert.Contains(t, out, "My-Server")
 	assert.Contains(t, out, `"enabled": true`)
 
 	// disable
@@ -154,9 +154,24 @@ func TestConnections_AddRejectsUnknownKind(t *testing.T) {
 	assert.Contains(t, err.Error(), `--kind must be "stdio" or "http"`)
 }
 
+func TestConnections_AddRejectsUnsafeName(t *testing.T) {
+	writeConnectionsConfig(t)
+
+	// A comma would inject an extra --allowedTools token when joined as
+	// mcp__<Name> (see buildArgs in internal/ai/client.go).
+	_, err := runConnections(t, "", "add", "--name", "x,Bash", "--kind", "stdio", "--command", "npx")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+
+	// A space is also rejected — only [A-Za-z0-9_-] is safe.
+	_, err = runConnections(t, "", "add", "--name", "my server", "--kind", "stdio", "--command", "npx")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+}
+
 func TestConnections_AddHTTPWithoutSecretStdinCreatesNoSecretFile(t *testing.T) {
 	cfg := writeConnectionsConfig(t)
-	out, err := runConnections(t, "", "add", "--name", "Web Tool", "--kind", "http", "--url", "https://example.com/mcp")
+	out, err := runConnections(t, "", "add", "--name", "Web-Tool", "--kind", "http", "--url", "https://example.com/mcp")
 	require.NoError(t, err, out)
 
 	database, err := db.Open(cfg.DBPath())
