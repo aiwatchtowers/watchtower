@@ -9,6 +9,7 @@ import WatchtowerCore
 /// `slackAccountsSection`.
 struct QuickConnectionsDetail: View {
     @Environment(AppState.self) private var appState
+    @Bindable var config: ConfigService
     @State private var showAddConnectionSheet = false
     @State private var connectionPendingRemoval: ExternalConnection?
 
@@ -23,6 +24,11 @@ struct QuickConnectionsDetail: View {
 
     private var quickConnectionsSection: some View {
         Section("Quick Connections") {
+            if let notice = QuickConnectionsProviderNotice.caption(forProvider: config.aiProvider ?? "claude") {
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let vm = appState.externalConnectionsViewModel {
                 if vm.connections.isEmpty {
                     Text("No external connections configured.")
