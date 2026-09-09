@@ -68,7 +68,7 @@ func RankByImportance(candidates []ScoredCandidate, limit int) []db.MemoryNodeRo
 // never give a high-importance-but-slightly-weaker-match node a chance to
 // outrank a trivially-better-ranked but unimportant one, because it would
 // never make the window at all. maxCandidateWindow caps the widened window
-// (mirrors internal/mcp/server.go's maxListLimit=200 — a single query should
+// (mirrors internal/tools/limit.go's maxListLimit=200 — a single query should
 // never scan an effectively unbounded result set).
 const candidateWindowMultiplier = 4
 const maxCandidateWindow = 200
@@ -80,10 +80,10 @@ const maxCandidateWindow = 200
 // RankByImportance.
 //
 // The exact-alias-match short-circuit stays memory_recall's own concern
-// (recallAliasHit, internal/mcp/memory.go) — a LATER task wires the MCP
-// handler to prepend that hit ahead of this function's results, exactly as
-// it prepends today ahead of SearchMemoryFTS's results. This function is
-// pure FTS ranking; it knows nothing about aliases.
+// (recallAliasHit, internal/tools/memory.go) — a LATER task wires the recall
+// tool to prepend that hit ahead of this function's results, exactly as it
+// prepends today ahead of SearchMemoryFTS's results. This function is pure
+// FTS ranking; it knows nothing about aliases.
 func RetrieveByQuery(database *db.DB, query string, limit int) ([]db.MemoryNodeRow, error) {
 	window := limit * candidateWindowMultiplier
 	if window <= 0 || window > maxCandidateWindow {

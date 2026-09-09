@@ -38,11 +38,25 @@ AccessRead}` entries in the registry (`internal/tools`, listed by
 `tools.ReadTools()`), dispatched through `Registry.CallRead` — which runs the
 tool's `Execute` and records **no** `agent_actions` row (a read is not a
 proposal). Dev mode builds a read-only registry (`tools.NewReadRegistry`) so
-`NewServer` mounts these reads from the one registry both server modes and the
-runtime-B loop share; the `query_only=ON` fence above is unchanged and still the
-real enforcement. `memory_map`/`memory_open`/`memory_recall` and `load_skill`
-stay plain `internal/mcp` handlers for now (they need vault/skills dependencies
-and, for memory, carry the documented telemetry-write exception).
+`NewServer` mounts these reads from the one registry both server modes share;
+the `query_only=ON` fence above is unchanged and still the real enforcement.
+
+Since slice 2b (2026-09-07) the dependency-carrying read tools moved too:
+`memory_map`/`memory_open`/`memory_recall` (`internal/tools/memory.go`) and
+`load_skill` (`internal/tools/skills.go`) are now `tools.Tool{Access:
+AccessRead}` entries as well, but — because they close over a vault path, a
+skills directory and the optional recall-compare shadow handle rather than only
+`*db.DB` — they cannot sit in the zero-arg `tools.ReadTools()` list. `NewServer`
+builds them from the paths it resolved (`tools.DependentReadTools`) and
+registers them onto its registry, so `registerRegistry` mounts them through
+`CallRead` like every other read; `internal/mcp` no longer carries any
+per-domain handler. The documented telemetry-write exception is unchanged and
+still runs through the Execute-supplied connection: `memory_open`'s
+`memory_node_stats` bump lands on the writable chat session and fails silently
+under `query_only` on the dev session; `memory_recall`'s shadow row writes only
+when the separate writable shadow handle is wired
+(`memory.retrieve.recall_compare`). (The runtime-B loop builds its registry from
+`tools.ReadTools()` alone, so it does not mount these four yet — a follow-up.)
 
 `TestAllToolsAreReadOnly` is a **naming-convention lint only** — it checks
 that every registered tool name starts with `list_`/`get_` or appears in an
@@ -201,6 +215,20 @@ match) — and by code review against this contract.
 
 ## Changelog
 
+- 2026-09-07: read-tool migration slice 2b — the dependency-carrying read tools
+  (`memory_map`/`memory_open`/`memory_recall`, `load_skill`) moved from the last
+  per-domain `internal/mcp` handlers (`memory.go`, `skills.go`, both deleted)
+  into `internal/tools` (`memory.go`, `skills.go`), registered via
+  `tools.DependentReadTools` in `NewServer` because they carry vault/skills/shadow
+  dependencies that keep them out of the zero-arg `tools.ReadTools()` list.
+  `internal/mcp` is now a thin lister with no domain handlers. No contract
+  semantics, guard tests, or gates changed: `query_only=ON`,
+  `TestNoToolMutatesDatabase` (memory/skills deliberately still outside its call
+  list), and the memory telemetry-write exception behave exactly as before —
+  proven by the unchanged `internal/mcp/{memory,skills,server}_test.go` passing
+  through the registry adapter, plus new direct-`CallRead` unit tests in
+  `internal/tools/{memory,skills}_test.go` (including the read-only-connection
+  graceful-bump path the integration tests never exercised).
 - 2026-09-06: read-tool migration — every pure-`db` read tool moved from
   per-domain `internal/mcp` handlers into the `internal/tools` registry
   (`tools.ReadTools()`), dispatched through `Registry.CallRead`; `internal/mcp`

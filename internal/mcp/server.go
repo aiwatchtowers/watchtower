@@ -21,12 +21,6 @@ import (
 // version is reported to MCP clients in the server handshake.
 const version = "0.1.0"
 
-// maxListLimit caps a memory tool's explicit request so a single call can never
-// dump an entire table into an LLM context window. (The migrated read tools
-// carry their own clamp in internal/tools/limit.go; only memory.go still uses
-// this one.)
-const maxListLimit = 200
-
 // Server wraps the SDK server so callers (cmd, tests) do not import the SDK.
 type Server struct {
 	s *mcpsdk.Server
@@ -106,13 +100,25 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	if srv.registry == nil {
 		srv.registry = tools.NewReadRegistry(database)
 	}
-
-	registerMemory(srv.s, database, srv.memoryVaultPath, srv.retrieveShadowDB)
-	registerSkills(srv.s, srv.skillsDir)
-	// Every pure-db read tool now lives in the registry (tools.ReadTools) and
-	// mounts from here instead of a per-domain register* handler — the registry
-	// is the single source both server modes and the runtime-B loop share.
-	// mountWrites gates the write tools + get_action to chat mode.
+	// The dependency-carrying read tools (memory_*, load_skill) cannot sit in the
+	// zero-arg ReadTools() list — they close over the vault path, skills dir and
+	// the optional recall-compare shadow handle this server resolved. Register
+	// them onto the registry here so registerRegistry mounts them uniformly with
+	// every other read tool; internal/mcp no longer carries a per-domain handler.
+	for _, t := range tools.DependentReadTools(tools.ReadDeps{
+		MemoryVaultPath:  srv.memoryVaultPath,
+		SkillsDir:        srv.skillsDir,
+		RetrieveShadowDB: srv.retrieveShadowDB,
+	}) {
+		if err := srv.registry.Register(t); err != nil {
+			panic("mcp: registering dependent read tool: " + err.Error())
+		}
+	}
+	// Every read tool now lives in the registry (tools.ReadTools plus the
+	// dependency-carrying ones above) and mounts from here instead of a
+	// per-domain register* handler — the registry is the single source both
+	// server modes share. mountWrites gates the write tools + get_action to
+	// chat mode.
 	registerRegistry(srv.s, database, srv.registry, srv.binding, srv.mountWrites)
 
 	return srv
@@ -133,15 +139,6 @@ func jsonResult(v any) (*mcpsdk.CallToolResult, any, error) {
 	return &mcpsdk.CallToolResult{
 		Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(b)}},
 	}, nil, nil
-}
-
-// jsonListResult marshals a list, rendering a nil/empty slice as [] (not null)
-// so list_ tools always return a JSON array.
-func jsonListResult[T any](items []T) (*mcpsdk.CallToolResult, any, error) {
-	if items == nil {
-		items = []T{}
-	}
-	return jsonResult(items)
 }
 
 // errResult builds a tool-level error result with a human-readable message.
