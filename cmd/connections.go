@@ -147,6 +147,15 @@ func toConnectionJSON(c db.ExternalConnection) connectionJSON {
 		CreatedAt: c.CreatedAt}
 }
 
+// warnIfProviderIgnoresConnections tells the owner that Quick Connections are
+// wired only for the claude provider, so an enabled connection is inert under
+// codex/ollama. Non-fatal: the enable/add still succeeds.
+func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name string) {
+	if p := cfg.AI.ConfiguredProviderID(); p != "claude" {
+		fmt.Fprintf(w, "warning: Quick Connections work only with the claude AI provider; connection %q will be inert under provider %q\n", name, p)
+	}
+}
+
 func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	name := connectionsAddFlagName
 	kind := connectionsAddFlagKind
@@ -216,6 +225,7 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Added connection #%d %q (%s), disabled.\n", id, name, kind)
 	fmt.Fprintf(out, "Run 'watchtower connections enable %d' to enable it.\n", id)
+	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, name)
 	return nil
 }
 
@@ -282,7 +292,7 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 	if err != nil {
 		return err
 	}
-	_, database, err := openConnectionsCmdDB(cmd)
+	cfg, database, err := openConnectionsCmdDB(cmd)
 	if err != nil {
 		return err
 	}
@@ -294,6 +304,9 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 	out := cmd.OutOrStdout()
 	if enabled {
 		fmt.Fprintf(out, "Connection %d enabled.\n", id)
+		if conn, err := database.GetExternalConnection(id); err == nil {
+			warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
+		}
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
 	}

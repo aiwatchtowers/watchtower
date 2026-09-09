@@ -34,6 +34,25 @@ func writeConnectionsConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
+// writeConnectionsConfigWithProvider is the writeConnectionsConfig precedent,
+// but stamps ai.provider so ConfiguredProviderID() resolves to a specific
+// value — used to exercise warnIfProviderIgnoresConnections under codex/ollama.
+func writeConnectionsConfigWithProvider(t *testing.T, provider string) *config.Config {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	configYAML := "active_workspace: test\nai:\n  provider: " + provider + "\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(configYAML), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	return cfg
+}
+
 // runConnections executes the real "connections" command tree via rootCmd,
 // the actions_test.go/runActions precedent, feeding stdin (if any) through
 // rootCmd so it reaches InOrStdin() on the dispatched child command.
@@ -188,6 +207,94 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 	conns, err := database.ListExternalConnections()
 	require.NoError(t, err)
 	assert.Empty(t, conns, "a rejected reserved name must create no row")
+}
+
+// TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
+// honesty warning: codex/ollama chats never wire external connections
+// (codex.Client has no SetExternalMCPServers, ollama routes through runtime
+// B), so enabling a connection under either is inert. The warning must not
+// block the enable — the row still ends up Enabled either way.
+func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+
+			out, err := runConnections(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
+			require.NoError(t, err, out)
+
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			conns, err := database.ListExternalConnections()
+			require.NoError(t, err)
+			require.Len(t, conns, 1)
+			idArg := strconv.FormatInt(conns[0].ID, 10)
+
+			// Re-run for "enable" in a fresh buffer (runConnections allocates
+			// its own bytes.Buffer per call) so this assertion only sees the
+			// enable output, not whatever "add" above also warned about.
+			out, err = runConnections(t, "", "enable", idArg)
+			require.NoError(t, err, out)
+
+			enabledConn, err := database.GetExternalConnection(conns[0].ID)
+			require.NoError(t, err)
+			assert.True(t, enabledConn.Enabled, "enable must still succeed regardless of provider")
+
+			if tt.wantWarning {
+				assert.Contains(t, out, "only")
+				assert.Contains(t, out, "claude")
+				assert.Contains(t, out, "My-Server")
+			} else {
+				assert.NotContains(t, out, "warning")
+			}
+		})
+	}
+}
+
+// TestConnectionsAdd_WarnsUnderNonClaudeProvider mirrors the enable case for
+// "connections add" — non-claude warns (row still created disabled, as
+// always), claude stays silent.
+func TestConnectionsAdd_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+
+			out, err := runConnections(t, "", "add", "--name", "My-Server", "--kind", "stdio", "--command", "npx")
+			require.NoError(t, err, out)
+
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			conns, err := database.ListExternalConnections()
+			require.NoError(t, err)
+			require.Len(t, conns, 1)
+			assert.False(t, conns[0].Enabled, "add must still create the row disabled regardless of provider")
+
+			if tt.wantWarning {
+				assert.Contains(t, out, "only")
+				assert.Contains(t, out, "claude")
+				assert.Contains(t, out, "My-Server")
+			} else {
+				assert.NotContains(t, out, "warning")
+			}
+		})
+	}
 }
 
 func TestConnections_AddHTTPWithoutSecretStdinCreatesNoSecretFile(t *testing.T) {
