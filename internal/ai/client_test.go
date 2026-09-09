@@ -562,7 +562,8 @@ func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
 }
 
 // TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders pins that an http server with
-// no headers emits no "headers" key at all, rather than an empty object.
+// no headers emits exactly {type, url}: no "headers" key (rather than an empty
+// object) and no stdio keys (command/args/env) leaking into an http entry.
 func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetExternalMCPServers([]ExternalMCPServer{{
@@ -578,8 +579,13 @@ func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 	if !ok {
 		t.Fatal("acme server missing")
 	}
-	if _, ok := acme["headers"]; ok {
-		t.Fatalf("headers key present with empty Headers map: %v", acme)
+	if len(acme) != 2 {
+		t.Fatalf("http entry must carry exactly type+url, got %d keys: %v", len(acme), acme)
+	}
+	for _, key := range []string{"type", "url"} {
+		if _, ok := acme[key]; !ok {
+			t.Fatalf("http entry missing %q key: %v", key, acme)
+		}
 	}
 }
 
