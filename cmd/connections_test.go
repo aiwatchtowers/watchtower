@@ -107,6 +107,7 @@ func resetConnectionsFlags() {
 	connectionsOAuthFlagNoOpen = false
 	connectionsOAuthFlagClientID = ""
 	connectionsOAuthFlagClientSecretStdin = false
+	connectionsOAuthFlagScope = ""
 }
 
 // connectionsFakeOAuthServer is a minimal RFC 8414/7591/7009 authorization
@@ -183,6 +184,16 @@ func newConnectionsFakeOAuthServer(t *testing.T) *connectionsFakeOAuthServer {
 // mcpoauth.Login while Login itself is still waiting on the callback).
 func captureConnectionsAuthorizeCallback(t *testing.T) {
 	t.Helper()
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, nil)
+}
+
+// captureConnectionsAuthorizeCallbackRecordingQuery is
+// captureConnectionsAuthorizeCallback plus an optional hook that runs
+// synchronously on the authorize URL's query before the loopback callback
+// fires — used to assert on request params (e.g. "scope") that never
+// travel any further than that URL in this fake-server setup.
+func captureConnectionsAuthorizeCallbackRecordingQuery(t *testing.T, record func(url.Values)) {
+	t.Helper()
 	old := mcpoauth.OpenBrowser
 	t.Cleanup(func() { mcpoauth.OpenBrowser = old })
 	mcpoauth.OpenBrowser = func(rawURL string) {
@@ -190,6 +201,9 @@ func captureConnectionsAuthorizeCallback(t *testing.T) {
 		if err != nil {
 			t.Errorf("parsing authorize URL %q: %v", rawURL, err)
 			return
+		}
+		if record != nil {
+			record(u.Query())
 		}
 		redirectURI := u.Query().Get("redirect_uri")
 		state := u.Query().Get("state")
@@ -500,6 +514,50 @@ func TestConnectionsOAuth_SignsInAndEnables(t *testing.T) {
 	require.NotNil(t, secret.OAuth, "a successful sign-in must persist the OAuth grant")
 	assert.Equal(t, "access-tok", secret.OAuth.AccessToken)
 	assert.Equal(t, "refresh-tok", secret.OAuth.RefreshToken)
+}
+
+// TestConnectionsOAuth_ScopeFlagRequestsScope pins I2: --scope threads
+// through to the authorize request's "scope" param, since that is the only
+// way an owner can ask a server for a scope like offline_access that some
+// servers require before they will issue a refresh token at all.
+func TestConnectionsOAuth_ScopeFlagRequestsScope(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	var gotScope string
+	sawScope := false
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, func(q url.Values) {
+		gotScope, sawScope = q.Get("scope"), q.Has("scope")
+	})
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	out, err := runConnections(t, "", "oauth", idArg, "--scope", "offline_access read:page")
+	require.NoError(t, err, out)
+	assert.True(t, sawScope, "authorize request must carry a scope param when --scope is set")
+	assert.Equal(t, "offline_access read:page", gotScope)
+}
+
+// TestConnectionsOAuth_NoScopeFlagOmitsScope pins the other half of I2: with
+// no --scope, the authorize request carries no scope param at all (the
+// pre-fix behavior) rather than defaulting to some hardcoded value —
+// Quick Connections has no per-service assumptions to default it from.
+func TestConnectionsOAuth_NoScopeFlagOmitsScope(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	sawScope := true // start true so a bug that never calls the hook still fails loudly below
+	called := false
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, func(q url.Values) {
+		sawScope, called = q.Has("scope"), true
+	})
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	out, err := runConnections(t, "", "oauth", idArg)
+	require.NoError(t, err, out)
+	require.True(t, called, "the authorize-URL hook must have run")
+	assert.False(t, sawScope, "authorize request must carry no scope param when --scope is not set")
 }
 
 func TestConnectionsOAuth_RejectsStdioKind(t *testing.T) {

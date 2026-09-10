@@ -101,6 +101,7 @@ var (
 	connectionsOAuthFlagNoOpen            bool
 	connectionsOAuthFlagClientID          string
 	connectionsOAuthFlagClientSecretStdin bool
+	connectionsOAuthFlagScope             string
 )
 
 func init() {
@@ -122,6 +123,8 @@ func init() {
 		"BYO OAuth client id (required when the server publishes no registration_endpoint)")
 	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagClientSecretStdin, "client-secret-stdin", false,
 		"read the BYO OAuth client secret from stdin")
+	connectionsOAuthCmd.Flags().StringVar(&connectionsOAuthFlagScope, "scope", "",
+		"space-separated OAuth scope(s) to request (e.g. an offline_access scope some servers require to issue a refresh token); omit to request none")
 
 	connectionsCmd.AddCommand(connectionsAddCmd)
 	connectionsCmd.AddCommand(connectionsListCmd)
@@ -450,6 +453,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		ServerURL:    conn.URL,
 		ClientID:     connectionsOAuthFlagClientID,
 		ClientSecret: clientSecret,
+		Scope:        connectionsOAuthFlagScope,
 	}, cmd.OutOrStdout(), mcpoauth.LoginOptions{
 		SkipBrowserOpen: connectionsOAuthFlagNoOpen,
 		AppReturn:       connectionsOAuthFlagAppReturn,
