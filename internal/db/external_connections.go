@@ -125,6 +125,19 @@ func (db *DB) SetExternalConnectionEnabled(id int64, enabled bool) error {
 	return nil
 }
 
+// SetExternalConnectionStatus records id's health (e.g. "ok"/"revoked") and
+// an accompanying error message, cleared by passing an empty string.
+func (db *DB) SetExternalConnectionStatus(id int64, status, errMsg string) error {
+	res, err := db.Exec(`UPDATE external_connections SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
+	if err != nil {
+		return fmt.Errorf("setting status for external connection %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no external_connections row with id %d", id)
+	}
+	return nil
+}
+
 // RemoveExternalConnection deletes id's row outright — a hard delete, unlike
 // the Slack/Jira "remove" precedent, since a Quick Connection carries no
 // synced data that needs to stay reachable.

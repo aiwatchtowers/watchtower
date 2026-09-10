@@ -36,3 +36,36 @@ func TestExternalConnections_CRUD(t *testing.T) {
 		t.Fatalf("not removed: %+v", all)
 	}
 }
+
+func TestSetExternalConnectionStatus(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.InsertExternalConnection(ExternalConnection{
+		Name: "trello", Kind: "http", URL: "https://x", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetExternalConnectionStatus(id, "revoked", "invalid_grant"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := d.GetExternalConnection(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != "revoked" || c.Error != "invalid_grant" {
+		t.Fatalf("status/error = %q/%q", c.Status, c.Error)
+	}
+	if err := d.SetExternalConnectionStatus(id, "ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	c, err = d.GetExternalConnection(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != "ok" || c.Error != "" {
+		t.Fatalf("status/error not cleared: %q/%q", c.Status, c.Error)
+	}
+	if err := d.SetExternalConnectionStatus(id+999, "ok", ""); err == nil {
+		t.Fatal("expected error for unknown id")
+	}
+}
