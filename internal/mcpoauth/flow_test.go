@@ -374,6 +374,12 @@ func TestExchangeCode_Success(t *testing.T) {
 	if tok.ExpiresIn != 3600 {
 		t.Errorf("ExpiresIn = %d, want 3600", tok.ExpiresIn)
 	}
+	if len(as.TokenRequests) != 1 {
+		t.Fatalf("TokenRequests = %d, want 1", len(as.TokenRequests))
+	}
+	if as.TokenRequests[0].Has("client_secret") {
+		t.Errorf("client_secret should be omitted from the form when the caller passed an empty secret, got %q", as.TokenRequests[0].Get("client_secret"))
+	}
 }
 
 func TestExchangeCode_WrongVerifierRejected(t *testing.T) {
