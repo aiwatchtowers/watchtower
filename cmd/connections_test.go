@@ -635,3 +635,111 @@ func TestConnectionsRemove_RevokesBestEffort(t *testing.T) {
 	_, err = database.GetExternalConnection(conn.ID)
 	assert.Error(t, err, "a failed revocation must still remove the row")
 }
+
+// TestConnectionsOAuth_PreservesExistingSecret pins that a sign-in on a
+// connection that already has an Env/Headers secret (e.g. added with
+// --secret-stdin before OAuth was wired up) keeps those fields — only
+// secret.OAuth is set, never a wholesale overwrite of the Secret.
+func TestConnectionsOAuth_PreservesExistingSecret(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	captureConnectionsAuthorizeCallback(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID)
+	require.NoError(t, store.Save(&externalmcp.Secret{
+		Headers: map[string]string{"X-Extra": "1"},
+		Env:     map[string]string{"FOO": "bar"},
+	}))
+
+	out, err := runConnections(t, "", "oauth", idArg)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "signed in and enabled")
+
+	secret, err := store.Load()
+	require.NoError(t, err)
+	require.NotNil(t, secret)
+	require.NotNil(t, secret.OAuth, "oauth must set the grant")
+	assert.Equal(t, "1", secret.Headers["X-Extra"], "pre-existing Headers must survive an oauth sign-in")
+	assert.Equal(t, "bar", secret.Env["FOO"], "pre-existing Env must survive an oauth sign-in")
+}
+
+// TestConnectionsOAuth_WarnsUnderNonClaudeProvider mirrors the add/enable
+// provider-honesty warning for "connections oauth": a successful sign-in
+// under a non-claude provider still enables the connection but warns on
+// stderr; claude stays silent. The add/enable precedent's table shape.
+func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+			as := newConnectionsFakeOAuthServer(t)
+			captureConnectionsAuthorizeCallback(t)
+
+			conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+			idArg := strconv.FormatInt(conn.ID, 10)
+
+			stdout, stderr, err := runConnectionsSplit(t, "", "oauth", idArg)
+			require.NoError(t, err, stdout+stderr)
+			assert.Contains(t, stdout, "signed in and enabled")
+
+			if tt.wantWarning {
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "Web-Tool")
+			} else {
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
+			}
+		})
+	}
+}
+
+// TestConnectionsRemove_RevokesSuccessfully is the successful-revocation
+// counterpart to TestConnectionsRemove_RevokesBestEffort: no warning, the
+// grant's refresh token is the one posted to /revoke, and the row + secret
+// file are both gone.
+func TestConnectionsRemove_RevokesSuccessfully(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID)
+	require.NoError(t, store.Save(&externalmcp.Secret{
+		OAuth: &externalmcp.OAuthGrant{
+			AccessToken:        "tok",
+			RefreshToken:       "refresh-tok",
+			ClientID:           "cid",
+			RevocationEndpoint: as.server.URL + "/revoke",
+		},
+	}))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "remove", idArg)
+	require.NoError(t, err, stdout+stderr)
+	assert.Contains(t, stdout, "Removed connection")
+	assert.NotContains(t, stderr, "warning", "a successful revocation must not warn")
+
+	as.mu.Lock()
+	revoked := append([]string(nil), as.RevokedTokens...)
+	as.mu.Unlock()
+	require.Len(t, revoked, 1)
+	assert.Equal(t, "refresh-tok", revoked[0])
+
+	assert.NoFileExists(t, store.Path())
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = database.GetExternalConnection(conn.ID)
+	assert.Error(t, err, "row must be gone after remove")
+}
