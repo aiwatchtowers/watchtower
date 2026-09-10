@@ -72,6 +72,19 @@ func (s *SecretStore) Load() (*Secret, error) {
 // file (or none) intact rather than a half-written one — load-bearing for
 // callers persisting a just-rotated OAuth token, where a torn write would
 // burn both the old and new refresh token.
+//
+// The temp file is created with O_EXCL rather than via os.WriteFile: a
+// leftover tmpPath from a prior interrupted Save (process killed between
+// the old WriteFile and Rename) could carry a mode wider than 0600 — say,
+// created under a permissive umask by an older build — and os.WriteFile
+// does NOT reset an already-existing file's mode, so writing over it would
+// silently rename that wider-permission file into place as the live
+// secret. A stale *regular file* left at tmpPath is always safe to discard
+// (Save always regenerates it from scratch), so it is removed first, then
+// O_EXCL guarantees the file this call writes is a fresh one created at
+// exactly 0600. Anything else occupying tmpPath (a directory, say) is left
+// alone — O_EXCL then fails loudly rather than this method silently
+// deleting something unexpected.
 func (s *SecretStore) Save(sec *Secret) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("creating secret directory: %w", err)
@@ -82,8 +95,37 @@ func (s *SecretStore) Save(sec *Secret) error {
 	}
 
 	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	if fi, statErr := os.Lstat(tmpPath); statErr == nil {
+		if fi.Mode().IsRegular() {
+			if err := os.Remove(tmpPath); err != nil {
+				return fmt.Errorf("removing stale temp secret file: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("checking temp secret file: %w", statErr)
+	}
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("creating temp secret file: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing temp secret file: %w", err)
+	}
+	// Sync before rename so the write is durable on disk before the rename
+	// makes it visible — without this, a crash right after Save returns
+	// could still lose the write despite the rename having "completed",
+	// which would defeat the crash-survival contract this method promises
+	// for a just-rotated OAuth token.
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("syncing temp secret file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing temp secret file: %w", err)
 	}
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		_ = os.Remove(tmpPath)

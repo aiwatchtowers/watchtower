@@ -118,6 +118,47 @@ func TestSecretStore_SaveIsAtomic(t *testing.T) {
 	}
 }
 
+// TestSecretStore_SaveFixesStaleWidePermTempFile pins the I5 fix: a leftover
+// .tmp file from a prior interrupted Save (created, say, under a permissive
+// umask by an older build) must not have its wider permissions carried into
+// the live secret via Rename. os.WriteFile does not chmod an
+// already-existing file, so before the fix a pre-existing 0666 .tmp file
+// would be reused as-is and renamed straight over the destination — this
+// test must fail before the O_EXCL fix and pass after.
+func TestSecretStore_SaveFixesStaleWidePermTempFile(t *testing.T) {
+	dir := t.TempDir()
+	st := NewSecretStore(dir, 99)
+
+	tmpPath := st.Path() + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte("stale leftover"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile's mode argument only applies at creation time and is itself
+	// subject to umask, so force the wide mode explicitly rather than
+	// relying on the process umask to leave 0666 untouched.
+	if err := os.Chmod(tmpPath, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(tmpPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o666 {
+		t.Fatalf("precondition: stale temp file mode = %v, want 0666", fi.Mode().Perm())
+	}
+
+	if err := st.Save(&Secret{Env: map[string]string{"K": "v"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertNoTmpFiles(t, dir)
+	assertMode0600(t, st.Path())
+	got, err := st.Load()
+	if err != nil || got.Env["K"] != "v" {
+		t.Fatalf("load after save = %+v, %v", got, err)
+	}
+}
+
 func assertNoTmpFiles(t *testing.T, dir string) {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join(dir, "*.tmp"))

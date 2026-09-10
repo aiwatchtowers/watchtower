@@ -2,7 +2,6 @@ package mcpoauth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -223,7 +222,7 @@ func fetchJSON(ctx context.Context, url string, out any) (ok bool, status int, e
 	if resp.StatusCode != http.StatusOK {
 		return false, resp.StatusCode, nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := decodeLimitedJSON(resp.Body, out); err != nil {
 		return false, resp.StatusCode, fmt.Errorf("decoding JSON body: %w", err)
 	}
 	return true, resp.StatusCode, nil

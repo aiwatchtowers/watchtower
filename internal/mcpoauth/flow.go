@@ -94,7 +94,7 @@ func Register(ctx context.Context, md *Metadata, redirectURI string) (clientID, 
 	}
 
 	var out registerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeLimitedJSON(resp.Body, &out); err != nil {
 		return "", "", fmt.Errorf("mcpoauth: decoding registration response from %s: %w", md.RegistrationEndpoint, err)
 	}
 	if out.ClientID == "" {
@@ -241,7 +241,7 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (*Token, er
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var tokErr tokenErrorResponse
-		if decErr := json.NewDecoder(resp.Body).Decode(&tokErr); decErr != nil {
+		if decErr := decodeLimitedJSON(resp.Body, &tokErr); decErr != nil {
 			return nil, fmt.Errorf("mcpoauth: token endpoint %s returned status %d with an undecodable error body: %w", endpoint, resp.StatusCode, decErr)
 		}
 		if tokErr.Error == "invalid_grant" {
@@ -251,7 +251,7 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (*Token, er
 	}
 
 	var tok Token
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+	if err := decodeLimitedJSON(resp.Body, &tok); err != nil {
 		return nil, fmt.Errorf("mcpoauth: decoding token response from %s: %w", endpoint, err)
 	}
 	return &tok, nil

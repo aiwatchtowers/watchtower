@@ -523,3 +523,33 @@ func TestDiscover_EmptyOptionalEndpoints_StillSucceeds(t *testing.T) {
 		t.Errorf("got RegistrationEndpoint=%q RevocationEndpoint=%q, want both empty", got.RegistrationEndpoint, got.RevocationEndpoint)
 	}
 }
+
+// TestDiscover_OversizedMetadataBody_Rejected pins the I4 fix end to end: a
+// hostile (or misbehaving) authorization-server metadata endpoint streaming
+// a body over maxResponseBodyBytes is rejected with a clear error rather
+// than Discover attempting to read and decode it in full.
+func TestDiscover_OversizedMetadataBody_Rejected(t *testing.T) {
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			http.NotFound(w, r)
+		case "/.well-known/oauth-authorization-server":
+			w.Header().Set("Content-Type", "application/json")
+			// Padding whitespace ahead of otherwise-valid JSON so a failure
+			// here can only come from the size cap, not a syntax error.
+			_, _ = w.Write([]byte(strings.Repeat(" ", maxResponseBodyBytes+1)))
+			_, _ = w.Write([]byte(`{"issuer":"x"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mcpServer.Close()
+
+	_, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err == nil {
+		t.Fatal("Discover: want error for an oversized metadata body")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("err = %v, want an 'exceeds ... byte limit' error", err)
+	}
+}
