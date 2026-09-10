@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/mcpoauth"
 )
 
 // connectionNamePattern constrains --name to characters that are safe to
@@ -70,6 +71,17 @@ var connectionsRemoveCmd = &cobra.Command{
 	RunE:  runConnectionsRemove,
 }
 
+var connectionsOAuthCmd = &cobra.Command{
+	Use:   "oauth <id>",
+	Short: "Sign in to an http Quick Connection via OAuth",
+	Long: "Runs an OAuth 2.1 + PKCE loopback sign-in against an http connection's\n" +
+		"server (discovery, dynamic client registration or a BYO client id,\n" +
+		"authorization, code exchange), persists the resulting grant to the\n" +
+		"connection's secret store, and enables the connection.",
+	Args: cobra.ExactArgs(1),
+	RunE: runConnectionsOAuth,
+}
+
 var (
 	connectionsFlagJSON bool
 
@@ -84,6 +96,11 @@ var (
 	connectionsAddFlagArgs        []string
 	connectionsAddFlagURL         string
 	connectionsAddFlagSecretStdin bool
+
+	connectionsOAuthFlagAppReturn         bool
+	connectionsOAuthFlagNoOpen            bool
+	connectionsOAuthFlagClientID          string
+	connectionsOAuthFlagClientSecretStdin bool
 )
 
 func init() {
@@ -97,11 +114,21 @@ func init() {
 
 	connectionsListCmd.Flags().BoolVar(&connectionsFlagJSON, "json", false, "output JSON")
 
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagAppReturn, "app-return", false,
+		"success page redirects to the Desktop app (watchtower-auth://connected)")
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagNoOpen, "no-open", false,
+		"don't open the browser automatically (print the authorize URL instead)")
+	connectionsOAuthCmd.Flags().StringVar(&connectionsOAuthFlagClientID, "client-id", "",
+		"BYO OAuth client id (required when the server publishes no registration_endpoint)")
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagClientSecretStdin, "client-secret-stdin", false,
+		"read the BYO OAuth client secret from stdin")
+
 	connectionsCmd.AddCommand(connectionsAddCmd)
 	connectionsCmd.AddCommand(connectionsListCmd)
 	connectionsCmd.AddCommand(connectionsEnableCmd)
 	connectionsCmd.AddCommand(connectionsDisableCmd)
 	connectionsCmd.AddCommand(connectionsRemoveCmd)
+	connectionsCmd.AddCommand(connectionsOAuthCmd)
 	rootCmd.AddCommand(connectionsCmd)
 }
 
@@ -139,12 +166,35 @@ type connectionJSON struct {
 	Status    string   `json:"status"`
 	Error     string   `json:"error,omitempty"`
 	CreatedAt string   `json:"created_at"`
+	Auth      string   `json:"auth"`
 }
 
-func toConnectionJSON(c db.ExternalConnection) connectionJSON {
+func toConnectionJSON(c db.ExternalConnection, auth string) connectionJSON {
 	return connectionJSON{ID: c.ID, Name: c.Name, Kind: c.Kind, Command: c.Command,
 		Args: c.Args, URL: c.URL, Enabled: c.Enabled, Status: c.Status, Error: c.Error,
-		CreatedAt: c.CreatedAt}
+		CreatedAt: c.CreatedAt, Auth: auth}
+}
+
+// connectionAuthState reports how id authenticates, for `connections list`:
+// "oauth" when an OAuth grant is on file, "static" when the secret carries
+// plain env/headers, "none" when there is no secret at all. A secret-load
+// error (corrupt file, permissions) renders "?" rather than failing the
+// whole listing.
+func connectionAuthState(cfg *config.Config, id int64) string {
+	secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Load()
+	if err != nil {
+		return "?"
+	}
+	if secret == nil {
+		return "none"
+	}
+	if secret.OAuth != nil {
+		return "oauth"
+	}
+	if len(secret.Env) > 0 || len(secret.Headers) > 0 {
+		return "static"
+	}
+	return "none"
 }
 
 // warnIfProviderIgnoresConnections tells the owner that Quick Connections are
@@ -230,7 +280,7 @@ func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runConnectionsList(cmd *cobra.Command, _ []string) error {
-	_, database, err := openConnectionsCmdDB(cmd)
+	cfg, database, err := openConnectionsCmdDB(cmd)
 	if err != nil {
 		return err
 	}
@@ -245,7 +295,7 @@ func runConnectionsList(cmd *cobra.Command, _ []string) error {
 	if connectionsFlagJSON {
 		wire := make([]connectionJSON, 0, len(conns))
 		for _, c := range conns {
-			wire = append(wire, toConnectionJSON(c))
+			wire = append(wire, toConnectionJSON(c, connectionAuthState(cfg, c.ID)))
 		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -266,7 +316,8 @@ func runConnectionsList(cmd *cobra.Command, _ []string) error {
 		if c.Kind == "http" {
 			target = c.URL
 		}
-		fmt.Fprintf(out, "#%d %s [%s] %s (%s) [%s]\n", c.ID, c.Name, c.Kind, target, c.Status, state)
+		fmt.Fprintf(out, "#%d %s [%s] %s (%s) [%s] auth=%s\n",
+			c.ID, c.Name, c.Kind, target, c.Status, state, connectionAuthState(cfg, c.ID))
 	}
 	return nil
 }
@@ -329,13 +380,97 @@ func runConnectionsRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
+	// Best-effort revocation, before the secret (and the refresh token it
+	// carries) is deleted: a failure here must never block the removal —
+	// the connection is going away either way.
+	if secret, loadErr := store.Load(); loadErr == nil && secret != nil &&
+		secret.OAuth != nil && secret.OAuth.RevocationEndpoint != "" {
+		if err := mcpoauth.Revoke(cmd.Context(), secret.OAuth.RevocationEndpoint,
+			secret.OAuth.ClientID, secret.OAuth.ClientSecret, secret.OAuth.RefreshToken); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: token revocation failed: %v\n", err)
+		}
+	}
+
 	if err := database.RemoveExternalConnection(id); err != nil {
 		return fmt.Errorf("removing connection: %w", err)
 	}
-	if err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
+	if err := store.Delete(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to delete secret file for connection %d: %v\n", id, err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Removed connection %d.\n", id)
+	return nil
+}
+
+// runConnectionsOAuth signs in to an http Quick Connection's server: OAuth
+// 2.1 + PKCE discovery/registration/authorization/exchange via
+// mcpoauth.Login, then persists the resulting grant and enables the
+// connection. The client secret (BYO registration only) travels via stdin,
+// never a flag, so it can never land on argv or in a process listing.
+func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
+	id, err := parseConnectionID(args[0])
+	if err != nil {
+		return err
+	}
+
+	var clientSecret string
+	if connectionsOAuthFlagClientSecretStdin {
+		data, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return fmt.Errorf("reading client secret from stdin: %w", err)
+		}
+		clientSecret = strings.TrimSpace(string(data))
+	}
+
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	conn, err := database.GetExternalConnection(id)
+	if err != nil {
+		return fmt.Errorf("getting connection: %w", err)
+	}
+	if conn.Kind != "http" {
+		return fmt.Errorf("connection %d is %q; OAuth sign-in applies to http servers only", id, conn.Kind)
+	}
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
+	secret, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("loading existing secret: %w", err)
+	}
+	if secret == nil {
+		secret = &externalmcp.Secret{}
+	}
+
+	grant, err := mcpoauth.Login(cmd.Context(), mcpoauth.LoginConfig{
+		ServerURL:    conn.URL,
+		ClientID:     connectionsOAuthFlagClientID,
+		ClientSecret: clientSecret,
+	}, cmd.OutOrStdout(), mcpoauth.LoginOptions{
+		SkipBrowserOpen: connectionsOAuthFlagNoOpen,
+		AppReturn:       connectionsOAuthFlagAppReturn,
+	})
+	if err != nil {
+		return fmt.Errorf("oauth sign-in: %w", err)
+	}
+
+	secret.OAuth = grant
+	if err := store.Save(secret); err != nil {
+		return fmt.Errorf("saving secret: %w", err)
+	}
+	if err := database.SetExternalConnectionEnabled(id, true); err != nil {
+		return fmt.Errorf("enabling connection: %w", err)
+	}
+	if err := database.SetExternalConnectionStatus(id, "ok", ""); err != nil {
+		return fmt.Errorf("updating connection status: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
+	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
 	return nil
 }
