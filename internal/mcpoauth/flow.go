@@ -80,12 +80,15 @@ func Register(ctx context.Context, md *Metadata, redirectURI string) (clientID, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("mcpoauth: registering client at %s: %w", md.RegistrationEndpoint, err)
 	}
 	defer resp.Body.Close()
 
+	if isRedirect(resp.StatusCode) {
+		return "", "", fmt.Errorf("mcpoauth: registration at %s returned a redirect (status %d); redirects are not followed here", md.RegistrationEndpoint, resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return "", "", fmt.Errorf("mcpoauth: registration at %s failed with status %d", md.RegistrationEndpoint, resp.StatusCode)
 	}
@@ -187,16 +190,29 @@ func Revoke(ctx context.Context, revocationEndpoint, clientID, clientSecret, tok
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := httpClient.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("mcpoauth: calling revocation endpoint %s: %w", revocationEndpoint, err)
 	}
 	defer resp.Body.Close()
 
+	if isRedirect(resp.StatusCode) {
+		return fmt.Errorf("mcpoauth: revocation endpoint %s returned a redirect (status %d); redirects are not followed here", revocationEndpoint, resp.StatusCode)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("mcpoauth: revocation endpoint %s returned status %d", revocationEndpoint, resp.StatusCode)
 	}
 	return nil
+}
+
+// isRedirect reports whether status is a 3xx response. Both noRedirectClient
+// callers below use it: postForm and Register/Revoke's own callers use
+// http.Client.CheckRedirect to stop the transport from following, but the
+// response itself still carries the 3xx status, and — unlike a transport
+// error — must be checked explicitly before falling through to code that
+// assumes the body decodes as a token or error JSON payload.
+func isRedirect(status int) bool {
+	return status >= 300 && status < 400
 }
 
 // postForm posts an application/x-www-form-urlencoded body to a token
@@ -214,12 +230,15 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (*Token, er
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := noRedirectClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("mcpoauth: calling token endpoint %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
+	if isRedirect(resp.StatusCode) {
+		return nil, fmt.Errorf("mcpoauth: token endpoint %s returned a redirect (status %d); redirects are not followed here", endpoint, resp.StatusCode)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var tokErr tokenErrorResponse
 		if decErr := json.NewDecoder(resp.Body).Decode(&tokErr); decErr != nil {

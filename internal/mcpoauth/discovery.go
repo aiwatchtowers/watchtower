@@ -12,7 +12,42 @@ import (
 	"time"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// httpClient is used for discovery's GET requests, which may legitimately
+// redirect (e.g. an origin's well-known document forwarding to a canonical
+// host). CheckRedirect re-runs requireSecure on every hop's URL, not just
+// the first — otherwise an https origin could 302 discovery onto a plain-http
+// host and metadata would be fetched (and later trusted) over cleartext.
+var httpClient = &http.Client{
+	Timeout:       30 * time.Second,
+	CheckRedirect: secureRedirectPolicy,
+}
+
+// noRedirectClient is used for POSTs to the token, registration, and
+// revocation endpoints. RFC 6749/7591/7009 define no redirect behavior for
+// these; Go's default client replays a POST body (including client_id,
+// client_secret, and refresh/auth-code grant material) on a 307/308, so an
+// authorization server whose token endpoint starts redirecting could steer
+// that body to an attacker-controlled host before requireSecure ever sees
+// it. Refusing to follow at the transport level, and treating any 3xx
+// response as an error in the callers below, closes that off entirely
+// rather than relying on requireSecure to catch every hop.
+var noRedirectClient = &http.Client{
+	Timeout: 30 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+// secureRedirectPolicy is httpClient's CheckRedirect: it enforces the same
+// https-or-loopback rule on every redirect hop that requireSecure enforces
+// on the initial URL, and keeps Go's default 10-hop cap (CheckRedirect is
+// only consulted when a policy is set, so the cap must be reimplemented).
+func secureRedirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("mcpoauth: stopped after %d redirects", len(via))
+	}
+	return requireSecure(req.URL.String())
+}
 
 // Metadata is the RFC 8414 authorization-server document an MCP server points at.
 type Metadata struct {
@@ -96,6 +131,29 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 	}
 	if !slices.Contains(meta.CodeChallengeMethodsSupported, "S256") {
 		return nil, fmt.Errorf("mcpoauth: authorization server at %s does not advertise S256 PKCE support (code_challenge_methods_supported: %v)", issuer, meta.CodeChallengeMethodsSupported)
+	}
+
+	// Every endpoint the metadata document names must itself be secure —
+	// requireSecure is re-checked per call site later (e.g. a grant loaded
+	// from disk carries a token_endpoint that never went through Discover),
+	// but validating here once means a hostile metadata document can never
+	// hand back so much as a URL for AuthorizeURL/Login to act on, e.g.
+	// opening the owner's browser to a cleartext authorization_endpoint.
+	if err := requireSecure(meta.AuthorizationEndpoint); err != nil {
+		return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure authorization_endpoint: %w", metaURL, err)
+	}
+	if err := requireSecure(meta.TokenEndpoint); err != nil {
+		return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure token_endpoint: %w", metaURL, err)
+	}
+	if meta.RegistrationEndpoint != "" {
+		if err := requireSecure(meta.RegistrationEndpoint); err != nil {
+			return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure registration_endpoint: %w", metaURL, err)
+		}
+	}
+	if meta.RevocationEndpoint != "" {
+		if err := requireSecure(meta.RevocationEndpoint); err != nil {
+			return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure revocation_endpoint: %w", metaURL, err)
+		}
 	}
 
 	return &meta, nil

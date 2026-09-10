@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"watchtower/internal/auth"
@@ -517,5 +519,125 @@ func TestRevoke_Posts(t *testing.T) {
 	}
 	if got.Get("client_id") != as.ClientID {
 		t.Errorf("client_id = %q, want %q", got.Get("client_id"), as.ClientID)
+	}
+}
+
+// --- B1: token/registration/revocation POSTs must never follow a redirect ---
+
+// attackerCounter is an httptest server that records how many requests it
+// receives (as an atomic counter, since the client under test may run the
+// request from an arbitrary goroutine) and, if ever actually reached, hands
+// back attacker-controlled JSON that would be accepted as a legitimate
+// token/registration response — proving the vulnerability isn't just "an
+// error was returned" but "the secret body was never delivered here".
+func attackerCounter(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"access_token": "attacker-issued-token",
+			"client_id":    "attacker-client",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// redirectingServer 307-redirects every request to target (preserving
+// method and body, per RFC 7231 — a 307 is the "same as 302 but the
+// verb/body are preserved" status, and is what the vulnerability report
+// exercised) so a naive redirect-following client would replay the POST
+// body (client_id/client_secret/refresh_token/etc.) at target.
+func redirectingServer(t *testing.T, target string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRefresh_RedirectToAttackerHost_RefusedAndNeverDialed(t *testing.T) {
+	attacker, hits := attackerCounter(t)
+	redirecting := redirectingServer(t, attacker.URL+"/token")
+
+	_, err := Refresh(context.Background(), redirecting.URL+"/token", "client-1", "", "refresh-tok", "")
+	if err == nil {
+		t.Fatal("Refresh: want error for a redirecting token endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error %q does not mention the redirect", err.Error())
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("attacker server received %d requests, want 0 (the redirect must never be followed)", got)
+	}
+}
+
+// Even a redirect to another https-looking host must be refused: redirects
+// are not followed on this endpoint class at all, not merely "unless the
+// destination is insecure". The destination is a URL that would fail to
+// resolve if dialed (no real TLS server backs it); the point is that the
+// client's CheckRedirect refuses before ever attempting to dial it.
+func TestRefresh_RedirectToAnotherHTTPSHost_Refused(t *testing.T) {
+	redirecting := redirectingServer(t, "https://attacker.invalid.example/token")
+
+	_, err := Refresh(context.Background(), redirecting.URL+"/token", "client-1", "", "refresh-tok", "")
+	if err == nil {
+		t.Fatal("Refresh: want error for a redirecting token endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error %q does not mention the redirect", err.Error())
+	}
+}
+
+func TestExchangeCode_RedirectToAttackerHost_RefusedAndNeverDialed(t *testing.T) {
+	attacker, hits := attackerCounter(t)
+	redirecting := redirectingServer(t, attacker.URL+"/token")
+
+	md := &Metadata{TokenEndpoint: redirecting.URL + "/token"}
+	_, err := ExchangeCode(context.Background(), md, "client-1", "", "code-1", "http://127.0.0.1:0/callback", "verifier", "")
+	if err == nil {
+		t.Fatal("ExchangeCode: want error for a redirecting token endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error %q does not mention the redirect", err.Error())
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("attacker server received %d requests, want 0", got)
+	}
+}
+
+func TestRegister_RedirectToAttackerHost_RefusedAndNeverDialed(t *testing.T) {
+	attacker, hits := attackerCounter(t)
+	redirecting := redirectingServer(t, attacker.URL+"/register")
+
+	md := &Metadata{RegistrationEndpoint: redirecting.URL + "/register"}
+	_, _, err := Register(context.Background(), md, "http://127.0.0.1:0/callback")
+	if err == nil {
+		t.Fatal("Register: want error for a redirecting registration endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error %q does not mention the redirect", err.Error())
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("attacker server received %d requests, want 0", got)
+	}
+}
+
+func TestRevoke_RedirectToAttackerHost_RefusedAndNeverDialed(t *testing.T) {
+	attacker, hits := attackerCounter(t)
+	redirecting := redirectingServer(t, attacker.URL+"/revoke")
+
+	err := Revoke(context.Background(), redirecting.URL+"/revoke", "client-1", "", "some-token")
+	if err == nil {
+		t.Fatal("Revoke: want error for a redirecting revocation endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error %q does not mention the redirect", err.Error())
+	}
+	if got := hits.Load(); got != 0 {
+		t.Errorf("attacker server received %d requests, want 0", got)
 	}
 }
