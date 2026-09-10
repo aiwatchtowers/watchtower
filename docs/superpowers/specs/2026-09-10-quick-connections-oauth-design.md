@@ -93,7 +93,7 @@ computed at launch from `oauth.access_token`, so a stale value can never be
 persisted as if it were a static secret. No new table or column: the connection
 row already has `status`/`error`; `kind` stays `http`.
 
-### 3.2 Discovery (`internal/externalmcp/oauth_discovery.go`)
+### 3.2 Discovery (`internal/mcpoauth/discovery.go`)
 Input: the connection's server URL. Steps, in order, all `https` only, with a
 bounded `http.Client` timeout:
 1. `GET <server-origin>/.well-known/oauth-protected-resource` → if 200, take
@@ -110,7 +110,7 @@ A `401` probe of the server itself is not required for discovery; a
 `WWW-Authenticate: … resource_metadata="<url>"` hint, when present, is honoured
 as step 1's URL.
 
-### 3.3 Client registration (`oauth_flow.go`)
+### 3.3 Client registration (`internal/mcpoauth/flow.go`)
 If metadata has `registration_endpoint` and the caller supplied no client id:
 `POST` `{client_name:"Watchtower", redirect_uris:[<loopback>],
 grant_types:["authorization_code","refresh_token"], response_types:["code"],
@@ -120,13 +120,15 @@ the CLI requires `--client-id` (and accepts `--client-secret-stdin`) — the BYO
 fallback — and continues down the identical authorize/exchange/refresh path.
 
 ### 3.4 Authorization — PKCE over the existing loopback
-Reuse `internal/auth`'s machinery (self-signed local TLS listener, system
-browser, `/callback` handler, `state` check, the `--app-return` success page
-that redirects to `watchtower-auth://connected`). The plan decides, after
-reading the seam, whether `auth.Login` accepts a pluggable code exchange or
-whether `externalmcp` carries its own loop the way `internal/jira/auth.go`
-does; either way the loopback listener, cert, browser opener and callback page
-are shared, not copied.
+A new package `internal/mcpoauth` carries its own `Login` loop — the house
+pattern (Slack, Jira, Gmail and Calendar each own theirs) — reusing the shared
+primitives from `internal/auth`: `RandomState`, `PortFromAddr`, `OpenBrowser`,
+`NewPKCEPair`. The loopback listener is **plain HTTP on 127.0.0.1** with its
+own port range (RFC 8252, the `internal/jira/auth.go` precedent): no
+self-signed certificate, so no browser warning, and dynamic client
+registration accepts `http://127.0.0.1:<port>/callback` redirect URIs. The
+success page and its `--app-return` block (redirect to
+`watchtower-auth://connected`) follow the Jira copy byte for byte.
 
 Authorize URL: `response_type=code`, `client_id`, `redirect_uri`, `state`,
 `code_challenge` (S256) + `code_challenge_method=S256`, `scope` if configured,
@@ -186,8 +188,11 @@ for tests.
   the `0600` temp mcp-config (QC-03 unchanged — the presence of an OAuth grant
   makes `hasSecret()` true by construction).
 - PKCE S256 + random `state`; public client (no secret) when DCR allows
-  `token_endpoint_auth_method=none`; TLS-only discovery and token calls;
-  loopback listener bound to `127.0.0.1` with the existing self-signed cert.
+  `token_endpoint_auth_method=none`; TLS-only discovery and token calls
+  (plain http accepted only for loopback hosts, so tests can use `httptest`);
+  the callback listener is plain HTTP bound to `127.0.0.1` only (RFC 8252 —
+  the authorization code it receives is single-use and bound to the PKCE
+  verifier that never leaves the process).
 - Refresh-token rotation is persisted before use; a refresh failure is
   surfaced on the row, never swallowed (QC-04).
 - Read-only + chat-only + per-connection consent are unchanged (QC-01, QC-02
