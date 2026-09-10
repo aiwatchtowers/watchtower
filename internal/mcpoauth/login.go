@@ -2,12 +2,14 @@ package mcpoauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"html"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/auth"
@@ -41,11 +43,13 @@ type LoginOptions struct {
 	AppReturn       bool // success page redirects to watchtower-auth://connected
 }
 
-// callbackResult is sent from the HTTP callback handler to the Login goroutine.
-type callbackResult struct {
-	code  string
-	state string
-	err   string
+// loginResult is what the /callback handler hands back to Login: either the
+// finished grant (state validated, code exchanged) or the error that should
+// be returned to the caller — the handler decides which page the browser
+// sees based on the very same outcome, so the two can never disagree.
+type loginResult struct {
+	grant *externalmcp.OAuthGrant
+	err   error
 }
 
 // Login runs discovery → (registration | BYO client id) → PKCE authorization
@@ -91,7 +95,14 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		return nil, err
 	}
 
-	resultCh := make(chan callbackResult, 1)
+	// loginCtx bounds the whole wait for the callback (including the code
+	// exchange the handler performs once it arrives) — derived once, up
+	// front, so the handler closure below and the final select share it.
+	loginCtx, cancel := context.WithTimeout(ctx, loginTimeout)
+	defer cancel()
+
+	resultCh := make(chan loginResult, 1)
+	var delivered atomic.Bool
 
 	// With app-return the success page sits briefly (so the confirmation is
 	// readable and the redirect doesn't race page load), then navigates to the
@@ -106,16 +117,53 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			resultCh <- callbackResult{err: errMsg}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(errMsg), 1))
+		// Only the first request to reach the callback delivers a result —
+		// a retry, a stray local probe, or a second race for the port gets a
+		// bare status with no page and never touches resultCh again.
+		if !delivered.CompareAndSwap(false, true) {
+			w.WriteHeader(http.StatusGone)
 			return
 		}
-		resultCh <- callbackResult{code: q.Get("code"), state: q.Get("state")}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, successPage)
+
+		// deliver is non-blocking by construction (delivered's CAS guarantees
+		// at most one send), but select+default keeps that true even if that
+		// invariant is ever weakened.
+		deliver := func(res loginResult, page string) {
+			select {
+			case resultCh <- res:
+			default:
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, page)
+		}
+		fail := func(userMsg, errText string) {
+			page := strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(userMsg), 1)
+			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, page)
+		}
+
+		q := r.URL.Query()
+		if errMsg := q.Get("error"); errMsg != "" {
+			fail(errMsg, fmt.Sprintf("authorization denied: %s", errMsg))
+			return
+		}
+		if got := q.Get("state"); subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 {
+			fail("state mismatch: possible CSRF attack", "state mismatch: possible CSRF attack")
+			return
+		}
+		code := q.Get("code")
+		if code == "" {
+			fail("no authorization code received", "no authorization code received")
+			return
+		}
+
+		tok, err := ExchangeCode(loginCtx, md, clientID, clientSecret, code, redirectURI, pkce.Verifier, cfg.ServerURL)
+		if err != nil {
+			fail(err.Error(), fmt.Sprintf("exchanging code for token: %s", err))
+			return
+		}
+
+		grant := buildGrant(tok, md, clientID, clientSecret, cfg.ServerURL)
+		deliver(loginResult{grant: grant}, successPage)
 	})
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -131,31 +179,20 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		OpenBrowser(authorizeURL)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
-	defer cancel()
-
-	var cb callbackResult
 	select {
-	case cb = <-resultCh:
-	case <-ctx.Done():
-		return nil, fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", ctx.Err())
+	case res := <-resultCh:
+		return res.grant, res.err
+	case <-loginCtx.Done():
+		return nil, fmt.Errorf("mcpoauth: login timed out or was cancelled: %w", loginCtx.Err())
 	}
+}
 
-	if cb.err != "" {
-		return nil, fmt.Errorf("mcpoauth: authorization denied: %s", cb.err)
-	}
-	if cb.state != state {
-		return nil, fmt.Errorf("mcpoauth: state mismatch: possible CSRF attack")
-	}
-	if cb.code == "" {
-		return nil, fmt.Errorf("mcpoauth: no authorization code received")
-	}
-
-	tok, err := ExchangeCode(ctx, md, clientID, clientSecret, cb.code, redirectURI, pkce.Verifier, cfg.ServerURL)
-	if err != nil {
-		return nil, fmt.Errorf("mcpoauth: exchanging code for token: %w", err)
-	}
-
+// buildGrant assembles the OAuthGrant to persist from the token endpoint's
+// response, the resolved client identity, and the discovered metadata. A
+// zero or absent ExpiresIn leaves ExpiresAt zero (OAuthGrant.Expiring
+// treats a zero ExpiresAt as never expiring) rather than stamping a bogus
+// "expires now".
+func buildGrant(tok *Token, md *Metadata, clientID, clientSecret, resource string) *externalmcp.OAuthGrant {
 	grant := &externalmcp.OAuthGrant{
 		AccessToken:        tok.AccessToken,
 		RefreshToken:       tok.RefreshToken,
@@ -163,19 +200,21 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		ClientID:           clientID,
 		ClientSecret:       clientSecret,
 		Scope:              tok.Scope,
-		Resource:           cfg.ServerURL,
+		Resource:           resource,
 		RevocationEndpoint: md.RevocationEndpoint,
 	}
 	if tok.ExpiresIn > 0 {
 		grant.ExpiresAt = Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
 	}
-	return grant, nil
+	return grant
 }
 
-// listenLocal tries preferred ports (18531-18540), then falls back to a
-// random port — its own range, distinct from calendar/jira/gmail's.
+// listenLocal tries preferred ports (18541-18550), then falls back to a
+// random port. Each loopback OAuth flow in the codebase owns a disjoint
+// range: Slack 18491-500, Calendar 18501-510, Jira 18511-520, Gmail
+// 18521-530, Outlook/IMAP 18531-540 — this one is 18541-18550.
 func listenLocal() (net.Listener, error) {
-	for port := 18531; port <= 18540; port++ {
+	for port := 18541; port <= 18550; port++ {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
 			return ln, nil

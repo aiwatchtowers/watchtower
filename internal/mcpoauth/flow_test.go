@@ -80,6 +80,17 @@ func newFakeAS(t *testing.T) *fakeAS {
 	return as
 }
 
+// SetCodeChallenge sets the expected PKCE code_challenge under as.mu — the
+// mutex-safe setter callers must use instead of writing the field directly
+// once /token (which reads it under the same lock) can run concurrently,
+// e.g. from a Login test driving the real loopback callback in another
+// goroutine.
+func (as *fakeAS) SetCodeChallenge(v string) {
+	as.mu.Lock()
+	defer as.mu.Unlock()
+	as.CodeChallenge = v
+}
+
 func (as *fakeAS) handleMetadata(w http.ResponseWriter, r *http.Request) {
 	as.mu.Lock()
 	defer as.mu.Unlock()
