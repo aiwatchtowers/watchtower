@@ -55,6 +55,13 @@ struct QuickConnectionsDetail: View {
                                 .help(connection.isOK
                                     ? "OK"
                                     : (connection.error.isEmpty ? connection.status : connection.error))
+                            if !connection.isOK {
+                                Button("Sign in again") {
+                                    Task { await vm.signIn(connection) }
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(vm.isBusy)
+                            }
                             Toggle("Enabled", isOn: Binding(
                                 get: { connection.enabled },
                                 set: { newValue in

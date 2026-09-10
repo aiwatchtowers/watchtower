@@ -2,10 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +19,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/mcpoauth"
 )
 
 // writeConnectionsConfig points flagConfig at a temp workspace whose DB path
@@ -97,6 +103,125 @@ func resetConnectionsFlags() {
 	connectionsAddFlagArgs = nil
 	connectionsAddFlagURL = ""
 	connectionsAddFlagSecretStdin = false
+	connectionsOAuthFlagAppReturn = false
+	connectionsOAuthFlagNoOpen = false
+	connectionsOAuthFlagClientID = ""
+	connectionsOAuthFlagClientSecretStdin = false
+	connectionsOAuthFlagScope = ""
+}
+
+// connectionsFakeOAuthServer is a minimal RFC 8414/7591/7009 authorization
+// server for exercising `connections oauth`/`connections remove` end to
+// end. It is a from-scratch reimplementation of the internal/mcpoauth
+// package's own fakeAS (that type is unexported in a different package, so
+// it cannot be imported here) — kept deliberately minimal: no PKCE/state
+// enforcement, since those are internal/mcpoauth's own responsibility and
+// are pinned by that package's tests already.
+type connectionsFakeOAuthServer struct {
+	server *httptest.Server
+
+	NoRegistrationEndpoint bool // omit registration_endpoint from metadata
+	RevokeFails            bool // /revoke always answers 500
+
+	mu            sync.Mutex
+	RevokedTokens []string
+}
+
+func newConnectionsFakeOAuthServer(t *testing.T) *connectionsFakeOAuthServer {
+	t.Helper()
+	as := &connectionsFakeOAuthServer{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		meta := map[string]any{
+			"issuer":                                as.server.URL,
+			"authorization_endpoint":                as.server.URL + "/authorize",
+			"token_endpoint":                        as.server.URL + "/token",
+			"revocation_endpoint":                   as.server.URL + "/revoke",
+			"code_challenge_methods_supported":      []string{"S256"},
+			"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post"},
+		}
+		if !as.NoRegistrationEndpoint {
+			meta["registration_endpoint"] = as.server.URL + "/register"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(meta)
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"client_id": "cid"})
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "access-tok",
+			"refresh_token": "refresh-tok",
+			"expires_in":    3600,
+		})
+	})
+	mux.HandleFunc("/revoke", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		as.mu.Lock()
+		as.RevokedTokens = append(as.RevokedTokens, r.PostForm.Get("token"))
+		as.mu.Unlock()
+		if as.RevokeFails {
+			http.Error(w, "revocation failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	as.server = httptest.NewServer(mux)
+	t.Cleanup(as.server.Close)
+	return as
+}
+
+// captureConnectionsAuthorizeCallback swaps mcpoauth.OpenBrowser so that,
+// instead of launching a real browser, it parses the state/redirect_uri out
+// of the authorize URL and drives the loopback callback itself (in a
+// goroutine, since OpenBrowser is called synchronously from inside
+// mcpoauth.Login while Login itself is still waiting on the callback).
+func captureConnectionsAuthorizeCallback(t *testing.T) {
+	t.Helper()
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, nil)
+}
+
+// captureConnectionsAuthorizeCallbackRecordingQuery is
+// captureConnectionsAuthorizeCallback plus an optional hook that runs
+// synchronously on the authorize URL's query before the loopback callback
+// fires — used to assert on request params (e.g. "scope") that never
+// travel any further than that URL in this fake-server setup.
+func captureConnectionsAuthorizeCallbackRecordingQuery(t *testing.T, record func(url.Values)) {
+	t.Helper()
+	old := mcpoauth.OpenBrowser
+	t.Cleanup(func() { mcpoauth.OpenBrowser = old })
+	mcpoauth.OpenBrowser = func(rawURL string) {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			t.Errorf("parsing authorize URL %q: %v", rawURL, err)
+			return
+		}
+		if record != nil {
+			record(u.Query())
+		}
+		redirectURI := u.Query().Get("redirect_uri")
+		state := u.Query().Get("state")
+		go func() {
+			cb, err := url.Parse(redirectURI)
+			if err != nil {
+				return
+			}
+			q := cb.Query()
+			q.Set("code", "any")
+			q.Set("state", state)
+			cb.RawQuery = q.Encode()
+			resp, err := http.Get(cb.String()) //nolint:gosec,noctx
+			if err == nil {
+				resp.Body.Close()
+			}
+		}()
+	}
 }
 
 func TestConnections_AddListEnableDisableRemove(t *testing.T) {
@@ -337,4 +462,361 @@ func TestConnections_AddHTTPWithoutSecretStdinCreatesNoSecretFile(t *testing.T) 
 
 	secretPath := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conns[0].ID).Path()
 	assert.NoFileExists(t, secretPath, "no --secret-stdin means no secret file at all")
+}
+
+// addHTTPConnection is a small test helper: adds an http connection pointed
+// at url and returns its row.
+func addHTTPConnection(t *testing.T, cfg *config.Config, name, connURL string) db.ExternalConnection {
+	t.Helper()
+	out, err := runConnections(t, "", "add", "--name", name, "--kind", "http", "--url", connURL)
+	require.NoError(t, err, out)
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	for _, c := range conns {
+		if c.Name == name {
+			return c
+		}
+	}
+	t.Fatalf("connection %q not found after add", name)
+	return db.ExternalConnection{}
+}
+
+func TestConnectionsOAuth_SignsInAndEnables(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	captureConnectionsAuthorizeCallback(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	// Deliberately WITHOUT --no-open: --no-open bypasses OpenBrowser
+	// entirely, but the captured hook above is what drives the loopback
+	// callback for this test.
+	out, err := runConnections(t, "", "oauth", idArg)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "signed in and enabled")
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	got, err := database.GetExternalConnection(conn.ID)
+	require.NoError(t, err)
+	assert.True(t, got.Enabled, "oauth sign-in must enable the connection")
+	assert.Equal(t, "ok", got.Status)
+
+	secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID).Load()
+	require.NoError(t, err)
+	require.NotNil(t, secret)
+	require.NotNil(t, secret.OAuth, "a successful sign-in must persist the OAuth grant")
+	assert.Equal(t, "access-tok", secret.OAuth.AccessToken)
+	assert.Equal(t, "refresh-tok", secret.OAuth.RefreshToken)
+}
+
+// TestConnectionsOAuth_ScopeFlagRequestsScope pins I2: --scope threads
+// through to the authorize request's "scope" param, since that is the only
+// way an owner can ask a server for a scope like offline_access that some
+// servers require before they will issue a refresh token at all.
+func TestConnectionsOAuth_ScopeFlagRequestsScope(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	var gotScope string
+	sawScope := false
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, func(q url.Values) {
+		gotScope, sawScope = q.Get("scope"), q.Has("scope")
+	})
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	out, err := runConnections(t, "", "oauth", idArg, "--scope", "offline_access read:page")
+	require.NoError(t, err, out)
+	assert.True(t, sawScope, "authorize request must carry a scope param when --scope is set")
+	assert.Equal(t, "offline_access read:page", gotScope)
+}
+
+// TestConnectionsOAuth_NoScopeFlagOmitsScope pins the other half of I2: with
+// no --scope, the authorize request carries no scope param at all (the
+// pre-fix behavior) rather than defaulting to some hardcoded value —
+// Quick Connections has no per-service assumptions to default it from.
+func TestConnectionsOAuth_NoScopeFlagOmitsScope(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	sawScope := true // start true so a bug that never calls the hook still fails loudly below
+	called := false
+	captureConnectionsAuthorizeCallbackRecordingQuery(t, func(q url.Values) {
+		sawScope, called = q.Has("scope"), true
+	})
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	out, err := runConnections(t, "", "oauth", idArg)
+	require.NoError(t, err, out)
+	require.True(t, called, "the authorize-URL hook must have run")
+	assert.False(t, sawScope, "authorize request must carry no scope param when --scope is not set")
+}
+
+func TestConnectionsOAuth_RejectsStdioKind(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	out, err := runConnections(t, "", "add", "--name", "Stdio-Tool", "--kind", "stdio", "--command", "npx")
+	require.NoError(t, err, out)
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	idArg := strconv.FormatInt(conns[0].ID, 10)
+
+	_, err = runConnections(t, "", "oauth", idArg, "--no-open")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OAuth sign-in applies to http servers only")
+}
+
+func TestConnectionsOAuth_NoRegistrationNeedsClientID(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	as.NoRegistrationEndpoint = true
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	_, err := runConnections(t, "", "oauth", idArg, "--no-open")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--client-id")
+}
+
+func TestConnectionsOAuth_BYOClientIDAndSecretStdin(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	as.NoRegistrationEndpoint = true
+	captureConnectionsAuthorizeCallback(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	const clientSecret = "s3cr3t-client-secret"
+	args := []string{"oauth", idArg, "--client-id", "byo-client", "--client-secret-stdin"}
+	for _, a := range args {
+		assert.NotContains(t, a, clientSecret, "the client secret must never appear in the CLI args slice")
+	}
+
+	out, err := runConnections(t, clientSecret, args...)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "signed in and enabled")
+
+	secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID).Load()
+	require.NoError(t, err)
+	require.NotNil(t, secret)
+	require.NotNil(t, secret.OAuth)
+	assert.Equal(t, "byo-client", secret.OAuth.ClientID, "BYO client id must be used verbatim (no registration call)")
+}
+
+func TestConnectionsList_ShowsAuthColumn(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+
+	oauthConn := addHTTPConnection(t, cfg, "OAuth-Tool", "https://example.com/mcp")
+	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), oauthConn.ID).Save(&externalmcp.Secret{
+		OAuth: &externalmcp.OAuthGrant{AccessToken: "tok"},
+	}))
+
+	out, err := runConnections(t, `{"env":{"API_KEY":"s3cr3t"}}`,
+		"add", "--name", "Static-Tool", "--kind", "stdio", "--command", "npx", "--secret-stdin")
+	require.NoError(t, err, out)
+
+	out, err = runConnections(t, "", "add", "--name", "None-Tool", "--kind", "stdio", "--command", "npx")
+	require.NoError(t, err, out)
+
+	out, err = runConnections(t, "", "list", "--json")
+	require.NoError(t, err, out)
+
+	var wire []connectionJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	byName := make(map[string]connectionJSON, len(wire))
+	for _, w := range wire {
+		byName[w.Name] = w
+	}
+	require.Contains(t, byName, "OAuth-Tool")
+	require.Contains(t, byName, "Static-Tool")
+	require.Contains(t, byName, "None-Tool")
+	assert.Equal(t, "oauth", byName["OAuth-Tool"].Auth)
+	assert.Equal(t, "static", byName["Static-Tool"].Auth)
+	assert.Equal(t, "none", byName["None-Tool"].Auth)
+
+	// The plain-text listing must also show the auth column, not just --json.
+	out, err = runConnections(t, "", "list")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "auth=oauth")
+	assert.Contains(t, out, "auth=static")
+	assert.Contains(t, out, "auth=none")
+}
+
+// TestConnectionsList_SecretLoadErrorWarnsWithReason pins M2: a connection
+// whose secret file fails to load still renders "?" in the auth column
+// (never fails the whole listing) but must also emit the failure reason
+// once on stderr as a "warning:" line, rather than swallowing it silently.
+func TestConnectionsList_SecretLoadErrorWarnsWithReason(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	conn := addHTTPConnection(t, cfg, "Broken-Tool", "https://example.com/mcp")
+
+	secretPath := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID).Path()
+	require.NoError(t, os.WriteFile(secretPath, []byte("not valid json"), 0o600))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "list")
+	require.NoError(t, err, stdout)
+	assert.Contains(t, stdout, "auth=?")
+	assert.Contains(t, stderr, "warning:")
+	assert.Contains(t, stderr, strconv.FormatInt(conn.ID, 10))
+	assert.NotContains(t, stderr, "not valid json", "warning must never echo the secret file's content")
+}
+
+func TestConnectionsRemove_RevokesBestEffort(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	as.RevokeFails = true
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID)
+	require.NoError(t, store.Save(&externalmcp.Secret{
+		OAuth: &externalmcp.OAuthGrant{
+			AccessToken:        "tok",
+			RefreshToken:       "refresh-tok",
+			ClientID:           "cid",
+			RevocationEndpoint: as.server.URL + "/revoke",
+		},
+	}))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "remove", idArg)
+	require.NoError(t, err, stdout+stderr)
+	assert.Contains(t, stdout, "Removed connection")
+	assert.Contains(t, stderr, "warning: token revocation failed")
+
+	as.mu.Lock()
+	revoked := append([]string(nil), as.RevokedTokens...)
+	as.mu.Unlock()
+	require.Len(t, revoked, 1, "remove must attempt revocation exactly once even though it fails")
+	assert.Equal(t, "refresh-tok", revoked[0], "revocation must post the refresh token")
+
+	assert.NoFileExists(t, store.Path(), "a failed revocation must still remove the secret file")
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = database.GetExternalConnection(conn.ID)
+	assert.Error(t, err, "a failed revocation must still remove the row")
+}
+
+// TestConnectionsOAuth_PreservesExistingSecret pins that a sign-in on a
+// connection that already has an Env/Headers secret (e.g. added with
+// --secret-stdin before OAuth was wired up) keeps those fields — only
+// secret.OAuth is set, never a wholesale overwrite of the Secret.
+func TestConnectionsOAuth_PreservesExistingSecret(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+	captureConnectionsAuthorizeCallback(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID)
+	require.NoError(t, store.Save(&externalmcp.Secret{
+		Headers: map[string]string{"X-Extra": "1"},
+		Env:     map[string]string{"FOO": "bar"},
+	}))
+
+	out, err := runConnections(t, "", "oauth", idArg)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "signed in and enabled")
+
+	secret, err := store.Load()
+	require.NoError(t, err)
+	require.NotNil(t, secret)
+	require.NotNil(t, secret.OAuth, "oauth must set the grant")
+	assert.Equal(t, "1", secret.Headers["X-Extra"], "pre-existing Headers must survive an oauth sign-in")
+	assert.Equal(t, "bar", secret.Env["FOO"], "pre-existing Env must survive an oauth sign-in")
+}
+
+// TestConnectionsOAuth_WarnsUnderNonClaudeProvider mirrors the add/enable
+// provider-honesty warning for "connections oauth": a successful sign-in
+// under a non-claude provider still enables the connection but warns on
+// stderr; claude stays silent. The add/enable precedent's table shape.
+func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    string
+		wantWarning bool
+	}{
+		{"ollama provider warns", "ollama", true},
+		{"claude provider silent", "claude", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := writeConnectionsConfigWithProvider(t, tt.provider)
+			as := newConnectionsFakeOAuthServer(t)
+			captureConnectionsAuthorizeCallback(t)
+
+			conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+			idArg := strconv.FormatInt(conn.ID, 10)
+
+			stdout, stderr, err := runConnectionsSplit(t, "", "oauth", idArg)
+			require.NoError(t, err, stdout+stderr)
+			assert.Contains(t, stdout, "signed in and enabled")
+
+			if tt.wantWarning {
+				assert.Contains(t, stderr, "only")
+				assert.Contains(t, stderr, "claude")
+				assert.Contains(t, stderr, "Web-Tool")
+			} else {
+				assert.Empty(t, stderr, "a claude provider must produce no warning at all")
+			}
+		})
+	}
+}
+
+// TestConnectionsRemove_RevokesSuccessfully is the successful-revocation
+// counterpart to TestConnectionsRemove_RevokesBestEffort: no warning, the
+// grant's refresh token is the one posted to /revoke, and the row + secret
+// file are both gone.
+func TestConnectionsRemove_RevokesSuccessfully(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	as := newConnectionsFakeOAuthServer(t)
+
+	conn := addHTTPConnection(t, cfg, "Web-Tool", as.server.URL)
+	idArg := strconv.FormatInt(conn.ID, 10)
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID)
+	require.NoError(t, store.Save(&externalmcp.Secret{
+		OAuth: &externalmcp.OAuthGrant{
+			AccessToken:        "tok",
+			RefreshToken:       "refresh-tok",
+			ClientID:           "cid",
+			RevocationEndpoint: as.server.URL + "/revoke",
+		},
+	}))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "remove", idArg)
+	require.NoError(t, err, stdout+stderr)
+	assert.Contains(t, stdout, "Removed connection")
+	assert.NotContains(t, stderr, "warning", "a successful revocation must not warn")
+
+	as.mu.Lock()
+	revoked := append([]string(nil), as.RevokedTokens...)
+	as.mu.Unlock()
+	require.Len(t, revoked, 1)
+	assert.Equal(t, "refresh-tok", revoked[0])
+
+	assert.NoFileExists(t, store.Path())
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = database.GetExternalConnection(conn.ID)
+	assert.Error(t, err, "row must be gone after remove")
 }

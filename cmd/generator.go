@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"log"
 	"path/filepath"
+	"time"
 
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
@@ -11,11 +13,16 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/mcpoauth"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
 	"watchtower/internal/tools"
 )
+
+// externalMCPNow is a test seam for the pre-launch OAuth refresh check in
+// loadExternalMCPServers (the internal/auth.openBrowserFunc precedent).
+var externalMCPNow = time.Now
 
 // validateModel is a no-op kept for call-site compatibility.
 // Model validation was removed — new model IDs often fail the check
@@ -133,7 +140,12 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 // and yields zero external servers (chat keeps working with only its built-in
 // tools); a per-connection secret-load error is logged and just skips that
 // one connection, so one owner's corrupted secret file can't take down every
-// other connection's tools.
+// other connection's tools. An OAuth connection degrades the same way on a
+// refresh failure: EnsureFresh returning ErrInvalidGrant (or any other
+// refresh error) marks the connection row status="revoked" and skips just
+// that connection — a revoked grant can never take down the rest of the
+// chat's external tools, and the owner sees the row surfaced as needing
+// re-sign-in rather than a silently missing tool.
 func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPServer {
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -157,18 +169,72 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 			Args:    c.Args,
 			URL:     c.URL,
 		}
-		secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID).Load()
+		store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
+		secret, err := store.Load()
 		if err != nil {
 			log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
 			continue
 		}
-		if secret != nil {
+		if secret != nil && secret.OAuth != nil {
+			if !applyOAuthCredentials(database, store, &server, secret, c) {
+				continue
+			}
+		} else if secret != nil {
 			server.Env = secret.Env
 			server.Headers = secret.Headers
 		}
 		servers = append(servers, server)
 	}
 	return servers
+}
+
+// applyOAuthCredentials verifies or refreshes an OAuth connection's grant and
+// puts the resulting bearer token on server. It reports whether the connection
+// may be used for this launch; false means "skip this one" and the reason has
+// already been logged and, where it is the grant's fault, recorded on the row.
+//
+// Two orderings here are load-bearing for QC-04. The Authorization header goes
+// into a COPY of the secret's headers, so a bearer can never be persisted as
+// if it were a static secret. And a rotated refresh token is saved BEFORE the
+// new access token is handed to the caller: if that save fails the token would
+// be unrecoverable once used, so the connection is skipped instead.
+func applyOAuthCredentials(
+	database *db.DB,
+	store *externalmcp.SecretStore,
+	server *ai.ExternalMCPServer,
+	secret *externalmcp.Secret,
+	c db.ExternalConnection,
+) bool {
+	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
+	if err != nil {
+		log.Printf("external connection %d (%s): token refresh failed, skipping: %v", c.ID, c.Name, err)
+		if serr := database.SetExternalConnectionStatus(c.ID, "revoked", err.Error()); serr != nil {
+			log.Printf("external connection %d (%s): recording revoked status: %v", c.ID, c.Name, serr)
+		}
+		return false
+	}
+
+	headers := make(map[string]string, len(secret.Headers)+1)
+	for k, v := range secret.Headers {
+		headers[k] = v
+	}
+	headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
+
+	if changed {
+		if err := store.Save(secret); err != nil {
+			log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
+			return false
+		}
+	}
+
+	server.Headers = headers
+	server.Env = secret.Env
+	if c.Status != "ok" {
+		if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
+			log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
+		}
+	}
+	return true
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.
