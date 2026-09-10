@@ -656,6 +656,25 @@ func TestConnectionsList_ShowsAuthColumn(t *testing.T) {
 	assert.Contains(t, out, "auth=none")
 }
 
+// TestConnectionsList_SecretLoadErrorWarnsWithReason pins M2: a connection
+// whose secret file fails to load still renders "?" in the auth column
+// (never fails the whole listing) but must also emit the failure reason
+// once on stderr as a "warning:" line, rather than swallowing it silently.
+func TestConnectionsList_SecretLoadErrorWarnsWithReason(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	conn := addHTTPConnection(t, cfg, "Broken-Tool", "https://example.com/mcp")
+
+	secretPath := externalmcp.NewSecretStore(cfg.WorkspaceDir(), conn.ID).Path()
+	require.NoError(t, os.WriteFile(secretPath, []byte("not valid json"), 0o600))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "list")
+	require.NoError(t, err, stdout)
+	assert.Contains(t, stdout, "auth=?")
+	assert.Contains(t, stderr, "warning:")
+	assert.Contains(t, stderr, strconv.FormatInt(conn.ID, 10))
+	assert.NotContains(t, stderr, "not valid json", "warning must never echo the secret file's content")
+}
+
 func TestConnectionsRemove_RevokesBestEffort(t *testing.T) {
 	cfg := writeConnectionsConfig(t)
 	as := newConnectionsFakeOAuthServer(t)

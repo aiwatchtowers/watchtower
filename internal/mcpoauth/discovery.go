@@ -101,7 +101,10 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, err
 	}
 
-	asURL := issuer + "/.well-known/oauth-authorization-server"
+	asURL, err := wellKnownAuthServerURL(issuer, "oauth-authorization-server")
+	if err != nil {
+		return nil, fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
+	}
 	tried = append(tried, asURL)
 	var meta Metadata
 	metaURL := asURL
@@ -113,7 +116,10 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 		return nil, fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: unexpected status %d", asURL, status)
 	}
 	if !ok {
-		oidcURL := issuer + "/.well-known/openid-configuration"
+		oidcURL, err := openIDConfigurationURL(issuer)
+		if err != nil {
+			return nil, fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
+		}
 		tried = append(tried, oidcURL)
 		metaURL = oidcURL
 		ok, _, err = fetchJSON(ctx, oidcURL, &meta)
@@ -198,6 +204,42 @@ func originOf(rawURL string) (string, error) {
 		return "", fmt.Errorf("missing scheme or host")
 	}
 	return u.Scheme + "://" + u.Host, nil
+}
+
+// wellKnownAuthServerURL builds the RFC 8414 (and RFC 9728, which follows
+// the same construction) well-known metadata URL for base, a
+// "https://host[/path]" value with no query or fragment expected. Per RFC
+// 8414 §3.1, the well-known path segment is inserted BETWEEN the host and
+// any path component of base — not simply appended after it — so
+// "https://host/tenant1" becomes
+// "https://host/.well-known/oauth-authorization-server/tenant1", never
+// "https://host/tenant1/.well-known/oauth-authorization-server". A trailing
+// slash on base's path is trimmed first so it doesn't produce a doubled
+// slash. wellKnownSegment is always a fixed literal from a call site in
+// this package (e.g. "oauth-authorization-server"), never derived from a
+// remote server, so there is no path-injection concern beyond base's own.
+func wellKnownAuthServerURL(base, wellKnownSegment string) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	u.Path = "/.well-known/" + wellKnownSegment + strings.TrimSuffix(u.Path, "/")
+	return u.String(), nil
+}
+
+// openIDConfigurationURL builds the OpenID Connect Discovery 1.0 metadata
+// URL for issuer. Unlike RFC 8414, the OIDC spec keeps a path component of
+// the issuer in place and simply APPENDS "/.well-known/openid-configuration"
+// after it (with any trailing slash on the issuer removed first) —
+// "https://host/tenant1" becomes
+// "https://host/tenant1/.well-known/openid-configuration".
+func openIDConfigurationURL(issuer string) (string, error) {
+	u, err := url.Parse(issuer)
+	if err != nil {
+		return "", err
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/.well-known/openid-configuration"
+	return u.String(), nil
 }
 
 // fetchJSON GETs url and decodes a JSON body into out. ok is true only on a

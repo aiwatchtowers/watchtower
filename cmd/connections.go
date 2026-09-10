@@ -181,11 +181,14 @@ func toConnectionJSON(c db.ExternalConnection, auth string) connectionJSON {
 // connectionAuthState reports how id authenticates, for `connections list`:
 // "oauth" when an OAuth grant is on file, "static" when the secret carries
 // plain env/headers, "none" when there is no secret at all. A secret-load
-// error (corrupt file, permissions) renders "?" rather than failing the
-// whole listing.
-func connectionAuthState(cfg *config.Config, id int64) string {
+// error (corrupt file, permissions) renders "?" in the column so the whole
+// listing doesn't fail, but the reason is still surfaced once on errW as a
+// "warning:" line — never the secret content, just the load error — so the
+// owner isn't left guessing why a connection shows "?".
+func connectionAuthState(cfg *config.Config, id int64, errW io.Writer) string {
 	secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Load()
 	if err != nil {
+		fmt.Fprintf(errW, "warning: connection %d: loading secret: %v\n", id, err)
 		return "?"
 	}
 	if secret == nil {
@@ -295,10 +298,11 @@ func runConnectionsList(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
+	errOut := cmd.ErrOrStderr()
 	if connectionsFlagJSON {
 		wire := make([]connectionJSON, 0, len(conns))
 		for _, c := range conns {
-			wire = append(wire, toConnectionJSON(c, connectionAuthState(cfg, c.ID)))
+			wire = append(wire, toConnectionJSON(c, connectionAuthState(cfg, c.ID, errOut)))
 		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
@@ -320,7 +324,7 @@ func runConnectionsList(cmd *cobra.Command, _ []string) error {
 			target = c.URL
 		}
 		fmt.Fprintf(out, "#%d %s [%s] %s (%s) [%s] auth=%s\n",
-			c.ID, c.Name, c.Kind, target, c.Status, state, connectionAuthState(cfg, c.ID))
+			c.ID, c.Name, c.Kind, target, c.Status, state, connectionAuthState(cfg, c.ID, errOut))
 	}
 	return nil
 }

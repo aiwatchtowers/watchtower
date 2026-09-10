@@ -553,3 +553,93 @@ func TestDiscover_OversizedMetadataBody_Rejected(t *testing.T) {
 		t.Errorf("err = %v, want an 'exceeds ... byte limit' error", err)
 	}
 }
+
+// TestWellKnownAuthServerURL pins the RFC 8414 §3.1 construction (M4): the
+// well-known segment is inserted BETWEEN the host and any path component of
+// the issuer, never simply appended after it.
+func TestWellKnownAuthServerURL(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"no path", "https://host.example.com", "https://host.example.com/.well-known/oauth-authorization-server"},
+		{"with path", "https://host.example.com/tenant1", "https://host.example.com/.well-known/oauth-authorization-server/tenant1"},
+		{"path with trailing slash", "https://host.example.com/tenant1/", "https://host.example.com/.well-known/oauth-authorization-server/tenant1"},
+		{"multi-segment path", "https://host.example.com/a/b", "https://host.example.com/.well-known/oauth-authorization-server/a/b"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := wellKnownAuthServerURL(c.base, "oauth-authorization-server")
+			if err != nil {
+				t.Fatalf("wellKnownAuthServerURL(%q): %v", c.base, err)
+			}
+			if got != c.want {
+				t.Errorf("wellKnownAuthServerURL(%q) = %q, want %q", c.base, got, c.want)
+			}
+		})
+	}
+}
+
+// TestOpenIDConfigurationURL pins the OIDC Discovery 1.0 construction,
+// deliberately different from RFC 8414: the issuer's path is kept in place
+// and the well-known segment is appended after it.
+func TestOpenIDConfigurationURL(t *testing.T) {
+	cases := []struct {
+		name   string
+		issuer string
+		want   string
+	}{
+		{"no path", "https://host.example.com", "https://host.example.com/.well-known/openid-configuration"},
+		{"with path", "https://host.example.com/tenant1", "https://host.example.com/tenant1/.well-known/openid-configuration"},
+		{"path with trailing slash", "https://host.example.com/tenant1/", "https://host.example.com/tenant1/.well-known/openid-configuration"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := openIDConfigurationURL(c.issuer)
+			if err != nil {
+				t.Fatalf("openIDConfigurationURL(%q): %v", c.issuer, err)
+			}
+			if got != c.want {
+				t.Errorf("openIDConfigurationURL(%q) = %q, want %q", c.issuer, got, c.want)
+			}
+		})
+	}
+}
+
+// TestDiscover_PathIssuer_UsesRFC8414WellKnownInsertion is the end-to-end
+// pin for M4: when the protected-resource document names an issuer with a
+// path component, Discover must request the RFC 8414 well-known URL with
+// the segment inserted before the path, not appended after it — an
+// authorization server whose issuer has a path (a common multi-tenant
+// shape) would otherwise 404 forever.
+func TestDiscover_PathIssuer_UsesRFC8414WellKnownInsertion(t *testing.T) {
+	var asServer *httptest.Server
+	asServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantPath := "/.well-known/oauth-authorization-server/tenant1"
+		if r.URL.Path != wantPath {
+			t.Errorf("AS metadata request path = %q, want %q (RFC 8414 insertion, not append)", r.URL.Path, wantPath)
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, validASMetadata(asServer.URL+"/tenant1"))
+	}))
+	defer asServer.Close()
+
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-protected-resource" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, protectedResourceMetadata{AuthorizationServers: []string{asServer.URL + "/tenant1"}})
+	}))
+	defer mcpServer.Close()
+
+	got, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got.AuthorizationEndpoint != asServer.URL+"/tenant1/authorize" {
+		t.Errorf("AuthorizationEndpoint = %q, want %q", got.AuthorizationEndpoint, asServer.URL+"/tenant1/authorize")
+	}
+}

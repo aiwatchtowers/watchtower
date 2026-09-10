@@ -158,8 +158,11 @@ for tests.
 
 ### 3.6 CLI
 - `watchtower connections oauth <id> [--app-return] [--no-open] [--client-id X] [--client-secret-stdin]`
-  — discovery → (DCR or BYO) → PKCE sign-in → save → enable. `--no-open` prints
-  the authorize URL instead of opening the browser (the test/headless hook).
+  — discovery → (DCR or BYO) → PKCE sign-in → save → enable. The authorize URL
+  is always printed (useful when the browser fails to open, or fails to reach
+  the loopback callback); `--no-open` additionally skips launching the browser
+  automatically (the test/headless hook), leaving the owner to open the
+  printed URL themselves.
   Errors: not an http connection; discovery failed (with the URLs tried); no
   `registration_endpoint` and no `--client-id` (message names the flag).
 - `connections add` unchanged (creates disabled). `connections list` shows an
