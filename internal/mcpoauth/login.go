@@ -116,55 +116,19 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 		Replace(callbackSuccessPage)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		// Only the first request to reach the callback delivers a result —
-		// a retry, a stray local probe, or a second race for the port gets a
-		// bare status with no page and never touches resultCh again.
-		if !delivered.CompareAndSwap(false, true) {
-			w.WriteHeader(http.StatusGone)
-			return
-		}
-
-		// deliver is non-blocking by construction (delivered's CAS guarantees
-		// at most one send), but select+default keeps that true even if that
-		// invariant is ever weakened.
-		deliver := func(res loginResult, page string) {
-			select {
-			case resultCh <- res:
-			default:
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, page)
-		}
-		fail := func(userMsg, errText string) {
-			page := strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(userMsg), 1)
-			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, page)
-		}
-
-		q := r.URL.Query()
-		if errMsg := q.Get("error"); errMsg != "" {
-			fail(errMsg, fmt.Sprintf("authorization denied: %s", errMsg))
-			return
-		}
-		if got := q.Get("state"); subtle.ConstantTimeCompare([]byte(got), []byte(state)) != 1 {
-			fail("state mismatch: possible CSRF attack", "state mismatch: possible CSRF attack")
-			return
-		}
-		code := q.Get("code")
-		if code == "" {
-			fail("no authorization code received", "no authorization code received")
-			return
-		}
-
-		tok, err := ExchangeCode(loginCtx, md, clientID, clientSecret, code, redirectURI, pkce.Verifier, cfg.ServerURL)
-		if err != nil {
-			fail(err.Error(), fmt.Sprintf("exchanging code for token: %s", err))
-			return
-		}
-
-		grant := buildGrant(tok, md, clientID, clientSecret, cfg.ServerURL)
-		deliver(loginResult{grant: grant}, successPage)
-	})
+	mux.HandleFunc(callbackPath, callbackHandler(callbackParams{
+		loginCtx:     loginCtx,
+		md:           md,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		redirectURI:  redirectURI,
+		resource:     cfg.ServerURL,
+		state:        state,
+		verifier:     pkce.Verifier,
+		successPage:  successPage,
+		resultCh:     resultCh,
+		delivered:    &delivered,
+	}))
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener) //nolint:errcheck
@@ -222,4 +186,75 @@ func listenLocal() (net.Listener, error) {
 		}
 	}
 	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+// callbackParams carries everything the OAuth callback handler needs. It exists
+// so the handler can be a named function with its own tests and its own
+// complexity budget, rather than a long closure inside Login.
+type callbackParams struct {
+	loginCtx     context.Context
+	md           *Metadata
+	clientID     string
+	clientSecret string
+	redirectURI  string
+	resource     string
+	state        string
+	verifier     string
+	successPage  string
+	resultCh     chan loginResult
+	delivered    *atomic.Bool
+}
+
+// callbackHandler builds the /callback handler. Only the FIRST request to
+// arrive delivers a result: a retry, a stray local probe, or a second race for
+// the port gets a bare 410 with no page and never touches the channel again.
+// Every outcome - provider error, state mismatch, missing code, failed
+// exchange - serves the error page, so what the browser shows can never
+// disagree with what Login returns.
+func callbackHandler(p callbackParams) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !p.delivered.CompareAndSwap(false, true) {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+
+		// deliver is non-blocking by construction (the CAS above guarantees at
+		// most one send), but select+default keeps that true even if that
+		// invariant is ever weakened.
+		deliver := func(res loginResult, page string) {
+			select {
+			case p.resultCh <- res:
+			default:
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, page)
+		}
+		fail := func(userMsg, errText string) {
+			page := strings.Replace(callbackErrorPage, "{{ERROR}}", html.EscapeString(userMsg), 1)
+			deliver(loginResult{err: fmt.Errorf("mcpoauth: %s", errText)}, page)
+		}
+
+		q := r.URL.Query()
+		if errMsg := q.Get("error"); errMsg != "" {
+			fail(errMsg, fmt.Sprintf("authorization denied: %s", errMsg))
+			return
+		}
+		if got := q.Get("state"); subtle.ConstantTimeCompare([]byte(got), []byte(p.state)) != 1 {
+			fail("state mismatch: possible CSRF attack", "state mismatch: possible CSRF attack")
+			return
+		}
+		code := q.Get("code")
+		if code == "" {
+			fail("no authorization code received", "no authorization code received")
+			return
+		}
+
+		tok, err := ExchangeCode(p.loginCtx, p.md, p.clientID, p.clientSecret, code, p.redirectURI, p.verifier, p.resource)
+		if err != nil {
+			fail(err.Error(), fmt.Sprintf("exchanging code for token: %s", err))
+			return
+		}
+
+		deliver(loginResult{grant: buildGrant(tok, p.md, p.clientID, p.clientSecret, p.resource)}, p.successPage)
+	}
 }

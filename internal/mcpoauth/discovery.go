@@ -78,79 +78,26 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 	if err := requireSecure(serverURL); err != nil {
 		return nil, err
 	}
-	origin, err := originOf(serverURL)
+	org, err := originOf(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("mcpoauth: parsing MCP server URL %q: %w", serverURL, err)
 	}
 
 	var tried []string
 
-	// RFC 9728 §3.1 inserts the well-known segment between the host and the
-	// resource's own path, so a server at https://host/mcp advertises its
-	// metadata at https://host/.well-known/oauth-protected-resource/mcp. Some
-	// deployments only publish the bare origin form, so try the spec-correct
-	// path-aware URL first and fall back to the origin one; both are recorded
-	// in `tried` so a total failure names everything we asked for.
-	prURLs := make([]string, 0, 2)
-	if pathAware, perr := wellKnownAuthServerURL(serverURL, "oauth-protected-resource"); perr == nil {
-		prURLs = append(prURLs, pathAware)
-	}
-	originPR := origin + "/.well-known/oauth-protected-resource"
-	if len(prURLs) == 0 || prURLs[0] != originPR {
-		prURLs = append(prURLs, originPR)
-	}
-
-	var pr protectedResourceMetadata
-	var ok bool
-	var fetchedFrom string
-	for _, prURL := range prURLs {
-		tried = append(tried, prURL)
-		fetchedFrom = prURL
-		var ferr error
-		ok, _, ferr = fetchJSON(ctx, prURL, &pr)
-		if ferr != nil {
-			return nil, fmt.Errorf("mcpoauth: fetching protected-resource metadata from %s: %w", fetchedFrom, ferr)
-		}
-		if ok {
-			break
-		}
-	}
-
-	issuer := origin
-	if ok && len(pr.AuthorizationServers) > 0 && pr.AuthorizationServers[0] != "" {
-		issuer = pr.AuthorizationServers[0]
+	issuer, err := discoverIssuer(ctx, serverURL, org, &tried)
+	if err != nil {
+		return nil, err
 	}
 	if err := requireSecure(issuer); err != nil {
 		return nil, err
 	}
 
-	asURL, err := wellKnownAuthServerURL(issuer, "oauth-authorization-server")
+	meta, metaURL, err := fetchAuthServerMetadata(ctx, issuer, &tried)
 	if err != nil {
-		return nil, fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
+		return nil, err
 	}
-	tried = append(tried, asURL)
-	var meta Metadata
-	metaURL := asURL
-	ok, status, err := fetchJSON(ctx, asURL, &meta)
-	if err != nil {
-		return nil, fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: %w", asURL, err)
-	}
-	if !ok && status != http.StatusNotFound {
-		return nil, fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: unexpected status %d", asURL, status)
-	}
-	if !ok {
-		oidcURL, err := openIDConfigurationURL(issuer)
-		if err != nil {
-			return nil, fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
-		}
-		tried = append(tried, oidcURL)
-		metaURL = oidcURL
-		ok, _, err = fetchJSON(ctx, oidcURL, &meta)
-		if err != nil {
-			return nil, fmt.Errorf("mcpoauth: fetching openid-configuration from %s: %w", oidcURL, err)
-		}
-	}
-	if !ok {
+	if meta == nil {
 		return nil, fmt.Errorf("mcpoauth: no authorization-server metadata found for %s (tried %s)", serverURL, strings.Join(tried, ", "))
 	}
 
@@ -160,31 +107,115 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 	if !slices.Contains(meta.CodeChallengeMethodsSupported, "S256") {
 		return nil, fmt.Errorf("mcpoauth: authorization server at %s does not advertise S256 PKCE support (code_challenge_methods_supported: %v)", issuer, meta.CodeChallengeMethodsSupported)
 	}
+	if err := requireSecureEndpoints(meta, metaURL); err != nil {
+		return nil, err
+	}
+	return meta, nil
+}
 
-	// Every endpoint the metadata document names must itself be secure —
-	// requireSecure is re-checked per call site later (e.g. a grant loaded
-	// from disk carries a token_endpoint that never went through Discover),
-	// but validating here once means a hostile metadata document can never
-	// hand back so much as a URL for AuthorizeURL/Login to act on, e.g.
-	// opening the owner's browser to a cleartext authorization_endpoint.
-	if err := requireSecure(meta.AuthorizationEndpoint); err != nil {
-		return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure authorization_endpoint: %w", metaURL, err)
+// discoverIssuer resolves the authorization-server issuer for an MCP server:
+// its RFC 9728 protected-resource document when the server publishes one,
+// otherwise the server's own scheme+host (the hosted-Atlassian shape, where
+// that document is a 404). Every URL asked for is appended to tried so a later
+// total failure can name all of them.
+//
+// RFC 9728 section 3.1 inserts the well-known segment between the host and the
+// resource's own path, so a server at https://host/mcp advertises its metadata
+// at https://host/.well-known/oauth-protected-resource/mcp. Some deployments
+// publish only the bare host form, so the spec-correct path-aware URL is tried
+// first and the bare one second.
+func discoverIssuer(ctx context.Context, serverURL, org string, tried *[]string) (string, error) {
+	prURLs := make([]string, 0, 2)
+	if pathAware, err := wellKnownAuthServerURL(serverURL, "oauth-protected-resource"); err == nil {
+		prURLs = append(prURLs, pathAware)
 	}
-	if err := requireSecure(meta.TokenEndpoint); err != nil {
-		return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure token_endpoint: %w", metaURL, err)
+	bare := org + "/.well-known/oauth-protected-resource"
+	if len(prURLs) == 0 || prURLs[0] != bare {
+		prURLs = append(prURLs, bare)
 	}
-	if meta.RegistrationEndpoint != "" {
-		if err := requireSecure(meta.RegistrationEndpoint); err != nil {
-			return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure registration_endpoint: %w", metaURL, err)
+
+	var pr protectedResourceMetadata
+	for _, prURL := range prURLs {
+		*tried = append(*tried, prURL)
+		ok, _, err := fetchJSON(ctx, prURL, &pr)
+		if err != nil {
+			return "", fmt.Errorf("mcpoauth: fetching protected-resource metadata from %s: %w", prURL, err)
+		}
+		if ok {
+			if len(pr.AuthorizationServers) > 0 && pr.AuthorizationServers[0] != "" {
+				return pr.AuthorizationServers[0], nil
+			}
+			break
 		}
 	}
-	if meta.RevocationEndpoint != "" {
-		if err := requireSecure(meta.RevocationEndpoint); err != nil {
-			return nil, fmt.Errorf("mcpoauth: metadata from %s has an insecure revocation_endpoint: %w", metaURL, err)
-		}
+	return org, nil
+}
+
+// fetchAuthServerMetadata fetches the issuer's RFC 8414 metadata, falling back
+// to openid-configuration ONLY on a 404 - any other non-2xx status is a hard
+// error naming the URL and status, even if openid-configuration would have
+// succeeded. Returns a nil document with a nil error when neither exists,
+// leaving the caller to report every URL tried.
+func fetchAuthServerMetadata(ctx context.Context, issuer string, tried *[]string) (*Metadata, string, error) {
+	asURL, err := wellKnownAuthServerURL(issuer, "oauth-authorization-server")
+	if err != nil {
+		return nil, "", fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
+	}
+	*tried = append(*tried, asURL)
+
+	var meta Metadata
+	ok, status, err := fetchJSON(ctx, asURL, &meta)
+	if err != nil {
+		return nil, "", fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: %w", asURL, err)
+	}
+	if ok {
+		return &meta, asURL, nil
+	}
+	if status != http.StatusNotFound {
+		return nil, "", fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: unexpected status %d", asURL, status)
 	}
 
-	return &meta, nil
+	oidcURL, err := openIDConfigurationURL(issuer)
+	if err != nil {
+		return nil, "", fmt.Errorf("mcpoauth: parsing issuer %q: %w", issuer, err)
+	}
+	*tried = append(*tried, oidcURL)
+	ok, _, err = fetchJSON(ctx, oidcURL, &meta)
+	if err != nil {
+		return nil, "", fmt.Errorf("mcpoauth: fetching openid-configuration from %s: %w", oidcURL, err)
+	}
+	if !ok {
+		return nil, "", nil
+	}
+	return &meta, oidcURL, nil
+}
+
+// requireSecureEndpoints rejects a metadata document that names any insecure
+// endpoint. requireSecure is re-checked per call site later (a grant loaded
+// from disk carries a token_endpoint that never went through Discover), but
+// validating here once means a hostile document can never hand back so much as
+// a URL for AuthorizeURL/Login to act on - e.g. opening the owner's browser to
+// a cleartext authorization_endpoint. The two optional endpoints are checked
+// only when the document names them.
+func requireSecureEndpoints(meta *Metadata, metaURL string) error {
+	endpoints := []struct {
+		field string
+		value string
+	}{
+		{"authorization_endpoint", meta.AuthorizationEndpoint},
+		{"token_endpoint", meta.TokenEndpoint},
+		{"registration_endpoint", meta.RegistrationEndpoint},
+		{"revocation_endpoint", meta.RevocationEndpoint},
+	}
+	for _, e := range endpoints {
+		if e.value == "" {
+			continue
+		}
+		if err := requireSecure(e.value); err != nil {
+			return fmt.Errorf("mcpoauth: metadata from %s has an insecure %s: %w", metaURL, e.field, err)
+		}
+	}
+	return nil
 }
 
 // requireSecure rejects plain http URLs except against a loopback host

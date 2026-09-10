@@ -122,12 +122,10 @@ func TestLogin_HappyPath(t *testing.T) {
 	}
 	q := u.Query()
 
-	if q.Get("code_challenge_method") != "S256" {
-		t.Errorf("code_challenge_method = %q, want S256", q.Get("code_challenge_method"))
-	}
-	if q.Get("resource") != as.server.URL {
-		t.Errorf("resource = %q, want %q", q.Get("resource"), as.server.URL)
-	}
+	assertFields(t, []fieldCheck{
+		{"code_challenge_method", q.Get("code_challenge_method"), "S256"},
+		{"resource", q.Get("resource"), as.server.URL},
+	})
 	// Pin the PKCE binding: fakeAS now actually enforces that the
 	// code_verifier ExchangeCode sends hashes to THIS challenge — mutating
 	// the verifier Login uses must fail this test.
@@ -138,12 +136,10 @@ func TestLogin_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing redirect_uri: %v", err)
 	}
-	if ru.Hostname() != "127.0.0.1" {
-		t.Errorf("redirect_uri host = %q, want 127.0.0.1 (loopback binding pinned)", ru.Hostname())
-	}
-	if ru.Path != "/callback" {
-		t.Errorf("redirect_uri path = %q, want /callback", ru.Path)
-	}
+	assertFields(t, []fieldCheck{
+		{"redirect_uri host (loopback binding pinned)", ru.Hostname(), "127.0.0.1"},
+		{"redirect_uri path", ru.Path, "/callback"},
+	})
 
 	status, body := hitCallback(t, redirectURI, map[string]string{"code": as.AuthCode, "state": q.Get("state")})
 	if status != http.StatusOK {
@@ -159,33 +155,42 @@ func TestLogin_HappyPath(t *testing.T) {
 	}
 	grant := res.grant
 
-	if grant.AccessToken != as.AccessToken {
-		t.Errorf("AccessToken = %q, want %q", grant.AccessToken, as.AccessToken)
-	}
-	if grant.RefreshToken != as.RefreshToken {
-		t.Errorf("RefreshToken = %q, want %q", grant.RefreshToken, as.RefreshToken)
-	}
+	assertFields(t, []fieldCheck{
+		{"AccessToken", grant.AccessToken, as.AccessToken},
+		{"RefreshToken", grant.RefreshToken, as.RefreshToken},
+		{"ClientID (issued by registration)", grant.ClientID, as.ClientID},
+		{"TokenEndpoint", grant.TokenEndpoint, as.server.URL + "/token"},
+		{"RevocationEndpoint", grant.RevocationEndpoint, as.server.URL + "/revoke"},
+		{"Resource", grant.Resource, as.server.URL},
+	})
+
 	wantExpiry := fixedNow.Add(3600 * time.Second)
 	if !grant.ExpiresAt.Equal(wantExpiry) {
 		t.Errorf("ExpiresAt = %v, want %v", grant.ExpiresAt, wantExpiry)
-	}
-	if grant.ClientID != as.ClientID {
-		t.Errorf("ClientID = %q, want %q (issued by registration)", grant.ClientID, as.ClientID)
-	}
-	if grant.TokenEndpoint != as.server.URL+"/token" {
-		t.Errorf("TokenEndpoint = %q, want %q", grant.TokenEndpoint, as.server.URL+"/token")
-	}
-	if grant.RevocationEndpoint != as.server.URL+"/revoke" {
-		t.Errorf("RevocationEndpoint = %q, want %q", grant.RevocationEndpoint, as.server.URL+"/revoke")
-	}
-	if grant.Resource != as.server.URL {
-		t.Errorf("Resource = %q, want %q", grant.Resource, as.server.URL)
 	}
 	if len(as.RegisterRequests) != 1 {
 		t.Errorf("RegisterRequests = %d, want 1 (DCR should run with no BYO client id)", len(as.RegisterRequests))
 	}
 	if !strings.Contains(out.String(), "Open this URL to sign in") {
 		t.Errorf("out = %q, want it to contain the authorize URL prompt", out.String())
+	}
+}
+
+// fieldCheck is one "this string must equal that string" assertion.
+type fieldCheck struct {
+	name string
+	got  string
+	want string
+}
+
+// assertFields reports every mismatch in one pass, so a failing run names all
+// the wrong fields instead of only the first.
+func assertFields(t *testing.T, checks []fieldCheck) {
+	t.Helper()
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
+		}
 	}
 }
 

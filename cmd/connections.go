@@ -421,13 +421,9 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var clientSecret string
-	if connectionsOAuthFlagClientSecretStdin {
-		data, err := io.ReadAll(cmd.InOrStdin())
-		if err != nil {
-			return fmt.Errorf("reading client secret from stdin: %w", err)
-		}
-		clientSecret = strings.TrimSpace(string(data))
+	clientSecret, err := readOAuthClientSecret(cmd)
+	if err != nil {
+		return err
 	}
 
 	cfg, database, err := openConnectionsCmdDB(cmd)
@@ -445,12 +441,9 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	}
 
 	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
-	secret, err := store.Load()
+	secret, err := loadOrInitSecret(store)
 	if err != nil {
-		return fmt.Errorf("loading existing secret: %w", err)
-	}
-	if secret == nil {
-		secret = &externalmcp.Secret{}
+		return err
 	}
 
 	grant, err := mcpoauth.Login(cmd.Context(), mcpoauth.LoginConfig{
@@ -481,4 +474,32 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
 	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
 	return nil
+}
+
+// readOAuthClientSecret reads the BYO client secret from stdin when
+// --client-secret-stdin was passed. The secret only ever travels this way, so
+// it can never appear in argv where any local process could read it (QC-03).
+func readOAuthClientSecret(cmd *cobra.Command) (string, error) {
+	if !connectionsOAuthFlagClientSecretStdin {
+		return "", nil
+	}
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return "", fmt.Errorf("reading client secret from stdin: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// loadOrInitSecret returns the connection's existing secret, or an empty one
+// when the connection has none yet. Loading rather than starting fresh is what
+// keeps a manually-entered header or env var alive across an OAuth sign-in.
+func loadOrInitSecret(store *externalmcp.SecretStore) (*externalmcp.Secret, error) {
+	secret, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading existing secret: %w", err)
+	}
+	if secret == nil {
+		return &externalmcp.Secret{}, nil
+	}
+	return secret, nil
 }

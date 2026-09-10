@@ -176,38 +176,8 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 			continue
 		}
 		if secret != nil && secret.OAuth != nil {
-			changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
-			if err != nil {
-				log.Printf("external connection %d (%s): token refresh failed, skipping: %v", c.ID, c.Name, err)
-				if serr := database.SetExternalConnectionStatus(c.ID, "revoked", err.Error()); serr != nil {
-					log.Printf("external connection %d (%s): recording revoked status: %v", c.ID, c.Name, serr)
-				}
+			if !applyOAuthCredentials(database, store, &server, secret, c) {
 				continue
-			}
-			// Copy headers so the bearer token is never written back into
-			// secret.Headers — this map, not secret.Headers, is what
-			// travels into server.Headers below.
-			headers := make(map[string]string, len(secret.Headers)+1)
-			for k, v := range secret.Headers {
-				headers[k] = v
-			}
-			headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
-			if changed {
-				// Persist the rotated token BEFORE it is handed out to the
-				// caller — a save failure means the new token would be
-				// unrecoverable once used, so skip this connection rather
-				// than hand it out.
-				if err := store.Save(secret); err != nil {
-					log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
-					continue
-				}
-			}
-			server.Headers = headers
-			server.Env = secret.Env
-			if c.Status != "ok" {
-				if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
-					log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
-				}
 			}
 		} else if secret != nil {
 			server.Env = secret.Env
@@ -216,6 +186,55 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 		servers = append(servers, server)
 	}
 	return servers
+}
+
+// applyOAuthCredentials verifies or refreshes an OAuth connection's grant and
+// puts the resulting bearer token on server. It reports whether the connection
+// may be used for this launch; false means "skip this one" and the reason has
+// already been logged and, where it is the grant's fault, recorded on the row.
+//
+// Two orderings here are load-bearing for QC-04. The Authorization header goes
+// into a COPY of the secret's headers, so a bearer can never be persisted as
+// if it were a static secret. And a rotated refresh token is saved BEFORE the
+// new access token is handed to the caller: if that save fails the token would
+// be unrecoverable once used, so the connection is skipped instead.
+func applyOAuthCredentials(
+	database *db.DB,
+	store *externalmcp.SecretStore,
+	server *ai.ExternalMCPServer,
+	secret *externalmcp.Secret,
+	c db.ExternalConnection,
+) bool {
+	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
+	if err != nil {
+		log.Printf("external connection %d (%s): token refresh failed, skipping: %v", c.ID, c.Name, err)
+		if serr := database.SetExternalConnectionStatus(c.ID, "revoked", err.Error()); serr != nil {
+			log.Printf("external connection %d (%s): recording revoked status: %v", c.ID, c.Name, serr)
+		}
+		return false
+	}
+
+	headers := make(map[string]string, len(secret.Headers)+1)
+	for k, v := range secret.Headers {
+		headers[k] = v
+	}
+	headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
+
+	if changed {
+		if err := store.Save(secret); err != nil {
+			log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
+			return false
+		}
+	}
+
+	server.Headers = headers
+	server.Env = secret.Env
+	if c.Status != "ok" {
+		if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
+			log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
+		}
+	}
+	return true
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.
