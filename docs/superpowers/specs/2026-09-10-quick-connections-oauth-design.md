@@ -139,7 +139,7 @@ exchange sends `code_verifier`. On success: save the grant, set
 ### 3.5 Pre-launch refresh — the load-bearing piece
 `cmd/generator.go`'s `loadExternalMCPServers` gains one step per enabled
 connection whose secret carries an `oauth` block:
-`EnsureFreshAccessToken(store, grant, now)`:
+`mcpoauth.EnsureFresh(ctx, grant, now)`:
 - If `expires_at − skew(60s) > now` → no network, use the stored access token.
 - Else `POST token_endpoint` `grant_type=refresh_token` (client id; secret if
   present) → persist the rotated tokens (refresh tokens may rotate) → use the
