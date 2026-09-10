@@ -17,7 +17,7 @@ import (
 type OAuthGrant struct {
 	AccessToken        string    `json:"access_token"`
 	RefreshToken       string    `json:"refresh_token,omitempty"`
-	ExpiresAt          time.Time `json:"expires_at"` // zero = unknown, never proactively refreshed
+	ExpiresAt          time.Time `json:"expires_at"` // zero = unknown lifetime; EnsureFresh treats this as "must verify" when a refresh token is present (see mcpoauth.EnsureFresh)
 	TokenEndpoint      string    `json:"token_endpoint"`
 	ClientID           string    `json:"client_id"`
 	ClientSecret       string    `json:"client_secret,omitempty"`
@@ -27,7 +27,10 @@ type OAuthGrant struct {
 }
 
 // Expiring reports whether the access token is already expired or expires
-// within skew of now. A zero ExpiresAt is treated as not expiring.
+// within skew of now. A zero ExpiresAt (unknown lifetime) is treated as not
+// expiring by THIS predicate — callers that need to distinguish "known
+// fresh" from "unknown, must verify" (mcpoauth.EnsureFresh does) check
+// ExpiresAt.IsZero() themselves rather than relying on Expiring alone.
 func (g *OAuthGrant) Expiring(now time.Time, skew time.Duration) bool {
 	return !g.ExpiresAt.IsZero() && !now.Add(skew).Before(g.ExpiresAt)
 }

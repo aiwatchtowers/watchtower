@@ -174,6 +174,12 @@ func TestEnsureFresh_ServerOmitsRefreshToken_KeepsOldOne(t *testing.T) {
 	}
 }
 
+// TestEnsureFresh_ZeroExpiresIn_ClearsExpiresAt pins that a refresh response
+// with no expires_in leaves ExpiresAt zero rather than stamping a bogus
+// expiry. A zero ExpiresAt is no longer "never expires" (see
+// TestEnsureFresh_UnknownExpiryWithRefreshToken_AlwaysVerifies below) — it
+// means "unknown, must verify on the next call" — but this test only pins
+// the clearing behavior itself.
 func TestEnsureFresh_ZeroExpiresIn_ClearsExpiresAt(t *testing.T) {
 	as := newFakeAS(t)
 	as.ZeroExpiresInOnRefresh = true
@@ -195,6 +201,79 @@ func TestEnsureFresh_ZeroExpiresIn_ClearsExpiresAt(t *testing.T) {
 	}
 	if !g.ExpiresAt.IsZero() {
 		t.Errorf("ExpiresAt = %v, want zero (unknown lifetime) when expires_in is 0", g.ExpiresAt)
+	}
+}
+
+// TestEnsureFresh_UnknownExpiryWithRefreshToken_AlwaysVerifies pins the I3
+// fix: a grant with an unknown expiry (ExpiresAt zero) and a refresh token
+// is refreshed on every call rather than handed over forever unverified.
+func TestEnsureFresh_UnknownExpiryWithRefreshToken_AlwaysVerifies(t *testing.T) {
+	as := newFakeAS(t)
+	as.ZeroExpiresInOnRefresh = true // keep the expiry unknown across both calls
+	now := time.Now()
+	g := &externalmcp.OAuthGrant{
+		AccessToken:   "access-token-1",
+		RefreshToken:  "refresh-token-1",
+		ExpiresAt:     time.Time{}, // unknown expiry
+		TokenEndpoint: as.server.URL + "/token",
+		ClientID:      as.ClientID,
+	}
+
+	changed, err := EnsureFresh(context.Background(), g, now)
+	if err != nil {
+		t.Fatalf("EnsureFresh: %v", err)
+	}
+	if !changed {
+		t.Fatalf("changed = false, want true (unknown expiry must be verified)")
+	}
+	if len(as.TokenRequests) != 1 {
+		t.Fatalf("TokenRequests = %d, want exactly 1 for a single call", len(as.TokenRequests))
+	}
+	if g.AccessToken != "access-token-1-r" {
+		t.Errorf("AccessToken = %q, want rotated", g.AccessToken)
+	}
+
+	// A second call refreshes again — unknown expiry is verified every time,
+	// not just once.
+	changed2, err := EnsureFresh(context.Background(), g, now)
+	if err != nil {
+		t.Fatalf("EnsureFresh (2nd call): %v", err)
+	}
+	if !changed2 {
+		t.Fatalf("changed = false on 2nd call, want true (still unknown expiry)")
+	}
+	if len(as.TokenRequests) != 2 {
+		t.Fatalf("TokenRequests = %d after 2nd call, want 2", len(as.TokenRequests))
+	}
+}
+
+// TestEnsureFresh_UnknownExpiryNoRefreshToken_HandedOverUnverified pins the
+// documented fallback: with no refresh token to verify against, an unknown
+// expiry is handed over as-is (nothing better is possible) rather than
+// erroring or blocking the caller.
+func TestEnsureFresh_UnknownExpiryNoRefreshToken_HandedOverUnverified(t *testing.T) {
+	as := newFakeAS(t)
+	now := time.Now()
+	g := &externalmcp.OAuthGrant{
+		AccessToken:   "access-token-1",
+		RefreshToken:  "", // nothing to refresh with
+		ExpiresAt:     time.Time{},
+		TokenEndpoint: as.server.URL + "/token",
+		ClientID:      as.ClientID,
+	}
+
+	changed, err := EnsureFresh(context.Background(), g, now)
+	if err != nil {
+		t.Fatalf("EnsureFresh: %v, want no error (hand over unverified)", err)
+	}
+	if changed {
+		t.Errorf("changed = true, want false (nothing to refresh with)")
+	}
+	if len(as.TokenRequests) != 0 {
+		t.Errorf("TokenRequests = %d, want 0 (no refresh token, no network call)", len(as.TokenRequests))
+	}
+	if g.AccessToken != "access-token-1" {
+		t.Errorf("AccessToken changed to %q, want unchanged", g.AccessToken)
 	}
 }
 

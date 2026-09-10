@@ -507,6 +507,13 @@ func TestListenLocal_BindsLoopbackOnly(t *testing.T) {
 	}
 }
 
+// TestBuildGrant_ZeroExpiresInYieldsZeroExpiresAt pins that a token
+// response with no expires_in leaves ExpiresAt zero rather than stamping a
+// bogus "expires now". A zero ExpiresAt is no longer "never expires": with
+// a refresh token present, EnsureFresh now treats it as "unknown, must
+// verify on every call" (see refresh_test.go's
+// TestEnsureFresh_UnknownExpiryWithRefreshToken_AlwaysVerifies) — this test
+// only pins buildGrant's own behavior.
 func TestBuildGrant_ZeroExpiresInYieldsZeroExpiresAt(t *testing.T) {
 	oldNow := Now
 	Now = func() time.Time { return time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC) }
