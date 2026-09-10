@@ -8,11 +8,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+// OAuthGrant is the OAuth 2.1 grant behind an http connection signed in via
+// `watchtower connections oauth`. The bearer header is derived from
+// AccessToken at chat launch and is never persisted into Headers.
+type OAuthGrant struct {
+	AccessToken        string    `json:"access_token"`
+	RefreshToken       string    `json:"refresh_token,omitempty"`
+	ExpiresAt          time.Time `json:"expires_at"` // zero = unknown, never proactively refreshed
+	TokenEndpoint      string    `json:"token_endpoint"`
+	ClientID           string    `json:"client_id"`
+	ClientSecret       string    `json:"client_secret,omitempty"`
+	Scope              string    `json:"scope,omitempty"`
+	Resource           string    `json:"resource,omitempty"` // the MCP server URL (RFC 8707)
+	RevocationEndpoint string    `json:"revocation_endpoint,omitempty"`
+}
+
+// Expiring reports whether the access token is already expired or expires
+// within skew of now. A zero ExpiresAt is treated as not expiring.
+func (g *OAuthGrant) Expiring(now time.Time, skew time.Duration) bool {
+	return !g.ExpiresAt.IsZero() && !now.Add(skew).Before(g.ExpiresAt)
+}
 
 type Secret struct {
 	Env     map[string]string `json:"env,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	OAuth   *OAuthGrant       `json:"oauth,omitempty"`
 }
 
 type SecretStore struct {
