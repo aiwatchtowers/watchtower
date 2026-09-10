@@ -63,6 +63,12 @@ func (s *SecretStore) Load() (*Secret, error) {
 	return &sec, nil
 }
 
+// Save writes sec atomically: it writes to path+".tmp" and renames that
+// over the destination (same directory, so the rename is on one
+// filesystem and atomic). A crash or failure mid-write leaves the previous
+// file (or none) intact rather than a half-written one — load-bearing for
+// callers persisting a just-rotated OAuth token, where a torn write would
+// burn both the old and new refresh token.
 func (s *SecretStore) Save(sec *Secret) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("creating secret directory: %w", err)
@@ -71,7 +77,16 @@ func (s *SecretStore) Save(sec *Secret) error {
 	if err != nil {
 		return fmt.Errorf("marshaling mcp secret: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+
+	tmpPath := s.path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return fmt.Errorf("writing temp secret file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("renaming temp secret file into place: %w", err)
+	}
+	return nil
 }
 
 func (s *SecretStore) Delete() error {

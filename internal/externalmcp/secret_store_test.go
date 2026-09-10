@@ -2,6 +2,7 @@ package externalmcp
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -82,6 +83,60 @@ func TestSecret_LegacyJSONDecodesWithNilOAuth(t *testing.T) {
 	}
 	if got.Headers["X"] != "y" {
 		t.Fatalf("headers not intact: %+v", got.Headers)
+	}
+}
+
+// TestSecretStore_SaveIsAtomic pins Save's temp-file+rename shape: no
+// leftover .tmp file after a successful save, the final file keeps 0600,
+// and its content is exactly what was saved (not a torn write). A second
+// Save (simulating a rotated-token re-save) must leave the store in the
+// same clean state, not accumulate stray temp files.
+func TestSecretStore_SaveIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	st := NewSecretStore(dir, 42)
+
+	first := &Secret{Env: map[string]string{"K": "v1"}}
+	if err := st.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	assertNoTmpFiles(t, dir)
+	assertMode0600(t, st.Path())
+	got, err := st.Load()
+	if err != nil || got.Env["K"] != "v1" {
+		t.Fatalf("load after first save = %+v, %v", got, err)
+	}
+
+	second := &Secret{Env: map[string]string{"K": "v2"}}
+	if err := st.Save(second); err != nil {
+		t.Fatal(err)
+	}
+	assertNoTmpFiles(t, dir)
+	assertMode0600(t, st.Path())
+	got, err = st.Load()
+	if err != nil || got.Env["K"] != "v2" {
+		t.Fatalf("load after second save = %+v, %v", got, err)
+	}
+}
+
+func assertNoTmpFiles(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("leftover temp files after Save: %v", matches)
+	}
+}
+
+func assertMode0600(t *testing.T, path string) {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
 	}
 }
 
