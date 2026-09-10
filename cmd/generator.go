@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"log"
 	"path/filepath"
+	"time"
 
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
@@ -11,11 +13,16 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/mcpoauth"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 	"watchtower/internal/sessions"
 	"watchtower/internal/tools"
 )
+
+// externalMCPNow is a test seam for the pre-launch OAuth refresh check in
+// loadExternalMCPServers (the internal/auth.openBrowserFunc precedent).
+var externalMCPNow = time.Now
 
 // validateModel is a no-op kept for call-site compatibility.
 // Model validation was removed — new model IDs often fail the check
@@ -157,12 +164,45 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 			Args:    c.Args,
 			URL:     c.URL,
 		}
-		secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID).Load()
+		store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
+		secret, err := store.Load()
 		if err != nil {
 			log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
 			continue
 		}
-		if secret != nil {
+		if secret != nil && secret.OAuth != nil {
+			changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
+			if err != nil {
+				log.Printf("external connection %d (%s): token refresh failed, skipping: %v", c.ID, c.Name, err)
+				if serr := database.SetExternalConnectionStatus(c.ID, "revoked", err.Error()); serr != nil {
+					log.Printf("external connection %d (%s): recording revoked status: %v", c.ID, c.Name, serr)
+				}
+				continue
+			}
+			if changed {
+				// Persist the rotated token BEFORE it is handed out — a save
+				// failure means the new token would be unrecoverable once
+				// used, so skip this connection rather than hand it out.
+				if err := store.Save(secret); err != nil {
+					log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
+					continue
+				}
+			}
+			// Copy headers so the bearer token is never written back into
+			// secret.Headers (and so never persisted by a later Save).
+			headers := make(map[string]string, len(secret.Headers)+1)
+			for k, v := range secret.Headers {
+				headers[k] = v
+			}
+			headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
+			server.Headers = headers
+			server.Env = secret.Env
+			if c.Status != "ok" {
+				if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
+					log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
+				}
+			}
+		} else if secret != nil {
 			server.Env = secret.Env
 			server.Headers = secret.Headers
 		}
