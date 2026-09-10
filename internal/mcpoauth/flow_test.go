@@ -27,8 +27,10 @@ type fakeAS struct {
 	server *httptest.Server
 
 	// Config knobs.
-	NoRegistrationEndpoint bool // omit registration_endpoint from metadata
-	RefreshInvalidGrant    bool // /token refresh_token grant always 400s invalid_grant
+	NoRegistrationEndpoint    bool // omit registration_endpoint from metadata
+	RefreshInvalidGrant       bool // /token refresh_token grant always 400s invalid_grant
+	OmitRefreshTokenOnRefresh bool // /token refresh_token response omits refresh_token (server didn't rotate it)
+	ZeroExpiresInOnRefresh    bool // /token refresh_token response sets expires_in to 0 (unknown lifetime)
 
 	// AuthCode is the code /token accepts for grant_type=authorization_code.
 	AuthCode string
@@ -220,12 +222,18 @@ func (as *fakeAS) tokenRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	as.AccessToken += "-r"
-	as.RefreshToken += "-r"
-	writeJSONToken(w, Token{
-		AccessToken:  as.AccessToken,
-		RefreshToken: as.RefreshToken,
-		ExpiresIn:    3600,
-	})
+	tok := Token{AccessToken: as.AccessToken, ExpiresIn: 3600}
+	if as.ZeroExpiresInOnRefresh {
+		tok.ExpiresIn = 0
+	}
+	if as.OmitRefreshTokenOnRefresh {
+		// The server doesn't rotate the refresh token on this grant; leave
+		// as.RefreshToken as-is and report none in the response.
+	} else {
+		as.RefreshToken += "-r"
+		tok.RefreshToken = as.RefreshToken
+	}
+	writeJSONToken(w, tok)
 }
 
 func (as *fakeAS) handleRevoke(t *testing.T) http.HandlerFunc {

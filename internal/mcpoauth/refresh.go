@@ -15,6 +15,9 @@ const RefreshSkew = 60 * time.Second
 // reports whether it changed. A grant without a refresh token that is expiring
 // is an error (sign in again). Returns ErrInvalidGrant when the server revoked it.
 func EnsureFresh(ctx context.Context, g *externalmcp.OAuthGrant, now time.Time) (changed bool, err error) {
+	if g == nil {
+		return false, fmt.Errorf("mcpoauth: EnsureFresh called with a nil grant")
+	}
 	if !g.Expiring(now, RefreshSkew) {
 		return false, nil
 	}

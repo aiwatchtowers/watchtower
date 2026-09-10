@@ -140,7 +140,12 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 // and yields zero external servers (chat keeps working with only its built-in
 // tools); a per-connection secret-load error is logged and just skips that
 // one connection, so one owner's corrupted secret file can't take down every
-// other connection's tools.
+// other connection's tools. An OAuth connection degrades the same way on a
+// refresh failure: EnsureFresh returning ErrInvalidGrant (or any other
+// refresh error) marks the connection row status="revoked" and skips just
+// that connection — a revoked grant can never take down the rest of the
+// chat's external tools, and the owner sees the row surfaced as needing
+// re-sign-in rather than a silently missing tool.
 func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPServer {
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -179,22 +184,24 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 				}
 				continue
 			}
-			if changed {
-				// Persist the rotated token BEFORE it is handed out — a save
-				// failure means the new token would be unrecoverable once
-				// used, so skip this connection rather than hand it out.
-				if err := store.Save(secret); err != nil {
-					log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
-					continue
-				}
-			}
 			// Copy headers so the bearer token is never written back into
-			// secret.Headers (and so never persisted by a later Save).
+			// secret.Headers — this map, not secret.Headers, is what
+			// travels into server.Headers below.
 			headers := make(map[string]string, len(secret.Headers)+1)
 			for k, v := range secret.Headers {
 				headers[k] = v
 			}
 			headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
+			if changed {
+				// Persist the rotated token BEFORE it is handed out to the
+				// caller — a save failure means the new token would be
+				// unrecoverable once used, so skip this connection rather
+				// than hand it out.
+				if err := store.Save(secret); err != nil {
+					log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
+					continue
+				}
+			}
 			server.Headers = headers
 			server.Env = secret.Env
 			if c.Status != "ok" {
