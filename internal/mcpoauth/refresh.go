@@ -53,7 +53,10 @@ func EnsureFresh(ctx context.Context, g *externalmcp.OAuthGrant, now time.Time) 
 	if tok.ExpiresIn > 0 {
 		g.ExpiresAt = now.Add(time.Duration(tok.ExpiresIn) * time.Second)
 	} else {
-		g.ExpiresAt = time.Time{} // unknown, never proactively refreshed again
+		// Lifetime unknown. Expiring() reads a zero ExpiresAt as "not expiring",
+		// so the unknown-expiry rule above (verify on every launch while a refresh
+		// token exists) is what keeps such a grant from going silently stale.
+		g.ExpiresAt = time.Time{}
 	}
 	return true, nil
 }

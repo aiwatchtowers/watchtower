@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -58,6 +59,49 @@ func TestDiscover_ProtectedResourcePointsAtIssuer(t *testing.T) {
 	}
 	if got.TokenEndpoint != asServer.URL+"/token" {
 		t.Errorf("TokenEndpoint = %q, want issuer from protected-resource metadata", got.TokenEndpoint)
+	}
+}
+
+// TestDiscover_ProtectedResourceAtPathAwareWellKnownURL pins RFC 9728 §3.1:
+// for a server with a path, the well-known segment is inserted BETWEEN the
+// host and that path, so https://host/mcp advertises its metadata at
+// https://host/.well-known/oauth-protected-resource/mcp. This server serves
+// ONLY that form (404 on the bare origin form), so the test fails if the
+// path-aware URL is not tried.
+func TestDiscover_ProtectedResourceAtPathAwareWellKnownURL(t *testing.T) {
+	var asServer *httptest.Server
+	asServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/oauth-authorization-server" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(t, w, validASMetadata(asServer.URL))
+	}))
+	defer asServer.Close()
+
+	var originFormHits atomic.Int64
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource/mcp":
+			writeJSON(t, w, protectedResourceMetadata{AuthorizationServers: []string{asServer.URL}})
+		case "/.well-known/oauth-protected-resource":
+			originFormHits.Add(1)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mcpServer.Close()
+
+	got, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got.TokenEndpoint != asServer.URL+"/token" {
+		t.Errorf("TokenEndpoint = %q, want the issuer named by the path-aware protected-resource document", got.TokenEndpoint)
+	}
+	if n := originFormHits.Load(); n != 0 {
+		t.Errorf("origin-form protected-resource URL was hit %d time(s); the path-aware URL must be tried first and win", n)
 	}
 }
 

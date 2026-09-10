@@ -85,12 +85,35 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 
 	var tried []string
 
-	prURL := origin + "/.well-known/oauth-protected-resource"
-	tried = append(tried, prURL)
+	// RFC 9728 §3.1 inserts the well-known segment between the host and the
+	// resource's own path, so a server at https://host/mcp advertises its
+	// metadata at https://host/.well-known/oauth-protected-resource/mcp. Some
+	// deployments only publish the bare origin form, so try the spec-correct
+	// path-aware URL first and fall back to the origin one; both are recorded
+	// in `tried` so a total failure names everything we asked for.
+	prURLs := make([]string, 0, 2)
+	if pathAware, perr := wellKnownAuthServerURL(serverURL, "oauth-protected-resource"); perr == nil {
+		prURLs = append(prURLs, pathAware)
+	}
+	originPR := origin + "/.well-known/oauth-protected-resource"
+	if len(prURLs) == 0 || prURLs[0] != originPR {
+		prURLs = append(prURLs, originPR)
+	}
+
 	var pr protectedResourceMetadata
-	ok, _, err := fetchJSON(ctx, prURL, &pr)
-	if err != nil {
-		return nil, fmt.Errorf("mcpoauth: fetching protected-resource metadata from %s: %w", prURL, err)
+	var ok bool
+	var fetchedFrom string
+	for _, prURL := range prURLs {
+		tried = append(tried, prURL)
+		fetchedFrom = prURL
+		var ferr error
+		ok, _, ferr = fetchJSON(ctx, prURL, &pr)
+		if ferr != nil {
+			return nil, fmt.Errorf("mcpoauth: fetching protected-resource metadata from %s: %w", fetchedFrom, ferr)
+		}
+		if ok {
+			break
+		}
 	}
 
 	issuer := origin

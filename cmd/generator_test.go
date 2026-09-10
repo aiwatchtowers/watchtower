@@ -255,12 +255,13 @@ func TestLoadExternalMCPServers_OAuth_SaveFailureSkipsConnection(t *testing.T) {
 	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
 	require.NoError(t, database.SetExternalConnectionStatus(id, "revoked", "stale"))
 
-	// Force SecretStore.Save to fail: it writes to store.Path()+".tmp" then
+	// Force SecretStore.Save to fail: it creates store.Path()+".tmp" then
 	// renames it into place, and a chmod on the destination file can't stop
 	// that (rename(2) only checks directory permissions, not the target
 	// file's mode) — so instead pre-occupy the exact temp-file name Save
-	// will try to create with a directory, which os.WriteFile cannot open
-	// for writing.
+	// will try to create with a DIRECTORY. Save removes a stale regular file
+	// at that path but deliberately leaves anything else alone, so its
+	// O_EXCL create fails loudly here.
 	require.NoError(t, os.Mkdir(store.Path()+".tmp", 0o700))
 	t.Cleanup(func() { _ = os.RemoveAll(store.Path() + ".tmp") })
 

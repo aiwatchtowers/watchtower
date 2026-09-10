@@ -189,9 +189,10 @@ func Login(ctx context.Context, cfg LoginConfig, out io.Writer, opts LoginOption
 
 // buildGrant assembles the OAuthGrant to persist from the token endpoint's
 // response, the resolved client identity, and the discovered metadata. A
-// zero or absent ExpiresIn leaves ExpiresAt zero (OAuthGrant.Expiring
-// treats a zero ExpiresAt as never expiring) rather than stamping a bogus
-// "expires now".
+// zero or absent ExpiresIn leaves ExpiresAt zero — an honest "lifetime
+// unknown" rather than a bogus "expires now". OAuthGrant.Expiring reads a
+// zero ExpiresAt as "not expiring", so EnsureFresh carries the unknown-expiry
+// rule instead: verify on every launch while a refresh token exists.
 func buildGrant(tok *Token, md *Metadata, clientID, clientSecret, resource string) *externalmcp.OAuthGrant {
 	grant := &externalmcp.OAuthGrant{
 		AccessToken:        tok.AccessToken,
