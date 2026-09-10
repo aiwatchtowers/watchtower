@@ -32,9 +32,12 @@ type protectedResourceMetadata struct {
 }
 
 // Discover resolves the authorization-server metadata for an MCP server URL:
-//  1. GET <origin>/.well-known/oauth-protected-resource → authorization_servers[0] as issuer (RFC 9728)
+//  1. GET <origin>/.well-known/oauth-protected-resource → authorization_servers[0] as issuer (RFC 9728);
+//     any non-200 here (the document is optional) falls back to treating the origin itself as the issuer.
 //  2. else the server origin is the issuer (the hosted Atlassian case: that document is 404)
-//  3. GET <issuer>/.well-known/oauth-authorization-server; on 404 GET <issuer>/.well-known/openid-configuration
+//  3. GET <issuer>/.well-known/oauth-authorization-server; ONLY a 404 falls back to
+//     GET <issuer>/.well-known/openid-configuration — any other non-2xx status (e.g. a 500) is a hard
+//     error naming the URL and status, even if openid-configuration would have succeeded.
 //
 // Requires https (plain http only for loopback hosts) and S256 in code_challenge_methods_supported.
 func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
@@ -51,7 +54,7 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 	prURL := origin + "/.well-known/oauth-protected-resource"
 	tried = append(tried, prURL)
 	var pr protectedResourceMetadata
-	ok, err := fetchJSON(ctx, prURL, &pr)
+	ok, _, err := fetchJSON(ctx, prURL, &pr)
 	if err != nil {
 		return nil, fmt.Errorf("mcpoauth: fetching protected-resource metadata from %s: %w", prURL, err)
 	}
@@ -68,15 +71,18 @@ func Discover(ctx context.Context, serverURL string) (*Metadata, error) {
 	tried = append(tried, asURL)
 	var meta Metadata
 	metaURL := asURL
-	ok, err = fetchJSON(ctx, asURL, &meta)
+	ok, status, err := fetchJSON(ctx, asURL, &meta)
 	if err != nil {
 		return nil, fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: %w", asURL, err)
+	}
+	if !ok && status != http.StatusNotFound {
+		return nil, fmt.Errorf("mcpoauth: fetching authorization-server metadata from %s: unexpected status %d", asURL, status)
 	}
 	if !ok {
 		oidcURL := issuer + "/.well-known/openid-configuration"
 		tried = append(tried, oidcURL)
 		metaURL = oidcURL
-		ok, err = fetchJSON(ctx, oidcURL, &meta)
+		ok, _, err = fetchJSON(ctx, oidcURL, &meta)
 		if err != nil {
 			return nil, fmt.Errorf("mcpoauth: fetching openid-configuration from %s: %w", oidcURL, err)
 		}
@@ -139,27 +145,28 @@ func originOf(rawURL string) (string, error) {
 
 // fetchJSON GETs url and decodes a JSON body into out. ok is true only on a
 // 200 response with a decodable body; a non-200 status is reported as
-// ok=false with a nil error (the caller's cue to try a fallback URL), while
-// a transport error or a malformed 200 body is a real error that aborts
-// discovery.
-func fetchJSON(ctx context.Context, url string, out any) (ok bool, err error) {
+// ok=false with the response's status code and a nil error, leaving the
+// caller to decide whether that status means "try a fallback URL" or "hard
+// error" — a transport error or a malformed 200 body is always a real
+// error that aborts discovery.
+func fetchJSON(ctx context.Context, url string, out any) (ok bool, status int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, nil
+		return false, resp.StatusCode, nil
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return false, fmt.Errorf("decoding JSON body: %w", err)
+		return false, resp.StatusCode, fmt.Errorf("decoding JSON body: %w", err)
 	}
-	return true, nil
+	return true, resp.StatusCode, nil
 }

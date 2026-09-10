@@ -112,6 +112,68 @@ func TestDiscover_FallsBackToOpenIDConfiguration(t *testing.T) {
 	}
 }
 
+// Pins fallback order: when oauth-authorization-server succeeds,
+// openid-configuration must never be consulted or allowed to win, even
+// though it also serves valid (but distinguishable) metadata here.
+func TestDiscover_PrefersAuthorizationServerOverOpenIDConfiguration(t *testing.T) {
+	var mcpServer *httptest.Server
+	mcpServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			http.NotFound(w, r)
+		case "/.well-known/oauth-authorization-server":
+			writeJSON(t, w, validASMetadata(mcpServer.URL))
+		case "/.well-known/openid-configuration":
+			meta := validASMetadata(mcpServer.URL)
+			meta.TokenEndpoint = mcpServer.URL + "/oidc-token-should-not-be-used"
+			writeJSON(t, w, meta)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mcpServer.Close()
+
+	got, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got.TokenEndpoint != mcpServer.URL+"/token" {
+		t.Errorf("TokenEndpoint = %q, want oauth-authorization-server's endpoint (openid-configuration must not win when AS metadata already succeeded)", got.TokenEndpoint)
+	}
+}
+
+// A non-404 failure fetching AS metadata (e.g. a 500) is a hard error: it
+// must never silently fall back to openid-configuration, even when that
+// document is present and valid.
+func TestDiscover_ASMetadata500_NoFallbackToOpenIDConfiguration(t *testing.T) {
+	var mcpServer *httptest.Server
+	mcpServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/oauth-protected-resource":
+			http.NotFound(w, r)
+		case "/.well-known/oauth-authorization-server":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/.well-known/openid-configuration":
+			writeJSON(t, w, validASMetadata(mcpServer.URL))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mcpServer.Close()
+
+	_, err := Discover(context.Background(), mcpServer.URL+"/mcp")
+	if err == nil {
+		t.Fatal("Discover: want error, got nil")
+	}
+	wantURL := mcpServer.URL + "/.well-known/oauth-authorization-server"
+	if !strings.Contains(err.Error(), wantURL) {
+		t.Errorf("error %q does not name the failing URL %q", err.Error(), wantURL)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q does not name the status code 500", err.Error())
+	}
+}
+
 // (d) all 404 ⇒ error text contains each URL tried.
 func TestDiscover_AllMissing_ErrorNamesEveryURLTried(t *testing.T) {
 	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
