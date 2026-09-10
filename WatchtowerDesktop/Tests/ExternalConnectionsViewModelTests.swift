@@ -125,6 +125,15 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
         XCTAssertFalse(args.contains("--secret-stdin"))
     }
 
+    // MARK: - oauthArgs (pure)
+
+    func testOAuthArgsAlwaysAppReturn() {
+        XCTAssertEqual(
+            ExternalConnectionsViewModel.oauthArgs(id: 7),
+            ["connections", "oauth", "7", "--app-return"]
+        )
+    }
+
     // MARK: - setEnabledArgs (pure)
 
     func testSetEnabledArgsEnable() {

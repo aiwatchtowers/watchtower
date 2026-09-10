@@ -18,6 +18,7 @@ final class ExternalConnectionsViewModel {
     var error: String?
 
     private let dbPool: DatabasePool
+    private var authProcess: Process?
 
     init(dbPool: DatabasePool) {
         self.dbPool = dbPool
@@ -85,13 +86,20 @@ final class ExternalConnectionsViewModel {
     /// written to the subprocess's stdin (plus a trailing newline) and is
     /// NEVER passed as a command-line argument; `nil`/empty means no secret
     /// and nothing is written to stdin.
+    ///
+    /// When `useOAuth` is set (http, OAuth sign-in chosen over manual
+    /// headers), a successful add is followed by looking the new row up by
+    /// its (unique) name and running `signIn` on it. The row is always
+    /// created first — if the sign-in step then fails, the row stays
+    /// (disabled) with `error` set; it is never rolled back.
     func addConnection(
         name: String,
         kind: String,
         command: String,
         args: [String],
         url: String,
-        secretJSON: String?
+        secretJSON: String?,
+        useOAuth: Bool = false
     ) async {
         let hasSecret = secretJSON?.isEmpty == false
         var stdin: String?
@@ -103,6 +111,47 @@ final class ExternalConnectionsViewModel {
             stdin: stdin,
             failurePrefix: "Add failed"
         )
+        guard useOAuth, error == nil else { return }
+
+        // `applyResult`'s `refresh()` is fire-and-forget — await our own pass
+        // so the new row is guaranteed visible before we search for it by name.
+        await refreshAsync()
+        guard let row = connections.first(where: { $0.name == name }) else {
+            error = "Added but could not find the new connection to sign in."
+            return
+        }
+        await signIn(row)
+    }
+
+    // MARK: - OAuth sign-in
+
+    /// Builds the `connections oauth <id>` args — always `--app-return` (the
+    /// OAuth success page redirects to watchtower-auth:// so macOS brings the
+    /// app back to the foreground). Pure and side-effect-free so the flag
+    /// assembly is directly testable without shelling out to a real process.
+    static func oauthArgs(id: Int64) -> [String] {
+        ["connections", "oauth", String(id), "--app-return"]
+    }
+
+    /// Signs `connection` in via `watchtower connections oauth <id>
+    /// --app-return` — the loopback-browser OAuth consent flow implemented by
+    /// the CLI. The detached Process is held in `authProcess` so
+    /// `cancelSignIn()` can terminate it mid-flow. Structural copy of
+    /// `SlackAccountsViewModel.runAuthFlow`/`addAccount`.
+    func signIn(_ connection: ExternalConnection) async {
+        await runAuthFlow(args: Self.oauthArgs(id: Int64(connection.id)), failurePrefix: "Sign in failed")
+    }
+
+    /// Terminates an in-flight sign-in process, if any. Mirrors
+    /// `SlackAccountsViewModel.cancelConnect` — the terminated process exits
+    /// with SIGTERM/SIGKILL, which `applyResult` treats as a user cancel, not
+    /// an error.
+    func cancelSignIn() {
+        if let process = authProcess, process.isRunning {
+            process.terminate()
+        }
+        authProcess = nil
+        isBusy = false
     }
 
     // MARK: - Enable / Disable
@@ -136,7 +185,36 @@ final class ExternalConnectionsViewModel {
         await runManagementCommand(args: Self.removeArgs(for: c), failurePrefix: "Remove failed")
     }
 
-    // MARK: - Flow helper
+    // MARK: - Flow helpers
+
+    /// Browser-consent flow (`oauth`) — holds the detached Process in
+    /// `authProcess` so `cancelSignIn()` can terminate it while this awaits.
+    /// Structural copy of `SlackAccountsViewModel.runAuthFlow`.
+    private func runAuthFlow(args: [String], failurePrefix: String) async {
+        guard !isBusy else {
+            error = "Another operation is already in progress."
+            return
+        }
+        guard let cliPath = Constants.findCLIPath() else {
+            error = "Watchtower CLI not found"
+            return
+        }
+
+        isBusy = true
+        error = nil
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = args
+        process.environment = Constants.resolvedEnvironment()
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        authProcess = process
+
+        let result = await Self.runProcess(process)
+        authProcess = nil
+        isBusy = false
+        applyResult(result, failurePrefix: failurePrefix)
+    }
 
     private func runManagementCommand(args: [String], stdin: String? = nil, failurePrefix: String) async {
         guard !isBusy else {
@@ -168,6 +246,9 @@ final class ExternalConnectionsViewModel {
             // restart would be a redundant daemon bounce copied from
             // SlackAccountsViewModel (where the daemon does own live sync).
             refresh()
+        } else if result.exitCode == 15 || result.exitCode == 9 {
+            // SIGTERM/SIGKILL — user cancelled via cancelSignIn(), not an error.
+            error = nil
         } else {
             error = result.stderr.isEmpty
                 ? "\(failurePrefix) (exit \(result.exitCode))"
