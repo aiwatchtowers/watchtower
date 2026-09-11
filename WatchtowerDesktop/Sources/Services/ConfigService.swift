@@ -187,7 +187,13 @@ final class ConfigService {
         // gone or unreadable.
         var yaml = currentYAMLOnDisk() ?? rawYAML
 
-        yaml["active_workspace"] = activeWorkspace
+        // `active_workspace` is never written here: the CLI owns it (`auth
+        // login`, `config set`) and no Settings control edits it, so the only
+        // thing save() could write is the snapshot reload() took — stale after
+        // any CLI change, and a nil (service loaded before `auth login` wrote
+        // the key) assigned to a dictionary subscript REMOVES the key, which
+        // left the daemon unable to start while the Desktop kept working off
+        // its first-workspace-dir fallback.
 
         // Sync section
         var sync = (yaml["sync"] as? [String: Any]) ?? [:]

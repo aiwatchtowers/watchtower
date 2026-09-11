@@ -29,6 +29,57 @@ struct ConfigServiceTests {
         #expect(svc.parseError == nil)
     }
 
+    /// The service can load before `auth login` writes active_workspace
+    /// (Settings opened first, or the Slack step skipped). Save must then
+    /// leave the key the CLI wrote in the meantime alone — assigning a nil
+    /// to the YAML dictionary deletes it, and a config without
+    /// active_workspace cannot start the daemon.
+    @Test("Save keeps an active_workspace written after load")
+    func saveKeepsWorkspaceWrittenAfterLoad() throws {
+        let path = makeTempConfig("""
+        sync:
+          workers: 2
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == nil)
+
+        try """
+        active_workspace: whitebit
+        sync:
+          workers: 2
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["active_workspace"] as? String == "whitebit")
+    }
+
+    /// The CLI owns `active_workspace`; the Desktop only displays it. A value
+    /// the CLI changed after this service loaded must survive Save — the
+    /// in-memory snapshot is stale, not authoritative.
+    @Test("Save never overwrites an active_workspace the CLI changed after load")
+    func saveKeepsWorkspaceChangedAfterLoad() throws {
+        let path = makeTempConfig("""
+        active_workspace: whitebit
+        sync:
+          workers: 2
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == "whitebit")
+
+        try """
+        active_workspace: acme
+        sync:
+          workers: 2
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["active_workspace"] as? String == "acme")
+    }
+
     @Test("Load parses sync section")
     func loadSync() {
         let path = makeTempConfig("""
@@ -324,7 +375,8 @@ struct ConfigServiceTests {
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
-        #expect(svc2.activeWorkspace == "new-ws")
+        // active_workspace is CLI-owned: even a dirty in-memory value is not written.
+        #expect(svc2.activeWorkspace == "old")
         #expect(svc2.aiProvider == "codex")
         #expect(svc2.calendarEnabled == true)
         #expect(svc2.calendarSyncDaysAhead == 7)
