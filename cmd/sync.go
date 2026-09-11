@@ -244,6 +244,25 @@ func runSyncDetach(cfg *config.Config) error {
 	return nil
 }
 
+// validateSyncConfig checks what a sync needs from config.yaml: a usable
+// active_workspace. Slack is optional — without a token the daemon still runs
+// (Calendar, Gmail, Jira keep syncing) and only the Slack phase is skipped.
+// A missing `workspaces.<name>` block is fine too: since Slack multi-account
+// the token lives in slack_token_<id>.json and `auth login` no longer writes
+// that block, so a fresh install has none. Only a legacy config-embedded
+// token, when present, is still validated for shape.
+func validateSyncConfig(cfg *config.Config) error {
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	if legacySlackConfigToken(cfg) != "" {
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+	}
+	return nil
+}
+
 func runSync(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -271,19 +290,8 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncNow(cfg)
 	}
 
-	// Slack is optional: without a token the daemon still runs (Calendar,
-	// Gmail, Jira keep syncing) and only the Slack phase is skipped.
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-	ws, err := cfg.GetActiveWorkspace()
-	if err != nil {
+	if err := validateSyncConfig(cfg); err != nil {
 		return err
-	}
-	if ws.SlackToken != "" {
-		if err := cfg.Validate(); err != nil {
-			return fmt.Errorf("invalid config: %w", err)
-		}
 	}
 
 	// --detach re-execs the process in the background.
