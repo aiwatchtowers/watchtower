@@ -62,6 +62,22 @@ final class DaemonManagerStartTests: XCTestCase {
         XCTAssertNil(manager.errorMessage)
     }
 
+    /// A child that writes far more than a pipe buffer (64 KB) to stderr must
+    /// not deadlock: the pipe is drained before `waitUntilExit`. Swapping the
+    /// two calls hangs this test instead of passing it.
+    @MainActor
+    func testFailedStartDrainsLargeStderr() async throws {
+        let script = try makeScript("head -c 300000 /dev/zero | tr '\\0' 'x' >&2\nexit 1")
+        let manager = DaemonManager()
+        manager.watchtowerPath = script
+
+        await manager.startDaemon()
+
+        let message = manager.errorMessage ?? ""
+        XCTAssertTrue(message.hasPrefix("Failed to start daemon (exit code 1): xxx"), String(message.prefix(60)))
+        XCTAssertGreaterThan(message.count, 200_000)
+    }
+
     func testStartFailureMessageTrimsStderr() {
         XCTAssertEqual(
             DaemonManager.startFailureMessage(status: 1, stderr: "  boom \n\n"),

@@ -160,7 +160,10 @@ package final class DaemonManager {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            return (process.terminationStatus, String(bytes: data, encoding: .utf8) ?? "")
+            // Latin-1 never fails, so a non-UTF-8 diagnostic degrades to mojibake
+            // instead of vanishing.
+            let stderr = String(bytes: data, encoding: .utf8) ?? String(bytes: data, encoding: .isoLatin1) ?? ""
+            return (process.terminationStatus, stderr)
         }.value
     }
 
@@ -182,7 +185,10 @@ package final class DaemonManager {
             NSLog("DaemonManager: restart: `sync stop` failed: %@", error.localizedDescription)
         }
         do {
-            _ = try await runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
+            let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+            if result.status != 0 {
+                NSLog("DaemonManager: restart: %@", startFailureMessage(status: result.status, stderr: result.stderr))
+            }
         } catch {
             NSLog("DaemonManager: restart: `sync --daemon --detach` failed: %@", error.localizedDescription)
         }
