@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -580,7 +581,49 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	resolveActiveWorkspace(cfg)
+
 	return cfg, nil
+}
+
+// resolveActiveWorkspace fills an empty ActiveWorkspace from the data
+// directory when exactly one workspace holds a database. The Desktop has
+// always fallen back to the first workspace directory with a watchtower.db
+// (DatabaseManager.resolveDBPath), so a config that lost its active_workspace
+// kept the app working while every CLI command and the daemon failed with
+// "active_workspace is required" — the two halves disagreed on the same
+// file. Resolving here, in the one place config is loaded, makes them agree.
+// Several candidates are left unresolved on purpose: guessing could point the
+// daemon's writes at a database other than the one on screen, so that case
+// stays an explicit `config set active_workspace <name>`.
+func resolveActiveWorkspace(cfg *Config) {
+	if cfg.ActiveWorkspace != "" {
+		return
+	}
+	candidates := workspaceDirsWithDatabase(DataRoot())
+	if len(candidates) == 1 {
+		cfg.ActiveWorkspace = candidates[0]
+	}
+}
+
+// workspaceDirsWithDatabase lists the valid workspace names under root that
+// hold a watchtower.db, sorted — the same candidate set the Desktop scans.
+func workspaceDirsWithDatabase(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() || !ValidWorkspaceRe.MatchString(e.Name()) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, e.Name(), "watchtower.db")); err == nil {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ValidWorkspaceRe matches valid workspace names: alphanumeric start, followed by
@@ -592,7 +635,7 @@ var ValidWorkspaceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 // making it suitable for commands that only need database access.
 func (c *Config) ValidateWorkspace() error {
 	if c.ActiveWorkspace == "" {
-		return fmt.Errorf("active_workspace is required; run 'watchtower config init' first")
+		return fmt.Errorf("active_workspace is required; set it with 'watchtower config set active_workspace <name>' (the folder under ~/.local/share/watchtower holding watchtower.db)")
 	}
 	if !ValidWorkspaceRe.MatchString(c.ActiveWorkspace) {
 		return fmt.Errorf("invalid workspace name %q: must contain only alphanumeric characters, hyphens, dots, and underscores", c.ActiveWorkspace)
@@ -659,12 +702,18 @@ func (c *Config) GetActiveWorkspace() (*WorkspaceConfig, error) {
 // WorkspaceDir returns the data directory for the active workspace
 // (~/.local/share/watchtower/{workspace}/).
 func (c *Config) WorkspaceDir() string {
+	return filepath.Join(DataRoot(), c.ActiveWorkspace)
+}
+
+// DataRoot returns the directory holding every workspace's data
+// (~/.local/share/watchtower).
+func DataRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// Fatal: storing sensitive data in a temp dir is unsafe.
 		log.Fatalf("could not determine home directory: %v", err)
 	}
-	return filepath.Join(home, ".local", "share", "watchtower", c.ActiveWorkspace)
+	return filepath.Join(home, ".local", "share", "watchtower")
 }
 
 // DBPath returns the path to the SQLite database for the active workspace.
