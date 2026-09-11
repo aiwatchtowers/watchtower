@@ -12,17 +12,42 @@ package enum Constants {
     package static let bundleID = "com.watchtower.desktop"
     package static let configDir = NSString("~/.config/watchtower").expandingTildeInPath
 
-    /// Directory of the active workspace from config.yaml, or nil when no
-    /// active_workspace is configured. Connection checks must use this instead
-    /// of scanning all workspace dirs — a stale token left in an old workspace
-    /// would otherwise show the active one as connected.
+    /// Directory of the active workspace: `active_workspace` from config.yaml,
+    /// or — when the key is missing — the one workspace directory holding a
+    /// `watchtower.db`, nil otherwise. Connection checks must use this instead
+    /// of scanning all workspace dirs for a first match — a stale token left in
+    /// an old workspace would otherwise show the active one as connected; the
+    /// single-candidate fallback has no such ambiguity by construction.
     package nonisolated static func activeWorkspaceDir() -> String? {
+        if let workspace = configuredActiveWorkspace() {
+            return "\(databasePath)/\(workspace)"
+        }
+        guard let workspace = singleWorkspaceWithDatabase(under: databasePath) else { return nil }
+        return "\(databasePath)/\(workspace)"
+    }
+
+    nonisolated private static func configuredActiveWorkspace() -> String? {
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any],
               let workspace = yaml["active_workspace"] as? String,
               !workspace.isEmpty else { return nil }
-        return "\(databasePath)/\(workspace)"
+        return workspace
+    }
+
+    /// The Go-side rule mirrored (`config.resolveActiveWorkspace`, a deliberate
+    /// dual-path pinned on both sides): the name of the single directory under
+    /// `root` that passes the Go workspace-name check and holds a
+    /// `watchtower.db`. Zero or several candidates → nil; the CLI refuses to
+    /// guess between several, so the Desktop must not either.
+    package nonisolated static func singleWorkspaceWithDatabase(under root: String) -> String? {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return nil }
+        let candidates = entries.filter { name in
+            name.range(of: "^[A-Za-z0-9][A-Za-z0-9_.-]*$", options: .regularExpression) != nil
+                && fm.fileExists(atPath: "\(root)/\(name)/watchtower.db")
+        }
+        return candidates.count == 1 ? candidates[0] : nil
     }
 
     /// Whether the Phase-4 memory surface for the Discuss chat is enabled
