@@ -250,7 +250,10 @@ func runSyncDetach(cfg *config.Config) error {
 // A missing `workspaces.<name>` block is fine too: since Slack multi-account
 // the token lives in slack_token_<id>.json and `auth login` no longer writes
 // that block, so a fresh install has none. Only a legacy config-embedded
-// token, when present, is still validated for shape.
+// token, when present, is still validated for shape. Deliberately dropped
+// with it: the old side effect of rejecting an active_workspace absent from
+// a non-empty legacy block — that block is a migration remnant, not a
+// registry of valid workspaces, and no other command ever consulted it.
 func validateSyncConfig(cfg *config.Config) error {
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
