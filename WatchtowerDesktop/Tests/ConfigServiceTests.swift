@@ -29,6 +29,32 @@ struct ConfigServiceTests {
         #expect(svc.parseError == nil)
     }
 
+    /// The service can load before `auth login` writes active_workspace
+    /// (Settings opened first, or the Slack step skipped). Save must then
+    /// leave the key the CLI wrote in the meantime alone — assigning a nil
+    /// to the YAML dictionary deletes it, and a config without
+    /// active_workspace cannot start the daemon.
+    @Test("Save keeps an active_workspace written after load")
+    func saveKeepsWorkspaceWrittenAfterLoad() throws {
+        let path = makeTempConfig("""
+        sync:
+          workers: 2
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == nil)
+
+        try """
+        active_workspace: whitebit
+        sync:
+          workers: 2
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["active_workspace"] as? String == "whitebit")
+    }
+
     @Test("Load parses sync section")
     func loadSync() {
         let path = makeTempConfig("""

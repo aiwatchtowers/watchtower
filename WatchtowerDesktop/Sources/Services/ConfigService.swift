@@ -187,7 +187,14 @@ final class ConfigService {
         // gone or unreadable.
         var yaml = currentYAMLOnDisk() ?? rawYAML
 
-        yaml["active_workspace"] = activeWorkspace
+        // Never delete the key: a nil here means this service loaded before
+        // `auth login` wrote active_workspace (Settings opened first, or the
+        // Slack step skipped), and assigning nil to a dictionary subscript
+        // REMOVES the key — which left the daemon unable to start while the
+        // Desktop kept working off its first-workspace-dir fallback.
+        if let workspace = activeWorkspace, !workspace.isEmpty {
+            yaml["active_workspace"] = workspace
+        }
 
         // Sync section
         var sync = (yaml["sync"] as? [String: Any]) ?? [:]
