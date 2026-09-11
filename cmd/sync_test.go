@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,4 +80,32 @@ func TestValidateSyncConfig_LegacyTokenStillValidated(t *testing.T) {
 
 	cfg.Workspaces["acme"].SlackToken = "xoxp-valid"
 	require.NoError(t, validateSyncConfig(cfg))
+}
+
+// The incident shape driven through the real command: active_workspace set,
+// no `workspaces:` block. runSync must get past config validation — the
+// "--detach requires --daemon" error is only reachable after
+// validateSyncConfig accepted the config. Before the fix this failed with
+// "workspace \"acme\" not found in config".
+func TestRunSync_AcceptsConfigWithoutWorkspacesBlock(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	configPath := filepath.Join(os.Getenv("HOME"), "config-no-block.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	syncFlagFull = false
+	syncFlagDaemon = false
+	syncFlagDetach = true
+	syncFlagStop = false
+	defer func() { syncFlagDetach = false }()
+	t.Setenv("WATCHTOWER_DETACH", "")
+
+	err := syncCmd.RunE(syncCmd, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--detach requires --daemon")
 }
