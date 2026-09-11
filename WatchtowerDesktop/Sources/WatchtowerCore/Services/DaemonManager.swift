@@ -85,16 +85,25 @@ package final class DaemonManager {
         }
 
         do {
-            let status = try await Self.runProcess(path: path, arguments: ["sync", "--daemon", "--detach"])
-            if status == 0 {
+            let result = try await Self.runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+            if result.status == 0 {
                 isRunning = true
                 errorMessage = nil
             } else {
-                errorMessage = "Failed to start daemon (exit code \(status))"
+                errorMessage = Self.startFailureMessage(status: result.status, stderr: result.stderr)
             }
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// The Settings error line for a failed start. The CLI's stderr is the
+    /// only diagnostic when `sync --daemon --detach` rejects the config: that
+    /// happens before the daemon opens daemon.log, so the log stays empty.
+    nonisolated static func startFailureMessage(status: Int32, stderr: String) -> String {
+        let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = "Failed to start daemon (exit code \(status))"
+        return detail.isEmpty ? base : "\(base): \(detail)"
     }
 
     // C4 fix: async to avoid blocking main thread
@@ -133,6 +142,25 @@ package final class DaemonManager {
             try process.run()
             process.waitUntilExit()
             return process.terminationStatus
+        }.value
+    }
+
+    /// `runProcess` with the child's stderr kept instead of muted, for the one
+    /// call whose failure has no other trace (see `startFailureMessage`).
+    /// The pipe is drained before `waitUntilExit` so a chatty child cannot
+    /// block on a full pipe.
+    nonisolated private static func runProcessCapturingStderr(
+        path: String,
+        arguments: [String]
+    ) async throws -> (status: Int32, stderr: String) {
+        try await Task.detached {
+            let process = makeProcess(path: path, arguments: arguments)
+            let pipe = Pipe()
+            process.standardError = pipe
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return (process.terminationStatus, String(bytes: data, encoding: .utf8) ?? "")
         }.value
     }
 
