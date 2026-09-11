@@ -397,6 +397,11 @@ type Config struct {
 	DB               DBConfig                    `mapstructure:"db"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
+
+	// workspaceCandidates is set by resolveActiveWorkspace when several
+	// workspaces hold a database and ActiveWorkspace stays empty, so
+	// ValidateWorkspace can name them instead of reporting a bare "required".
+	workspaceCandidates []string
 }
 
 // DBConfig captures database-runtime state that the binary tracks across
@@ -566,6 +571,11 @@ func Load(configPath string) (*Config, error) {
 		cfg.AI.Workers = cfg.Digest.Workers
 	}
 
+	// Resolve the workspace before the env-token binding below: that binding
+	// keys on cfg.ActiveWorkspace, so a workspace recovered from disk must be
+	// known by then or WATCHTOWER_SLACK_TOKEN would be silently dropped.
+	resolveActiveWorkspace(cfg)
+
 	// Bind workspace-level slack token from env
 	if token := os.Getenv("WATCHTOWER_SLACK_TOKEN"); token != "" && cfg.ActiveWorkspace != "" {
 		if cfg.Workspaces == nil {
@@ -580,8 +590,6 @@ func Load(configPath string) (*Config, error) {
 			ws.SlackToken = token
 		}
 	}
-
-	resolveActiveWorkspace(cfg)
 
 	return cfg, nil
 }
@@ -600,14 +608,25 @@ func resolveActiveWorkspace(cfg *Config) {
 	if cfg.ActiveWorkspace != "" {
 		return
 	}
-	candidates := workspaceDirsWithDatabase(DataRoot())
-	if len(candidates) == 1 {
+	root, err := DataRoot()
+	if err != nil {
+		return // best-effort lookup; the caller's own path use reports the error
+	}
+	candidates := workspaceDirsWithDatabase(root)
+	switch len(candidates) {
+	case 1:
 		cfg.ActiveWorkspace = candidates[0]
+	case 0:
+	default:
+		cfg.workspaceCandidates = candidates
 	}
 }
 
-// workspaceDirsWithDatabase lists the valid workspace names under root that
-// hold a watchtower.db, sorted — the same candidate set the Desktop scans.
+// workspaceDirsWithDatabase lists the workspace names under root that hold a
+// watchtower.db, sorted. It scans the same directory the Desktop's
+// DatabaseManager.resolveDBPath fallback does, narrowed to names
+// ValidWorkspaceRe accepts (the Swift validator is slightly wider — a leading
+// '_' or '-' passes there — so such a directory is a Desktop candidate only).
 func workspaceDirsWithDatabase(root string) []string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -635,6 +654,9 @@ var ValidWorkspaceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 // making it suitable for commands that only need database access.
 func (c *Config) ValidateWorkspace() error {
 	if c.ActiveWorkspace == "" {
+		if len(c.workspaceCandidates) > 1 {
+			return fmt.Errorf("active_workspace is required; several workspaces hold a database (%s) — pick one with 'watchtower config set active_workspace <name>'", strings.Join(c.workspaceCandidates, ", "))
+		}
 		return fmt.Errorf("active_workspace is required; set it with 'watchtower config set active_workspace <name>' (the folder under ~/.local/share/watchtower holding watchtower.db)")
 	}
 	if !ValidWorkspaceRe.MatchString(c.ActiveWorkspace) {
@@ -702,18 +724,22 @@ func (c *Config) GetActiveWorkspace() (*WorkspaceConfig, error) {
 // WorkspaceDir returns the data directory for the active workspace
 // (~/.local/share/watchtower/{workspace}/).
 func (c *Config) WorkspaceDir() string {
-	return filepath.Join(DataRoot(), c.ActiveWorkspace)
+	root, err := DataRoot()
+	if err != nil {
+		// Fatal: storing sensitive data in a temp dir is unsafe.
+		log.Fatalf("%v", err)
+	}
+	return filepath.Join(root, c.ActiveWorkspace)
 }
 
 // DataRoot returns the directory holding every workspace's data
 // (~/.local/share/watchtower).
-func DataRoot() string {
+func DataRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// Fatal: storing sensitive data in a temp dir is unsafe.
-		log.Fatalf("could not determine home directory: %v", err)
+		return "", fmt.Errorf("could not determine home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", "watchtower")
+	return filepath.Join(home, ".local", "share", "watchtower"), nil
 }
 
 // DBPath returns the path to the SQLite database for the active workspace.

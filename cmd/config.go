@@ -185,11 +185,11 @@ func runConfigInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create DB directory
-	home, err := os.UserHomeDir()
+	root, err := config.DataRoot()
 	if err != nil {
-		return fmt.Errorf("getting home directory: %w", err)
+		return err
 	}
-	dbDir := filepath.Join(home, ".local", "share", "watchtower", workspace)
+	dbDir := filepath.Join(root, workspace)
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		return fmt.Errorf("creating database directory: %w", err)
 	}
