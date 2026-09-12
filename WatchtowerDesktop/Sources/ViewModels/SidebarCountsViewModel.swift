@@ -20,6 +20,9 @@ final class SidebarCountsViewModel {
     var inboxHighPriorityCount: Int = 0
     /// Open-situation count, driving the Dashboard sidebar badge (see D9 dashboard task).
     var situationsCount: Int = 0
+    /// What the Inbox tab actually shows since it became the action strip:
+    /// proposals awaiting the owner + due reminders.
+    var inboxStripCount: Int = 0
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
     var memoryDisputedCount: Int = 0
@@ -114,6 +117,7 @@ final class SidebarCountsViewModel {
         let inboxPendingCount: Int
         let inboxHighPriorityCount: Int
         var situationsCount: Int
+        var inboxStripCount: Int
         var memoryDisputedCount: Int
         var ideasCount: Int
         var unacknowledgedRecapCount: Int
@@ -131,6 +135,7 @@ final class SidebarCountsViewModel {
             inboxPendingCount: 0,
             inboxHighPriorityCount: 0,
             situationsCount: 0,
+            inboxStripCount: 0,
             memoryDisputedCount: 0,
             ideasCount: 0,
             unacknowledgedRecapCount: 0
@@ -148,6 +153,11 @@ final class SidebarCountsViewModel {
                 let waitingRecap = hasWaitingRecap ? 1 : 0
                 // Open situations, likewise independent of the current user.
                 let openSituations = try SituationQueries.openCount(db)
+                // The Inbox tab's strip: pending/failed proposals + due reminders,
+                // user-independent and tolerant of a pre-agent-actions schema.
+                let nowUTC = ISO8601DateFormatter().string(from: Date())
+                let stripCount = ((try? AgentActionQueries.awaitingOwnerCount(db)) ?? 0)
+                    + ((try? ReminderQueries.dueCount(db, nowUTC: nowUTC)) ?? 0)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Ideas awaiting review, tolerant of a pre-ideas-registry schema.
@@ -161,6 +171,7 @@ final class SidebarCountsViewModel {
                     var zero = Counts.zero
                     zero.unacknowledgedRecapCount = waitingRecap
                     zero.situationsCount = openSituations
+                    zero.inboxStripCount = stripCount
                     zero.memoryDisputedCount = disputed
                     zero.ideasCount = ideasForReview
                     zero.unreadStreamCount = unreadStream
@@ -200,6 +211,7 @@ final class SidebarCountsViewModel {
                     inboxPendingCount: inboxCounts.unread,
                     inboxHighPriorityCount: inboxCounts.highPriority,
                     situationsCount: openSituations,
+                    inboxStripCount: stripCount,
                     memoryDisputedCount: disputed,
                     ideasCount: ideasForReview,
                     unacknowledgedRecapCount: waitingRecap
@@ -224,6 +236,7 @@ final class SidebarCountsViewModel {
         inboxPendingCount = c.inboxPendingCount
         inboxHighPriorityCount = c.inboxHighPriorityCount
         situationsCount = c.situationsCount
+        inboxStripCount = c.inboxStripCount
         memoryDisputedCount = c.memoryDisputedCount
         ideasCount = c.ideasCount
         unacknowledgedRecapCount = c.unacknowledgedRecapCount

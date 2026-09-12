@@ -13,6 +13,9 @@ final class ReminderQueriesTests: XCTestCase {
         }
         let due = try dbq.read { try ReminderQueries.fetchDue($0, nowUTC: "2100-01-01T00:00:00Z") }
         XCTAssertEqual(due.map(\.messageRef), ["C1@1"])
+        // The sidebar badge twin counts exactly the rows fetchDue returns.
+        XCTAssertEqual(try dbq.read { try ReminderQueries.dueCount($0, nowUTC: "2100-01-01T00:00:00Z") }, 1)
+        XCTAssertEqual(try dbq.read { try ReminderQueries.dueCount($0, nowUTC: "1999-01-01T00:00:00Z") }, 0)
     }
 
     func testMarkDoneRemovesFromDue() throws {

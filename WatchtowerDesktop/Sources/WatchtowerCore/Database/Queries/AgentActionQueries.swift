@@ -36,6 +36,13 @@ package enum AgentActionQueries {
     /// state to be caught in — actually surfaces on the strip instead of
     /// vanishing the instant it auto-applies (spec §4.1). Non-terminal rows
     /// sort first, then the terminal tail, newest-first within each group.
+    /// How many proposals wait on the owner right now: pending ones and failed
+    /// ones (retriable). Drives the Inbox sidebar badge; `approved`/`executing`
+    /// rows are in flight, not decisions, so they are not counted.
+    package static func awaitingOwnerCount(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM agent_actions WHERE status IN ('pending','failed')") ?? 0
+    }
+
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions

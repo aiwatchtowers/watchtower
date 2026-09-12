@@ -139,4 +139,19 @@ final class AgentActionQueriesTests: XCTestCase {
             "newest created_at first within each group; non-terminal rows before the recent-terminal tail; old terminal rows dropped"
         )
     }
+
+    /// The Inbox badge counts what waits on the owner: pending + failed
+    /// (retriable); in-flight and terminal rows are not decisions.
+    func testAwaitingOwnerCountCountsPendingAndFailedOnly() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t1", status: "pending")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t2", status: "failed")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t3", status: "approved")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t4", status: "executing")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t5", status: "applied")
+            _ = try TestDatabase.insertAgentAction(db, turnID: "t6", status: "rejected")
+        }
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 2)
+    }
 }
