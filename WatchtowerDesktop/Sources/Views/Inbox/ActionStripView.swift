@@ -4,24 +4,62 @@ import WatchtowerCore
 /// The Inbox tab's content: a flat strip of due reminders and pending agent-
 /// action proposals — the reaction-command surface, replacing the situations
 /// Dashboard (`InboxFeedView`, which stays in place for the demolition
-/// follow-up to remove). Reads `appState.actionStripViewModel` (AppState-
-/// owned so it survives navigation, the `SlackAccountsViewModel` house
-/// pattern) and re-`refresh()`s on every appear — cross-process daemon/CLI
-/// writes don't fire `ValueObservation` (see the view model's own doc
-/// comment).
+/// follow-up to remove). The Dashboard's two sibling tabs did not move with
+/// it: the learned-rules manager and the assistant profile editor still feed
+/// triage, so they keep their door here behind the same segmented control
+/// `InboxFeedView` had (`.learned`/`.profile` render the very same views).
+/// Reads `appState.actionStripViewModel` (AppState-owned so it survives
+/// navigation, the `SlackAccountsViewModel` house pattern) and
+/// re-`refresh()`s on every appear — cross-process daemon/CLI writes don't
+/// fire `ValueObservation` (see the view model's own doc comment).
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
+    @State private var tab: Tab = .actions
+
+    enum Tab { case actions, learned, profile }
 
     var body: some View {
-        Group {
-            if let vm = appState.actionStripViewModel {
-                content(vm)
-            } else {
-                ProgressView()
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                Text("Actions").tag(Tab.actions)
+                Text("Learned").tag(Tab.learned)
+                Text("Profile").tag(Tab.profile)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            switch tab {
+            case .actions:
+                if let vm = appState.actionStripViewModel {
+                    content(vm)
+                } else {
+                    ProgressView()
+                }
+            case .learned:
+                if let dbPool = appState.databaseManager?.dbPool {
+                    InboxLearnedRulesView(db: dbPool)
+                } else {
+                    unavailable
+                }
+            case .profile:
+                if let vm = appState.secretaryProfileViewModel {
+                    SecretaryProfileView(vm: vm)
+                } else {
+                    unavailable
+                }
             }
         }
         .navigationTitle("Inbox")
         .task { appState.actionStripViewModel?.refresh() }
+    }
+
+    private var unavailable: some View {
+        Text("Database unavailable")
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

@@ -32,6 +32,8 @@ A flat queue of things waiting on **your decision** — not a feed you scroll an
 
 **Empty state:** "Nothing waiting on you" when both sections are empty.
 
+**Learned / Profile:** the segmented control at the top of the tab switches between the action strip (**Actions**), the **Learned** rules manager (the 👍/👎-derived rules the assistant's triage follows), and your assistant **Profile** brief — the same two editors the previous Dashboard hosted. The sidebar badge counts what the strip shows: proposals awaiting your decision plus due reminders.
+
 **Note on the previous Inbox:** the AI-clustered situations Dashboard (triage → compose → situation cards, "what happened" across Slack/Jira/Calendar/Gmail) is no longer shown on this tab — that recap job now belongs to **Catch Up**. Its detection and triage stages keep running quietly in the background (so Catch-Up and Memory keep working), but the composed situations themselves are no longer generated or surfaced anywhere in this build.
 
 ### Ideas
