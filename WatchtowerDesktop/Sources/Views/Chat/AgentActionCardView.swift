@@ -15,6 +15,11 @@ struct AgentActionCardView: View {
         switch action.tool {
         case "create_target": return "Create task"
         case "create_jira_issue": return "Create Jira issue"
+        case "connect_jira_board": return "Connect Jira board"
+        case "create_track": return "Create track"
+        case "create_idea": return "Capture idea"
+        case "remind_me": return "Remind me"
+        case "brief_context": return "Brief context"
         default: return action.tool
         }
     }
@@ -37,7 +42,32 @@ struct AgentActionCardView: View {
             if let p = action.argString("priority"), !p.isEmpty { lines.append("Priority: \(p)") }
             return lines
         default:
-            return [action.argsJSON]
+            return waveTwoSummaryLines(for: action) ?? [action.argsJSON]
+        }
+    }
+
+    /// connect_jira_board + the Reaction Commands Wave 2 tools; nil for a tool
+    /// this card has no rendering for (falls back to the raw arguments).
+    private static func waveTwoSummaryLines(for action: AgentAction) -> [String]? {
+        switch action.tool {
+        case "connect_jira_board":
+            var lines = ["Project: \(action.argString("project_key") ?? "?")"]
+            if let b = action.argString("board_name"), !b.isEmpty { lines.append("Board: \(b)") }
+            return lines
+        case "create_track":
+            return [action.argString("title") ?? action.argString("text") ?? action.argsJSON]
+        case "create_idea":
+            var lines = [action.argString("essence") ?? ""]
+            if let t = action.argString("title"), !t.isEmpty { lines.insert(t, at: 0) }
+            return lines
+        case "remind_me":
+            var lines = ["Remind at: \(action.argString("remind_at") ?? "?")"]
+            if let n = action.argString("note"), !n.isEmpty { lines.append(n) }
+            return lines
+        case "brief_context":
+            return [action.argString("summary") ?? action.argsJSON]
+        default:
+            return nil
         }
     }
 
@@ -100,6 +130,15 @@ struct AgentActionCardView: View {
             Link(key, destination: link).font(.callout)
         } else if action.status == "applied", let id = action.resultString("target_id") {
             Text("Task #\(id) created").font(.callout)
+        } else if action.status == "applied", let board = action.resultString("board_name") {
+            Text("Board \(board) connected").font(.callout)
+        }
+        // A tool that applied but only partly (create_jira_issue's mirror,
+        // connect_jira_board's first profile) says so in result.warning; the
+        // card is the owner's primary surface, so the warning must show here,
+        // not only in `watchtower actions show`.
+        if action.status == "applied", let warning = action.resultString("warning"), !warning.isEmpty {
+            Text(warning).font(.caption).foregroundStyle(.orange)
         }
     }
 
