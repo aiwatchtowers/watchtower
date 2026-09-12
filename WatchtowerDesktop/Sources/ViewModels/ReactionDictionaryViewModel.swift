@@ -2,11 +2,13 @@ import Foundation
 import GRDB
 import WatchtowerCore
 
-/// The tools registered in Go's `internal/tools` registry, in seed order
-/// (migration 00063's `INSERT ... VALUES` plus the four added since) — the
-/// picker's options when the owner adds a new emoji mapping. Not read from
-/// the DB: the registry itself is Go-only static code, so this list is kept
-/// in sync by hand alongside `internal/tools/*.go`.
+/// The tools a reaction may dispatch, in seed order (migration 00063's
+/// `INSERT ... VALUES` plus the four Wave 2 tools) — the picker's options when
+/// the owner adds a new emoji mapping. Not read from the DB: the registry
+/// itself is Go-only static code, so this list is kept in sync by hand
+/// alongside `internal/tools/*.go`. Deliberately NOT the whole registry:
+/// `connect_jira_board` is `Surfaces: ["main"]` (main AI Chat only), so the
+/// reaction surface could never dispatch it and it is left out on purpose.
 package enum ReactionDictionaryTools {
     package static let all = [
         "create_target",
