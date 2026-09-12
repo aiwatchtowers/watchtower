@@ -71,10 +71,11 @@ final class ReactionDictionaryViewModel {
         }
     }
 
-    /// The owner's standing trust for `tool` ("ask"/"execute"), or nil when no
-    /// `tool_trust` row exists yet (Go's default is "ask").
-    func trustFor(tool: String) -> String? {
-        trustByTool[tool]
+    /// The owner's standing trust for `tool` ("ask"/"execute"). A tool with no
+    /// `tool_trust` row is "ask" — Go's default (`Registry.Propose`), so the
+    /// Wave 1 tools, which no migration seeds, read the same as the seeded ones.
+    func trustFor(tool: String) -> String {
+        trustByTool[tool] ?? "ask"
     }
 
     func setEnabled(emoji: String, enabled: Bool) async {

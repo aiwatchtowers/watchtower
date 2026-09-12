@@ -272,11 +272,9 @@ struct SlackConnectionDetail: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if let trust = vm.trustFor(tool: mapping.tool) {
-                                Text(trust)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text(vm.trustFor(tool: mapping.tool))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             Toggle("Enabled", isOn: Binding(
                                 get: { mapping.enabled },
                                 set: { newValue in
