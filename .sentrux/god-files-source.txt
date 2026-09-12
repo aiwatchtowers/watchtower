@@ -1,0 +1,4 @@
+WatchtowerDesktop/Sources/App/Navigation.swift
+WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
+WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
+WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
