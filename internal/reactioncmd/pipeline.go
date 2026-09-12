@@ -202,10 +202,11 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessa
 	if c.ThreadTS != "" {
 		threadLines = p.threadContext(c)
 	}
-	now := time.Now()
-	today := now.UTC().Format("2006-01-02")
 	// The daemon runs in the owner's TZ (the create_target due precedent), so
-	// time.Local is the owner's zone.
+	// time.Local is the owner's zone — both the date and the clock below are
+	// the owner's, so "tomorrow" cannot straddle a UTC midnight.
+	now := time.Now()
+	today := now.Format("2006-01-02")
 	ownerNow := now.Format("2006-01-02T15:04:05-07:00 (MST)")
 	userMsg := buildComposeUserMessage(c, argGuide(c.Mapping.Tool), threadLines, jiraProjects, today, ownerNow, prompts.Directive(p.language()))
 

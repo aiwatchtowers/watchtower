@@ -61,7 +61,6 @@ struct SidebarView: View {
     private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
     private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
     private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
-    private var inboxHighPriorityCount: Int { counts?.inboxHighPriorityCount ?? 0 }
     private var situationsCount: Int { counts?.situationsCount ?? 0 }
     private var inboxStripCount: Int { counts?.inboxStripCount ?? 0 }
     private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
@@ -215,7 +214,6 @@ struct SidebarView: View {
                 capsuleBadge(count, color: item == .tracks ? .orange
                     : item == .memory ? .orange
                     : item == .ideas ? .orange
-                    : item == .inbox && inboxHighPriorityCount > 0 ? .red
                     : item == .inbox ? .blue
                     : item == .targets && overdueTaskCount > 0 ? .red
                     : item == .targets ? .blue
@@ -289,10 +287,11 @@ struct SidebarView: View {
     }
 
     /// Color of the collapsed-header badge: red if any visible child is a red source
-    /// (inbox-high/digests/briefings/statistics/catch-up), otherwise blue.
+    /// (digests/briefings/statistics/catch-up), otherwise blue. The Inbox is not
+    /// one: its badge counts the action strip, and the high-priority inbox_items
+    /// that used to turn it red are no longer shown on that tab.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
         let visible = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
-        if visible.contains(.inbox), inboxHighPriorityCount > 0 { return .red }
         if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
         if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
