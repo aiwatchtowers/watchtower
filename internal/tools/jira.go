@@ -190,10 +190,8 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 				// The package has no logger, so a failed side-write rides the
 				// error it accompanies rather than vanishing (§9 swallowed
 				// error): the owner must know the account was NOT marked.
-				if errors.Is(err, jira.ErrAuthRevoked) {
-					if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
-						return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
-					}
+				if dbErr := recordRevokedGrant(d, account.ID, err); dbErr != nil {
+					return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
 				}
 				return nil, err
 			}

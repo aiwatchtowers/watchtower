@@ -141,10 +141,8 @@ func connectJiraBoard(ctx context.Context, d *db.DB, factory JiraConnectFactory,
 		// Same auth-revoked side write as create_jira_issue: a revoked
 		// grant is the account's problem and the owner must see it, and
 		// if recording it fails the primary error still rides out.
-		if errors.Is(err, jira.ErrAuthRevoked) {
-			if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
-				return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
-			}
+		if dbErr := recordRevokedGrant(d, account.ID, err); dbErr != nil {
+			return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
 		}
 		return nil, err
 	}
@@ -193,23 +191,40 @@ func profileConnectedBoard(ctx context.Context, d *db.DB, conn JiraConnect, acco
 	// reconnect of an already-profiled, unchanged board is a cache hit
 	// instead of a fresh analysis — the same fetch CheckAndRefreshProfiles
 	// and 'jira boards analyze' do before calling AnalyzeBoard.
+	// GetJiraBoardProfile returns (nil, nil) for a board without a profile,
+	// so a non-nil error is a real read failure: profiling still runs (on
+	// the fresh row, i.e. uncached), but the owner hears why it cost a pass.
+	var notes []string
 	profiled := row
-	if full, ferr := d.GetJiraBoardProfile(accountID, row.ID); ferr == nil && full != nil {
+	full, ferr := d.GetJiraBoardProfile(accountID, row.ID)
+	switch {
+	case ferr != nil:
+		notes = append(notes, "profile cache lookup failed, profiled uncached: "+ferr.Error())
+	case full != nil:
 		profiled = *full
 	}
-	_, err := conn.Profiler.AnalyzeBoard(ctx, profiled)
-	if err == nil {
-		return ""
-	}
-	warning := "connected, but the board profile was not generated (retry with 'watchtower jira boards analyze'): " + err.Error()
-	// A revoked grant surfacing here is the same account-level
-	// problem the FetchAllBoards path escalates — record it (still
-	// without failing the connect) so the owner is not left chasing
-	// a phantom profiling error while the account card reads OK.
-	if errors.Is(err, jira.ErrAuthRevoked) {
-		if dbErr := d.SetJiraAccountAuthState(accountID, "revoked", err.Error()); dbErr != nil {
+	if _, err := conn.Profiler.AnalyzeBoard(ctx, profiled); err != nil {
+		warning := "connected, but the board profile was not generated (retry with 'watchtower jira boards analyze'): " + err.Error()
+		// A revoked grant surfacing here is the same account-level
+		// problem the FetchAllBoards path escalates — record it (still
+		// without failing the connect) so the owner is not left chasing
+		// a phantom profiling error while the account card reads OK.
+		if dbErr := recordRevokedGrant(d, accountID, err); dbErr != nil {
 			warning += " (and recording the revoked grant failed: " + dbErr.Error() + ")"
 		}
+		notes = append(notes, warning)
 	}
-	return warning
+	return strings.Join(notes, "; ")
+}
+
+// recordRevokedGrant marks the account revoked when err is jira.ErrAuthRevoked
+// and returns only the side write's own failure (nil otherwise, including when
+// err is not a revoked grant). The three Jira write paths share it so the
+// revoked-state contract cannot drift between them; each caller decides how
+// the dbErr rides out (folded into the primary error or into a warning).
+func recordRevokedGrant(d *db.DB, accountID int64, err error) error {
+	if !errors.Is(err, jira.ErrAuthRevoked) {
+		return nil
+	}
+	return d.SetJiraAccountAuthState(accountID, "revoked", err.Error())
 }
