@@ -196,6 +196,15 @@ final class AppState {
     /// the Settings window.
     private(set) var externalConnectionsViewModel: ExternalConnectionsViewModel?
 
+    /// Reaction Dictionary ViewModel (Settings → Slack "Reaction commands"
+    /// editor) — persists across tab switches like its sibling account VMs
+    /// above.
+    private(set) var reactionDictionaryViewModel: ReactionDictionaryViewModel?
+
+    /// Dashboard action strip (pending agent-action proposals + due reminders)
+    /// — persists across tab switches like its siblings above.
+    private(set) var actionStripViewModel: ActionStripViewModel?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -624,6 +633,8 @@ final class AppState {
         initSlackAccounts(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
         initExternalConnections(dbPool: manager.dbPool)
+        initReactionDictionary(dbPool: manager.dbPool)
+        initActionStrip(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -714,6 +725,18 @@ final class AppState {
         let vm = ExternalConnectionsViewModel(dbPool: dbPool)
         vm.refresh()
         externalConnectionsViewModel = vm
+    }
+
+    func initReactionDictionary(dbPool: DatabasePool) {
+        let vm = ReactionDictionaryViewModel(dbPool: dbPool)
+        vm.refresh()
+        reactionDictionaryViewModel = vm
+    }
+
+    func initActionStrip(dbPool: DatabasePool) {
+        let vm = ActionStripViewModel(dbPool: dbPool)
+        vm.refresh()
+        actionStripViewModel = vm
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

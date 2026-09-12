@@ -19,6 +19,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Developer Surface | [dev-surface.md](dev-surface.md) | `internal/mcp/` (`taskcontext.go`, `experts.go`, `situations.go`), `internal/devpack/`, `cmd/integrate.go` |
 | Agent actions | [agent-actions.md](agent-actions.md) | `internal/tools/`, `internal/db/agent_actions.go`, `internal/mcp/actions.go`, `cmd/actions.go`, `cmd/mcp.go` (`--chat`), `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/`, `WatchtowerDesktop/Sources/Views/Chat/AgentActionCardView.swift` |
 | Quick Connections | [quick-connections.md](quick-connections.md) | `internal/db/external_connections.go`, `internal/externalmcp/`, `internal/mcpoauth/`, `internal/ai/client.go` (config merge + allowlist), `cmd/connections.go`, `cmd/generator.go` (`loadExternalMCPServers`), `WatchtowerDesktop/Sources/ViewModels/ExternalConnectionsViewModel.swift`, `WatchtowerDesktop/Sources/Views/Settings/{ConnectionsSettings,QuickConnectionsDetail,AddExternalConnectionView}.swift` |
+| Reaction Commands + Inbox Action Strip | [reaction-commands.md](reaction-commands.md) | `internal/reactioncmd/`, `internal/db/reaction_commands.go`, `internal/db/reminders.go`, `cmd/reaction_commands.go`, `WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift` |
 
 (Other modules will be added as their inventories are written.)
 

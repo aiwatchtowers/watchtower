@@ -285,6 +285,9 @@ func (p *Pipeline) runTriagePhase(ctx context.Context, currentUserID string, new
 // Compose failures are logged and swallowed — they never fail Run and never
 // touch the inbox watermark (compose owns its own watermark, DASH-02).
 func (p *Pipeline) runComposePhase(ctx context.Context, currentUserID string) (created, merged int) {
+	if p.cfg == nil || !p.cfg.Inbox.Situations.Enabled {
+		return 0, 0
+	}
 	if p.generator == nil {
 		return 0, 0
 	}

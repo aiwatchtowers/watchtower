@@ -23,6 +23,25 @@ func argGuide(tool string) string {
 - "summary" (required): the issue title, at most 255 characters.
 - "description" (optional): plain-text body summarising the message and any thread context.
 - "reason" (required): one sentence for the owner.`
+	case "create_track":
+		return `Arguments:
+- "text" (required): what to watch, at most 200 characters.
+- "context" (optional): why it matters / what to watch for.
+- "reason" (required): one sentence for the owner.`
+	case "create_idea":
+		return `Arguments:
+- "title" (optional): a short idea title.
+- "essence" (required): the idea in one or two sentences.
+- "reason" (required): one sentence for the owner.`
+	case "remind_me":
+		return `Arguments:
+- "remind_at" (required): ISO-8601 UTC time to resurface this. If the message implies no explicit time, use tomorrow at 09:00 local converted to UTC.
+- "note" (optional): a short note on what to follow up on.
+- "reason" (required): one sentence for the owner.`
+	case "brief_context":
+		return `Arguments:
+- "summary" (required): a concise summary of the message and any thread context you were given.
+- "reason" (required): one sentence for the owner.`
 	default:
 		return `Return a JSON object of this action's arguments, plus a "reason" (one sentence for the owner).`
 	}

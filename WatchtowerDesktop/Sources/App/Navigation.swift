@@ -201,7 +201,7 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .inbox:
-            InboxFeedView()
+            ActionStripView()
         case .ideas:
             if let vm = appState.ideasViewModel {
                 IdeasView(vm: vm)

@@ -51,6 +51,12 @@ func testConfig() *config.Config {
 			InitialLookbackDays: 7,
 			MaxTriageMessages:   config.DefaultInboxMaxTriageMessages,
 			MaxAwarenessCards:   config.DefaultInboxMaxAwarenessCards,
+			// Situations default off (config.DefaultInboxSituationsEnabled), but
+			// the existing compose/situation-card test suite exercises those
+			// stages directly and predates the gate — keep it on here so this
+			// helper's byte-for-byte behavior is unchanged for every caller.
+			// The gate itself is pinned by TestInbox_SituationsGateOff_SkipsCompose.
+			Situations: config.InboxSituationsConfig{Enabled: true},
 		},
 		Dashboard: config.DashboardConfig{
 			StaleAfterDays:    config.DefaultDashboardStaleAfterDays,
@@ -1197,4 +1203,52 @@ func TestTriage_FreshWatermarkUsesLookbackFloor(t *testing.T) {
 	assert.NotNil(t, recentItem, "recent stream message should become an inbox item")
 	oldItem, _ := d.GetInboxItemByMessage("C1", oldTS)
 	assert.Nil(t, oldItem, "ancient stream message outside the lookback window must not become an inbox item")
+}
+
+// TestInbox_SituationsGateOff_SkipsCompose pins the inbox.situations.enabled
+// gate: with it off, runComposePhase and runSituationCards must be a no-op
+// AND must never call the generator, even when there is material (new
+// signals, a situation needing a card) that would otherwise be acted on.
+// Triage/detectors/auto-resolve/watermark logic are untouched by this gate —
+// only the two situations stages are muted.
+func TestInbox_SituationsGateOff_SkipsCompose(t *testing.T) {
+	d, p, gen := newComposePipeline(t)
+	p.cfg.Inbox.Situations.Enabled = false
+
+	// Material for compose: fresh triaged signals that would otherwise fold
+	// into a new situation.
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "1.1", "U2", "prod down")
+	insertMessage(t, d, "C1", "2.1", "U2", "still down")
+	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
+	sig2 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "still down"})
+
+	// Material for cards: an existing situation that needs one.
+	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "prod incident", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "prod is down"})
+	require.NoError(t, err)
+	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig1), int(sig2)}))
+
+	// Queue responses that would succeed if either stage incorrectly ran, so
+	// a leaked call surfaces as unexpected creation/cards rather than a
+	// silent error.
+	gen.responses = []string{
+		`{"action":"create","title":"Prod incident","kind":"external","priority":"high","reason":"prod is down"}`,
+		`{"summary":"Prod has been down.","why_matters":"uptime.","chronology":"U2 — reported prod down."}`,
+	}
+
+	created, merged := p.runComposePhase(context.Background(), "U1")
+	if created != 0 || merged != 0 {
+		t.Fatalf("gated compose must be a no-op, got created=%d merged=%d", created, merged)
+	}
+
+	cards, err := p.runSituationCards(context.Background(), "U1")
+	if err != nil || cards != 0 {
+		t.Fatalf("gated cards must be a no-op, got %d err=%v", cards, err)
+	}
+
+	assert.Equal(t, 0, gen.calls, "the gate must skip both stages before any generator call")
+
+	s, err := d.GetSituation(int(sitID))
+	require.NoError(t, err)
+	assert.Equal(t, "none", s.CardStatus, "the situation's card must stay untouched while the gate is off")
 }
