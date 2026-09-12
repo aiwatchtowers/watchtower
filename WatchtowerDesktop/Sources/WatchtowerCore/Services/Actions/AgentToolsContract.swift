@@ -17,6 +17,8 @@ package enum AgentToolsContract {
             tools = """
             - create_target — propose a new task or reminder (a task with a due date) in the owner's task list.
             - create_jira_issue — propose a Jira issue on a connected site.
+            - connect_jira_board — propose watching a Jira board so its issues start syncing; pass board_name \
+            when the project has several boards, and ask the owner when the project is ambiguous.
             """
             coexistence = ""
         case .target:

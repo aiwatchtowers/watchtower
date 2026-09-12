@@ -23,6 +23,25 @@ func argGuide(tool string) string {
 - "summary" (required): the issue title, at most 255 characters.
 - "description" (optional): plain-text body summarising the message and any thread context.
 - "reason" (required): one sentence for the owner.`
+	case "create_track":
+		return `Arguments:
+- "text" (required): what to watch, at most 200 characters.
+- "context" (optional): why it matters / what to watch for.
+- "reason" (required): one sentence for the owner.`
+	case "create_idea":
+		return `Arguments:
+- "title" (optional): a short idea title.
+- "essence" (required): the idea in one or two sentences.
+- "reason" (required): one sentence for the owner.`
+	case "remind_me":
+		return `Arguments:
+- "remind_at" (required): RFC 3339 time to resurface this, carrying the owner's timezone offset from the context below (e.g. 2026-09-07T09:00:00+02:00) — Watchtower stores it as UTC. If the message implies no explicit time, use tomorrow at 09:00 in the owner's local timezone.
+- "note" (optional): a short note on what to follow up on.
+- "reason" (required): one sentence for the owner.`
+	case "brief_context":
+		return `Arguments:
+- "summary" (required): a concise summary of the message and any thread context you were given.
+- "reason" (required): one sentence for the owner.`
 	default:
 		return `Return a JSON object of this action's arguments, plus a "reason" (one sentence for the owner).`
 	}
@@ -31,7 +50,10 @@ func argGuide(tool string) string {
 // buildComposeUserMessage assembles the user message for the reactioncmd.command
 // prompt: which action to build, its argument guide, the reacted message and
 // any thread context, and grounding facts (Jira projects, today's date).
-func buildComposeUserMessage(c candidate, guide string, threadLines, jiraProjects []string, today, langDirective string) string {
+// ownerNow is the owner's wall-clock time with its offset and zone name, so
+// a relative time ("tomorrow 09:00") can be expressed deterministically;
+// empty omits the line.
+func buildComposeUserMessage(c candidate, guide string, threadLines, jiraProjects []string, today, ownerNow, langDirective string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Action to build: %s\n\n%s\n\n", c.Mapping.Tool, guide)
 
@@ -57,6 +79,9 @@ func buildComposeUserMessage(c candidate, guide string, threadLines, jiraProject
 	}
 
 	fmt.Fprintf(&b, "\nToday's date: %s\n", today)
+	if ownerNow != "" {
+		fmt.Fprintf(&b, "Owner's local time now: %s\n", ownerNow)
+	}
 	if langDirective != "" {
 		fmt.Fprintf(&b, "\n%s\n", langDirective)
 	}

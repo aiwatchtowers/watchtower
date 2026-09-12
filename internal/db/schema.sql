@@ -1618,3 +1618,18 @@ CREATE TABLE IF NOT EXISTS external_connections (
     error      TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+
+-- Reminders (migration 00065): the owner's ":later:" reaction parks a message
+-- to resurface in the inbox action strip at remind_at.
+CREATE TABLE IF NOT EXISTS reminders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id  INTEGER NOT NULL DEFAULT 0,
+    message_ref TEXT    NOT NULL DEFAULT '',
+    note        TEXT    NOT NULL DEFAULT '',
+    remind_at   TEXT    NOT NULL,
+    status      TEXT    NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','done','dismissed')),
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    done_at     TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);

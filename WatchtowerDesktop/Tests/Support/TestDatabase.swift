@@ -1028,6 +1028,35 @@ package enum TestDatabase {
         return db.lastInsertedRowID
     }
 
+    @discardableResult
+    package static func insertReactionCommandMapping(
+        _ db: Database,
+        emoji: String,
+        kind: String = "builtin_tool",
+        tool: String = "",
+        handlerID: Int64 = 0,
+        enabled: Bool = true,
+        createdAt: String = "2026-09-05T00:00:00Z"
+    ) throws -> String {
+        try db.execute(sql: """
+            INSERT INTO reaction_command_map
+                (emoji, kind, tool, handler_id, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [emoji, kind, tool, handlerID, enabled, createdAt, createdAt])
+        return emoji
+    }
+
+    package static func insertToolTrust(
+        _ db: Database,
+        tool: String,
+        trust: String,
+        updatedAt: String = "2026-09-05T00:00:00Z"
+    ) throws {
+        try db.execute(sql: """
+            INSERT INTO tool_trust (tool, trust, updated_at) VALUES (?, ?, ?)
+            """, arguments: [tool, trust, updatedAt])
+    }
+
     package static func insertGoogleAccount(
         _ db: Database,
         email: String = "",

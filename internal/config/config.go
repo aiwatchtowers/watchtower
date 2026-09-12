@@ -82,11 +82,18 @@ type BriefingConfig struct {
 
 // InboxConfig holds settings for the inbox detection pipeline.
 type InboxConfig struct {
-	Enabled             bool `mapstructure:"enabled"`               // enable inbox detection (default: true)
-	MaxItemsPerRun      int  `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
-	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
-	MaxTriageMessages   int  `mapstructure:"max_triage_messages"`   // max stream messages scanned per triage cycle (default: 600)
-	MaxAwarenessCards   int  `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
+	Enabled             bool                  `mapstructure:"enabled"`               // enable inbox detection (default: true)
+	MaxItemsPerRun      int                   `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
+	InitialLookbackDays int                   `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
+	MaxTriageMessages   int                   `mapstructure:"max_triage_messages"`   // max stream messages scanned per triage cycle (default: 600)
+	MaxAwarenessCards   int                   `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
+	Situations          InboxSituationsConfig `mapstructure:"situations"`            // gates the situations compose + situation-card stages independently (default: false)
+}
+
+// InboxSituationsConfig gates the situations compose + situation-card stages
+// (the expensive AI clustering) independently of the rest of the inbox.
+type InboxSituationsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable dashboard situations compose + cards (default: false)
 }
 
 // IdeasConfig holds settings for the ideas & decisions registry pipeline
@@ -445,6 +452,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
 	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
+	v.SetDefault("inbox.situations.enabled", DefaultInboxSituationsEnabled)
 	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
 	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
 	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)

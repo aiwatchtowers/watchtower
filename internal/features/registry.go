@@ -122,7 +122,12 @@ var registry = []Feature{
 		ConfigKey: "inbox.enabled",
 		Cost:      CostHeavy,
 		FeedsInto: []string{"memory", "briefing"},
-		Enabled:   func(cfg *config.Config) bool { return cfg.Inbox.Enabled },
+		SubToggles: []SubToggle{{
+			Key:         "inbox.situations.enabled",
+			Title:       "Cluster into situations",
+			Description: "Run the AI that groups inbox activity into Dashboard situations. Off = the inbox shows the action strip only.",
+		}},
+		Enabled: func(cfg *config.Config) bool { return cfg.Inbox.Enabled },
 	},
 	{
 		ID:          "slack-digests",

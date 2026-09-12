@@ -1054,5 +1054,27 @@ extension TestDatabase {
         error      TEXT    NOT NULL DEFAULT '',
         created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
+    CREATE TABLE IF NOT EXISTS reaction_command_map (
+        emoji      TEXT PRIMARY KEY,
+        kind       TEXT    NOT NULL DEFAULT 'builtin_tool'
+                   CHECK(kind IN ('builtin_tool','agent')),
+        tool       TEXT    NOT NULL DEFAULT '',
+        handler_id INTEGER NOT NULL DEFAULT 0,
+        enabled    INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+    CREATE TABLE IF NOT EXISTS reminders (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id  INTEGER NOT NULL DEFAULT 0,
+        message_ref TEXT    NOT NULL DEFAULT '',
+        note        TEXT    NOT NULL DEFAULT '',
+        remind_at   TEXT    NOT NULL,
+        status      TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','done','dismissed')),
+        created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        done_at     TEXT    NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
     """
 }
