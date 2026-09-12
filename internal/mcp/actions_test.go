@@ -43,6 +43,14 @@ func chatRegistry(t *testing.T, database *db.DB) *tools.Registry {
 	})); err != nil {
 		t.Fatal(err)
 	}
+	// The main-only External tool, with a factory that must never run on
+	// propose/list — pins the surface gate through the MCP adapter.
+	if err := reg.Register(tools.NewConnectJiraBoard(func(db.JiraAccount) (tools.JiraConnect, error) {
+		t.Fatal("the Jira connect factory must never be built on propose")
+		return tools.JiraConnect{}, nil
+	})); err != nil {
+		t.Fatal(err)
+	}
 	// The migrated read tools mount on the chat surface too (dispatched through
 	// the registry's read branch) — mirrors production buildToolRegistry.
 	for _, rt := range tools.ReadTools() {
@@ -69,12 +77,15 @@ func toolNames(t *testing.T, cs *mcpsdk.ClientSession) map[string]bool {
 func TestChatMode_ListsWriteToolsPerSurface(t *testing.T) {
 	database := seedDB(t)
 	main := toolNames(t, newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"}))
-	if !main["create_target"] || !main["create_jira_issue"] || !main["get_action"] || !main["list_jira_projects"] {
+	if !main["create_target"] || !main["create_jira_issue"] || !main["connect_jira_board"] || !main["get_action"] || !main["list_jira_projects"] {
 		t.Fatalf("main surface tools = %v", main)
 	}
 	target := toolNames(t, newChatSession(t, seedDB(t), chatRegistry(t, database), tools.Binding{Surface: "target"}))
 	if target["create_target"] {
 		t.Fatalf("create_target must not be offered on the target surface (TGT-BRIEF-01)")
+	}
+	if target["connect_jira_board"] {
+		t.Fatalf("connect_jira_board is main-chat only (TGT-BRIEF-01 axis 3) and must not be offered on the target surface")
 	}
 	if !target["create_jira_issue"] {
 		t.Fatalf("create_jira_issue missing on the target surface")
