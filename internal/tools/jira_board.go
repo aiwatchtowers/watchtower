@@ -116,84 +116,100 @@ func NewConnectJiraBoard(factory JiraConnectFactory) *Tool {
 			return nil
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
-			var a connectJiraBoardArgs
-			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, fmt.Errorf("decoding connect_jira_board args: %w", err)
-			}
-			account, err := ResolveJiraAccount(d, a.AccountID)
-			if err != nil {
-				return nil, err
-			}
-			conn, err := factory(account)
-			if err != nil {
-				return nil, err
-			}
-			boards, err := conn.Client.FetchAllBoards(ctx)
-			if err != nil {
-				// Same auth-revoked side write as create_jira_issue: a revoked
-				// grant is the account's problem and the owner must see it, and
-				// if recording it fails the primary error still rides out.
-				if errors.Is(err, jira.ErrAuthRevoked) {
-					if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
-						return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
-					}
-				}
-				return nil, err
-			}
-			board, err := matchBoard(boards, a.ProjectKey, a.BoardName)
-			if err != nil {
-				return nil, err
-			}
-			// Upsert first so the row exists, then select it. UpsertJiraBoard
-			// preserves is_selected (and the profile columns) on conflict, so
-			// the DB side of a re-connect is idempotent; the profiler below is
-			// cache-protected too, so a reconnect stays cheap.
-			row := db.JiraBoard{
-				AccountID: account.ID, ID: board.ID, Name: board.Name,
-				ProjectKey: board.Location.ProjectKey, BoardType: board.Type,
-				SyncedAt: time.Now().UTC().Format(time.RFC3339),
-			}
-			if err := d.UpsertJiraBoard(row); err != nil {
-				return nil, fmt.Errorf("saving board %d: %w", board.ID, err)
-			}
-			if err := d.SetJiraBoardSelected(account.ID, board.ID, true); err != nil {
-				return nil, fmt.Errorf("selecting board %d: %w", board.ID, err)
-			}
-			result := map[string]any{
-				"board_id": board.ID, "board_name": board.Name, "project_key": row.ProjectKey,
-			}
-			// The board is connected the moment it is selected — the next daemon
-			// sync pass reads GetJiraSelectedBoards and pulls its issues, so we
-			// never block on that here. Profiling is a best-effort enrichment on
-			// top: the daemon's auto-refresh only re-profiles boards that already
-			// have a profile, so this inline pass bootstraps the first one — but
-			// its failure (or a nil profiler) must never fail the connect.
-			if conn.Profiler != nil {
-				// Hand the profiler the PERSISTED row, not the freshly-built one:
-				// AnalyzeBoard skips the (paid, strong-tier) LLM pass only when the
-				// row already carries a matching config_hash + profile, so a
-				// reconnect of an already-profiled, unchanged board is a cache hit
-				// instead of a fresh analysis — the same fetch CheckAndRefreshProfiles
-				// and 'jira boards analyze' do before calling AnalyzeBoard.
-				profiled := row
-				if full, ferr := d.GetJiraBoardProfile(account.ID, board.ID); ferr == nil && full != nil {
-					profiled = *full
-				}
-				if _, err := conn.Profiler.AnalyzeBoard(ctx, profiled); err != nil {
-					warning := "connected, but the board profile was not generated (retry with 'watchtower jira boards analyze'): " + err.Error()
-					// A revoked grant surfacing here is the same account-level
-					// problem the FetchAllBoards path escalates — record it (still
-					// without failing the connect) so the owner is not left chasing
-					// a phantom profiling error while the account card reads OK.
-					if errors.Is(err, jira.ErrAuthRevoked) {
-						if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
-							warning += " (and recording the revoked grant failed: " + dbErr.Error() + ")"
-						}
-					}
-					result["warning"] = warning
-				}
-			}
-			return result, nil
+			return connectJiraBoard(ctx, d, factory, call)
 		},
 	}
+}
+
+// connectJiraBoard is connect_jira_board's Execute body: resolve the account,
+// fetch and match the board, persist + select it, then best-effort profile it.
+func connectJiraBoard(ctx context.Context, d *db.DB, factory JiraConnectFactory, call Call) (any, error) {
+	var a connectJiraBoardArgs
+	if err := json.Unmarshal(call.Args, &a); err != nil {
+		return nil, fmt.Errorf("decoding connect_jira_board args: %w", err)
+	}
+	account, err := ResolveJiraAccount(d, a.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := factory(account)
+	if err != nil {
+		return nil, err
+	}
+	boards, err := conn.Client.FetchAllBoards(ctx)
+	if err != nil {
+		// Same auth-revoked side write as create_jira_issue: a revoked
+		// grant is the account's problem and the owner must see it, and
+		// if recording it fails the primary error still rides out.
+		if errors.Is(err, jira.ErrAuthRevoked) {
+			if dbErr := d.SetJiraAccountAuthState(account.ID, "revoked", err.Error()); dbErr != nil {
+				return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
+			}
+		}
+		return nil, err
+	}
+	board, err := matchBoard(boards, a.ProjectKey, a.BoardName)
+	if err != nil {
+		return nil, err
+	}
+	// Upsert first so the row exists, then select it. UpsertJiraBoard
+	// preserves is_selected (and the profile columns) on conflict, so
+	// the DB side of a re-connect is idempotent; the profiler below is
+	// cache-protected too, so a reconnect stays cheap.
+	row := db.JiraBoard{
+		AccountID: account.ID, ID: board.ID, Name: board.Name,
+		ProjectKey: board.Location.ProjectKey, BoardType: board.Type,
+		SyncedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := d.UpsertJiraBoard(row); err != nil {
+		return nil, fmt.Errorf("saving board %d: %w", board.ID, err)
+	}
+	if err := d.SetJiraBoardSelected(account.ID, board.ID, true); err != nil {
+		return nil, fmt.Errorf("selecting board %d: %w", board.ID, err)
+	}
+	result := map[string]any{
+		"board_id": board.ID, "board_name": board.Name, "project_key": row.ProjectKey,
+	}
+	if warning := profileConnectedBoard(ctx, d, conn, account.ID, row); warning != "" {
+		result["warning"] = warning
+	}
+	return result, nil
+}
+
+// profileConnectedBoard runs the best-effort first profile of a just-connected
+// board and returns a warning for the result on failure ("" on success or
+// with no profiler). The board is connected the moment it is selected — the
+// next daemon sync pass reads GetJiraSelectedBoards and pulls its issues, so
+// nothing blocks on this. The daemon's auto-refresh only re-profiles boards
+// that already have a profile, so this pass bootstraps the first one — but
+// its failure (or a nil profiler) must never fail the connect.
+func profileConnectedBoard(ctx context.Context, d *db.DB, conn JiraConnect, accountID int64, row db.JiraBoard) string {
+	if conn.Profiler == nil {
+		return ""
+	}
+	// Hand the profiler the PERSISTED row, not the freshly-built one:
+	// AnalyzeBoard skips the (paid, strong-tier) LLM pass only when the
+	// row already carries a matching config_hash + profile, so a
+	// reconnect of an already-profiled, unchanged board is a cache hit
+	// instead of a fresh analysis — the same fetch CheckAndRefreshProfiles
+	// and 'jira boards analyze' do before calling AnalyzeBoard.
+	profiled := row
+	if full, ferr := d.GetJiraBoardProfile(accountID, row.ID); ferr == nil && full != nil {
+		profiled = *full
+	}
+	_, err := conn.Profiler.AnalyzeBoard(ctx, profiled)
+	if err == nil {
+		return ""
+	}
+	warning := "connected, but the board profile was not generated (retry with 'watchtower jira boards analyze'): " + err.Error()
+	// A revoked grant surfacing here is the same account-level
+	// problem the FetchAllBoards path escalates — record it (still
+	// without failing the connect) so the owner is not left chasing
+	// a phantom profiling error while the account card reads OK.
+	if errors.Is(err, jira.ErrAuthRevoked) {
+		if dbErr := d.SetJiraAccountAuthState(accountID, "revoked", err.Error()); dbErr != nil {
+			warning += " (and recording the revoked grant failed: " + dbErr.Error() + ")"
+		}
+	}
+	return warning
 }
