@@ -31,6 +31,10 @@ func NewRemindMe() *Tool {
 		Description: "Park a message to resurface in the inbox at a chosen time.",
 		InputSchema: schema,
 		Access:      AccessWrite,
+		// Reaction-path only (REACT-02 threads the reacted message ref through
+		// Call.Binding): mounting it in the main/target chat would let a chat
+		// turn create work outside its mandate with no message to bind to.
+		Surfaces: []string{"reaction"},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a remindMeArgs
 			if err := decodeStrict(raw, &a); err != nil {

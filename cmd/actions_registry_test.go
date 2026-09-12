@@ -31,16 +31,29 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		}
 		return out
 	}
+	reactionTools := []string{"create_track", "create_idea", "remind_me", "brief_context"}
+
 	main := names("main")
-	for _, w := range []string{"create_target", "create_jira_issue", "connect_jira_board", "create_track", "create_idea", "remind_me", "brief_context"} {
+	for _, w := range []string{"create_target", "create_jira_issue", "connect_jira_board"} {
 		assert.True(t, main[w], "write tool %s missing on main", w)
 	}
 	for _, rt := range tools.ReadTools() {
 		assert.True(t, main[rt.Name], "read tool %s missing on main", rt.Name)
+	}
+	for _, w := range reactionTools {
+		assert.False(t, main[w], "%s is reaction-path only; in chat it would create work with no message to bind to", w)
 	}
 
 	target := names("target")
 	assert.False(t, target["create_target"], "create_target is main-only (TGT-BRIEF-01 axis 3)")
 	assert.False(t, target["connect_jira_board"], "connect_jira_board is main-only (TGT-BRIEF-01 axis 3)")
 	assert.True(t, target["create_jira_issue"], "create_jira_issue is offered on the target surface")
+	for _, w := range reactionTools {
+		assert.False(t, target[w], "%s must not be offered on the target surface (TGT-BRIEF-01 axis 3)", w)
+	}
+
+	reaction := names("reaction")
+	for _, w := range reactionTools {
+		assert.True(t, reaction[w], "%s missing on the reaction surface", w)
+	}
 }

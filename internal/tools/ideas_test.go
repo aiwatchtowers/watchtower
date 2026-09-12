@@ -114,6 +114,6 @@ func TestCreateIdea_Registration(t *testing.T) {
 	assert.Equal(t, "create_idea", tool.Name)
 	assert.Equal(t, AccessWrite, tool.Access)
 	assert.False(t, tool.External)
-	assert.Empty(t, tool.Surfaces)
+	assert.Equal(t, []string{"reaction"}, tool.Surfaces, "reaction-path only")
 	require.NotNil(t, tool.InputSchema)
 }
