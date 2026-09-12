@@ -14,16 +14,16 @@ import WatchtowerCore
 /// fire `ValueObservation` (see the view model's own doc comment).
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
-    @State private var tab: Tab = .actions
+    @State private var stripTab: StripTab = .actions
 
-    enum Tab { case actions, learned, profile }
+    enum StripTab { case actions, learned, profile }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                Text("Actions").tag(Tab.actions)
-                Text("Learned").tag(Tab.learned)
-                Text("Profile").tag(Tab.profile)
+            Picker("", selection: $stripTab) {
+                Text("Actions").tag(StripTab.actions)
+                Text("Learned").tag(StripTab.learned)
+                Text("Profile").tag(StripTab.profile)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 12)
@@ -31,7 +31,7 @@ struct ActionStripView: View {
 
             Divider()
 
-            switch tab {
+            switch stripTab {
             case .actions:
                 if let vm = appState.actionStripViewModel {
                     content(vm)
@@ -42,13 +42,13 @@ struct ActionStripView: View {
                 if let dbPool = appState.databaseManager?.dbPool {
                     InboxLearnedRulesView(db: dbPool)
                 } else {
-                    unavailable
+                    databaseUnavailableNotice
                 }
             case .profile:
                 if let vm = appState.secretaryProfileViewModel {
                     SecretaryProfileView(vm: vm)
                 } else {
-                    unavailable
+                    databaseUnavailableNotice
                 }
             }
         }
@@ -56,7 +56,7 @@ struct ActionStripView: View {
         .task { appState.actionStripViewModel?.refresh() }
     }
 
-    private var unavailable: some View {
+    private var databaseUnavailableNotice: some View {
         Text("Database unavailable")
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
