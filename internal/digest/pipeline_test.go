@@ -1460,6 +1460,7 @@ func TestPersistBatchResults_BlanksInventedMessageRefs(t *testing.T) {
 	batch := []batchEntry{{
 		channelID:   "C1",
 		channelName: "general",
+		since:       900,
 		msgs: []db.Message{
 			{TS: "1000.000100", UserID: "U1", Text: "real message", TSUnix: 1000},
 		},
@@ -1478,7 +1479,7 @@ func TestPersistBatchResults_BlanksInventedMessageRefs(t *testing.T) {
 		},
 	}}}}
 
-	saved := p.persistBatchResults(batch, results, 900, nil, 1, &batchAggregator{})
+	saved := p.persistBatchResults(batch, results, nil, 1, &batchAggregator{})
 	require.Equal(t, 1, saved)
 
 	topics, err := database.ListDigestTopicIdeasAfter(0, 0, 0)
@@ -1704,24 +1705,46 @@ func TestGetPrompt_WithRole(t *testing.T) {
 	assert.Contains(t, tmpl, "You are analyzing Slack messages")
 }
 
+// windowFor returns the resolved window start for one channel, or -1 when the
+// channel is not a candidate at all.
+func windowFor(t *testing.T, p *Pipeline, channelID string) float64 {
+	t.Helper()
+	windows, err := p.resolveChannelWindows(float64(time.Now().Unix()))
+	require.NoError(t, err)
+	for _, w := range windows {
+		if w.channelID == channelID {
+			return w.since
+		}
+	}
+	return -1
+}
+
 func TestLastDigestTime_NoDigests(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 	cfg.Sync.InitialHistoryDays = 7
 	gen := &mockGenerator{}
 
-	p := New(database, cfg, gen, testLogger())
-	since := p.lastDigestTime()
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedMessagesForChannel(t, database, "C1", "U1", 3)
 
-	// Should be approximately 7 days ago.
+	p := New(database, cfg, gen, testLogger())
+
+	// A channel that has never been digested falls back to the first-run
+	// initial_history_days lookback — approximately 7 days ago.
 	expected := float64(time.Now().AddDate(0, 0, -7).Unix())
-	assert.InDelta(t, expected, since, 5.0)
+	assert.InDelta(t, expected, windowFor(t, p, "C1"), 5.0)
 }
 
 func TestLastDigestTime_WithDigests(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
 	gen := &mockGenerator{}
+
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+	seedMessagesForChannel(t, database, "C1", "U1", 3)
 
 	periodTo := float64(time.Now().Unix() - 3600)
 	_, err := database.UpsertDigest(db.Digest{
@@ -1732,22 +1755,28 @@ func TestLastDigestTime_WithDigests(t *testing.T) {
 	require.NoError(t, err)
 
 	p := New(database, cfg, gen, testLogger())
-	since := p.lastDigestTime()
 
-	assert.InDelta(t, periodTo, since, 1.0)
+	// The channel's window starts where its own last digest ended.
+	assert.InDelta(t, periodTo, windowFor(t, p, "C1"), 1.0)
 }
 
 // TestLastDigestTime_FastForwardOverridesOldDigests pins FEAT-03 for Slack
-// digests: after the slack-digests fast-forward floor is stamped to "now", the
-// next digest window starts at ~now even though an old channel digest exists —
-// the backlog between the old digest and the re-enable is not re-digested.
+// digests: after the slack-digests fast-forward floor is stamped, a channel's
+// next digest window starts at the floor even though an older channel digest
+// exists — the backlog between the old digest and the re-enable is not
+// re-digested. Per-channel windows do not weaken this: the floor is still
+// global and still wins over every channel's own high-water mark.
 func TestLastDigestTime_FastForwardOverridesOldDigests(t *testing.T) {
 	database := testDB(t)
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
 	cfg := testConfig()
 	gen := &mockGenerator{}
 
-	// An old channel digest — its period_to is a week ago.
+	seedChannel(t, database, "C1", "general")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// An old channel digest — its period_to is a week ago — and backlog traffic
+	// that accrued after it, while the feature was off.
 	oldPeriodTo := float64(time.Now().AddDate(0, 0, -7).Unix())
 	_, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
@@ -1755,15 +1784,27 @@ func TestLastDigestTime_FastForwardOverridesOldDigests(t *testing.T) {
 		Summary: "old", MessageCount: 5, Model: "haiku",
 	})
 	require.NoError(t, err)
+	for i := range 3 {
+		ts := fmt.Sprintf("%d.%06d", int64(oldPeriodTo)+int64(i*60)+60, i)
+		seedMessage(t, database, "C1", ts, "U1", fmt.Sprintf("backlog msg %d", i))
+	}
 
-	// The feature is re-enabled now → fast-forward floor stamped to now.
-	now := float64(time.Now().Unix())
-	require.NoError(t, database.SetDigestFastForwardTS(now))
+	// The feature is re-enabled → fast-forward floor stamped to that moment.
+	floor := float64(time.Now().Unix() - 600)
+	require.NoError(t, database.SetDigestFastForwardTS(floor))
 
 	p := New(database, cfg, gen, testLogger())
-	since := p.lastDigestTime()
 
-	assert.InDelta(t, now, since, 5.0, "fast-forward floor must win over the stale digest's period_to")
+	// Nothing newer than the floor: the channel is not a candidate at all, so
+	// the week of backlog is never digested.
+	assert.Equal(t, float64(-1), windowFor(t, p, "C1"),
+		"the backlog below the fast-forward floor must not be re-digested")
+
+	// New traffic after the re-enable: the window starts at the floor, not at
+	// the stale digest's period_to.
+	seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", int64(floor)+60), "U1", "post-re-enable message")
+	assert.InDelta(t, floor, windowFor(t, p, "C1"), 1.0,
+		"fast-forward floor must win over the stale digest's period_to")
 }
 
 func TestOnProgress_Callback(t *testing.T) {

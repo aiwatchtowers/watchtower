@@ -377,6 +377,57 @@ func (db *DB) ChannelsWithNewMessages(sinceUnix float64) ([]string, error) {
 	return channels, rows.Err()
 }
 
+// ChannelDigestCandidate is one channel holding messages that its own channel
+// digests have not covered yet.
+type ChannelDigestCandidate struct {
+	ChannelID string
+	// NewestMessageTS is the newest message ts_unix in the channel.
+	NewestMessageTS float64
+	// LastDigestTo is the channel's own latest channel-digest period_to,
+	// or 0 when the channel has never been digested.
+	LastDigestTo float64
+}
+
+// ChannelsWithUndigestedMessages returns one candidate per channel whose newest
+// message is later than that channel's OWN channel-digest high-water mark
+// (MAX(digests.period_to) for type 'channel'). A channel that has never been
+// digested is compared against neverDigestedSince instead — the first-run
+// initial-history lookback.
+//
+// This is the per-channel replacement for selecting channels against one global
+// "since" scalar: a channel whose digest failed, was capped out by the per-run
+// batch budget, or was skipped by the cooldown keeps its own older high-water
+// mark, so its messages are offered again next cycle instead of falling below a
+// window start that some other channel's success moved.
+func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]ChannelDigestCandidate, error) {
+	rows, err := db.Query(`
+		SELECT m.channel_id, MAX(m.ts_unix), COALESCE(d.period_to, 0)
+		FROM messages m
+		LEFT JOIN (
+			SELECT channel_id, MAX(period_to) AS period_to
+			FROM digests
+			WHERE type = 'channel'
+			GROUP BY channel_id
+		) d ON d.channel_id = m.channel_id
+		GROUP BY m.channel_id, d.period_to
+		HAVING MAX(m.ts_unix) > CASE WHEN COALESCE(d.period_to, 0) > 0 THEN d.period_to ELSE ? END
+		ORDER BY m.channel_id`, neverDigestedSince)
+	if err != nil {
+		return nil, fmt.Errorf("querying channels with undigested messages: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []ChannelDigestCandidate
+	for rows.Next() {
+		var c ChannelDigestCandidate
+		if err := rows.Scan(&c.ChannelID, &c.NewestMessageTS, &c.LastDigestTo); err != nil {
+			return nil, fmt.Errorf("scanning channel digest candidate: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates, rows.Err()
+}
+
 // GetDigestDecisionsForChannel returns individual decisions from digests
 // that overlap with the given channel and time window.
 // Decisions are parsed from the JSON decisions field of each digest.

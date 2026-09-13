@@ -437,23 +437,118 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 	return nil
 }
 
-// RunChannelDigests generates digests for all channels with new messages
-// since the last digest run. Returns the count and accumulated token usage.
-// Channels are processed in parallel using digest.workers (default: config.DefaultDigestWorkers).
-func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
-	sinceUnix := p.SinceOverride
-	if sinceUnix == 0 {
-		sinceUnix = p.lastDigestTime()
-	}
-	// Truncate to nearest minute to prevent near-duplicate digests when
-	// the pipeline runs twice within seconds (same period_from key).
-	sinceUnix = float64(int64(sinceUnix) / 60 * 60)
-	nowUnix := float64(time.Now().Unix())
-	return p.runChannelDigestsForWindow(ctx, sinceUnix, nowUnix)
+// channelWindow pairs a channel with the start of its own digest window.
+type channelWindow struct {
+	channelID string
+	since     float64
 }
 
-// runChannelDigestsForWindow generates channel digests for a specific time window.
+// RunChannelDigests generates digests for every channel holding messages its
+// own digests have not covered yet. Returns the count and accumulated token
+// usage. Channels are processed in parallel using digest.workers
+// (default: config.DefaultDigestWorkers).
+func (p *Pipeline) RunChannelDigests(ctx context.Context) (int, *Usage, error) {
+	nowUnix := float64(time.Now().Unix())
+
+	// `digest generate --since` is the operator escape hatch: it overrides every
+	// channel's own high-water mark with one uniform window.
+	if p.SinceOverride != 0 {
+		// Truncate to nearest minute to prevent near-duplicate digests when
+		// the pipeline runs twice within seconds (same period_from key).
+		sinceUnix := float64(int64(p.SinceOverride) / 60 * 60)
+		p.logger.Printf("digest: window override: since=%s now=%s",
+			time.Unix(int64(sinceUnix), 0).Format("2006-01-02 15:04"),
+			time.Unix(int64(nowUnix), 0).Format("2006-01-02 15:04"))
+		return p.runChannelDigestsForWindow(ctx, sinceUnix, nowUnix)
+	}
+
+	windows, err := p.resolveChannelWindows(nowUnix)
+	if err != nil {
+		return 0, nil, err
+	}
+	return p.runChannelWindows(ctx, windows, nowUnix)
+}
+
+// runChannelDigestsForWindow generates channel digests over one uniform window
+// for every channel with new messages in it.
 func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, nowUnix float64) (int, *Usage, error) {
+	channels, err := p.db.ChannelsWithNewMessages(sinceUnix)
+	if err != nil {
+		return 0, nil, fmt.Errorf("finding channels with new messages: %w", err)
+	}
+	p.logger.Printf("digest: found %d channels with new messages", len(channels))
+
+	windows := make([]channelWindow, 0, len(channels))
+	for _, channelID := range channels {
+		windows = append(windows, channelWindow{channelID: channelID, since: sinceUnix})
+	}
+	return p.runChannelWindows(ctx, windows, nowUnix)
+}
+
+// resolveChannelWindows returns one window per channel that holds messages
+// newer than that channel's own digest high-water mark. Each window starts
+// where that channel's last digest ended, so a channel whose digest failed, was
+// capped out by the per-run batch budget or was skipped by the cooldown is
+// offered again with its undigested messages still inside the window — no
+// other channel's success can move it past them.
+func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, error) {
+	firstRunSince := p.initialHistorySince(nowUnix)
+	fastForwardTS, err := p.db.GetDigestFastForwardTS()
+	if err != nil {
+		p.logger.Printf("digest: reading fast-forward ts: %v", err)
+		fastForwardTS = 0
+	}
+
+	candidates, err := p.db.ChannelsWithUndigestedMessages(firstRunSince)
+	if err != nil {
+		return nil, fmt.Errorf("finding channels with undigested messages: %w", err)
+	}
+
+	windows := make([]channelWindow, 0, len(candidates))
+	skippedByFloor := 0
+	for _, c := range candidates {
+		since := channelDigestSince(c.LastDigestTo, firstRunSince, fastForwardTS)
+		if c.NewestMessageTS <= since {
+			// The fast-forward floor sits past this channel's newest message:
+			// the backlog it accrued while the feature was off stays undigested
+			// (FEAT-03).
+			skippedByFloor++
+			continue
+		}
+		windows = append(windows, channelWindow{channelID: c.ChannelID, since: since})
+	}
+	p.logger.Printf("digest: %d channel(s) with undigested messages, %d skipped (below fast-forward floor)",
+		len(windows), skippedByFloor)
+	return windows, nil
+}
+
+// channelDigestSince is the window start for one channel: its own digest
+// high-water mark, the first-run lookback when it has never been digested,
+// raised to the global FEAT-03 fast-forward floor when that floor is later.
+func channelDigestSince(lastDigestTo, firstRunSince, fastForwardTS float64) float64 {
+	since := lastDigestTo
+	if since <= 0 {
+		since = firstRunSince
+	}
+	if fastForwardTS > since {
+		return fastForwardTS
+	}
+	return since
+}
+
+// initialHistorySince is the window start a channel that has never been
+// digested falls back to: initial_history_days before now (set during
+// onboarding).
+func (p *Pipeline) initialHistorySince(nowUnix float64) float64 {
+	days := p.cfg.Sync.InitialHistoryDays
+	if days <= 0 {
+		days = config.DefaultInitialHistDays
+	}
+	return float64(time.Unix(int64(nowUnix), 0).AddDate(0, 0, -days).Unix())
+}
+
+// runChannelWindows digests each channel over its own window, up to nowUnix.
+func (p *Pipeline) runChannelWindows(ctx context.Context, windows []channelWindow, nowUnix float64) (int, *Usage, error) {
 	// Ensure caches are populated (lazy init for direct RunChannelDigests calls).
 	if p.channelTypes == nil {
 		p.loadCaches()
@@ -463,20 +558,13 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 		p.OnProgress(0, 0, "Finding channels with new messages...")
 	}
 
-	p.logger.Printf("digest: window: since=%s now=%s",
-		time.Unix(int64(sinceUnix), 0).Format("2006-01-02 15:04"),
-		time.Unix(int64(nowUnix), 0).Format("2006-01-02 15:04"))
-
-	channels, err := p.selectActiveChannels(sinceUnix)
-	if err != nil {
-		return 0, nil, err
-	}
-	if len(channels) == 0 {
+	windows = p.filterDigestableChannels(windows)
+	if len(windows) == 0 {
 		p.logger.Println("digest: no channels with new messages")
 		return 0, nil, nil
 	}
 
-	entries := p.buildBatchEntries(channels, sinceUnix, nowUnix)
+	entries := p.buildBatchEntries(windows, nowUnix)
 	entries = p.applyDigestCooldown(entries)
 	if len(entries) == 0 {
 		p.logger.Println("digest: no channels with visible messages")
@@ -495,18 +583,12 @@ func (p *Pipeline) runChannelDigestsForWindow(ctx context.Context, sinceUnix, no
 		p.OnProgress(0, total, fmt.Sprintf("Processing %d channels in %d batches...", total, len(batches)))
 	}
 
-	return p.dispatchChannelBatches(ctx, batches, total, workers, sinceUnix, nowUnix)
+	return p.dispatchChannelBatches(ctx, batches, total, workers, nowUnix)
 }
 
-// selectActiveChannels returns channel IDs with new messages since sinceUnix,
-// after filtering muted channels and 1:1 DMs.
-func (p *Pipeline) selectActiveChannels(sinceUnix float64) ([]string, error) {
-	channels, err := p.db.ChannelsWithNewMessages(sinceUnix)
-	if err != nil {
-		return nil, fmt.Errorf("finding channels with new messages: %w", err)
-	}
-	p.logger.Printf("digest: found %d channels with new messages", len(channels))
-
+// filterDigestableChannels drops muted channels and 1:1 DMs from the candidate
+// windows.
+func (p *Pipeline) filterDigestableChannels(windows []channelWindow) []channelWindow {
 	mutedIDs, err := p.db.GetMutedChannelIDs()
 	if err != nil {
 		p.logger.Printf("digest: warning: failed to load muted channels: %v", err)
@@ -515,45 +597,45 @@ func (p *Pipeline) selectActiveChannels(sinceUnix float64) ([]string, error) {
 		for _, id := range mutedIDs {
 			muted[id] = true
 		}
-		var filtered []string
-		for _, ch := range channels {
-			if !muted[ch] {
-				filtered = append(filtered, ch)
+		var filtered []channelWindow
+		for _, w := range windows {
+			if !muted[w.channelID] {
+				filtered = append(filtered, w)
 			}
 		}
-		if skipped := len(channels) - len(filtered); skipped > 0 {
+		if skipped := len(windows) - len(filtered); skipped > 0 {
 			p.logger.Printf("digest: skipped %d muted channel(s)", skipped)
 		}
-		channels = filtered
+		windows = filtered
 	}
 
 	// Filter out 1:1 DMs — private conversations are not useful in digests.
 	// Group DMs are kept (they often contain team discussions).
-	var filtered []string
+	var filtered []channelWindow
 	skippedDM := 0
-	for _, ch := range channels {
-		if p.channelTypes[ch] == "dm" {
+	for _, w := range windows {
+		if p.channelTypes[w.channelID] == "dm" {
 			skippedDM++
 			continue
 		}
-		filtered = append(filtered, ch)
+		filtered = append(filtered, w)
 	}
 	if skippedDM > 0 {
 		p.logger.Printf("digest: skipped %d DM channel(s)", skippedDM)
 	}
-	return filtered, nil
+	return filtered
 }
 
 // buildBatchEntries loads messages for each channel, classifies bots, and
 // returns entries with visible-message counts. Bot-heavy channels are
 // reduced to human-context-only messages; channels with no visible content
 // are dropped.
-func (p *Pipeline) buildBatchEntries(channels []string, sinceUnix, nowUnix float64) []batchEntry {
+func (p *Pipeline) buildBatchEntries(windows []channelWindow, nowUnix float64) []batchEntry {
 	var entries []batchEntry
 	skippedNoVisible := 0
 	skippedBotOnly := 0
-	for _, channelID := range channels {
-		entry, status := p.buildBatchEntry(channelID, sinceUnix, nowUnix)
+	for _, w := range windows {
+		entry, status := p.buildBatchEntry(w, nowUnix)
 		switch status {
 		case batchEntryAccepted:
 			entries = append(entries, entry)
@@ -579,8 +661,9 @@ const (
 	batchEntrySkipError
 )
 
-func (p *Pipeline) buildBatchEntry(channelID string, sinceUnix, nowUnix float64) (batchEntry, batchEntryStatus) {
-	msgs, err := p.db.GetMessagesByTimeRange(channelID, sinceUnix, nowUnix)
+func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry, batchEntryStatus) {
+	channelID := w.channelID
+	msgs, err := p.db.GetMessagesByTimeRange(channelID, w.since, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error getting messages for %s: %v", channelID, err)
 		return batchEntry{}, batchEntrySkipError
@@ -621,6 +704,7 @@ func (p *Pipeline) buildBatchEntry(channelID string, sinceUnix, nowUnix float64)
 	return batchEntry{
 		channelID:    channelID,
 		channelName:  p.channelName(channelID),
+		since:        w.since,
 		msgs:         msgs,
 		visibleCount: visible,
 	}, batchEntryAccepted
@@ -749,7 +833,7 @@ func (a *batchAggregator) recordError(err error) {
 
 // dispatchChannelBatches runs worker goroutines over batches and aggregates
 // per-window results into a single Usage + count.
-func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batchEntry, total, workers int, sinceUnix, nowUnix float64) (int, *Usage, error) {
+func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batchEntry, total, workers int, nowUnix float64) (int, *Usage, error) {
 	batchCh := make(chan []batchEntry, len(batches))
 	for _, b := range batches {
 		batchCh <- b
@@ -767,9 +851,9 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 					return
 				}
 				if len(batch) == 1 {
-					p.processSingleEntry(ctx, batch[0], total, agg, sinceUnix, nowUnix)
+					p.processSingleEntry(ctx, batch[0], total, agg, nowUnix)
 				} else {
-					p.processBatchEntry(ctx, batch, total, agg, sinceUnix, nowUnix)
+					p.processBatchEntry(ctx, batch, total, agg, nowUnix)
 				}
 			}
 		}()
@@ -795,7 +879,8 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 }
 
 // processSingleEntry handles a 1-channel batch: individual prompt for better quality.
-func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total int, agg *batchAggregator, sinceUnix, nowUnix float64) {
+func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total int, agg *batchAggregator, nowUnix float64) {
+	sinceUnix := e.since
 	p.lastStepMu.Lock()
 	p.LastStepMessageCount = len(e.msgs)
 	p.LastStepPeriodFrom = time.Unix(int64(sinceUnix), 0)
@@ -870,11 +955,14 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 }
 
 // processBatchEntry handles a multi-channel batch via the batch prompt.
-func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, total int, agg *batchAggregator, sinceUnix, nowUnix float64) {
+func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, total int, agg *batchAggregator, nowUnix float64) {
 	batchMsgCount := 0
 	for _, e := range batch {
 		batchMsgCount += len(e.msgs)
 	}
+	// Entries in one batch may carry different window starts; the batch's own
+	// reported period covers all of them.
+	sinceUnix := earliestSince(batch)
 
 	p.lastStepMu.Lock()
 	p.LastStepMessageCount = batchMsgCount
@@ -889,7 +977,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	p.lastStepMu.Unlock()
 
 	stepStart := time.Now()
-	results, usage, pv, err := p.generateBatchDigest(ctx, batch, sinceUnix, nowUnix)
+	results, usage, pv, err := p.generateBatchDigest(ctx, batch, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error generating batch (%d channels): %v", len(batch), err)
 		agg.recordError(err)
@@ -897,7 +985,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 		return
 	}
 
-	saved := p.persistBatchResults(batch, results, sinceUnix, usage, pv, agg)
+	saved := p.persistBatchResults(batch, results, usage, pv, agg)
 
 	if usage != nil {
 		agg.totalInput.Add(int64(usage.InputTokens))
@@ -928,7 +1016,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 // persistBatchResults stores AI batch results back to the DB and returns the
 // number successfully saved. The first result carries the batch-level usage;
 // subsequent results pass nil to avoid double-counting tokens.
-func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, sinceUnix float64, usage *Usage, promptVersion int, agg *batchAggregator) int {
+func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, usage *Usage, promptVersion int, agg *batchAggregator) int {
 	lookup := newBatchEntryLookup(batch)
 
 	saved := 0
@@ -947,7 +1035,7 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 		if rIdx == 0 {
 			resultUsage = usage
 		}
-		if p.persistOneBatchResult(entry, r, sinceUnix, resultUsage, promptVersion, agg) {
+		if p.persistOneBatchResult(entry, r, resultUsage, promptVersion, agg) {
 			saved++
 		}
 	}
@@ -1011,7 +1099,8 @@ func (l *batchEntryLookup) resolve(channelID string) (entry *batchEntry, ambiguo
 // persistOneBatchResult stores one resolved AI batch result, returning
 // whether it saved. resultUsage is non-nil only for the batch's first
 // result — the batch-level usage must not be counted once per channel.
-func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult, sinceUnix float64, resultUsage *Usage, promptVersion int, agg *batchAggregator) bool {
+func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult, resultUsage *Usage, promptVersion int, agg *batchAggregator) bool {
+	sinceUnix := entry.since
 	dr := &DigestResult{
 		Summary:        r.Summary,
 		Topics:         r.Topics,
@@ -1485,12 +1574,27 @@ func (p *Pipeline) updatePeriodBounds(sinceUnix, lastMsgTS float64) {
 	}
 }
 
-// batchEntry holds a channel with its messages for batch processing.
+// batchEntry holds a channel with its messages for batch processing. since is
+// that channel's own window start — entries inside one batch may carry
+// different windows.
 type batchEntry struct {
 	channelID    string
 	channelName  string
+	since        float64
 	msgs         []db.Message
 	visibleCount int
+}
+
+// earliestSince returns the earliest window start in a batch — the batch's
+// overall coverage, used for the batch prompt header and step reporting.
+func earliestSince(batch []batchEntry) float64 {
+	var earliest float64
+	for i, e := range batch {
+		if i == 0 || e.since < earliest {
+			earliest = e.since
+		}
+	}
+	return earliest
 }
 
 // BatchChannelResult is the per-channel result from a batch digest LLM call.
@@ -1597,8 +1701,10 @@ func parseBatchDigestResult(raw string) ([]BatchChannelResult, error) {
 
 // generateBatchDigest generates a single LLM call for multiple low-activity channels.
 // Returns per-channel results, combined usage, prompt version, and error.
-func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry, from, to float64) ([]BatchChannelResult, *Usage, int, error) {
-	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02 15:04")
+func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry, to float64) ([]BatchChannelResult, *Usage, int, error) {
+	// Each entry carries its own window start, so the batch header states the
+	// widest one and every channel block states its own.
+	fromStr := time.Unix(int64(earliestSince(entries)), 0).Local().Format("2006-01-02 15:04")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02 15:04")
 
 	var channelBlocks strings.Builder
@@ -1628,6 +1734,8 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 		}
 
 		fmt.Fprintf(&channelBlocks, "--- #%s (%s) ---\n", e.channelName, e.channelID)
+		fmt.Fprintf(&channelBlocks, "[Covers %s to %s]\n",
+			time.Unix(int64(e.since), 0).Local().Format("2006-01-02 15:04"), toStr)
 		if prevCtx != "" {
 			// Strip the leading "=== PREVIOUS CONTEXT ===" header since we embed it differently
 			prevCtx = strings.TrimPrefix(prevCtx, "\n=== PREVIOUS CONTEXT ===\n")
@@ -1668,41 +1776,6 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 func (p *Pipeline) isFirstRun() bool {
 	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
 	return err != nil || len(digests) == 0
-}
-
-func (p *Pipeline) lastDigestTime() float64 {
-	derived := p.derivedLastDigestTime()
-	// A persisted fast-forward floor (stamped when the slack-digests feature is
-	// re-enabled) wins when it is later than the derived window start, so a
-	// re-enable resumes from "now" instead of re-digesting the backlog (FEAT-03).
-	ff, err := p.db.GetDigestFastForwardTS()
-	if err != nil {
-		p.logger.Printf("digest: reading fast-forward ts: %v", err)
-		return derived
-	}
-	if ff > derived {
-		p.logger.Printf("digest: fast-forward floor %.0f overrides derived %.0f", ff, derived)
-		return ff
-	}
-	return derived
-}
-
-func (p *Pipeline) derivedLastDigestTime() float64 {
-	// Find the latest channel digest period_to
-	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
-	if err == nil && len(digests) > 0 {
-		t := time.Unix(int64(digests[0].PeriodTo), 0)
-		p.logger.Printf("digest: last digest time: %s", t.Format("2006-01-02 15:04"))
-		return digests[0].PeriodTo
-	}
-	// First run: use initial_history_days from config (set during onboarding)
-	days := p.cfg.Sync.InitialHistoryDays
-	if days <= 0 {
-		days = config.DefaultInitialHistDays
-	}
-	since := float64(time.Now().AddDate(0, 0, -days).Unix())
-	p.logger.Printf("digest: first run — looking back %d days, since=%s (%.0f)", days, time.Unix(int64(since), 0).Format("2006-01-02 15:04"), since)
-	return since
 }
 
 // formatMessages renders messages for a digest prompt. Every line carries the

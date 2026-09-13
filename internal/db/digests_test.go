@@ -304,6 +304,63 @@ func TestChannelsWithNewMessages(t *testing.T) {
 	assert.Nil(t, channels)
 }
 
+func TestChannelsWithUndigestedMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// C1 is digested up to 2000000, C2 up to 3500000, C3 never digested.
+	for _, m := range []struct{ ch, ts string }{
+		{"C1", "1000000.000001"}, {"C1", "2500000.000001"},
+		{"C2", "3000000.000001"},
+		{"C3", "1200000.000001"},
+	} {
+		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
+		require.NoError(t, err)
+	}
+	for _, d := range []struct {
+		ch string
+		to float64
+	}{{"C1", 2000000}, {"C2", 3500000}} {
+		_, err = db.UpsertDigest(Digest{
+			ChannelID: d.ch, Type: "channel",
+			PeriodFrom: d.to - 1000, PeriodTo: d.to,
+			Summary: "s", MessageCount: 1, Model: "haiku",
+		})
+		require.NoError(t, err)
+	}
+
+	// C1 has a message past its own watermark; C2 does not; C3 has never been
+	// digested and its message is newer than the never-digested floor.
+	candidates, err := db.ChannelsWithUndigestedMessages(1100000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, 2500000.0, candidates[0].NewestMessageTS)
+	assert.Equal(t, 2000000.0, candidates[0].LastDigestTo)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+	assert.Equal(t, 0.0, candidates[1].LastDigestTo, "a never-digested channel reports no watermark")
+
+	// Raising the never-digested floor past C3's message drops only C3 —
+	// C1 is still selected against its own watermark, not the floor.
+	candidates, err = db.ChannelsWithUndigestedMessages(3000000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+
+	// A daily rollup never counts as a channel's watermark.
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C3", Type: "daily",
+		PeriodFrom: 1000000, PeriodTo: 9000000,
+		Summary: "rollup", MessageCount: 1, Model: "haiku",
+	})
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1100000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+}
+
 func TestDigestTypeConstraint(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)
