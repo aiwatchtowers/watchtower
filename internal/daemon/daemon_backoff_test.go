@@ -357,6 +357,30 @@ func TestDaemon_BriefingBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 	assert.Equal(t, 3, gen.calls, "a 4th cycle on the same day must launch nothing once the budget is spent")
 }
 
+// TestDaemon_BriefingBackoff_LogsGivingUpOnceBudgetExhausted is the briefing
+// counterpart of TestDaemon_DayPlanBackoff_LogsGivingUpOnceBudgetExhausted —
+// pinned separately because the two record*Attempt functions are independent
+// copies today and a future edit could diverge them silently otherwise.
+func TestDaemon_BriefingBackoff_LogsGivingUpOnceBudgetExhausted(t *testing.T) {
+	d, _, gen := briefingBackoffTestSetup(t)
+	var buf bytes.Buffer
+	d.SetLogger(log.New(&buf, "", 0))
+
+	d.phaseBriefing(context.Background())
+	d.phaseBriefing(context.Background())
+	require.Equal(t, 2, gen.calls)
+	assert.Equal(t, 0, strings.Count(buf.String(), "giving up"), "must not log giving-up before the budget is actually spent")
+
+	d.phaseBriefing(context.Background())
+	require.Equal(t, 3, gen.calls)
+	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must log giving-up exactly once when the 3rd failure spends the budget")
+
+	// A 4th (and 5th) cycle the same day is a silent skip — no repeat log line.
+	d.phaseBriefing(context.Background())
+	d.phaseBriefing(context.Background())
+	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must not repeat the giving-up line on later silent skips the same day")
+}
+
 func TestDaemon_BriefingBackoff_BenignNoUserSkipDoesNotConsumeBudget(t *testing.T) {
 	if time.Now().Hour() < 1 {
 		t.Skip("hour is below briefing threshold")
