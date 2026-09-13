@@ -130,4 +130,15 @@ final class DaemonManagerLivePIDTests: XCTestCase {
 
         XCTAssertNil(DaemonManager.livePID(atPath: path))
     }
+
+    /// pid 0 addresses the caller's own process group under `kill(2)`, so
+    /// `kill(0, 0)` succeeds — a `daemon.pid` left containing `0` (or a
+    /// negative value) must not read as a live daemon just because the
+    /// syscall didn't error.
+    func testZeroOrNegativePIDReturnsNil() throws {
+        for contents in ["0", "-1", "0 1757712345"] {
+            let path = try writePIDFile(contents)
+            XCTAssertNil(DaemonManager.livePID(atPath: path), "contents: \(contents)")
+        }
+    }
 }

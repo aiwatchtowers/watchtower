@@ -359,7 +359,10 @@ package final class DaemonManager {
 
         // PID file may contain "PID TIMESTAMP" format
         let pidComponent = pidStr.components(separatedBy: " ").first ?? pidStr
-        guard let pid = pid_t(pidComponent) else { return nil }
+        guard let pid = pid_t(pidComponent), pid > 0 else { return nil }
+        // pid 0 addresses the caller's own process group and pid <= 0 has its
+        // own special meanings to `kill(2)` — none of them "a daemon we
+        // started", so a corrupt/zeroed pid file must never read as live.
 
         return kill(pid, 0) == 0 ? pid : nil
     }
