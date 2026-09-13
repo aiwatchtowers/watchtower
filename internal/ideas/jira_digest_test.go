@@ -1,8 +1,10 @@
 package ideas
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -391,12 +393,12 @@ func TestIdeas01_JiraFloorStopsAtBudgetDroppedIssue(t *testing.T) {
 		"period_to must describe what the row's floor claims, not what was loaded")
 }
 
-// TestIdeas01_JiraNothingRendered_NoCallNoRowFloorUnchanged covers the
-// degenerate branch the old code got most wrong (see
-// feedback_test_degenerate_clean_exit): a prompt budget too small for even the
-// oldest issue renders nothing, so there is nothing to ask the model about and
-// nothing this run may claim — no AI call, no row, floor frozen.
-func TestIdeas01_JiraNothingRendered_NoCallNoRowFloorUnchanged(t *testing.T) {
+// TestIdeas01_JiraOversizedIssue_RenderedAnywayFloorAdvances is the Jira half
+// of the same controller ruling (2026-09-13): a prompt budget too small for
+// even the oldest issue must still render that one issue, overshooting the
+// cap, so the pass mines the window and its floor moves instead of the account
+// re-reading the same issue forever.
+func TestIdeas01_JiraOversizedIssue_RenderedAnywayFloorAdvances(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour)
 	acctID := seedJiraAccount(t, d)
@@ -405,19 +407,29 @@ func TestIdeas01_JiraNothingRendered_NoCallNoRowFloorUnchanged(t *testing.T) {
 	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
 	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Real issue", "Open", "new", "desc", u1)
 
-	gen := &fakeGen{reply: func(string) (string, error) {
-		t.Fatal("generator must not be called when the budget fits no issue")
-		return "", nil
+	var logged bytes.Buffer
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
 	}}
-	p := New(d, testCfgWithBudget(1), gen, testLogger())
+	const budget = 1
+	p := New(d, testCfgWithBudget(budget), gen, log.New(&logged, "", 0))
 	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
-	assert.Zero(t, gen.calls)
+
+	require.Equal(t, 1, gen.calls, "the oversized issue must still be mined")
+	assert.Contains(t, seenBlock, "WT-1", "the one oversized issue must be rendered")
+	assert.Greater(t, len(seenBlock), budget, "the overshoot is what makes progress possible")
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
-	assert.Empty(t, digests)
+	require.Len(t, digests, 1)
 
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
-	assert.Equal(t, floor, newFloor, "nothing was rendered, so the floor must not move at all")
+	assert.Equal(t, u1, newFloor, "the rendered issue's floor must advance, or the pass stalls forever")
+
+	// The operator must be able to see why the prompt outgrew their cap.
+	assert.Contains(t, logged.String(), "WT-1", "the overshoot log must name the issue")
+	assert.Contains(t, logged.String(), "ideas.max_prompt_chars", "the overshoot log must name the cap")
 }

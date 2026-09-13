@@ -1,6 +1,7 @@
 package ideas
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -326,34 +327,48 @@ func TestIdeas01_EmailFloorStopsAtBudgetDroppedThread(t *testing.T) {
 		"period_to must describe what the row summarizes, not what was loaded")
 }
 
-// TestIdeas01_EmailNothingRendered_NoCallNoRowFloorUnchanged covers the
+// TestIdeas01_EmailOversizedThread_RenderedAnywayFloorAdvances covers the
 // degenerate branch the old code got most wrong (see
-// feedback_test_degenerate_clean_exit): a prompt budget too small for even the
-// oldest thread renders nothing, so there is nothing to ask the model about
-// and nothing this run may claim — no AI call, no row, floor frozen.
-func TestIdeas01_EmailNothingRendered_NoCallNoRowFloorUnchanged(t *testing.T) {
+// feedback_test_degenerate_clean_exit), in the shape the controller ruled on
+// 2026-09-13: a prompt budget too small for even the oldest thread must still
+// render that one thread, overshooting the cap, so the pass mines the window
+// and its floor moves. Rendering nothing would be honest about the floor and
+// still wrong — the account would re-read the same thread forever, mining
+// nothing, which loses the window exactly like a dishonest floor does.
+func TestIdeas01_EmailOversizedThread_RenderedAnywayFloorAdvances(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
 	acctID := seedGoogleAccount(t, d, float64(base))
 	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
 	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "body",
 		time.Unix(base+10, 0).UTC().Format(time.RFC3339))
+	tag := fmt.Sprintf("gmail:%d:thr-1", acctID)
 
-	gen := &fakeGen{reply: func(string) (string, error) {
-		t.Fatal("generator must not be called when the budget fits no thread")
-		return "", nil
+	var logged bytes.Buffer
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":%q}],"decisions":[]}]}`, tag), nil
 	}}
-	p := New(d, testCfgWithBudget(1), gen, testLogger())
+	const budget = 1
+	p := New(d, testCfgWithBudget(budget), gen, log.New(&logged, "", 0))
 	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
-	assert.Zero(t, gen.calls)
+
+	require.Equal(t, 1, gen.calls, "the oversized thread must still be mined")
+	assert.Contains(t, seenBlock, "thr-1", "the one oversized thread must be rendered")
+	assert.Greater(t, len(seenBlock), budget, "the overshoot is what makes progress possible")
 
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
-	assert.Empty(t, digests)
+	require.Len(t, digests, 1)
 
 	floor, err := d.IdeasEmailFloor(acctID)
 	require.NoError(t, err)
-	assert.Equal(t, float64(base-10), floor, "nothing was rendered, so the floor must not move at all")
+	assert.Equal(t, float64(base+10), floor, "the rendered thread's floor must advance, or the pass stalls forever")
+
+	// The operator must be able to see why the prompt outgrew their cap.
+	assert.Contains(t, logged.String(), tag, "the overshoot log must name the thread")
+	assert.Contains(t, logged.String(), "ideas.max_prompt_chars", "the overshoot log must name the cap")
 }
 
 // TestRunEmailDigests_DisabledAccount_Skipped covers the GmailEnabled gate:

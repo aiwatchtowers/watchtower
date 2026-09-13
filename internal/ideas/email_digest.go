@@ -162,6 +162,13 @@ func emailThreadTag(accountID int64, threadID string) string {
 // is spent; a thread that doesn't fit is left out of BOTH the block and the
 // tag set, so a candidate can never validate against material the model was
 // never shown.
+//
+// The OLDEST thread is always rendered, even when it alone exceeds maxChars.
+// A pass that rendered nothing could advance no floor (IDEA-01) and would
+// therefore re-read the same un-renderable thread forever, mining nothing: a
+// stall loses the window as surely as a dishonest floor would. A bounded
+// single-thread overshoot is the lesser evil, and the caller logs it — a
+// returned block longer than maxChars is exactly that signal.
 func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (string, map[string]bool) {
 	var b strings.Builder
 	tags := make(map[string]bool, len(threads))
@@ -180,8 +187,8 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (str
 		}
 		line := fmt.Sprintf("[%d] %s (%s): %s — %s\n", i+1, subject, tag,
 			strings.Join(th.participants, ", "), strings.Join(excerpts, " / "))
-		if len(line) > budget {
-			break
+		if len(line) > budget && len(tags) > 0 {
+			break // the oldest thread renders regardless; see the doc comment
 		}
 		budget -= len(line)
 		tags[tag] = true
@@ -332,9 +339,10 @@ func (p *Pipeline) initEmailFloor(acct db.GoogleAccount) error {
 
 // runEmailDigestAccount runs the email pre-digest pass for one account. A
 // floor of 0 (never initialized) initializes and skips extraction. Zero new
-// messages is a clean no-op: no AI call, no row, floor untouched — and so is
-// a prompt budget that fits no thread at all, since a floor may only advance
-// over threads the model actually saw (IDEA-01).
+// messages is a clean no-op: no AI call, no row, floor untouched. A floor may
+// only advance over threads the model actually saw (IDEA-01), which is why a
+// thread too big for the whole prompt budget is rendered anyway rather than
+// leaving the pass with nothing to claim and no way forward.
 func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount, bound time.Time) error {
 	floor, err := p.db.IdeasEmailFloor(acct.ID)
 	if err != nil {
@@ -356,16 +364,19 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		return nil
 	}
 
-	block, tags := renderEmailBlock(acct.ID, groupThreads(msgs), p.maxPromptChars())
+	threads := groupThreads(msgs)
+	budget := p.maxPromptChars()
+	block, tags := renderEmailBlock(acct.ID, threads, budget)
+	if len(block) > budget {
+		p.logf("ideas: email account %d: thread %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			acct.ID, emailThreadTag(acct.ID, threads[0].threadID), len(block), budget)
+	}
 	minTS, maxTS, rendered := renderedEmailWindow(acct.ID, msgs, tags)
 	if !rendered {
-		// The oldest thread alone outgrows the whole prompt budget, so this
-		// pass has nothing to show the model and nothing it may claim. Leave
-		// the floor where it is and say why: the window is retried next run,
-		// and the operator can see that ideas.max_prompt_chars is too small
-		// for it rather than watching the material disappear.
-		p.logf("ideas: email account %d: prompt budget fits no thread, nothing mined (floor unchanged)", acct.ID)
-		return nil
+		// Unreachable: renderEmailBlock always renders its oldest thread, so a
+		// non-empty msgs always yields a window. Fail loudly rather than claim
+		// a floor from a zero value if that contract is ever broken.
+		return fmt.Errorf("no thread rendered from %d gmail messages", len(msgs))
 	}
 
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", block, tags)

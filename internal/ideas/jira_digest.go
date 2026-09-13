@@ -37,15 +37,15 @@ const maxCommentsPerIssue = 20
 // validateRefs. Issues are appended whole until maxChars is spent; an issue
 // that doesn't fit is left out of BOTH the block and the tag set, so a
 // candidate can never validate against material the model was never shown.
+//
+// The OLDEST issue (issues[0], which is also the first project's first) is
+// always rendered, even when it alone exceeds maxChars — the renderEmailBlock
+// rule: a pass that rendered nothing could advance no floor (IDEA-01) and
+// would re-read the same un-renderable issue forever, mining nothing. A
+// bounded single-issue overshoot is the lesser evil, and the caller logs it —
+// a returned block longer than maxChars is exactly that signal.
 func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int) (string, map[string]bool) {
-	var order []string
-	byProject := make(map[string][]db.JiraIssue)
-	for _, is := range issues {
-		if _, ok := byProject[is.ProjectKey]; !ok {
-			order = append(order, is.ProjectKey)
-		}
-		byProject[is.ProjectKey] = append(byProject[is.ProjectKey], is)
-	}
+	order, byProject := groupIssuesByProject(issues)
 
 	var b strings.Builder
 	tags := make(map[string]bool, len(issues))
@@ -53,7 +53,7 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 	n := 0
 	for _, project := range order {
 		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
-		if len(header) > budget {
+		if len(header) > budget && len(tags) > 0 {
 			break
 		}
 
@@ -61,21 +61,20 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 		var unitKeys []string
 		for _, is := range byProject[project] {
 			n++
-			desc := capBytes(oneLine(is.DescriptionText), jiraExcerptBytes)
-			var issueBlock strings.Builder
-			fmt.Fprintf(&issueBlock, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status, desc)
-			for _, c := range newestComments(commentsByIssue[is.Key]) {
-				fmt.Fprintf(&issueBlock, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
-			}
-			if len(header)+unit.Len()+issueBlock.Len() > budget {
-				n--
+			issueBlock := renderJiraIssue(n, is, commentsByIssue[is.Key])
+			rendered := len(tags) > 0 || len(unitKeys) > 0
+			if len(header)+unit.Len()+len(issueBlock) > budget && rendered {
+				n-- // the very first issue renders regardless; see the doc comment
 				break
 			}
-			unit.WriteString(issueBlock.String())
+			unit.WriteString(issueBlock)
 			unitKeys = append(unitKeys, is.Key)
 		}
 		if unit.Len() == 0 {
-			break // not even this project's first issue fits — stop entirely
+			// A later project whose first issue does not fit — the first
+			// project always renders at least one, so this can only be a
+			// project with budget already spent. Stop entirely.
+			break
 		}
 
 		b.WriteString(header)
@@ -86,6 +85,33 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 		}
 	}
 	return b.String(), tags
+}
+
+// groupIssuesByProject buckets issues by project key, returning the projects
+// in first-seen order (which, since issues arrive oldest-first, is order of
+// oldest issue) alongside the buckets.
+func groupIssuesByProject(issues []db.JiraIssue) ([]string, map[string][]db.JiraIssue) {
+	var order []string
+	byProject := make(map[string][]db.JiraIssue)
+	for _, is := range issues {
+		if _, ok := byProject[is.ProjectKey]; !ok {
+			order = append(order, is.ProjectKey)
+		}
+		byProject[is.ProjectKey] = append(byProject[is.ProjectKey], is)
+	}
+	return order, byProject
+}
+
+// renderJiraIssue renders one issue as the numbered line plus one indented
+// line per surviving comment — renderJiraBlock's indivisible unit.
+func renderJiraIssue(n int, is db.JiraIssue, comments []db.JiraComment) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status,
+		capBytes(oneLine(is.DescriptionText), jiraExcerptBytes))
+	for _, c := range newestComments(comments) {
+		fmt.Fprintf(&b, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
+	}
+	return b.String()
 }
 
 // renderedJiraFloor returns the furthest updated_at one Jira pass may claim —
@@ -203,9 +229,10 @@ func (p *Pipeline) gatherJiraComments(accountID int64, issues []db.JiraIssue, fl
 // runJiraDigestAccount runs the jira pre-digest pass for one account. An
 // empty floor (never initialized) initializes to now and skips extraction —
 // no backfill, the runEmailDigestAccount precedent. Zero changed issues is a
-// clean no-op: no AI call, no row, floor untouched — and so is a prompt
-// budget that fits no issue at all, since a floor may only advance over
-// issues the model actually saw (IDEA-01).
+// clean no-op: no AI call, no row, floor untouched. A floor may only advance
+// over issues the model actually saw (IDEA-01), which is why an issue too big
+// for the whole prompt budget is rendered anyway rather than leaving the pass
+// with nothing to claim and no way forward.
 func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount, bound time.Time) error {
 	floor, err := p.db.IdeasJiraFloor(acct.ID)
 	if err != nil {
@@ -232,16 +259,18 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return err
 	}
 
-	block, tags := renderJiraBlock(issues, commentsByIssue, p.maxPromptChars())
+	budget := p.maxPromptChars()
+	block, tags := renderJiraBlock(issues, commentsByIssue, budget)
+	if len(block) > budget {
+		p.logf("ideas: jira account %d: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			acct.ID, issues[0].Key, len(block), budget)
+	}
 	renderedTo := renderedJiraFloor(issues, tags)
 	if renderedTo == "" {
-		// The oldest issue alone outgrows the whole prompt budget, so this
-		// pass has nothing to show the model and nothing it may claim. Leave
-		// the floor where it is and say why: the window is retried next run,
-		// and the operator can see that ideas.max_prompt_chars is too small
-		// for it rather than watching the material disappear.
-		p.logf("ideas: jira account %d: prompt budget fits no issue, nothing mined (floor unchanged)", acct.ID)
-		return nil
+		// Unreachable: renderJiraBlock always renders its oldest issue, so a
+		// non-empty issues always yields a floor. Fail loudly rather than
+		// claim an empty floor if that contract is ever broken.
+		return fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", block, tags)
