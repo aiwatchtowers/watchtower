@@ -27,6 +27,15 @@ const (
 	statusFailed = "failed"
 )
 
+// staleBuildingAfter is how long a recap may sit in 'building' before a later
+// run treats the process that was building it as gone. Generous enough that a
+// strong-tier compose over the widest window finishes well inside it.
+const staleBuildingAfter = 30 * time.Minute
+
+// staleBuildingError is what a reaped recap records, in the same place a real
+// compose failure would: it is the operator's explanation for the Retry button.
+const staleBuildingError = "the run building this recap did not finish (the process was interrupted)"
+
 // TopUp is the coverage top-up seam: the two digest pipelines that feed a recap
 // window, refreshed just before it is read. The CLI wires the real pipelines;
 // tests inject fakes.
@@ -87,6 +96,7 @@ type RunResult struct {
 // as status='failed' and returned with a nil error, so a failed recap is
 // something the operator can look at and retry rather than a lost run.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) {
+	p.reapStaleRecaps()
 	w, err := p.resolveRunWindow(opts)
 	if err != nil {
 		return RunResult{}, err
@@ -155,6 +165,31 @@ func (p *Pipeline) Acknowledge(recapID int64) error {
 		return fmt.Errorf("catch-up recap %d is %s, not ready", recapID, r.Status)
 	}
 	return p.db.AcknowledgeCatchupWindow(recapID, r.PeriodFrom, r.PeriodTo)
+}
+
+// reapStaleRecaps fails every recap abandoned in 'building' by a process that
+// died before it could finish or fail it — a killed daemon, a crashed CLI, a
+// machine asleep mid-compose. Without it the Desktop spins on "Building the
+// recap…" forever and offers no Retry, since Retry lives on the failed branch.
+//
+// Called at the very top of Run, BEFORE this run inserts its own row, so a run
+// can never reap itself.
+//
+// A genuinely slow run can outlive the threshold and be reaped by a second run
+// started meanwhile; its own later finish then flips the row back to 'ready'.
+// That is not a lost update — the operator gets the real recap.
+//
+// Best-effort: failing to clean up old rows must never cost the recap this run
+// is about to build.
+func (p *Pipeline) reapStaleRecaps() {
+	n, err := p.db.FailStaleCatchupRecaps(p.now().Add(-staleBuildingAfter), staleBuildingError)
+	if err != nil {
+		p.logf("catchup: reaping abandoned recaps failed, building this one anyway: %v", err)
+		return
+	}
+	if n > 0 {
+		p.logf("catchup: marked %d abandoned recap(s) failed after %s in 'building'", n, staleBuildingAfter)
+	}
 }
 
 // resolveRunWindow picks the window this run covers. A regen reuses its source

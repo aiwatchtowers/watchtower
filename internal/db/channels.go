@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -34,6 +35,45 @@ func (db *DB) UpsertChannel(ch Channel) error {
 	)
 	if err != nil {
 		return fmt.Errorf("upserting channel %s: %w", ch.ID, err)
+	}
+	return nil
+}
+
+// SetChannelDigestConsideredTS records that everything in the channel up to
+// tsUnix has been rendered into a channel-digest AI call that returned
+// successfully, whether or not the model chose to write a digest for it. The
+// write is monotone — a lower stamp never moves the mark backwards, so batches
+// running concurrently cannot undo each other. UpsertChannel lists its updated
+// columns explicitly, so a later Slack sync never clears this.
+//
+// Truncated to whole seconds to match messages.ts_unix, which is a generated
+// column holding only the whole-second part of the Slack ts.
+//
+// A channel with no `channels` row would silently absorb the write and stall
+// forever, so a zero-row update is checked: an already-higher mark is the
+// ordinary case and returns nil, a missing row is reported as an error.
+func (db *DB) SetChannelDigestConsideredTS(channelID string, tsUnix float64) error {
+	res, err := db.Exec(`
+		UPDATE channels SET digest_considered_ts = ?
+		WHERE id = ? AND (digest_considered_ts IS NULL OR digest_considered_ts < ?)`,
+		int64(tsUnix), channelID, int64(tsUnix))
+	if err != nil {
+		return fmt.Errorf("stamping digest considered ts for %s: %w", channelID, err)
+	}
+	// A driver that cannot report the count falls through to the check below,
+	// which is the conservative direction.
+	updated, raErr := res.RowsAffected()
+	if raErr == nil && updated > 0 {
+		return nil
+	}
+
+	var one int
+	err = db.QueryRow(`SELECT 1 FROM channels WHERE id = ?`, channelID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("stamping digest considered ts: no channels row for %s", channelID)
+	}
+	if err != nil {
+		return fmt.Errorf("checking channels row for %s: %w", channelID, err)
 	}
 	return nil
 }

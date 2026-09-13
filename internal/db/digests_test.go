@@ -304,6 +304,172 @@ func TestChannelsWithNewMessages(t *testing.T) {
 	assert.Nil(t, channels)
 }
 
+// farFuture is an upper bound past every fixture timestamp, for the cases that
+// are not about the bound itself.
+const farFuture = 9_999_999_999.0
+
+func TestChannelsWithUndigestedMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// C1 is digested up to 2000000, C2 up to 3500000, C3 never digested.
+	for _, m := range []struct{ ch, ts string }{
+		{"C1", "1000000.000001"}, {"C1", "2500000.000001"},
+		{"C2", "3000000.000001"},
+		{"C3", "1200000.000001"},
+	} {
+		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
+		require.NoError(t, err)
+	}
+	for _, d := range []struct {
+		ch string
+		to float64
+	}{{"C1", 2000000}, {"C2", 3500000}} {
+		_, err = db.UpsertDigest(Digest{
+			ChannelID: d.ch, Type: "channel",
+			PeriodFrom: d.to - 1000, PeriodTo: d.to,
+			Summary: "s", MessageCount: 1, Model: "haiku",
+		})
+		require.NoError(t, err)
+	}
+
+	// C1 has a message past its own watermark; C2 does not; C3 has never been
+	// digested and its message is newer than the never-digested floor.
+	candidates, err := db.ChannelsWithUndigestedMessages(1100000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, 2500000.0, candidates[0].NewestMessageTS)
+	assert.Equal(t, 2000000.0, candidates[0].LastDigestTo)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+	assert.Equal(t, 0.0, candidates[1].LastDigestTo, "a never-digested channel reports no watermark")
+
+	// Raising the never-digested floor past C3's message drops only C3 —
+	// C1 is still selected against its own watermark, not the floor.
+	candidates, err = db.ChannelsWithUndigestedMessages(3000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+
+	// A daily rollup never counts as a channel's watermark.
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C3", Type: "daily",
+		PeriodFrom: 1000000, PeriodTo: 9000000,
+		Summary: "rollup", MessageCount: 1, Model: "haiku",
+	})
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1100000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+}
+
+// TestChannelsWithUndigestedMessages_UpperBoundMatchesTheLoader pins that
+// discovery is bounded above by the same `to` the caller loads with. A message
+// past that bound — a Slack-assigned ts ahead of the local clock, through skew
+// or a sync race — must not make a channel a candidate the load cannot serve:
+// the window would load empty, or reload the same second and write a zero-width
+// digest row, every cycle.
+func TestChannelsWithUndigestedMessages_UpperBoundMatchesTheLoader(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "skewed", Type: "public"}))
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'loadable')")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '5000000.000001', 'U1', 'past the bound')")
+	require.NoError(t, err)
+
+	// The bound hides the later message entirely — including from MAX().
+	candidates, err := db.ChannelsWithUndigestedMessages(1000000, 3000000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 2000000.0, candidates[0].NewestMessageTS,
+		"the newest message reported must be one the same bound can load")
+
+	// Considered through everything the bound can serve → not a candidate, even
+	// though a later message exists above it.
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000000))
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, 3000000)
+	require.NoError(t, err)
+	assert.Empty(t, candidates, "a message the load cannot serve must not keep the channel a candidate")
+
+	// Raise the bound past it and the channel comes back.
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 5000000.0, candidates[0].NewestMessageTS)
+}
+
+// TestChannelsWithUndigestedMessages_ConsideredMark pins that the
+// considered-through mark takes a channel out of the candidate set exactly like
+// a digest would. A channel the model declines writes no digests row, so
+// without this it would be re-offered forever.
+func TestChannelsWithUndigestedMessages_ConsideredMark(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "declined", Type: "public"}))
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'msg')")
+	require.NoError(t, err)
+
+	candidates, err := db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 0.0, candidates[0].ConsideredTS, "never considered")
+
+	// Considered through the message → no longer a candidate, with no digest row.
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000000))
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	assert.Empty(t, candidates)
+
+	// New traffic past the mark brings it back, carrying the mark.
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '3000000.000001', 'U1', 'newer')")
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 2000000.0, candidates[0].ConsideredTS)
+	assert.Equal(t, 0.0, candidates[0].LastDigestTo, "declined channels never get a digest row")
+}
+
+func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	consideredTS := func() any {
+		t.Helper()
+		var ts any
+		require.NoError(t, db.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = 'C1'`).Scan(&ts))
+		return ts
+	}
+	assert.Nil(t, consideredTS(), "never considered stays NULL")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000))
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 1000))
+	assert.Equal(t, int64(2000), consideredTS(), "a lower stamp must not move the mark backwards")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 3000))
+	assert.Equal(t, int64(3000), consideredTS())
+
+	// A later Slack sync must not clear the mark.
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general-renamed", Type: "public", Topic: "t"}))
+	assert.Equal(t, int64(3000), consideredTS(), "UpsertChannel must not clear the digest considered mark")
+
+	// A channel with no row would swallow the write and stall forever, so the
+	// no-op must be reported rather than pass for a successful stamp.
+	err = db.SetChannelDigestConsideredTS("C_MISSING", 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "C_MISSING")
+}
+
 func TestDigestTypeConstraint(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

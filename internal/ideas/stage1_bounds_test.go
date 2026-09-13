@@ -74,13 +74,13 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 			messages: []db.GmailExtractMessage{{BodyText: strings.Repeat("y ", 400)}}},
 	}
 
-	full, fullTags := renderEmailBlock(7, threads, 100000)
+	full, fullTags := renderEmailBlock(7, threads, 100000, 0)
 	require.Contains(t, full, "thr-1")
 	require.Contains(t, full, "thr-2")
 	require.Len(t, fullTags, 2)
 
 	firstLineLen := strings.Index(full, "\n") + 1
-	bounded, tags := renderEmailBlock(7, threads, firstLineLen)
+	bounded, tags := renderEmailBlock(7, threads, firstLineLen, 0)
 	assert.Contains(t, bounded, "thr-1")
 	assert.NotContains(t, bounded, "thr-2")
 	assert.LessOrEqual(t, len(bounded), firstLineLen)
@@ -90,6 +90,15 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 
 // TestRenderJiraBlock_CapsCommentsPerIssue keeps one hot ticket from
 // dominating the prompt: only the newest maxCommentsPerIssue comments render.
+//
+// This direction is deliberately NOT the Gmail thread cap's, and the asymmetry
+// is the reason (final-review A4, 2026-09-13): Gmail's floor is
+// message-granular, so a thread's excluded tail holds the floor below itself
+// and is mined next run — an oldest-first cap there is a real guarantee. Jira's
+// floor is issue-granular, so nothing can hold it below a rendered issue's own
+// updated_at and EITHER direction loses the comments past the cap. Given that,
+// the newest are the half worth keeping for a decisions miner. A flip to
+// oldest-first was tried and reverted; see maxCommentsPerIssue.
 func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 	issues := []db.JiraIssue{{Key: "WT-1", ProjectKey: "WT", Summary: "s", Status: "Open"}}
 	var comments []db.JiraComment
@@ -97,7 +106,7 @@ func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 		comments = append(comments, db.JiraComment{IssueKey: "WT-1", Author: "Ann", BodyText: fmt.Sprintf("comment-%02d", i)})
 	}
 
-	block, tags := renderJiraBlock(issues, map[string][]db.JiraComment{"WT-1": comments}, 100000)
+	block, tags := renderJiraBlock(issues, map[string][]db.JiraComment{"WT-1": comments}, 100000, "")
 	assert.Equal(t, maxCommentsPerIssue, strings.Count(block, "  - Ann: "))
 	assert.NotContains(t, block, "comment-00", "the oldest comments are the ones dropped")
 	assert.Contains(t, block, fmt.Sprintf("comment-%02d", maxCommentsPerIssue+9), "the newest comment survives")
@@ -112,11 +121,11 @@ func TestRenderJiraBlock_BudgetDropsIssueFromBlockAndTags(t *testing.T) {
 		{Key: "WT-2", ProjectKey: "WT", Summary: strings.Repeat("z", 400), Status: "Open"},
 	}
 
-	full, fullTags := renderJiraBlock(issues, nil, 100000)
+	full, fullTags := renderJiraBlock(issues, nil, 100000, "")
 	require.Contains(t, full, "WT-2")
 	require.Len(t, fullTags, 2)
 
-	bounded, tags := renderJiraBlock(issues, nil, len(full)-100)
+	bounded, tags := renderJiraBlock(issues, nil, len(full)-100, "")
 	assert.Contains(t, bounded, "WT-1")
 	assert.NotContains(t, bounded, "WT-2")
 	assert.Equal(t, map[string]bool{"WT-1": true}, tags)
@@ -153,4 +162,53 @@ func TestBuildPreferencesBlock_PositiveRatingOutranksRejectedStatus(t *testing.T
 	block := buildPreferencesBlock(d)
 	require.Contains(t, block, "LIKED/APPROVED:")
 	assert.NotContains(t, block, "DISLIKED/REJECTED:")
+}
+
+// TestBuildPreferencesBlock_DecisionsNeverBecomeExamples pins the fix for the
+// block's worst failure mode: since the 2026-08-12 split a mined decision is
+// born 'active' with no owner act at all, so it used to land in LIKED/APPROVED
+// and — outnumbering rated ideas on a real workspace — teach the consolidator
+// that the owner approves of everything. A decision belongs in neither bucket
+// whatever its status or rating; only ideas and notes are verdicts.
+func TestBuildPreferencesBlock_DecisionsNeverBecomeExamples(t *testing.T) {
+	d := newTestDB(t)
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Approved idea", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Machine-recorded decision", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Rejected idea", Essence: "e", Status: "rejected",
+	})
+
+	block := buildPreferencesBlock(d)
+	require.Contains(t, block, "LIKED/APPROVED:")
+	require.Contains(t, block, "DISLIKED/REJECTED:")
+	assert.Contains(t, block, "Approved idea", "an owner-approved idea is an example")
+	assert.Contains(t, block, "Rejected idea", "an owner-rejected idea is an example")
+	assert.NotContains(t, block, "Machine-recorded decision",
+		"a decision is a journal entry, never an owner verdict — it belongs in neither bucket")
+}
+
+// TestBuildPreferencesBlock_RatedDecisionStillExcluded guards the SQL shape
+// itself: the kind filter is ANDed outside the rating/status disjunction, so a
+// decision the owner rated in the Digests ledger cannot slip back in through
+// the owner_rating arm. Written as `A OR B AND C` it would.
+func TestBuildPreferencesBlock_RatedDecisionStillExcluded(t *testing.T) {
+	d := newTestDB(t)
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Approved idea", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Liked decision", Essence: "e", Status: "active", OwnerRating: 1,
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Disliked decision", Essence: "e", Status: "active", OwnerRating: -1,
+	})
+
+	block := buildPreferencesBlock(d)
+	assert.NotContains(t, block, "Liked decision")
+	assert.NotContains(t, block, "Disliked decision")
+	assert.Contains(t, block, "Approved idea")
 }

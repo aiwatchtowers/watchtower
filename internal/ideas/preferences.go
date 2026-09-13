@@ -23,6 +23,13 @@ func buildPreferencesBlock(database *db.DB) string {
 	// idea. Checking status first would file a thumbs-down on an active idea
 	// under LIKED — teaching the consolidator the opposite of what the owner
 	// said.
+	//
+	// `active` counts as LIKED because ListIdeaVerdictExamples excludes
+	// decisions: the only ways an idea or note reaches `active` are the
+	// Desktop Approve button (proposed -> active) and CreateManualIdea (the
+	// owner wrote it themselves), both explicit endorsements. It was the
+	// machine-authored decisions, born `active` unseen, that made this arm
+	// read as "merely not rejected".
 	var liked, disliked []db.Idea
 	for _, idea := range examples {
 		switch {

@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS channels (
     dm_user_id   TEXT,
     num_members  INTEGER NOT NULL DEFAULT 0,
     last_read    TEXT NOT NULL DEFAULT '',  -- Slack conversations.mark cursor (message ts)
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    digest_considered_ts INTEGER            -- newest message ts_unix rendered into a channel-digest AI call that succeeded (NULL = never); see 00066
 );
 CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name);
 CREATE INDEX IF NOT EXISTS idx_channels_type ON channels(type);

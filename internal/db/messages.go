@@ -12,6 +12,13 @@ const (
 	DefaultChannelActivityLimit = 10
 	DefaultUserActivityLimit    = 5
 	DefaultSearchLimit          = 50
+
+	// BoundarySecondRowLimit bounds the one digest load allowed to overshoot
+	// DefaultTimeRangeLimit: a window whose first DefaultTimeRangeLimit rows all
+	// share a single ts_unix second, which can only make forward progress by
+	// taking that whole second at once. Slack cannot deliver this many messages
+	// in one second in one channel, so it is a ceiling, not a working limit.
+	BoundarySecondRowLimit = DefaultTimeRangeLimit * 20
 )
 
 // MessageOpts provides options for querying messages.
@@ -172,6 +179,51 @@ func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Mess
 	defer rows.Close()
 
 	return scanMessages(rows)
+}
+
+// GetOldestMessagesByTimeRange returns up to limit messages in a channel within
+// a Unix timestamp range, OLDEST first.
+//
+// The direction is load-bearing for the channel-digest window, its only
+// caller. That window starts at the channel's own watermark and runs to now, so
+// when a backlog exceeds the cap something has to be left out — and only a
+// remainder at the NEWER end can be reached on a later cycle, once the
+// watermark has advanced past what was rendered. Newest-first truncation
+// strands the older remainder permanently, because the watermark never moves
+// back over it. GetMessagesByTimeRange keeps its newest-first contract for the
+// chat context builder, which wants the most recent messages and advances no
+// watermark.
+//
+// The caller passes DefaultTimeRangeLimit normally and BoundarySecondRowLimit
+// for the one case that must overshoot it — see trimPartialBoundarySecond.
+func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64, limit int) ([]Message, error) {
+	rows, err := db.Query(`
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		FROM messages
+		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
+		ORDER BY ts_unix ASC
+		LIMIT ?`,
+		channelID, from, to, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying oldest messages by time range: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
+// CountMessagesInChannelRange returns how many messages one channel holds in a
+// Unix timestamp range, both bounds inclusive. Unlike the loaders it is not
+// capped, so a caller can report how much a row cap left behind.
+func (db *DB) CountMessagesInChannelRange(channelID string, from, to float64) (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?`,
+		channelID, from, to).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting messages in %s: %w", channelID, err)
+	}
+	return count, nil
 }
 
 // CountMessagesByTimeRange returns the number of messages in a time range.

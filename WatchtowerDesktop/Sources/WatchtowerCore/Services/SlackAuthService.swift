@@ -75,6 +75,7 @@ package final class SlackAuthService {
         do {
             try process.run()
         } catch {
+            CLILog.failure(args: arguments, exitCode: -1, stderr: error.localizedDescription)
             return (-1, "", error.localizedDescription)
         }
 
@@ -91,6 +92,16 @@ package final class SlackAuthService {
             data: stderrData, encoding: .utf8
         )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
+        // The third ad-hoc Process wrapper in the app (after ProcessCLIRunner and
+        // CatchUpViewModel's), so it logs the child's stderr itself: `disconnect`
+        // turns it into one line of UI text, and a failed sign-out otherwise left
+        // nothing behind to debug. Logged here rather than at the caller because
+        // this helper is private and knows the arguments.
+        if process.terminationStatus != 0 {
+            CLILog.failure(args: arguments, exitCode: process.terminationStatus, stderr: stderr)
+        } else {
+            CLILog.warning(args: arguments, stderr: stderr)
+        }
         return (process.terminationStatus, stdout, stderr)
     }
 }

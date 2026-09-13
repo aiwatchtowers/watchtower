@@ -377,6 +377,84 @@ func (db *DB) ChannelsWithNewMessages(sinceUnix float64) ([]string, error) {
 	return channels, rows.Err()
 }
 
+// ChannelDigestCandidate is one channel holding messages that its own channel
+// digests have not covered yet.
+type ChannelDigestCandidate struct {
+	ChannelID string
+	// NewestMessageTS is the newest message ts_unix in the channel at or before
+	// the `to` bound — the newest message a load over the same bound can serve.
+	NewestMessageTS float64
+	// LastDigestTo is the channel's own latest channel-digest period_to,
+	// or 0 when the channel has never been digested.
+	LastDigestTo float64
+	// ConsideredTS is channels.digest_considered_ts — the newest message the
+	// channel has had rendered into a successful AI call, or 0 when never.
+	// A channel the model keeps declining advances this and not LastDigestTo.
+	ConsideredTS float64
+}
+
+// ChannelsWithUndigestedMessages returns one candidate per channel whose newest
+// message is later than that channel's OWN high-water mark — the later of
+// MAX(digests.period_to) for type 'channel' ("digested through") and
+// channels.digest_considered_ts ("considered through"). A channel with neither
+// is compared against neverDigestedSince instead — the first-run
+// initial-history lookback.
+//
+// This is the per-channel replacement for selecting channels against one global
+// "since" scalar: a channel whose digest failed, was capped out by the per-run
+// batch budget, or was skipped by the cooldown keeps its own older high-water
+// mark, so its messages are offered again next cycle instead of falling below a
+// window start that some other channel's success moved.
+//
+// The HAVING clause mirrors digest.channelDigestSince minus its fast-forward
+// floor; the floor only ever raises the window start, so this pre-filter can
+// never drop a channel the caller would keep.
+//
+// `to` MUST be the same upper bound the caller then loads with. Without it this
+// query would offer a channel whose only newer message the load cannot serve —
+// a message whose Slack-assigned ts_unix is ahead of the local clock, through
+// skew or a sync race — and the window would either load empty or re-render the
+// same second every cycle, writing a zero-width digest row each time. A
+// discovery query and a loader that disagree about which messages exist is the
+// shape this whole change exists to remove, so they take the same bound.
+func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince, to float64) ([]ChannelDigestCandidate, error) {
+	rows, err := db.Query(`
+		SELECT m.channel_id, MAX(m.ts_unix), COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)
+		FROM messages m
+		LEFT JOIN (
+			SELECT channel_id, MAX(period_to) AS period_to
+			FROM digests
+			WHERE type = 'channel'
+			GROUP BY channel_id
+		) d ON d.channel_id = m.channel_id
+		LEFT JOIN channels c ON c.id = m.channel_id
+		WHERE m.ts_unix <= ?
+		-- Group by the channel alone: both joins match at most one row per
+		-- channel, so the bare d/c columns are functionally dependent on it.
+		-- Adding them to the GROUP BY costs two temp B-trees (one for the group,
+		-- one for the order) on a query that runs every digest cycle.
+		GROUP BY m.channel_id
+		HAVING MAX(m.ts_unix) > CASE
+			WHEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)) > 0
+			THEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0))
+			ELSE ? END
+		ORDER BY m.channel_id`, to, neverDigestedSince)
+	if err != nil {
+		return nil, fmt.Errorf("querying channels with undigested messages: %w", err)
+	}
+	defer rows.Close()
+
+	var candidates []ChannelDigestCandidate
+	for rows.Next() {
+		var c ChannelDigestCandidate
+		if err := rows.Scan(&c.ChannelID, &c.NewestMessageTS, &c.LastDigestTo, &c.ConsideredTS); err != nil {
+			return nil, fmt.Errorf("scanning channel digest candidate: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates, rows.Err()
+}
+
 // GetDigestDecisionsForChannel returns individual decisions from digests
 // that overlap with the given channel and time window.
 // Decisions are parsed from the JSON decisions field of each digest.

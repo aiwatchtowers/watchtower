@@ -2,14 +2,11 @@ package ideas
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
-	"watchtower/internal/prompts"
 )
 
 // jiraIssuesPerAccountLimit bounds how many changed issues one pre-digest
@@ -27,9 +24,25 @@ const jiraExcerptBytes = 500
 const jiraFloorInitBackoff = 5 * time.Second
 
 // maxCommentsPerIssue caps a hot issue at its newest N comments so one
-// thousand-comment ticket cannot dominate the prompt (the
-// maxMessagesPerThread precedent). ListJiraCommentsSince returns each issue's
-// comments oldest-first, so the newest are the tail.
+// thousand-comment ticket cannot dominate the prompt. ListJiraCommentsSince
+// returns each issue's comments oldest-first, so the newest are the tail.
+//
+// Deliberately NOT the maxMessagesPerThread direction, despite looking like the
+// same situation: that cap keeps its OLDEST messages because Gmail's floor is
+// MESSAGE-granular — renderedEmailWindow walks every loaded message and stops
+// at the first one the cap dropped, so a thread's excluded tail holds the floor
+// below itself and is mined next run. Jira's floor is ISSUE-granular:
+// renderedJiraFloor matches whole issues against the tag set, so nothing can
+// hold the floor below a rendered issue's own updated_at. Either direction
+// therefore loses the comments past the cap — ListJiraIssuesUpdatedSince
+// reloads on a strict >, so the issue is not returned again and
+// ListJiraCommentsSince never sees them — and for a decisions miner the newest
+// are the half worth keeping. Making the Jira floor comment-aware is the real
+// fix and needs the digest package's advancesWindow invariant ported across
+// packages (otherwise an issue whose comments alone exceed the cap stalls
+// forever); until then this limitation is stated in IDEA-01 rather than
+// papered over. The issue itself — key, summary, status, description — is
+// always rendered, so what is lost is supplementary context, not a unit.
 const maxCommentsPerIssue = 20
 
 // renderJiraBlock groups issues per project ("=== PROJECT <KEY> ==="
@@ -40,7 +53,95 @@ const maxCommentsPerIssue = 20
 // validateRefs. Issues are appended whole until maxChars is spent; an issue
 // that doesn't fit is left out of BOTH the block and the tag set, so a
 // candidate can never validate against material the model was never shown.
-func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int) (string, map[string]bool) {
+//
+// The OLDEST issue (issues[0], which is also the first project's first) is
+// always rendered, even when it alone exceeds maxChars — the renderEmailBlock
+// rule: a pass that rendered nothing could advance no floor (IDEA-01) and
+// would re-read the same un-renderable issue forever, mining nothing. A
+// bounded single-issue overshoot is the lesser evil, and the caller logs it —
+// a returned block longer than maxChars is exactly that signal.
+//
+// drainThrough ("" = off) is the second escape, used only on a re-render:
+// every issue with that updated_at is rendered regardless of the budget, up to
+// maxTieDrainUnits of them, so the floor can pass that whole timestamp. Such a
+// group can straddle projects, so a drain pass keeps scanning past a project
+// that fits nothing instead of stopping at it. See renderJiraWindow.
+func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int, drainThrough string) (string, map[string]bool) {
+	order, byProject := groupIssuesByProject(issues)
+
+	var b strings.Builder
+	tags := make(map[string]bool, len(issues))
+	st := &jiraRenderState{budget: maxChars, drainThrough: drainThrough}
+	for _, project := range order {
+		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
+		unit, keys := st.renderProject(header, byProject[project], commentsByIssue)
+		if len(keys) == 0 {
+			if drainThrough == "" {
+				break // budget spent: no later project can fit either
+			}
+			continue // a later project may still hold a tie-mate
+		}
+		b.WriteString(header)
+		b.WriteString(unit)
+		st.budget -= len(header) + len(unit)
+		st.written += len(header) + len(unit)
+		for _, key := range keys {
+			tags[key] = true
+			st.rendered = true
+		}
+	}
+	return b.String(), tags
+}
+
+// jiraRenderState carries renderJiraBlock's budget accounting across project
+// groups: the remaining budget, the running issue number, whether anything has
+// been rendered at all (the always-one escape), and how much of the boundary
+// group has been drained (the tie escape).
+type jiraRenderState struct {
+	budget   int
+	n        int
+	rendered bool
+	drained  int
+	// written is the block size committed by earlier project groups, so the
+	// drain can be bounded in bytes as well as units (tieDrainCharCeiling).
+	written      int
+	drainThrough string
+}
+
+// renderProject renders one project's issues into a unit, admitting an issue
+// when it fits, when nothing has been rendered anywhere yet, or when it ties
+// with drainThrough.
+func (st *jiraRenderState) renderProject(header string, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment) (string, []string) {
+	var unit strings.Builder
+	var keys []string
+	for _, is := range issues {
+		st.n++
+		block := renderJiraIssue(st.n, is, commentsByIssue[is.Key])
+		fits := len(header)+unit.Len()+len(block) <= st.budget
+		first := !st.rendered && len(keys) == 0
+		tie := st.drainThrough != "" && is.UpdatedAt == st.drainThrough &&
+			st.drained < maxTieDrainUnits &&
+			st.written+len(header)+unit.Len()+len(block) <= tieDrainCharCeiling
+		if !fits && !first && !tie {
+			st.n--
+			if st.drainThrough == "" {
+				break // stop at the first issue that does not fit
+			}
+			continue // a later issue in this project may still be a tie-mate
+		}
+		if !fits {
+			st.drained++
+		}
+		unit.WriteString(block)
+		keys = append(keys, is.Key)
+	}
+	return unit.String(), keys
+}
+
+// groupIssuesByProject buckets issues by project key, returning the projects
+// in first-seen order (which, since issues arrive oldest-first, is order of
+// oldest issue) alongside the buckets.
+func groupIssuesByProject(issues []db.JiraIssue) ([]string, map[string][]db.JiraIssue) {
 	var order []string
 	byProject := make(map[string][]db.JiraIssue)
 	for _, is := range issues {
@@ -49,50 +150,82 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 		}
 		byProject[is.ProjectKey] = append(byProject[is.ProjectKey], is)
 	}
+	return order, byProject
+}
 
+// renderJiraIssue renders one issue as the numbered line plus one indented
+// line per surviving comment — renderJiraBlock's indivisible unit.
+func renderJiraIssue(n int, is db.JiraIssue, comments []db.JiraComment) string {
 	var b strings.Builder
-	tags := make(map[string]bool, len(issues))
-	budget := maxChars
+	fmt.Fprintf(&b, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status,
+		capBytes(oneLine(is.DescriptionText), jiraExcerptBytes))
+	for _, c := range newestComments(comments) {
+		fmt.Fprintf(&b, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
+	}
+	return b.String()
+}
+
+// renderedJiraFloor returns the furthest updated_at one Jira pass may claim —
+// the value its floor advances to and its stream_digests row ends at.
+// renderedTags is renderJiraBlock's key set, i.e. exactly the issues put in
+// front of the model (and so exactly what a candidate may cite, IDEA-02).
+//
+// issues arrives ordered by updated_at ascending, so the scan stops at the
+// first issue the prompt budget dropped: everything below that point was
+// rendered, everything from it on must stay unclaimed. A plain max over
+// rendered issues would not do — renderJiraBlock groups by project rather than
+// by time, so a dropped issue in a later project can carry an updated_at lower
+// than a rendered one's, and the floor would bury it (IDEA-01).
+//
+// Stopping there is not enough either, because ListJiraIssuesUpdatedSince
+// reloads with a strict >: a rendered issue TYING with the first dropped one
+// (one bulk edit stamping several issues at once) would put the floor exactly
+// on a timestamp that still holds unmined material. The trailing tie is
+// therefore trimmed off the claim — the trimPartialBoundarySecond rule, at the
+// prompt-budget cut this time rather than the loader's LIMIT cut.
+//
+// ok is false when trimming leaves nothing: the cut landed entirely inside one
+// updated_at, so no honest floor exists below it and the caller must drain
+// that whole group instead (boundary).
+func renderedJiraFloor(issues []db.JiraIssue, renderedTags map[string]bool) (floor, boundary string, ok bool) {
 	n := 0
-	for _, project := range order {
-		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
-		if len(header) > budget {
+	for _, is := range issues {
+		if !renderedTags[is.Key] {
 			break
 		}
+		n++
+	}
+	if n == len(issues) {
+		return issues[n-1].UpdatedAt, "", true
+	}
+	boundary = issues[n].UpdatedAt
+	for n > 0 && issues[n-1].UpdatedAt == boundary {
+		n--
+	}
+	if n == 0 {
+		return "", boundary, false
+	}
+	return issues[n-1].UpdatedAt, boundary, true
+}
 
-		var unit strings.Builder
-		var unitKeys []string
-		for _, is := range byProject[project] {
+// countUnrenderedJiraTies counts the issues at boundary that the drain ceiling
+// left out — the material the floor is about to pass over, reported in the
+// fault log so the loss is a number the owner can see rather than an
+// inference.
+func countUnrenderedJiraTies(issues []db.JiraIssue, renderedTags map[string]bool, boundary string) int {
+	n := 0
+	for _, is := range issues {
+		if is.UpdatedAt == boundary && !renderedTags[is.Key] {
 			n++
-			desc := capBytes(oneLine(is.DescriptionText), jiraExcerptBytes)
-			var issueBlock strings.Builder
-			fmt.Fprintf(&issueBlock, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status, desc)
-			for _, c := range newestComments(commentsByIssue[is.Key]) {
-				fmt.Fprintf(&issueBlock, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
-			}
-			if len(header)+unit.Len()+issueBlock.Len() > budget {
-				n--
-				break
-			}
-			unit.WriteString(issueBlock.String())
-			unitKeys = append(unitKeys, is.Key)
-		}
-		if unit.Len() == 0 {
-			break // not even this project's first issue fits — stop entirely
-		}
-
-		b.WriteString(header)
-		b.WriteString(unit.String())
-		budget -= len(header) + unit.Len()
-		for _, key := range unitKeys {
-			tags[key] = true
 		}
 	}
-	return b.String(), tags
+	return n
 }
 
 // newestComments returns at most maxCommentsPerIssue comments, keeping the
-// newest (the tail of the oldest-first slice ListJiraCommentsSince returns).
+// newest (the tail of the oldest-first slice ListJiraCommentsSince returns) —
+// see maxCommentsPerIssue for why this direction, unlike Gmail's, cannot be
+// flipped into a floor guarantee.
 func newestComments(comments []db.JiraComment) []db.JiraComment {
 	if len(comments) <= maxCommentsPerIssue {
 		return comments
@@ -148,22 +281,88 @@ func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 	return firstErr
 }
 
+// renderJiraWindow renders one pass's block and decides the floor it may
+// claim, draining the boundary group when the prompt budget cut inside a
+// single updated_at. Both escapes are logged: they are the only two ways a
+// stage-1 prompt exceeds ideas.max_prompt_chars, and an operator who set the
+// cap too low should be able to see why.
+func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, budget int) (string, map[string]bool, string) {
+	block, tags := renderJiraBlock(issues, commentsByIssue, budget, "")
+	if len(block) > budget {
+		p.logf("ideas: jira account %d: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			accountID, issues[0].Key, len(block), budget)
+	}
+	floor, boundary, ok := renderedJiraFloor(issues, tags)
+	if ok {
+		return block, tags, floor
+	}
+
+	// The cut landed inside one updated_at — one bulk edit stamping several
+	// issues at once. No floor below that timestamp is claimable, so render
+	// the whole group rather than stall; the loader already drains its own
+	// LIMIT cut this way.
+	block, tags = renderJiraBlock(issues, commentsByIssue, budget, boundary)
+	p.logf("ideas: jira account %d: the %d-char ideas.max_prompt_chars cap cut inside updated_at %s — rendered that whole group (%d chars) so the floor can pass it",
+		accountID, budget, boundary, len(block))
+
+	drainedFloor, _, drainedOK := renderedJiraFloor(issues, tags)
+	if drainedOK {
+		return block, tags, drainedFloor
+	}
+	// More than maxTieDrainUnits issues share that timestamp. The floor passes
+	// it anyway — the alternative is a pass that can never move — so this is
+	// the one branch where material is genuinely lost, and it is a fault, not
+	// a statistic: the ceiling is sized so ordinary bulk edits cannot reach it.
+	p.logf("ideas: ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at %s; the floor passes that timestamp, so they will not be mined",
+		accountID, countUnrenderedJiraTies(issues, tags, boundary), boundary,
+		drainCeilings(len(block)))
+	return block, tags, boundary
+}
+
+// initJiraFloor stamps a never-initialized account's ideas floor at now
+// (minus jiraFloorInitBackoff) and mines nothing — no backfill, the
+// initEmailFloor precedent.
+func (p *Pipeline) initJiraFloor(acct db.JiraAccount) error {
+	now := db.FormatJiraTime(time.Now().UTC().Add(-jiraFloorInitBackoff))
+	if err := p.db.SetIdeasJiraFloor(acct.ID, now); err != nil {
+		return fmt.Errorf("initializing ideas jira floor: %w", err)
+	}
+	p.logf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
+	return nil
+}
+
+// gatherJiraComments loads the comments added to issues since floor, grouped
+// by issue key for renderJiraBlock.
+func (p *Pipeline) gatherJiraComments(accountID int64, issues []db.JiraIssue, floor string) (map[string][]db.JiraComment, error) {
+	keys := make([]string, len(issues))
+	for i, is := range issues {
+		keys[i] = is.Key
+	}
+	comments, err := p.db.ListJiraCommentsSince(accountID, keys, floor)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira comments: %w", err)
+	}
+	byIssue := make(map[string][]db.JiraComment, len(keys))
+	for _, c := range comments {
+		byIssue[c.IssueKey] = append(byIssue[c.IssueKey], c)
+	}
+	return byIssue, nil
+}
+
 // runJiraDigestAccount runs the jira pre-digest pass for one account. An
 // empty floor (never initialized) initializes to now and skips extraction —
 // no backfill, the runEmailDigestAccount precedent. Zero changed issues is a
-// clean no-op: no AI call, no row, floor untouched.
+// clean no-op: no AI call, no row, floor untouched. A floor may only advance
+// over issues the model actually saw (IDEA-01), which is why an issue too big
+// for the whole prompt budget is rendered anyway rather than leaving the pass
+// with nothing to claim and no way forward.
 func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount, bound time.Time) error {
 	floor, err := p.db.IdeasJiraFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas jira floor: %w", err)
 	}
 	if floor == "" {
-		now := db.FormatJiraTime(time.Now().UTC().Add(-jiraFloorInitBackoff))
-		if serr := p.db.SetIdeasJiraFloor(acct.ID, now); serr != nil {
-			return fmt.Errorf("initializing ideas jira floor: %w", serr)
-		}
-		p.logf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
-		return nil
+		return p.initJiraFloor(acct)
 	}
 
 	var beforeISO string
@@ -178,65 +377,40 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return nil
 	}
 
-	keys := make([]string, len(issues))
-	maxUpdated := issues[0].UpdatedAt
-	for i, is := range issues {
-		keys[i] = is.Key
-		if is.UpdatedAt > maxUpdated {
-			maxUpdated = is.UpdatedAt
-		}
-	}
-
-	comments, err := p.db.ListJiraCommentsSince(acct.ID, keys, floor)
+	commentsByIssue, err := p.gatherJiraComments(acct.ID, issues, floor)
 	if err != nil {
-		return fmt.Errorf("listing jira comments: %w", err)
-	}
-	commentsByIssue := make(map[string][]db.JiraComment, len(keys))
-	for _, c := range comments {
-		commentsByIssue[c.IssueKey] = append(commentsByIssue[c.IssueKey], c)
+		return err
 	}
 
-	block, tags := renderJiraBlock(issues, commentsByIssue, p.maxPromptChars())
+	budget := p.maxPromptChars()
+	block, tags, renderedTo := p.renderJiraWindow(acct.ID, issues, commentsByIssue, budget)
+	if renderedTo == "" {
+		// Unreachable: the drain leaves every issue at the boundary timestamp
+		// rendered, so a non-empty issues always yields a floor. Fail loudly
+		// rather than claim an empty floor if that contract is ever broken.
+		return fmt.Errorf("no issue rendered from %d jira issues", len(issues))
+	}
 
-	tmpl, _ := p.getPrompt("ideas.digest_jira")
-	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
-
-	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.digest_jira"), system, block, "")
-	p.accumulateUsage(usage)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", block, tags)
 	if err != nil {
-		return fmt.Errorf("generating jira digest: %w", err)
+		return err
 	}
 
-	raw, err := prompts.ExtractJSONObject(reply)
-	if err != nil {
-		return fmt.Errorf("extracting jira digest JSON: %w", err)
-	}
-	var parsed streamTopics
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return fmt.Errorf("parsing jira digest JSON: %w", err)
-	}
-	if parsed.Topics == nil {
-		return fmt.Errorf("jira digest reply has no \"topics\" key")
-	}
-	topics := validateRefs(*parsed.Topics, tags)
-	topicsJSON, err := json.Marshal(topics)
-	if err != nil {
-		return fmt.Errorf("marshaling jira digest topics: %w", err)
-	}
-
-	_, err = p.db.InsertStreamDigest(db.StreamDigest{
+	if err := p.insertStreamTopics(db.StreamDigest{
 		Source:     "jira",
 		AccountID:  acct.ID,
 		Scope:      "",
 		PeriodFrom: normalizeJiraStreamPeriod(floor),
-		PeriodTo:   normalizeJiraStreamPeriod(maxUpdated),
-		TopicsJSON: string(topicsJSON),
-	})
-	if err != nil {
-		return fmt.Errorf("inserting stream digest: %w", err)
+		PeriodTo:   normalizeJiraStreamPeriod(renderedTo),
+	}, topics, fmt.Sprintf("jira account %d", acct.ID)); err != nil {
+		return err
 	}
 
-	if err := p.db.SetIdeasJiraFloor(acct.ID, maxUpdated); err != nil {
+	// renderedTo is the newest RENDERED issue's updated_at, never the newest
+	// loaded one: an issue the budget dropped stays above the floor and is
+	// mined next run. ListJiraIssuesUpdatedSince reloads with a strict >, so
+	// the boundary issue itself is not re-read; IDEA-05 covers the rest.
+	if err := p.db.SetIdeasJiraFloor(acct.ID, renderedTo); err != nil {
 		return fmt.Errorf("advancing ideas jira floor: %w", err)
 	}
 	return nil

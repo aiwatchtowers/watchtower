@@ -261,6 +261,18 @@ final class CatchUpViewModel {
 
         Task.detached {
             let result = await Self.runCLI(path: cliPath, arguments: spec.arguments)
+            // This VM runs its own Process wrapper rather than ProcessCLIRunner
+            // (a duplication kept deliberately for now), so it has to log the
+            // child's stderr itself: `failureMessage` turns it into one line of
+            // UI text the next reload replaces, and the crashes that stranded
+            // recap rows in 'building' left no trace anywhere on the Desktop.
+            if result.exitCode != 0 {
+                CLILog.failure(
+                    args: spec.arguments, exitCode: result.exitCode, stderr: result.stderr
+                )
+            } else {
+                CLILog.warning(args: spec.arguments, stderr: result.stderr)
+            }
             await MainActor.run {
                 self.isBuilding = false
                 self.stopPolling()

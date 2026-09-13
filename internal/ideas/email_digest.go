@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
@@ -68,10 +69,83 @@ func filterCandidates(cands []streamCandidate, validTags map[string]bool) []stre
 	return out
 }
 
-// maxMessagesPerThread caps a poison thread at its newest N messages so a
+// maxMessagesPerThread caps a poison thread at its OLDEST N messages so a
 // single oversized thread cannot blow the prompt budget (the
-// internal/memory/gmail_extract.go groupGmailThreads precedent).
+// internal/memory/gmail_extract.go groupGmailThreads precedent, which keeps
+// the newest because it mines for recency).
+//
+// Oldest, not newest, because this pass owns a floor: whatever the cap leaves
+// out must stay ABOVE the floor to be mined next run (IDEA-01), and only the
+// tail can. Keeping the newest would either bury the excluded older messages
+// or pin the floor below them forever, re-loading the same thread every cycle.
 const maxMessagesPerThread = 50
+
+// maxTieDrainUnits bounds how large a boundary group the prompt-budget cut
+// will drain past its cap (the db.BoundarySecondRowLimit precedent). Because a
+// tie group all shares one timestamp and both reloads are strictly
+// greater-than, such a group is all-or-nothing: whatever is not drained goes
+// under the floor unmined. The ceiling is therefore sized so that ordinary
+// bulk activity never reaches it, not so that it trims a typical load —
+// exceeding it is a fault, and the pass logs it as one.
+//
+// 1000 for three reasons specific to these two sources:
+//   - Jira: Atlassian's own bulk-change operation caps at 1000 issues, so no
+//     single bulk edit can stamp more than that; and updated_at carries
+//     milliseconds, so even a maximal one spreads across many timestamps.
+//   - Gmail: internal_date is the receipt second, and 1000 messages landing in
+//     one mailbox within the same second is an import or migration artifact,
+//     not mail.
+//   - Reaching it at all requires the loaders' own unbounded boundary drains:
+//     one pass loads at most 500 Gmail messages or 300 Jira issues, so a group
+//     this large can only have arrived through the LIMIT -1 re-read those
+//     drains use, which is already the pathological branch.
+const maxTieDrainUnits = 1000
+
+// tieDrainBudgetFactor bounds the boundary drain in the OTHER dimension —
+// bytes — because a ceiling that is out of reach in units gives no protection
+// in the dimension that actually fails. maxTieDrainUnits counts units; a
+// thousand fat ones (a Jira issue renders up to ~10.5 KB) build a prompt no
+// model will accept, and an over-context call is the worst outcome available
+// here: mineStreamTopics errors, the floor correctly does NOT advance, and the
+// next cycle rebuilds the same oversized drain — losing the tie group AND
+// everything above it, permanently, while paying for the failing call every
+// cycle. Stopping short and advancing loses only the undrained tie-mates, and
+// says so.
+//
+// The byte ceiling therefore inherits the unit ceiling's disposition exactly:
+// stop, advance the floor anyway, and report a counted fault. It never
+// retreats — a drain that stops without advancing is the stall two rounds of
+// this wave were spent removing.
+//
+// Ten times the DEFAULT prompt budget: five times a 200-issue bulk edit's
+// ~120 KB, so ordinary bulk activity cannot reach it, while 600 KB stays inside
+// a ~200k-token light-tier context with margin (~150k tokens at ~4 chars/token),
+// which is the thing being protected.
+const tieDrainBudgetFactor = 10
+
+// tieDrainCharCeiling is the largest block the boundary drain may build. It is
+// pinned to the DEFAULT prompt budget rather than the configured one, in BOTH
+// directions, which is why it is a constant and not a function of
+// ideas.max_prompt_chars:
+//   - A LOWERED budget must not shrink it. The drain already bypasses
+//     ideas.max_prompt_chars by design, and the model's context does not shrink
+//     because the owner turned down a cost knob; a budget-relative ceiling would
+//     start discarding tie-mates far below any real context limit.
+//   - A RAISED budget must not grow it. That is the dangerous direction: at
+//     120 000 (the value catchup.max_prompt_chars already uses) a relative
+//     ceiling would reach 1.2 MB ≈ 300k tokens, past a 200k context — raising
+//     the protection out from under itself and restoring the very over-context
+//     stall the bound exists to prevent.
+const tieDrainCharCeiling = config.DefaultIdeasMaxPromptChars * tieDrainBudgetFactor
+
+// drainCeilings renders both bounds plus what the drain actually built, so a
+// fault line says which ceiling stopped it without the renderer having to
+// report that separately: a block at the char ceiling was stopped by bytes, a
+// small block by units.
+func drainCeilings(blockChars int) string {
+	return fmt.Sprintf("its ceilings (%d units / %d chars, block %d chars)",
+		maxTieDrainUnits, tieDrainCharCeiling, blockChars)
+}
 
 // emailThread is one Gmail thread grouped for the ideas email pre-digest — a
 // local, deliberately independent copy of the shape
@@ -88,7 +162,10 @@ type emailThread struct {
 // groupThreads groups accountID's ts-ordered gmail messages into per-thread
 // units keyed by thread_id: the first non-empty subject wins, participants
 // are distinct "name <email>" senders in first-seen order, and a thread is
-// capped at its newest maxMessagesPerThread messages.
+// capped at its OLDEST maxMessagesPerThread messages — oldest because the cap
+// must leave its remainder ABOVE this pass's floor to be mined next run, and
+// only a thread's tail can be (see maxMessagesPerThread). Capping the other
+// way round leaves a floor that cannot advance at all.
 func groupThreads(msgs []db.GmailExtractMessage) []emailThread {
 	index := make(map[string]int)
 	var threads []emailThread
@@ -106,8 +183,8 @@ func groupThreads(msgs []db.GmailExtractMessage) []emailThread {
 		th.messages = append(th.messages, m)
 	}
 	for i := range threads {
-		if n := len(threads[i].messages); n > maxMessagesPerThread {
-			threads[i].messages = threads[i].messages[n-maxMessagesPerThread:]
+		if len(threads[i].messages) > maxMessagesPerThread {
+			threads[i].messages = threads[i].messages[:maxMessagesPerThread]
 		}
 		threads[i].participants = distinctSenders(threads[i].messages)
 	}
@@ -146,6 +223,15 @@ func senderLabel(name, email string) string {
 // emailExcerptBytes caps each message's rendered excerpt.
 const emailExcerptBytes = 240
 
+// emailThreadTag is the one place the Gmail stage-1 ref format is spelled
+// out: renderEmailBlock stamps it into the block and the tag set, and
+// renderedEmailWindow reads it back to decide which messages this run may
+// claim. Both must agree, or the floor would advance over material the model
+// was never shown.
+func emailThreadTag(accountID int64, threadID string) string {
+	return fmt.Sprintf("gmail:%d:%s", accountID, threadID)
+}
+
 // renderEmailBlock renders one numbered line per thread — "[n] <subject>
 // (gmail:<accountID>:<threadID>): <participants> — <excerpts>" — and returns
 // the set of "gmail:<accountID>:<threadID>" tags a candidate's ref must copy
@@ -153,32 +239,200 @@ const emailExcerptBytes = 240
 // is spent; a thread that doesn't fit is left out of BOTH the block and the
 // tag set, so a candidate can never validate against material the model was
 // never shown.
-func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (string, map[string]bool) {
+//
+// The OLDEST thread is always rendered, even when it alone exceeds maxChars.
+// A pass that rendered nothing could advance no floor (IDEA-01) and would
+// therefore re-read the same un-renderable thread forever, mining nothing: a
+// stall loses the window as surely as a dishonest floor would. A bounded
+// single-thread overshoot is the lesser evil, and the caller logs it — a
+// returned block longer than maxChars is exactly that signal.
+//
+// drainThrough (0 = off) is the second escape, used only on a re-render: every
+// thread whose OLDEST message carries that timestamp is rendered regardless of
+// the budget, up to maxTieDrainUnits of them, so the floor can pass that whole
+// timestamp. See renderEmailWindow.
+func renderEmailBlock(accountID int64, threads []emailThread, maxChars int, drainThrough float64) (string, map[string]bool) {
 	var b strings.Builder
 	tags := make(map[string]bool, len(threads))
 	budget := maxChars
-	for i, th := range threads {
-		tag := fmt.Sprintf("gmail:%d:%s", accountID, th.threadID)
-		subject := th.subject
-		if subject == "" {
-			subject = "(no subject)"
-		}
-		var excerpts []string
-		for _, m := range th.messages {
-			if ex := capBytes(oneLine(m.BodyText), emailExcerptBytes); ex != "" {
-				excerpts = append(excerpts, ex)
+	drained := 0
+	n := 0
+	for _, th := range threads {
+		tag := emailThreadTag(accountID, th.threadID)
+		n++
+		line := renderEmailThread(n, tag, th)
+		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough &&
+			drained < maxTieDrainUnits && b.Len()+len(line) <= tieDrainCharCeiling
+		if len(line) > budget && len(tags) > 0 && !tie {
+			n-- // keep the numbering contiguous, like renderProject's twin
+			if drainThrough == 0 {
+				break // the oldest thread renders regardless; see the doc comment
 			}
+			continue // a later thread may still belong to the drained group
 		}
-		line := fmt.Sprintf("[%d] %s (%s): %s — %s\n", i+1, subject, tag,
-			strings.Join(th.participants, ", "), strings.Join(excerpts, " / "))
 		if len(line) > budget {
-			break
+			drained++
 		}
 		budget -= len(line)
 		tags[tag] = true
 		b.WriteString(line)
 	}
 	return b.String(), tags
+}
+
+// renderEmailThread renders one thread's numbered line — renderEmailBlock's
+// indivisible unit.
+func renderEmailThread(n int, tag string, th emailThread) string {
+	subject := th.subject
+	if subject == "" {
+		subject = "(no subject)"
+	}
+	var excerpts []string
+	for _, m := range th.messages {
+		if ex := capBytes(oneLine(m.BodyText), emailExcerptBytes); ex != "" {
+			excerpts = append(excerpts, ex)
+		}
+	}
+	return fmt.Sprintf("[%d] %s (%s): %s — %s\n", n, subject, tag,
+		strings.Join(th.participants, ", "), strings.Join(excerpts, " / "))
+}
+
+// renderedEmailMessages returns the ids of the messages actually rendered into
+// the block: those belonging to a thread in renderedTags, and within it only
+// the ones that survived the maxMessagesPerThread cap (groupThreads has
+// already trimmed each thread's slice). Message-level, not thread-level: a
+// capped thread's tail was never shown, so the floor may not pass it either.
+func renderedEmailMessages(accountID int64, threads []emailThread, renderedTags map[string]bool) map[string]bool {
+	ids := make(map[string]bool, len(threads))
+	for _, th := range threads {
+		if !renderedTags[emailThreadTag(accountID, th.threadID)] {
+			continue
+		}
+		for _, m := range th.messages {
+			ids[m.MessageID] = true
+		}
+	}
+	return ids
+}
+
+// countUnrenderedEmailTies counts the threads at boundaryTS that the drain
+// ceiling left out — the material the floor is about to pass over, reported in
+// the fault log so the loss is a number the owner can see rather than an
+// inference.
+func countUnrenderedEmailTies(accountID int64, threads []emailThread, renderedTags map[string]bool, boundaryTS float64) int {
+	n := 0
+	for _, th := range threads {
+		if th.messages[0].TSUnix == boundaryTS && !renderedTags[emailThreadTag(accountID, th.threadID)] {
+			n++
+		}
+	}
+	return n
+}
+
+// emailWindow is what one email pass may claim: the period its stream_digests
+// row covers and the furthest its floor may advance.
+type emailWindow struct {
+	minTS, maxTS float64
+	// boundaryTS is the timestamp the prompt budget cut inside — set only when
+	// ok is false, and the group the caller must drain before the floor can
+	// pass it.
+	boundaryTS float64
+	ok         bool
+}
+
+// renderedEmailWindow decides that window from the messages actually rendered
+// (renderedEmailMessages).
+//
+// msgs arrives ordered by timestamp ascending, so the scan stops at the first
+// message the prompt budget left out: everything below that point was
+// rendered, everything from it on must stay unclaimed. A plain max over
+// rendered threads would not do — thread render order follows each thread's
+// FIRST message, so a dropped thread can hold messages older than a rendered
+// one's, and the floor would bury them (IDEA-01).
+//
+// Stopping there is not enough either, because the reload is strictly
+// greater-than over a second-granular internal_date: a rendered message TYING
+// with the first dropped one would put the floor exactly on a timestamp that
+// still holds unmined material. The trailing tie is therefore trimmed off the
+// claim — the trimPartialBoundarySecond rule, at the prompt-budget cut this
+// time rather than the loader's LIMIT cut.
+//
+// ok is false when trimming leaves nothing: the cut landed entirely inside one
+// timestamp, so no honest floor exists below it and the caller must drain that
+// whole group instead (boundaryTS).
+func renderedEmailWindow(msgs []db.GmailExtractMessage, renderedIDs map[string]bool) emailWindow {
+	n := 0
+	for _, m := range msgs {
+		if !renderedIDs[m.MessageID] {
+			break
+		}
+		n++
+	}
+	if n == len(msgs) {
+		return emailWindow{minTS: msgs[0].TSUnix, maxTS: msgs[n-1].TSUnix, ok: true}
+	}
+	boundary := msgs[n].TSUnix
+	for n > 0 && msgs[n-1].TSUnix == boundary {
+		n--
+	}
+	if n == 0 {
+		return emailWindow{boundaryTS: boundary}
+	}
+	return emailWindow{minTS: msgs[0].TSUnix, maxTS: msgs[n-1].TSUnix, ok: true}
+}
+
+// mineStreamTopics performs one stage-1 AI call over block and returns the
+// topics that survived ref validation against renderedTags. promptID doubles
+// as the digest source tag (the two are the same string for both stage-1
+// passes). A generator, extraction, parse, or missing-"topics"-key failure
+// returns an error, so the caller writes no row and leaves its floor untouched
+// (IDEA-01). Shared by the Gmail and Jira passes, which differ only in their
+// prompt and their tag vocabulary.
+func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, block string, renderedTags map[string]bool) ([]streamTopic, error) {
+	tmpl, _ := p.getPrompt(promptID)
+	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
+
+	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, promptID), system, block, "")
+	p.accumulateUsage(usage)
+	if err != nil {
+		return nil, fmt.Errorf("generating %s: %w", promptID, err)
+	}
+
+	raw, err := prompts.ExtractJSONObject(reply)
+	if err != nil {
+		return nil, fmt.Errorf("extracting %s JSON: %w", promptID, err)
+	}
+	var parsed streamTopics
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("parsing %s JSON: %w", promptID, err)
+	}
+	if parsed.Topics == nil {
+		return nil, fmt.Errorf("%s reply has no \"topics\" key", promptID)
+	}
+	return validateRefs(*parsed.Topics, renderedTags), nil
+}
+
+// insertStreamTopics writes one stream_digests row carrying topics, or writes
+// nothing at all when validation left nothing behind. An empty row is a digest
+// with no content: it badges the Desktop Digests feed as unread for nothing,
+// and it marks a window as covered on the strength of material it does not
+// carry. The caller still advances its floor — the window was genuinely mined,
+// it simply had nothing worth recording (IDEA-01's converse clause). what
+// labels the account in the skip log.
+func (p *Pipeline) insertStreamTopics(row db.StreamDigest, topics []streamTopic, what string) error {
+	if len(topics) == 0 {
+		p.logf("ideas: %s: no topics survived validation, no stream_digests row written", what)
+		return nil
+	}
+	topicsJSON, err := json.Marshal(topics)
+	if err != nil {
+		return fmt.Errorf("marshaling stream digest topics: %w", err)
+	}
+	row.TopicsJSON = string(topicsJSON)
+	if _, err := p.db.InsertStreamDigest(row); err != nil {
+		return fmt.Errorf("inserting stream digest: %w", err)
+	}
+	return nil
 }
 
 // runEmailDigests is the ideas registry's Gmail pre-digest pass: one Generate
@@ -213,32 +467,78 @@ func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 	return firstErr
 }
 
+// renderEmailWindow renders one pass's block and decides the window it may
+// claim, draining the boundary group when the prompt budget cut inside a
+// single timestamp. Both escapes are logged: they are the only two ways a
+// stage-1 prompt exceeds ideas.max_prompt_chars, and an operator who set the
+// cap too low should be able to see why.
+func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMessage, budget int) (string, map[string]bool, emailWindow) {
+	threads := groupThreads(msgs)
+	block, tags := renderEmailBlock(accountID, threads, budget, 0)
+	if len(block) > budget {
+		p.logf("ideas: email account %d: thread %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			accountID, emailThreadTag(accountID, threads[0].threadID), len(block), budget)
+	}
+	win := renderedEmailWindow(msgs, renderedEmailMessages(accountID, threads, tags))
+	if win.ok {
+		return block, tags, win
+	}
+
+	// The cut landed inside one timestamp, and internal_date is
+	// second-granular, so several threads sharing a second is ordinary. No
+	// floor below that second is claimable, so render the whole group rather
+	// than stall — the loader already drains its own LIMIT cut this way.
+	block, tags = renderEmailBlock(accountID, threads, budget, win.boundaryTS)
+	p.logf("ideas: email account %d: the %d-char ideas.max_prompt_chars cap cut inside second %.0f — rendered that whole group (%d chars) so the floor can pass it",
+		accountID, budget, win.boundaryTS, len(block))
+
+	drained := renderedEmailWindow(msgs, renderedEmailMessages(accountID, threads, tags))
+	if drained.ok {
+		return block, tags, drained
+	}
+	// More than maxTieDrainUnits threads share that second. The floor passes it
+	// anyway — the alternative is a pass that can never move — so this is the
+	// one branch where material is genuinely lost, and it is a fault, not a
+	// statistic: the ceiling is sized so ordinary traffic cannot reach it.
+	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f were NOT rendered — the boundary drain stopped at %s; the floor passes that second, so they will not be mined",
+		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS,
+		drainCeilings(len(block)))
+	return block, tags, emailWindow{minTS: msgs[0].TSUnix, maxTS: win.boundaryTS, ok: true}
+}
+
+// initEmailFloor stamps a never-initialized account's ideas floor at its
+// current Gmail sync watermark and mines nothing — no backfill, the memory
+// jira_ingest.go:80 precedent. gmail_last_internal_date IS the newest synced
+// message's internal_date for this account, so no extra query is needed. No
+// synced mail yet leaves the floor at 0 for the next run to initialize.
+func (p *Pipeline) initEmailFloor(acct db.GoogleAccount) error {
+	maxTS, err := p.db.GetGmailAccountWatermark(acct.ID)
+	if err != nil {
+		return fmt.Errorf("getting gmail sync watermark: %w", err)
+	}
+	if maxTS == 0 {
+		return nil
+	}
+	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
+		return fmt.Errorf("initializing ideas email floor: %w", err)
+	}
+	p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
+	return nil
+}
+
 // runEmailDigestAccount runs the email pre-digest pass for one account. A
-// floor of 0 (never initialized) initializes to the account's current Gmail
-// sync watermark and skips extraction — no backfill, the memory
-// jira_ingest.go:80 precedent. Zero new messages is a clean no-op: no AI
-// call, no row, floor untouched.
+// floor of 0 (never initialized) initializes and skips extraction. Zero new
+// messages is a clean no-op: no AI call, no row, floor untouched. A floor may
+// only advance over threads the model actually saw (IDEA-01), which is why a
+// thread too big for the whole prompt budget is rendered anyway rather than
+// leaving the pass with nothing to claim and no way forward.
 func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount, bound time.Time) error {
 	floor, err := p.db.IdeasEmailFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas email floor: %w", err)
 	}
 	if floor == 0 {
-		// gmail_last_internal_date IS the newest synced message's internal_date
-		// for this account — exactly "current max internal_date" — so no extra
-		// query is needed to initialize the floor.
-		maxTS, werr := p.db.GetGmailAccountWatermark(acct.ID)
-		if werr != nil {
-			return fmt.Errorf("getting gmail sync watermark: %w", werr)
-		}
-		if maxTS == 0 {
-			return nil // no synced mail yet — retry initialization next run
-		}
-		if serr := p.db.SetIdeasEmailFloor(acct.ID, maxTS); serr != nil {
-			return fmt.Errorf("initializing ideas email floor: %w", serr)
-		}
-		p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
-		return nil
+		return p.initEmailFloor(acct)
 	}
 
 	var beforeTS float64
@@ -253,57 +553,34 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		return nil
 	}
 
-	threads := groupThreads(msgs)
-	block, tags := renderEmailBlock(acct.ID, threads, p.maxPromptChars())
+	budget := p.maxPromptChars()
+	block, tags, win := p.renderEmailWindow(acct.ID, msgs, budget)
+	if !win.ok {
+		// Unreachable: the drain leaves every message at the boundary
+		// timestamp rendered, so a non-empty msgs always yields a window. Fail
+		// loudly rather than claim a floor from a zero value if that contract
+		// is ever broken.
+		return fmt.Errorf("no thread rendered from %d gmail messages", len(msgs))
+	}
+	minTS, maxTS := win.minTS, win.maxTS
 
-	tmpl, _ := p.getPrompt("ideas.digest_email")
-	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
-
-	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.digest_email"), system, block, "")
-	p.accumulateUsage(usage)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", block, tags)
 	if err != nil {
-		return fmt.Errorf("generating email digest: %w", err)
+		return err
 	}
 
-	raw, err := prompts.ExtractJSONObject(reply)
-	if err != nil {
-		return fmt.Errorf("extracting email digest JSON: %w", err)
-	}
-	var parsed streamTopics
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return fmt.Errorf("parsing email digest JSON: %w", err)
-	}
-	if parsed.Topics == nil {
-		return fmt.Errorf("email digest reply has no \"topics\" key")
-	}
-	topics := validateRefs(*parsed.Topics, tags)
-	topicsJSON, err := json.Marshal(topics)
-	if err != nil {
-		return fmt.Errorf("marshaling email digest topics: %w", err)
-	}
-
-	minTS, maxTS := msgs[0].TSUnix, msgs[0].TSUnix
-	for _, m := range msgs {
-		if m.TSUnix < minTS {
-			minTS = m.TSUnix
-		}
-		if m.TSUnix > maxTS {
-			maxTS = m.TSUnix
-		}
-	}
-
-	_, err = p.db.InsertStreamDigest(db.StreamDigest{
+	if err := p.insertStreamTopics(db.StreamDigest{
 		Source:     "gmail",
 		AccountID:  acct.ID,
 		Scope:      "",
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
-		TopicsJSON: string(topicsJSON),
-	})
-	if err != nil {
-		return fmt.Errorf("inserting stream digest: %w", err)
+	}, topics, fmt.Sprintf("email account %d", acct.ID)); err != nil {
+		return err
 	}
 
+	// maxTS is the newest RENDERED message, never the newest loaded one: a
+	// thread the budget dropped stays above the floor and is mined next run.
 	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
 		return fmt.Errorf("advancing ideas email floor: %w", err)
 	}

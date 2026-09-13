@@ -121,12 +121,21 @@ func (db *DB) PublishBriefingFeedItems(cutoff string) (int, error) {
 
 // PublishRecapFeedItems publishes meeting recaps created after the bootstrap
 // cutoff, keyed by their calendar event id.
+//
+// The event_id IS NOT NULL filter is load-bearing: migration 00056 made
+// meeting_recaps.event_id nullable with ON DELETE SET NULL, so calendar
+// stale-cleanup leaves orphaned recaps behind. feed_items.source_id is NOT
+// NULL, and SQLite aborts the whole INSERT … SELECT on a constraint violation
+// — so without the filter a single orphaned recap stops every other recap,
+// permanently, from ever reaching the feed. An orphaned recap is not published
+// (it has no event to key on); it stays reachable through the recordings view.
 func (db *DB) PublishRecapFeedItems(cutoff string) (int, error) {
 	return db.feedUpsert("meeting_recap", `
 		INSERT INTO feed_items (item_type, source_id, event_ts, importance)
 		SELECT 'meeting_recap', r.event_id, r.created_at, 60
 		FROM meeting_recaps r
 		WHERE r.created_at > ?
+		  AND r.event_id IS NOT NULL
 		ON CONFLICT(item_type, source_id) DO NOTHING`, cutoff)
 }
 

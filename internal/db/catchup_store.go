@@ -80,6 +80,24 @@ func (db *DB) FailCatchupRecap(id int64, coverageJSON, errMsg string) error {
 	return nil
 }
 
+// FailStaleCatchupRecaps marks every recap still 'building' since before cutoff
+// as failed, carrying errMsg as the recorded error, and returns how many rows it
+// reaped. A row leaves 'building' only through FinishCatchupRecap or
+// FailCatchupRecap, both of which need the run's process to survive: a killed
+// daemon, a crashed CLI or a machine sleep otherwise strands the row forever.
+//
+// created_at is UTC RFC3339-second text, so the cutoff is formatted the same way
+// and compared as a string.
+func (db *DB) FailStaleCatchupRecaps(cutoff time.Time, errMsg string) (int64, error) {
+	res, err := db.Exec(`UPDATE catchup_recaps SET status='failed', error=?,
+		updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE status='building' AND created_at < ?`,
+		errMsg, cutoff.UTC().Format("2006-01-02T15:04:05Z"))
+	if err != nil {
+		return 0, fmt.Errorf("failing stale catchup recaps: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // GetCatchupRecap returns one recap or a wrapped sql.ErrNoRows.
 func (db *DB) GetCatchupRecap(id int64) (*CatchupRecap, error) {
 	r, err := scanCatchupRecap(db.QueryRow(`SELECT `+catchupRecapCols+` FROM catchup_recaps WHERE id=?`, id))

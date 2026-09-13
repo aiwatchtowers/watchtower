@@ -122,6 +122,42 @@ struct CLIRunnerTests {
         #expect(String(data: out, encoding: .utf8)?.contains("done") == true)
     }
 
+    // MARK: - CLILog
+    //
+    // The `print` itself is not observable from a test; what the line is allowed
+    // to CONTAIN is, and that is the half with a rule behind it.
+
+    @Test("CLILog.label keeps the subcommand path and flag names")
+    func logLabelKeepsSubcommandAndFlags() {
+        #expect(CLILog.label(["catchup", "run", "--json"]) == "catchup run --json")
+        #expect(CLILog.label([]).isEmpty)
+    }
+
+    @Test("CLILog.label never logs argument values")
+    func logLabelDropsArgumentValues() {
+        let label = CLILog.label([
+            "catchup", "feedback", "12",
+            "--comment", "too much detail about the release, please shorten",
+            "--transcript-file", "/tmp/rec_7.txt",
+            "--model=claude-sonnet-4-6"
+        ])
+        // Free text and file paths carry the owner's own words; only the flag
+        // names and the leading subcommand path may reach the log.
+        #expect(label == "catchup feedback --comment --transcript-file --model")
+        #expect(!label.contains("shorten"))
+        #expect(!label.contains("/tmp/rec_7.txt"))
+        #expect(!label.contains("claude-sonnet-4-6"))
+    }
+
+    @Test("CLILog.detail bounds a runaway child's stderr")
+    func logDetailBoundsStderr() {
+        let long = String(repeating: "x", count: 5000)
+        let detail = CLILog.detail(long)
+        #expect(detail.count == CLILog.stderrLimit + 1, "300 chars plus the elision marker")
+        #expect(CLILog.detail("  boom  ") == "boom")
+        #expect(CLILog.detail("\n\n").isEmpty, "a child that wrote only whitespace warned about nothing")
+    }
+
     @Test("Fake CLIRunnerProtocol can stub runs")
     func fakeRunner() async throws {
         struct FakeRunner: CLIRunnerProtocol {

@@ -198,6 +198,88 @@ func TestCatchup04_InventedRefsAreDroppedNotPersisted(t *testing.T) {
 	assert.Contains(t, r.BodyJSON, `"decisions":[]`)
 }
 
+// backdateRecap ages a recap row the way a run that started earlier would have
+// left it. Seeded from the running clock — never a hardcoded date.
+func backdateRecap(t *testing.T, d *db.DB, id int64, age time.Duration) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE catchup_recaps SET created_at=? WHERE id=?`,
+		time.Now().UTC().Add(-age).Format("2006-01-02T15:04:05Z"), id)
+	require.NoError(t, err)
+}
+
+// A recap leaves 'building' only through finish/failRun, and both need the run's
+// process to survive. A killed daemon or a crashed CLI strands the row, and the
+// Desktop then spins on "Building the recap…" forever — Retry exists only on the
+// failed branch. So every run first reaps what an earlier one abandoned.
+func TestRun_ReapsAbandonedBuildingRecaps(t *testing.T) {
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	// created_at is stamped by SQLite's own clock, so the reap is compared
+	// against the same wall clock rather than the suite's fake epoch.
+	p.now = time.Now
+
+	stale, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	backdateRecap(t, d, stale, 31*time.Minute)
+	fresh, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	backdateRecap(t, d, fresh, 5*time.Minute)
+
+	now := time.Now()
+	res, err := p.Run(context.Background(), RunOptions{
+		Spec: WindowSpec{From: now.Add(-time.Hour), To: now.Add(-time.Minute)},
+	})
+	require.NoError(t, err)
+
+	r, err := d.GetCatchupRecap(stale)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", r.Status, "a recap abandoned past the threshold is failed, so the UI can offer Retry")
+	assert.NotEmpty(t, r.Error, "the reaped row explains itself")
+	r, err = d.GetCatchupRecap(fresh)
+	require.NoError(t, err)
+	assert.Equal(t, "building", r.Status, "a run that may still be alive is left alone")
+	r, err = d.GetCatchupRecap(res.RecapID)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", r.Status, "this run's own recap is unaffected")
+}
+
+// The reap must run BEFORE this run inserts its own row, or it marks the recap
+// it is about to build as abandoned.
+//
+// The row's FINAL status cannot show that — finish overwrites both status and
+// error on every exit path — so the assertion reads the row MID-RUN, from the
+// generator hook that fires between the insert and finish. The clock is a day
+// ahead, so a row inserted before the reap would be past the stale cutoff and
+// read 'failed' there instead of 'building'.
+func TestRun_ReapNeverCatchesTheRunsOwnRow(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	p.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
+
+	now := time.Now()
+	id := seedDigest(t, d, float64(now.Add(-30*time.Minute).Unix()), float64(now.Add(-29*time.Minute).Unix()))
+	gen.out = fmt.Sprintf(composeOK, id)
+	var statusDuringRun string
+	gen.fn = func(_, _ string) string {
+		rows, err := d.ListCatchupRecaps(1)
+		require.NoError(t, err)
+		require.Len(t, rows, 1, "this run's row is the only one")
+		statusDuringRun = rows[0].Status
+		return gen.out
+	}
+
+	res, err := p.Run(context.Background(), RunOptions{
+		Spec: WindowSpec{From: now.Add(-time.Hour), To: now.Add(-time.Minute)},
+	})
+	require.NoError(t, err)
+	require.True(t, gen.called, "the compose call must happen, or nothing observed the row mid-run")
+	assert.Equal(t, "building", statusDuringRun, "the run's own row was inserted after the reap, so the reap could not see it")
+	r, err := d.GetCatchupRecap(res.RecapID)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", r.Status)
+	assert.Empty(t, r.Error)
+}
+
 func TestRun_AIFailureMarksRecapFailed(t *testing.T) {
 	gen := &mockGenerator{out: "not json"}
 	p, d := newPipeline(t, gen, &fakeTopUp{})
