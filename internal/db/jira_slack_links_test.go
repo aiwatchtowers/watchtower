@@ -193,11 +193,30 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 
 	require.NoError(t, goose.DownTo(d.DB, "migrations", 66))
 
-	// Both rows are legal under UNIQUE(issue_key, channel_id, message_ts) and
-	// both are what the old upsert could write: ProcessTrack takes channel_id
-	// from the first entry of the track's channel_ids JSON, which can reorder.
+	// PROJ-1: two rows legal under UNIQUE(issue_key, channel_id, message_ts) but
+	// illegal under the track identity — what the old upsert could write, since
+	// ProcessTrack takes channel_id from the first entry of the track's
+	// channel_ids JSON, which can reorder between runs. The copy must dedupe.
 	_, err = d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, link_type)
 		VALUES ('PROJ-1', '1:C1', '', 5, 'track'), ('PROJ-1', '1:C2', '', 5, 'track')`)
+	require.NoError(t, err)
+
+	// PROJ-2 / PROJ-3: a kind's id is NULL, which the unique indexes treat as
+	// distinct — so both rows are legal after the migration and the copy must
+	// keep both. GROUP BY treats NULLs as equal, so the discriminator has to
+	// fall back to the row id; a bare CAST would drop the older row silently.
+	_, err = d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, link_type)
+		VALUES ('PROJ-2', '1:C1', '', NULL, 'track'), ('PROJ-2', '1:C2', '', NULL, 'track')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, digest_id, link_type)
+		VALUES ('PROJ-3', '1:C1', '', NULL, 'decision'), ('PROJ-3', '1:C2', '', NULL, 'decision')`)
+	require.NoError(t, err)
+
+	// PROJ-4: two distinct mentions whose channel_id and message_ts concatenate
+	// to the same string. Unreachable with real Slack ids, but it is what the
+	// separator in the mention discriminator is there for.
+	_, err = d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, link_type)
+		VALUES ('PROJ-4', '1:C1', '12', 'mention'), ('PROJ-4', '1:C11', '2', 'mention')`)
 	require.NoError(t, err)
 
 	require.NoError(t, goose.Up(d.DB, "migrations"), "the migration must survive legacy rows")
@@ -206,4 +225,10 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, links, 1, "the copy keeps one row per kind identity")
 	assert.Equal(t, "1:C2", links[0].ChannelID, "the newest row wins")
+
+	for _, issueKey := range []string{"PROJ-2", "PROJ-3", "PROJ-4"} {
+		links, err := d.GetJiraSlackLinksByIssue(issueKey)
+		require.NoError(t, err)
+		assert.Len(t, links, 2, "%s: the copy must not drop a row the new indexes accept", issueKey)
+	}
 }
