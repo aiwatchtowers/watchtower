@@ -744,7 +744,9 @@ extension TestDatabase {
         updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
         notified_at         TEXT NOT NULL DEFAULT '',
         next_step           TEXT NOT NULL DEFAULT '',
-        next_step_at        TEXT NOT NULL DEFAULT ''
+        next_step_at        TEXT NOT NULL DEFAULT '',
+        next_step_attempts     INTEGER NOT NULL DEFAULT 0,
+        next_step_attempted_at TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
     CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);

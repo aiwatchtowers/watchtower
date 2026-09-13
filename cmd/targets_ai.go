@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/targets"
 
@@ -417,7 +418,7 @@ func runTargetsGenerate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, usage, _, err := gen.Generate(ctx, systemPrompt, userMessage, "")
+	result, usage, _, err := gen.Generate(digest.WithSource(ctx, "tasks.generate"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -545,7 +546,7 @@ func runTargetsAIUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, usage, _, err := gen.Generate(ctx, systemPrompt, targetsFlagInstruction, "")
+	result, usage, _, err := gen.Generate(digest.WithSource(ctx, "tasks.update"), systemPrompt, targetsFlagInstruction, "")
 	if err != nil {
 		return fmt.Errorf("AI update failed: %w", err)
 	}
@@ -712,9 +713,12 @@ func runTargetsNextStep(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	if targetsFlagNextStepAll {
-		n, err := pipe.GenerateAllNextSteps(ctx)
+		n, attempted, err := pipe.GenerateAllNextSteps(ctx)
 		if err != nil {
 			return fmt.Errorf("next-step generation failed (generated %d before failure): %w", n, err)
+		}
+		if attempted > 0 && n == 0 {
+			return fmt.Errorf("next-step generation: all %d selected target(s) failed", attempted)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Generated next step for %d target(s)\n", n)
 		return nil

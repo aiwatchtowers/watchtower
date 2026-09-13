@@ -957,16 +957,22 @@ func TestDaemon_NotifiesDueTargets(t *testing.T) {
 
 // fakeDayPlanRunner implements DayPlanRunner for testing. Run inserts a real
 // plan row into database so the dedup check in shouldRunDayPlan fires on the
-// second call.
+// second call. Setting alwaysFail makes Run return an error instead — a real
+// failure that persists no plan row, exercising the backoff-budget path
+// (see daemon_backoff_test.go).
 type fakeDayPlanRunner struct {
 	database    *db.DB
 	runCalls    int
 	detectCalls int
 	syncCalls   int
+	alwaysFail  bool
 }
 
 func (f *fakeDayPlanRunner) Run(_ context.Context, opts dayplan.RunOptions) (*db.DayPlan, error) {
 	f.runCalls++
+	if f.alwaysFail {
+		return nil, fmt.Errorf("fake day-plan generation failure")
+	}
 	if f.database != nil {
 		plan := &db.DayPlan{
 			UserID:          opts.UserID,

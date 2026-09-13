@@ -504,6 +504,189 @@ func TestRunDailyRollup_NotEnoughDigests(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 }
 
+// TestRunDailyRollup_SkipsWithoutNewChannelDigest pins the cadence gate: once a
+// day's rollup exists and no channel digest has landed since, a follow-up call
+// (the daemon's every-15-min cycle) must neither call the generator again nor
+// disturb the existing row's content or read_at.
+func TestRunDailyRollup_SkipsWithoutNewChannelDigest(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.Equal(t, 1, gen.calls, "first cycle of the day must generate")
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	dailyID := digests[0].ID
+
+	// Simulate the owner having already read today's rollup.
+	require.NoError(t, database.MarkDigestRead(dailyID))
+
+	// Second cycle, same day, no new channel digest material: must be a no-op.
+	gen.response = `{"summary":"must never be written","topics":[]}`
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	assert.Equal(t, 1, gen.calls, "an immediately following cycle with no new channel digest must not call the generator")
+
+	digests, err = database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Contains(t, digests[0].Summary, "first rollup", "content must be untouched when the cadence gate skips")
+	assert.NotEmpty(t, digests[0].ReadAt, "read_at must not be cleared without a genuine regeneration")
+}
+
+// TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest pins the other
+// half of the cadence gate: a channel digest newer than the existing daily row
+// must trigger regeneration and reset read_at, even if the rollup had been read.
+func TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+	seedChannel(t, database, "C3", "platform")
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.Equal(t, 1, gen.calls)
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	dailyID := digests[0].ID
+	require.NoError(t, database.MarkDigestRead(dailyID))
+
+	// Push the existing daily row's created_at into the past so a
+	// freshly-written channel digest unambiguously counts as "newer",
+	// independent of the test's own wall-clock resolution.
+	_, err = database.Exec(`UPDATE digests SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?`, dailyID)
+	require.NoError(t, err)
+
+	// New material lands: a third channel digest for the same day.
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C3", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Platform team rotated secrets", MessageCount: 8, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen.response = `{"summary":"second rollup with new material","topics":[]}`
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	assert.Equal(t, 2, gen.calls, "a newer channel digest must trigger regeneration")
+
+	digests, err = database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Contains(t, digests[0].Summary, "second rollup with new material")
+	assert.Empty(t, digests[0].ReadAt, "a genuine regeneration must reset read_at")
+}
+
+// TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition pins that the
+// cadence gate looks at the MAX of every channel digest's created_at, not
+// merely channelDigests[0]. GetDigests orders channel digests by
+// (period_to DESC, period_from DESC) — not by created_at — so the digest
+// with the newest created_at need not be first in that slice. The fixture
+// below deliberately puts the newest-by-created_at digest SECOND in
+// period_to order, so a "just take [0]" implementation disagrees with the
+// correct max-over-all-digests one.
+func TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	// digestA ranks FIRST in GetDigests' period_to DESC ordering (its
+	// period_to is the day's latest), digestB ranks second.
+	digestAID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	digestBID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix - 3600,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.Equal(t, 1, gen.calls)
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	dailyID := digests[0].ID
+
+	// Fully control created_at ordering, decoupled from real time: digestA
+	// (first in period_to order) is OLDER than the daily row; digestB
+	// (second in period_to order) is NEWER than the daily row. Only a
+	// max-over-all-digests comparison catches digestB's recency.
+	_, err = database.Exec(`UPDATE digests SET created_at = '2010-01-01T00:00:00Z' WHERE id = ?`, digestAID)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE digests SET created_at = '2030-01-01T00:00:00Z' WHERE id = ?`, digestBID)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE digests SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?`, dailyID)
+	require.NoError(t, err)
+
+	gen.response = `{"summary":"second rollup","topics":[]}`
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	assert.Equal(t, 2, gen.calls, "digestB's created_at (2030, ranked second by period_to) must still be seen as newer than the daily row (2020) even though digestA (2010, ranked first) is not")
+}
+
 func TestRunWeeklyTrends(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -574,7 +757,7 @@ func TestStoreDigest(t *testing.T) {
 		},
 	}
 
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0}, 0)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0}, 0, false)
 	require.NoError(t, err)
 
 	d, err := database.GetLatestDigest("C1", "channel")
@@ -1885,6 +2068,88 @@ func TestRunChannelDigests_SkipsEmptyMessages(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 }
 
+// TestStoreDigest_FalseDoesNotResetReadAt pins the scope boundary of
+// resetReadOnWrite: a channel-digest re-upsert (the two channel call sites and
+// the dead weekly one all pass false) must never clear read_at, even though
+// content is genuinely rewritten. Only the daily rollup call site passes true.
+func TestStoreDigest_FalseDoesNotResetReadAt(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	p := New(database, cfg, gen, testLogger())
+
+	result := &DigestResult{Summary: "first version", Topics: []Topic{{Title: "a", Summary: "topic a"}}}
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0, false)
+	require.NoError(t, err)
+
+	d, err := database.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	require.NoError(t, database.MarkDigestRead(d.ID))
+
+	// Re-upsert the same (channel_id, type, period_from, period_to) row with
+	// different content and resetReadOnWrite=false, as every channel/weekly
+	// call site does.
+	result2 := &DigestResult{Summary: "second version", Topics: []Topic{{Title: "b", Summary: "topic b"}}}
+	err = p.storeDigest("C1", "channel", 1000.0, 2000.0, result2, 12, nil, 0, false)
+	require.NoError(t, err)
+
+	d, err = database.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, "second version", d.Summary, "content must still update")
+	assert.NotEmpty(t, d.ReadAt, "resetReadOnWrite=false must never clear read_at")
+}
+
+// TestStoreDigest_TrueResetsReadAtOnlyOnContentChange pins decision 9's
+// literal wording — "read_at reset on content change" — against
+// resetReadOnWrite=true (the daily rollup's own call site): a regeneration
+// producing byte-identical Summary+Topics must leave a read row read, and
+// only a regeneration whose content actually differs clears it. Both halves
+// are asserted in one test because a test that only checks the differing
+// case cannot tell this tightening apart from "always reset."
+func TestStoreDigest_TrueResetsReadAtOnlyOnContentChange(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	p := New(database, cfg, gen, testLogger())
+
+	result := &DigestResult{Summary: "v1", Topics: []Topic{{Title: "t1", Summary: "topic one"}}}
+	err := p.storeDigest("", "daily", 1000.0, 2000.0, result, 10, nil, 0, true)
+	require.NoError(t, err)
+
+	d, err := database.GetLatestDigest("", "daily")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	require.NoError(t, database.MarkDigestRead(d.ID))
+
+	// Half 1: a regeneration with the SAME Summary+Topics (title "t1"
+	// unchanged; only the per-topic Summary field, which isn't part of the
+	// digests row's own Topics/Summary columns, differs) must not clear
+	// read_at.
+	sameContent := &DigestResult{Summary: "v1", Topics: []Topic{{Title: "t1", Summary: "topic one, reworded internally"}}}
+	err = p.storeDigest("", "daily", 1000.0, 2000.0, sameContent, 11, nil, 0, true)
+	require.NoError(t, err)
+
+	d, err = database.GetLatestDigest("", "daily")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.NotEmpty(t, d.ReadAt, "identical Summary+Topics must leave read_at intact")
+
+	// Half 2: a regeneration with a DIFFERENT Summary must clear read_at.
+	differentContent := &DigestResult{Summary: "v2", Topics: []Topic{{Title: "t1", Summary: "topic one"}}}
+	err = p.storeDigest("", "daily", 1000.0, 2000.0, differentContent, 12, nil, 0, true)
+	require.NoError(t, err)
+
+	d, err = database.GetLatestDigest("", "daily")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, "v2", d.Summary)
+	assert.Empty(t, d.ReadAt, "a differing Summary must clear read_at")
+}
+
 func TestStoreDigest_NilUsage(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -1897,7 +2162,7 @@ func TestStoreDigest_NilUsage(t *testing.T) {
 		Topics:  []Topic{{Title: "a", Summary: "topic a"}},
 	}
 
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0, false)
 	require.NoError(t, err)
 
 	d, err := database.GetLatestDigest("C1", "channel")
@@ -1915,7 +2180,7 @@ func TestStoreDigest_WithPromptVersion(t *testing.T) {
 
 	result := &DigestResult{Summary: "versioned", Topics: []Topic{{Title: "t1", Summary: "topic"}}}
 	// Store with prompt version 3 — verifies that storeDigest accepts and passes it.
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 5, &Usage{InputTokens: 10, OutputTokens: 5}, 3)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 5, &Usage{InputTokens: 10, OutputTokens: 5}, 3, false)
 	require.NoError(t, err)
 
 	// Verify via GetDigests (prompt_version may not be scanned, but

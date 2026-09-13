@@ -47,7 +47,7 @@ func (p *Pipeline) GenerateTranscriptRecap(ctx context.Context, eventID, transcr
 	userMessage := "Below is the full single-track meeting transcript (speakers are not labeled). " +
 		"Generate the recap JSON exactly per the system prompt.\n\n=== TRANSCRIPT ===\n" + trimmed
 
-	aiResponse, usage, _, err := p.generator.Generate(ctx, systemPrompt, userMessage, "")
+	aiResponse, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.recap"), systemPrompt, userMessage, "")
 	if err != nil {
 		return nil, nil, fmt.Errorf("AI generation: %w", err)
 	}

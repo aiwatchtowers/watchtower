@@ -25,7 +25,10 @@ const reflectSource = prompts.MemoryReflect
 
 // reflectStaggerDays is the reflection cadence: the pass fires on at most one
 // day per this many, its slot deterministically chosen from the workspace id
-// (mirror rewriteStaggerDays) so no per-workspace watermark column is needed.
+// (mirror rewriteStaggerDays). The stagger picks the DAY; it is stateless, so it
+// cannot also answer "already ran today" — that is the memory_step_state memo's
+// job (see 00069). The original claim here that no stored state was needed was
+// wrong, and cost one strong-tier pass per daemon cycle of every slot day.
 const reflectStaggerDays = 7
 
 // reflectWindowDays is the git-log lookback the churn digest is built over.
@@ -70,7 +73,9 @@ type nodeChurn struct {
 
 // Reflect is the strong-tier weekly reflection pass (Phase-4 surface, MEM-11).
 // It runs at most once per reflectStaggerDays via a deterministic stagger keyed
-// on the workspace id, reads the vault git-log churn over the last week plus
+// on the workspace id AND a memory_step_state memo stamped on attempt (the
+// stagger alone picks the day, not the cycle — see 00069), reads the vault
+// git-log churn over the last week plus
 // per-belief ## History churn, and asks the strong model for up to three
 // meta-observations naming the unstable areas. Each observation is disposed of
 // BY CODE ONLY: a "dispute" on a flapping belief sets a dispute_pending flag
@@ -101,6 +106,16 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, drop
 	if !dueForReflect(p.workspaceStaggerKey(), now) {
 		return 0, 0, 0, nil, nil // not this workspace's weekly slot
 	}
+	// The "done today" memo (see 00069). dueForReflect is stateless and
+	// day-granular, so without this the whole pass — git walk, churn digest and
+	// the strong-tier call — re-ran on every daemon cycle of its slot day.
+	stamp, _, err := p.db.MemoryStepState(db.MemoryStepReflect, "")
+	if err != nil {
+		return 0, 0, 0, nil, err
+	}
+	if sameUTCDay(stamp, now) {
+		return 0, 0, 0, nil, nil // already attempted this cycle's slot day
+	}
 
 	rows, err := p.db.ListMemoryNodes()
 	if err != nil {
@@ -114,7 +129,9 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, drop
 
 	churn := p.reflectChurn(rows, commits, since)
 	if len(churn) == 0 {
-		return 0, 0, 0, nil, nil // a calm week — no AI call at all
+		// A calm week — no AI call at all, and deliberately NO memo stamp: nothing
+		// was spent, and a later cycle the same day may see real churn.
+		return 0, 0, 0, nil, nil
 	}
 
 	typeByID := make(map[string]string, len(rows))
@@ -125,6 +142,17 @@ func (p *Pipeline) Reflect(ctx context.Context, now time.Time) (n, flagged, drop
 	system, user := buildReflectPrompt(p.getPrompt(prompts.MemoryReflect), p.Language, rows, churn, since)
 	raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, reflectSource), system, user, "")
 	usage = u
+	// Stamped on ATTEMPT, not on success — and deliberately so. The vault git log
+	// cannot serve as this memo: a run that only flags disputes (a side-table
+	// write) or whose model returned zero observations writes no memory(reflect)
+	// commit at all, so the expensive-but-silent runs are exactly the ones a
+	// commit-derived memo would miss. Stamping only on success would also retry a
+	// model outage every daemon cycle all slot day, which is the bug being fixed.
+	// The trade: a transient failure costs one week of reflection. Reflection is
+	// advisory (dispute flags + entity notes), so that is the correct direction.
+	if serr := p.db.SetMemoryStepState(db.MemoryStepReflect, "", now.UTC().Format(time.RFC3339), ""); serr != nil {
+		p.logf("memory: reflect: stamp step state: %v", serr) // costs repeats, never correctness
+	}
 	if gerr != nil {
 		return 0, 0, 0, usage, fmt.Errorf("memory: reflect: generate: %w", gerr)
 	}

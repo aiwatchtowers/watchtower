@@ -64,6 +64,15 @@ type jiraAccountSyncer interface {
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
 var minPollInterval = 1 * time.Second
 
+// maxDailyAIAttempts caps how many real (error-producing) attempts the
+// day-plan and briefing phases make in one calendar day before backing off
+// until the next day. A "real attempt" is one that reached the AI/parse/store
+// step and failed — a benign skip (no current user yet, no data yet) costs
+// nothing and is not counted (see recordBriefingAttempt/recordDayPlanAttempt).
+// Deliberately a code constant, not a config key: owner decision 9 (the
+// 2026-09-13 audit fix wave) forbids a new config key for this backoff.
+const maxDailyAIAttempts = 3
+
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
 	orchestrators       []*sync.Orchestrator
@@ -99,6 +108,16 @@ type Daemon struct {
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+
+	// Real-failure attempt budgets for day plan / briefing (max 3/day, see
+	// maxDailyAIAttempts). Loaded from disk at daemon start
+	// (loadDayPlanAttempts/loadBriefingAttempts) and persisted after every
+	// real attempt, so an exhausted budget survives a daemon restart — the
+	// flaw the bare in-memory lastDayPlanDate/lastBriefing fields had.
+	dayPlanAttemptDate  string // YYYY-MM-DD the counter below is for
+	dayPlanAttempts     int
+	briefingAttemptDate string // YYYY-MM-DD the counter below is for
+	briefingAttempts    int
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 }
@@ -284,6 +303,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastBriefing()
 	d.loadLastIdeas()
 	d.loadLastStreams()
+	d.loadDayPlanAttempts()
+	d.loadBriefingAttempts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -1207,10 +1228,18 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 		return
 	}
 	d.trackedPipelineRun("next_step", func() pipelineRunStats {
-		n, err := d.nextStepPipe.GenerateAllNextSteps(ctx)
-		if err != nil {
+		n, attempted, err := d.nextStepPipe.GenerateAllNextSteps(ctx)
+		switch {
+		case err != nil:
 			d.logger.Printf("next-step error: %v", err)
-		} else if n > 0 {
+		case attempted > 0 && n == 0:
+			// Distinguish "every selected target failed" from "nothing
+			// needed a refresh" — both used to record identically as
+			// items_found=0 with no error, so an owner could not tell a
+			// silently-failing batch from a quiet one.
+			err = fmt.Errorf("next-step: all %d selected target(s) failed this cycle", attempted)
+			d.logger.Printf("%v", err)
+		case n > 0:
 			d.logger.Printf("next-step: refreshed %d target(s)", n)
 		}
 		return pipelineRunStats{items: n, err: err}
@@ -1252,6 +1281,11 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 	d.trackedPipelineRun("briefing", func() pipelineRunStats {
 		id, err := d.briefingPipe.Run(ctx)
 		if err != nil {
+			// A real failure (AI generate/parse/store error) reached this
+			// point — RunForDate's benign skips ("no current user", "no data
+			// yet") both return (0, nil) and never consume budget; only a
+			// non-nil error does.
+			d.recordBriefingAttempt(time.Now().Format("2006-01-02"))
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
@@ -1404,8 +1438,11 @@ func (d *Daemon) shouldRunBriefing() bool {
 	if targetHour <= 0 {
 		targetHour = config.DefaultBriefingHour
 	}
+	if now.Hour() < targetHour {
+		return false
+	}
 
-	return now.Hour() >= targetHour
+	return !d.briefingAttemptsExhausted(now.Format("2006-01-02"))
 }
 
 func sameCalendarDay(a, b time.Time) bool {
@@ -1438,8 +1475,117 @@ func (d *Daemon) saveLastBriefing() {
 	}
 }
 
+// attemptMarker is the on-disk shape of a real-attempt budget: the calendar
+// date the count applies to, plus how many real (error-producing) attempts
+// have been made on that date. Encoded as "date,attempts" — a plain-text
+// extension of the bare-timestamp `<name>.txt` marker family (last_briefing.txt
+// et al.), not a new mechanism.
+type attemptMarker struct {
+	date     string
+	attempts int
+}
+
+func loadAttemptMarker(path string) attemptMarker {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return attemptMarker{}
+	}
+	date, countStr, ok := strings.Cut(strings.TrimSpace(string(data)), ",")
+	if !ok {
+		return attemptMarker{}
+	}
+	n, err := strconv.Atoi(countStr)
+	if err != nil {
+		return attemptMarker{}
+	}
+	return attemptMarker{date: date, attempts: n}
+}
+
+func saveAttemptMarker(path string, m attemptMarker) error {
+	data := m.date + "," + strconv.Itoa(m.attempts)
+	return os.WriteFile(path, []byte(data), 0o600)
+}
+
+func (d *Daemon) dayPlanAttemptsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "day_plan_attempts.txt")
+}
+
+// loadDayPlanAttempts restores the day-plan real-attempt budget from disk at
+// daemon start, so an already-exhausted budget stays exhausted across a
+// restart instead of resetting to zero.
+func (d *Daemon) loadDayPlanAttempts() {
+	m := loadAttemptMarker(d.dayPlanAttemptsPath())
+	d.dayPlanAttemptDate = m.date
+	d.dayPlanAttempts = m.attempts
+}
+
+// recordDayPlanAttempt registers one real (error-producing) day-plan attempt
+// for date, resetting the counter first if date is a new calendar day, and
+// persists the result immediately so a crash right after does not lose it.
+func (d *Daemon) recordDayPlanAttempt(date string) {
+	if d.dayPlanAttemptDate != date {
+		d.dayPlanAttemptDate = date
+		d.dayPlanAttempts = 0
+	}
+	d.dayPlanAttempts++
+	if err := saveAttemptMarker(d.dayPlanAttemptsPath(), attemptMarker{date: date, attempts: d.dayPlanAttempts}); err != nil {
+		d.logger.Printf("failed to save day-plan attempt marker: %v", err)
+	}
+	// Logged once, the moment the budget is actually spent — not on every
+	// later cycle's silent skip — so the owner can tell "gave up for today"
+	// (this line, plus maxDailyAIAttempts error rows already in
+	// pipeline_runs) apart from "not generated yet" (no rows, no line) in the
+	// daemon log without drowning it in a repeat every poll interval.
+	if d.dayPlanAttempts == maxDailyAIAttempts {
+		d.logger.Printf("dayplan: giving up for %s after %d failed attempts, will retry tomorrow", date, d.dayPlanAttempts)
+	}
+}
+
+// dayPlanAttemptsExhausted reports whether the day-plan budget for date has
+// already been spent (maxDailyAIAttempts real failures). A different date
+// (including one never recorded) is never exhausted — the budget resets
+// every calendar day.
+func (d *Daemon) dayPlanAttemptsExhausted(date string) bool {
+	return d.dayPlanAttemptDate == date && d.dayPlanAttempts >= maxDailyAIAttempts
+}
+
+func (d *Daemon) briefingAttemptsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "briefing_attempts.txt")
+}
+
+// loadBriefingAttempts is the briefing counterpart to loadDayPlanAttempts.
+func (d *Daemon) loadBriefingAttempts() {
+	m := loadAttemptMarker(d.briefingAttemptsPath())
+	d.briefingAttemptDate = m.date
+	d.briefingAttempts = m.attempts
+}
+
+// recordBriefingAttempt is the briefing counterpart to recordDayPlanAttempt.
+func (d *Daemon) recordBriefingAttempt(date string) {
+	if d.briefingAttemptDate != date {
+		d.briefingAttemptDate = date
+		d.briefingAttempts = 0
+	}
+	d.briefingAttempts++
+	if err := saveAttemptMarker(d.briefingAttemptsPath(), attemptMarker{date: date, attempts: d.briefingAttempts}); err != nil {
+		d.logger.Printf("failed to save briefing attempt marker: %v", err)
+	}
+	// See recordDayPlanAttempt's comment: logged once, when the budget is
+	// actually spent.
+	if d.briefingAttempts == maxDailyAIAttempts {
+		d.logger.Printf("briefing: giving up for %s after %d failed attempts, will retry tomorrow", date, d.briefingAttempts)
+	}
+}
+
+// briefingAttemptsExhausted is the briefing counterpart to
+// dayPlanAttemptsExhausted.
+func (d *Daemon) briefingAttemptsExhausted(date string) bool {
+	return d.briefingAttemptDate == date && d.briefingAttempts >= maxDailyAIAttempts
+}
+
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a
-// plan: enabled, hour gate passed, no plan yet for today.
+// plan: enabled, hour gate passed, real-attempt budget not exhausted today,
+// no plan yet for today.
 func (d *Daemon) shouldRunDayPlan(now time.Time) bool {
 	if d.dayPlanPipeline == nil {
 		return false
@@ -1457,6 +1603,9 @@ func (d *Daemon) shouldRunDayPlan(now time.Time) bool {
 	}
 	date := now.Format("2006-01-02")
 	if d.lastDayPlanDate == date {
+		return false
+	}
+	if d.dayPlanAttemptsExhausted(date) {
 		return false
 	}
 	if d.db == nil {
@@ -1495,6 +1644,11 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time) {
 		}
 		inTok, outTok, cost, totalAPI := d.dayPlanPipeline.AccumulatedUsage()
 		if err != nil {
+			// shouldRunDayPlan already filtered out the "no current user"
+			// case before Run was ever called (see its own gate above), so
+			// every Run invocation reaching this point is a real attempt —
+			// any error here is a real failure and consumes budget.
+			d.recordDayPlanAttempt(date)
 			d.logger.Printf("dayplan: generation failed: %v", err)
 		} else {
 			d.lastDayPlanDate = date

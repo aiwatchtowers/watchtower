@@ -224,7 +224,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	userMessage := fmt.Sprintf("Generate meeting prep for event %q (ID: %s) at %s on %s.",
 		event.Title, event.ID, meetingTime, start.Format("2006-01-02"))
 
-	aiResponse, _, _, err := p.generator.Generate(ctx, systemPrompt, userMessage, "")
+	aiResponse, _, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.prep"), systemPrompt, userMessage, "")
 	if err != nil {
 		p.logger.Printf("meeting: error generating prep for %q: %v", event.Title, err)
 		return nil, fmt.Errorf("AI generation: %w", err)

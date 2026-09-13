@@ -312,6 +312,8 @@ Immediately after Tracks. Active track narratives are formatted into a text bloc
 
 Aggregates all channel digests for the day into a cross-channel summary. Uses running context (memory) and track context (Stage 10b). Does not duplicate tracked topics.
 
+**Throttling (2026-09-13):** not regenerated on every cycle. If today's daily rollup already exists, it is only regenerated when a channel digest newer than that rollup's `created_at` has landed since — otherwise the cycle skips it without an AI call. A regeneration clears the rollup's `read_at` (so it surfaces as unread again); a skipped cycle leaves `read_at` untouched.
+
 ### Weekly Rollup
 
 Aggregates daily rollups for the week. Higher level of abstraction — trends and strategic observations.
@@ -370,6 +372,8 @@ Separate AI call across all cards → overall team health overview, areas of att
 2. Current hour ≥ configured hour
 3. There is at least some data (digests, tracks, tasks, or inbox)
 4. Briefing for this date doesn't yet exist (deduplication by user + date)
+
+**Attempt budget (2026-09-13):** a real failure (the generate call itself erroring, not one of the conditions above skipping cleanly) counts against a 3-per-day budget, persisted to `briefing_attempts.txt` so it survives a daemon restart. Once the 3rd failure spends the day's budget, the daemon logs a one-time "giving up" line and stops trying until the next calendar day — it does not retry on every subsequent cycle.
 
 ### Data Collection from All Previous Stages
 
@@ -435,11 +439,13 @@ With each cycle:
 | Sync | Every 15 min | DB: `search_last_date` | Date of last message |
 | Inbox | Every 15 min | DB: `inbox_last_processed_ts` | Unix timestamp of processing |
 | Digests | Every 15 min | DB: UNIQUE(channel, type, period) | Window + file lock |
+| Daily Rollup | Every 15 min, but skipped without a newer channel digest | DB: `digests.created_at` (today's daily row) | Regenerates only on new/changed channel digests for the day |
 | Tracks | Every 15 min | DB: `pipeline_runs.period_to` | End of last window |
 | People Cards | Once per 24h | File: `last_people.txt` | Unix timestamp |
-| Briefing | Once per day | File: `last_briefing.txt` + DB: UNIQUE(user, date) | Unix timestamp |
+| Briefing | Once per day, capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
+| Day Plan | Once per day after `day_plan.hour` (default 8), capped at 3 real attempts/day; runs right after Briefing in the same cycle | DB: `day_plans` UNIQUE(user, date) + File: `day_plan_attempts.txt` | date,attempt-count |
 
-Files `last_people.txt` and `last_briefing.txt` survive daemon restarts.
+Files `last_people.txt` and `last_briefing.txt` survive daemon restarts, as does `day_plan_attempts.txt`.
 
 ---
 

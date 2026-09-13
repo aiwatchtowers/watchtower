@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 )
 
@@ -60,7 +61,7 @@ func (p *Pipeline) GenerateRecap(
 	)
 	userMessage := "Generate a recap from the meeting notes."
 
-	aiResponse, _, _, err := p.generator.Generate(ctx, systemPrompt, userMessage, "")
+	aiResponse, _, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.recap"), systemPrompt, userMessage, "")
 	if err != nil {
 		return nil, fmt.Errorf("AI generation: %w", err)
 	}

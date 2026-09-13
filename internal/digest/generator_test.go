@@ -295,6 +295,12 @@ echo "{\"type\":\"result\",\"result\":\"model:$model\",\"is_error\":false}"
 		{"untagged uses strong", context.Background(), "model:strong-model"},
 		{"light source uses light", WithSource(context.Background(), "inbox.triage"), "model:light-model"},
 		{"strong source uses strong", WithSource(context.Background(), "digest.channel"), "model:strong-model"},
+		// The two learn-call reclassifications (decision 9, fix wave 4, task
+		// 6): a bare TierForSource assertion only restates the table, so this
+		// proves the tag actually reaches Generate and selects the light
+		// model, end to end.
+		{"situation learn source uses light", WithSource(context.Background(), "inbox.situation_learn"), "model:light-model"},
+		{"catchup learn source uses light", WithSource(context.Background(), "catchup.learn"), "model:light-model"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -2,12 +2,15 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
@@ -143,31 +146,104 @@ func (p *Pipeline) renderIndex(runID int64) error {
 // failed map render never fails the run and leaves the last good map in place.
 func (p *Pipeline) renderMap(ctx context.Context, runID int64, strong bool) (*digest.Usage, error) {
 	if strong && p.generator != nil {
-		content, usage, err := p.strongMapContent(ctx)
-		if err != nil {
-			p.logf("memory: strong map render failed, keeping previous map.md: %v", err)
-			return usage, p.fallbackMap(runID)
-		}
-		msg := CommitMsg{Op: "map", Summary: "render hot map", Cause: fmt.Sprintf("run:%d", runID)}
-		_, werr := p.vault.WriteFile(mapFileName, []byte(capMapBytes(content)), msg)
-		return usage, werr
+		return p.renderStrongMap(ctx, runID)
 	}
 	return nil, p.fallbackMap(runID)
 }
 
-// strongMapContent asks the strong model for the hot summary from the top
-// entities (by importance), open episodes, and active beliefs.
-func (p *Pipeline) strongMapContent(ctx context.Context) (string, *digest.Usage, error) {
+// renderStrongMap is the strong-tier arm of renderMap, change-gated on a
+// fingerprint of the RENDERED PROMPT INPUT (see 00069).
+//
+// The write was already change-gated — Vault.WriteFile returns early on
+// byte-identical content, so the vault git log under-reports how often this ran
+// — but the AI CALL that produced those bytes was not gated at all: one strong
+// render per daemon cycle, forever. The fingerprint closes that: when the input
+// the model would see is byte-identical to the one the committed map.md was
+// rendered from AND that file is still on disk, the call is skipped and map.md
+// is left exactly as it is (no fallback write either — the committed map already
+// IS that render). The file condition matters because the skip returns before
+// any write: a matching fingerprint over a missing map.md would otherwise leave
+// nothing to recreate it.
+//
+// The fingerprint is stamped on SUCCESS only, deliberately unlike the
+// rewrite/reflect memos: a failed generate leaves the input unchanged, so the
+// next cycle is a legitimate retry of a transient failure, and the failure path
+// already degrades to the cheap mechanical map.
+func (p *Pipeline) renderStrongMap(ctx context.Context, runID int64) (*digest.Usage, error) {
+	system, user, err := p.mapCall()
+	if err != nil {
+		p.logf("memory: strong map render failed, keeping previous map.md: %v", err)
+		return nil, p.fallbackMap(runID)
+	}
+	fingerprint := mapInputFingerprint(user)
+	stored, serr := p.mapInputFingerprintStored()
+	if serr != nil {
+		p.logf("memory: map: read step state: %v", serr) // fail open: render rather than skip
+	} else if stored != "" && stored == fingerprint && p.mapFileExists() {
+		// Identical input — map.md is already this render. The file check is not
+		// belt-and-braces: the skip returns before ANY write, so a matching
+		// fingerprint over a MISSING map.md would leave nothing to recreate it.
+		// That is reachable — `watchtower memory reset-to` rewinds the vault past
+		// the map commit, and the owner can delete the file — and before the
+		// fingerprint gate every strong cycle either rewrote map.md or fell
+		// through to fallbackMap, whose os.Stat recreated it.
+		return nil, nil
+	}
+
+	raw, usage, _, gerr := p.generator.Generate(digest.WithSource(ctx, renderMapSource), system, user, "")
+	if gerr != nil {
+		p.logf("memory: strong map render failed, keeping previous map.md: %v", fmt.Errorf("memory: render map: generate: %w", gerr))
+		return usage, p.fallbackMap(runID)
+	}
+	msg := CommitMsg{Op: "map", Summary: "render hot map", Cause: fmt.Sprintf("run:%d", runID)}
+	if _, werr := p.vault.WriteFile(mapFileName, []byte(capMapBytes(strings.TrimSpace(raw))), msg); werr != nil {
+		return usage, werr
+	}
+	if err := p.db.SetMemoryStepState(db.MemoryStepMap, "", time.Now().UTC().Format(time.RFC3339), fingerprint); err != nil {
+		p.logf("memory: map: stamp step state: %v", err) // costs repeats, never correctness
+	}
+	return usage, nil
+}
+
+// mapCall builds the strong map's prompt from the top entities (by importance),
+// open episodes, and active beliefs — the exact bytes the fingerprint gate keys
+// on, so the gate can never diverge from what the model would actually see.
+func (p *Pipeline) mapCall() (system, user string, err error) {
 	entities, open, beliefs, err := p.mapInputs()
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
-	system, user := buildRenderMapPrompt(p.getPrompt(prompts.MemoryRenderMap), p.Language, entities, open, beliefs)
-	raw, usage, _, err := p.generator.Generate(digest.WithSource(ctx, renderMapSource), system, user, "")
-	if err != nil {
-		return "", usage, fmt.Errorf("memory: render map: generate: %w", err)
+	system, user = buildRenderMapPrompt(p.getPrompt(prompts.MemoryRenderMap), p.Language, entities, open, beliefs)
+	return system, user, nil
+}
+
+// mapInputFingerprint hashes the rendered user message. The system message is
+// deliberately excluded: it is the prompt template, and a template edit should
+// re-render on its own cadence, not be conflated with "the world changed".
+func mapInputFingerprint(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return hex.EncodeToString(sum[:])
+}
+
+// mapInputFingerprintStored reads the fingerprint of the input map.md was last
+// rendered from ("" when the strong map has never rendered).
+func (p *Pipeline) mapInputFingerprintStored() (string, error) {
+	_, fingerprint, err := p.db.MemoryStepState(db.MemoryStepMap, "")
+	return fingerprint, err
+}
+
+// mapFileExists reports whether map.md is on disk — the fingerprint gate's
+// second condition, since a skip writes nothing at all. A stat error other than
+// "missing" also reads as absent, so the gate fails toward rendering (never
+// toward a stale or missing map) — but it is logged rather than swallowed: a
+// persistent permission/IO failure would otherwise burn one strong-tier call per
+// daemon cycle with nothing in the log to explain it.
+func (p *Pipeline) mapFileExists() bool {
+	_, err := os.Stat(filepath.Join(p.vault.path, mapFileName))
+	if err != nil && !os.IsNotExist(err) {
+		p.logf("memory: map: stat %s: %v (treating as absent, will render)", mapFileName, err)
 	}
-	return strings.TrimSpace(raw), usage, nil
+	return err == nil
 }
 
 // beliefEntry is one active belief line in the strong map input.
@@ -309,7 +385,7 @@ func capMapBytes(s string) string {
 // writes a tiny mechanical stub pointing at index.md so memory_map always has a
 // target. Used when the semantic tier is off or the strong render failed.
 func (p *Pipeline) fallbackMap(runID int64) error {
-	if _, err := os.Stat(filepath.Join(p.vault.path, mapFileName)); err == nil {
+	if p.mapFileExists() {
 		return nil // keep the previous committed map.md
 	}
 	content := "# World map\n\nSee `index.md` for the full memory index.\n"

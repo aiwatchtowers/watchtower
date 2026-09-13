@@ -411,32 +411,34 @@ type ChannelSettings struct {
 
 // Target represents a hierarchical goal at any level (replaces Task).
 type Target struct {
-	ID                int
-	Text              string
-	Intent            string
-	Level             string        // "quarter", "month", "week", "day", "custom"
-	CustomLabel       string        // free text when level="custom"
-	PeriodStart       string        // YYYY-MM-DD
-	PeriodEnd         string        // YYYY-MM-DD
-	ParentID          sql.NullInt64 // references targets(id)
-	Status            string        // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
-	Priority          string        // "high", "medium", "low"
-	Ownership         string        // "mine", "delegated", "watching"
-	BallOn            string
-	DueDate           string // "YYYY-MM-DDTHH:MM" or ""
-	SnoozeUntil       string // "YYYY-MM-DDTHH:MM" or ""
-	Blocking          string
-	Tags              string  // JSON
-	SubItems          string  // JSON
-	Notes             string  // JSON
-	Progress          float64 // 0.0..1.0
-	SourceType        string  // "extract", "briefing", "manual", "chat", "inbox", "jira", "slack"
-	SourceID          string
-	AILevelConfidence sql.NullFloat64
-	CreatedAt         string
-	UpdatedAt         string
-	NextStep          string // AI-suggested next action (JSON), "" when not yet generated
-	NextStepAt        string // when NextStep was generated; compared to UpdatedAt for staleness
+	ID                  int
+	Text                string
+	Intent              string
+	Level               string        // "quarter", "month", "week", "day", "custom"
+	CustomLabel         string        // free text when level="custom"
+	PeriodStart         string        // YYYY-MM-DD
+	PeriodEnd           string        // YYYY-MM-DD
+	ParentID            sql.NullInt64 // references targets(id)
+	Status              string        // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+	Priority            string        // "high", "medium", "low"
+	Ownership           string        // "mine", "delegated", "watching"
+	BallOn              string
+	DueDate             string // "YYYY-MM-DDTHH:MM" or ""
+	SnoozeUntil         string // "YYYY-MM-DDTHH:MM" or ""
+	Blocking            string
+	Tags                string  // JSON
+	SubItems            string  // JSON
+	Notes               string  // JSON
+	Progress            float64 // 0.0..1.0
+	SourceType          string  // "extract", "briefing", "manual", "chat", "inbox", "jira", "slack"
+	SourceID            string
+	AILevelConfidence   sql.NullFloat64
+	CreatedAt           string
+	UpdatedAt           string
+	NextStep            string // AI-suggested next action (JSON), "" when not yet generated
+	NextStepAt          string // when NextStep was generated; compared to UpdatedAt for staleness
+	NextStepAttempts    int    // attempts made since the last per-target budget reset (see 00068)
+	NextStepAttemptedAt string // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.

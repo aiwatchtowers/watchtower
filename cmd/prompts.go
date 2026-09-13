@@ -7,6 +7,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
 
@@ -218,7 +219,7 @@ func runTune(cmd *cobra.Command, args []string) error {
 
 	// Wrap digest.Generator as prompts.TextGenerator, capturing usage.
 	tuneGen := prompts.GenerateFunc(func(ctx context.Context, systemPrompt, userMessage string) (string, error) {
-		raw, usage, _, err := gen.Generate(ctx, systemPrompt, userMessage, "")
+		raw, usage, _, err := gen.Generate(digest.WithSource(ctx, "prompts.tune"), systemPrompt, userMessage, "")
 		if usage != nil {
 			totalInTok += usage.InputTokens
 			totalOutTok += usage.OutputTokens

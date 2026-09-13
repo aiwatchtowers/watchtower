@@ -71,11 +71,26 @@ Rules:
 // GenerateNextStep computes and persists the next-step suggestion for a single
 // target. It returns the parsed suggestion. The call routes to the default
 // (quality) model since it requires prioritisation reasoning.
+//
+// Every call — success or failure — records one attempt against the
+// per-target daily budget (targets.next_step_attempts/next_step_attempted_at,
+// migration 00068) that GetTargetsNeedingNextStep enforces, so a target whose
+// reply never parses stops being retried once it has burned 3 attempts that
+// UTC day, until it is either edited again or the day rolls over.
 func (p *Pipeline) GenerateNextStep(ctx context.Context, targetID int) (*NextStep, error) {
 	target, err := p.db.GetTargetByID(targetID)
 	if err != nil {
 		return nil, fmt.Errorf("loading target %d: %w", targetID, err)
 	}
+
+	now := time.Now().UTC()
+	nowStr := now.Format("2006-01-02T15:04:05Z")
+	attempts := nextAttemptCount(target, now)
+	defer func() {
+		if rerr := p.db.RecordTargetNextStepAttempt(targetID, attempts, nowStr); rerr != nil {
+			p.logger.Printf("targets/nextstep: recording attempt for target %d: %v", targetID, rerr)
+		}
+	}()
 
 	prompt := p.buildNextStepPrompt(target)
 	ctx2 := digest.WithSource(ctx, "targets.next_step")
@@ -95,35 +110,55 @@ func (p *Pipeline) GenerateNextStep(ctx context.Context, targetID int) (*NextSte
 	if err != nil {
 		return nil, fmt.Errorf("encoding next-step for target %d: %w", targetID, err)
 	}
-	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	if err := p.db.SetTargetNextStep(targetID, string(encoded), now); err != nil {
+	if err := p.db.SetTargetNextStep(targetID, string(encoded), nowStr); err != nil {
 		return nil, err
 	}
 	return ns, nil
 }
 
+// nextAttemptCount decides the next_step_attempts value to record for this
+// attempt against target t. The counter resets to 1 — a fresh budget, not one
+// more retry — when t was edited since its last recorded attempt (a new
+// problem, per the controller's ruling) or the last attempt fell on an
+// earlier UTC calendar day (the daily budget resets); otherwise it
+// increments. Comparisons are lexical string comparisons on UTC ISO8601
+// timestamps, matching every other staleness check on this row.
+func nextAttemptCount(t *db.Target, now time.Time) int {
+	if t.NextStepAttemptedAt == "" || t.NextStepAttemptedAt < t.UpdatedAt {
+		return 1
+	}
+	attemptedAt, err := time.Parse("2006-01-02T15:04:05Z", t.NextStepAttemptedAt)
+	if err != nil || attemptedAt.Format("2006-01-02") != now.Format("2006-01-02") {
+		return 1
+	}
+	return t.NextStepAttempts + 1
+}
+
 // GenerateAllNextSteps refreshes next-step suggestions for every active target
-// whose suggestion is missing or stale. It returns the number successfully
-// generated. Failures on individual targets are logged and skipped so one bad
-// target does not abort the batch.
-func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (int, error) {
+// whose suggestion is missing or stale (and whose per-target attempt budget,
+// migration 00068, is not exhausted). It returns the number successfully
+// generated and the number of targets selected into this batch, so a caller
+// can tell "nothing needed a refresh this cycle" (attempted == 0) apart from
+// "every selected target failed" (attempted > 0, done == 0) — both would
+// otherwise report identically as "0 generated". Failures on individual
+// targets are logged and skipped so one bad target does not abort the batch.
+func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (done, attempted int, err error) {
 	limit := 50
 	if p.cfg != nil && p.cfg.Resolver.ActiveSnapshotLimit > 0 {
 		limit = p.cfg.Resolver.ActiveSnapshotLimit
 	}
 	targets, err := p.db.GetTargetsNeedingNextStep(limit)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(targets) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	const workers = 4
 	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		done int
+		wg sync.WaitGroup
+		mu sync.Mutex
 	)
 	sem := make(chan struct{}, workers)
 	for i := range targets {
@@ -146,7 +181,7 @@ func (p *Pipeline) GenerateAllNextSteps(ctx context.Context) (int, error) {
 		}()
 	}
 	wg.Wait()
-	return done, ctx.Err()
+	return done, len(targets), ctx.Err()
 }
 
 // Bounds on the assistant-conversation excerpt folded into the next-step

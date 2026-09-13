@@ -131,6 +131,330 @@ func TestGetTargetsNeedingNextStep_FiltersDoneAndFresh(t *testing.T) {
 	}
 }
 
+// --- per-target attempt budget (migration 00068) ---
+//
+// These pin the eligibility predicate GetTargetsNeedingNextStep adds on top
+// of staleness: a target that has burned 3 attempts on the current UTC
+// calendar day is excluded UNLESS it was edited since its last attempt (a
+// fresh problem, not a retry) or the UTC day has rolled over (the daily
+// budget resets). Every fixture here seeds at least two targets so a
+// single-target assertion can never pass for a global-counter implementation
+// by accident — see the wave-3 guard-shape note in the task brief.
+
+const isoUTC = "2006-01-02T15:04:05Z"
+
+// seedAttempts sets a target's per-target attempt-budget columns directly,
+// and independently its updated_at, so a test can construct the exact
+// ordering the eligibility predicate cares about without going through a real
+// generation cycle.
+func seedAttempts(t *testing.T, d *db.DB, id int64, attempts int, attemptedAt, updatedAt string) {
+	t.Helper()
+	if err := d.RecordTargetNextStepAttempt(int(id), attempts, attemptedAt); err != nil {
+		t.Fatalf("seed attempts for target %d: %v", id, err)
+	}
+	if _, err := d.Exec(`UPDATE targets SET updated_at = ? WHERE id = ?`, updatedAt, id); err != nil {
+		t.Fatalf("seed updated_at for target %d: %v", id, err)
+	}
+}
+
+// TestGetTargetsNeedingNextStep_AttemptBudgetPerTargetIsolation: an exhausted
+// target must not block a sibling target that still has budget — a global
+// counter would fail this the moment the first target burned all 3 attempts.
+func TestGetTargetsNeedingNextStep_AttemptBudgetPerTargetIsolation(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	exhausted := seedActiveTarget(t, d, "exhausted")
+	fresh := seedActiveTarget(t, d, "fresh")
+
+	now := time.Now().UTC().Format(isoUTC)
+	// Exhausted today, not edited since (attempted_at >= updated_at) — must
+	// be excluded, but must not affect the sibling target at all.
+	seedAttempts(t, d, exhausted, 3, now, now)
+
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	ids := map[int]bool{}
+	for _, tgt := range need {
+		ids[tgt.ID] = true
+	}
+	if ids[int(exhausted)] {
+		t.Error("target with 3 attempts today (not edited since) should be excluded")
+	}
+	if !ids[int(fresh)] {
+		t.Error("a sibling target with budget remaining must still be selected")
+	}
+}
+
+// TestGenerateNextStep_RepeatedFailuresClimbToThreeThenExcluded drives the
+// counter through the REAL write path — repeated GenerateNextStep calls on
+// the same target, same UTC day, with no manual seeding of
+// next_step_attempts/next_step_attempted_at — rather than seedAttempts'
+// direct-write shortcut. This is the one guard that can tell a working
+// increment branch apart from a `nextAttemptCount` that always returns 1: a
+// fixture built with seedAttempts starts the counter pre-loaded and never
+// exercises the "otherwise increment" arm at all, so a mutant that always
+// resets to 1 would still pass every other budget test in this file while
+// leaving the daily cap a permanent no-op.
+func TestGenerateNextStep_RepeatedFailuresClimbToThreeThenExcluded(t *testing.T) {
+	gen := &mockGenerator{err: fmt.Errorf("simulated AI failure")}
+	p, d := makeTestPipeline(t, gen)
+
+	id := seedActiveTarget(t, d, "repeatedly failing")
+
+	for i, want := range []int{1, 2, 3} {
+		if _, err := p.GenerateNextStep(context.Background(), int(id)); err == nil {
+			t.Fatalf("attempt %d: expected the simulated AI failure to surface", i+1)
+		}
+		tgt, err := d.GetTargetByID(int(id))
+		if err != nil {
+			t.Fatalf("reload after attempt %d: %v", i+1, err)
+		}
+		if tgt.NextStepAttempts != want {
+			t.Fatalf("after attempt %d: expected next_step_attempts=%d, got %d", i+1, want, tgt.NextStepAttempts)
+		}
+		if tgt.NextStep != "" {
+			t.Fatalf("a failed attempt must never persist a next_step, got %q", tgt.NextStep)
+		}
+	}
+
+	// Only after the third real failure, same UTC day, does the eligibility
+	// predicate exclude the target.
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	for _, cand := range need {
+		if cand.ID == int(id) {
+			t.Fatal("a target with 3 real same-day failures must be excluded from the next batch")
+		}
+	}
+}
+
+// TestGetTargetsNeedingNextStep_UTCDayRolloverGrantsFreshBudget: an exhausted
+// target from a previous UTC calendar day is eligible again today, with a
+// full fresh budget (not one straggler attempt) — nextAttemptCount must reset
+// to 1, not continue counting from 3.
+func TestGetTargetsNeedingNextStep_UTCDayRolloverGrantsFreshBudget(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	rolledOver := seedActiveTarget(t, d, "rolled-over")
+	stillToday := seedActiveTarget(t, d, "still-exhausted-today")
+
+	now := time.Now().UTC()
+	yesterday := now.AddDate(0, 0, -1).Format(isoUTC)
+	today := now.Format(isoUTC)
+
+	// Exhausted yesterday, never edited since — the day boundary alone must
+	// grant a fresh budget.
+	seedAttempts(t, d, rolledOver, 3, yesterday, yesterday)
+	// Exhausted today, not edited since — the negative control: must stay excluded.
+	seedAttempts(t, d, stillToday, 3, today, today)
+
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	ids := map[int]bool{}
+	for _, tgt := range need {
+		ids[tgt.ID] = true
+	}
+	if !ids[int(rolledOver)] {
+		t.Error("a target exhausted on a previous UTC day should be eligible again today")
+	}
+	if ids[int(stillToday)] {
+		t.Error("a target exhausted today (not edited, no rollover) should stay excluded")
+	}
+
+	// The reset must be a fresh full budget, not "one more attempt": the
+	// counter itself resets to 1, so today's cycle can still make 2 more
+	// attempts after this one — not immediately re-exhaust on the next try.
+	reloaded, err := d.GetTargetByID(int(rolledOver))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	if got := nextAttemptCount(reloaded, now); got != 1 {
+		t.Errorf("day rollover must reset the counter to 1, got %d", got)
+	}
+}
+
+// TestGetTargetsNeedingNextStep_FreshEditGrantsBudgetSameDay: the controller's
+// ruling — a target edited since its last failed attempt gets a fresh budget
+// immediately, same UTC day, no rollover needed, because it is a new problem
+// rather than a retry of the same failure.
+func TestGetTargetsNeedingNextStep_FreshEditGrantsBudgetSameDay(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	edited := seedActiveTarget(t, d, "edited-after-exhaustion")
+
+	now := time.Now().UTC()
+	attemptedAt := now.Add(-1 * time.Hour).Format(isoUTC)
+	editedAt := now.Format(isoUTC)
+
+	// Exhausted an hour ago, then edited (updated_at moved past attempted_at)
+	// — same UTC calendar day throughout, so only the fresh-edit escape can
+	// explain eligibility here.
+	seedAttempts(t, d, edited, 3, attemptedAt, editedAt)
+
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	found := false
+	for _, tgt := range need {
+		if tgt.ID == int(edited) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a target edited since its last exhausted attempt must be eligible immediately")
+	}
+
+	reloaded, err := d.GetTargetByID(int(edited))
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	if got := nextAttemptCount(reloaded, now); got != 1 {
+		t.Errorf("a fresh edit must reset the counter to 1 regardless of the old attempt count, got %d", got)
+	}
+}
+
+// TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh: a
+// successful generation must never leave attempt-budget state that later
+// blocks a legitimate refresh once the target is edited again.
+// targetNeedsNextStep reports whether id appears in a
+// GetTargetsNeedingNextStep result — the repeated arrange/assert scan lifted
+// out of TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh to
+// keep that test's own cyclomatic complexity down (gocyclo).
+func targetNeedsNextStep(need []db.Target, id int64) bool {
+	for _, cand := range need {
+		if cand.ID == int(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// reloadTarget re-fetches a target by id, failing the test with context on
+// error — the repeated "reload and check" step split out of
+// TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh.
+func reloadTarget(t *testing.T, d *db.DB, id int64, when string) *db.Target {
+	t.Helper()
+	tgt, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload %s: %v", when, err)
+	}
+	return tgt
+}
+
+func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
+	p, d := makeTestPipeline(t, gen)
+
+	id := seedActiveTarget(t, d, "will succeed then be edited")
+
+	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
+		t.Fatalf("GenerateNextStep: %v", err)
+	}
+	tgt := reloadTarget(t, d, id, "after success")
+	if tgt.NextStepAttempts != 1 || tgt.NextStepAttemptedAt == "" {
+		t.Fatalf("expected the successful attempt to be recorded, got %+v", tgt)
+	}
+
+	// Not stale yet (next_step_at is fresh) — must not be reselected.
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	if targetNeedsNextStep(need, id) {
+		t.Fatal("a freshly-succeeded target must not be reselected before it goes stale")
+	}
+
+	// Now simulate an owner edit: bump updated_at past both next_step_at and
+	// next_step_attempted_at (a real edit would also do this via UpdateTarget).
+	later := time.Now().UTC().Add(time.Minute).Format(isoUTC)
+	if _, err := d.Exec(`UPDATE targets SET updated_at = ? WHERE id = ?`, later, id); err != nil {
+		t.Fatalf("simulate edit: %v", err)
+	}
+
+	need, err = d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep after edit: %v", err)
+	}
+	if !targetNeedsNextStep(need, id) {
+		t.Fatal("editing the target after a successful generation must make it eligible for refresh again")
+	}
+
+	// And a second generation succeeds again, with the counter reset to 1 —
+	// the one prior success never compounds into a blocking count.
+	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
+		t.Fatalf("second GenerateNextStep: %v", err)
+	}
+	tgt = reloadTarget(t, d, id, "after second success")
+	if tgt.NextStepAttempts != 1 {
+		t.Errorf("post-edit attempt must reset the counter to 1, got %d", tgt.NextStepAttempts)
+	}
+}
+
+// TestGenerateAllNextSteps_ExhaustedTargetExcludedFromBatch: end-to-end
+// through the real batch entry point — an exhausted target is skipped
+// entirely (never even calls the AI), while a sibling target with budget
+// remaining is still processed and succeeds. This is the two-target guard
+// TestGenerateAllNextSteps_PerTargetFailureIsolation cannot provide on its
+// own, since that test never exhausts anyone's budget.
+func TestGenerateAllNextSteps_ExhaustedTargetExcludedFromBatch(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
+	p, d := makeTestPipeline(t, gen)
+
+	exhausted := seedActiveTarget(t, d, "exhausted")
+	fresh := seedActiveTarget(t, d, "fresh")
+
+	now := time.Now().UTC().Format(isoUTC)
+	seedAttempts(t, d, exhausted, 3, now, now)
+
+	done, attempted, err := p.GenerateAllNextSteps(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateAllNextSteps: %v", err)
+	}
+	if attempted != 1 {
+		t.Fatalf("expected only the non-exhausted target to be selected, got %d", attempted)
+	}
+	if done != 1 {
+		t.Fatalf("expected 1 successful generation, got %d", done)
+	}
+	if gen.calls() != 1 {
+		t.Fatalf("the exhausted target must never reach the AI, got %d calls", gen.calls())
+	}
+
+	freshTgt, err := d.GetTargetByID(int(fresh))
+	if err != nil {
+		t.Fatalf("reload fresh target: %v", err)
+	}
+	if freshTgt.NextStep == "" {
+		t.Error("the non-exhausted sibling should have its next_step generated")
+	}
+	exhaustedTgt, err := d.GetTargetByID(int(exhausted))
+	if err != nil {
+		t.Fatalf("reload exhausted target: %v", err)
+	}
+	if exhaustedTgt.NextStepAttempts != 3 {
+		t.Errorf("the exhausted target's attempt count must be untouched by the batch, got %d", exhaustedTgt.NextStepAttempts)
+	}
+}
+
 // TestGenerateNextStep_SystemPromptCarriesLanguageDirective enforces the
 // prompts.Directive contract (F7): the next-step system prompt must carry the
 // configured response language instead of silently defaulting to English.
@@ -179,12 +503,15 @@ func TestGenerateAllNextSteps_PerTargetFailureIsolation(t *testing.T) {
 	bad := seedActiveTarget(t, d, "FAILME beta")
 	goodB := seedActiveTarget(t, d, "gamma")
 
-	n, err := p.GenerateAllNextSteps(context.Background())
+	n, attempted, err := p.GenerateAllNextSteps(context.Background())
 	if err != nil {
 		t.Fatalf("GenerateAllNextSteps: %v", err)
 	}
 	if n != 2 {
 		t.Fatalf("expected 2 successful generations, got %d", n)
+	}
+	if attempted != 3 {
+		t.Fatalf("expected 3 targets selected into the batch, got %d", attempted)
 	}
 	for _, id := range []int64{goodA, goodB} {
 		tgt, err := d.GetTargetByID(int(id))
@@ -210,12 +537,15 @@ func TestGenerateAllNextSteps_ZeroTargetsCleanExit(t *testing.T) {
 	gen := &mockGenerator{responses: []string{`{"title":"never","actions":[]}`}}
 	p, _ := makeTestPipeline(t, gen)
 
-	n, err := p.GenerateAllNextSteps(context.Background())
+	n, attempted, err := p.GenerateAllNextSteps(context.Background())
 	if err != nil {
 		t.Fatalf("GenerateAllNextSteps on empty DB: %v", err)
 	}
 	if n != 0 {
 		t.Fatalf("expected 0 generations, got %d", n)
+	}
+	if attempted != 0 {
+		t.Fatalf("expected 0 targets attempted, got %d", attempted)
 	}
 	if gen.calls() != 0 {
 		t.Fatalf("AI must not be called with zero targets, got %d calls", gen.calls())
@@ -239,12 +569,15 @@ func TestGenerateAllNextSteps_RespectsActiveSnapshotLimit(t *testing.T) {
 		seedActiveTarget(t, d, text)
 	}
 
-	n, err := p.GenerateAllNextSteps(context.Background())
+	n, attempted, err := p.GenerateAllNextSteps(context.Background())
 	if err != nil {
 		t.Fatalf("GenerateAllNextSteps: %v", err)
 	}
 	if n != 1 {
 		t.Fatalf("expected the limit to cap the batch at 1, got %d", n)
+	}
+	if attempted != 1 {
+		t.Fatalf("expected the limit to cap attempted at 1, got %d", attempted)
 	}
 	if gen.calls() != 1 {
 		t.Fatalf("expected exactly 1 AI call, got %d", gen.calls())

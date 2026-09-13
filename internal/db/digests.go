@@ -244,6 +244,17 @@ func (db *DB) MarkDigestRead(id int) error {
 	return nil
 }
 
+// ResetDigestReadAt clears a digest's read_at back to unread. Used only by the
+// daily rollup's regeneration path: when its content genuinely changes
+// underneath a prior read, the owner should see it as unread again.
+func (db *DB) ResetDigestReadAt(id int64) error {
+	_, err := db.Exec(`UPDATE digests SET read_at = NULL WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("resetting read_at for digest %d: %w", id, err)
+	}
+	return nil
+}
+
 // markDigestDecisionsRead inserts a decision_reads row for every decision index
 // in the digest's decisions JSON array. Best-effort on malformed JSON: the digest
 // read itself stands and a corrupt decisions blob is skipped rather than failing.

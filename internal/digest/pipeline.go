@@ -1096,7 +1096,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		}
 	}
 
-	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv); err != nil {
+	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
 		p.logger.Printf("digest: error storing digest for #%s: %v", e.channelName, err)
 		agg.recordError(err)
 		done := int(agg.completed.Add(1))
@@ -1316,7 +1316,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 		}
 	}
 
-	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion); err != nil {
+	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion, false); err != nil {
 		p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
 		agg.recordError(err)
 		return false
@@ -1333,6 +1333,63 @@ func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	return p.runDailyRollupForDate(ctx, dayStart)
+}
+
+// dailyRollupNeeded reports whether the daily rollup for [fromUnix, toUnix]
+// should be (re)generated: true when no existing daily row covers this window
+// yet (first rollup of the day), or when some channel digest is newer than
+// the existing row's own created_at (new material has landed since).
+func (p *Pipeline) dailyRollupNeeded(fromUnix, toUnix float64, channelDigests []db.Digest) (bool, error) {
+	existing, err := p.db.GetDigestsOverlapping("daily", fromUnix, toUnix)
+	if err != nil {
+		return false, err
+	}
+	if len(existing) == 0 {
+		return true, nil
+	}
+	return newestCreatedAt(channelDigests) > existing[0].CreatedAt, nil
+}
+
+// newestCreatedAt returns the lexically greatest created_at among digests.
+// Comparing lexically is safe: UpsertDigest always writes created_at via
+// strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), a fixed-width ISO8601 string that
+// sorts identically to chronological order — no need to time.Parse it.
+func newestCreatedAt(digests []db.Digest) string {
+	newest := ""
+	for _, d := range digests {
+		if d.CreatedAt > newest {
+			newest = d.CreatedAt
+		}
+	}
+	return newest
+}
+
+// formatDailyRollupChannelInput renders each channel digest (and its topics'
+// decisions, or the legacy flat decisions field when a digest predates
+// topics) into the prompt text block the daily rollup is generated from.
+// AI-generated values are sanitized against prompt injection via prior output.
+func (p *Pipeline) formatDailyRollupChannelInput(channelDigests []db.Digest) string {
+	var sb strings.Builder
+	for _, d := range channelDigests {
+		name := p.channelName(d.ChannelID)
+		summary := sanitizePromptValue(d.Summary)
+		fmt.Fprintf(&sb, "### #%s [channel_id=%s] (%d messages)\nSummary: %s\n", name, d.ChannelID, d.MessageCount, summary)
+		topics, _ := p.db.GetDigestTopics(d.ID)
+		if len(topics) > 0 {
+			fmt.Fprintf(&sb, "Topics:\n")
+			for _, t := range topics {
+				fmt.Fprintf(&sb, "- %s: %s\n", sanitizePromptValue(t.Title), sanitizePromptValue(t.Summary))
+				if t.Decisions != "" && t.Decisions != "[]" {
+					fmt.Fprintf(&sb, "  Decisions: %s\n", sanitizePromptValue(t.Decisions))
+				}
+			}
+		} else if d.Decisions != "" && d.Decisions != "[]" {
+			// Fallback for old digests without topics
+			fmt.Fprintf(&sb, "Decisions: %s\n", sanitizePromptValue(d.Decisions))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 // runDailyRollupForDate generates a daily rollup for the given date.
@@ -1354,32 +1411,17 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		return nil // not enough data for a rollup
 	}
 
-	var sb strings.Builder
-	for _, d := range channelDigests {
-		name := p.channelName(d.ChannelID)
-		// Sanitize AI-generated values to prevent prompt injection via prior AI output
-		summary := sanitizePromptValue(d.Summary)
-		fmt.Fprintf(&sb, "### #%s [channel_id=%s] (%d messages)\nSummary: %s\n", name, d.ChannelID, d.MessageCount, summary)
-		// Include topics with their decisions for the rollup
-		topics, _ := p.db.GetDigestTopics(d.ID)
-		if len(topics) > 0 {
-			fmt.Fprintf(&sb, "Topics:\n")
-			for _, t := range topics {
-				fmt.Fprintf(&sb, "- %s: %s\n", sanitizePromptValue(t.Title), sanitizePromptValue(t.Summary))
-				if t.Decisions != "" && t.Decisions != "[]" {
-					fmt.Fprintf(&sb, "  Decisions: %s\n", sanitizePromptValue(t.Decisions))
-				}
-			}
-		} else if d.Decisions != "" && d.Decisions != "[]" {
-			// Fallback for old digests without topics
-			fmt.Fprintf(&sb, "Decisions: %s\n", sanitizePromptValue(d.Decisions))
-		}
-		sb.WriteString("\n")
+	needed, err := p.dailyRollupNeeded(fromUnix, toUnix, channelDigests)
+	if err != nil {
+		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
+	}
+	if !needed {
+		return nil // nothing new since the last rollup for this day
 	}
 
 	// Prepend chain context if available (decisions grouped into chains are shown
 	// as chain updates rather than repeated individually).
-	channelInput := sb.String()
+	channelInput := p.formatDailyRollupChannelInput(channelDigests)
 	if p.TrackContext != "" {
 		channelInput = p.TrackContext + "\n" + channelInput
 	}
@@ -1410,7 +1452,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv)
+	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true)
 }
 
 // RunWeeklyTrends generates a weekly trends digest from daily rollups.
@@ -1482,7 +1524,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv)
+	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false)
 }
 
 // RunPeriodSummary generates a summary across all digests in the given time range.
@@ -1644,7 +1686,24 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 	return result, usage, pv, nil
 }
 
-func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int) error {
+// digestContentChanged reports whether summary/topics differ from the
+// existing row for this exact (digestType, from, to) window — the two fields
+// the digests table itself carries as content, per decision 9's "reset on
+// content change" wording; no hash column, no schema change. No prior row at
+// all (the first-ever write) counts as changed.
+func (p *Pipeline) digestContentChanged(digestType string, from, to float64, summary, topics string) bool {
+	prior, err := p.db.GetDigestsOverlapping(digestType, from, to)
+	if err != nil || len(prior) == 0 {
+		return true
+	}
+	return prior[0].Summary != summary || prior[0].Topics != topics
+}
+
+// resetReadOnWrite, when true, clears an existing row's read_at back to
+// unread after the upsert — used only by the daily rollup's genuine
+// regeneration path (gated upstream in runDailyRollupForDate), so the owner
+// re-sees a rollup whose content actually changed underneath a prior read.
+func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool) error {
 	// Aggregate topics into flat arrays for legacy columns (backward compat).
 	var allTopicTitles []string
 	var allDecisions []Decision
@@ -1691,46 +1750,75 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		d.CostUSD = 0
 	}
 
+	// Capture whether this write actually changes content BEFORE the upsert
+	// overwrites the prior row, so a resetReadOnWrite caller can tell
+	// "content changed" from "regenerated byte-identical output" (decision
+	// 9's literal wording is "reset on content change", not "reset on every
+	// regeneration").
+	var contentChanged bool
+	if resetReadOnWrite {
+		contentChanged = p.digestContentChanged(digestType, from, to, d.Summary, d.Topics)
+	}
+
 	digestID, err := p.db.UpsertDigest(d)
 	if err != nil {
 		return err
 	}
 
-	// Store structured topics in digest_topics table.
-	if len(result.Topics) > 0 {
-		var dbTopics []db.DigestTopic
-		for i, t := range result.Topics {
-			ai, _ := json.Marshal(t.ActionItems)
-			sit, _ := json.Marshal(t.Situations)
-			km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
-			dbTopics = append(dbTopics, db.DigestTopic{
-				Idx:         i,
-				Title:       t.Title,
-				Summary:     t.Summary,
-				Decisions:   marshalArray(t.Decisions),
-				ActionItems: string(ai),
-				Situations:  string(sit),
-				KeyMessages: string(km),
-				Ideas:       marshalArray(t.Ideas),
-			})
-		}
-		if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
-			p.logger.Printf("warning: failed to store digest topics: %v", err)
+	if resetReadOnWrite && contentChanged {
+		if err := p.db.ResetDigestReadAt(digestID); err != nil {
+			p.logger.Printf("warning: failed to reset read_at for digest %d: %v", digestID, err)
 		}
 	}
 
-	// Detect Jira keys in digest decisions.
-	if p.jiraKeyDetector != nil {
-		for _, t := range result.Topics {
-			for _, dec := range t.Decisions {
-				if _, err := p.jiraKeyDetector.ProcessDigestDecision(int(digestID), channelID, dec.Text); err != nil {
-					p.logger.Printf("warning: jira key detection in decision failed: %v", err)
-				}
+	p.storeDigestTopics(digestID, result.Topics)
+	p.detectJiraKeysInDecisions(digestID, channelID, result.Topics)
+
+	return nil
+}
+
+// storeDigestTopics persists result's per-topic structure into the
+// digest_topics table. Best-effort: a write failure is logged, not fatal —
+// the digests row itself already committed.
+func (p *Pipeline) storeDigestTopics(digestID int64, topics []Topic) {
+	if len(topics) == 0 {
+		return
+	}
+	var dbTopics []db.DigestTopic
+	for i, t := range topics {
+		ai, _ := json.Marshal(t.ActionItems)
+		sit, _ := json.Marshal(t.Situations)
+		km, _ := json.Marshal(filterValidTimestamps(t.KeyMessages))
+		dbTopics = append(dbTopics, db.DigestTopic{
+			Idx:         i,
+			Title:       t.Title,
+			Summary:     t.Summary,
+			Decisions:   marshalArray(t.Decisions),
+			ActionItems: string(ai),
+			Situations:  string(sit),
+			KeyMessages: string(km),
+			Ideas:       marshalArray(t.Ideas),
+		})
+	}
+	if err := p.db.InsertDigestTopics(digestID, dbTopics); err != nil {
+		p.logger.Printf("warning: failed to store digest topics: %v", err)
+	}
+}
+
+// detectJiraKeysInDecisions runs the Jira key detector (when configured) over
+// every decision text across topics. Best-effort: a per-decision failure is
+// logged and does not stop the scan of the rest.
+func (p *Pipeline) detectJiraKeysInDecisions(digestID int64, channelID string, topics []Topic) {
+	if p.jiraKeyDetector == nil {
+		return
+	}
+	for _, t := range topics {
+		for _, dec := range t.Decisions {
+			if _, err := p.jiraKeyDetector.ProcessDigestDecision(int(digestID), channelID, dec.Text); err != nil {
+				p.logger.Printf("warning: jira key detection in decision failed: %v", err)
 			}
 		}
 	}
-
-	return nil
 }
 
 // marshalArray renders a slice as JSON, emitting "[]" — never "null" — for an
