@@ -545,7 +545,7 @@ func TestRunDailyRollup_SkipsWithoutNewChannelDigest(t *testing.T) {
 	dailyID := digests[0].ID
 
 	// Simulate the owner having already read today's rollup.
-	require.NoError(t, database.MarkDigestRead(int(dailyID)))
+	require.NoError(t, database.MarkDigestRead(dailyID))
 
 	// Second cycle, same day, no new channel digest material: must be a no-op.
 	gen.response = `{"summary":"must never be written","topics":[]}`
@@ -598,7 +598,7 @@ func TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest(t *testing.
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	dailyID := digests[0].ID
-	require.NoError(t, database.MarkDigestRead(int(dailyID)))
+	require.NoError(t, database.MarkDigestRead(dailyID))
 
 	// Push the existing daily row's created_at into the past so a
 	// freshly-written channel digest unambiguously counts as "newer",
@@ -2024,7 +2024,7 @@ func TestStoreDigest_FalseDoesNotResetReadAt(t *testing.T) {
 	d, err := database.GetLatestDigest("C1", "channel")
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	require.NoError(t, database.MarkDigestRead(int(d.ID)))
+	require.NoError(t, database.MarkDigestRead(d.ID))
 
 	// Re-upsert the same (channel_id, type, period_from, period_to) row with
 	// different content and resetReadOnWrite=false, as every channel/weekly
