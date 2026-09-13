@@ -1096,7 +1096,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		}
 	}
 
-	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv); err != nil {
+	if err := p.storeDigest(e.channelID, "channel", sinceUnix, lastMsgTS, result, len(e.msgs), usage, pv, false); err != nil {
 		p.logger.Printf("digest: error storing digest for #%s: %v", e.channelName, err)
 		agg.recordError(err)
 		done := int(agg.completed.Add(1))
@@ -1316,7 +1316,7 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 		}
 	}
 
-	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion); err != nil {
+	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion, false); err != nil {
 		p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
 		agg.recordError(err)
 		return false
@@ -1352,6 +1352,27 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 
 	if len(channelDigests) < 2 {
 		return nil // not enough data for a rollup
+	}
+
+	// Skip regeneration unless this is the first rollup of the day or some
+	// channel digest has landed since the existing one was written. Comparing
+	// created_at lexically is safe: UpsertDigest always writes it via
+	// strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), a fixed-width ISO8601 string that
+	// sorts identically to chronological order — no need to time.Parse it.
+	existing, err := p.db.GetDigestsOverlapping("daily", fromUnix, toUnix)
+	if err != nil {
+		return fmt.Errorf("checking existing daily rollup for %s: %w", dayStart.Format("2006-01-02"), err)
+	}
+	if len(existing) > 0 {
+		newestChannelDigestAt := ""
+		for _, d := range channelDigests {
+			if d.CreatedAt > newestChannelDigestAt {
+				newestChannelDigestAt = d.CreatedAt
+			}
+		}
+		if newestChannelDigestAt <= existing[0].CreatedAt {
+			return nil // nothing new since the last rollup for this day
+		}
 	}
 
 	var sb strings.Builder
@@ -1410,7 +1431,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv)
+	return p.storeDigest("", "daily", fromUnix, toUnix, result, totalMsgs, usage, pv, true)
 }
 
 // RunWeeklyTrends generates a weekly trends digest from daily rollups.
@@ -1482,7 +1503,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 		totalMsgs += d.MessageCount
 	}
 
-	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv)
+	return p.storeDigest("", "weekly", fromUnix, toUnix, result, totalMsgs, usage, pv, false)
 }
 
 // RunPeriodSummary generates a summary across all digests in the given time range.
@@ -1644,7 +1665,11 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 	return result, usage, pv, nil
 }
 
-func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int) error {
+// resetReadOnWrite, when true, clears an existing row's read_at back to
+// unread after the upsert — used only by the daily rollup's genuine
+// regeneration path (gated upstream in runDailyRollupForDate), so the owner
+// re-sees a rollup whose content actually changed underneath a prior read.
+func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, result *DigestResult, msgCount int, usage *Usage, promptVersion int, resetReadOnWrite bool) error {
 	// Aggregate topics into flat arrays for legacy columns (backward compat).
 	var allTopicTitles []string
 	var allDecisions []Decision
@@ -1694,6 +1719,12 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 	digestID, err := p.db.UpsertDigest(d)
 	if err != nil {
 		return err
+	}
+
+	if resetReadOnWrite {
+		if err := p.db.ResetDigestReadAt(digestID); err != nil {
+			p.logger.Printf("warning: failed to reset read_at for digest %d: %v", digestID, err)
+		}
 	}
 
 	// Store structured topics in digest_topics table.

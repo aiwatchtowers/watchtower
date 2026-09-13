@@ -36,7 +36,7 @@ func TestStoreDigest_EmptyIdeasAndDecisionsPersistAsEmptyArrays(t *testing.T) {
 			// ordinary case for a topic the model found nothing in.
 		}},
 	}
-	require.NoError(t, p.storeDigest("C1", "channel", 100, 200, result, 5, nil, 1))
+	require.NoError(t, p.storeDigest("C1", "channel", 100, 200, result, 5, nil, 1, false))
 
 	var ideas, decisions string
 	require.NoError(t, d.QueryRow(`SELECT ideas, decisions FROM digest_topics`).Scan(&ideas, &decisions))
@@ -66,7 +66,7 @@ func TestStoreDigest_MinedIdeasAndDecisionsSurvive(t *testing.T) {
 			Decisions: []Decision{{Text: "launch Friday", By: "Bob", MessageTS: "2.2"}},
 		}},
 	}
-	require.NoError(t, p.storeDigest("C1", "channel", 100, 200, result, 5, nil, 1))
+	require.NoError(t, p.storeDigest("C1", "channel", 100, 200, result, 5, nil, 1, false))
 
 	topics, err := d.ListDigestTopicIdeasAfter(0, 0, 0)
 	require.NoError(t, err)

@@ -504,6 +504,127 @@ func TestRunDailyRollup_NotEnoughDigests(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 }
 
+// TestRunDailyRollup_SkipsWithoutNewChannelDigest pins the cadence gate: once a
+// day's rollup exists and no channel digest has landed since, a follow-up call
+// (the daemon's every-15-min cycle) must neither call the generator again nor
+// disturb the existing row's content or read_at.
+func TestRunDailyRollup_SkipsWithoutNewChannelDigest(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.Equal(t, 1, gen.calls, "first cycle of the day must generate")
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	dailyID := digests[0].ID
+
+	// Simulate the owner having already read today's rollup.
+	require.NoError(t, database.MarkDigestRead(int(dailyID)))
+
+	// Second cycle, same day, no new channel digest material: must be a no-op.
+	gen.response = `{"summary":"must never be written","topics":[]}`
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	assert.Equal(t, 1, gen.calls, "an immediately following cycle with no new channel digest must not call the generator")
+
+	digests, err = database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Contains(t, digests[0].Summary, "first rollup", "content must be untouched when the cadence gate skips")
+	assert.NotEmpty(t, digests[0].ReadAt, "read_at must not be cleared without a genuine regeneration")
+}
+
+// TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest pins the other
+// half of the cadence gate: a channel digest newer than the existing daily row
+// must trigger regeneration and reset read_at, even if the rollup had been read.
+func TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C1", "frontend")
+	seedChannel(t, database, "C2", "backend")
+	seedChannel(t, database, "C3", "platform")
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	fromUnix := float64(dayStart.Unix())
+	toUnix := float64(now.Unix())
+
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
+	})
+	require.NoError(t, err)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C2", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
+	p := New(database, cfg, gen, testLogger())
+
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.Equal(t, 1, gen.calls)
+
+	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	dailyID := digests[0].ID
+	require.NoError(t, database.MarkDigestRead(int(dailyID)))
+
+	// Push the existing daily row's created_at into the past so a
+	// freshly-written channel digest unambiguously counts as "newer",
+	// independent of the test's own wall-clock resolution.
+	_, err = database.Exec(`UPDATE digests SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?`, dailyID)
+	require.NoError(t, err)
+
+	// New material lands: a third channel digest for the same day.
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C3", Type: "channel",
+		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		Summary: "Platform team rotated secrets", MessageCount: 8, Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	gen.response = `{"summary":"second rollup with new material","topics":[]}`
+	require.NoError(t, p.RunDailyRollup(context.Background()))
+	assert.Equal(t, 2, gen.calls, "a newer channel digest must trigger regeneration")
+
+	digests, err = database.GetDigests(db.DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Contains(t, digests[0].Summary, "second rollup with new material")
+	assert.Empty(t, digests[0].ReadAt, "a genuine regeneration must reset read_at")
+}
+
 func TestRunWeeklyTrends(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -574,7 +695,7 @@ func TestStoreDigest(t *testing.T) {
 		},
 	}
 
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0}, 0)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 42, &Usage{InputTokens: 500, OutputTokens: 200, CostUSD: 0}, 0, false)
 	require.NoError(t, err)
 
 	d, err := database.GetLatestDigest("C1", "channel")
@@ -1897,7 +2018,7 @@ func TestStoreDigest_NilUsage(t *testing.T) {
 		Topics:  []Topic{{Title: "a", Summary: "topic a"}},
 	}
 
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0, false)
 	require.NoError(t, err)
 
 	d, err := database.GetLatestDigest("C1", "channel")
@@ -1915,7 +2036,7 @@ func TestStoreDigest_WithPromptVersion(t *testing.T) {
 
 	result := &DigestResult{Summary: "versioned", Topics: []Topic{{Title: "t1", Summary: "topic"}}}
 	// Store with prompt version 3 — verifies that storeDigest accepts and passes it.
-	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 5, &Usage{InputTokens: 10, OutputTokens: 5}, 3)
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 5, &Usage{InputTokens: 10, OutputTokens: 5}, 3, false)
 	require.NoError(t, err)
 
 	// Verify via GetDigests (prompt_version may not be scanned, but
