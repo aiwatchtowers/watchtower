@@ -574,6 +574,16 @@ func TestIdeas01_RaisedPromptBudgetDoesNotRaiseTheDrainCeiling(t *testing.T) {
 // to it, so the floor must stop at the last message actually rendered, not at
 // the thread's newest. The cap keeps the OLDEST messages precisely so the
 // remainder can stay above the floor and be mined next run.
+//
+// There is deliberately NO Jira twin of this test, and nobody forgot to write
+// one: it would fail. Gmail's floor is message-granular (renderedEmailWindow
+// walks message ids), so a thread's excluded tail is itself an unrendered unit
+// and holds the floor below it. Jira's floor is issue-granular
+// (renderedJiraFloor matches whole issue keys), so an issue's comments past
+// maxCommentsPerIssue cannot hold the floor below the issue and are not
+// re-listed — a stated limitation, not an oversight. See
+// maxCommentsPerIssue's comment and the "Known limitation" paragraph in
+// docs/inventory/ideas.md's IDEA-01.
 func TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
