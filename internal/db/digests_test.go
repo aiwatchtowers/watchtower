@@ -420,6 +420,12 @@ func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {
 	// A later Slack sync must not clear the mark.
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general-renamed", Type: "public", Topic: "t"}))
 	assert.Equal(t, int64(3000), consideredTS(), "UpsertChannel must not clear the digest considered mark")
+
+	// A channel with no row would swallow the write and stall forever, so the
+	// no-op must be reported rather than pass for a successful stamp.
+	err = db.SetChannelDigestConsideredTS("C_MISSING", 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "C_MISSING")
 }
 
 func TestDigestTypeConstraint(t *testing.T) {

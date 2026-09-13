@@ -419,7 +419,11 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]Chan
 			GROUP BY channel_id
 		) d ON d.channel_id = m.channel_id
 		LEFT JOIN channels c ON c.id = m.channel_id
-		GROUP BY m.channel_id, d.period_to, c.digest_considered_ts
+		-- Group by the channel alone: both joins match at most one row per
+		-- channel, so the bare d/c columns are functionally dependent on it.
+		-- Adding them to the GROUP BY costs two temp B-trees (one for the group,
+		-- one for the order) on a query that runs every digest cycle.
+		GROUP BY m.channel_id
 		HAVING MAX(m.ts_unix) > CASE
 			WHEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)) > 0
 			THEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0))

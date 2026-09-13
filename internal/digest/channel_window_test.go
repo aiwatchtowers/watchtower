@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -143,6 +144,18 @@ func (g *promptCapturingGenerator) prompt(t *testing.T, i int) string {
 	return g.prompts[i]
 }
 
+// sawPrompt reports whether any prompt so far contained needle.
+func (g *promptCapturingGenerator) sawPrompt(needle string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, p := range g.prompts {
+		if strings.Contains(p, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestChannelWindow_DeclinedChannelStillMovesOn pins the stall that a
 // per-channel window derived from digests.period_to alone creates. The batch
 // prompt tells the model to SKIP channels where nothing noteworthy happened, so
@@ -250,34 +263,206 @@ func TestChannelWindow_BacklogBeyondMessageCapDrainsForward(t *testing.T) {
 }
 
 // TestChannelWindow_CappedChannelsAreDeferredNotDropped covers the second loss
-// path of the same defect: the per-run batch budget drops batches after the
-// cap, and with a global watermark those channels' messages fell below the next
-// window start. With per-channel windows a capped channel simply has no digest
-// yet, so its full backlog is still inside its next window.
+// path of the same defect, driving the real per-run batch budget: with more
+// batches than config.DefaultMaxBatchesPerRun, planChannelBatches drops the
+// smallest ones, and under a global watermark the successes of the batches that
+// did run moved the next window start past the dropped channels' messages. The
+// deferred channel must still be a CANDIDATE next cycle — asserting only that
+// its window is wide would also pass if it had been dropped from the candidate
+// set entirely, which is the failure being guarded against.
 func TestChannelWindow_CappedChannelsAreDeferredNotDropped(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
+	cfg.Digest.MinMessages = 5
+	cfg.Digest.BatchMaxChannels = 1 // one channel per batch, so channels == batches
 
 	seedUser(t, database, "U1", "alice", "Alice")
 	firstTS := time.Now().Add(-2 * time.Hour).Unix()
 
-	// C_DIGESTED was digested up to now; C_DEFERRED never was, and its messages
-	// are older than that digest's period_to.
-	seedChannel(t, database, "C_DIGESTED", "digested")
-	seedChannel(t, database, "C_DEFERRED", "deferred")
-	for i := range 5 {
-		ts := fmt.Sprintf("%d.%06d", firstTS+int64(i*10), i)
-		seedMessage(t, database, "C_DEFERRED", ts, "U1", fmt.Sprintf("deferred msg %d", i))
+	// One channel more than the budget allows. The smallest sorts last in the
+	// cap's by-message-count ordering, so it is deterministically the one
+	// dropped; its newest message is older than every other channel's, so a
+	// global watermark would bury it.
+	const channels = config.DefaultMaxBatchesPerRun + 1
+	const deferredID = "C_DEFERRED"
+	for c := range channels - 1 {
+		id := fmt.Sprintf("C%d", c)
+		seedChannel(t, database, id, fmt.Sprintf("chan-%d", c))
+		for i := range 35 {
+			ts := fmt.Sprintf("%d.%06d", firstTS+int64(i*10), i)
+			seedMessage(t, database, id, ts, "U1", fmt.Sprintf("msg %d", i))
+		}
 	}
-	_, err := database.UpsertDigest(db.Digest{
-		ChannelID: "C_DIGESTED", Type: "channel",
-		PeriodFrom: float64(firstTS), PeriodTo: float64(time.Now().Unix()),
-		Summary: "covered", MessageCount: 5, Model: "haiku",
-	})
+	seedChannel(t, database, deferredID, "deferred")
+	for i := range 30 {
+		ts := fmt.Sprintf("%d.%06d", firstTS+int64(i*10), i)
+		seedMessage(t, database, deferredID, ts, "U1", fmt.Sprintf("deferred msg %d", i))
+	}
+
+	gen := &threadSafeMockGenerator{response: validDigestJSON()}
+	p := New(database, cfg, gen, testLogger())
+
+	n, _, err := p.RunChannelDigests(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, config.DefaultMaxBatchesPerRun, n, "the per-run batch budget caps the cycle")
+
+	deferred, err := database.GetLatestDigest(deferredID, "channel")
+	require.NoError(t, err)
+	require.Nil(t, deferred, "the capped-out channel was not digested")
+
+	since := windowFor(t, p, deferredID)
+	require.GreaterOrEqual(t, since, 0.0, "the capped-out channel must still be a candidate next cycle")
+	assert.Less(t, since, float64(firstTS), "its window must still cover the messages it never digested")
+
+	n, _, err = p.RunChannelDigests(context.Background())
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, 1)
+
+	deferred, err = database.GetLatestDigest(deferredID, "channel")
+	require.NoError(t, err)
+	require.NotNil(t, deferred, "the deferred channel is digested on the next cycle")
+	assert.Equal(t, 30, deferred.MessageCount, "with all of its backlog, none of it dropped")
+}
+
+// TestChannelWindow_BotOnlyBacklogDoesNotLockOutLaterHumanMessages pins the
+// mechanical-skip half of the considered-through mark. buildBatchEntry drops a
+// bot-only or no-visible-text channel BEFORE any AI call, so without a stamp on
+// those decisions the window never moves — and with an oldest-first load capped
+// at db.DefaultTimeRangeLimit rows, a backlog wider than the cap pins the window
+// at its head permanently: every later message, human ones included, is never
+// even loaded. A mechanical skip is a decision code made over messages it fully
+// read, so it counts as considered; only a failed load stamps nothing.
+func TestChannelWindow_BotOnlyBacklogDoesNotLockOutLaterHumanMessages(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS", "alerts")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	const bots = db.DefaultTimeRangeLimit + 50
+	firstTS := time.Now().Add(-6 * time.Hour).Unix()
+	for i := range bots {
+		seedMessage(t, database, "C_ALERTS", fmt.Sprintf("%d.000000", firstTS+int64(i)), "UBOT", fmt.Sprintf("alert %d", i))
+	}
+	seedMessage(t, database, "C_ALERTS",
+		fmt.Sprintf("%d.000000", firstTS+int64(bots)+60), "U1", "human-needs-this-digested")
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	reached := false
+	for range 5 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+		if gen.sawPrompt("human-needs-this-digested") {
+			reached = true
+			break
+		}
+	}
+	assert.True(t, reached,
+		"a bot-only backlog wider than the row cap must not lock the channel out of every later prompt")
+}
+
+// TestChannelWindow_WholeSecondBurstOvershootsTheRowCap covers the one load the
+// cap must be allowed to exceed. When every row of a capped load shares one
+// ts_unix second, trimming the partial boundary second would leave nothing to
+// render — and because the next window starts AT that second, the load would
+// refill with exactly those rows every cycle and never reach anything after
+// them. Reloading past the cap keeps the channel moving; the overshoot is
+// bounded by db.BoundarySecondRowLimit.
+func TestChannelWindow_WholeSecondBurstOvershootsTheRowCap(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1 // keep the cooldown out of the way on cycle two
+
+	seedChannel(t, database, "C_BURST", "burst")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	const inOneSecond = db.DefaultTimeRangeLimit + 20
+	sec := time.Now().Add(-2 * time.Hour).Unix()
+	for i := range inOneSecond {
+		seedMessage(t, database, "C_BURST", fmt.Sprintf("%d.%06d", sec, i+1), "U1", fmt.Sprintf("burst-%d-end", i))
+	}
+	seedMessage(t, database, "C_BURST", fmt.Sprintf("%d.000000", sec+120), "U1", "after-the-burst")
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	_, _, err := p.RunChannelDigests(context.Background())
 	require.NoError(t, err)
 
-	p := New(database, cfg, &mockGenerator{response: validDigestJSON()}, testLogger())
+	first := gen.prompt(t, 0)
+	assert.Contains(t, first, fmt.Sprintf("burst-%d-end", inOneSecond-1),
+		"the whole second must be rendered, over the row cap")
+	assert.Contains(t, first, "after-the-burst",
+		"the message after the burst must be reachable, not stranded behind a window that never moves")
 
-	assert.Less(t, windowFor(t, p, "C_DEFERRED"), float64(firstTS),
-		"a channel that was never digested keeps its whole backlog inside its next window")
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_BURST"),
+		"with the burst consumed the channel has nothing left to offer")
+}
+
+// TestChannelWindow_StoreFailureLeavesTheChannelUnstamped pins the other half of
+// the stamping rule: the AI call returned, but this channel's own digest never
+// reached the database, so its window must not advance and the next cycle must
+// re-render it.
+func TestChannelWindow_StoreFailureLeavesTheChannelUnstamped(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1
+
+	seedChannel(t, database, "C_OK", "stores-fine")
+	seedChannel(t, database, "C_BROKEN", "store-fails")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	firstTS := time.Now().Add(-2 * time.Hour).Unix()
+	for i := range 4 {
+		ts := fmt.Sprintf("%d.%06d", firstTS+int64(i*10), i)
+		seedMessage(t, database, "C_OK", ts, "U1", fmt.Sprintf("ok-msg-%d", i))
+		seedMessage(t, database, "C_BROKEN", ts, "U1", fmt.Sprintf("broken-msg-%d", i))
+	}
+
+	// Fail the store of one channel's digest inside a batch whose AI call
+	// succeeds for both channels.
+	_, err := database.Exec(`CREATE TRIGGER fail_broken_digest BEFORE INSERT ON digests
+		WHEN NEW.channel_id = 'C_BROKEN'
+		BEGIN SELECT RAISE(ABORT, 'simulated store failure'); END`)
+	require.NoError(t, err)
+
+	topics := `"topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]`
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel_batch": fmt.Sprintf(
+			`[{"channel_id":"C_OK","summary":"ok",%s},{"channel_id":"C_BROKEN","summary":"broken",%s}]`, topics, topics),
+		"digest.channel": validDigestJSON(),
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	n, _, err := p.RunChannelDigests(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "only the channel whose store worked produced a digest")
+
+	// The store recovers; the next cycle must re-render everything it lost.
+	_, err = database.Exec(`DROP TRIGGER fail_broken_digest`)
+	require.NoError(t, err)
+
+	before := len(gen.prompts)
+	_, _, err = p.RunChannelDigests(context.Background())
+	require.NoError(t, err)
+
+	second := gen.prompt(t, before)
+	assert.Contains(t, second, "broken-msg-0",
+		"a store failure must not advance the channel's mark — its messages are re-rendered")
+	assert.NotContains(t, second, "ok-msg-0",
+		"the channel that stored fine has moved on")
+
+	broken, err := database.GetLatestDigest("C_BROKEN", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, broken)
+	assert.Equal(t, 4, broken.MessageCount, "all four messages survived the failed store")
 }

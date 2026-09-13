@@ -12,6 +12,13 @@ const (
 	DefaultChannelActivityLimit = 10
 	DefaultUserActivityLimit    = 5
 	DefaultSearchLimit          = 50
+
+	// BoundarySecondRowLimit bounds the one digest load allowed to overshoot
+	// DefaultTimeRangeLimit: a window whose first DefaultTimeRangeLimit rows all
+	// share a single ts_unix second, which can only make forward progress by
+	// taking that whole second at once. Slack cannot deliver this many messages
+	// in one second in one channel, so it is a ceiling, not a working limit.
+	BoundarySecondRowLimit = DefaultTimeRangeLimit * 20
 )
 
 // MessageOpts provides options for querying messages.
@@ -174,8 +181,8 @@ func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Mess
 	return scanMessages(rows)
 }
 
-// GetOldestMessagesByTimeRange returns messages in a channel within a Unix
-// timestamp range, OLDEST first, limited to DefaultTimeRangeLimit rows.
+// GetOldestMessagesByTimeRange returns up to limit messages in a channel within
+// a Unix timestamp range, OLDEST first.
 //
 // The direction is load-bearing for the channel-digest window, its only
 // caller. That window starts at the channel's own watermark and runs to now, so
@@ -186,14 +193,17 @@ func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Mess
 // back over it. GetMessagesByTimeRange keeps its newest-first contract for the
 // chat context builder, which wants the most recent messages and advances no
 // watermark.
-func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64) ([]Message, error) {
+//
+// The caller passes DefaultTimeRangeLimit normally and BoundarySecondRowLimit
+// for the one case that must overshoot it — see trimPartialBoundarySecond.
+func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64, limit int) ([]Message, error) {
 	rows, err := db.Query(`
 		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
 		FROM messages
 		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
 		ORDER BY ts_unix ASC
 		LIMIT ?`,
-		channelID, from, to, DefaultTimeRangeLimit,
+		channelID, from, to, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying oldest messages by time range: %w", err)

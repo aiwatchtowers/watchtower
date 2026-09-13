@@ -522,18 +522,23 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 	return windows, nil
 }
 
-// stampConsidered records that everything in this entry reached a channel-digest
-// AI call that returned, so the channel's next window starts after it even when
-// the model wrote no digest for it. The mark is the newest message in
-// entry.msgs — what was actually rendered, never what was merely available:
-// buildBatchEntry hands over a load trimmed to the row cap, and the bot-heavy
-// path hands over only the extracted human context.
+// stampConsidered records that msgs has been considered for this channel, so
+// its next window starts after them even though they produced no digest. Two
+// things count as considered: material the model saw and chose not to write
+// about, and material code mechanically decided there was nothing to ask about
+// (no visible text, bot-only). A failed AI call is neither — it decided
+// nothing — and never reaches here.
+//
+// msgs must be exactly what the decision covered, never what was merely
+// available: the accepted path passes its rendered set (trimmed to the row cap,
+// or only the extracted human context for a bot-heavy channel), the mechanical
+// skips pass the whole load their decision read.
 //
 // Best-effort: a failed stamp costs a re-render next cycle, never data, so it
 // must not fail the channel's digest.
-func (p *Pipeline) stampConsidered(e *batchEntry) {
+func (p *Pipeline) stampConsidered(channelID string, msgs []db.Message) {
 	var newest float64
-	for _, m := range e.msgs {
+	for _, m := range msgs {
 		if m.TSUnix > newest {
 			newest = m.TSUnix
 		}
@@ -541,8 +546,8 @@ func (p *Pipeline) stampConsidered(e *batchEntry) {
 	if newest <= 0 {
 		return
 	}
-	if err := p.db.SetChannelDigestConsideredTS(e.channelID, newest); err != nil {
-		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", e.channelName, err)
+	if err := p.db.SetChannelDigestConsideredTS(channelID, newest); err != nil {
+		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", p.channelName(channelID), err)
 	}
 }
 
@@ -666,6 +671,7 @@ func (p *Pipeline) buildBatchEntries(windows []channelWindow, nowUnix float64) [
 	var entries []batchEntry
 	skippedNoVisible := 0
 	skippedBotOnly := 0
+	skippedBelowMin := 0
 	for _, w := range windows {
 		entry, status := p.buildBatchEntry(w, nowUnix)
 		switch status {
@@ -675,69 +681,85 @@ func (p *Pipeline) buildBatchEntries(windows []channelWindow, nowUnix float64) [
 			skippedNoVisible++
 		case batchEntrySkipBotOnly:
 			skippedBotOnly++
+		case batchEntrySkipBelowMin:
+			skippedBelowMin++
 		case batchEntrySkipError:
 			// already logged in buildBatchEntry
 		}
 	}
-	p.logger.Printf("digest: %d channels with visible messages, %d skipped (no visible text), %d skipped (bot-only)",
-		len(entries), skippedNoVisible, skippedBotOnly)
+	p.logger.Printf("digest: %d channels with visible messages, %d skipped (no visible text), %d skipped (bot-only), %d skipped (below min messages)",
+		len(entries), skippedNoVisible, skippedBotOnly, skippedBelowMin)
 	return entries
 }
 
-// trimPartialBoundarySecond drops the trailing messages sharing the newest
-// ts_unix from a message load that hit the row cap. messages.ts_unix has
-// whole-second resolution, so the considered-through mark stamped from these
-// messages cannot distinguish "up to and including second N" from "part of
-// second N": without the trim, siblings of the last message that did not fit
-// would be skipped when the next window starts at N. msgs must be oldest-first
-// and non-empty; a load where every row shares one second is returned whole
-// (nothing better is available, and an empty batch would stall the channel).
-func trimPartialBoundarySecond(msgs []db.Message) []db.Message {
+// trimPartialBoundarySecond splits a capped, oldest-first load into the part
+// that may be rendered and whether a whole-second overshoot is needed.
+// messages.ts_unix has whole-second resolution, so a considered-through mark
+// stamped from these messages cannot distinguish "up to and including second N"
+// from "part of second N": without the trim, siblings of the last message that
+// did not fit would be skipped when the next window starts at N.
+//
+// ok is false when the cap landed entirely inside one second and trimming would
+// leave nothing to render. That case cannot make progress by trimming — the
+// next window would reload exactly these rows forever — so the caller must
+// reload the whole second instead, overshooting the cap.
+func trimPartialBoundarySecond(msgs []db.Message) (trimmed []db.Message, ok bool) {
 	last := msgs[len(msgs)-1].TSUnix
 	cut := len(msgs)
 	for cut > 0 && msgs[cut-1].TSUnix == last {
 		cut--
 	}
 	if cut == 0 {
-		return msgs
+		return nil, false
 	}
-	return msgs[:cut]
+	return msgs[:cut], true
 }
 
 type batchEntryStatus int
 
 const (
 	batchEntryAccepted batchEntryStatus = iota
+	// batchEntrySkipNoVisible / batchEntrySkipBotOnly are decisions code makes
+	// over a window it fully loaded: re-deciding next cycle returns the same
+	// answer, so the material counts as considered and the mark is stamped.
 	batchEntrySkipNoVisible
 	batchEntrySkipBotOnly
+	// batchEntrySkipBelowMin is "nothing visible yet, and too few messages to
+	// call it" — deliberately NOT stamped, so the channel is reconsidered once
+	// more arrives. It cannot stall: more messages push it past MinMessages
+	// into batchEntrySkipNoVisible, or a visible one makes it digestable.
+	batchEntrySkipBelowMin
+	// batchEntrySkipError is a load failure: nothing was decided, so nothing
+	// may be stamped.
 	batchEntrySkipError
 )
 
 func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry, batchEntryStatus) {
 	channelID := w.channelID
-	msgs, err := p.db.GetOldestMessagesByTimeRange(channelID, w.since, nowUnix)
+	msgs, err := p.loadWindowMessages(w, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error getting messages for %s: %v", channelID, err)
 		return batchEntry{}, batchEntrySkipError
 	}
-	if len(msgs) == db.DefaultTimeRangeLimit {
-		msgs = trimPartialBoundarySecond(msgs)
-		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
-			p.channelName(channelID), db.DefaultTimeRangeLimit, len(msgs))
-	}
+	// Every mechanical skip below covers this whole load, so that is what its
+	// mark records — the accepted path stamps its own (possibly narrower)
+	// rendered set instead.
+	loaded := msgs
 
 	visible, botVisible := p.countVisibleMessages(msgs)
 	if visible == 0 {
 		if len(msgs) >= p.cfg.Digest.MinMessages {
+			p.stampConsidered(channelID, loaded)
 			return batchEntry{}, batchEntrySkipNoVisible
 		}
-		return batchEntry{}, batchEntrySkipError
+		return batchEntry{}, batchEntrySkipBelowMin
 	}
 	humanVisible := visible - botVisible
 
 	// Bot-heavy channel: ≥90% visible messages from bots.
 	if float64(botVisible)/float64(visible) >= 0.9 {
 		if humanVisible == 0 {
+			p.stampConsidered(channelID, loaded)
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		msgs = p.extractHumanContext(msgs)
@@ -748,6 +770,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 			}
 		}
 		if visible == 0 {
+			p.stampConsidered(channelID, loaded)
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		p.logger.Printf("digest: #%s is bot-heavy, extracted %d context messages around human replies",
@@ -761,6 +784,41 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 		msgs:         msgs,
 		visibleCount: visible,
 	}, batchEntryAccepted
+}
+
+// loadWindowMessages loads a channel's window oldest-first, capped, and cut
+// back to a whole number of seconds so the considered-through mark can never
+// land inside a partially-loaded second.
+func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) ([]db.Message, error) {
+	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
+	if err != nil || len(msgs) < db.DefaultTimeRangeLimit {
+		return msgs, err
+	}
+
+	if trimmed, ok := trimPartialBoundarySecond(msgs); ok {
+		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
+			p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(trimmed))
+		return trimmed, nil
+	}
+
+	// The whole capped load sits inside one second, so trimming would leave
+	// nothing to render — and since the next window starts AT that second, the
+	// load would refill with exactly these rows every cycle and never reach
+	// anything after them. Reload with a far higher ceiling so the load gets
+	// past that second: a bounded overshoot of the cap beats a channel that can
+	// never move.
+	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
+	if err != nil {
+		return nil, err
+	}
+	if len(msgs) == db.BoundarySecondRowLimit {
+		if trimmed, ok := trimPartialBoundarySecond(msgs); ok {
+			msgs = trimmed
+		}
+	}
+	p.logger.Printf("digest: #%s holds more than %d message(s) in a single second: digesting %d message(s) over the limit",
+		p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(msgs))
+	return msgs, nil
 }
 
 // countVisibleMessages returns (visible, bot-authored visible). Messages with
@@ -978,7 +1036,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	agg.generated.Add(1)
 	p.totalMessageCount.Add(int64(len(e.msgs)))
 	p.updatePeriodBounds(sinceUnix, lastMsgTS)
-	p.stampConsidered(&e)
+	p.stampConsidered(e.channelID, e.msgs)
 
 	p.lastStepMu.Lock()
 	p.LastStepMessageCount = len(e.msgs)
@@ -1048,7 +1106,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	// the next cycle retries it.
 	for _, e := range out.rendered {
 		if !storeFailed[e.channelID] {
-			p.stampConsidered(e)
+			p.stampConsidered(e.channelID, e.msgs)
 		}
 	}
 
