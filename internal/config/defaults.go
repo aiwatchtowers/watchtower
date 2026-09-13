@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
 
 const (
 	DefaultActiveWorkspace = ""
@@ -179,4 +182,27 @@ func DefaultJiraFeatures(role string) JiraFeatureToggles {
 			TrackJiraLinking:   true,
 		}
 	}
+}
+
+// jiraFeatureDefaults renders a role's defaults as the `jira.features.<key>`
+// viper defaults Load registers. The keys are read straight off
+// JiraFeatureToggles' mapstructure tags — the same tags viper decodes back
+// into the struct — so a renamed or added toggle cannot leave a default
+// behind under a key nothing reads, which is the failure class this whole
+// repair exists to remove. A field with no mapstructure tag is skipped
+// rather than registered under an empty key.
+func jiraFeatureDefaults(role string) map[string]bool {
+	toggles := DefaultJiraFeatures(role)
+	value := reflect.ValueOf(toggles)
+	typ := value.Type()
+
+	out := make(map[string]bool, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		key := typ.Field(i).Tag.Get("mapstructure")
+		if key == "" {
+			continue
+		}
+		out[key] = value.Field(i).Bool()
+	}
+	return out
 }
