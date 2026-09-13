@@ -89,7 +89,14 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 }
 
 // TestRenderJiraBlock_CapsCommentsPerIssue keeps one hot ticket from
-// dominating the prompt: only the newest maxCommentsPerIssue comments render.
+// dominating the prompt: only maxCommentsPerIssue comments render, and they
+// are the OLDEST ones.
+//
+// The direction changed on 2026-09-13 (final-review §4) and is load-bearing,
+// not cosmetic: the floor advances past the issue's updated_at once it is
+// rendered, so whatever the cap leaves out is only reachable again if it is
+// the part still AHEAD of the floor. Keeping the newest buried the rest — the
+// same IDEA-01 violation the Gmail thread cap had, one level down.
 func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 	issues := []db.JiraIssue{{Key: "WT-1", ProjectKey: "WT", Summary: "s", Status: "Open"}}
 	var comments []db.JiraComment
@@ -99,8 +106,9 @@ func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 
 	block, tags := renderJiraBlock(issues, map[string][]db.JiraComment{"WT-1": comments}, 100000, "")
 	assert.Equal(t, maxCommentsPerIssue, strings.Count(block, "  - Ann: "))
-	assert.NotContains(t, block, "comment-00", "the oldest comments are the ones dropped")
-	assert.Contains(t, block, fmt.Sprintf("comment-%02d", maxCommentsPerIssue+9), "the newest comment survives")
+	assert.Contains(t, block, "comment-00", "the oldest comment survives, so the floor may pass it")
+	assert.NotContains(t, block, fmt.Sprintf("comment-%02d", maxCommentsPerIssue+9),
+		"the newest comments are the ones dropped — they stay ahead of the floor for the next run")
 	assert.Equal(t, map[string]bool{"WT-1": true}, tags)
 }
 

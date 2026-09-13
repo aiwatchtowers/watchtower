@@ -454,9 +454,76 @@ func TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T
 	out := logged.String()
 	assert.Contains(t, out, "ERROR", "hitting the ceiling is a fault, not a note")
 	assert.Contains(t, out, fmt.Sprintf(
-		"ERROR: gmail account %d: %d thread(s) sharing second %d exceeded the %d-unit boundary-drain ceiling and were NOT rendered",
-		acctID, wantUnrendered, base+10, maxTieDrainUnits),
-		"the fault must name the source, the count, the timestamp and the ceiling")
+		"ERROR: gmail account %d: %d thread(s) sharing second %d were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
+		acctID, wantUnrendered, base+10, maxTieDrainUnits, tieDrainCharCeiling(1)),
+		"the fault must name the source, the count, the timestamp and both ceilings")
+	// The UNIT ceiling is what stopped this drain, so the block must sit far
+	// below the byte ceiling — otherwise this test is silently exercising the
+	// other bound.
+	assert.Less(t, len(seenBlock), tieDrainCharCeiling(1)/2,
+		"this fixture must exercise the unit ceiling, not the byte ceiling")
+}
+
+// TestIdeas01_EmailTieDrainStopsAtByteCeiling covers the drain's SECOND
+// ceiling, in the dimension the unit ceiling cannot see. A thousand fat units
+// build a prompt no model accepts, and an over-context call is the worst
+// outcome available here: the generator errors, the floor correctly does not
+// advance, and the next cycle rebuilds the same oversized drain — losing the
+// tie group AND everything above it, permanently. Stopping on bytes loses only
+// the undrained tie-mates and says so, which is why the byte bound inherits
+// the unit ceiling's disposition exactly: advance anyway, counted fault, never
+// a retreat.
+//
+// Fixture arithmetic, pinned literally: 8 threads share a second, each
+// rendering one ~100 KB line, against a 600 000-char ceiling — so 5 fit
+// (5 x 100 060 = 500 300; a 6th would be 600 360) and 3 do not. Well under the
+// 1000-unit ceiling, so bytes are provably what stopped it.
+func TestIdeas01_EmailTieDrainStopsAtByteCeiling(t *testing.T) {
+	require.Equal(t, 10, tieDrainBudgetFactor,
+		"the byte ceiling protects against an over-context drain; changing the factor means "+
+			"re-deriving the counts below with it")
+
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+
+	const seeded, wantRendered, wantUnrendered = 8, 5, 3
+	const fatSubject = 100000 // subjects are not excerpt-capped, so this sets the line size
+	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	for i := 0; i < seeded; i++ {
+		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
+			"a@example.com", "Ann", strings.Repeat("s", fatSubject), "body", same)
+	}
+
+	var seenBlock string
+	var logged bytes.Buffer
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[]}`, nil
+	}}
+	// Budget 1: every thread overshoots, so the drain — not the ordinary
+	// budget loop — decides everything after the first.
+	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	ceiling := tieDrainCharCeiling(1)
+	assert.Equal(t, wantRendered, strings.Count(seenBlock, "gmail:"),
+		"the drain must stop on bytes, having taken as many tie-mates as the ceiling allows")
+	assert.LessOrEqual(t, len(seenBlock), ceiling, "the block must never exceed the byte ceiling")
+	assert.Less(t, wantRendered, maxTieDrainUnits,
+		"bytes, not units, must be what stopped this drain")
+
+	floor, err := d.IdeasEmailFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+10), floor,
+		"the byte ceiling inherits the unit ceiling's disposition: advance anyway, never retreat")
+
+	assert.Contains(t, logged.String(), fmt.Sprintf(
+		"ERROR: gmail account %d: %d thread(s) sharing second %d were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
+		acctID, wantUnrendered, base+10, maxTieDrainUnits, ceiling),
+		"a byte-ceiling breach must report the same counted fault as a unit-ceiling breach")
 }
 
 // TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor covers the

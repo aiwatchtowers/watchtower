@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
@@ -99,6 +100,48 @@ const maxMessagesPerThread = 50
 //     this large can only have arrived through the LIMIT -1 re-read those
 //     drains use, which is already the pathological branch.
 const maxTieDrainUnits = 1000
+
+// tieDrainBudgetFactor bounds the boundary drain in the OTHER dimension —
+// bytes — because a ceiling that is out of reach in units gives no protection
+// in the dimension that actually fails. maxTieDrainUnits counts units; a
+// thousand fat ones (a Jira issue renders up to ~10.5 KB) build a prompt no
+// model will accept, and an over-context call is the worst outcome available
+// here: mineStreamTopics errors, the floor correctly does NOT advance, and the
+// next cycle rebuilds the same oversized drain — losing the tie group AND
+// everything above it, permanently, while paying for the failing call every
+// cycle. Stopping short and advancing loses only the undrained tie-mates, and
+// says so.
+//
+// The byte ceiling therefore inherits the unit ceiling's disposition exactly:
+// stop, advance the floor anyway, and report a counted fault. It never
+// retreats — a drain that stops without advancing is the stall two rounds of
+// this wave were spent removing.
+//
+// Ten times the prompt budget: five times a 200-issue bulk edit's ~120 KB, so
+// ordinary bulk activity cannot reach it, while 600 KB at the default 60 000
+// stays inside a ~200k-token light-tier context with margin (~150k tokens at
+// ~4 chars/token), which is the thing being protected. The floor at the
+// DEFAULT budget is deliberate: the drain already bypasses
+// ideas.max_prompt_chars by design, and the model's context does not shrink
+// because the owner lowered a cost knob.
+const tieDrainBudgetFactor = 10
+
+// tieDrainCharCeiling is the largest block the boundary drain may build.
+func tieDrainCharCeiling(maxChars int) int {
+	if maxChars < config.DefaultIdeasMaxPromptChars {
+		maxChars = config.DefaultIdeasMaxPromptChars
+	}
+	return maxChars * tieDrainBudgetFactor
+}
+
+// drainCeilings renders both bounds plus what the drain actually built, so a
+// fault line says which ceiling stopped it without the renderer having to
+// report that separately: a block at the char ceiling was stopped by bytes, a
+// small block by units.
+func drainCeilings(blockChars, maxChars int) string {
+	return fmt.Sprintf("its ceilings (%d units / %d chars, block %d chars)",
+		maxTieDrainUnits, tieDrainCharCeiling(maxChars), blockChars)
+}
 
 // emailThread is one Gmail thread grouped for the ideas email pre-digest — a
 // local, deliberately independent copy of the shape
@@ -214,7 +257,8 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int, drai
 		tag := emailThreadTag(accountID, th.threadID)
 		n++
 		line := renderEmailThread(n, tag, th)
-		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough && drained < maxTieDrainUnits
+		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough &&
+			drained < maxTieDrainUnits && b.Len()+len(line) <= tieDrainCharCeiling(maxChars)
 		if len(line) > budget && len(tags) > 0 && !tie {
 			n-- // keep the numbering contiguous, like renderProject's twin
 			if drainThrough == 0 {
@@ -452,8 +496,9 @@ func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMess
 	// anyway — the alternative is a pass that can never move — so this is the
 	// one branch where material is genuinely lost, and it is a fault, not a
 	// statistic: the ceiling is sized so ordinary traffic cannot reach it.
-	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f exceeded the %d-unit boundary-drain ceiling and were NOT rendered; the floor passes that second, so they will not be mined",
-		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS, maxTieDrainUnits)
+	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f were NOT rendered — the boundary drain stopped at %s; the floor passes that second, so they will not be mined",
+		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS,
+		drainCeilings(len(block), budget))
 	return block, tags, emailWindow{minTS: msgs[0].TSUnix, maxTS: win.boundaryTS, ok: true}
 }
 

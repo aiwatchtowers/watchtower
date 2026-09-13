@@ -450,6 +450,137 @@ func TestIdeas01_JiraTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
 	}
 }
 
+// seedJiraIssuesInOneTimestamp inserts n issues in one project all carrying
+// the same updated_at, in one transaction — the boundary-drain ceiling only
+// engages past maxTieDrainUnits units, so its guard needs a bulk fixture.
+func seedJiraIssuesInOneTimestamp(t *testing.T, d *db.DB, accountID int64, n int, updatedAt string) {
+	t.Helper()
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO jira_issues
+		(account_id, key, id, project_key, board_id, summary, description_text, status, status_category, sprint_id, created_at, updated_at, synced_at)
+		VALUES (?, ?, ?, 'WT', 0, 's', 'd', 'Open', 'new', 0, ?, ?, ?)`)
+	require.NoError(t, err)
+	defer stmt.Close()
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("WT-%05d", i)
+		_, err = stmt.Exec(accountID, key, key, updatedAt, updatedAt, updatedAt)
+		require.NoError(t, err)
+	}
+	require.NoError(t, tx.Commit())
+}
+
+// TestIdeas01_JiraTieGroupBeyondCeiling_BoundedAndFloorAdvances is the Jira
+// twin of the email ceiling guard, and the one that matters most: the ceiling
+// was raised from 50 to 1000 on the strength of Jira bulk-edit traffic, and
+// this branch — the count, the fault line, and the advance-anyway disposition
+// — had no test at all until now (final-review §9).
+//
+// Same strength as the email half: the constant is pinned, the rendered count
+// is exact, and the fault line is matched in full.
+func TestIdeas01_JiraTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T) {
+	require.Equal(t, 1000, maxTieDrainUnits,
+		"the drain ceiling must stay out of reach of ordinary bulk activity: a tie group is "+
+			"all-or-nothing, so whatever the ceiling trims goes under the floor unmined. "+
+			"If this constant is deliberately changed, re-derive the counts below with it.")
+
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	floor := base.Format(time.RFC3339)
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+
+	// 1005 issues sharing one updated_at — one bulk edit, past the ceiling by
+	// 5, and past the loader's own 300-issue cap, so this also exercises the
+	// unbounded boundary drain handing the renderer more than one pass holds.
+	const seeded, wantRendered, wantUnrendered = 1005, 1000, 5
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	seedJiraIssuesInOneTimestamp(t, d, acctID, seeded, u1)
+
+	var seenBlock string
+	var logged bytes.Buffer
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	assert.Equal(t, wantRendered, strings.Count(seenBlock, " — Open — "),
+		"the drain must take the group up to the ceiling and stop exactly there")
+	assert.Less(t, len(seenBlock), tieDrainCharCeiling(1)/2,
+		"this fixture must exercise the unit ceiling, not the byte ceiling")
+
+	newFloor, err := d.IdeasJiraFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, u1, newFloor,
+		"above the ceiling the floor still passes the timestamp — a bounded residual, not a stall")
+
+	out := logged.String()
+	assert.Contains(t, out, "ERROR", "hitting the ceiling is a fault, not a note")
+	assert.Contains(t, out, fmt.Sprintf(
+		"ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
+		acctID, wantUnrendered, u1, maxTieDrainUnits, tieDrainCharCeiling(1)),
+		"the fault must name the source, the count, the timestamp and both ceilings")
+}
+
+// TestIdeas01_JiraTieDrainStopsAtByteCeiling is the Jira half of the drain's
+// byte bound — the dimension the unit ceiling cannot see, and the one a Jira
+// bulk edit reaches first, since an issue renders far fatter than a Gmail
+// thread line (description plus up to maxCommentsPerIssue comments).
+//
+// Fixture arithmetic, pinned literally: 8 issues share one updated_at, each
+// rendering a ~100 KB line, against a 600 000-char ceiling — so 5 fit and 3 do
+// not, well under the 1000-unit ceiling.
+func TestIdeas01_JiraTieDrainStopsAtByteCeiling(t *testing.T) {
+	require.Equal(t, 10, tieDrainBudgetFactor,
+		"the byte ceiling protects against an over-context drain; changing the factor means "+
+			"re-deriving the counts below with it")
+
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	floor := base.Format(time.RFC3339)
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+
+	const seeded, wantRendered, wantUnrendered = 8, 5, 3
+	const fatSummary = 100000 // summaries are not excerpt-capped, so this sets the line size
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	for i := 0; i < seeded; i++ {
+		seedJiraIssueIdeas(t, d, acctID, fmt.Sprintf("WT-%03d", i), "WT",
+			strings.Repeat("s", fatSummary), "Open", "new", "d", u1)
+	}
+
+	var seenBlock string
+	var logged bytes.Buffer
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	ceiling := tieDrainCharCeiling(1)
+	assert.Equal(t, wantRendered, strings.Count(seenBlock, " — Open — "),
+		"the drain must stop on bytes, having taken as many tie-mates as the ceiling allows")
+	assert.LessOrEqual(t, len(seenBlock), ceiling, "the block must never exceed the byte ceiling")
+	assert.Less(t, wantRendered, maxTieDrainUnits,
+		"bytes, not units, must be what stopped this drain")
+
+	newFloor, err := d.IdeasJiraFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, u1, newFloor,
+		"the byte ceiling inherits the unit ceiling's disposition: advance anyway, never retreat")
+
+	assert.Contains(t, logged.String(), fmt.Sprintf(
+		"ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
+		acctID, wantUnrendered, u1, maxTieDrainUnits, ceiling),
+		"a byte-ceiling breach must report the same counted fault as a unit-ceiling breach")
+}
+
 // TestIdeas01_JiraOversizedIssue_RenderedAnywayFloorAdvances is the Jira half
 // of the same controller ruling (2026-09-13): a prompt budget too small for
 // even the oldest issue must still render that one issue, overshooting the
