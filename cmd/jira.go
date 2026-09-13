@@ -1171,6 +1171,34 @@ var featureNames = []string{
 	"write_back", "release_dashboard", "without_jira",
 }
 
+// jiraFeatureConfigKeys maps every feature name this CLI accepts — the short
+// spelling and, where it differs, the long one — to the key the toggle is
+// written under inside `jira.features`. That key is the field's mapstructure
+// tag, which is the only spelling config.Load decodes and the only one the
+// two Swift readers of the raw yaml look for.
+//
+// The accepted names must stay in step with featureToggleRef; the keys must
+// stay in step with config.JiraFeatureToggles' mapstructure tags.
+// TestJiraFeatureConfigKeys_MatchStructAndToggleRef pins both.
+var jiraFeatureConfigKeys = map[string]string{
+	"my_issues":              "my_issues_in_briefing",
+	"my_issues_in_briefing":  "my_issues_in_briefing",
+	"awaiting_input":         "awaiting_my_input",
+	"awaiting_my_input":      "awaiting_my_input",
+	"who_ping":               "who_ping",
+	"track_linking":          "track_jira_linking",
+	"track_jira_linking":     "track_jira_linking",
+	"team_workload":          "team_workload",
+	"blocker_map":            "blocker_map",
+	"iteration_progress":     "iteration_progress",
+	"epic_progress":          "epic_progress",
+	"write_back":             "write_back_suggestions",
+	"write_back_suggestions": "write_back_suggestions",
+	"release_dashboard":      "release_dashboard",
+	"without_jira":           "without_jira_detection",
+	"without_jira_detection": "without_jira_detection",
+}
+
 func runJiraFeatures(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -1249,24 +1277,22 @@ func runJiraFeaturesDisable(cmd *cobra.Command, args []string) error {
 	return setJiraFeatureToggle(cmd, args[0], false)
 }
 
+// setJiraFeatureToggle writes one toggle as a scalar `jira.features.<key>`
+// entry, the same shape setConfigKey uses for every other feature toggle in
+// the product. It deliberately does NOT write the whole
+// config.JiraFeatureToggles struct: viper serializes through yaml.v3, the
+// struct carries no yaml tags, and yaml.v3 therefore falls back to the
+// lowercased Go field name — so every toggle the CLI wrote landed as
+// `myissuesinbriefing`, which matches no mapstructure tag and read back as
+// false forever. Writing one scalar key also leaves the other ten alone,
+// instead of cementing ten explicit falses read out of an all-false struct.
 func setJiraFeatureToggle(cmd *cobra.Command, name string, value bool) error {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	features := cfg.Jira.Features
-	ptr, ok := featureToggleRef(&features, name)
+	key, ok := jiraFeatureConfigKeys[name]
 	if !ok {
 		return fmt.Errorf("unknown feature %q; valid: %s", name, strings.Join(featureNames, ", "))
 	}
-	*ptr = value
 
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("jira.features", features)
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	if err := setConfigKey(flagConfig, "jira.features."+key, value); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
@@ -1304,10 +1330,16 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 
 	defaults := config.DefaultJiraFeatures(role)
 
+	// Eleven scalar keys in one write, for the reason setJiraFeatureToggle
+	// documents: the struct has no yaml tags, so writing it produces keys no
+	// reader can see.
 	v := viper.New()
 	v.SetConfigFile(flagConfig)
 	_ = v.ReadInConfig()
-	v.Set("jira.features", defaults)
+	for _, name := range featureNames {
+		ptr, _ := featureToggleRef(&defaults, name)
+		v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
+	}
 	if err := writeConfigAtomic(v, flagConfig); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
