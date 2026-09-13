@@ -572,7 +572,7 @@ Return [] if nothing noteworthy across all channels.
 %s
 
 Rules:
-- channel_id: copy it EXACTLY as it appears in that channel's own "--- #name (channel_id) ---" header above — never shorten, expand, or reconstruct it. The JSON example above shows an illustrative id; the header is the source of truth.
+- channel_id: copy it EXACTLY as it appears in that channel's own "--- #name (channel_id) ---" header in the CHANNELS section below — never shorten, expand, or reconstruct it. The header is the source of truth, not the JSON example above.
 - topics: EACH TOPIC is a self-contained thematic unit about ONE specific subject
   * 2-7 topics per channel (proportional to message count; fewer messages = fewer topics)
   * title: specific, descriptive (e.g. "Hashbank deposit processing failure", not "Issues")
