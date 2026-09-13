@@ -624,10 +624,29 @@ func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
 // commit instead of one per link. That matters on the message-sync path, where
 // SetMaxOpenConns(1) makes every separate write serialise against the sync's
 // own.
+//
+// Every link is resolved to its kind's statement BEFORE any of them executes,
+// so a batch carrying one unknown link_type is refused whole rather than
+// leaving the links ahead of it written into the caller's transaction — the
+// caller should not have to rely on its own rollback to get that.
 func (db *DB) UpsertJiraSlackLinkBatch(tx *sql.Tx, links []JiraSlackLink) error {
 	if tx == nil {
 		return fmt.Errorf("UpsertJiraSlackLinkBatch: nil transaction")
 	}
+
+	type resolved struct {
+		link  JiraSlackLink
+		query string
+	}
+	pending := make([]resolved, 0, len(links))
+	for _, link := range links {
+		link, query, err := jiraSlackLinkUpsert(link)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, resolved{link: link, query: query})
+	}
+
 	stmts := make(map[string]*sql.Stmt, 3)
 	defer func() {
 		for _, stmt := range stmts {
@@ -635,17 +654,15 @@ func (db *DB) UpsertJiraSlackLinkBatch(tx *sql.Tx, links []JiraSlackLink) error 
 		}
 	}()
 
-	for _, link := range links {
-		link, query, err := jiraSlackLinkUpsert(link)
-		if err != nil {
-			return err
-		}
+	for _, p := range pending {
+		link, query := p.link, p.query
 		stmt, ok := stmts[query]
 		if !ok {
-			stmt, err = tx.Prepare(query)
+			prepared, err := tx.Prepare(query)
 			if err != nil {
 				return fmt.Errorf("preparing jira slack link upsert: %w", err)
 			}
+			stmt = prepared
 			stmts[query] = stmt
 		}
 		if _, err := stmt.Exec(

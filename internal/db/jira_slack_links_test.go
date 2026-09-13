@@ -290,9 +290,15 @@ func TestUpsertJiraSlackLinkBatch_IsIdempotent(t *testing.T) {
 }
 
 // The batch shares the single writer's refusal of an unknown kind (such a row
-// matches no partial index and would never dedupe), and it refuses before
-// touching the table rather than after writing part of the page.
-func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefused(t *testing.T) {
+// matches no partial index and would never dedupe), and it refuses the batch
+// WHOLE: the links ahead of the bad one must not already be in the caller's
+// transaction.
+//
+// The transaction is deliberately COMMITTED after the error rather than rolled
+// back. A rollback here would pin the test's own cleanup instead of the
+// function — the version of this test that rolled back passed even when the
+// batch wrote the first link before refusing the second.
+func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefusedWholeBatch(t *testing.T) {
 	database := openTestDB(t)
 
 	tx, err := database.Begin()
@@ -303,11 +309,11 @@ func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefused(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sighting")
-	require.NoError(t, tx.Rollback())
+	require.NoError(t, tx.Commit())
 
 	stored, err := database.GetJiraSlackLinksByIssue("PROJ-1")
 	require.NoError(t, err)
-	assert.Empty(t, stored, "a refused batch must leave nothing behind")
+	assert.Empty(t, stored, "the link ahead of the refused one must not have been written")
 }
 
 func TestUpsertJiraSlackLinkBatch_NilTransactionIsRefused(t *testing.T) {

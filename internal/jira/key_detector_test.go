@@ -3,6 +3,7 @@ package jira
 import (
 	"testing"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 
 	"github.com/stretchr/testify/assert"
@@ -109,13 +110,15 @@ func TestKeyDetector_ProcessMessageBatch_WritesOneMentionPerDetectedKey(t *testi
 	seedProjectKey(t, database, "PROJ")
 	d := NewKeyDetector(database)
 
+	// Three messages carrying four links, so a count of messages and a count
+	// of links cannot be confused for one another.
 	count, err := d.ProcessMessageBatch([]db.Message{
 		{ChannelID: "1:C1", TS: "1000.001", Text: "Fixing PROJ-123 now"},
 		{ChannelID: "1:C1", TS: "1000.002", Text: "no keys here"},
-		{ChannelID: "1:C2", TS: "1000.003", Text: "PROJ-123 and PROJ-9 both"},
+		{ChannelID: "1:C2", TS: "1000.003", Text: "PROJ-123, PROJ-9 and PROJ-77 all"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 3, count)
+	assert.Equal(t, 4, count, "the count is links written, not messages seen")
 
 	links, err := database.GetJiraSlackLinksByIssue("PROJ-123")
 	require.NoError(t, err)
@@ -126,7 +129,7 @@ func TestKeyDetector_ProcessMessageBatch_WritesOneMentionPerDetectedKey(t *testi
 
 	byMessage, err := database.GetJiraSlackLinksByMessage("1:C2", "1000.003")
 	require.NoError(t, err)
-	assert.Len(t, byMessage, 2, "both keys in one message are linked to that message")
+	assert.Len(t, byMessage, 3, "every key in one message is linked to that message")
 }
 
 // The batch shares the empty-key-set rule with DetectKeys: with nothing synced
@@ -253,4 +256,17 @@ func TestKeyDetector_KeyLoadFailureDetectsNothing(t *testing.T) {
 	links, err := database.GetJiraSlackLinksByIssue("PROJ-123")
 	require.NoError(t, err)
 	assert.Empty(t, links, "nothing is written when the known-key set cannot be loaded")
+}
+
+// The gate lives in one place so a new call site cannot invent a different one:
+// cfg.Jira.Enabled and nothing else, false by default and flipped true by
+// `jira add`/`jira login`. Off must be the pre-wiring behaviour exactly — no
+// detector constructed, no key set ever loaded.
+func TestNewKeyDetectorIfEnabled_GatedOnJiraEnabled(t *testing.T) {
+	database := openTestDB(t)
+
+	assert.Nil(t, NewKeyDetectorIfEnabled(&config.Config{}, database),
+		"an install without Jira must get no detector")
+	assert.NotNil(t, NewKeyDetectorIfEnabled(&config.Config{Jira: config.JiraConfig{Enabled: true}}, database),
+		"an install with Jira connected must get a detector")
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -28,6 +29,29 @@ func NewKeyDetector(database *db.DB) *KeyDetector {
 		db:     database,
 		logger: log.New(os.Stderr, "[jira-keys] ", log.LstdFlags),
 	}
+}
+
+// NewKeyDetectorIfEnabled returns a detector for the pipelines and the sync
+// orchestrators to hook, or nil when this install has no Jira. It is the ONE
+// place the gate is expressed, so a new call site cannot accidentally invent a
+// different one.
+//
+// The gate is cfg.Jira.Enabled and nothing else. It is false by default and
+// flipped true by `jira add`/`jira login` (enableJiraPhase), so it is on for
+// exactly the installs that have a Jira site connected — which is also the only
+// state in which GetKnownProjectKeys can return anything. Deliberately NOT one
+// of the jira.features.* toggles: this step collects the data every Jira
+// surface reads (--jira/--no-jira, the Desktop "Linked Jira Issues" badges,
+// get_task_context, find_experts, who-to-ping), and putting it behind a
+// per-feature toggle would hide a data-collection step from the owner.
+//
+// Callers must nil-check rather than pass the result straight to a
+// Set…Detector: a typed nil stored in an interface field is not nil.
+func NewKeyDetectorIfEnabled(cfg *config.Config, database *db.DB) *KeyDetector {
+	if !cfg.Jira.Enabled {
+		return nil
+	}
+	return NewKeyDetector(database)
 }
 
 // DetectKeys finds all Jira issue keys in text, filtering by known project keys.
