@@ -154,3 +154,52 @@ func TestBuildPreferencesBlock_PositiveRatingOutranksRejectedStatus(t *testing.T
 	require.Contains(t, block, "LIKED/APPROVED:")
 	assert.NotContains(t, block, "DISLIKED/REJECTED:")
 }
+
+// TestBuildPreferencesBlock_DecisionsNeverBecomeExamples pins the fix for the
+// block's worst failure mode: since the 2026-08-12 split a mined decision is
+// born 'active' with no owner act at all, so it used to land in LIKED/APPROVED
+// and — outnumbering rated ideas on a real workspace — teach the consolidator
+// that the owner approves of everything. A decision belongs in neither bucket
+// whatever its status or rating; only ideas and notes are verdicts.
+func TestBuildPreferencesBlock_DecisionsNeverBecomeExamples(t *testing.T) {
+	d := newTestDB(t)
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Approved idea", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Machine-recorded decision", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Rejected idea", Essence: "e", Status: "rejected",
+	})
+
+	block := buildPreferencesBlock(d)
+	require.Contains(t, block, "LIKED/APPROVED:")
+	require.Contains(t, block, "DISLIKED/REJECTED:")
+	assert.Contains(t, block, "Approved idea", "an owner-approved idea is an example")
+	assert.Contains(t, block, "Rejected idea", "an owner-rejected idea is an example")
+	assert.NotContains(t, block, "Machine-recorded decision",
+		"a decision is a journal entry, never an owner verdict — it belongs in neither bucket")
+}
+
+// TestBuildPreferencesBlock_RatedDecisionStillExcluded guards the SQL shape
+// itself: the kind filter is ANDed outside the rating/status disjunction, so a
+// decision the owner rated in the Digests ledger cannot slip back in through
+// the owner_rating arm. Written as `A OR B AND C` it would.
+func TestBuildPreferencesBlock_RatedDecisionStillExcluded(t *testing.T) {
+	d := newTestDB(t)
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "idea", Title: "Approved idea", Essence: "e", Status: "active",
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Liked decision", Essence: "e", Status: "active", OwnerRating: 1,
+	})
+	seedIdeaRow(t, d, db.Idea{
+		Kind: "decision", Title: "Disliked decision", Essence: "e", Status: "active", OwnerRating: -1,
+	})
+
+	block := buildPreferencesBlock(d)
+	assert.NotContains(t, block, "Liked decision")
+	assert.NotContains(t, block, "Disliked decision")
+	assert.Contains(t, block, "Approved idea")
+}

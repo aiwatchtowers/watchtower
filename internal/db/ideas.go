@@ -361,12 +361,23 @@ func (db *DB) ListIdeasForPrompt() ([]Idea, error) {
 // ListIdeaVerdictExamples returns owner-rated or terminally-dispositioned
 // ideas (rejected/dropped/active), newest first — few-shot examples of past
 // owner verdicts for the consolidator prompt.
+//
+// Decisions are excluded. Since the 2026-08-12 split a mined decision is born
+// `active` with no owner act at all, so without this filter every decision the
+// assistant ever recorded satisfied the status arm and flooded the prompt's
+// LIKED/APPROVED list — on a real workspace they outnumber owner-rated ideas
+// and `LIMIT 20 ORDER BY updated_at DESC` let them dominate it, teaching the
+// consolidator that the owner approves of everything. A decision is a journal
+// entry, never a verdict. The `kind` filter is deliberately ANDed OUTSIDE the
+// rating/status disjunction: a decision the owner rated in the Digests ledger
+// is still not an example of what they want mined.
 func (db *DB) ListIdeaVerdictExamples(limit int) ([]Idea, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := db.Query(`SELECT `+ideaSelectCols+` FROM ideas
-		WHERE owner_rating != 0 OR status IN ('rejected','dropped','active')
+		WHERE kind != 'decision'
+		  AND (owner_rating != 0 OR status IN ('rejected','dropped','active'))
 		ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing idea verdict examples: %w", err)

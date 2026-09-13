@@ -270,6 +270,16 @@ func TestIdeas_ListIdeaVerdictExamples(t *testing.T) {
 	rejected := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Rejected idea", Essence: "e", Status: "rejected"})
 	_ = mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Irrelevant proposed idea", Essence: "e", Status: "proposed"})
 
+	// A mined decision is born 'active' with no owner act at all, so it must
+	// never be offered as an example of an owner verdict — including one the
+	// owner rated in the Digests ledger, which the kind filter excludes only
+	// because it is ANDed outside the rating/status disjunction.
+	activeDecision := mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Recorded decision", Essence: "e", Status: "active"})
+	ratedDecision := mustCreateIdea(t, d, Idea{Kind: "decision", Title: "Rated decision", Essence: "e", Status: "active"})
+	if _, err := d.Exec(`UPDATE ideas SET owner_rating = 1 WHERE id = ?`, ratedDecision); err != nil {
+		t.Fatalf("rating decision: %v", err)
+	}
+
 	examples, err := d.ListIdeaVerdictExamples(10)
 	if err != nil {
 		t.Fatalf("ListIdeaVerdictExamples: %v", err)
@@ -283,6 +293,12 @@ func TestIdeas_ListIdeaVerdictExamples(t *testing.T) {
 	}
 	if !ids[rejected] {
 		t.Errorf("ListIdeaVerdictExamples missing rejected idea: %+v", examples)
+	}
+	if ids[activeDecision] {
+		t.Errorf("ListIdeaVerdictExamples included an active decision %d: %+v", activeDecision, examples)
+	}
+	if ids[ratedDecision] {
+		t.Errorf("ListIdeaVerdictExamples included a rated decision %d: %+v", ratedDecision, examples)
 	}
 }
 
