@@ -54,6 +54,51 @@ func TestCatchupRecapLifecycle(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// A row stranded in 'building' by a process that died mid-run is the only thing
+// the reap may touch: not a fresh build, and not a row that already reached a
+// terminal status.
+func TestFailStaleCatchupRecaps(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Now().UTC()
+	backdate := func(id int64, age time.Duration) {
+		_, err := d.Exec(`UPDATE catchup_recaps SET created_at=? WHERE id=?`,
+			now.Add(-age).Format("2006-01-02T15:04:05Z"), id)
+		require.NoError(t, err)
+	}
+
+	stale, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	backdate(stale, 31*time.Minute)
+	fresh, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	backdate(fresh, 5*time.Minute)
+	done, err := d.InsertCatchupRecap(100, 200, 0)
+	require.NoError(t, err)
+	backdate(done, 48*time.Hour)
+	require.NoError(t, d.FinishCatchupRecap(done, "tl;dr", `{"topics":[]}`, `{}`, "sonnet", 1, 1, 0))
+
+	n, err := d.FailStaleCatchupRecaps(now.Add(-30*time.Minute), "interrupted")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the abandoned row is reaped")
+
+	r, err := d.GetCatchupRecap(stale)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", r.Status)
+	assert.Equal(t, "interrupted", r.Error, "the reaped row explains itself to the operator")
+	r, err = d.GetCatchupRecap(fresh)
+	require.NoError(t, err)
+	assert.Equal(t, "building", r.Status, "a run still inside the window is left alone")
+	r, err = d.GetCatchupRecap(done)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", r.Status, "an old but finished recap is not a stale build")
+	assert.Equal(t, "tl;dr", r.TLDR)
+
+	// Idempotent: nothing left to reap on a second pass.
+	n, err = d.FailStaleCatchupRecaps(now.Add(-30*time.Minute), "interrupted")
+	require.NoError(t, err)
+	assert.Zero(t, n)
+}
+
 func TestLastAcknowledgedCatchupTo(t *testing.T) {
 	d := openTestDB(t)
 	got, err := d.LastAcknowledgedCatchupTo()
