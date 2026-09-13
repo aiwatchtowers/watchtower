@@ -929,16 +929,44 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 // number successfully saved. The first result carries the batch-level usage;
 // subsequent results pass nil to avoid double-counting tokens.
 func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, sinceUnix float64, usage *Usage, promptVersion int, agg *batchAggregator) int {
+	// The model is prompted with the namespaced channelID in each channel
+	// block's header, but its own JSON example shows a bare id, and it
+	// sometimes echoes that bare form back (C1, audit finding). Resolve a
+	// result against the batch by BOTH forms: exact namespaced match first,
+	// then the raw form. A raw id shared by two entries (two accounts in the
+	// same batch) is ambiguous and must not be guessed at — it's removed from
+	// the raw-form map entirely and logged once, not matched to either entry.
 	entryMap := make(map[string]*batchEntry, len(batch))
+	rawMap := make(map[string]*batchEntry, len(batch))
+	ambiguousRaw := make(map[string]bool)
 	for i := range batch {
-		entryMap[batch[i].channelID] = &batch[i]
+		entry := &batch[i]
+		entryMap[entry.channelID] = entry
+		_, rawID, _ := watchtowerslack.SplitAccountID(entry.channelID)
+		if rawID == "" {
+			continue
+		}
+		if _, exists := rawMap[rawID]; exists {
+			ambiguousRaw[rawID] = true
+			continue
+		}
+		rawMap[rawID] = entry
+	}
+	for rawID := range ambiguousRaw {
+		delete(rawMap, rawID)
+		p.logger.Printf("digest: batch result channel id %s is ambiguous across accounts, skipping", rawID)
 	}
 
 	saved := 0
 	for rIdx, r := range results {
 		entry, ok := entryMap[r.ChannelID]
 		if !ok {
-			p.logger.Printf("digest: batch result for unknown channel %s, skipping", r.ChannelID)
+			entry, ok = rawMap[r.ChannelID]
+		}
+		if !ok {
+			if !ambiguousRaw[r.ChannelID] {
+				p.logger.Printf("digest: batch result for unknown channel %s, skipping", r.ChannelID)
+			}
 			continue
 		}
 

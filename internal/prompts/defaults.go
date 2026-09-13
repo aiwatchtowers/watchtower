@@ -110,7 +110,7 @@ var DefaultVersions = map[string]int{
 	PeopleTeam:                 1,
 	BriefingDaily:              7, // v7: the secretary/assistant persona merge — one assistant everywhere
 	InboxTriage:                2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	DigestChannelBatch:         4, // v4: ops-changelog exclusion + exact-message_ts rule
+	DigestChannelBatch:         5, // v5: instruct the model to echo channel_id verbatim from the block header (C1)
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
@@ -572,6 +572,7 @@ Return [] if nothing noteworthy across all channels.
 %s
 
 Rules:
+- channel_id: copy it EXACTLY as it appears in that channel's own "--- #name (channel_id) ---" header above — never shorten, expand, or reconstruct it. The JSON example above shows an illustrative id; the header is the source of truth.
 - topics: EACH TOPIC is a self-contained thematic unit about ONE specific subject
   * 2-7 topics per channel (proportional to message count; fewer messages = fewer topics)
   * title: specific, descriptive (e.g. "Hashbank deposit processing failure", not "Issues")
