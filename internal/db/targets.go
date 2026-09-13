@@ -206,19 +206,26 @@ func (db *DB) RecordTargetNextStepAttempt(id, attempts int, attemptedAt string) 
 // updated_at's semantics would touch all five call sites of
 // RecomputeParentProgress, which is wider than this budget and riskier than
 // the hole. Left as-is by controller ruling.
+//
+// nextStepAttemptBudget is the per-target daily cap this predicate enforces
+// (targets.next_step_attempts, migration 00068) — a separate knob from the
+// daemon's own maxDailyAIAttempts (internal/daemon/daemon.go), which caps
+// the unrelated day-plan/briefing pipelines daemon-wide, not per target.
+const nextStepAttemptBudget = 3
+
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
-	query := `SELECT ` + targetSelectCols + ` FROM targets
+	query := fmt.Sprintf(`SELECT `+targetSelectCols+` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')
 		  AND (next_step_at = '' OR next_step_at < updated_at)
 		  AND (
 		    next_step_attempted_at < updated_at
-		    OR next_step_attempts < 3
+		    OR next_step_attempts < %d
 		    OR date(next_step_attempted_at) < date('now')
 		  )
 		ORDER BY
 		  CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
 		  CASE WHEN due_date = '' THEN 1 ELSE 0 END,
-		  due_date`
+		  due_date`, nextStepAttemptBudget)
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}

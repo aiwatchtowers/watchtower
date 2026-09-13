@@ -335,6 +335,31 @@ func TestGetTargetsNeedingNextStep_FreshEditGrantsBudgetSameDay(t *testing.T) {
 // TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh: a
 // successful generation must never leave attempt-budget state that later
 // blocks a legitimate refresh once the target is edited again.
+// targetNeedsNextStep reports whether id appears in a
+// GetTargetsNeedingNextStep result — the repeated arrange/assert scan lifted
+// out of TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh to
+// keep that test's own cyclomatic complexity down (gocyclo).
+func targetNeedsNextStep(need []db.Target, id int64) bool {
+	for _, cand := range need {
+		if cand.ID == int(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// reloadTarget re-fetches a target by id, failing the test with context on
+// error — the repeated "reload and check" step split out of
+// TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh.
+func reloadTarget(t *testing.T, d *db.DB, id int64, when string) *db.Target {
+	t.Helper()
+	tgt, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload %s: %v", when, err)
+	}
+	return tgt
+}
+
 func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.T) {
 	gen := &mockGenerator{responses: []string{`{"title":"Do X","actions":[]}`}}
 	p, d := makeTestPipeline(t, gen)
@@ -344,10 +369,7 @@ func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.
 	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
 		t.Fatalf("GenerateNextStep: %v", err)
 	}
-	tgt, err := d.GetTargetByID(int(id))
-	if err != nil {
-		t.Fatalf("reload after success: %v", err)
-	}
+	tgt := reloadTarget(t, d, id, "after success")
 	if tgt.NextStepAttempts != 1 || tgt.NextStepAttemptedAt == "" {
 		t.Fatalf("expected the successful attempt to be recorded, got %+v", tgt)
 	}
@@ -357,10 +379,8 @@ func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.
 	if err != nil {
 		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
 	}
-	for _, cand := range need {
-		if cand.ID == int(id) {
-			t.Fatal("a freshly-succeeded target must not be reselected before it goes stale")
-		}
+	if targetNeedsNextStep(need, id) {
+		t.Fatal("a freshly-succeeded target must not be reselected before it goes stale")
 	}
 
 	// Now simulate an owner edit: bump updated_at past both next_step_at and
@@ -374,13 +394,7 @@ func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.
 	if err != nil {
 		t.Fatalf("GetTargetsNeedingNextStep after edit: %v", err)
 	}
-	found := false
-	for _, cand := range need {
-		if cand.ID == int(id) {
-			found = true
-		}
-	}
-	if !found {
+	if !targetNeedsNextStep(need, id) {
 		t.Fatal("editing the target after a successful generation must make it eligible for refresh again")
 	}
 
@@ -389,10 +403,7 @@ func TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh(t *testing.
 	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
 		t.Fatalf("second GenerateNextStep: %v", err)
 	}
-	tgt, err = d.GetTargetByID(int(id))
-	if err != nil {
-		t.Fatalf("reload after second success: %v", err)
-	}
+	tgt = reloadTarget(t, d, id, "after second success")
 	if tgt.NextStepAttempts != 1 {
 		t.Errorf("post-edit attempt must reset the counter to 1, got %d", tgt.NextStepAttempts)
 	}

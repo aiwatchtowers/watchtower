@@ -413,7 +413,10 @@ func extractTagExpr(ctxArg ast.Expr, pkg string, localVars map[string]ast.Expr) 
 // classifying each one. Returns human-readable failure strings (empty means
 // every call in this file passed) plus the number of Generate calls found in
 // this file, whether or not they passed — the caller uses that count for the
-// coverage floor (see minGenerateCallsClassified).
+// coverage floor (see minGenerateCallsClassified). Per-call classification
+// and tag-expression resolution are split into their own functions
+// (recordWithSourceBinding, classifyGenerateCall, classifyTagCandidates) to
+// keep this function's own cyclomatic complexity down (gocyclo).
 func (sc *sourceScanner) scanFile(f scannedFile) ([]string, int) {
 	var failures []string
 	found := 0
@@ -427,44 +430,81 @@ func (sc *sourceScanner) scanFile(f scannedFile) ([]string, int) {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch stmt := n.(type) {
 			case *ast.AssignStmt:
-				if len(stmt.Lhs) == 1 && len(stmt.Rhs) == 1 {
-					if call, ok := stmt.Rhs[0].(*ast.CallExpr); ok && isWithSourceCall(call, f.pkg) && len(call.Args) == 2 {
-						if ident, ok := stmt.Lhs[0].(*ast.Ident); ok && ident.Name != "_" {
-							localVars[ident.Name] = call.Args[1]
-						}
-					}
-				}
+				recordWithSourceBinding(stmt, f.pkg, localVars)
 			case *ast.CallExpr:
-				sel, ok := stmt.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "Generate" || len(stmt.Args) != 4 {
+				if !isGenerateCall(stmt) {
 					return true
 				}
 				found++
-				pos := f.fset.Position(stmt.Pos())
-				loc := f.relPath + ":" + strconv.Itoa(pos.Line)
-				tagExpr, tagged := extractTagExpr(stmt.Args[0], f.pkg, localVars)
-				if !tagged {
-					failures = append(failures, loc+" calls Generate with an untagged context — add digest.WithSource(ctx, \"<tag>\")")
-					return true
-				}
-				candidates, ok := sc.resolveTagExprToStrings(tagExpr, f.pkg, funcName)
-				if !ok {
-					failures = append(failures, loc+" tags Generate with an expression this scan cannot resolve to a literal string — extend resolveTagExprToStrings or use a plain string literal")
-					return true
-				}
-				for _, tag := range candidates {
-					if TierForSource(tag) == TierLight {
-						continue
-					}
-					if !seenInAllowlist(tag) {
-						failures = append(failures, loc+" tags source "+strconv.Quote(tag)+" which routes strong by TierForSource's default arm and is not acknowledged in allowedStrongSources — add it with a reason, or route it light")
-					}
-				}
+				failures = append(failures, sc.classifyGenerateCall(stmt, f, funcName, localVars)...)
 			}
 			return true
 		})
 	}
 	return failures, found
+}
+
+// isGenerateCall reports whether stmt is a `Generate(ctx, systemPrompt,
+// userMessage, sessionID)` call — a method named Generate with exactly 4
+// arguments, matching the digest.Generator signature.
+func isGenerateCall(stmt *ast.CallExpr) bool {
+	sel, ok := stmt.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Generate" && len(stmt.Args) == 4
+}
+
+// recordWithSourceBinding notes `x := digest.WithSource(_, tagExpr)` (or
+// bare `x := WithSource(_, tagExpr)` within package digest itself)
+// assignments into localVars, so a later Generate(x, ...) call in the same
+// function can resolve x back to its tag expression.
+func recordWithSourceBinding(stmt *ast.AssignStmt, pkg string, localVars map[string]ast.Expr) {
+	if len(stmt.Lhs) != 1 || len(stmt.Rhs) != 1 {
+		return
+	}
+	call, ok := stmt.Rhs[0].(*ast.CallExpr)
+	if !ok || !isWithSourceCall(call, pkg) || len(call.Args) != 2 {
+		return
+	}
+	ident, ok := stmt.Lhs[0].(*ast.Ident)
+	if !ok || ident.Name == "_" {
+		return
+	}
+	localVars[ident.Name] = call.Args[1]
+}
+
+// classifyGenerateCall inspects one Generate(...) call site's context
+// argument and returns every failure it produces (untagged, an unresolvable
+// tag expression, or a resolved tag that routes strong without an
+// allowedStrongSources entry) — empty means the call passed.
+func (sc *sourceScanner) classifyGenerateCall(stmt *ast.CallExpr, f scannedFile, funcName string, localVars map[string]ast.Expr) []string {
+	pos := f.fset.Position(stmt.Pos())
+	loc := f.relPath + ":" + strconv.Itoa(pos.Line)
+
+	tagExpr, tagged := extractTagExpr(stmt.Args[0], f.pkg, localVars)
+	if !tagged {
+		return []string{loc + " calls Generate with an untagged context — add digest.WithSource(ctx, \"<tag>\")"}
+	}
+	candidates, ok := sc.resolveTagExprToStrings(tagExpr, f.pkg, funcName)
+	if !ok {
+		return []string{loc + " tags Generate with an expression this scan cannot resolve to a literal string — extend resolveTagExprToStrings or use a plain string literal"}
+	}
+	return classifyTagCandidates(candidates, loc)
+}
+
+// classifyTagCandidates checks each resolved tag string against
+// TierForSource and, for one that routes strong, against
+// allowedStrongSources — returning one failure string per unacknowledged
+// strong tag.
+func classifyTagCandidates(candidates []string, loc string) []string {
+	var failures []string
+	for _, tag := range candidates {
+		if TierForSource(tag) == TierLight {
+			continue
+		}
+		if !seenInAllowlist(tag) {
+			failures = append(failures, loc+" tags source "+strconv.Quote(tag)+" which routes strong by TierForSource's default arm and is not acknowledged in allowedStrongSources — add it with a reason, or route it light")
+		}
+	}
+	return failures
 }
 
 func seenInAllowlist(tag string) bool {
