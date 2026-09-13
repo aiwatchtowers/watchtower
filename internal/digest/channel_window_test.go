@@ -415,6 +415,132 @@ func TestChannelWindow_WholeSecondBurstOvershootsTheRowCap(t *testing.T) {
 		"with the burst consumed the channel has nothing left to offer")
 }
 
+// TestChannelWindow_CapSpanningTwoSecondsStillAdvances pins the progress
+// invariant at the boundary trim. A capped load spanning exactly two seconds
+// trims back to the first of them — which, from the second cycle on, IS the
+// window's own start, so the mark restamps where it already was. Discovery
+// keeps offering the channel, so it burns one AI call and one zero-width
+// digests row every cycle while the later second never renders. Trimming to
+// nothing and trimming back to the window start are the same dead end, and both
+// must take the over-cap reload.
+func TestChannelWindow_CapSpanningTwoSecondsStillAdvances(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_BURSTY", "bursty")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// A burst wider than the cap across exactly two seconds: the cap lands
+	// inside the second one, and the trim backs off to the first.
+	const firstSecond = 400
+	const secondSecond = 200
+	base := time.Now().Add(-6 * time.Hour).Unix()
+	for i := range firstSecond {
+		seedMessage(t, database, "C_BURSTY", fmt.Sprintf("%d.%06d", base, i+1), "U1", fmt.Sprintf("at-T-%d-end", i))
+	}
+	for i := range secondSecond {
+		seedMessage(t, database, "C_BURSTY", fmt.Sprintf("%d.%06d", base+1, i+1), "U1", fmt.Sprintf("at-T1-%d-end", i))
+	}
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	for range 4 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+	}
+
+	assert.True(t, gen.sawPrompt(fmt.Sprintf("at-T1-%d-end", secondSecond-1)),
+		"the later second must reach a prompt — a trim back to the window start makes no progress")
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_BURSTY"),
+		"with the burst consumed the channel has nothing left to offer")
+}
+
+// TestChannelWindow_BotHeavyContextInsideTheOpeningSecondStillAdvances pins the
+// same invariant on the accepted path. extractHumanContext keeps each human
+// message plus a few neighbours; when the human replies and their neighbours
+// all sit in the window's opening second, the rendered subset's newest message
+// IS the window start and the mark does not move. The extraction read the whole
+// load and dropped the rest as noise, so the mark records that instead.
+func TestChannelWindow_BotHeavyContextInsideTheOpeningSecondStillAdvances(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+
+	seedChannel(t, database, "C_ALERTS2", "alerts-two")
+	require.NoError(t, database.UpsertUser(db.User{ID: "UBOT", Name: "alertbot", IsBot: true}))
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// One human reply buried in alerts, all inside a single second — wide
+	// enough on both sides that the ±3 context window cannot escape it.
+	base := time.Now().Add(-6 * time.Hour).Unix()
+	seq := 0
+	seedAt := func(sec int64, user, text string) {
+		seq++
+		seedMessage(t, database, "C_ALERTS2", fmt.Sprintf("%d.%06d", sec, seq), user, text)
+	}
+	for i := range 15 {
+		seedAt(base, "UBOT", fmt.Sprintf("opening alert %d", i))
+	}
+	seedAt(base, "U1", "looking into this")
+	for i := range 15 {
+		seedAt(base, "UBOT", fmt.Sprintf("trailing alert %d", i))
+	}
+	// Bot-only traffic afterwards, which the extraction drops as noise.
+	for i := range 50 {
+		seedAt(base+10+int64(i), "UBOT", fmt.Sprintf("later alert %d", i))
+	}
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	for range 4 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_ALERTS2"),
+		"a bot-heavy channel whose context stays in the opening second must still finish its window")
+}
+
+// TestRenderBatchChannelBlocks_UnrenderedEntryIsNotConsidered pins the safety
+// property its doc comment claims: an entry that contributes nothing to the
+// prompt must not be reported back as rendered, because the caller stamps the
+// considered-through mark for exactly that set. buildBatchEntry cannot produce
+// such an entry today (it accepts only entries with visible messages), so this
+// is asserted at the seam that would carry the claim if it ever could.
+func TestRenderBatchChannelBlocks_UnrenderedEntryIsNotConsidered(t *testing.T) {
+	database := testDB(t)
+	seedChannel(t, database, "C_REAL", "real")
+	seedChannel(t, database, "C_BLANK", "blank")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	p := New(database, testConfig(), &mockGenerator{}, testLogger())
+	p.loadCaches()
+
+	entries := []batchEntry{
+		{channelID: "C_REAL", channelName: "real", since: 1000, msgs: []db.Message{
+			{TS: "1100.000001", UserID: "U1", Text: "something to say", TSUnix: 1100},
+		}, visibleCount: 1},
+		{channelID: "C_BLANK", channelName: "blank", since: 1000, msgs: []db.Message{
+			{TS: "1200.000001", UserID: "U1", Text: "", TSUnix: 1200},
+			{TS: "1300.000001", UserID: "U1", Text: "deleted", IsDeleted: true, TSUnix: 1300},
+		}, visibleCount: 1},
+	}
+
+	blocks, rendered := p.renderBatchChannelBlocks(entries, "2026-01-01 00:00")
+
+	require.Len(t, rendered, 1, "only the entry that produced a block is reported")
+	assert.Equal(t, "C_REAL", rendered[0].channelID)
+	assert.Contains(t, blocks, "something to say")
+	assert.NotContains(t, blocks, "C_BLANK", "an entry with nothing to render contributes no block")
+}
+
 // TestChannelWindow_MinMessagesAboveTheLoadCapStillAdvances pins the last
 // mechanical skip. digest.min_messages has no upper clamp, so a value above
 // db.DefaultTimeRangeLimit makes "0 visible and fewer than MinMessages of them"

@@ -522,32 +522,52 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 	return windows, nil
 }
 
-// stampConsidered records that msgs has been considered for this channel, so
-// its next window starts after them even though they produced no digest. Two
-// things count as considered: material the model saw and chose not to write
-// about, and material code mechanically decided there was nothing to ask about
-// (no visible text, bot-only, or too few to judge — see batchEntryStatus). A
-// failed AI call and a failed load are neither — they decided nothing — and
-// never reach here.
-//
-// msgs must be exactly what the decision covered, never what was merely
-// available: the accepted path passes its rendered set (trimmed to the row cap,
-// or only the extracted human context for a bot-heavy channel), the mechanical
-// skips pass the whole load their decision read.
-//
-// Best-effort: a failed stamp costs a re-render next cycle, never data, so it
-// must not fail the channel's digest.
-func (p *Pipeline) stampConsidered(channelID string, msgs []db.Message) {
+// newestTS returns the newest ts_unix among msgs, or 0 when there are none.
+func newestTS(msgs []db.Message) float64 {
 	var newest float64
 	for _, m := range msgs {
 		if m.TSUnix > newest {
 			newest = m.TSUnix
 		}
 	}
-	if newest <= 0 {
+	return newest
+}
+
+// advancesWindow reports whether considering msgs would move a channel's mark
+// past where its window started.
+//
+// **This is the invariant behind every escape in this file, and it is the thing
+// to extend.** A channel's next window starts at its mark, and the mark is the
+// newest message the cycle claims to have handled — so a claim whose newest
+// message is the window's own start leaves the mark exactly where it was, and
+// the channel reloads the identical rows next cycle, forever. Three different
+// shapes have violated it so far (a capped load entirely inside one second, a
+// boundary trim that backs off to the window's opening second, a bot-heavy
+// extraction confined to that same second). Do not add a fourth special case:
+// assert the invariant.
+func advancesWindow(msgs []db.Message, since float64) bool {
+	return newestTS(msgs) > since
+}
+
+// stampConsidered records that this channel has been considered through tsUnix,
+// so its next window starts after it even though it produced no digest. Two
+// things count as considered: material the model saw and chose not to write
+// about, and material code mechanically decided there was nothing to ask about
+// (no visible text, bot-only, or too few to judge — see batchEntryStatus). A
+// failed AI call and a failed load are neither — they decided nothing — and
+// never reach here.
+//
+// tsUnix must be exactly what the decision covered, never what was merely
+// available: the accepted path passes batchEntry.consideredThrough, the
+// mechanical skips pass the newest message of the load their decision read.
+//
+// Best-effort: a failed stamp costs a re-render next cycle, never data, so it
+// must not fail the channel's digest.
+func (p *Pipeline) stampConsidered(channelID string, tsUnix float64) {
+	if tsUnix <= 0 {
 		return
 	}
-	if err := p.db.SetChannelDigestConsideredTS(channelID, newest); err != nil {
+	if err := p.db.SetChannelDigestConsideredTS(channelID, tsUnix); err != nil {
 		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", p.channelName(channelID), err)
 	}
 }
@@ -701,9 +721,10 @@ func (p *Pipeline) buildBatchEntries(windows []channelWindow, nowUnix float64) [
 // did not fit would be skipped when the next window starts at N.
 //
 // ok is false when the cap landed entirely inside one second and trimming would
-// leave nothing to render. That case cannot make progress by trimming — the
-// next window would reload exactly these rows forever — so the caller must
-// reload the whole second instead, overshooting the cap.
+// leave nothing at all. Callers must treat that as one case of the broader
+// condition — see advancesWindow: a trimmed set that does not move the mark
+// past the window start is no more useful than an empty one, and both must take
+// the over-cap reload.
 func trimPartialBoundarySecond(msgs []db.Message) (trimmed []db.Message, ok bool) {
 	last := msgs[len(msgs)-1].TSUnix
 	cut := len(msgs)
@@ -752,7 +773,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 
 	visible, botVisible := p.countVisibleMessages(msgs)
 	if visible == 0 {
-		p.stampConsidered(channelID, loaded)
+		p.stampConsidered(channelID, newestTS(loaded))
 		if len(msgs) >= p.cfg.Digest.MinMessages {
 			return batchEntry{}, batchEntrySkipNoVisible
 		}
@@ -763,7 +784,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 	// Bot-heavy channel: ≥90% visible messages from bots.
 	if float64(botVisible)/float64(visible) >= 0.9 {
 		if humanVisible == 0 {
-			p.stampConsidered(channelID, loaded)
+			p.stampConsidered(channelID, newestTS(loaded))
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		msgs = p.extractHumanContext(msgs)
@@ -774,53 +795,67 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 			}
 		}
 		if visible == 0 {
-			p.stampConsidered(channelID, loaded)
+			p.stampConsidered(channelID, newestTS(loaded))
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		p.logger.Printf("digest: #%s is bot-heavy, extracted %d context messages around human replies",
 			p.channelName(channelID), visible)
 	}
 
+	// Normally the mark records exactly what will be rendered. The exception is
+	// the invariant again: a bot-heavy extraction can keep only messages inside
+	// the window's opening second, and a mark that does not advance pins the
+	// channel on them forever. The extraction read the whole load and dropped
+	// the rest as noise, so that is what the mark records instead.
+	consideredThrough := newestTS(msgs)
+	if !advancesWindow(msgs, w.since) {
+		consideredThrough = newestTS(loaded)
+	}
+
 	return batchEntry{
-		channelID:    channelID,
-		channelName:  p.channelName(channelID),
-		since:        w.since,
-		msgs:         msgs,
-		visibleCount: visible,
+		channelID:         channelID,
+		channelName:       p.channelName(channelID),
+		since:             w.since,
+		consideredThrough: consideredThrough,
+		msgs:              msgs,
+		visibleCount:      visible,
 	}, batchEntryAccepted
 }
 
 // loadWindowMessages loads a channel's window oldest-first, capped, and cut
 // back to a whole number of seconds so the considered-through mark can never
 // land inside a partially-loaded second.
+//
+// The cut must never cost the window its forward progress. Trimming back to the
+// window's own opening second leaves the mark exactly where it started, which
+// pins the channel on those rows for good — the same dead end as trimming away
+// everything. Both are the one condition advancesWindow states, and both take
+// the over-cap reload below.
 func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) ([]db.Message, error) {
 	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
 	if err != nil || len(msgs) < db.DefaultTimeRangeLimit {
 		return msgs, err
 	}
 
-	if trimmed, ok := trimPartialBoundarySecond(msgs); ok {
+	if trimmed, ok := trimPartialBoundarySecond(msgs); ok && advancesWindow(trimmed, w.since) {
 		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
 			p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(trimmed))
 		return trimmed, nil
 	}
 
-	// The whole capped load sits inside one second, so trimming would leave
-	// nothing to render — and since the next window starts AT that second, the
-	// load would refill with exactly these rows every cycle and never reach
-	// anything after them. Reload with a far higher ceiling so the load gets
-	// past that second: a bounded overshoot of the cap beats a channel that can
-	// never move.
+	// Nothing the cap left behind moves the window. Reload with a far higher
+	// ceiling so the load reaches past the second the window starts in: a
+	// bounded overshoot of the cap beats a channel that can never move.
 	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
 	if err != nil {
 		return nil, err
 	}
 	if len(msgs) == db.BoundarySecondRowLimit {
-		if trimmed, ok := trimPartialBoundarySecond(msgs); ok {
+		if trimmed, ok := trimPartialBoundarySecond(msgs); ok && advancesWindow(trimmed, w.since) {
 			msgs = trimmed
 		}
 	}
-	p.logger.Printf("digest: #%s holds more than %d message(s) in a single second: digesting %d message(s) over the limit",
+	p.logger.Printf("digest: #%s holds more than %d message(s) in the second its window opens on: digesting %d message(s) over the limit",
 		p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(msgs))
 	return msgs, nil
 }
@@ -1040,7 +1075,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	agg.generated.Add(1)
 	p.totalMessageCount.Add(int64(len(e.msgs)))
 	p.updatePeriodBounds(sinceUnix, lastMsgTS)
-	p.stampConsidered(e.channelID, e.msgs)
+	p.stampConsidered(e.channelID, e.consideredThrough)
 
 	p.lastStepMu.Lock()
 	p.LastStepMessageCount = len(e.msgs)
@@ -1110,7 +1145,7 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	// the next cycle retries it.
 	for _, e := range out.rendered {
 		if !storeFailed[e.channelID] {
-			p.stampConsidered(e.channelID, e.msgs)
+			p.stampConsidered(e.channelID, e.consideredThrough)
 		}
 	}
 
@@ -1708,11 +1743,15 @@ func (p *Pipeline) updatePeriodBounds(sinceUnix, lastMsgTS float64) {
 // that channel's own window start — entries inside one batch may carry
 // different windows.
 type batchEntry struct {
-	channelID    string
-	channelName  string
-	since        float64
-	msgs         []db.Message
-	visibleCount int
+	channelID   string
+	channelName string
+	since       float64
+	// consideredThrough is the mark to stamp once this entry's AI call returns:
+	// the newest message rendered, except where that would not advance the
+	// window (see buildBatchEntry).
+	consideredThrough float64
+	msgs              []db.Message
+	visibleCount      int
 }
 
 // earliestSince returns the earliest window start in a batch — the batch's
@@ -1841,8 +1880,15 @@ type batchDigestOutput struct {
 }
 
 // renderBatchChannelBlocks formats one channel block per entry and reports the
-// entries that produced one. An entry whose messages all filter out renders
-// nothing and is therefore never reported as considered.
+// entries that produced one.
+//
+// The caller stamps the considered-through mark for exactly the entries
+// reported here, so an entry that contributes nothing to the prompt must not be
+// among them: the blank-render `continue` below is what enforces that, and the
+// append is deliberately after it. buildBatchEntry cannot produce such an entry
+// today — it accepts only entries with visible messages — so the property is
+// pinned at this seam rather than end to end
+// (TestRenderBatchChannelBlocks_UnrenderedEntryIsNotConsidered).
 func (p *Pipeline) renderBatchChannelBlocks(entries []batchEntry, toStr string) (blocks string, rendered []*batchEntry) {
 	var channelBlocks strings.Builder
 
