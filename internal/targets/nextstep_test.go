@@ -191,6 +191,51 @@ func TestGetTargetsNeedingNextStep_AttemptBudgetPerTargetIsolation(t *testing.T)
 	}
 }
 
+// TestGenerateNextStep_RepeatedFailuresClimbToThreeThenExcluded drives the
+// counter through the REAL write path — repeated GenerateNextStep calls on
+// the same target, same UTC day, with no manual seeding of
+// next_step_attempts/next_step_attempted_at — rather than seedAttempts'
+// direct-write shortcut. This is the one guard that can tell a working
+// increment branch apart from a `nextAttemptCount` that always returns 1: a
+// fixture built with seedAttempts starts the counter pre-loaded and never
+// exercises the "otherwise increment" arm at all, so a mutant that always
+// resets to 1 would still pass every other budget test in this file while
+// leaving the daily cap a permanent no-op.
+func TestGenerateNextStep_RepeatedFailuresClimbToThreeThenExcluded(t *testing.T) {
+	gen := &mockGenerator{err: fmt.Errorf("simulated AI failure")}
+	p, d := makeTestPipeline(t, gen)
+
+	id := seedActiveTarget(t, d, "repeatedly failing")
+
+	for i, want := range []int{1, 2, 3} {
+		if _, err := p.GenerateNextStep(context.Background(), int(id)); err == nil {
+			t.Fatalf("attempt %d: expected the simulated AI failure to surface", i+1)
+		}
+		tgt, err := d.GetTargetByID(int(id))
+		if err != nil {
+			t.Fatalf("reload after attempt %d: %v", i+1, err)
+		}
+		if tgt.NextStepAttempts != want {
+			t.Fatalf("after attempt %d: expected next_step_attempts=%d, got %d", i+1, want, tgt.NextStepAttempts)
+		}
+		if tgt.NextStep != "" {
+			t.Fatalf("a failed attempt must never persist a next_step, got %q", tgt.NextStep)
+		}
+	}
+
+	// Only after the third real failure, same UTC day, does the eligibility
+	// predicate exclude the target.
+	need, err := d.GetTargetsNeedingNextStep(0)
+	if err != nil {
+		t.Fatalf("GetTargetsNeedingNextStep: %v", err)
+	}
+	for _, cand := range need {
+		if cand.ID == int(id) {
+			t.Fatal("a target with 3 real same-day failures must be excluded from the next batch")
+		}
+	}
+}
+
 // TestGetTargetsNeedingNextStep_UTCDayRolloverGrantsFreshBudget: an exhausted
 // target from a previous UTC calendar day is eligible again today, with a
 // full fresh budget (not one straggler attempt) — nextAttemptCount must reset

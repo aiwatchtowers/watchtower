@@ -189,6 +189,18 @@ func (db *DB) RecordTargetNextStepAttempt(id, attempts int, attemptedAt string) 
 // budget resets). This is deliberately per-row: a global counter would let
 // one perpetually-failing target silence next-step generation for every
 // other target that also needs a refresh that day. See RecordTargetNextStepAttempt.
+//
+// Known limitation (owner-accepted, not fixed here): the "edited since"
+// escape hatch is keyed on raw updated_at, and RecomputeParentProgress
+// (below) bumps a PARENT target's updated_at on every call, whether or not
+// its computed progress actually changed — it fires on any child status
+// transition. A non-leaf target with actively churning children can
+// therefore look "freshly edited" on every cycle and exceed the 3/day budget
+// indefinitely. This predates this predicate (the same column already drove
+// next_step_at staleness) and is bounded by child churn, not unbounded;
+// narrowing updated_at's semantics would touch all four callers of
+// RecomputeParentProgress, which is wider than this budget and riskier than
+// the hole. Left as-is by controller ruling.
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')
