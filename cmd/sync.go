@@ -489,22 +489,16 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 	return snaps, firstErr
 }
 
-// runSyncDaemon builds a daemon.Daemon around the already-wired Slack
-// orchestrators, attaches every pipeline stage (unconditionally — each
-// pipeline's own daemon phase gates its execution on that feature's own
-// config flag, see internal/daemon/daemon.go) plus one syncer per connected
-// Jira/Google/IMAP/CalDAV account (seeding each source's legacy
-// single-account config into its accounts table first, so an existing install
-// keeps syncing without a re-login), and runs it until ctx is cancelled. A
-// source that fails to seed or wire records its own error and is skipped —
-// the fan-out pattern shared by wireJiraSyncers/wireGoogleSyncers/
-// wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
-// rest of the daemon from starting.
 // migrateJiraFeatureKeys runs the one-time jira.features key repair and
 // returns the config the daemon should run with: the reloaded one when the
 // repair actually moved a value, otherwise cfg untouched. Log-only on
 // failure — an unrepaired file reads exactly as it did before, which is the
 // pre-repair status quo rather than a fail-open, and the next start retries.
+//
+// Daemon start is the ONLY caller that reaches an install which never opens
+// `jira features`, i.e. every Desktop-only owner, so the call site in
+// runSyncDaemon is load-bearing and pinned by
+// TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration.
 func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Config {
 	repaired, err := config.MigrateJiraFeatureKeys(flagConfig)
 	if err != nil {
@@ -523,6 +517,17 @@ func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Conf
 	return freshCfg
 }
 
+// runSyncDaemon builds a daemon.Daemon around the already-wired Slack
+// orchestrators, attaches every pipeline stage (unconditionally — each
+// pipeline's own daemon phase gates its execution on that feature's own
+// config flag, see internal/daemon/daemon.go) plus one syncer per connected
+// Jira/Google/IMAP/CalDAV account (seeding each source's legacy
+// single-account config into its accounts table first, so an existing install
+// keeps syncing without a re-login), and runs it until ctx is cancelled. A
+// source that fails to seed or wire records its own error and is skipped —
+// the fan-out pattern shared by wireJiraSyncers/wireGoogleSyncers/
+// wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
+// rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
 	// Perform the one-time feature-gate migration (and its first-contact
 	// marker stamp) for digest.enabled=false installs. On a real migration,

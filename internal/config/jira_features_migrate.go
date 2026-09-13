@@ -43,12 +43,25 @@ var squashedJiraFeatureKeys = map[string]string{
 // landing first would be followed by a migration reading a file it no longer
 // describes.
 //
-// It is value-preserving, not a delete. A `teamworkload: true` on disk is
-// an enable the owner performed and the repaired reader cannot see; the
-// migration carries that value over to `team_workload` before removing the
-// dead key. A long key already present wins — it is an explicit value the
-// owner or the repaired writer set, and must never be overwritten by a
-// stale squashed one.
+// ONLY A `true` IS CARRIED OVER. The pre-fix writer serialized the whole
+// struct, so it wrote all eleven keys on EVERY call: a `false` in that block
+// records the artifact of a struct write, not a decision. Only a `true` can
+// be traced to intent — an explicit `enable`, or a `reset`, which is the
+// owner asking for the role defaults. A squashed `false` is therefore
+// deleted and not carried, which leaves its readable key absent and lets
+// Load's role default decide (see config.go). Carrying it instead would
+// write eleven explicit values onto every repaired install — the common
+// shape is an all-`false` block — freezing the whole Jira surface off
+// forever and putting the defaults out of reach on exactly the machines
+// this repair exists for.
+//
+// Accepted cost of that rule: an owner who deliberately disabled a flag
+// that is ON in the role baseline gets it back, once. Re-disabling it now
+// actually persists, which it never did before the key repair.
+//
+// A readable key already present always wins — it is an explicit value the
+// owner or the repaired writer set, and a stale squashed key must never
+// overwrite it, in either direction.
 //
 // Behaviour, mirroring MigrateFeatureGates:
 //
@@ -58,14 +71,14 @@ var squashedJiraFeatureKeys = map[string]string{
 //   - No squashed key is present: the marker is written ALONE. This is the
 //     common case (a fresh install, or one that never touched a toggle) and
 //     it costs exactly one write, ever.
-//   - Squashed keys are present: their values move to the long spelling
-//     where no long key already exists, the squashed keys are removed, and
-//     the marker is stamped — all in one atomic write.
+//   - Squashed keys are present: every one of them is removed, each `true`
+//     lands under the readable spelling where no readable key already
+//     exists, and the marker is stamped — all in one atomic write.
 //
-// The returned bool is repaired: at least one squashed key was carried over
-// and removed. A read or write failure returns (false, err) — nothing was
-// repaired, and the next call retries from the unstamped file. (A read
-// failure also means config.Load would have failed on the same file anyway.)
+// The returned bool is repaired: at least one squashed key was removed. A
+// read or write failure returns (false, err) — nothing was repaired, and the
+// next call retries from the unstamped file. (A read failure also means
+// config.Load would have failed on the same file anyway.)
 func MigrateJiraFeatureKeys(configPath string) (bool, error) {
 	v := viper.New()
 	v.SetConfigFile(configPath)
@@ -91,8 +104,8 @@ func MigrateJiraFeatureKeys(configPath string) (bool, error) {
 		}
 		deletes = append(deletes, squashedKey)
 		longKey := "jira.features." + long
-		if !v.IsSet(longKey) {
-			sets[longKey] = v.GetBool(squashedKey)
+		if v.GetBool(squashedKey) && !v.IsSet(longKey) {
+			sets[longKey] = true
 		}
 	}
 

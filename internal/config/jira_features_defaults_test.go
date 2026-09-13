@@ -45,13 +45,17 @@ func TestLoad_ExplicitJiraFeatureValueBeatsDefault(t *testing.T) {
 	assert.True(t, cfg.Jira.Features.AwaitingMyInput, "an untouched key still takes the default")
 }
 
-// TestLoad_MigratedInstallKeepsOwnerValuesOverDefaults is the interaction
-// between the key repair and the defaults, and it is the case that decides
-// whether an owner's deliberate "off" survives. After the migration every
-// flag the pre-repair writer touched carries an explicit key, so the
-// defaults cannot reach it — my_issues_in_briefing stays false even though
-// it is on in the IC baseline. Only genuinely absent keys take a default.
-func TestLoad_MigratedInstallKeepsOwnerValuesOverDefaults(t *testing.T) {
+// TestLoad_MigratedInstallTakesDefaultsForDroppedArtifacts is the
+// interaction between the key repair and the defaults, and it is what makes
+// the repair reach the owner rather than freeze his install as it was.
+//
+// The migration carries a squashed `true` and drops a squashed `false`,
+// because the pre-fix writer wrote all eleven keys on every call and only a
+// `true` records intent. So after a repair the carried enable stands, the
+// dropped artifact falls through to the role default — and a value written
+// AFTERWARDS through the product's own write path still wins over that
+// default, which is the half of the contract that has to keep holding.
+func TestLoad_MigratedInstallTakesDefaultsForDroppedArtifacts(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	content := "active_workspace: test\n" +
 		"jira:\n" +
@@ -66,11 +70,20 @@ func TestLoad_MigratedInstallKeepsOwnerValuesOverDefaults(t *testing.T) {
 
 	cfg, err := Load(p)
 	require.NoError(t, err)
-	assert.False(t, cfg.Jira.Features.MyIssuesInBriefing,
-		"a migrated explicit false must not be overwritten by the on-by-default seed")
 	assert.True(t, cfg.Jira.Features.TeamWorkload, "the migrated enable stands")
+	assert.True(t, cfg.Jira.Features.MyIssuesInBriefing,
+		"a dropped artifact false must fall through to the on-by-default role baseline")
 	assert.True(t, cfg.Jira.Features.AwaitingMyInput,
-		"a key the owner never touched is absent, so it takes the default")
+		"a key the owner never touched is absent, so it takes the default too")
+
+	// A deliberate disable written after the repair — the shape
+	// `jira features disable` now produces — must survive the default.
+	require.NoError(t, patchConfigYAML(p, map[string]bool{"jira.features.my_issues_in_briefing": false}, nil))
+
+	cfg, err = Load(p)
+	require.NoError(t, err)
+	assert.False(t, cfg.Jira.Features.MyIssuesInBriefing,
+		"an explicit post-repair false must not be overwritten by the on-by-default seed")
 }
 
 // TestJiraFeatureDefaults_CoversEveryToggle pins that the seeded keys are the

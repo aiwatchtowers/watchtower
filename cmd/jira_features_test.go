@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"bytes"
+	"log"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -150,9 +153,50 @@ func TestJiraFeatureConfigKeys_MatchStructAndToggleRef(t *testing.T) {
 	}
 	assert.Len(t, seen, typ.NumField(), "every toggle must have a canonical key")
 
+	// featureNames drives both `jira features reset` and the display table,
+	// and is the one table nothing else checks: a twelfth toggle added to the
+	// struct and to jiraFeatureConfigKeys but forgotten here would reset
+	// eleven of twelve keys and omit a row, silently.
+	assert.Len(t, featureNames, typ.NumField(), "featureNames must list every toggle exactly once")
 	for _, name := range featureNames {
 		assert.NotEmpty(t, jiraFeatureConfigKeys[name], "short name %q has no canonical key", name)
 	}
+}
+
+// TestMigrateJiraFeatureKeys_DaemonHelperReturnsRepairedConfig covers the
+// daemon's own repair path, including its reload branch: the returned config
+// must carry the repaired values, not the pre-repair ones the caller loaded.
+func TestMigrateJiraFeatureKeys_DaemonHelperReturnsRepairedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "jira:\n  features:\n    teamworkload: true\n")
+
+	before, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.False(t, before.Jira.Features.TeamWorkload, "fixture check: unreadable before the repair")
+
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	after := migrateJiraFeatureKeys(before, logger)
+	assert.True(t, after.Jira.Features.TeamWorkload, "the daemon must run with the repaired values")
+
+	// A second call has nothing to repair and must hand the same config back
+	// untouched rather than reload for nothing.
+	same := migrateJiraFeatureKeys(after, logger)
+	assert.Same(t, after, same, "a no-op repair must not swap the daemon's config")
+}
+
+// TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration closes the hole the
+// helper test cannot: daemon start is the only caller that reaches an
+// install which never opens `jira features` — every Desktop-only owner — and
+// deleting the one line from runSyncDaemon leaves every other test green
+// while those installs keep their squashed keys and inert enables forever.
+// runSyncDaemon cannot be invoked from a test (it builds and runs a daemon
+// until ctx is cancelled), so the call site is asserted on the source.
+func TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration(t *testing.T) {
+	src, err := os.ReadFile("sync.go")
+	require.NoError(t, err)
+	// Not assert.Contains: on failure that would dump the whole file.
+	assert.True(t, strings.Contains(string(src), "cfg = migrateJiraFeatureKeys(cfg, logger)"),
+		"runSyncDaemon must run the jira.features key repair at daemon start — the call is gone from cmd/sync.go")
 }
 
 // TestJiraFeaturesCmd_PersistentPreRunMigratesAndRunsRootHook pins both

@@ -489,32 +489,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
-	// An absent jira.features key means the role default, not false. Before
-	// this there was no default for any of the eleven, so a pristine install
-	// — one that never ran `jira features` — had the whole Jira feature
-	// surface off and the promised "defaults based on user role" never
-	// existed at all.
-	//
-	// The IC baseline is seeded, not a per-role set, and deliberately:
-	// Load has no DB handle, and the role lives in user_profile.role, which
-	// is FREE TEXT collected from an onboarding TextField placeholdered
-	// "e.g. Engineering Manager". The structured RoleLevel exists only in
-	// Swift (WatchtowerCore/Models/UserProfile.swift) and is never
-	// persisted, so DefaultJiraFeatures falls to its IC branch for every
-	// real user — `jira features reset` has always reset to IC. Seeding the
-	// IC baseline here is therefore not an approximation of the role
-	// default; today it IS the role default, for everyone. Persisting a real
-	// role level and seeding per role is separate work, and until it exists
-	// a connect-time writer chasing the role would only be a second writer
-	// of these keys for a value that does not exist.
-	//
-	// Registering defaults is safe here only because Load's viper is never
-	// written back: a SetDefault leaks into WriteConfigAs output, so the
-	// writer vipers (cmd/jira.go, cmd/features.go, cmd/config.go) must stay
-	// default-free or role defaults get baked into the owner's file.
-	for key, value := range jiraFeatureDefaults(DefaultJiraFeaturesRole) {
-		v.SetDefault("jira.features."+key, value)
-	}
+	setJiraFeatureDefaults(v)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
 	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
