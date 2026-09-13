@@ -59,6 +59,20 @@ func searchWindow(now time.Time, lastDate string, initialDays int) (after string
 	return now.AddDate(0, 0, -days).Format(searchDateFormat), days, false
 }
 
+// recordSearchGap logs the clamped-catch-up warning and best-effort records
+// it on the account's error column. The DB write is diagnostic telemetry,
+// not correctness-load-bearing: losing it must never abort the sync itself
+// (the recordSlackWireError house shape, cmd/sync.go), so a write failure is
+// logged and swallowed rather than returned.
+func (o *Orchestrator) recordSearchGap(gapDays int, unclampedAfter, clampedAfter string) {
+	msg := fmt.Sprintf("search sync: gap of %d days exceeds the %d-day catch-up cap; messages between %s and %s were not fetched",
+		gapDays, maxSearchCatchUpDays, unclampedAfter, clampedAfter)
+	o.logger.Printf("warning: %s", msg)
+	if err := o.db.SetSlackAccountError(o.accountID, msg); err != nil {
+		o.logger.Printf("search sync: failed to record gap on account %d: %v", o.accountID, err)
+	}
+}
+
 // searchChannelType maps a search result CtxChannel to our type string.
 func searchChannelType(ch slack.CtxChannel) string {
 	if ch.IsMPIM {
@@ -82,17 +96,17 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
+	if lastDate != "" {
+		if _, err := time.Parse(searchDateFormat, lastDate); err != nil {
+			o.logger.Printf("search sync: invalid search_last_date %q, treating as first run", lastDate)
+		}
+	}
 
 	now := time.Now()
 	searchAfter, gapDays, clamped := searchWindow(now, lastDate, o.config.Sync.InitialHistoryDays)
 	if clamped {
 		unclampedAfter := now.AddDate(0, 0, -gapDays).Format(searchDateFormat)
-		msg := fmt.Sprintf("search sync: gap of %d days exceeds the %d-day catch-up cap; messages between %s and %s were not fetched",
-			gapDays, maxSearchCatchUpDays, unclampedAfter, searchAfter)
-		o.logger.Printf("warning: %s", msg)
-		if err := o.db.SetSlackAccountError(o.accountID, msg); err != nil {
-			return fmt.Errorf("recording search sync gap: %w", err)
-		}
+		o.recordSearchGap(gapDays, unclampedAfter, searchAfter)
 	}
 
 	query := fmt.Sprintf("after:%s", searchAfter)

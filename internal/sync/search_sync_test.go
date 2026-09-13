@@ -165,3 +165,54 @@ func TestSyncViaSearch_UnclampedGapDoesNotWarnOrRecordError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, got.Error)
 }
+
+// TestSyncViaSearch_FailedGapWriteDoesNotAbortSync is fix round 1's F1: the
+// SetSlackAccountError write is diagnostic telemetry about the gap, not
+// correctness-load-bearing — losing it must never abort the sync itself.
+// Renaming the error column (leaving search_last_date untouched) makes only
+// that write fail, without disturbing the watermark read/advance the rest
+// of the sync depends on.
+func TestSyncViaSearch_FailedGapWriteDoesNotAbortSync(t *testing.T) {
+	ts := newTestSetup(t, emptySearchResultsMux())
+
+	staleDate := time.Now().AddDate(0, 0, -45).Format(searchDateFormat)
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, staleDate))
+
+	_, err := ts.db.Exec(`ALTER TABLE slack_accounts RENAME COLUMN error TO error_disabled_for_test`)
+	require.NoError(t, err)
+
+	var logBuf bytes.Buffer
+	ts.orch.logger = log.New(&logBuf, "", 0)
+
+	err = ts.orch.syncViaSearch(context.Background())
+	require.NoError(t, err, "a failed gap-note write must not abort the sync")
+
+	assert.Contains(t, logBuf.String(), "gap of 47 days exceeds the 30-day catch-up cap",
+		"the warning must still be logged even though the DB write fails")
+	assert.Contains(t, logBuf.String(), "failed to record gap on account",
+		"the write failure itself must be logged, not silently dropped")
+
+	watermark, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, time.Now().Format(searchDateFormat), watermark,
+		"the sync must still run to completion and advance the watermark")
+}
+
+// TestSyncViaSearch_InvalidWatermarkLogsWarning restores the anomaly signal
+// for a corrupt search_last_date (Watchtower is the sole writer, so this
+// should never happen, but if it does the daemon log should say so) that
+// was dropped when the window math moved into searchWindow.
+func TestSyncViaSearch_InvalidWatermarkLogsWarning(t *testing.T) {
+	ts := newTestSetup(t, emptySearchResultsMux())
+
+	var logBuf bytes.Buffer
+	ts.orch.logger = log.New(&logBuf, "", 0)
+
+	_, err := ts.db.Exec(`UPDATE slack_accounts SET search_last_date = ? WHERE id = ?`, "not-a-date", ts.accountID)
+	require.NoError(t, err)
+
+	err = ts.orch.syncViaSearch(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, logBuf.String(), `invalid search_last_date "not-a-date", treating as first run`)
+}
