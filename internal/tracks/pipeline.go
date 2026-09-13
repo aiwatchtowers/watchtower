@@ -318,12 +318,24 @@ func (p *Pipeline) RunForWindow(ctx context.Context, userID string, from, to flo
 	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for @%s in %d batch(es)...",
 		len(allEntries), totalTopicCount, userName, len(batches)))
 
-	totalStored := p.runTrackBatches(ctx, batches, userID, userName, from, to)
+	res := p.runTrackBatches(ctx, batches, userID, userName, from, to)
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
-	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", totalStored, userName, len(allEntries)))
-	p.logger.Printf("tracks: %d tracks for @%s from %d channels", totalStored, userName, len(allEntries))
-	return totalStored, nil //nolint:nilerr // partial results returned; per-batch errors logged above
+	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
+	p.logger.Printf("tracks: %d tracks for @%s from %d channels", res.stored, userName, len(allEntries))
+
+	// A window that produced nothing must not be stamped as a completed run:
+	// both tracks watermarks read pipeline_runs rows with status='done', so a
+	// silent nil here would skip every digest of the failed window forever.
+	switch {
+	case res.aborted != nil:
+		// Shutdown is not a batch failure, but the window is unfinished either way.
+		return res.stored, fmt.Errorf("track extraction interrupted after %d of %d batch(es): %w",
+			res.succeeded+res.failed, len(batches), res.aborted)
+	case res.succeeded == 0 && res.failed > 0:
+		return res.stored, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
+	}
+	return res.stored, nil //nolint:nilerr // partial success only: at least one batch stored tracks, the rest are logged above
 }
 
 // loadWindowContext caches the user profile + active-tracks reference and
@@ -575,12 +587,26 @@ func (p *Pipeline) planTrackBatches(entries []digestEntry) [][]digestEntry {
 	return groupDigestBatches(entries, 15, maxTopicsPerBatch)
 }
 
+// trackBatchResult accumulates the outcome of a batch loop so RunForWindow can
+// tell a fully failed window from a partial success (the digest pipeline's
+// batchAggregator shape, single-goroutine so no atomics are needed).
+type trackBatchResult struct {
+	stored    int
+	succeeded int
+	failed    int
+	lastErr   error
+	aborted   error // non-nil when the loop stopped early because ctx was cancelled
+}
+
 // runTrackBatches runs each AI batch sequentially (per-batch errors logged but
-// don't abort the run) and returns the total number of tracks stored.
-func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry, userID, userName string, from, to float64) int {
-	totalStored := 0
+// don't abort the run) and reports how many batches stored tracks, how many
+// failed, and the last failure — so an all-failed window can be surfaced as an
+// error instead of being stamped as a clean run with zero tracks.
+func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry, userID, userName string, from, to float64) trackBatchResult {
+	var res trackBatchResult
 	for i, batch := range batches {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			res.aborted = err
 			break
 		}
 		batchTopics := 0
@@ -600,13 +626,16 @@ func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry,
 		n, err := p.generateBatchTracks(ctx, batch, userID, userName, from, to)
 		if err != nil {
 			p.logger.Printf("tracks: error in batch %d/%d: %v", i+1, len(batches), err)
+			res.failed++
+			res.lastErr = err
 		} else {
-			totalStored += n
+			res.stored += n
+			res.succeeded++
 		}
 		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 		p.progress(i+1, len(batches), fmt.Sprintf("Batch %d/%d done (%d tracks)", i+1, len(batches), n))
 	}
-	return totalStored
+	return res
 }
 
 // digestEntry represents a channel's digest data for batch processing.
