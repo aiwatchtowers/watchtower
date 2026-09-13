@@ -1,7 +1,6 @@
 package catchup
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -244,23 +243,37 @@ func TestRun_ReapsAbandonedBuildingRecaps(t *testing.T) {
 	assert.Equal(t, "ready", r.Status, "this run's own recap is unaffected")
 }
 
-// The reap must run BEFORE this run inserts its own row. The row's final status
-// cannot show the difference (finish overwrites whatever the reap wrote), so the
-// observable is that the reap finds nothing to report: the clock here is far
-// enough ahead that a row inserted first WOULD be past the stale cutoff.
+// The reap must run BEFORE this run inserts its own row, or it marks the recap
+// it is about to build as abandoned.
+//
+// The row's FINAL status cannot show that — finish overwrites both status and
+// error on every exit path — so the assertion reads the row MID-RUN, from the
+// generator hook that fires between the insert and finish. The clock is a day
+// ahead, so a row inserted before the reap would be past the stale cutoff and
+// read 'failed' there instead of 'building'.
 func TestRun_ReapNeverCatchesTheRunsOwnRow(t *testing.T) {
-	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	gen := &mockGenerator{}
 	p, d := newPipeline(t, gen, &fakeTopUp{})
-	var logs bytes.Buffer
-	p.logger = log.New(&logs, "", 0)
 	p.now = func() time.Time { return time.Now().Add(24 * time.Hour) }
 
 	now := time.Now()
+	id := seedDigest(t, d, float64(now.Add(-30*time.Minute).Unix()), float64(now.Add(-29*time.Minute).Unix()))
+	gen.out = fmt.Sprintf(composeOK, id)
+	var statusDuringRun string
+	gen.fn = func(_, _ string) string {
+		rows, err := d.ListCatchupRecaps(1)
+		require.NoError(t, err)
+		require.Len(t, rows, 1, "this run's row is the only one")
+		statusDuringRun = rows[0].Status
+		return gen.out
+	}
+
 	res, err := p.Run(context.Background(), RunOptions{
 		Spec: WindowSpec{From: now.Add(-time.Hour), To: now.Add(-time.Minute)},
 	})
 	require.NoError(t, err)
-	assert.NotContains(t, logs.String(), "abandoned", "the run reaped nothing — its own row was not there yet")
+	require.True(t, gen.called, "the compose call must happen, or nothing observed the row mid-run")
+	assert.Equal(t, "building", statusDuringRun, "the run's own row was inserted after the reap, so the reap could not see it")
 	r, err := d.GetCatchupRecap(res.RecapID)
 	require.NoError(t, err)
 	assert.Equal(t, "ready", r.Status)

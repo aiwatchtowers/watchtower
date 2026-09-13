@@ -119,6 +119,9 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         do {
             try process.run()
         } catch {
+            // The binary store mid-replace, or a copy that lost its exec bit:
+            // ~30 call sites turn this into one line of UI and nothing else.
+            CLILog.failure(args: args, exitCode: -1, stderr: error.localizedDescription)
             throw CLIRunnerError.launchFailed(underlying: error)
         }
 
