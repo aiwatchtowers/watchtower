@@ -115,7 +115,10 @@ type emailThread struct {
 // groupThreads groups accountID's ts-ordered gmail messages into per-thread
 // units keyed by thread_id: the first non-empty subject wins, participants
 // are distinct "name <email>" senders in first-seen order, and a thread is
-// capped at its newest maxMessagesPerThread messages.
+// capped at its OLDEST maxMessagesPerThread messages — oldest because the cap
+// must leave its remainder ABOVE this pass's floor to be mined next run, and
+// only a thread's tail can be (see maxMessagesPerThread). Capping the other
+// way round leaves a floor that cannot advance at all.
 func groupThreads(msgs []db.GmailExtractMessage) []emailThread {
 	index := make(map[string]int)
 	var threads []emailThread
@@ -206,11 +209,14 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int, drai
 	tags := make(map[string]bool, len(threads))
 	budget := maxChars
 	drained := 0
-	for i, th := range threads {
+	n := 0
+	for _, th := range threads {
 		tag := emailThreadTag(accountID, th.threadID)
-		line := renderEmailThread(i+1, tag, th)
+		n++
+		line := renderEmailThread(n, tag, th)
 		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough && drained < maxTieDrainUnits
 		if len(line) > budget && len(tags) > 0 && !tie {
+			n-- // keep the numbering contiguous, like renderProject's twin
 			if drainThrough == 0 {
 				break // the oldest thread renders regardless; see the doc comment
 			}
