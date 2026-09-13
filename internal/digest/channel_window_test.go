@@ -415,6 +415,53 @@ func TestChannelWindow_WholeSecondBurstOvershootsTheRowCap(t *testing.T) {
 		"with the burst consumed the channel has nothing left to offer")
 }
 
+// TestChannelWindow_MinMessagesAboveTheLoadCapStillAdvances pins the last
+// mechanical skip. digest.min_messages has no upper clamp, so a value above
+// db.DefaultTimeRangeLimit makes "0 visible and fewer than MinMessages of them"
+// permanently true for a capped load: the channel takes batchEntrySkipBelowMin
+// every cycle, and if that status did not stamp, the window would pin at the
+// head of the backlog and the visible message behind it would never be loaded.
+//
+// The skip is safe to stamp because it is reachable only when every loaded
+// message is empty or deleted — re-deciding next cycle over a superset returns
+// the same verdict.
+func TestChannelWindow_MinMessagesAboveTheLoadCapStillAdvances(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = db.DefaultTimeRangeLimit + 100 // no upper clamp exists
+
+	seedChannel(t, database, "C_QUIET", "quiet")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// An all-invisible backlog wider than the load cap, then the message that
+	// matters sitting behind it.
+	const invisible = db.DefaultTimeRangeLimit + 100
+	firstTS := time.Now().Add(-6 * time.Hour).Unix()
+	for i := range invisible {
+		seedMessage(t, database, "C_QUIET", fmt.Sprintf("%d.000000", firstTS+int64(i)), "U1", "")
+	}
+	seedMessage(t, database, "C_QUIET",
+		fmt.Sprintf("%d.000000", firstTS+int64(invisible)+60), "U1", "visible-behind-the-backlog")
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	reached := false
+	for range 5 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+		if gen.sawPrompt("visible-behind-the-backlog") {
+			reached = true
+			break
+		}
+	}
+	assert.True(t, reached,
+		"a min_messages above the load cap must not pin the window at the head of an invisible backlog")
+}
+
 // TestChannelWindow_CapInsideASecondLosesNothing pins trimPartialBoundarySecond
 // itself. messages.ts_unix has whole-second resolution, so when the row cap
 // lands part-way through a second, a mark stamped from the newest loaded
@@ -458,18 +505,18 @@ func TestChannelWindow_CapInsideASecondLosesNothing(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	rendered := 0
+	duplicated := 0
 	var missing []string
 	for _, text := range texts {
 		switch n := gen.promptsContaining(text); {
 		case n == 0:
 			missing = append(missing, text)
 		case n > 1:
-			rendered++
+			duplicated++
 		}
 	}
 	assert.Empty(t, missing, "every message must reach a prompt — the cap may defer, never drop")
-	assert.Equal(t, 1, rendered, "exactly one second is re-rendered: the boundary the trim backed off to")
+	assert.Equal(t, 1, duplicated, "exactly one second is re-rendered: the boundary the trim backed off to")
 }
 
 // TestChannelWindow_StoreFailureLeavesTheChannelUnstamped pins the other half of

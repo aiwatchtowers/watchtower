@@ -526,8 +526,9 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 // its next window starts after them even though they produced no digest. Two
 // things count as considered: material the model saw and chose not to write
 // about, and material code mechanically decided there was nothing to ask about
-// (no visible text, bot-only). A failed AI call is neither — it decided
-// nothing — and never reaches here.
+// (no visible text, bot-only, or too few to judge — see batchEntryStatus). A
+// failed AI call and a failed load are neither — they decided nothing — and
+// never reach here.
 //
 // msgs must be exactly what the decision covered, never what was merely
 // available: the accepted path passes its rendered set (trimmed to the row cap,
@@ -719,15 +720,18 @@ type batchEntryStatus int
 
 const (
 	batchEntryAccepted batchEntryStatus = iota
-	// batchEntrySkipNoVisible / batchEntrySkipBotOnly are decisions code makes
-	// over a window it fully loaded: re-deciding next cycle returns the same
-	// answer, so the material counts as considered and the mark is stamped.
+	// All three mechanical skips are decisions code makes over a window it
+	// fully loaded — every loaded message is empty, deleted, or bot noise — so
+	// re-deciding next cycle over a superset of the same messages returns the
+	// same verdict. All three therefore stamp the considered-through mark; the
+	// statuses stay distinct only to keep the skip counters readable.
+	//
+	// Stamping SkipBelowMin matters beyond tidiness: digest.min_messages has no
+	// upper clamp, so a value above db.DefaultTimeRangeLimit would otherwise
+	// pin the window at the head of an all-invisible backlog forever and never
+	// load the visible message behind it.
 	batchEntrySkipNoVisible
 	batchEntrySkipBotOnly
-	// batchEntrySkipBelowMin is "nothing visible yet, and too few messages to
-	// call it" — deliberately NOT stamped, so the channel is reconsidered once
-	// more arrives. It cannot stall: more messages push it past MinMessages
-	// into batchEntrySkipNoVisible, or a visible one makes it digestable.
 	batchEntrySkipBelowMin
 	// batchEntrySkipError is a load failure: nothing was decided, so nothing
 	// may be stamped.
@@ -748,8 +752,8 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 
 	visible, botVisible := p.countVisibleMessages(msgs)
 	if visible == 0 {
+		p.stampConsidered(channelID, loaded)
 		if len(msgs) >= p.cfg.Digest.MinMessages {
-			p.stampConsidered(channelID, loaded)
 			return batchEntry{}, batchEntrySkipNoVisible
 		}
 		return batchEntry{}, batchEntrySkipBelowMin

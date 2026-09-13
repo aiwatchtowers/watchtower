@@ -165,7 +165,7 @@ func TestGetOldestMessagesByTimeRange(t *testing.T) {
 
 	msgs, err := db.GetOldestMessagesByTimeRange("C001", 1700000000, 1700002000, 10)
 	require.NoError(t, err)
-	require.Len(t, msgs, 3, "the other channel's message is not in range")
+	require.Len(t, msgs, 3, "C002's message is inside the window but belongs to another channel")
 	assert.Equal(t, []string{"early", "middle", "late"}, []string{msgs[0].Text, msgs[1].Text, msgs[2].Text},
 		"oldest first — the reverse of GetMessagesByTimeRange")
 
