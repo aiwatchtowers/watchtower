@@ -146,14 +146,21 @@ func (g *promptCapturingGenerator) prompt(t *testing.T, i int) string {
 
 // sawPrompt reports whether any prompt so far contained needle.
 func (g *promptCapturingGenerator) sawPrompt(needle string) bool {
+	return g.promptsContaining(needle) > 0
+}
+
+// promptsContaining counts how many prompts so far carried needle — one means
+// rendered exactly once, more means re-rendered across cycles.
+func (g *promptCapturingGenerator) promptsContaining(needle string) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	n := 0
 	for _, p := range g.prompts {
 		if strings.Contains(p, needle) {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 // TestChannelWindow_DeclinedChannelStillMovesOn pins the stall that a
@@ -406,6 +413,63 @@ func TestChannelWindow_WholeSecondBurstOvershootsTheRowCap(t *testing.T) {
 
 	assert.Equal(t, float64(-1), windowFor(t, p, "C_BURST"),
 		"with the burst consumed the channel has nothing left to offer")
+}
+
+// TestChannelWindow_CapInsideASecondLosesNothing pins trimPartialBoundarySecond
+// itself. messages.ts_unix has whole-second resolution, so when the row cap
+// lands part-way through a second, a mark stamped from the newest loaded
+// message cannot express "part of second N" — and discovery's test is a strict
+// `newest > mark`, so the siblings that did not fit fall out of the candidate
+// set entirely. Trimming back to the last whole second costs re-rendering that
+// second and loses nothing.
+func TestChannelWindow_CapInsideASecondLosesNothing(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1
+
+	seedChannel(t, database, "C_EDGE", "edge")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// One message per second up to three short of the cap, then five sharing a
+	// single second — so the cap falls inside that second, with two left over.
+	const singles = db.DefaultTimeRangeLimit - 3
+	const sharing = 5
+	firstTS := time.Now().Add(-6 * time.Hour).Unix()
+	texts := make([]string, 0, singles+sharing)
+	for i := range singles {
+		text := fmt.Sprintf("seq-%03d-end", i)
+		texts = append(texts, text)
+		seedMessage(t, database, "C_EDGE", fmt.Sprintf("%d.000000", firstTS+int64(i)), "U1", text)
+	}
+	for i := range sharing {
+		text := fmt.Sprintf("shared-%d-end", i)
+		texts = append(texts, text)
+		seedMessage(t, database, "C_EDGE", fmt.Sprintf("%d.%06d", firstTS+int64(singles), i+1), "U1", text)
+	}
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	for range 3 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+	}
+
+	rendered := 0
+	var missing []string
+	for _, text := range texts {
+		switch n := gen.promptsContaining(text); {
+		case n == 0:
+			missing = append(missing, text)
+		case n > 1:
+			rendered++
+		}
+	}
+	assert.Empty(t, missing, "every message must reach a prompt — the cap may defer, never drop")
+	assert.Equal(t, 1, rendered, "exactly one second is re-rendered: the boundary the trim backed off to")
 }
 
 // TestChannelWindow_StoreFailureLeavesTheChannelUnstamped pins the other half of
