@@ -18,15 +18,21 @@ func openTestDB(t *testing.T) *db.DB {
 	return database
 }
 
+// seedProjectKey makes one project key known to the detector.
+func seedProjectKey(t *testing.T, database *db.DB, projectKey string) {
+	t.Helper()
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: 1,
+		Key:       projectKey + "-1", ProjectKey: projectKey, Summary: "S", Status: "O", StatusCategory: "todo",
+		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+}
+
 func TestKeyDetector_DetectKeys(t *testing.T) {
 	database := openTestDB(t)
 
 	// Seed known project keys.
-	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		AccountID: 1,
-		Key:       "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo",
-		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
-	}))
+	seedProjectKey(t, database, "PROJ")
 
 	d := NewKeyDetector(database)
 
@@ -52,17 +58,36 @@ func TestKeyDetector_DetectKeys(t *testing.T) {
 	}
 }
 
-func TestKeyDetector_DetectKeys_NoKnownKeys(t *testing.T) {
+// TestKeyDetector_DetectKeys_NoKnownKeysDetectsNothing replaces the former
+// TestKeyDetector_DetectKeys_NoKnownKeys, which pinned the opposite rule: with
+// no project keys known, every match used to be accepted. That fallback turned
+// UTF-8, COVID-19, SHA-256 and RFC-9728 into "Jira keys" the moment the
+// detector got a caller. Unknown now means no.
+func TestKeyDetector_DetectKeys_NoKnownKeysDetectsNothing(t *testing.T) {
 	database := openTestDB(t)
 	d := NewKeyDetector(database)
 
-	// With no known keys in DB, all matches should be accepted.
-	result := d.DetectKeys("ABC-1 and DEF-2")
-	assert.Equal(t, []string{"ABC-1", "DEF-2"}, result)
+	assert.Nil(t, d.DetectKeys("ABC-1 and DEF-2"))
+	assert.Nil(t, d.DetectKeys("UTF-8, COVID-19, SHA-256 and RFC-9728 are not Jira keys"))
+}
+
+// A project key that lands after the first detection is picked up without a
+// process restart: an empty key set is never memoized, so a daemon that started
+// before the first Jira sync is not deaf for its whole lifetime.
+func TestKeyDetector_DetectKeys_PicksUpProjectKeysSyncedLater(t *testing.T) {
+	database := openTestDB(t)
+	d := NewKeyDetector(database)
+
+	require.Nil(t, d.DetectKeys("LATE-7"), "nothing is known yet")
+
+	seedProjectKey(t, database, "LATE")
+
+	assert.Equal(t, []string{"LATE-7"}, d.DetectKeys("LATE-7"), "no ResetCache, no restart")
 }
 
 func TestKeyDetector_ProcessMessage(t *testing.T) {
 	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
 	d := NewKeyDetector(database)
 
 	count, err := d.ProcessMessage("C1", "1000.001", "Fixing PROJ-123 now")
@@ -78,6 +103,7 @@ func TestKeyDetector_ProcessMessage(t *testing.T) {
 
 func TestKeyDetector_ProcessTrack(t *testing.T) {
 	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
 	d := NewKeyDetector(database)
 
 	count, err := d.ProcessTrack(42, "Follow up on PROJ-10", `[{"ts":"1","text":"re PROJ-20"}]`, `["C1"]`)
@@ -94,6 +120,7 @@ func TestKeyDetector_ProcessTrack(t *testing.T) {
 
 func TestKeyDetector_ProcessDigestDecision(t *testing.T) {
 	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
 	d := NewKeyDetector(database)
 
 	count, err := d.ProcessDigestDecision(10, "C1", "Decided to close PROJ-5")
@@ -110,19 +137,18 @@ func TestKeyDetector_ProcessDigestDecision(t *testing.T) {
 
 func TestKeyDetector_ResetCache(t *testing.T) {
 	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
 	d := NewKeyDetector(database)
 
-	// First call initializes cache.
-	_ = d.DetectKeys("ABC-1")
+	// First call memoizes a non-empty key set.
+	require.Equal(t, []string{"PROJ-1"}, d.DetectKeys("PROJ-1"))
 
 	// Add a project key.
-	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
-		AccountID: 1,
-		Key:       "NEW-1", ProjectKey: "NEW", Summary: "S", Status: "O", StatusCategory: "todo",
-		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
-	}))
+	seedProjectKey(t, database, "NEW")
 
-	// Before reset, NEW is not known.
+	// Before reset, NEW is not known — a non-empty set is cached.
+	assert.Nil(t, d.DetectKeys("NEW-42"))
+
 	d.ResetCache()
 
 	result := d.DetectKeys("NEW-42")

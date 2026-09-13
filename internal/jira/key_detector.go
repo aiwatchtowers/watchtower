@@ -15,11 +15,10 @@ var jiraKeyPattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+-\d+)\b`)
 
 // KeyDetector detects Jira issue keys in text and links them to Slack messages.
 type KeyDetector struct {
-	db            *db.DB
-	logger        *log.Logger
-	knownKeys     map[string]bool
-	knownKeysOnce sync.Once
-	mu            sync.RWMutex
+	db        *db.DB
+	logger    *log.Logger
+	knownKeys map[string]bool
+	mu        sync.RWMutex
 }
 
 // NewKeyDetector creates a new KeyDetector.
@@ -31,21 +30,22 @@ func NewKeyDetector(database *db.DB) *KeyDetector {
 }
 
 // DetectKeys finds all Jira issue keys in text, filtering by known project keys.
+//
+// A token is a Jira key only if its project is one this workspace actually
+// synced: unknown means no. Without that rule an empty key set turned every
+// [A-Z][A-Z0-9_]+-\d+ token into a "Jira key" — UTF-8, COVID-19, SHA-256,
+// RFC-9728 — and wrote it into jira_slack_links, which feeds AI prompts, the
+// Desktop and the get_task_context dev surface.
 func (d *KeyDetector) DetectKeys(text string) []string {
-	d.knownKeysOnce.Do(func() {
-		if err := d.refreshKnownKeys(); err != nil {
-			d.logger.Printf("failed to load known project keys: %v", err)
-		}
-	})
-
 	matches := jiraKeyPattern.FindAllString(text, -1)
 	if len(matches) == 0 {
 		return nil
 	}
 
-	d.mu.RLock()
-	known := d.knownKeys
-	d.mu.RUnlock()
+	known := d.knownProjectKeys()
+	if len(known) == 0 {
+		return nil
+	}
 
 	seen := make(map[string]bool)
 	var result []string
@@ -55,13 +55,35 @@ func (d *KeyDetector) DetectKeys(text string) []string {
 		}
 		seen[m] = true
 
-		proj := extractProjectKey(m)
-		// If we have no known keys yet, accept all matches.
-		if len(known) == 0 || known[proj] {
+		if known[extractProjectKey(m)] {
 			result = append(result, m)
 		}
 	}
 	return result
+}
+
+// knownProjectKeys returns the cached project keys, loading them when the cache
+// is still empty. Only a non-empty result is ever memoized: a daemon that
+// starts before the first Jira sync would otherwise cache the empty set for its
+// whole lifetime and never detect a key again. Reloading while the set is empty
+// is a SELECT DISTINCT over two small tables. A load error keeps the set empty,
+// which detects nothing — unknown means no, never yes.
+func (d *KeyDetector) knownProjectKeys() map[string]bool {
+	d.mu.RLock()
+	known := d.knownKeys
+	d.mu.RUnlock()
+	if len(known) > 0 {
+		return known
+	}
+
+	if err := d.refreshKnownKeys(); err != nil {
+		d.logger.Printf("failed to load known project keys: %v", err)
+		return nil
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.knownKeys
 }
 
 // ProcessMessage detects Jira keys in a Slack message and records links.
@@ -146,7 +168,6 @@ func (d *KeyDetector) ResetCache() {
 	d.mu.Lock()
 	d.knownKeys = nil
 	d.mu.Unlock()
-	d.knownKeysOnce = sync.Once{}
 }
 
 // extractProjectKey extracts the project key from an issue key ("PROJ-123" -> "PROJ").
