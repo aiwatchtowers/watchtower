@@ -99,12 +99,23 @@ func (m *UserMapper) ResolveAll(ctx context.Context, manualMap map[string]string
 			}
 		}
 
-		// Phase 3: Manual mapping override.
+		// Phase 3: Manual mapping override. The config value is hand-written,
+		// so it is resolved against users.id rather than trusted: a bare
+		// "U0123ABCD" typed off the Slack UI matches no column since migration
+		// 00048, and storing it here would push it onto every one of that
+		// user's issues on the next upsert. An id that resolves to nothing is
+		// reported and skipped, leaving whatever the email/fuzzy phases found
+		// — an unusable override is worse than no override.
 		if slackID, ok := manualMap[mapping.JiraAccountID]; ok {
-			mapping.SlackUserID = slackID
-			mapping.MatchMethod = "manual"
-			mapping.MatchConfidence = 1.0
-			mapping.ResolvedAt = now
+			resolved, err := m.db.ResolveSlackUserID(slackID)
+			if err != nil {
+				m.logger.Printf("ignoring jira.user_map entry %s → %q: %v", mapping.JiraAccountID, slackID, err)
+			} else {
+				mapping.SlackUserID = resolved
+				mapping.MatchMethod = "manual"
+				mapping.MatchConfidence = 1.0
+				mapping.ResolvedAt = now
+			}
 		}
 
 		if err := m.db.UpsertJiraUserMap(*mapping); err != nil {

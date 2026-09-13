@@ -966,20 +966,42 @@ func runJiraUsersMap(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	mapping := db.JiraUserMap{
-		JiraAccountID:   jiraAccountID,
-		SlackUserID:     slackUserID,
-		MatchMethod:     "manual",
-		MatchConfidence: 1.0,
-		ResolvedAt:      now,
-	}
-	if err := database.UpsertJiraUserMap(mapping); err != nil {
-		return fmt.Errorf("upserting user map: %w", err)
+	resolved, err := mapJiraUserToSlack(database, jiraAccountID, slackUserID)
+	if err != nil {
+		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Mapped Jira user %s → Slack user %s (manual, confidence=1.0)\n", jiraAccountID, slackUserID)
+	fmt.Fprintf(cmd.OutOrStdout(), "Mapped Jira user %s → Slack user %s (manual, confidence=1.0)\n", jiraAccountID, resolved)
 	return nil
+}
+
+// mapJiraUserToSlack records a manual Jira→Slack mapping, resolving the typed
+// Slack id to the users.id it names first.
+//
+// The argument is whatever an operator read off the Slack UI, which is a bare
+// "U0123ABCD" — a form that has matched no column in this database since
+// migration 00048 namespaced every Slack id. Stored verbatim it produced a
+// mapping that looked right in `jira users` and then propagated onto every one
+// of that person's issues on the next upsert, where every reader comparing
+// against an external identity saw nothing. An id naming no synced user is
+// refused rather than stored.
+func mapJiraUserToSlack(database *db.DB, jiraAccountID, slackUserID string) (string, error) {
+	resolved, err := database.ResolveSlackUserID(slackUserID)
+	if err != nil {
+		return "", fmt.Errorf("resolving slack user: %w", err)
+	}
+
+	mapping := db.JiraUserMap{
+		JiraAccountID:   jiraAccountID,
+		SlackUserID:     resolved,
+		MatchMethod:     "manual",
+		MatchConfidence: 1.0,
+		ResolvedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := database.UpsertJiraUserMap(mapping); err != nil {
+		return "", fmt.Errorf("upserting user map: %w", err)
+	}
+	return resolved, nil
 }
 
 func runJiraUsersResolve(cmd *cobra.Command, _ []string) error {

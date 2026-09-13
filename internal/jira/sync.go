@@ -202,6 +202,27 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// ResolveUsers maps newly-seen Jira users onto Slack users and re-derives the
+// denormalized Slack id columns on jira_issues.
+//
+// Sync itself only ever creates a SHELL jira_user_map row (Jira account id,
+// email, display name) and then reads the mapping back read-only, so without
+// this step every Jira user first seen by a daemon-driven install keeps an
+// empty slack_user_id forever — and with it an empty assignee_slack_id on
+// every one of their issues, which every reader comparing against an external
+// identity reads as "this person has no work". Until 2026-09-13 the step ran
+// only from `jira users resolve` and the tail of a manual `jira sync`, which
+// is to say: not at all on an install driven by the daemon.
+func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) error {
+	if s.mapper == nil {
+		return nil
+	}
+	if err := s.mapper.ResolveAll(ctx, manualMap); err != nil {
+		return err
+	}
+	return s.db.BackfillJiraSlackIDs()
+}
+
 // buildIncrementalJQL builds the JQL for an incremental project sync.
 //
 // The window is expressed as a relative "-Nm" (minutes ago) clause rather than

@@ -447,19 +447,49 @@ func (db *DB) UpsertJiraUserMap(mapping JiraUserMap) error {
 	return nil
 }
 
-// BackfillJiraSlackIDs updates assignee_slack_id and reporter_slack_id on existing issues from jira_user_map.
+// BackfillJiraSlackIDs re-derives assignee_slack_id and reporter_slack_id on
+// existing issues from jira_user_map, the single source of truth for the
+// Jira→Slack identity.
+//
+// It corrects a stored value that DISAGREES with the map, not only an empty
+// one. The former "fill empty cells only" guard is why migration 00048 left
+// these two columns permanently broken: 00048 namespaced jira_user_map and
+// users.id but never rewrote this denormalized copy, so every issue last
+// upserted before it kept a bare "U123" that no namespaced reader can match
+// again — and a backfill that skipped non-empty cells skipped exactly those
+// rows. Because Jira sync is incremental by updated_at, a quiet issue is never
+// re-upserted, so the stale population never drains on its own either.
+//
+// Re-deriving needs no Slack account id and therefore makes no guess about
+// which workspace a bare id belonged to: assignee_account_id is an Atlassian
+// id no migration touched, and the correct namespaced value already sits in
+// the map under that key. The cost is that the map wins over a value written
+// directly onto an issue — which is the intent, since every writer of these
+// columns copies the map anyway.
+//
+// Rows with no Atlassian account id, and rows whose account id has no resolved
+// map entry, are left exactly as they are: a missing mapping is not evidence
+// that the stored value is wrong.
 func (db *DB) BackfillJiraSlackIDs() error {
-	_, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id = COALESCE(
+	_, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
-		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != ''), '')
-		WHERE assignee_account_id != '' AND assignee_slack_id = ''`)
+		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')
+		WHERE assignee_account_id != ''
+		  AND EXISTS (SELECT 1 FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')
+		  AND assignee_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
 		return fmt.Errorf("backfilling assignee slack IDs: %w", err)
 	}
-	_, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id = COALESCE(
+	_, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
-		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != ''), '')
-		WHERE reporter_account_id != '' AND reporter_slack_id = ''`)
+		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')
+		WHERE reporter_account_id != ''
+		  AND EXISTS (SELECT 1 FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')
+		  AND reporter_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
 		return fmt.Errorf("backfilling reporter slack IDs: %w", err)
 	}
