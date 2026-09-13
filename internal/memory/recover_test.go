@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -159,6 +160,31 @@ func TestResetToRefusesDirtyWorktree(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "uncommitted")
 	assert.Equal(t, head, headHash(t, v), "a refused reset leaves HEAD where it was")
+}
+
+// TestResetFailureNeverClaimsASucceededReset: the reset and the ignored-file
+// restore fail independently, and the operator's next step differs by which
+// half broke — so a failed reset must never be reported as a succeeded one
+// (it was, whenever both halves failed: the reset error was dropped and the
+// restore wrapper claimed success unconditionally).
+func TestResetFailureNeverClaimsASucceededReset(t *testing.T) {
+	resetErr := errors.New("hard reset boom")
+	restoreErr := errors.New("restore boom")
+
+	both := resetFailure("abc123", resetErr, restoreErr, "/tmp/copies")
+	assert.ErrorIs(t, both, resetErr, "the reset error must not be dropped")
+	assert.ErrorIs(t, both, restoreErr)
+	assert.NotContains(t, both.Error(), "succeeded")
+	assert.Contains(t, both.Error(), "/tmp/copies", "the copies are the only source left")
+
+	onlyReset := resetFailure("abc123", resetErr, nil, "")
+	assert.ErrorIs(t, onlyReset, resetErr)
+	assert.NotContains(t, onlyReset.Error(), "succeeded")
+
+	onlyRestore := resetFailure("abc123", nil, restoreErr, "/tmp/copies")
+	assert.ErrorIs(t, onlyRestore, restoreErr)
+	assert.Contains(t, onlyRestore.Error(), "succeeded", "here the vault really is reset")
+	assert.Contains(t, onlyRestore.Error(), "/tmp/copies")
 }
 
 // TestLockHolderPIDNamesTheHolder: the memory lock records its holder's pid so

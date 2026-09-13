@@ -69,12 +69,38 @@ type SlackIDMigration struct {
 // bareSlackIDRe, so a second run finds nothing to change and makes no commit.
 // dryRun computes the same plan and writes nothing.
 //
+// A dirty worktree refuses the real run (the ResetTo guard, for the opposite
+// reason: nothing here would discard those changes, but the pass does not pick
+// them up either). Idempotency is over the FILES, not over an interrupted
+// run's work: an interrupted pass leaves rewritten files on disk with no
+// commit, and to a re-run those files already carry namespaced ids, so it
+// finds nothing to change, commits nothing, and leaves the rewrites sitting
+// uncommitted for the daemon to sweep into a memory(owner-edit) commit
+// (MEM-03), mis-attributing a machine migration to the owner. Refusing puts
+// that in front of the operator instead. The dry run only warns: it writes
+// nothing, so it is safe to preview a dirty vault.
+//
 // logf may be nil (logging is dropped).
 func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, ...any)) (SlackIDMigration, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
 	stats := SlackIDMigration{ByType: make(map[string]int)}
+
+	dirty, dirtyCount, err := worktreeDirt(v)
+	if err != nil {
+		return stats, err
+	}
+	if dirtyCount > 0 {
+		msg := fmt.Sprintf("the vault worktree has %d uncommitted change(s) (%s) — "+
+			"commit them in the vault as a memory(migrate) commit (or remove them) first, "+
+			"or the next pipeline run commits them as memory(owner-edit)",
+			dirtyCount, strings.Join(dirty, ", "))
+		if !dryRun {
+			return stats, fmt.Errorf("memory: migrate: %s", msg)
+		}
+		logf("memory: migrate: warning: %s", msg)
+	}
 
 	accountID, err := singleSlackAccountID(database)
 	if err != nil {

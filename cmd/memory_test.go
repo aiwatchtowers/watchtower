@@ -507,6 +507,38 @@ func TestCLI_MemoryFactoryPassesLogf(t *testing.T) {
 		"the factory must pass logf through to the pipeline")
 }
 
+// TestCLI_MemoryFactoryGeneratorIsTimeoutBounded pins H8 for the memory
+// pipeline. It is the one pipeline wired outside cliPooledGenerator, and it
+// used to get a bare cliGenerator — so every memory AI call ran unbounded
+// while the daemon phase held sync.lock, which is exactly the freeze the
+// timeout was introduced to end.
+func TestCLI_MemoryFactoryGeneratorIsTimeoutBounded(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, true)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	bound, ok := digest.CallTimeout(cliBoundedGenerator(cfg))
+	require.True(t, ok, "the memory pipeline's generator must carry a wall-clock bound")
+	assert.Equal(t, digest.DaemonAICallTimeout, bound)
+
+	// ...and the factory must source it there rather than building its own.
+	old := cliBoundedGenerator
+	t.Cleanup(func() { cliBoundedGenerator = old })
+	calls := 0
+	cliBoundedGenerator = func(c *config.Config) digest.Generator {
+		calls++
+		return old(c)
+	}
+	_ = newMemoryPipelineFactory(database, vault, cfg, t.Logf)
+	assert.Equal(t, 1, calls, "the factory must build its generator through cliBoundedGenerator")
+}
+
 // TestCLI_MemoryIndex prints the mechanical index.md (the browsing surface of
 // the two-tier world map).
 func TestCLI_MemoryIndex(t *testing.T) {

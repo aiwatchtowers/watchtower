@@ -1,6 +1,10 @@
 package memory
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -127,6 +131,40 @@ func TestMigrateSlackIDsDryRunWritesNothing(t *testing.T) {
 	got, err := v.ReadNode(person.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"U0123ABCD", "alice@example.com"}, got.Aliases)
+}
+
+// TestMigrateSlackIDsRefusesDirtyWorktree: an interrupted run leaves rewritten
+// node files on disk with nothing committed, and to a re-run those files are
+// already migrated — it finds nothing to change, commits nothing, and leaves
+// the rewrites for the daemon's next pass to sweep into a memory(owner-edit)
+// commit (MEM-03), mis-attributing a machine migration to the owner. The real
+// run refuses and names the paths; the dry run, which writes nothing, warns
+// and still previews.
+func TestMigrateSlackIDsRefusesDirtyWorktree(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	addSlackAccount(t, d, 7, "ok", true)
+	person, _ := slackIDFixture(t, v, d)
+	before := headHash(t, v)
+
+	rel, err := nodeRelPath(person.ID)
+	require.NoError(t, err)
+	interrupted := person
+	interrupted.Aliases = []string{"7:U0123ABCD", "alice@example.com"} // what an interrupted pass leaves behind
+	require.NoError(t, os.WriteFile(filepath.Join(v.path, filepath.FromSlash(rel)), interrupted.Render(), vaultFileMode))
+
+	_, err = MigrateSlackIDs(v, d, false, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uncommitted")
+	assert.Contains(t, err.Error(), rel, "the refusal names the dirty path")
+	assert.Equal(t, before, headHash(t, v), "a refused migration commits nothing")
+
+	var logged []string
+	stats, err := MigrateSlackIDs(v, d, true, func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	require.NoError(t, err, "the dry run writes nothing, so a dirty vault is still previewable")
+	assert.False(t, stats.Committed)
+	assert.Contains(t, strings.Join(logged, "\n"), "uncommitted", "but it says so")
 }
 
 // TestMigrateSlackIDsRefusesWithTwoAccounts: which account a bare id belongs

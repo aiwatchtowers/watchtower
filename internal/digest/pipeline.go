@@ -952,9 +952,11 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 		}
 		rawMap[rawID] = entry
 	}
+	// A collision is only interesting once the model actually echoes the raw
+	// form back; two accounts sharing a raw channel id in one batch is normal
+	// and silent otherwise. Logged at the point of encounter, below.
 	for rawID := range ambiguousRaw {
 		delete(rawMap, rawID)
-		p.logger.Printf("digest: batch result channel id %s is ambiguous across accounts, skipping", rawID)
 	}
 
 	saved := 0
@@ -964,7 +966,9 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 			entry, ok = rawMap[r.ChannelID]
 		}
 		if !ok {
-			if !ambiguousRaw[r.ChannelID] {
+			if ambiguousRaw[r.ChannelID] {
+				p.logger.Printf("digest: batch result channel id %s is ambiguous across accounts, skipping", r.ChannelID)
+			} else {
 				p.logger.Printf("digest: batch result for unknown channel %s, skipping", r.ChannelID)
 			}
 			continue

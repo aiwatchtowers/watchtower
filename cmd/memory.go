@@ -121,13 +121,17 @@ var memoryRetrieveCompareCmd = &cobra.Command{
 
 // newMemoryPipelineFactory is the seam tests override to inject a fake
 // pipeline (same pattern as newDayPlanPipelineFactory). The default wires
-// the standard CLI generator, the prompt store, the digest language for
-// the extractor's directive, and the caller's logf (the daemon passes its
-// logger, the CLI a stderr printf — never nil, or per-window failures and
-// quarantine warnings would be dropped silently); NewPipeline labels the run
-// source "cli" (the daemon re-labels via SetMemoryPipeline).
+// the timeout-bounded CLI generator (H8 — the memory phase runs inside the
+// daemon cycle holding sync.lock, so a hung claude/codex subprocess here
+// freezes every later phase exactly as it would in any other phase; the bound
+// applies to `memory consolidate` too, the same trade-off cliPooledGenerator
+// already makes for the batch CLI commands), the prompt store, the digest
+// language for the extractor's directive, and the caller's logf (the daemon
+// passes its logger, the CLI a stderr printf — never nil, or per-window
+// failures and quarantine warnings would be dropped silently); NewPipeline
+// labels the run source "cli" (the daemon re-labels via SetMemoryPipeline).
 var newMemoryPipelineFactory = func(database *db.DB, vault *memory.Vault, cfg *config.Config, logf func(string, ...any)) *memory.Pipeline {
-	p := memory.NewPipeline(database, vault, cliGenerator(cfg), cfg.Memory, logf)
+	p := memory.NewPipeline(database, vault, cliBoundedGenerator(cfg), cfg.Memory, logf)
 	p.Language = cfg.Digest.Language
 	p.SetPromptStore(prompts.New(database, nil))
 	return p

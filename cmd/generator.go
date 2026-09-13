@@ -47,15 +47,31 @@ func cliGenerator(cfg *config.Config) digest.Generator {
 	}
 }
 
+// cliBoundedGenerator is cliGenerator plus the H8 wall-clock cap and nothing
+// else — the shape a pipeline wired outside cliPooledGenerator needs. The
+// memory pipeline is the one such pipeline (newMemoryPipelineFactory builds it
+// for both the daemon phase and `watchtower memory consolidate`), and its
+// daemon phase runs while holding sync.lock like any other, so it must not be
+// the one AI path left unbounded. It is a var so the wiring test can pin that
+// the factory sources its generator here rather than building a bare one.
+var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
+	return digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
+}
+
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
 // Each call creates a fresh session (--no-session-persistence / --ephemeral).
 // The pool only limits how many AI processes run in parallel. The raw
 // generator is wrapped with a wall-clock timeout (H8) so a hung claude/codex
 // subprocess cannot freeze the daemon's sequential cycle forever while
-// holding sync.lock — this path is shared by the daemon and one-shot
-// `watchtower sync`, both unattended. cliGenerator (interactive commands
-// like ask/chat) deliberately does NOT get this wrapper: those calls are
-// already bounded by the user.
+// holding sync.lock.
+//
+// This path backs the daemon AND every batch CLI command that runs a pipeline
+// (`sync`, `catchup`, `digest`, `inbox`, `tracks`, …). The cap applies to
+// those too, deliberately: they run the same unattended pipelines, and a
+// batch command that hangs for hours on one subprocess is no better at a
+// terminal than in the daemon. cliGenerator (interactive commands like
+// ask/chat) deliberately does NOT get this wrapper: those calls are already
+// bounded by the user.
 func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generator, func()) {
 	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers

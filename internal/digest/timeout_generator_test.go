@@ -42,6 +42,10 @@ func TestWithCallTimeout_BlockingGeneratorTimesOut(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ai call exceeded")
 	assert.Contains(t, err.Error(), timeout.String())
+	// The error must be recognisable as a deadline at every caller, not just
+	// readable: callers distinguish "the AI call timed out" from a genuine
+	// generator failure with errors.Is.
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Empty(t, result)
 	assert.Nil(t, usage)
 	assert.Empty(t, sessionID)
@@ -73,6 +77,35 @@ func TestWithCallTimeout_ParentCancellationPropagates(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Generate did not return after parent context cancellation")
 	}
+}
+
+// TestWithCallTimeout_ParentDeadlineIsNotReportedAsTheCap: when the CALLER's
+// context expires first, the failure belongs to the caller, not to the
+// daemon's 10-minute cap — reporting "ai call exceeded 10m0s" on a call that
+// ran for milliseconds would send whoever reads the log hunting a hang that
+// never happened.
+func TestWithCallTimeout_ParentDeadlineIsNotReportedAsTheCap(t *testing.T) {
+	gen := WithCallTimeout(blockingGenerator{}, time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, _, _, err := gen.Generate(ctx, "sys", "user", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.NotContains(t, err.Error(), "ai call exceeded",
+		"the caller's own deadline must not be reported as the daemon AI cap")
+}
+
+// TestCallTimeout_ReportsTheBound: the wiring tests that pin an unattended AI
+// path as bounded (H8) need boundedness to be observable from outside.
+func TestCallTimeout_ReportsTheBound(t *testing.T) {
+	d, ok := CallTimeout(WithCallTimeout(&fastGenerator{}, 3*time.Minute))
+	assert.True(t, ok)
+	assert.Equal(t, 3*time.Minute, d)
+
+	_, ok = CallTimeout(&fastGenerator{})
+	assert.False(t, ok, "an unwrapped generator carries no bound")
 }
 
 // TestWithCallTimeout_FastPathPassesThroughUnchanged pins the non-degenerate

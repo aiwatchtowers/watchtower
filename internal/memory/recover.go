@@ -143,12 +143,14 @@ func ResetTo(v *Vault, database *db.DB, plan ResetPlan, logf func(string, ...any
 	resetErr := wt.Reset(&git.ResetOptions{Commit: plumbing.NewHash(plan.Target), Mode: git.HardReset})
 	// Restore even when the reset failed: it may have deleted ignored files
 	// before failing, and the copies are the only remaining source.
-	if err := snapshot.restore(v.path); err != nil {
-		return Stats{}, err // keeps the copies on disk; the error names where they are
+	restoreErr := snapshot.restore(v.path)
+	if restoreErr == nil {
+		snapshot.discard()
 	}
-	snapshot.discard()
-	if resetErr != nil {
-		return Stats{}, fmt.Errorf("memory: reset: hard reset to %s: %w", plan.Target, resetErr)
+	// Both halves can fail, and a failed reset reported as a succeeded one
+	// sends the operator to the wrong recovery.
+	if resetErr != nil || restoreErr != nil {
+		return Stats{}, resetFailure(plan.Target, resetErr, restoreErr, snapshot.dir)
 	}
 	// git tracks no empty directories, so a reset that removed every file of a
 	// node directory can leave the directory itself gone — which Reconcile's
@@ -325,9 +327,10 @@ func snapshotIgnoredFiles(vaultPath string) (*ignoredFileSnapshot, error) {
 }
 
 // restore puts back every snapshotted file the reset removed. A file the reset
-// left alone is not rewritten. On failure the copies stay on disk and the error
-// names the directory holding them — the owner's Obsidian config is not
-// something to lose to a cleanup.
+// left alone is not rewritten. On failure the copies stay on disk (the caller
+// skips discard) and resetFailure names the directory holding them — the
+// owner's Obsidian config is not something to lose to a cleanup. It says
+// nothing about how the reset itself went: only the caller knows that.
 func (s *ignoredFileSnapshot) restore(vaultPath string) error {
 	for _, rel := range s.paths {
 		dst := filepath.Join(vaultPath, filepath.FromSlash(rel))
@@ -335,10 +338,29 @@ func (s *ignoredFileSnapshot) restore(vaultPath string) error {
 			continue
 		}
 		if err := copyVaultFile(filepath.Join(s.dir, filepath.FromSlash(rel)), dst); err != nil {
-			return fmt.Errorf("%w (the reset succeeded; copies of the ignored files are in %s)", err, s.dir)
+			return err
 		}
 	}
 	return nil
+}
+
+// resetFailure renders the outcome of the reset/restore pair as one error.
+// The two fail independently and the operator's next step differs by which:
+// a restore failure alone leaves the vault correctly reset with only the
+// gitignored copies to place by hand, while a reset failure means the vault
+// never moved. Saying "the reset succeeded" in the second case — as this did
+// before — points the operator at the wrong half.
+func resetFailure(target string, resetErr, restoreErr error, copiesDir string) error {
+	switch {
+	case resetErr != nil && restoreErr != nil:
+		return fmt.Errorf("memory: reset: the hard reset to %s failed AND restoring the ignored vault files failed "+
+			"(copies of the ignored files are in %s): %w", target, copiesDir, errors.Join(resetErr, restoreErr))
+	case resetErr != nil:
+		return fmt.Errorf("memory: reset: hard reset to %s: %w", target, resetErr)
+	default:
+		return fmt.Errorf("memory: reset: the reset to %s succeeded but restoring the ignored vault files failed "+
+			"(copies of the ignored files are in %s): %w", target, copiesDir, restoreErr)
+	}
 }
 
 // discard removes the snapshot's temp directory.
@@ -375,15 +397,16 @@ func copyVaultFile(src, dst string) error {
 }
 
 // worktreeDirt returns the uncommitted worktree paths (sorted, sampled to
-// dirtySampleCap) and their total count.
+// dirtySampleCap) and their total count. Shared by the two operator recovery
+// commands (reset and the Slack-id migration), so its errors name neither.
 func worktreeDirt(v *Vault) ([]string, int, error) {
 	wt, err := v.repo.Worktree()
 	if err != nil {
-		return nil, 0, fmt.Errorf("memory: reset: vault worktree: %w", err)
+		return nil, 0, fmt.Errorf("memory: vault worktree: %w", err)
 	}
 	status, err := wt.Status()
 	if err != nil {
-		return nil, 0, fmt.Errorf("memory: reset: vault status: %w", err)
+		return nil, 0, fmt.Errorf("memory: vault status: %w", err)
 	}
 	var paths []string
 	for p, s := range status {
