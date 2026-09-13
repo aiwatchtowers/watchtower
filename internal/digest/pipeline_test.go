@@ -2006,6 +2006,40 @@ func TestRunChannelDigests_SkipsEmptyMessages(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 }
 
+// TestStoreDigest_FalseDoesNotResetReadAt pins the scope boundary of
+// resetReadOnWrite: a channel-digest re-upsert (the two channel call sites and
+// the dead weekly one all pass false) must never clear read_at, even though
+// content is genuinely rewritten. Only the daily rollup call site passes true.
+func TestStoreDigest_FalseDoesNotResetReadAt(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	gen := &mockGenerator{}
+
+	p := New(database, cfg, gen, testLogger())
+
+	result := &DigestResult{Summary: "first version", Topics: []Topic{{Title: "a", Summary: "topic a"}}}
+	err := p.storeDigest("C1", "channel", 1000.0, 2000.0, result, 10, nil, 0, false)
+	require.NoError(t, err)
+
+	d, err := database.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	require.NoError(t, database.MarkDigestRead(int(d.ID)))
+
+	// Re-upsert the same (channel_id, type, period_from, period_to) row with
+	// different content and resetReadOnWrite=false, as every channel/weekly
+	// call site does.
+	result2 := &DigestResult{Summary: "second version", Topics: []Topic{{Title: "b", Summary: "topic b"}}}
+	err = p.storeDigest("C1", "channel", 1000.0, 2000.0, result2, 12, nil, 0, false)
+	require.NoError(t, err)
+
+	d, err = database.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, "second version", d.Summary, "content must still update")
+	assert.NotEmpty(t, d.ReadAt, "resetReadOnWrite=false must never clear read_at")
+}
+
 func TestStoreDigest_NilUsage(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
