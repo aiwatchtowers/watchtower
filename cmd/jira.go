@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -790,13 +791,34 @@ func runJiraStatus(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Issues synced: %d\n", issueCount)
 
 	states, _ := database.GetJiraSyncStates()
-	for _, s := range states {
-		if s.LastSyncedAt != "" {
-			fmt.Fprintf(out, "Last sync (%d:%s): %s\n", s.AccountID, s.ProjectKey, s.LastSyncedAt)
-		}
-	}
+	printJiraSyncStates(out, states)
 
 	return nil
+}
+
+// printJiraSyncStates renders the per-project sync rows.
+//
+// Two things were invisible here. A project that has never synced successfully
+// printed nothing at all — its last_synced_at is empty, so the line was
+// skipped, which reads exactly like "that project is not configured" rather
+// than "it has failed every pass since you added it". And the failure itself
+// was never shown, so a project that succeeded once and has failed ever since
+// showed a stale timestamp with nothing to say it was stale.
+//
+// The error text is truncated because it can carry a whole HTTP response body
+// (see Client.do); the untruncated text is in the daemon log.
+func printJiraSyncStates(out io.Writer, states []db.JiraSyncState) {
+	for _, s := range states {
+		lastSync := s.LastSyncedAt
+		if lastSync == "" {
+			lastSync = "never"
+		}
+		fmt.Fprintf(out, "Last sync (%d:%s): %s\n", s.AccountID, s.ProjectKey, lastSync)
+		if s.LastError != "" {
+			oneLine := strings.Join(strings.Fields(s.LastError), " ")
+			fmt.Fprintf(out, "  Last error (%s): %s\n", s.LastErrorAt, truncate(oneLine, 200))
+		}
+	}
 }
 
 func runJiraBoards(cmd *cobra.Command, _ []string) error {

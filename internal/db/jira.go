@@ -534,15 +534,51 @@ func (db *DB) GetJiraUserMapByAccountID(id string) (*JiraUserMap, error) {
 	return &m, nil
 }
 
-// UpdateJiraSyncState inserts or updates the sync state for a Jira project on one account.
+// UpdateJiraSyncState records a SUCCESSFUL sync of one project on one account,
+// and therefore CLEARS last_error/last_error_at.
+//
+// last_error is "the error, if any, from the most recent attempt" — singular,
+// sitting next to last_synced_at, and the same thing slack_accounts and
+// google_accounts already mean by status/error. Never clearing it would leave
+// `jira status` printing a recent sync beside a weeks-old error with no way to
+// tell which one is current, which is more misleading than the silence this
+// replaces. The accepted cost is that a flapping project keeps no history: an
+// intermittent failure vanishes the moment the next pass succeeds. If those
+// turn out to be the common case, a consecutive_failures counter is the
+// follow-up — not a second, never-cleared error column.
 func (db *DB) UpdateJiraSyncState(accountID int64, projectKey, lastSyncedAt string, issuesSynced int) error {
 	_, err := db.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(account_id, project_key) DO UPDATE SET last_synced_at=excluded.last_synced_at,
-			issues_synced=excluded.issues_synced`,
+			issues_synced=excluded.issues_synced, last_error='', last_error_at=''`,
 		accountID, projectKey, lastSyncedAt, issuesSynced)
 	if err != nil {
 		return fmt.Errorf("updating jira sync state %s: %w", projectKey, err)
+	}
+	return nil
+}
+
+// RecordJiraSyncError records why one project's sync failed, leaving the
+// watermark columns alone — a failed attempt synced nothing, so last_synced_at
+// and issues_synced still describe the last time it worked.
+//
+// The counterpart to UpdateJiraSyncState, and deliberately a separate function:
+// the failure path has no watermark of its own to write, and the previous
+// attempt to fold both into one call ended up re-writing a row with the values
+// it had just read out of it while the error text fell out of scope unused.
+//
+// This is per-project sync health, not the account's grant health: it drives no
+// Re-login button and clears on the project's next success, so it does not
+// collide with the rule that a daemon pass may only ever stamp "revoked" onto
+// jira_accounts.status.
+func (db *DB) RecordJiraSyncError(accountID int64, projectKey, lastError, lastErrorAt string) error {
+	_, err := db.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_error, last_error_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(account_id, project_key) DO UPDATE SET last_error=excluded.last_error,
+			last_error_at=excluded.last_error_at`,
+		accountID, projectKey, lastError, lastErrorAt)
+	if err != nil {
+		return fmt.Errorf("recording jira sync error %s: %w", projectKey, err)
 	}
 	return nil
 }

@@ -131,13 +131,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				s.logger.Printf("auth revoked, aborting sync: %v", err)
 				return total, err
 			}
+			// Sync keeps going across projects and returns nil, so the daemon
+			// log is the ONLY place this failure would otherwise land. Record
+			// it on the project's own row, which `jira status` renders and the
+			// next successful pass clears.
 			s.logger.Printf("sync error for project %s: %v", projectKey, err)
-			if syncState == nil {
-				syncState = &db.JiraSyncState{AccountID: s.accountID, ProjectKey: projectKey}
+			if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+				s.logger.Printf("recording sync error for project %s: %v", projectKey, rerr)
 			}
-			syncState.LastError = err.Error()
-			syncState.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
-			_ = s.db.UpdateJiraSyncState(s.accountID, syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
 			continue
 		}
 
