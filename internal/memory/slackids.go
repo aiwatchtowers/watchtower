@@ -87,19 +87,8 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 	}
 	stats := SlackIDMigration{ByType: make(map[string]int)}
 
-	dirty, dirtyCount, err := worktreeDirt(v)
-	if err != nil {
+	if err := refuseDirtySlackIDMigrationWorktree(v, dryRun, logf); err != nil {
 		return stats, err
-	}
-	if dirtyCount > 0 {
-		msg := fmt.Sprintf("the vault worktree has %d uncommitted change(s) (%s) — "+
-			"commit them in the vault as a memory(migrate) commit (or remove them) first, "+
-			"or the next pipeline run commits them as memory(owner-edit)",
-			dirtyCount, strings.Join(dirty, ", "))
-		if !dryRun {
-			return stats, fmt.Errorf("memory: migrate: %s", msg)
-		}
-		logf("memory: migrate: warning: %s", msg)
 	}
 
 	accountID, err := singleSlackAccountID(database)
@@ -119,7 +108,47 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 		return stats, err
 	}
 
-	plan := &slackIDPlan{accountID: accountID, jiraKeys: jiraKeys, owners: aliasOwners(nodes), stats: &stats, logf: logf}
+	write := planSlackIDRewrites(nodes, accountID, jiraKeys, &stats, logf)
+	if dryRun || len(write) == 0 {
+		return stats, nil
+	}
+
+	if err := commitSlackIDRewrites(v, database, write, &stats, logf); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+// refuseDirtySlackIDMigrationWorktree refuses a real run over a dirty vault
+// worktree: this pass does not pick up uncommitted changes, and letting it
+// proceed would leave them for the next daemon cycle to mis-attribute to the
+// owner as a memory(owner-edit) commit. A dry run only warns, since it writes
+// nothing and is therefore safe to run over a dirty vault.
+func refuseDirtySlackIDMigrationWorktree(v *Vault, dryRun bool, logf func(string, ...any)) error {
+	dirty, dirtyCount, err := worktreeDirt(v)
+	if err != nil {
+		return err
+	}
+	if dirtyCount == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("the vault worktree has %d uncommitted change(s) (%s) — "+
+		"commit them in the vault as a memory(migrate) commit (or remove them) first, "+
+		"or the next pipeline run commits them as memory(owner-edit)",
+		dirtyCount, strings.Join(dirty, ", "))
+	if !dryRun {
+		return fmt.Errorf("memory: migrate: %s", msg)
+	}
+	logf("memory: migrate: warning: %s", msg)
+	return nil
+}
+
+// planSlackIDRewrites scans every node and returns the ones whose aliases or
+// ## Provenance refs need rewriting, recording per-node-type and per-kind
+// counts on stats as it goes. The same plan runs for both a dry run and a
+// real one, so the preview and the applied change can never disagree.
+func planSlackIDRewrites(nodes []Node, accountID int64, jiraKeys map[string]bool, stats *SlackIDMigration, logf func(string, ...any)) []Node {
+	plan := &slackIDPlan{accountID: accountID, jiraKeys: jiraKeys, owners: aliasOwners(nodes), stats: stats, logf: logf}
 	var write []Node
 	for i, n := range nodes {
 		if i > 0 && i%slackIDProgressEvery == 0 {
@@ -133,10 +162,15 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 		stats.NodesChanged++
 		stats.ByType[n.Type]++
 	}
-	if dryRun || len(write) == 0 {
-		return stats, nil
-	}
+	return write
+}
 
+// commitSlackIDRewrites writes the rewritten nodes as one vault commit and
+// rebuilds the index (the provenance index is derived from those very lines,
+// so it must follow). stats.Committed is set as soon as the commit succeeds,
+// even if the reindex that follows fails — the vault write already happened,
+// and the error is wrapped to say so.
+func commitSlackIDRewrites(v *Vault, database *db.DB, write []Node, stats *SlackIDMigration, logf func(string, ...any)) error {
 	ids := make([]string, len(write))
 	for i, n := range write {
 		ids[i] = n.ID
@@ -152,14 +186,14 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 	// rather than going silent for minutes.
 	logf("memory: migrate: committing %d node(s) as one vault commit (this stages each node separately and can take minutes)", len(write))
 	if _, err := v.WriteNodes(write, msg); err != nil {
-		return stats, err
+		return err
 	}
 	stats.Committed = true
 
 	if _, err := Rebuild(v, database, logf); err != nil {
-		return stats, fmt.Errorf("%w (the vault is migrated but the index is stale; run `watchtower memory reindex`)", err)
+		return fmt.Errorf("%w (the vault is migrated but the index is stale; run `watchtower memory reindex`)", err)
 	}
-	return stats, nil
+	return nil
 }
 
 // slackIDPlan carries the decision inputs shared by every node of one pass.

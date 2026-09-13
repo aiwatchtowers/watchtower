@@ -929,44 +929,13 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 // number successfully saved. The first result carries the batch-level usage;
 // subsequent results pass nil to avoid double-counting tokens.
 func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, sinceUnix float64, usage *Usage, promptVersion int, agg *batchAggregator) int {
-	// The model is prompted with the namespaced channelID in each channel
-	// block's header, but its own JSON example shows a bare id, and it
-	// sometimes echoes that bare form back (C1, audit finding). Resolve a
-	// result against the batch by BOTH forms: exact namespaced match first,
-	// then the raw form. A raw id shared by two entries (two accounts in the
-	// same batch) is ambiguous and must not be guessed at — it's removed from
-	// the raw-form map entirely and logged once, not matched to either entry.
-	entryMap := make(map[string]*batchEntry, len(batch))
-	rawMap := make(map[string]*batchEntry, len(batch))
-	ambiguousRaw := make(map[string]bool)
-	for i := range batch {
-		entry := &batch[i]
-		entryMap[entry.channelID] = entry
-		_, rawID, _ := watchtowerslack.SplitAccountID(entry.channelID)
-		if rawID == "" {
-			continue
-		}
-		if _, exists := rawMap[rawID]; exists {
-			ambiguousRaw[rawID] = true
-			continue
-		}
-		rawMap[rawID] = entry
-	}
-	// A collision is only interesting once the model actually echoes the raw
-	// form back; two accounts sharing a raw channel id in one batch is normal
-	// and silent otherwise. Logged at the point of encounter, below.
-	for rawID := range ambiguousRaw {
-		delete(rawMap, rawID)
-	}
+	lookup := newBatchEntryLookup(batch)
 
 	saved := 0
 	for rIdx, r := range results {
-		entry, ok := entryMap[r.ChannelID]
-		if !ok {
-			entry, ok = rawMap[r.ChannelID]
-		}
-		if !ok {
-			if ambiguousRaw[r.ChannelID] {
+		entry, ambiguous := lookup.resolve(r.ChannelID)
+		if entry == nil {
+			if ambiguous {
 				p.logger.Printf("digest: batch result channel id %s is ambiguous across accounts, skipping", r.ChannelID)
 			} else {
 				p.logger.Printf("digest: batch result for unknown channel %s, skipping", r.ChannelID)
@@ -974,38 +943,100 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 			continue
 		}
 
-		dr := &DigestResult{
-			Summary:        r.Summary,
-			Topics:         r.Topics,
-			RunningSummary: r.RunningSummary,
-		}
-		if n := blankInventedMessageRefs(dr.Topics, entry.msgs); n > 0 {
-			p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, entry.channelName)
-		}
-
-		lastMsgTS := sinceUnix
-		for _, m := range entry.msgs {
-			if m.TSUnix > lastMsgTS {
-				lastMsgTS = m.TSUnix
-			}
-		}
-
 		var resultUsage *Usage
 		if rIdx == 0 {
 			resultUsage = usage
 		}
-
-		if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion); err != nil {
-			p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
-			agg.recordError(err)
-			continue
+		if p.persistOneBatchResult(entry, r, sinceUnix, resultUsage, promptVersion, agg) {
+			saved++
 		}
-
-		saved++
-		agg.generated.Add(1)
-		p.totalMessageCount.Add(int64(len(entry.msgs)))
 	}
 	return saved
+}
+
+// batchEntryLookup resolves an AI batch result's channel id back to the
+// batch entry it belongs to. The model is prompted with the namespaced
+// channelID in each channel block's header, but its own JSON example shows a
+// bare id, and it sometimes echoes that bare form back (C1, audit finding),
+// so a result is resolved against BOTH forms: exact namespaced match first,
+// then the raw form. A raw id shared by two entries (two accounts in the same
+// batch) is ambiguous and must not be guessed at — it's removed from the
+// raw-form map entirely, and resolve reports it as ambiguous only if a result
+// actually collides with it, so a collision that no result ever echoes back
+// stays silent.
+type batchEntryLookup struct {
+	entryMap     map[string]*batchEntry
+	rawMap       map[string]*batchEntry
+	ambiguousRaw map[string]bool
+}
+
+func newBatchEntryLookup(batch []batchEntry) *batchEntryLookup {
+	l := &batchEntryLookup{
+		entryMap:     make(map[string]*batchEntry, len(batch)),
+		rawMap:       make(map[string]*batchEntry, len(batch)),
+		ambiguousRaw: make(map[string]bool),
+	}
+	for i := range batch {
+		entry := &batch[i]
+		l.entryMap[entry.channelID] = entry
+		_, rawID, _ := watchtowerslack.SplitAccountID(entry.channelID)
+		if rawID == "" {
+			continue
+		}
+		if _, exists := l.rawMap[rawID]; exists {
+			l.ambiguousRaw[rawID] = true
+			continue
+		}
+		l.rawMap[rawID] = entry
+	}
+	for rawID := range l.ambiguousRaw {
+		delete(l.rawMap, rawID)
+	}
+	return l
+}
+
+// resolve returns the batch entry channelID refers to, or nil when it
+// matches neither form; ambiguous is true only in that nil case, when
+// channelID is a raw id two batch entries share.
+func (l *batchEntryLookup) resolve(channelID string) (entry *batchEntry, ambiguous bool) {
+	if e, ok := l.entryMap[channelID]; ok {
+		return e, false
+	}
+	if e, ok := l.rawMap[channelID]; ok {
+		return e, false
+	}
+	return nil, l.ambiguousRaw[channelID]
+}
+
+// persistOneBatchResult stores one resolved AI batch result, returning
+// whether it saved. resultUsage is non-nil only for the batch's first
+// result — the batch-level usage must not be counted once per channel.
+func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult, sinceUnix float64, resultUsage *Usage, promptVersion int, agg *batchAggregator) bool {
+	dr := &DigestResult{
+		Summary:        r.Summary,
+		Topics:         r.Topics,
+		RunningSummary: r.RunningSummary,
+	}
+	if n := blankInventedMessageRefs(dr.Topics, entry.msgs); n > 0 {
+		p.logger.Printf("digest: blanked %d invented message_ts ref(s) in #%s", n, entry.channelName)
+	}
+
+	lastMsgTS := sinceUnix
+	for _, m := range entry.msgs {
+		if m.TSUnix > lastMsgTS {
+			lastMsgTS = m.TSUnix
+		}
+	}
+
+	if err := p.storeDigest(entry.channelID, "channel", sinceUnix, lastMsgTS, dr, len(entry.msgs), resultUsage, promptVersion); err != nil {
+		p.logger.Printf("digest: error storing batch digest for #%s: %v", entry.channelName, err)
+		agg.recordError(err)
+		return false
+	}
+
+	agg.generated.Add(1)
+	p.totalMessageCount.Add(int64(len(entry.msgs)))
+	return true
 }
 
 // RunDailyRollup generates a cross-channel daily digest from today's channel digests.
