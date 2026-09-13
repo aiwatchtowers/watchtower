@@ -88,7 +88,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new mailbox's first sync + AI cycle runs now.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -135,7 +135,7 @@ final class EmailAccountsViewModel {
                     self.error = nil
                     self.refresh()
                     // Re-wire the daemon so the new account's first sync runs now.
-                    Task { await DaemonManager.restart() }
+                    Task { await DaemonManager.restartLogging() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -192,7 +192,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Restart so the daemon drops the removed account's syncer.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"

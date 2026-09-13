@@ -76,7 +76,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new calendar's first sync runs now.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -118,7 +118,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new feed's first sync runs now.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -159,7 +159,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Restart so the daemon drops the removed account's syncer.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"

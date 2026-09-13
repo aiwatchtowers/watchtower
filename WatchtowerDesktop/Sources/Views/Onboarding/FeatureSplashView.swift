@@ -376,7 +376,7 @@ struct FeatureSplashView: View {
             // clears what it applied, so afterwards there is no longer any
             // way to tell whether the owner had staged anything.
             let hadPendingChanges = !service.pending.isEmpty
-            await service.apply { await DaemonManager.restart() }
+            await service.apply { try await DaemonManager.restart() }
             guard FeatureSplashLogic.shouldFinishAfterApply(
                 hadPendingChanges: hadPendingChanges,
                 loadError: service.loadError

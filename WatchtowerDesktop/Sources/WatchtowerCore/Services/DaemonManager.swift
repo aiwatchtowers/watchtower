@@ -1,5 +1,39 @@
 import Foundation
 
+// MARK: - DaemonRestartError
+
+/// Why `DaemonManager.restart()` failed to leave a live daemon behind.
+package enum DaemonRestartError: LocalizedError, Equatable {
+    /// `sync stop` returned non-zero and the daemon still had not exited by
+    /// `restartStopGrace` — `--detach` was never attempted, since starting
+    /// one next to a process that might still be live would risk two
+    /// daemons. `pid` is nil only if the pid file vanished between the
+    /// timeout firing and the diagnostic re-read (the process is still gone
+    /// either way).
+    case stopTimedOut(pid: pid_t?)
+    /// `sync --daemon --detach` itself exited non-zero.
+    case startFailed(status: Int32, stderr: String)
+
+    package var errorDescription: String? {
+        switch self {
+        case .stopTimedOut(let pid):
+            let who = pid.map { "pid \($0)" } ?? "the old daemon"
+            let graceSeconds = Int(DaemonManager.restartStopGrace.components.seconds)
+            return "Daemon restart: \(who) did not stop within \(graceSeconds)s; refusing to start a second daemon"
+        case let .startFailed(status, stderr):
+            return DaemonManager.startFailureMessage(status: status, stderr: stderr)
+        }
+    }
+}
+
+// MARK: - PidWaitOutcome
+
+/// Result of `DaemonManager.waitForPidDeath`.
+enum PidWaitOutcome: Equatable {
+    case died
+    case timedOut
+}
+
 @MainActor
 @Observable
 package final class DaemonManager {
@@ -177,21 +211,85 @@ package final class DaemonManager {
     /// pipeline cycle on start — so a restart right after connecting a source
     /// makes its data and AI products appear right away instead of waiting for
     /// the next poll.
-    package nonisolated static func restart() async {
+    ///
+    /// Never leaves the system without a daemon (H11, owner decision 10): a
+    /// `sync stop` that returns non-zero (normal while an AI call is in
+    /// flight — the CLI gives it only 10 s of SIGTERM grace) does not mean
+    /// the daemon is dead, and starting `--detach` next to a still-live one
+    /// would either get refused ("already running") after the old one dies
+    /// moments later — leaving no daemon until the app relaunches — or, in
+    /// the worse case, race a second one in. So a non-zero stop is followed
+    /// by polling pid liveness up to `restartStopGrace`; `--detach` runs only
+    /// once the pid is confirmed dead, and `.stopTimedOut` is thrown instead
+    /// of attempted if it never dies.
+    package nonisolated static func restart() async throws {
         guard let path = Constants.findCLIPath() else { return }
+
+        var stopStatus: Int32 = 1
         do {
-            _ = try await runProcess(path: path, arguments: ["sync", "stop"])
+            stopStatus = try await runProcess(path: path, arguments: ["sync", "stop"])
         } catch {
-            NSLog("DaemonManager: restart: `sync stop` failed: %@", error.localizedDescription)
+            NSLog("DaemonManager: restart: `sync stop` failed to spawn: %@", error.localizedDescription)
         }
-        do {
-            let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
-            if result.status != 0 {
-                NSLog("DaemonManager: restart: %@", startFailureMessage(status: result.status, stderr: result.stderr))
+
+        if stopStatus != 0 {
+            let outcome = await waitForPidDeath(
+                isAlive: isDaemonRunning,
+                step: restartPollStep,
+                deadline: restartStopGrace
+            )
+            if outcome == .timedOut {
+                throw DaemonRestartError.stopTimedOut(pid: runningDaemonPID())
             }
-        } catch {
-            NSLog("DaemonManager: restart: `sync --daemon --detach` failed: %@", error.localizedDescription)
         }
+
+        let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+        if result.status != 0 {
+            throw DaemonRestartError.startFailed(status: result.status, stderr: result.stderr)
+        }
+    }
+
+    /// Fire-and-forget convenience for the many call sites that kick off a
+    /// restart after a background account change (a new Slack/Google/Jira
+    /// connection, an account removal) and cannot usefully react to its
+    /// result beyond making sure a failure is never silent.
+    package nonisolated static func restartLogging() async {
+        do {
+            try await restart()
+        } catch {
+            NSLog("DaemonManager: restart failed: %@", error.localizedDescription)
+        }
+    }
+
+    /// Bound on how long `restart()` waits for a `sync stop` that returned
+    /// non-zero to actually take the daemon down before it gives up and
+    /// refuses to start a second one next to a possibly-still-live process.
+    /// Generous on purpose: `sync stop`'s own SIGTERM grace is only 10 s, and
+    /// an in-flight AI call routinely outlasts that — this is the ceiling on
+    /// how long a restart may leave the system without a daemon at all, not
+    /// a redundant timeout layered on top of the CLI's.
+    package nonisolated static let restartStopGrace: Duration = .seconds(60)
+
+    /// Poll interval while waiting out `restartStopGrace`.
+    nonisolated private static let restartPollStep: Duration = .milliseconds(250)
+
+    /// Polls `isAlive` every `step` until it reports death or `deadline`
+    /// (wall time from the first call) elapses. Pure aside from the clock
+    /// read and the sleep: `isAlive` is the only I/O seam, so both branches
+    /// are pinned with a fake counter instead of a real process.
+    nonisolated static func waitForPidDeath(
+        isAlive: () -> Bool,
+        step: Duration,
+        deadline: Duration
+    ) async -> PidWaitOutcome {
+        let start = ContinuousClock.now
+        while isAlive() {
+            if ContinuousClock.now - start >= deadline {
+                return .timedOut
+            }
+            try? await Task.sleep(for: step)
+        }
+        return .died
     }
 
     /// How long a terminated `sync stop` gets to actually die before the wait
@@ -239,10 +337,20 @@ package final class DaemonManager {
     }
 
     nonisolated private static func isDaemonRunning() -> Bool {
+        runningDaemonPID() != nil
+    }
+
+    /// Scans every workspace's `daemon.pid` for a live process (not scoped to
+    /// the active workspace, unlike `readSyncProgress` — a daemon can be
+    /// running against ANY workspace and must still block `restart()` from
+    /// starting a second one). Returns the pid of the first live one found,
+    /// for `.stopTimedOut`'s diagnostic; `isDaemonRunning()` just asks
+    /// whether this is nil.
+    nonisolated private static func runningDaemonPID() -> pid_t? {
         let dataPath = Constants.databasePath
         let fm = FileManager.default
 
-        guard let contents = try? fm.contentsOfDirectory(atPath: dataPath) else { return false }
+        guard let contents = try? fm.contentsOfDirectory(atPath: dataPath) else { return nil }
 
         for dir in contents {
             guard !dir.hasPrefix(".") else { continue }
@@ -255,11 +363,11 @@ package final class DaemonManager {
             guard let pid = pid_t(pidComponent) else { continue }
 
             if kill(pid, 0) == 0 {
-                return true
+                return pid
             }
         }
 
-        return false
+        return nil
     }
 
     nonisolated private static func findWatchtowerSync() -> String? {

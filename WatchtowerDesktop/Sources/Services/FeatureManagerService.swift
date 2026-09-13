@@ -213,7 +213,16 @@ final class FeatureManagerService {
     /// success or failure, so `features`/`disabledFeatureIDs` (and
     /// `onDisabledChanged`) never go stale relative to whatever subset of
     /// the batch actually landed.
-    func apply(restart: @MainActor () async -> Void) async {
+    ///
+    /// A `restart()` that throws (H11: it never leaves the system without a
+    /// daemon, but it can still fail to bring one back) is caught here
+    /// rather than left to propagate — the writes it followed already
+    /// succeeded, so the toggle itself is not what failed. It still must
+    /// not be reported as a quiet success: it takes the same `loadError`
+    /// slot as a write failure, unless a write failure already claimed it
+    /// (something not persisted outranks a daemon that's merely still
+    /// catching up).
+    func apply(restart: @MainActor () async throws -> Void) async {
         guard !pending.isEmpty else { return }
         isApplying = true
         defer { isApplying = false }
@@ -238,7 +247,11 @@ final class FeatureManagerService {
             applyWithDependents = []
         }
         if appliedCount > 0 {
-            await restart()
+            do {
+                try await restart()
+            } catch {
+                if failure == nil { failure = error }
+            }
         }
 
         // Always reload, success or failure: a batch that stopped partway

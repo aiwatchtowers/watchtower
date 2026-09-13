@@ -451,6 +451,56 @@ struct FeatureManagerServiceTests {
         #expect(service.isApplying == false)
     }
 
+    // MARK: - apply() — restart failure (H11, decision 10)
+
+    @Test("apply() surfaces a thrown restart error via loadError when the writes themselves all succeeded")
+    func applySurfacesRestartFailure() async {
+        let (service, _) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+
+        service.setPending("ideas", enabled: false)
+        let spy = RestartSpy()
+
+        await service.apply {
+            try await spy.throwingRestart(CLIRunnerError.nonZeroExit(code: 1, stderr: "daemon restart: pid 123 did not stop"))
+        }
+
+        #expect(spy.callCount == 1)
+        #expect(service.pending.isEmpty, "the write itself landed and is no longer pending")
+        #expect(
+            service.loadError?.contains("daemon restart: pid 123 did not stop") == true,
+            "a restart failure must reach the user, not report as a quiet success"
+        )
+    }
+
+    @Test("apply() keeps the write failure in loadError even when restart also throws")
+    func applyPrefersWriteFailureOverRestartFailure() async {
+        // Same shape as applyStopsOnFirstFailure: "ideas" (call #2) lands,
+        // "tracks" (call #3) fails, so appliedCount > 0 still fires restart.
+        let runner = NthCallFailingRunner(
+            failOnCall: 3,
+            error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom: disable failed"),
+            stdout: Data(Self.featuresListJSON.utf8),
+            stdoutAfterFailure: Data(Self.featuresListAfterIdeasDisabledJSON.utf8)
+        )
+        let service = FeatureManagerService(runner: runner)
+        await service.load()
+
+        service.setPending("ideas", enabled: false)
+        service.setPending("tracks", enabled: true)
+        let spy = RestartSpy()
+
+        await service.apply {
+            try await spy.throwingRestart(CLIRunnerError.nonZeroExit(code: 1, stderr: "restart also failed"))
+        }
+
+        #expect(spy.callCount == 1, "\"ideas\" already went live — restart still fires despite the later write failure")
+        #expect(
+            service.loadError?.contains("boom: disable failed") == true,
+            "a write that never landed outranks a restart that merely failed to pick it up"
+        )
+    }
+
     // MARK: - onDisabledChanged
 
     @Test("load() invokes onDisabledChanged with the freshly computed disabled set on success")
@@ -628,4 +678,13 @@ private final class NthCallFailingRunner: CLIRunnerProtocol {
 private final class RestartSpy {
     private(set) var callCount = 0
     func restart() async { callCount += 1 }
+
+    /// A second entry point (rather than making `restart()` itself throw)
+    /// so the many existing non-throwing call sites above are untouched —
+    /// only the tests pinning `apply()`'s handling of a failed
+    /// `DaemonManager.restart()` (H11) use this one.
+    func throwingRestart(_ error: Error) async throws {
+        callCount += 1
+        throw error
+    }
 }
