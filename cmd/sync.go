@@ -500,6 +500,29 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 // the fan-out pattern shared by wireJiraSyncers/wireGoogleSyncers/
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
+// migrateJiraFeatureKeys runs the one-time jira.features key repair and
+// returns the config the daemon should run with: the reloaded one when the
+// repair actually moved a value, otherwise cfg untouched. Log-only on
+// failure — an unrepaired file reads exactly as it did before, which is the
+// pre-repair status quo rather than a fail-open, and the next start retries.
+func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Config {
+	repaired, err := config.MigrateJiraFeatureKeys(flagConfig)
+	if err != nil {
+		logger.Printf("jira feature-key migration error: %v (continuing with current config)", err)
+		return cfg
+	}
+	if !repaired {
+		return cfg
+	}
+	freshCfg, err := config.Load(flagConfig)
+	if err != nil {
+		logger.Printf("failed to reload config after jira feature-key migration: %v (continuing with current config)", err)
+		return cfg
+	}
+	logger.Printf("jira feature-key migration applied; config reloaded")
+	return freshCfg
+}
+
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
 	// Perform the one-time feature-gate migration (and its first-contact
 	// marker stamp) for digest.enabled=false installs. On a real migration,
@@ -526,6 +549,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 			logger.Printf("feature-gate migration applied; config reloaded")
 		}
 	}
+
+	cfg = migrateJiraFeatureKeys(cfg, logger)
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)

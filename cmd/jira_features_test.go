@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 )
 
 // loadJiraFeatures reads configPath through the real config.Load — the only
@@ -152,6 +153,29 @@ func TestJiraFeatureConfigKeys_MatchStructAndToggleRef(t *testing.T) {
 	for _, name := range featureNames {
 		assert.NotEmpty(t, jiraFeatureConfigKeys[name], "short name %q has no canonical key", name)
 	}
+}
+
+// TestJiraFeaturesCmd_PersistentPreRunMigratesAndRunsRootHook pins both
+// halves of the `jira features` hook. The migration must run BEFORE any
+// subcommand reads or writes — without it `jira features` prints false for a
+// toggle the owner enabled before the key repair, and the enable/disable
+// writers act on a file they have not repaired yet. And cobra runs only the
+// CLOSEST PersistentPreRunE in the chain, so declaring one here must not
+// shadow rootCmd's ensureSchemaFormat: both effects are asserted on the file.
+func TestJiraFeaturesCmd_PersistentPreRunMigratesAndRunsRootHook(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "jira:\n  features:\n    teamworkload: true\n")
+
+	require.NoError(t, jiraFeaturesCmd.PersistentPreRunE(jiraFeaturesCmd, nil))
+
+	assert.True(t, loadJiraFeatures(t, configPath).TeamWorkload,
+		"a pre-repair enable must be readable by the time any subcommand runs")
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+	assert.Equal(t, db.CurrentSchemaFormat, v.GetInt("db.schema_format"), "rootCmd's ensureSchemaFormat must still run")
+	assert.True(t, v.IsSet(config.JiraFeaturesMigratedKey), "the jira hook's own migration must run too")
 }
 
 // newJiraFeaturesTestCmd returns a cobra command whose output is discarded,

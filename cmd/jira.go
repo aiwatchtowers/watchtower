@@ -137,7 +137,29 @@ var jiraSyncCmd = &cobra.Command{
 var jiraFeaturesCmd = &cobra.Command{
 	Use:   "features",
 	Short: "Show Jira feature toggles",
-	RunE:  runJiraFeatures,
+	// PersistentPreRunE runs the one-time jira.features key repair before
+	// any `jira features` subcommand reads or writes the config. The order
+	// is load-bearing: an enable that wrote first would be followed by a
+	// migration reading a file it no longer describes, and the repaired key
+	// would be the one the migration then skipped as "already present".
+	// Log-only on error, like the feature-gate migration's own call sites,
+	// so a migration hiccup never blocks list/enable/disable/reset.
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `jira features` subcommand would
+	// silently skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
+		if _, err := config.MigrateJiraFeatureKeys(flagConfig); err != nil {
+			log.Printf("warning: jira feature-key migration failed: %v", err)
+		}
+		return nil
+	},
+	RunE: runJiraFeatures,
 }
 
 var jiraFeaturesEnableCmd = &cobra.Command{
