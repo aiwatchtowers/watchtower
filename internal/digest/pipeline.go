@@ -1716,14 +1716,33 @@ func (p *Pipeline) storeDigest(channelID, digestType string, from, to float64, r
 		d.CostUSD = 0
 	}
 
+	// Capture the prior row's content BEFORE the upsert overwrites it, so a
+	// resetReadOnWrite caller can tell "content changed" from "regenerated
+	// byte-identical output" (decision 9's literal wording is "reset on
+	// content change", not "reset on every regeneration"). Summary+Topics is
+	// what the digests row itself carries as content — no hash column, no
+	// schema change.
+	var priorSummary, priorTopics string
+	var hadPrior bool
+	if resetReadOnWrite {
+		if prior, perr := p.db.GetDigestsOverlapping(digestType, from, to); perr == nil && len(prior) > 0 {
+			priorSummary = prior[0].Summary
+			priorTopics = prior[0].Topics
+			hadPrior = true
+		}
+	}
+
 	digestID, err := p.db.UpsertDigest(d)
 	if err != nil {
 		return err
 	}
 
 	if resetReadOnWrite {
-		if err := p.db.ResetDigestReadAt(digestID); err != nil {
-			p.logger.Printf("warning: failed to reset read_at for digest %d: %v", digestID, err)
+		contentChanged := !hadPrior || priorSummary != d.Summary || priorTopics != d.Topics
+		if contentChanged {
+			if err := p.db.ResetDigestReadAt(digestID); err != nil {
+				p.logger.Printf("warning: failed to reset read_at for digest %d: %v", digestID, err)
+			}
 		}
 	}
 
