@@ -387,19 +387,53 @@ func TestPhaseJiraSyncResolvesUsersAfterCleanPass(t *testing.T) {
 }
 
 // A failed pass says nothing new about identities and may have left the
-// account half-synced, so the resolve step belongs to the clean branch only.
+// account half-synced, so the resolve step belongs to the clean branch only —
+// and a broken sibling must not suppress a healthy account's resolve, the same
+// fan-out isolation the auth-state write and the target-status reflection
+// already follow.
 func TestPhaseJiraSyncSkipsUserResolveOnFailure(t *testing.T) {
 	d, database, _ := newJiraTestDaemon(t)
 
-	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	brokenAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	healthyAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
 	require.NoError(t, err)
 
-	stub := &stubJiraSyncer{accountID: acct, err: errors.New("jira api 503")}
-	d.jiraSyncers = []jiraAccountSyncer{stub}
+	broken := &stubJiraSyncer{accountID: brokenAcct, err: errors.New("jira api 503")}
+	healthy := &stubJiraSyncer{accountID: healthyAcct}
+	d.jiraSyncers = []jiraAccountSyncer{broken, healthy}
 
 	d.phaseJiraSync(context.Background())
 
-	assert.Zero(t, stub.resolveCalls, "a failed pass must not run the resolve step")
+	assert.Zero(t, broken.resolveCalls, "a failed pass must not run the resolve step")
+	assert.Equal(t, 1, healthy.resolveCalls, "a broken sibling must not suppress a healthy account's resolve")
+}
+
+// TestPhaseJiraSyncResolvesUsersForEveryCleanAccount is the multi-account axis
+// of "once per account", and it needs TWO clean accounts to exist: with a
+// single one in the fixture, a regression to "resolve the first clean syncer
+// and then stop" is invisible, and so is one that resolves only the last.
+//
+// Failure it pins: two connected sites both syncing cleanly, but only site 1's
+// newly-seen Jira users ever resolve — so every issue on site 2 keeps an empty
+// assignee_slack_id forever. That is the §A6 bug, half-fixed, and per-account
+// fan-out isolation is the premise of the whole Jira multi-account sub-project.
+func TestPhaseJiraSyncResolvesUsersForEveryCleanAccount(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	firstAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	secondAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	first := &stubJiraSyncer{accountID: firstAcct}
+	second := &stubJiraSyncer{accountID: secondAcct}
+	d.jiraSyncers = []jiraAccountSyncer{first, second}
+
+	d.phaseJiraSync(context.Background())
+
+	assert.Equal(t, 1, first.resolveCalls, "the first clean account must resolve exactly once")
+	assert.Equal(t, 1, second.resolveCalls, "every clean account must resolve, not just the first")
 }
 
 // A cancelled context is daemon shutdown: the resolve step writes to the

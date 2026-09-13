@@ -1050,11 +1050,15 @@ func runJiraUsersResolve(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Backfill assignee_slack_id on existing issues.
-	if err := database.BackfillJiraSlackIDs(); err != nil {
+	assignees, reporters, err := database.BackfillJiraSlackIDs()
+	if err != nil {
 		return fmt.Errorf("backfilling slack IDs: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
+	if assignees > 0 || reporters > 0 {
+		fmt.Fprintf(out, "Re-derived Slack ids on %d assignee and %d reporter rows.\n", assignees, reporters)
+	}
 	maps, _ := database.GetJiraUserMaps()
 	matched := 0
 	for _, m := range maps {
@@ -1166,8 +1170,12 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Backfill slack IDs on issues that were synced before user mapping was resolved.
-	_ = database.BackfillJiraSlackIDs()
+	// Backfill slack IDs on issues that were synced before user mapping was
+	// resolved. The counts belong to `jira users resolve`, whose whole job this
+	// is; here it is a tail step, so only a failure is worth a line.
+	if _, _, berr := database.BackfillJiraSlackIDs(); berr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: backfilling slack IDs failed: %v\n", berr)
+	}
 
 	return nil
 }

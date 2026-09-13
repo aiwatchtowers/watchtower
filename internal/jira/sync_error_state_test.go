@@ -71,6 +71,44 @@ func TestSyncer_Sync_FailureKeepsEarlierWatermark(t *testing.T) {
 	assert.Contains(t, state.LastError, "jira is down")
 }
 
+// TestSyncer_Sync_SecondFailureReplacesTheFirstOne covers the conflict path of
+// the failure writer, which the other two tests reach only for the text.
+//
+// A project that failed on Monday and fails again on Friday with a different
+// reason must carry Friday's reason under FRIDAY's timestamp. Updating the text
+// while leaving the timestamp at its first value is the wrong implementation
+// this pins: `jira status` would then print the new error dated a week ago,
+// which is precisely the "a stale error reads as a current one" hazard the
+// renderer prints the timestamp to avoid — and it stays that way for as long as
+// the project keeps failing, because only a success ever clears the pair.
+func TestSyncer_Sync_SecondFailureReplacesTheFirstOne(t *testing.T) {
+	database := revokedSyncerDB(t)
+	require.NoError(t, database.UpsertJiraBoard(db.JiraBoard{
+		AccountID: 1, ID: 3, Name: "Ops", ProjectKey: "OPS", IsSelected: true, SyncedAt: "now",
+	}))
+
+	const firstFailure = "2026-09-07T00:00:00Z"
+	require.NoError(t, database.RecordJiraSyncError(1, "OPS", "connection reset by peer", firstFailure))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errorMessages":["jira is down"]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := quietSyncer(t, database, srv.URL).Sync(context.Background())
+	require.NoError(t, err)
+
+	state, err := database.GetJiraSyncState(1, "OPS")
+	require.NoError(t, err)
+	require.NotNil(t, state)
+	assert.Contains(t, state.LastError, "jira is down", "the newer reason must replace the older one")
+	assert.NotContains(t, state.LastError, "connection reset", "the older reason must not survive")
+	assert.NotEqual(t, firstFailure, state.LastErrorAt,
+		"the timestamp must move with the error, or the newest failure reads as a week-old one")
+	assert.Greater(t, state.LastErrorAt, firstFailure, "the replacement timestamp must be the newer one")
+}
+
 // TestSyncer_Sync_SuccessClearsPreviousFailure pins the clear condition the
 // column names imply: last_error is the error from the MOST RECENT attempt, so
 // a project that recovers stops reporting one. Without this, `jira status`

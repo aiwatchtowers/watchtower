@@ -470,8 +470,16 @@ func (db *DB) UpsertJiraUserMap(mapping JiraUserMap) error {
 // Rows with no Atlassian account id, and rows whose account id has no resolved
 // map entry, are left exactly as they are: a missing mapping is not evidence
 // that the stored value is wrong.
-func (db *DB) BackfillJiraSlackIDs() error {
-	_, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id =
+//
+// It returns how many rows each statement actually rewrote. Those counts are
+// the only place the repair is observable: they say whether a pass converged
+// or is still finding stale rows, and a steady non-zero count means something
+// keeps re-introducing them. A correct implementation returns 0, 0 on the pass
+// after the one that repaired an install — an implementation that rewrites
+// every mapped row regardless keeps returning the full row count, which on
+// jira_issues is the largest churn in the database and is otherwise invisible.
+func (db *DB) BackfillJiraSlackIDs() (assignees, reporters int64, err error) {
+	res, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
 		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')
 		WHERE assignee_account_id != ''
@@ -480,9 +488,14 @@ func (db *DB) BackfillJiraSlackIDs() error {
 		  AND assignee_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
 		 	WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
-		return fmt.Errorf("backfilling assignee slack IDs: %w", err)
+		return 0, 0, fmt.Errorf("backfilling assignee slack IDs: %w", err)
 	}
-	_, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id =
+	assignees, err = res.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting backfilled assignee slack IDs: %w", err)
+	}
+
+	res, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
 		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')
 		WHERE reporter_account_id != ''
@@ -491,9 +504,13 @@ func (db *DB) BackfillJiraSlackIDs() error {
 		  AND reporter_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
 		 	WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
-		return fmt.Errorf("backfilling reporter slack IDs: %w", err)
+		return assignees, 0, fmt.Errorf("backfilling reporter slack IDs: %w", err)
 	}
-	return nil
+	reporters, err = res.RowsAffected()
+	if err != nil {
+		return assignees, 0, fmt.Errorf("counting backfilled reporter slack IDs: %w", err)
+	}
+	return assignees, reporters, nil
 }
 
 // GetJiraUserMaps returns all Jira user mappings.

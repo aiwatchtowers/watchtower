@@ -214,6 +214,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 // identity reads as "this person has no work". Until 2026-09-13 the step ran
 // only from `jira users resolve` and the tail of a manual `jira sync`, which
 // is to say: not at all on an install driven by the daemon.
+//
+// A pass that rewrote nothing says nothing, so only a non-zero repair is
+// logged: on a healthy install the counts fall to zero and stay there, and a
+// line that keeps reappearing means something is still re-introducing stale
+// ids. The syncer's logger is the daemon's (wireJiraSyncers replaces it), so
+// this lands in daemon.log with the rest of the pass.
 func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) error {
 	if s.mapper == nil {
 		return nil
@@ -221,7 +227,14 @@ func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) 
 	if err := s.mapper.ResolveAll(ctx, manualMap); err != nil {
 		return err
 	}
-	return s.db.BackfillJiraSlackIDs()
+	assignees, reporters, err := s.db.BackfillJiraSlackIDs()
+	if err != nil {
+		return err
+	}
+	if assignees > 0 || reporters > 0 {
+		s.logger.Printf("re-derived slack ids on %d assignee and %d reporter rows", assignees, reporters)
+	}
+	return nil
 }
 
 // buildIncrementalJQL builds the JQL for an incremental project sync.
