@@ -167,3 +167,26 @@ func TestExtractFirstFromJSONArray(t *testing.T) {
 	assert.Equal(t, "", extractFirstFromJSONArray(`[]`))
 	assert.Equal(t, "", extractFirstFromJSONArray(""))
 }
+
+// A failed key load is deliberately fail-closed and non-propagating: it detects
+// nothing (never accept-all) and reports a clean "nothing found" rather than an
+// error, so a transient DB failure can never fail the caller that is merely
+// looking for Jira keys in a message.
+func TestKeyDetector_KeyLoadFailureDetectsNothing(t *testing.T) {
+	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
+	_, err := database.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	d := NewKeyDetector(database)
+
+	assert.Nil(t, d.DetectKeys("Fixing PROJ-123 now"))
+
+	count, err := d.ProcessMessage("1:C1", "1000.001", "Fixing PROJ-123 now")
+	require.NoError(t, err, "a key-load failure must not fail the caller")
+	assert.Equal(t, 0, count)
+
+	links, err := database.GetJiraSlackLinksByIssue("PROJ-123")
+	require.NoError(t, err)
+	assert.Empty(t, links, "nothing is written when the known-key set cannot be loaded")
+}

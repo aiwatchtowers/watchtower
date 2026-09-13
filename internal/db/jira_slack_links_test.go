@@ -151,3 +151,59 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, links, 2, "re-applying 00067 restores the per-kind identity")
 }
+
+// A link kind with no identity matches no partial index, so every write would
+// insert. An empty link_type is what a caller gets by forgetting a field.
+func TestUpsertJiraSlackLink_EmptyLinkTypeIsStoredAndDedupedAsMention(t *testing.T) {
+	database := openTestDB(t)
+
+	link := JiraSlackLink{IssueKey: "PROJ-5", ChannelID: "1:C1", MessageTS: "1000.001"}
+	require.NoError(t, database.UpsertJiraSlackLink(link))
+	require.NoError(t, database.UpsertJiraSlackLink(link))
+
+	links, err := database.GetJiraSlackLinksByIssue("PROJ-5")
+	require.NoError(t, err)
+	require.Len(t, links, 1, "a link with no kind must still dedupe, not grow the table")
+	assert.Equal(t, "mention", links[0].LinkType)
+}
+
+func TestUpsertJiraSlackLink_UnknownLinkTypeIsRefused(t *testing.T) {
+	database := openTestDB(t)
+
+	err := database.UpsertJiraSlackLink(JiraSlackLink{
+		IssueKey: "PROJ-6", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "sighting",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown link_type "sighting"`)
+
+	links, err := database.GetJiraSlackLinksByIssue("PROJ-6")
+	require.NoError(t, err)
+	assert.Empty(t, links, "a refused link must write nothing")
+}
+
+// The new per-kind indexes are narrower on some axes than the constraint they
+// replace, so a pair that was legal before can be illegal after. The migration
+// must dedupe such a pair rather than abort — an aborted migration means goose
+// fails, db.Open errors, and neither the daemon nor the Desktop starts.
+func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jira-slack-link-legacy.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	defer d.Close()
+
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 66))
+
+	// Both rows are legal under UNIQUE(issue_key, channel_id, message_ts) and
+	// both are what the old upsert could write: ProcessTrack takes channel_id
+	// from the first entry of the track's channel_ids JSON, which can reorder.
+	_, err = d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, link_type)
+		VALUES ('PROJ-1', '1:C1', '', 5, 'track'), ('PROJ-1', '1:C2', '', 5, 'track')`)
+	require.NoError(t, err)
+
+	require.NoError(t, goose.Up(d.DB, "migrations"), "the migration must survive legacy rows")
+
+	links, err := d.GetJiraSlackLinksByIssue("PROJ-1")
+	require.NoError(t, err)
+	require.Len(t, links, 1, "the copy keeps one row per kind identity")
+	assert.Equal(t, "1:C2", links[0].ChannelID, "the newest row wins")
+}

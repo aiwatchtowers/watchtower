@@ -24,6 +24,18 @@
 -- which has had no non-test caller since it was introduced — so the table is
 -- empty on every install. Nothing references jira_slack_links, so the DROP
 -- fires no cascade.
+--
+-- The copy nevertheless dedupes per kind identity, keeping the newest row of
+-- each. The new indexes are narrower on some axes than the old constraint, so a
+-- pair that was legal before can be illegal after — two 'track' links for one
+-- (issue_key, track_id) differing only in channel_id, which the old upsert could
+-- produce because ProcessTrack takes channel_id from the first entry of the
+-- track's channel_ids JSON. Without the dedupe, CREATE UNIQUE INDEX would abort,
+-- goose would fail the migration and db.Open would refuse to start the daemon
+-- and the Desktop — a far worse outcome than the link loss being fixed. This can
+-- only ever fire on data the empty-table proof above says does not exist.
+-- The CASE mirrors the indexes, NULLs included: a NULL track_id/digest_id
+-- collides with nothing in a unique index, so such a row is its own group here.
 
 CREATE TABLE jira_slack_links_new (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +48,17 @@ CREATE TABLE jira_slack_links_new (
     detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 INSERT INTO jira_slack_links_new (id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at)
-    SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at FROM jira_slack_links;
+    SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
+    FROM jira_slack_links
+    WHERE id IN (
+        SELECT MAX(id) FROM jira_slack_links
+        GROUP BY issue_key, link_type,
+            CASE link_type
+                WHEN 'track'    THEN COALESCE(CAST(track_id AS TEXT), 'row:' || id)
+                WHEN 'decision' THEN COALESCE(CAST(digest_id AS TEXT), 'row:' || id)
+                ELSE channel_id || char(31) || message_ts
+            END
+    );
 DROP TABLE jira_slack_links;
 ALTER TABLE jira_slack_links_new RENAME TO jira_slack_links;
 

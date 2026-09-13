@@ -583,13 +583,23 @@ const (
 
 // UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
 // identity of the link's own kind.
+//
+// A kind with no identity has no dedup: its rows match no partial index, so
+// every write inserts. An empty LinkType is therefore normalised to "mention"
+// (the column's own default) rather than written through — it is what a caller
+// gets by forgetting a field — and any other value is refused outright instead
+// of growing the table without bound.
 func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
-	query := upsertJiraSlackLinkMention
+	var query string
 	switch link.LinkType {
+	case "", "mention":
+		link.LinkType, query = "mention", upsertJiraSlackLinkMention
 	case "track":
 		query = upsertJiraSlackLinkTrack
 	case "decision":
 		query = upsertJiraSlackLinkDecision
+	default:
+		return fmt.Errorf("upserting jira slack link %s: unknown link_type %q", link.IssueKey, link.LinkType)
 	}
 
 	_, err := db.Exec(query,
