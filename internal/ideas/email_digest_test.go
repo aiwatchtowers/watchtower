@@ -295,7 +295,7 @@ func TestIdeas01_EmailFloorStopsAtBudgetDroppedThread(t *testing.T) {
 	// Budget the first thread's line exactly, so the second thread is dropped.
 	window, err := d.ListGmailThreadsForExtract(acctID, float64(base-10), 0, 500)
 	require.NoError(t, err)
-	full, _ := renderEmailBlock(acctID, groupThreads(window), 1000000)
+	full, _ := renderEmailBlock(acctID, groupThreads(window), 1000000, 0)
 	budget := strings.Index(full, "\n") + 1
 
 	var seenBlock string
@@ -325,6 +325,125 @@ func TestIdeas01_EmailFloorStopsAtBudgetDroppedThread(t *testing.T) {
 	require.Len(t, digests, 1)
 	assert.Equal(t, time.Unix(base+10, 0).UTC().Format(time.RFC3339), digests[0].PeriodTo,
 		"period_to must describe what the row summarizes, not what was loaded")
+}
+
+// TestIdeas01_EmailTieAtBudgetCut_DrainedNotBuried pins the boundary-tie rule.
+// internal_date is second-granular, so two threads whose oldest message shares
+// a second are ordinary. When the budget cut lands inside that second, a floor
+// set to the last rendered message would sit exactly ON it — and the reload is
+// strictly greater-than, so the dropped thread would never be read again. The
+// whole tie group must be rendered instead.
+func TestIdeas01_EmailTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+
+	// Both threads' only message sits in the same second.
+	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "First", "short", same)
+	seedGmailMessageIdeas(t, d, acctID, "m2", "thr-2", "b@example.com", "Bob", "Second",
+		strings.Repeat("y ", 400), same)
+
+	// A budget that fits the first thread's line only.
+	window, err := d.ListGmailThreadsForExtract(acctID, float64(base-10), 0, 500)
+	require.NoError(t, err)
+	full, _ := renderEmailBlock(acctID, groupThreads(window), 1000000, 0)
+	budget := strings.Index(full, "\n") + 1
+
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":%q}],"decisions":[]}]}`,
+			fmt.Sprintf("gmail:%d:thr-1", acctID)), nil
+	}}
+	p := New(d, testCfgWithBudget(budget), gen, testLogger())
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	assert.Contains(t, seenBlock, "thr-2",
+		"the tie-mate must be drained into the same prompt, not dropped below the floor")
+
+	floor, ferr := d.IdeasEmailFloor(acctID)
+	require.NoError(t, ferr)
+	assert.Equal(t, float64(base+10), floor)
+
+	// Nothing is left behind: the floor passed the second only because the
+	// whole second was rendered.
+	left, lerr := d.ListGmailThreadsForExtract(acctID, floor, 0, 500)
+	require.NoError(t, lerr)
+	assert.Empty(t, left, "no message may sit at-or-below the floor unmined")
+}
+
+// TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances covers the
+// documented residual: a tie group larger than maxTieDrainUnits is drained
+// only to the ceiling, and the floor passes the second anyway. The remainder
+// is lost — deliberately, because the alternative is a pass that can never
+// move. The ceiling must hold, or one second could pull the whole window into
+// a single prompt.
+func TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+
+	const threadCount = maxTieDrainUnits + 10
+	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	for i := 0; i < threadCount; i++ {
+		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
+			"a@example.com", "Ann", "Subj", "body", same)
+	}
+
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(1), gen, testLogger())
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	rendered := strings.Count(seenBlock, "gmail:")
+	assert.LessOrEqual(t, rendered, maxTieDrainUnits+1, "the drain must stop at the ceiling")
+	assert.Greater(t, rendered, 1, "the drain must still take the group up to the ceiling")
+
+	floor, err := d.IdeasEmailFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+10), floor,
+		"above the ceiling the floor still passes the second — a bounded residual, not a stall")
+}
+
+// TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor covers the
+// maxMessagesPerThread cap: a thread longer than the cap is rendered only up
+// to it, so the floor must stop at the last message actually rendered, not at
+// the thread's newest. The cap keeps the OLDEST messages precisely so the
+// remainder can stay above the floor and be mined next run.
+func TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+
+	const extra = 10
+	for i := 1; i <= maxMessagesPerThread+extra; i++ {
+		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), "thr-1", "a@example.com", "Ann",
+			"Long thread", fmt.Sprintf("message %d", i),
+			time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339))
+	}
+
+	gen := &fakeGen{reply: func(string) (string, error) { return `{"topics":[]}`, nil }}
+	p := New(d, testCfg(), gen, testLogger())
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	floor, err := d.IdeasEmailFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+maxMessagesPerThread), floor,
+		"the floor stops at the newest message the cap actually rendered")
+
+	left, lerr := d.ListGmailThreadsForExtract(acctID, floor, 0, 500)
+	require.NoError(t, lerr)
+	assert.Len(t, left, extra, "the messages the cap left out must still be minable")
 }
 
 // TestIdeas01_EmailOversizedThread_RenderedAnywayFloorAdvances covers the

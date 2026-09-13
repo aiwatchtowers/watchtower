@@ -74,13 +74,13 @@ func TestRenderEmailBlock_BudgetDropsThreadFromBlockAndTags(t *testing.T) {
 			messages: []db.GmailExtractMessage{{BodyText: strings.Repeat("y ", 400)}}},
 	}
 
-	full, fullTags := renderEmailBlock(7, threads, 100000)
+	full, fullTags := renderEmailBlock(7, threads, 100000, 0)
 	require.Contains(t, full, "thr-1")
 	require.Contains(t, full, "thr-2")
 	require.Len(t, fullTags, 2)
 
 	firstLineLen := strings.Index(full, "\n") + 1
-	bounded, tags := renderEmailBlock(7, threads, firstLineLen)
+	bounded, tags := renderEmailBlock(7, threads, firstLineLen, 0)
 	assert.Contains(t, bounded, "thr-1")
 	assert.NotContains(t, bounded, "thr-2")
 	assert.LessOrEqual(t, len(bounded), firstLineLen)
@@ -97,7 +97,7 @@ func TestRenderJiraBlock_CapsCommentsPerIssue(t *testing.T) {
 		comments = append(comments, db.JiraComment{IssueKey: "WT-1", Author: "Ann", BodyText: fmt.Sprintf("comment-%02d", i)})
 	}
 
-	block, tags := renderJiraBlock(issues, map[string][]db.JiraComment{"WT-1": comments}, 100000)
+	block, tags := renderJiraBlock(issues, map[string][]db.JiraComment{"WT-1": comments}, 100000, "")
 	assert.Equal(t, maxCommentsPerIssue, strings.Count(block, "  - Ann: "))
 	assert.NotContains(t, block, "comment-00", "the oldest comments are the ones dropped")
 	assert.Contains(t, block, fmt.Sprintf("comment-%02d", maxCommentsPerIssue+9), "the newest comment survives")
@@ -112,11 +112,11 @@ func TestRenderJiraBlock_BudgetDropsIssueFromBlockAndTags(t *testing.T) {
 		{Key: "WT-2", ProjectKey: "WT", Summary: strings.Repeat("z", 400), Status: "Open"},
 	}
 
-	full, fullTags := renderJiraBlock(issues, nil, 100000)
+	full, fullTags := renderJiraBlock(issues, nil, 100000, "")
 	require.Contains(t, full, "WT-2")
 	require.Len(t, fullTags, 2)
 
-	bounded, tags := renderJiraBlock(issues, nil, len(full)-100)
+	bounded, tags := renderJiraBlock(issues, nil, len(full)-100, "")
 	assert.Contains(t, bounded, "WT-1")
 	assert.NotContains(t, bounded, "WT-2")
 	assert.Equal(t, map[string]bool{"WT-1": true}, tags)

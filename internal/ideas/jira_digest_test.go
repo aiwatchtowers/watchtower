@@ -360,7 +360,7 @@ func TestIdeas01_JiraFloorStopsAtBudgetDroppedIssue(t *testing.T) {
 	issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, "", jiraIssuesPerAccountLimit)
 	require.NoError(t, err)
 	require.Len(t, issues, 3)
-	wtOnly, _ := renderJiraBlock([]db.JiraIssue{issues[0], issues[2]}, nil, 1000000)
+	wtOnly, _ := renderJiraBlock([]db.JiraIssue{issues[0], issues[2]}, nil, 1000000, "")
 
 	var seenBlock string
 	gen := &fakeGen{reply: func(user string) (string, error) {
@@ -391,6 +391,63 @@ func TestIdeas01_JiraFloorStopsAtBudgetDroppedIssue(t *testing.T) {
 	require.Len(t, digests, 1)
 	assert.Equal(t, normalizeJiraStreamPeriod(u1), digests[0].PeriodTo,
 		"period_to must describe what the row's floor claims, not what was loaded")
+}
+
+// TestIdeas01_JiraTieAtBudgetCut_DrainedNotBuried pins the boundary-tie rule
+// on the reviewer's reproduction: one bulk edit stamps the same updated_at on
+// issues in two projects, and the budget fits the first project whole. A floor
+// set to the last rendered issue would sit exactly ON that timestamp, and
+// ListJiraIssuesUpdatedSince reloads with a strict >, so BBB-1 — never
+// rendered — would be invisible to every later run. The whole tie group must
+// be rendered instead.
+func TestIdeas01_JiraTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	floor := base.Format(time.RFC3339)
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	u2 := base.Add(20 * time.Second).Format(time.RFC3339)
+	seedJiraIssueIdeas(t, d, acctID, "AAA-1", "AAA", "first", "Open", "new", "desc", u1)
+	seedJiraIssueIdeas(t, d, acctID, "BBB-1", "BBB", "bulk-edited twin", "Open", "new", "desc", u1)
+	seedJiraIssueIdeas(t, d, acctID, "AAA-2", "AAA", "second", "Open", "new", "desc", u2)
+
+	// A budget that fits project AAA whole and nothing more.
+	issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, "", jiraIssuesPerAccountLimit)
+	require.NoError(t, err)
+	require.Len(t, issues, 3)
+	aaaOnly, _ := renderJiraBlock([]db.JiraIssue{issues[0], issues[2]}, nil, 1000000, "")
+
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":"AAA-1"}],"decisions":[]}]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(len(aaaOnly)), gen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	assert.Contains(t, seenBlock, "BBB-1",
+		"the tie-mate must be drained into the same prompt, not dropped below the floor")
+
+	newFloor, ferr := d.IdeasJiraFloor(acctID)
+	require.NoError(t, ferr)
+
+	// The invariant, stated directly: every issue the prompt did NOT carry
+	// must still be above the floor, so a later run can still reach it.
+	left, lerr := d.ListJiraIssuesUpdatedSince(acctID, newFloor, "", jiraIssuesPerAccountLimit)
+	require.NoError(t, lerr)
+	stillVisible := make(map[string]bool, len(left))
+	for _, is := range left {
+		stillVisible[is.Key] = true
+	}
+	for _, is := range issues {
+		if !strings.Contains(seenBlock, is.Key) {
+			assert.True(t, stillVisible[is.Key],
+				"%s was never rendered, so it must remain above the floor", is.Key)
+		}
+	}
 }
 
 // TestIdeas01_JiraOversizedIssue_RenderedAnywayFloorAdvances is the Jira half

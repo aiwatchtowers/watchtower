@@ -44,47 +44,76 @@ const maxCommentsPerIssue = 20
 // would re-read the same un-renderable issue forever, mining nothing. A
 // bounded single-issue overshoot is the lesser evil, and the caller logs it —
 // a returned block longer than maxChars is exactly that signal.
-func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int) (string, map[string]bool) {
+//
+// drainThrough ("" = off) is the second escape, used only on a re-render:
+// every issue with that updated_at is rendered regardless of the budget, up to
+// maxTieDrainUnits of them, so the floor can pass that whole timestamp. Such a
+// group can straddle projects, so a drain pass keeps scanning past a project
+// that fits nothing instead of stopping at it. See renderJiraWindow.
+func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, maxChars int, drainThrough string) (string, map[string]bool) {
 	order, byProject := groupIssuesByProject(issues)
 
 	var b strings.Builder
 	tags := make(map[string]bool, len(issues))
-	budget := maxChars
-	n := 0
+	st := &jiraRenderState{budget: maxChars, drainThrough: drainThrough}
 	for _, project := range order {
 		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
-		if len(header) > budget && len(tags) > 0 {
-			break
-		}
-
-		var unit strings.Builder
-		var unitKeys []string
-		for _, is := range byProject[project] {
-			n++
-			issueBlock := renderJiraIssue(n, is, commentsByIssue[is.Key])
-			rendered := len(tags) > 0 || len(unitKeys) > 0
-			if len(header)+unit.Len()+len(issueBlock) > budget && rendered {
-				n-- // the very first issue renders regardless; see the doc comment
-				break
+		unit, keys := st.renderProject(header, byProject[project], commentsByIssue)
+		if len(keys) == 0 {
+			if drainThrough == "" {
+				break // budget spent: no later project can fit either
 			}
-			unit.WriteString(issueBlock)
-			unitKeys = append(unitKeys, is.Key)
+			continue // a later project may still hold a tie-mate
 		}
-		if unit.Len() == 0 {
-			// A later project whose first issue does not fit — the first
-			// project always renders at least one, so this can only be a
-			// project with budget already spent. Stop entirely.
-			break
-		}
-
 		b.WriteString(header)
-		b.WriteString(unit.String())
-		budget -= len(header) + unit.Len()
-		for _, key := range unitKeys {
+		b.WriteString(unit)
+		st.budget -= len(header) + len(unit)
+		for _, key := range keys {
 			tags[key] = true
+			st.rendered = true
 		}
 	}
 	return b.String(), tags
+}
+
+// jiraRenderState carries renderJiraBlock's budget accounting across project
+// groups: the remaining budget, the running issue number, whether anything has
+// been rendered at all (the always-one escape), and how much of the boundary
+// group has been drained (the tie escape).
+type jiraRenderState struct {
+	budget       int
+	n            int
+	rendered     bool
+	drained      int
+	drainThrough string
+}
+
+// renderProject renders one project's issues into a unit, admitting an issue
+// when it fits, when nothing has been rendered anywhere yet, or when it ties
+// with drainThrough.
+func (st *jiraRenderState) renderProject(header string, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment) (string, []string) {
+	var unit strings.Builder
+	var keys []string
+	for _, is := range issues {
+		st.n++
+		block := renderJiraIssue(st.n, is, commentsByIssue[is.Key])
+		fits := len(header)+unit.Len()+len(block) <= st.budget
+		first := !st.rendered && len(keys) == 0
+		tie := st.drainThrough != "" && is.UpdatedAt == st.drainThrough && st.drained < maxTieDrainUnits
+		if !fits && !first && !tie {
+			st.n--
+			if st.drainThrough == "" {
+				break // stop at the first issue that does not fit
+			}
+			continue // a later issue in this project may still be a tie-mate
+		}
+		if !fits {
+			st.drained++
+		}
+		unit.WriteString(block)
+		keys = append(keys, is.Key)
+	}
+	return unit.String(), keys
 }
 
 // groupIssuesByProject buckets issues by project key, returning the projects
@@ -126,17 +155,35 @@ func renderJiraIssue(n int, is db.JiraIssue, comments []db.JiraComment) string {
 // by time, so a dropped issue in a later project can carry an updated_at lower
 // than a rendered one's, and the floor would bury it (IDEA-01).
 //
-// An empty return means not even the oldest issue was rendered: nothing was
-// mined, so the floor must not move at all.
-func renderedJiraFloor(issues []db.JiraIssue, renderedTags map[string]bool) string {
-	last := ""
+// Stopping there is not enough either, because ListJiraIssuesUpdatedSince
+// reloads with a strict >: a rendered issue TYING with the first dropped one
+// (one bulk edit stamping several issues at once) would put the floor exactly
+// on a timestamp that still holds unmined material. The trailing tie is
+// therefore trimmed off the claim — the trimPartialBoundarySecond rule, at the
+// prompt-budget cut this time rather than the loader's LIMIT cut.
+//
+// ok is false when trimming leaves nothing: the cut landed entirely inside one
+// updated_at, so no honest floor exists below it and the caller must drain
+// that whole group instead (boundary).
+func renderedJiraFloor(issues []db.JiraIssue, renderedTags map[string]bool) (floor, boundary string, ok bool) {
+	n := 0
 	for _, is := range issues {
 		if !renderedTags[is.Key] {
 			break
 		}
-		last = is.UpdatedAt
+		n++
 	}
-	return last
+	if n == len(issues) {
+		return issues[n-1].UpdatedAt, "", true
+	}
+	boundary = issues[n].UpdatedAt
+	for n > 0 && issues[n-1].UpdatedAt == boundary {
+		n--
+	}
+	if n == 0 {
+		return "", boundary, false
+	}
+	return issues[n-1].UpdatedAt, boundary, true
 }
 
 // newestComments returns at most maxCommentsPerIssue comments, keeping the
@@ -194,6 +241,42 @@ func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 		}
 	}
 	return firstErr
+}
+
+// renderJiraWindow renders one pass's block and decides the floor it may
+// claim, draining the boundary group when the prompt budget cut inside a
+// single updated_at. Both escapes are logged: they are the only two ways a
+// stage-1 prompt exceeds ideas.max_prompt_chars, and an operator who set the
+// cap too low should be able to see why.
+func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, budget int) (string, map[string]bool, string) {
+	block, tags := renderJiraBlock(issues, commentsByIssue, budget, "")
+	if len(block) > budget {
+		p.logf("ideas: jira account %d: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			accountID, issues[0].Key, len(block), budget)
+	}
+	floor, boundary, ok := renderedJiraFloor(issues, tags)
+	if ok {
+		return block, tags, floor
+	}
+
+	// The cut landed inside one updated_at — one bulk edit stamping several
+	// issues at once. No floor below that timestamp is claimable, so render
+	// the whole group rather than stall; the loader already drains its own
+	// LIMIT cut this way.
+	block, tags = renderJiraBlock(issues, commentsByIssue, budget, boundary)
+	p.logf("ideas: jira account %d: the %d-char ideas.max_prompt_chars cap cut inside updated_at %s — rendered that whole group (%d chars) so the floor can pass it",
+		accountID, budget, boundary, len(block))
+
+	drainedFloor, _, drainedOK := renderedJiraFloor(issues, tags)
+	if drainedOK {
+		return block, tags, drainedFloor
+	}
+	// More than maxTieDrainUnits issues share that timestamp. The floor passes
+	// it anyway: the alternative is a pass that can never move. The remainder
+	// is the documented residual above the ceiling.
+	p.logf("ideas: jira account %d: more than %d issues share updated_at %s — the floor passes it and the rest of that group is not mined",
+		accountID, maxTieDrainUnits, boundary)
+	return block, tags, boundary
 }
 
 // initJiraFloor stamps a never-initialized account's ideas floor at now
@@ -260,16 +343,11 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 	}
 
 	budget := p.maxPromptChars()
-	block, tags := renderJiraBlock(issues, commentsByIssue, budget)
-	if len(block) > budget {
-		p.logf("ideas: jira account %d: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
-			acct.ID, issues[0].Key, len(block), budget)
-	}
-	renderedTo := renderedJiraFloor(issues, tags)
+	block, tags, renderedTo := p.renderJiraWindow(acct.ID, issues, commentsByIssue, budget)
 	if renderedTo == "" {
-		// Unreachable: renderJiraBlock always renders its oldest issue, so a
-		// non-empty issues always yields a floor. Fail loudly rather than
-		// claim an empty floor if that contract is ever broken.
+		// Unreachable: the drain leaves every issue at the boundary timestamp
+		// rendered, so a non-empty issues always yields a floor. Fail loudly
+		// rather than claim an empty floor if that contract is ever broken.
 		return fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
