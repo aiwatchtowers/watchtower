@@ -186,6 +186,20 @@ func renderedJiraFloor(issues []db.JiraIssue, renderedTags map[string]bool) (flo
 	return issues[n-1].UpdatedAt, boundary, true
 }
 
+// countUnrenderedJiraTies counts the issues at boundary that the drain ceiling
+// left out — the material the floor is about to pass over, reported in the
+// fault log so the loss is a number the owner can see rather than an
+// inference.
+func countUnrenderedJiraTies(issues []db.JiraIssue, renderedTags map[string]bool, boundary string) int {
+	n := 0
+	for _, is := range issues {
+		if is.UpdatedAt == boundary && !renderedTags[is.Key] {
+			n++
+		}
+	}
+	return n
+}
+
 // newestComments returns at most maxCommentsPerIssue comments, keeping the
 // newest (the tail of the oldest-first slice ListJiraCommentsSince returns).
 func newestComments(comments []db.JiraComment) []db.JiraComment {
@@ -272,10 +286,11 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 		return block, tags, drainedFloor
 	}
 	// More than maxTieDrainUnits issues share that timestamp. The floor passes
-	// it anyway: the alternative is a pass that can never move. The remainder
-	// is the documented residual above the ceiling.
-	p.logf("ideas: jira account %d: more than %d issues share updated_at %s — the floor passes it and the rest of that group is not mined",
-		accountID, maxTieDrainUnits, boundary)
+	// it anyway — the alternative is a pass that can never move — so this is
+	// the one branch where material is genuinely lost, and it is a fault, not
+	// a statistic: the ceiling is sized so ordinary bulk edits cannot reach it.
+	p.logf("ideas: ERROR: jira account %d: %d issue(s) sharing updated_at %s exceeded the %d-unit boundary-drain ceiling and were NOT rendered; the floor passes that timestamp, so they will not be mined",
+		accountID, countUnrenderedJiraTies(issues, tags, boundary), boundary, maxTieDrainUnits)
 	return block, tags, boundary
 }
 

@@ -95,6 +95,27 @@ func seedGmailMessageIdeas(t *testing.T, d *db.DB, accountID int64, id, threadID
 	require.NoError(t, err)
 }
 
+// seedGmailThreadsInOneSecond inserts n single-message threads all carrying
+// the same internal_date, in one transaction — the boundary-drain ceiling only
+// engages past maxTieDrainUnits units, so its guard needs a bulk fixture.
+func seedGmailThreadsInOneSecond(t *testing.T, d *db.DB, accountID int64, n int, internalDateISO string) {
+	t.Helper()
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO gmail_messages
+		(account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	require.NoError(t, err)
+	defer stmt.Close()
+	for i := 0; i < n; i++ {
+		_, err = stmt.Exec(accountID, fmt.Sprintf("m%05d", i), fmt.Sprintf("thr-%05d", i),
+			"a@example.com", "Ann", "Subj", "body", internalDateISO)
+		require.NoError(t, err)
+	}
+	require.NoError(t, tx.Commit())
+}
+
 func TestRunEmailDigests_InsertsRowAndAdvancesFloor(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
@@ -376,41 +397,54 @@ func TestIdeas01_EmailTieAtBudgetCut_DrainedNotBuried(t *testing.T) {
 }
 
 // TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances covers the
-// documented residual: a tie group larger than maxTieDrainUnits is drained
-// only to the ceiling, and the floor passes the second anyway. The remainder
-// is lost — deliberately, because the alternative is a pass that can never
-// move. The ceiling must hold, or one second could pull the whole window into
-// a single prompt.
+// one branch that still loses material: a tie group larger than
+// maxTieDrainUnits is drained only to the ceiling, and the floor passes the
+// second anyway — deliberately, because the alternative is a pass that can
+// never move (a second-granular group is all-or-nothing). The drain must stop
+// somewhere, or one second could pull an unbounded load into a single prompt;
+// and when it does stop short, the pass must report a FAULT naming the source,
+// the timestamp and how many units went unrendered, not a quiet statistic.
+//
+// The ceiling is deliberately out of reach of ordinary traffic, so this test
+// has to manufacture a group past it.
 func TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour).Unix()
 	acctID := seedGoogleAccount(t, d, float64(base))
 	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
 
-	const threadCount = maxTieDrainUnits + 10
+	const overCeiling = 5
 	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
-	for i := 0; i < threadCount; i++ {
-		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
-			"a@example.com", "Ann", "Subj", "body", same)
-	}
+	seedGmailThreadsInOneSecond(t, d, acctID, maxTieDrainUnits+overCeiling, same)
 
 	var seenBlock string
+	var logged bytes.Buffer
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		seenBlock = user
 		return `{"topics":[]}`, nil
 	}}
-	p := New(d, testCfgWithBudget(1), gen, testLogger())
+	p := New(d, testCfgWithBudget(1), gen, log.New(&logged, "", 0))
 	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
 	require.Equal(t, 1, gen.calls)
 
 	rendered := strings.Count(seenBlock, "gmail:")
 	assert.LessOrEqual(t, rendered, maxTieDrainUnits+1, "the drain must stop at the ceiling")
-	assert.Greater(t, rendered, 1, "the drain must still take the group up to the ceiling")
+	assert.Greater(t, rendered, maxTieDrainUnits/2,
+		"the drain must still take the group all the way up to the ceiling")
 
 	floor, err := d.IdeasEmailFloor(acctID)
 	require.NoError(t, err)
 	assert.Equal(t, float64(base+10), floor,
 		"above the ceiling the floor still passes the second — a bounded residual, not a stall")
+
+	// The loss must surface as a fault, with enough detail to act on.
+	out := logged.String()
+	assert.Contains(t, out, "ERROR", "hitting the ceiling is a fault, not a note")
+	assert.Contains(t, out, fmt.Sprintf("gmail account %d", acctID), "the fault must name the source")
+	assert.Contains(t, out, fmt.Sprintf("%d", base+10), "the fault must name the timestamp")
+	assert.Contains(t, out, "were NOT rendered", "the fault must say the units were not mined")
+	assert.Regexp(t, `ERROR: gmail account \d+: \d+ thread\(s\)`, out,
+		"the fault must count the unrendered units")
 }
 
 // TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor covers the

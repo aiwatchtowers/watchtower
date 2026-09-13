@@ -80,13 +80,25 @@ func filterCandidates(cands []streamCandidate, validTags map[string]bool) []stre
 const maxMessagesPerThread = 50
 
 // maxTieDrainUnits bounds how large a boundary group the prompt-budget cut
-// will drain past its cap (the db.BoundarySecondRowLimit precedent). More than
-// this many Gmail threads whose oldest message shares one second, or Jira
-// issues sharing one millisecond, is not a working load — it is a ceiling. A
-// group larger than this is drained only to the ceiling and the floor still
-// advances past the timestamp, so the remainder is lost: a bounded residual,
-// chosen over a pass that can never move.
-const maxTieDrainUnits = 50
+// will drain past its cap (the db.BoundarySecondRowLimit precedent). Because a
+// tie group all shares one timestamp and both reloads are strictly
+// greater-than, such a group is all-or-nothing: whatever is not drained goes
+// under the floor unmined. The ceiling is therefore sized so that ordinary
+// bulk activity never reaches it, not so that it trims a typical load —
+// exceeding it is a fault, and the pass logs it as one.
+//
+// 1000 for three reasons specific to these two sources:
+//   - Jira: Atlassian's own bulk-change operation caps at 1000 issues, so no
+//     single bulk edit can stamp more than that; and updated_at carries
+//     milliseconds, so even a maximal one spreads across many timestamps.
+//   - Gmail: internal_date is the receipt second, and 1000 messages landing in
+//     one mailbox within the same second is an import or migration artifact,
+//     not mail.
+//   - Reaching it at all requires the loaders' own unbounded boundary drains:
+//     one pass loads at most 500 Gmail messages or 300 Jira issues, so a group
+//     this large can only have arrived through the LIMIT -1 re-read those
+//     drains use, which is already the pathological branch.
+const maxTieDrainUnits = 1000
 
 // emailThread is one Gmail thread grouped for the ideas email pre-digest — a
 // local, deliberately independent copy of the shape
@@ -247,6 +259,20 @@ func renderedEmailMessages(accountID int64, threads []emailThread, renderedTags 
 		}
 	}
 	return ids
+}
+
+// countUnrenderedEmailTies counts the threads at boundaryTS that the drain
+// ceiling left out — the material the floor is about to pass over, reported in
+// the fault log so the loss is a number the owner can see rather than an
+// inference.
+func countUnrenderedEmailTies(accountID int64, threads []emailThread, renderedTags map[string]bool, boundaryTS float64) int {
+	n := 0
+	for _, th := range threads {
+		if th.messages[0].TSUnix == boundaryTS && !renderedTags[emailThreadTag(accountID, th.threadID)] {
+			n++
+		}
+	}
+	return n
 }
 
 // emailWindow is what one email pass may claim: the period its stream_digests
@@ -416,11 +442,12 @@ func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMess
 	if drained.ok {
 		return block, tags, drained
 	}
-	// More than maxTieDrainUnits threads share that second. The floor passes
-	// it anyway: the alternative is a pass that can never move. The remainder
-	// is the documented residual above the ceiling.
-	p.logf("ideas: email account %d: more than %d threads share second %.0f — the floor passes it and the rest of that second is not mined",
-		accountID, maxTieDrainUnits, win.boundaryTS)
+	// More than maxTieDrainUnits threads share that second. The floor passes it
+	// anyway — the alternative is a pass that can never move — so this is the
+	// one branch where material is genuinely lost, and it is a fault, not a
+	// statistic: the ceiling is sized so ordinary traffic cannot reach it.
+	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f exceeded the %d-unit boundary-drain ceiling and were NOT rendered; the floor passes that second, so they will not be mined",
+		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS, maxTieDrainUnits)
 	return block, tags, emailWindow{minTS: msgs[0].TSUnix, maxTS: win.boundaryTS, ok: true}
 }
 
