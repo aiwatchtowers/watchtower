@@ -2,14 +2,11 @@ package ideas
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
-	"watchtower/internal/prompts"
 )
 
 // jiraIssuesPerAccountLimit bounds how many changed issues one pre-digest
@@ -91,6 +88,31 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 	return b.String(), tags
 }
 
+// renderedJiraFloor returns the furthest updated_at one Jira pass may claim —
+// the value its floor advances to and its stream_digests row ends at.
+// renderedTags is renderJiraBlock's key set, i.e. exactly the issues put in
+// front of the model (and so exactly what a candidate may cite, IDEA-02).
+//
+// issues arrives ordered by updated_at ascending, so the scan stops at the
+// first issue the prompt budget dropped: everything below that point was
+// rendered, everything from it on must stay unclaimed. A plain max over
+// rendered issues would not do — renderJiraBlock groups by project rather than
+// by time, so a dropped issue in a later project can carry an updated_at lower
+// than a rendered one's, and the floor would bury it (IDEA-01).
+//
+// An empty return means not even the oldest issue was rendered: nothing was
+// mined, so the floor must not move at all.
+func renderedJiraFloor(issues []db.JiraIssue, renderedTags map[string]bool) string {
+	last := ""
+	for _, is := range issues {
+		if !renderedTags[is.Key] {
+			break
+		}
+		last = is.UpdatedAt
+	}
+	return last
+}
+
 // newestComments returns at most maxCommentsPerIssue comments, keeping the
 // newest (the tail of the oldest-first slice ListJiraCommentsSince returns).
 func newestComments(comments []db.JiraComment) []db.JiraComment {
@@ -148,22 +170,49 @@ func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 	return firstErr
 }
 
+// initJiraFloor stamps a never-initialized account's ideas floor at now
+// (minus jiraFloorInitBackoff) and mines nothing — no backfill, the
+// initEmailFloor precedent.
+func (p *Pipeline) initJiraFloor(acct db.JiraAccount) error {
+	now := db.FormatJiraTime(time.Now().UTC().Add(-jiraFloorInitBackoff))
+	if err := p.db.SetIdeasJiraFloor(acct.ID, now); err != nil {
+		return fmt.Errorf("initializing ideas jira floor: %w", err)
+	}
+	p.logf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
+	return nil
+}
+
+// gatherJiraComments loads the comments added to issues since floor, grouped
+// by issue key for renderJiraBlock.
+func (p *Pipeline) gatherJiraComments(accountID int64, issues []db.JiraIssue, floor string) (map[string][]db.JiraComment, error) {
+	keys := make([]string, len(issues))
+	for i, is := range issues {
+		keys[i] = is.Key
+	}
+	comments, err := p.db.ListJiraCommentsSince(accountID, keys, floor)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira comments: %w", err)
+	}
+	byIssue := make(map[string][]db.JiraComment, len(keys))
+	for _, c := range comments {
+		byIssue[c.IssueKey] = append(byIssue[c.IssueKey], c)
+	}
+	return byIssue, nil
+}
+
 // runJiraDigestAccount runs the jira pre-digest pass for one account. An
 // empty floor (never initialized) initializes to now and skips extraction —
 // no backfill, the runEmailDigestAccount precedent. Zero changed issues is a
-// clean no-op: no AI call, no row, floor untouched.
+// clean no-op: no AI call, no row, floor untouched — and so is a prompt
+// budget that fits no issue at all, since a floor may only advance over
+// issues the model actually saw (IDEA-01).
 func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount, bound time.Time) error {
 	floor, err := p.db.IdeasJiraFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas jira floor: %w", err)
 	}
 	if floor == "" {
-		now := db.FormatJiraTime(time.Now().UTC().Add(-jiraFloorInitBackoff))
-		if serr := p.db.SetIdeasJiraFloor(acct.ID, now); serr != nil {
-			return fmt.Errorf("initializing ideas jira floor: %w", serr)
-		}
-		p.logf("ideas: jira account %d floor initialized at %s, no backfill", acct.ID, now)
-		return nil
+		return p.initJiraFloor(acct)
 	}
 
 	var beforeISO string
@@ -178,65 +227,43 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return nil
 	}
 
-	keys := make([]string, len(issues))
-	maxUpdated := issues[0].UpdatedAt
-	for i, is := range issues {
-		keys[i] = is.Key
-		if is.UpdatedAt > maxUpdated {
-			maxUpdated = is.UpdatedAt
-		}
-	}
-
-	comments, err := p.db.ListJiraCommentsSince(acct.ID, keys, floor)
+	commentsByIssue, err := p.gatherJiraComments(acct.ID, issues, floor)
 	if err != nil {
-		return fmt.Errorf("listing jira comments: %w", err)
-	}
-	commentsByIssue := make(map[string][]db.JiraComment, len(keys))
-	for _, c := range comments {
-		commentsByIssue[c.IssueKey] = append(commentsByIssue[c.IssueKey], c)
+		return err
 	}
 
 	block, tags := renderJiraBlock(issues, commentsByIssue, p.maxPromptChars())
+	renderedTo := renderedJiraFloor(issues, tags)
+	if renderedTo == "" {
+		// The oldest issue alone outgrows the whole prompt budget, so this
+		// pass has nothing to show the model and nothing it may claim. Leave
+		// the floor where it is and say why: the window is retried next run,
+		// and the operator can see that ideas.max_prompt_chars is too small
+		// for it rather than watching the material disappear.
+		p.logf("ideas: jira account %d: prompt budget fits no issue, nothing mined (floor unchanged)", acct.ID)
+		return nil
+	}
 
-	tmpl, _ := p.getPrompt("ideas.digest_jira")
-	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
-
-	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.digest_jira"), system, block, "")
-	p.accumulateUsage(usage)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", block, tags)
 	if err != nil {
-		return fmt.Errorf("generating jira digest: %w", err)
+		return err
 	}
 
-	raw, err := prompts.ExtractJSONObject(reply)
-	if err != nil {
-		return fmt.Errorf("extracting jira digest JSON: %w", err)
-	}
-	var parsed streamTopics
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return fmt.Errorf("parsing jira digest JSON: %w", err)
-	}
-	if parsed.Topics == nil {
-		return fmt.Errorf("jira digest reply has no \"topics\" key")
-	}
-	topics := validateRefs(*parsed.Topics, tags)
-	topicsJSON, err := json.Marshal(topics)
-	if err != nil {
-		return fmt.Errorf("marshaling jira digest topics: %w", err)
-	}
-
-	_, err = p.db.InsertStreamDigest(db.StreamDigest{
+	if err := p.insertStreamTopics(db.StreamDigest{
 		Source:     "jira",
 		AccountID:  acct.ID,
 		Scope:      "",
 		PeriodFrom: normalizeJiraStreamPeriod(floor),
-		PeriodTo:   normalizeJiraStreamPeriod(maxUpdated),
-		TopicsJSON: string(topicsJSON),
-	})
-	if err != nil {
-		return fmt.Errorf("inserting stream digest: %w", err)
+		PeriodTo:   normalizeJiraStreamPeriod(renderedTo),
+	}, topics, fmt.Sprintf("jira account %d", acct.ID)); err != nil {
+		return err
 	}
 
-	if err := p.db.SetIdeasJiraFloor(acct.ID, maxUpdated); err != nil {
+	// renderedTo is the newest RENDERED issue's updated_at, never the newest
+	// loaded one: an issue the budget dropped stays above the floor and is
+	// mined next run. ListJiraIssuesUpdatedSince reloads with a strict >, so
+	// the boundary issue itself is not re-read; IDEA-05 covers the rest.
+	if err := p.db.SetIdeasJiraFloor(acct.ID, renderedTo); err != nil {
 		return fmt.Errorf("advancing ideas jira floor: %w", err)
 	}
 	return nil

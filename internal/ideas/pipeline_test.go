@@ -67,7 +67,11 @@ func TestRunStreamDigests_RunsEvenWhenIdeasDisabled(t *testing.T) {
 	jbase := time.Now().Add(-time.Hour)
 	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
 	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
-	jiraTag := "jira:WT-1"
+	// The Jira stage-1 ref vocabulary is the BARE issue key (renderJiraBlock's
+	// tag set), so this reply validates and the pass writes its row. A
+	// "jira:"-prefixed ref would be dropped by validateRefs and the pass would
+	// correctly write nothing, which is not what this test is about.
+	jiraTag := "WT-1"
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		if strings.Contains(user, "=== PROJECT") {
@@ -153,7 +157,11 @@ func TestRunStreamDigests_EmailErrorDoesNotBlockJira(t *testing.T) {
 	jbase := time.Now().Add(-time.Hour)
 	setIdeasJiraFloorRaw(t, d, jiraAcctID, db.FormatJiraTime(jbase))
 	seedJiraIssueIdeas(t, d, jiraAcctID, "WT-1", "WT", "Issue", "Open", "new", "desc", db.FormatJiraTime(jbase.Add(10*time.Second)))
-	jiraTag := "jira:WT-1"
+	// The Jira stage-1 ref vocabulary is the BARE issue key (renderJiraBlock's
+	// tag set), so this reply validates and the pass writes its row. A
+	// "jira:"-prefixed ref would be dropped by validateRefs and the pass would
+	// correctly write nothing, which is not what this test is about.
+	jiraTag := "WT-1"
 
 	gen := &fakeGen{reply: func(user string) (string, error) {
 		if strings.Contains(user, "=== PROJECT") {

@@ -271,9 +271,15 @@ func TestGB4_JiraStreamPeriodNormalizedToRFC3339UTC(t *testing.T) {
 	assert.True(t, covered, "coverage check must correctly match the normalized RFC3339 period")
 }
 
-// TestIdeas02_JiraHallucinatedRefDropped covers ref validation: a
-// candidate whose ref is not a bare key from the rendered block is dropped,
-// but the pass still completes normally (row inserted, floor advanced).
+// TestIdeas02_JiraHallucinatedRefDropped covers ref validation: a candidate
+// whose ref is not a bare key from the rendered block never reaches the
+// database at all, while the pass still completes normally (the AI call itself
+// succeeded, so the mined window's floor advances).
+//
+// Re-expressed 2026-09-13 (audit fix wave 2): the invented ref used to leave
+// behind a stream_digests row carrying "[]". This now asserts zero rows, which
+// is strictly stronger — the earlier assertion accepted a row as long as its
+// topics were empty, this one accepts no row at all.
 func TestIdeas02_JiraHallucinatedRefDropped(t *testing.T) {
 	d := newTestDB(t)
 	base := time.Now().Add(-time.Hour)
@@ -289,12 +295,129 @@ func TestIdeas02_JiraHallucinatedRefDropped(t *testing.T) {
 	err := p.runJiraDigests(context.Background(), time.Time{})
 	require.NoError(t, err)
 
+	assertNoStreamDigestCites(t, d, "WT-999")
 	digests, err := d.ListStreamDigestsAfter(0, "")
 	require.NoError(t, err)
-	require.Len(t, digests, 1)
-	assert.Equal(t, "[]", digests[0].TopicsJSON)
+	assert.Empty(t, digests,
+		"an invented ref must not reach stream_digests at all — not even as an empty row")
+
+	newFloor, err := d.IdeasJiraFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, u1, newFloor, "the window was mined, so its floor still advances")
+}
+
+// TestIdeas01_JiraEmptyTopics_NoRowFloorAdvances is the other route to the
+// same no-empty-row rule: the model answered with an affirmative but empty
+// "topics" array. No row is written, yet the window was genuinely mined, so
+// the floor advances.
+func TestIdeas01_JiraEmptyTopics_NoRowFloorAdvances(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	setIdeasJiraFloorRaw(t, d, acctID, base.Format(time.RFC3339))
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Real issue", "Open", "new", "desc", u1)
+
+	gen := &fakeGen{reply: func(string) (string, error) { return `{"topics":[]}`, nil }}
+	p := New(d, testCfg(), gen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	digests, err := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, err)
+	assert.Empty(t, digests, "a window with no topics must write no stream_digests row")
 
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
 	assert.Equal(t, u1, newFloor)
+}
+
+// TestIdeas01_JiraFloorStopsAtBudgetDroppedIssue pins the floor to what the
+// renderer actually put in front of the model, in the shape that makes the
+// rule sharp: renderJiraBlock groups by project, not by time, so the dropped
+// issue (OPS-1, updated second) is OLDER than a rendered one (WT-2, updated
+// third). A floor taken as the max over rendered issues would land on WT-2's
+// updated_at and bury OPS-1 for good — the floor must stop at the last issue
+// below the first dropped one instead.
+func TestIdeas01_JiraFloorStopsAtBudgetDroppedIssue(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	floor := base.Format(time.RFC3339)
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	u2 := base.Add(20 * time.Second).Format(time.RFC3339)
+	u3 := base.Add(30 * time.Second).Format(time.RFC3339)
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "first", "Open", "new", "desc", u1)
+	seedJiraIssueIdeas(t, d, acctID, "OPS-1", "OPS", "second project", "Open", "new", "desc", u2)
+	seedJiraIssueIdeas(t, d, acctID, "WT-2", "WT", "third", "Open", "new", "desc", u3)
+
+	// A budget that fits project WT's whole group and nothing more, so the
+	// OPS group is dropped even though its issue is older than WT-2.
+	issues, err := d.ListJiraIssuesUpdatedSince(acctID, floor, "", jiraIssuesPerAccountLimit)
+	require.NoError(t, err)
+	require.Len(t, issues, 3)
+	wtOnly, _ := renderJiraBlock([]db.JiraIssue{issues[0], issues[2]}, nil, 1000000)
+
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"i","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(len(wtOnly)), gen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+	require.Contains(t, seenBlock, "WT-2", "project WT must have rendered whole")
+	require.NotContains(t, seenBlock, "OPS-1", "the OPS group must not have been rendered")
+
+	newFloor, ferr := d.IdeasJiraFloor(acctID)
+	require.NoError(t, ferr)
+	assert.Equal(t, u1, newFloor,
+		"the floor must stop below the dropped OPS-1, not jump to the rendered WT-2")
+
+	// Both unmined issues are still visible to the next run — including WT-2,
+	// which is re-read (cost, never loss: IDEA-05 dedups a re-mine).
+	left, lerr := d.ListJiraIssuesUpdatedSince(acctID, newFloor, "", jiraIssuesPerAccountLimit)
+	require.NoError(t, lerr)
+	require.Len(t, left, 2)
+	assert.Equal(t, "OPS-1", left[0].Key)
+	assert.Equal(t, "WT-2", left[1].Key)
+
+	digests, derr := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, derr)
+	require.Len(t, digests, 1)
+	assert.Equal(t, normalizeJiraStreamPeriod(u1), digests[0].PeriodTo,
+		"period_to must describe what the row's floor claims, not what was loaded")
+}
+
+// TestIdeas01_JiraNothingRendered_NoCallNoRowFloorUnchanged covers the
+// degenerate branch the old code got most wrong (see
+// feedback_test_degenerate_clean_exit): a prompt budget too small for even the
+// oldest issue renders nothing, so there is nothing to ask the model about and
+// nothing this run may claim — no AI call, no row, floor frozen.
+func TestIdeas01_JiraNothingRendered_NoCallNoRowFloorUnchanged(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour)
+	acctID := seedJiraAccount(t, d)
+	floor := base.Format(time.RFC3339)
+	setIdeasJiraFloorRaw(t, d, acctID, floor)
+	u1 := base.Add(10 * time.Second).Format(time.RFC3339)
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Real issue", "Open", "new", "desc", u1)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		t.Fatal("generator must not be called when the budget fits no issue")
+		return "", nil
+	}}
+	p := New(d, testCfgWithBudget(1), gen, testLogger())
+	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
+	assert.Zero(t, gen.calls)
+
+	digests, err := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, err)
+	assert.Empty(t, digests)
+
+	newFloor, err := d.IdeasJiraFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, floor, newFloor, "nothing was rendered, so the floor must not move at all")
 }

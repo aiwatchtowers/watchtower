@@ -146,6 +146,15 @@ func senderLabel(name, email string) string {
 // emailExcerptBytes caps each message's rendered excerpt.
 const emailExcerptBytes = 240
 
+// emailThreadTag is the one place the Gmail stage-1 ref format is spelled
+// out: renderEmailBlock stamps it into the block and the tag set, and
+// renderedEmailWindow reads it back to decide which messages this run may
+// claim. Both must agree, or the floor would advance over material the model
+// was never shown.
+func emailThreadTag(accountID int64, threadID string) string {
+	return fmt.Sprintf("gmail:%d:%s", accountID, threadID)
+}
+
 // renderEmailBlock renders one numbered line per thread — "[n] <subject>
 // (gmail:<accountID>:<threadID>): <participants> — <excerpts>" — and returns
 // the set of "gmail:<accountID>:<threadID>" tags a candidate's ref must copy
@@ -158,7 +167,7 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (str
 	tags := make(map[string]bool, len(threads))
 	budget := maxChars
 	for i, th := range threads {
-		tag := fmt.Sprintf("gmail:%d:%s", accountID, th.threadID)
+		tag := emailThreadTag(accountID, th.threadID)
 		subject := th.subject
 		if subject == "" {
 			subject = "(no subject)"
@@ -179,6 +188,94 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int) (str
 		b.WriteString(line)
 	}
 	return b.String(), tags
+}
+
+// renderedEmailWindow returns the message-timestamp window one email pass may
+// claim — the period its stream_digests row covers and the furthest its floor
+// may advance. renderedTags is renderEmailBlock's tag set, i.e. exactly the
+// threads put in front of the model (and so exactly what a candidate may cite,
+// IDEA-02).
+//
+// msgs arrives ordered by timestamp ascending, so the scan stops at the first
+// message whose thread the prompt budget dropped: everything below that point
+// was rendered, everything from it on must stay unclaimed. A plain max over
+// rendered threads would not do — thread render order follows each thread's
+// FIRST message, so a dropped thread can hold messages older than a rendered
+// one's, and the floor would bury them (IDEA-01).
+//
+// ok is false when not even the oldest message's thread was rendered: nothing
+// was mined, so the floor must not move at all.
+func renderedEmailWindow(accountID int64, msgs []db.GmailExtractMessage, renderedTags map[string]bool) (minTS, maxTS float64, ok bool) {
+	for _, m := range msgs {
+		if !renderedTags[emailThreadTag(accountID, m.ThreadID)] {
+			break
+		}
+		if !ok {
+			minTS, maxTS, ok = m.TSUnix, m.TSUnix, true
+			continue
+		}
+		if m.TSUnix < minTS {
+			minTS = m.TSUnix
+		}
+		if m.TSUnix > maxTS {
+			maxTS = m.TSUnix
+		}
+	}
+	return minTS, maxTS, ok
+}
+
+// mineStreamTopics performs one stage-1 AI call over block and returns the
+// topics that survived ref validation against renderedTags. promptID doubles
+// as the digest source tag (the two are the same string for both stage-1
+// passes). A generator, extraction, parse, or missing-"topics"-key failure
+// returns an error, so the caller writes no row and leaves its floor untouched
+// (IDEA-01). Shared by the Gmail and Jira passes, which differ only in their
+// prompt and their tag vocabulary.
+func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, block string, renderedTags map[string]bool) ([]streamTopic, error) {
+	tmpl, _ := p.getPrompt(promptID)
+	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
+
+	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, promptID), system, block, "")
+	p.accumulateUsage(usage)
+	if err != nil {
+		return nil, fmt.Errorf("generating %s: %w", promptID, err)
+	}
+
+	raw, err := prompts.ExtractJSONObject(reply)
+	if err != nil {
+		return nil, fmt.Errorf("extracting %s JSON: %w", promptID, err)
+	}
+	var parsed streamTopics
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("parsing %s JSON: %w", promptID, err)
+	}
+	if parsed.Topics == nil {
+		return nil, fmt.Errorf("%s reply has no \"topics\" key", promptID)
+	}
+	return validateRefs(*parsed.Topics, renderedTags), nil
+}
+
+// insertStreamTopics writes one stream_digests row carrying topics, or writes
+// nothing at all when validation left nothing behind. An empty row is a digest
+// with no content: it badges the Desktop Digests feed as unread for nothing,
+// and it marks a window as covered on the strength of material it does not
+// carry. The caller still advances its floor — the window was genuinely mined,
+// it simply had nothing worth recording (IDEA-01's converse clause). what
+// labels the account in the skip log.
+func (p *Pipeline) insertStreamTopics(row db.StreamDigest, topics []streamTopic, what string) error {
+	if len(topics) == 0 {
+		p.logf("ideas: %s: no topics survived validation, no stream_digests row written", what)
+		return nil
+	}
+	topicsJSON, err := json.Marshal(topics)
+	if err != nil {
+		return fmt.Errorf("marshaling stream digest topics: %w", err)
+	}
+	row.TopicsJSON = string(topicsJSON)
+	if _, err := p.db.InsertStreamDigest(row); err != nil {
+		return fmt.Errorf("inserting stream digest: %w", err)
+	}
+	return nil
 }
 
 // runEmailDigests is the ideas registry's Gmail pre-digest pass: one Generate
@@ -213,32 +310,38 @@ func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 	return firstErr
 }
 
+// initEmailFloor stamps a never-initialized account's ideas floor at its
+// current Gmail sync watermark and mines nothing — no backfill, the memory
+// jira_ingest.go:80 precedent. gmail_last_internal_date IS the newest synced
+// message's internal_date for this account, so no extra query is needed. No
+// synced mail yet leaves the floor at 0 for the next run to initialize.
+func (p *Pipeline) initEmailFloor(acct db.GoogleAccount) error {
+	maxTS, err := p.db.GetGmailAccountWatermark(acct.ID)
+	if err != nil {
+		return fmt.Errorf("getting gmail sync watermark: %w", err)
+	}
+	if maxTS == 0 {
+		return nil
+	}
+	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
+		return fmt.Errorf("initializing ideas email floor: %w", err)
+	}
+	p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
+	return nil
+}
+
 // runEmailDigestAccount runs the email pre-digest pass for one account. A
-// floor of 0 (never initialized) initializes to the account's current Gmail
-// sync watermark and skips extraction — no backfill, the memory
-// jira_ingest.go:80 precedent. Zero new messages is a clean no-op: no AI
-// call, no row, floor untouched.
+// floor of 0 (never initialized) initializes and skips extraction. Zero new
+// messages is a clean no-op: no AI call, no row, floor untouched — and so is
+// a prompt budget that fits no thread at all, since a floor may only advance
+// over threads the model actually saw (IDEA-01).
 func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAccount, bound time.Time) error {
 	floor, err := p.db.IdeasEmailFloor(acct.ID)
 	if err != nil {
 		return fmt.Errorf("getting ideas email floor: %w", err)
 	}
 	if floor == 0 {
-		// gmail_last_internal_date IS the newest synced message's internal_date
-		// for this account — exactly "current max internal_date" — so no extra
-		// query is needed to initialize the floor.
-		maxTS, werr := p.db.GetGmailAccountWatermark(acct.ID)
-		if werr != nil {
-			return fmt.Errorf("getting gmail sync watermark: %w", werr)
-		}
-		if maxTS == 0 {
-			return nil // no synced mail yet — retry initialization next run
-		}
-		if serr := p.db.SetIdeasEmailFloor(acct.ID, maxTS); serr != nil {
-			return fmt.Errorf("initializing ideas email floor: %w", serr)
-		}
-		p.logf("ideas: email account %d floor initialized at %v, no backfill", acct.ID, maxTS)
-		return nil
+		return p.initEmailFloor(acct)
 	}
 
 	var beforeTS float64
@@ -253,57 +356,35 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		return nil
 	}
 
-	threads := groupThreads(msgs)
-	block, tags := renderEmailBlock(acct.ID, threads, p.maxPromptChars())
+	block, tags := renderEmailBlock(acct.ID, groupThreads(msgs), p.maxPromptChars())
+	minTS, maxTS, rendered := renderedEmailWindow(acct.ID, msgs, tags)
+	if !rendered {
+		// The oldest thread alone outgrows the whole prompt budget, so this
+		// pass has nothing to show the model and nothing it may claim. Leave
+		// the floor where it is and say why: the window is retried next run,
+		// and the operator can see that ideas.max_prompt_chars is too small
+		// for it rather than watching the material disappear.
+		p.logf("ideas: email account %d: prompt budget fits no thread, nothing mined (floor unchanged)", acct.ID)
+		return nil
+	}
 
-	tmpl, _ := p.getPrompt("ideas.digest_email")
-	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
-
-	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "ideas.digest_email"), system, block, "")
-	p.accumulateUsage(usage)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", block, tags)
 	if err != nil {
-		return fmt.Errorf("generating email digest: %w", err)
+		return err
 	}
 
-	raw, err := prompts.ExtractJSONObject(reply)
-	if err != nil {
-		return fmt.Errorf("extracting email digest JSON: %w", err)
-	}
-	var parsed streamTopics
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return fmt.Errorf("parsing email digest JSON: %w", err)
-	}
-	if parsed.Topics == nil {
-		return fmt.Errorf("email digest reply has no \"topics\" key")
-	}
-	topics := validateRefs(*parsed.Topics, tags)
-	topicsJSON, err := json.Marshal(topics)
-	if err != nil {
-		return fmt.Errorf("marshaling email digest topics: %w", err)
-	}
-
-	minTS, maxTS := msgs[0].TSUnix, msgs[0].TSUnix
-	for _, m := range msgs {
-		if m.TSUnix < minTS {
-			minTS = m.TSUnix
-		}
-		if m.TSUnix > maxTS {
-			maxTS = m.TSUnix
-		}
-	}
-
-	_, err = p.db.InsertStreamDigest(db.StreamDigest{
+	if err := p.insertStreamTopics(db.StreamDigest{
 		Source:     "gmail",
 		AccountID:  acct.ID,
 		Scope:      "",
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
-		TopicsJSON: string(topicsJSON),
-	})
-	if err != nil {
-		return fmt.Errorf("inserting stream digest: %w", err)
+	}, topics, fmt.Sprintf("email account %d", acct.ID)); err != nil {
+		return err
 	}
 
+	// maxTS is the newest RENDERED message, never the newest loaded one: a
+	// thread the budget dropped stays above the floor and is mined next run.
 	if err := p.db.SetIdeasEmailFloor(acct.ID, maxTS); err != nil {
 		return fmt.Errorf("advancing ideas email floor: %w", err)
 	}
