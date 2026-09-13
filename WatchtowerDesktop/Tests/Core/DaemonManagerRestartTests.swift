@@ -67,4 +67,67 @@ final class DaemonManagerRestartTests: XCTestCase {
             DaemonManager.startFailureMessage(status: 1, stderr: "boom")
         )
     }
+
+    func testCLINotFoundHasAMessage() {
+        XCTAssertFalse((DaemonRestartError.cliNotFound.errorDescription ?? "").isEmpty)
+    }
+}
+
+// MARK: - livePID(atPath:)
+
+/// `livePID` is the parsing routine `restart()`'s pid wait actually depends
+/// on (via `activeWorkspaceDaemonPID`, scoped to the active workspace only —
+/// F1 fix: the previous broad, all-workspaces scan could see a stale pid in
+/// an unrelated worktree workspace and spin the full `restartStopGrace` for
+/// nothing). Pinned here against a temp file, no `Constants.databasePath`
+/// involved.
+final class DaemonManagerLivePIDTests: XCTestCase {
+    private var tempDir: URL!
+
+    override func setUpWithError() throws {
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dm-livepid-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let tempDir { try? FileManager.default.removeItem(at: tempDir) }
+    }
+
+    private func writePIDFile(_ contents: String) throws -> String {
+        let path = tempDir.appendingPathComponent("daemon.pid").path
+        try Data(contents.utf8).write(to: URL(fileURLWithPath: path))
+        return path
+    }
+
+    func testLiveProcessInPIDTimestampFormatReturnsThePid() throws {
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        let path = try writePIDFile("\(myPid) 1234567890")
+
+        XCTAssertEqual(DaemonManager.livePID(atPath: path), myPid)
+    }
+
+    func testDeadProcessReturnsNil() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "exit 0"]
+        try process.run()
+        process.waitUntilExit()
+        let deadPid = process.processIdentifier
+
+        let path = try writePIDFile("\(deadPid)")
+
+        XCTAssertNil(DaemonManager.livePID(atPath: path))
+    }
+
+    func testMissingFileReturnsNil() {
+        let path = tempDir.appendingPathComponent("daemon.pid").path
+        XCTAssertNil(DaemonManager.livePID(atPath: path))
+    }
+
+    func testGarbageContentsReturnsNil() throws {
+        let path = try writePIDFile("not-a-pid")
+
+        XCTAssertNil(DaemonManager.livePID(atPath: path))
+    }
 }

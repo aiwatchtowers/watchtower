@@ -13,6 +13,9 @@ package enum DaemonRestartError: LocalizedError, Equatable {
     case stopTimedOut(pid: pid_t?)
     /// `sync --daemon --detach` itself exited non-zero.
     case startFailed(status: Int32, stderr: String)
+    /// No `watchtower` binary was resolvable at all — `restart()` did
+    /// nothing, which must not read as a quiet success.
+    case cliNotFound
 
     package var errorDescription: String? {
         switch self {
@@ -22,6 +25,8 @@ package enum DaemonRestartError: LocalizedError, Equatable {
             return "Daemon restart: \(who) did not stop within \(graceSeconds)s; refusing to start a second daemon"
         case let .startFailed(status, stderr):
             return DaemonManager.startFailureMessage(status: status, stderr: stderr)
+        case .cliNotFound:
+            return "watchtower binary not found in PATH"
         }
     }
 }
@@ -223,7 +228,9 @@ package final class DaemonManager {
     /// once the pid is confirmed dead, and `.stopTimedOut` is thrown instead
     /// of attempted if it never dies.
     package nonisolated static func restart() async throws {
-        guard let path = Constants.findCLIPath() else { return }
+        guard let path = Constants.findCLIPath() else {
+            throw DaemonRestartError.cliNotFound
+        }
 
         var stopStatus: Int32 = 1
         do {
@@ -234,12 +241,12 @@ package final class DaemonManager {
 
         if stopStatus != 0 {
             let outcome = await waitForPidDeath(
-                isAlive: isDaemonRunning,
+                isAlive: { activeWorkspaceDaemonPID() != nil },
                 step: restartPollStep,
                 deadline: restartStopGrace
             )
             if outcome == .timedOut {
-                throw DaemonRestartError.stopTimedOut(pid: runningDaemonPID())
+                throw DaemonRestartError.stopTimedOut(pid: activeWorkspaceDaemonPID())
             }
         }
 
@@ -340,12 +347,31 @@ package final class DaemonManager {
         runningDaemonPID() != nil
     }
 
+    /// Reads a `daemon.pid` file (`"PID"` or `"PID TIMESTAMP"`) and confirms
+    /// liveness via `kill(pid, 0)`. The one parsing routine shared by the
+    /// broad, all-workspaces scan (`runningDaemonPID`) and the active-workspace-
+    /// only lookup `restart()` actually needs (`activeWorkspaceDaemonPID`) —
+    /// factored out so a test can pin it against a temp file directly, without
+    /// touching `Constants.databasePath`.
+    nonisolated static func livePID(atPath pidPath: String) -> pid_t? {
+        guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+
+        // PID file may contain "PID TIMESTAMP" format
+        let pidComponent = pidStr.components(separatedBy: " ").first ?? pidStr
+        guard let pid = pid_t(pidComponent) else { return nil }
+
+        return kill(pid, 0) == 0 ? pid : nil
+    }
+
     /// Scans every workspace's `daemon.pid` for a live process (not scoped to
     /// the active workspace, unlike `readSyncProgress` — a daemon can be
-    /// running against ANY workspace and must still block `restart()` from
-    /// starting a second one). Returns the pid of the first live one found,
-    /// for `.stopTimedOut`'s diagnostic; `isDaemonRunning()` just asks
-    /// whether this is nil.
+    /// running against ANY workspace and must still count for the broad
+    /// "is any daemon alive" question `isDaemonRunning()`/`checkDaemonRunning()`
+    /// ask). Returns the pid of the first live one found. `restart()` itself
+    /// does NOT use this — see `activeWorkspaceDaemonPID()` — a stale pid file
+    /// in an unrelated workspace must never make `restart()` wait out the
+    /// whole `restartStopGrace` for a daemon it was never trying to stop.
     nonisolated private static func runningDaemonPID() -> pid_t? {
         let dataPath = Constants.databasePath
         let fm = FileManager.default
@@ -354,20 +380,30 @@ package final class DaemonManager {
 
         for dir in contents {
             guard !dir.hasPrefix(".") else { continue }
-            let pidPath = "\(dataPath)/\(dir)/daemon.pid"
-            guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines) else { continue }
-
-            // PID file may contain "PID TIMESTAMP" format
-            let pidComponent = pidStr.components(separatedBy: " ").first ?? pidStr
-            guard let pid = pid_t(pidComponent) else { continue }
-
-            if kill(pid, 0) == 0 {
+            if let pid = livePID(atPath: "\(dataPath)/\(dir)/daemon.pid") {
                 return pid
             }
         }
 
         return nil
+    }
+
+    /// The active workspace's own `daemon.pid` — what `sync stop`/`sync
+    /// --daemon --detach` actually operate on (`cmd/sync.go`'s
+    /// `pidFilePath(cfg)`). This is what `restart()`'s wait loop must poll:
+    /// the broad `runningDaemonPID()` scan sees every workspace directory
+    /// (several, on a machine with worktree-derived workspaces), and a
+    /// stale/reused pid in an unrelated one would otherwise make `restart()`
+    /// spin out the full `restartStopGrace` and refuse to bring the actual
+    /// daemon back. Falls back to the broad scan (logged) only when the
+    /// active workspace itself cannot be resolved — still safer than
+    /// skipping the liveness check outright.
+    nonisolated private static func activeWorkspaceDaemonPID() -> pid_t? {
+        guard let dir = Constants.activeWorkspaceDir() else {
+            NSLog("DaemonManager: restart: active workspace is ambiguous; falling back to a scan of every workspace's daemon.pid")
+            return runningDaemonPID()
+        }
+        return livePID(atPath: "\(dir)/daemon.pid")
     }
 
     nonisolated private static func findWatchtowerSync() -> String? {
