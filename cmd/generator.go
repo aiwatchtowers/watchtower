@@ -49,9 +49,15 @@ func cliGenerator(cfg *config.Config) digest.Generator {
 
 // cliPooledGenerator creates a PooledGenerator backed by a concurrency pool.
 // Each call creates a fresh session (--no-session-persistence / --ephemeral).
-// The pool only limits how many AI processes run in parallel.
+// The pool only limits how many AI processes run in parallel. The raw
+// generator is wrapped with a wall-clock timeout (H8) so a hung claude/codex
+// subprocess cannot freeze the daemon's sequential cycle forever while
+// holding sync.lock — this path is shared by the daemon and one-shot
+// `watchtower sync`, both unattended. cliGenerator (interactive commands
+// like ask/chat) deliberately does NOT get this wrapper: those calls are
+// already bounded by the user.
 func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generator, func()) {
-	rawGen := cliGenerator(cfg)
+	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {
 		poolSize = config.DefaultAIWorkers
