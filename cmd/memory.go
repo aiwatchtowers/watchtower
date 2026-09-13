@@ -122,7 +122,7 @@ func init() {
 		memoryDigestCompareCmd, memoryRetrieveCompareCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
-	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be created without writing")
+	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be CREATED without writing (alias stitches and skips are not previewed)")
 	memoryDigestCompareCmd.Flags().Duration("since", 7*24*time.Hour, "compare legacy channel digests written within this lookback")
 	memoryDigestCompareCmd.Flags().String("out", "docs/specs/memory-digest-compare-report.md", "path to write the markdown compare report")
 	memoryRetrieveCompareCmd.Flags().Duration("since", 24*time.Hour, "briefing surface: compare notable revisions since this lookback")
@@ -560,8 +560,13 @@ func runMemorySeed(cmd *cobra.Command, _ []string) error {
 		printed++
 	}
 	if printed == 0 {
-		fmt.Fprintln(out, "Nothing to seed.")
+		fmt.Fprintln(out, "Nothing to create.")
 	}
+	// The real pass also appends missing aliases to pages that already exist
+	// (identity stitching) and stands down on candidates spanning two pages.
+	// Previewing those needs the vault, which the dry run deliberately does not
+	// open, so say plainly that this list covers creates only.
+	fmt.Fprintln(out, "(Creates only — alias stitches onto existing pages and skips are not previewed.)")
 	return nil
 }
 

@@ -2,7 +2,10 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -714,4 +717,43 @@ func TestSeedStitchDoesNotAbortPipelineRun(t *testing.T) {
 	stats, err := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf).Run(context.Background())
 	require.NoError(t, err, "a stitched candidate must not abort the run")
 	assert.Equal(t, 1, stats.Seeded, "the channel is created; the person is stitched, not counted")
+}
+
+// TestSeedGitFailureIndexesNothing pins the validate-first ordering's half of
+// the C2 fix: the index is written only AFTER the vault commit succeeds, so a
+// failed git write leaves the index exactly as it was. (The reverse — git
+// without an index row — is Reconcile's self-healing Added case, and is the
+// deliberate cost of not holding the SQLite write lock across go-git's
+// whole-worktree staging walk.)
+func TestSeedGitFailureIndexesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	v, d := newTestVault(t), newTestDB(t)
+	seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+	seedChannel(t, d, "1:C1GEN", "general", "", "")
+	seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+	repo := openTestRepo(t, v.path)
+	commitsBefore := commitCount(t, repo)
+	nodesBefore, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	require.Empty(t, nodesBefore)
+
+	// Make the node write fail: entities/ becomes read-only for its owner.
+	entities := filepath.Join(v.path, "entities")
+	require.NoError(t, os.Chmod(entities, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(entities, 0o700) })
+
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
+	require.Error(t, err, "an unwritable vault must fail the pass")
+	assert.Contains(t, err.Error(), "memory: write node", "the git write is what failed")
+	assert.Zero(t, created)
+
+	nodesAfter, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	assert.Empty(t, nodesAfter, "nothing indexed when the vault write failed")
+	aliases, err := d.LookupMemoryAlias("1:U123")
+	assert.ErrorIs(t, err, sql.ErrNoRows, "no alias row leaked (got %q)", aliases)
+	assert.Equal(t, commitsBefore, commitCount(t, repo), "no commit")
 }

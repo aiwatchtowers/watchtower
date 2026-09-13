@@ -159,7 +159,7 @@ func planSeedWrites(v *Vault, database *db.DB, candidates []seedCandidate, logf 
 			if len(unowned) == 0 {
 				continue // already seeded, with every alias — idempotency
 			}
-			idx, err := stageSeedUpdate(v, staged, &plan.write, owners[0])
+			idx, fromVault, err := stageSeedUpdate(v, staged, &plan.write, owners[0])
 			if err != nil {
 				// The index names a page the vault cannot produce. One broken
 				// file must not brick the seed step (the Reconcile quarantine
@@ -172,7 +172,12 @@ func planSeedWrites(v *Vault, database *db.DB, candidates []seedCandidate, logf 
 			for _, a := range unowned {
 				claimed[strings.ToLower(a)] = owners[0]
 			}
-			plan.stitched++
+			if fromVault {
+				// Count only pages that PRE-EXISTED this run. Appending an
+				// alias to a page minted moments ago (a second candidate
+				// resolving to it through claimed) is part of creating it.
+				plan.stitched++
+			}
 		default:
 			n := Node{
 				ID:      NewID("entity"),
@@ -195,17 +200,34 @@ func planSeedWrites(v *Vault, database *db.DB, candidates []seedCandidate, logf 
 	return plan, nil
 }
 
-// writeSeedNodes mirrors the write set into the SQLite index and commits it to
-// the vault — index FIRST, inside one transaction, so a failed git write rolls
-// the index back: a node is never in git history without being in the index
-// for the same run, and a failed run leaves neither.
+// writeSeedNodes validates the write set's aliases against the index, commits
+// it to the vault, and then mirrors it into the index in one short transaction.
 //
-// Every DB read the index rows need is hoisted out of the transaction
-// (prepareIndexNode) because the SQLite handle is single-connection (db.Open
-// sets SetMaxOpenConns(1)) and a read issued while the transaction holds that
-// connection would deadlock. The one residual window is a Commit failure after
-// a successful git commit; Reconcile heals it by indexing the file next run.
+// Validate-FIRST, not index-first: **a validate-first run never creates a
+// UNIQUE collision** — after planSeedWrites every alias either belongs to the
+// node that carries it or belongs to nobody, so validateSeedAliases is an
+// internal-consistency assertion that aborts with NOTHING written if the plan
+// and the index ever disagree. Wrapping the git commit inside the index
+// transaction instead would be a stronger guarantee on paper and a worse one in
+// practice: WriteNodes runs a go-git `wt.Add` per node, each of which walks the
+// whole worktree, so on a large vault the SQLite write lock would be held for
+// minutes — and the pool is one connection with a 5 s busy_timeout, so every
+// concurrent Desktop write would fail with "database is locked".
+//
+// The residual window is therefore a node in git whose index write failed; the
+// next Reconcile picks it up as Added (it is a file with no index row), which is
+// exactly the self-healing path MEM-02 already guarantees. Every DB read the
+// index rows need is hoisted out of the transaction (prepareIndexNode) because
+// the SQLite handle is single-connection (db.Open sets SetMaxOpenConns(1)) and a
+// read issued while the transaction holds that connection would deadlock.
 func writeSeedNodes(v *Vault, database *db.DB, write []Node, msg CommitMsg) error {
+	if err := validateSeedAliases(database, write); err != nil {
+		return err
+	}
+	if _, err := v.WriteNodes(write, msg); err != nil {
+		return err
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	mem := newOwnerEditedMemo(v)
 	prepared := make([]preparedIndexNode, len(write))
@@ -227,11 +249,37 @@ func writeSeedNodes(v *Vault, database *db.DB, write []Node, msg CommitMsg) erro
 			return err
 		}
 	}
-	if _, err := v.WriteNodes(write, msg); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("memory: seed index commit: %w", err)
+	}
+	return nil
+}
+
+// validateSeedAliases checks that every alias of every node about to be written
+// is free or already owned by that same node — both across the write set and
+// against the index. A violation is unreachable after planSeedWrites, so it is
+// reported as an internal inconsistency and aborts the pass before anything is
+// written, rather than surfacing later as a UNIQUE constraint failure with a
+// duplicate page already committed to git (audit C2).
+func validateSeedAliases(database *db.DB, write []Node) error {
+	claimant := make(map[string]string) // lower(alias) -> node id claiming it here
+	for _, n := range write {
+		for _, a := range n.Aliases {
+			key := strings.ToLower(a)
+			if other, ok := claimant[key]; ok && other != n.ID {
+				return fmt.Errorf("memory: seed: alias %q claimed by both %s and %s", a, other, n.ID)
+			}
+			claimant[key] = n.ID
+
+			owner, err := database.LookupMemoryAlias(a)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+			case err != nil:
+				return fmt.Errorf("memory: seed validate %q: %w", a, err)
+			case owner != n.ID:
+				return fmt.Errorf("memory: seed: alias %q already belongs to %s, not %s", a, owner, n.ID)
+			}
+		}
 	}
 	return nil
 }
@@ -241,24 +289,26 @@ func writeSeedNodes(v *Vault, database *db.DB, write []Node, msg CommitMsg) erro
 // owning node ids in first-seen order plus the aliases nobody owns yet (in
 // the candidate's own casing, deduplicated case-insensitively so a candidate
 // carrying two spellings of one alias cannot collide with itself).
-func resolveCandidate(database *db.DB, claimed map[string]string, aliases []string) (owners, unowned []string, err error) {
+func resolveCandidate(database *db.DB, claimed map[string]string, aliases []string) ([]string, []string, error) {
+	var owners, unowned []string
 	seenOwner := make(map[string]bool, len(aliases))
 	seenFree := make(map[string]bool, len(aliases))
 	for _, a := range aliases {
 		key := strings.ToLower(a)
 		id, ok := claimed[key]
 		if !ok {
-			id, err = database.LookupMemoryAlias(a)
+			var lookupErr error
+			id, lookupErr = database.LookupMemoryAlias(a)
 			switch {
-			case err == nil:
-			case errors.Is(err, sql.ErrNoRows):
+			case lookupErr == nil:
+			case errors.Is(lookupErr, sql.ErrNoRows):
 				if !seenFree[key] {
 					seenFree[key] = true
 					unowned = append(unowned, a)
 				}
 				continue
 			default:
-				return nil, nil, fmt.Errorf("memory: seed lookup %q: %w", a, err)
+				return nil, nil, fmt.Errorf("memory: seed lookup %q: %w", a, lookupErr)
 			}
 		}
 		if !seenOwner[id] {
@@ -271,17 +321,20 @@ func resolveCandidate(database *db.DB, claimed map[string]string, aliases []stri
 
 // stageSeedUpdate returns the index in write of the node to stitch aliases
 // onto, reading it from the vault the first time this run touches it.
-func stageSeedUpdate(v *Vault, staged map[string]int, write *[]Node, nodeID string) (int, error) {
+// fromVault reports whether this call did that read — false for a node already
+// in the write set, which is how the caller tells a stitch onto a pre-existing
+// page from one onto a page minted earlier in the same run.
+func stageSeedUpdate(v *Vault, staged map[string]int, write *[]Node, nodeID string) (idx int, fromVault bool, err error) {
 	if idx, ok := staged[nodeID]; ok {
-		return idx, nil
+		return idx, false, nil
 	}
 	n, err := v.ReadNode(nodeID)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	staged[nodeID] = len(*write)
 	*write = append(*write, n)
-	return staged[nodeID], nil
+	return staged[nodeID], true, nil
 }
 
 // entitySkeletonBody renders the v1 entity template: H1 plus the What /
