@@ -140,17 +140,52 @@ func TestTierForSource_EveryGenerateCallIsTagged(t *testing.T) {
 
 	// Pass 2: find every Generate(...) call and classify its tag.
 	var failures []string
+	totalCalls := 0
 	for _, f := range files {
 		if skipGenerateCallFiles[f.relPath] {
 			continue
 		}
-		failures = append(failures, sc.scanFile(f)...)
+		fileFailures, fileCalls := sc.scanFile(f)
+		failures = append(failures, fileFailures...)
+		totalCalls += fileCalls
+	}
+
+	// Coverage floor: a scan that silently walked zero files (wrong roots, a
+	// repoRoot() miscalculation, internal/ or cmd/ moved in a refactor) finds
+	// zero Generate calls and therefore reports zero failures — passing for
+	// exactly the wrong reason. Assert a lower bound on what the walk
+	// actually found, so a collapse in coverage fails loudly instead of
+	// reading as "no problems." See minGoFilesWalked/minGenerateCallsClassified.
+	if len(files) < minGoFilesWalked {
+		t.Fatalf("walked only %d non-test .go files under internal/ and cmd/, want at least %d — the scan may be looking at the wrong roots (repoRoot() resolved to %q)", len(files), minGoFilesWalked, root)
+	}
+	if totalCalls < minGenerateCallsClassified {
+		t.Fatalf("classified only %d Generate call sites, want at least %d — a scan that finds too few calls is as broken as one that finds none: it may be silently missing whole packages", totalCalls, minGenerateCallsClassified)
 	}
 
 	for _, f := range failures {
 		t.Error(f)
 	}
+	t.Logf("tier scan: walked %d files, classified %d Generate call sites", len(files), totalCalls)
 }
+
+// minGoFilesWalked and minGenerateCallsClassified are coverage floors, not
+// exact counts: at the time this test was written, walking internal/ and
+// cmd/ found 376 non-test .go files and classified 47 Generate call sites
+// (logged by the test itself on every run — t.Logf above). Both floors sit
+// comfortably below those measured numbers (300 and 30) so ordinary code
+// growth (a new pipeline, a new prompt) never trips them, but a walk that
+// silently covers nothing or almost nothing — wrong roots, a moved
+// directory, a broken repoRoot() — fails loudly instead of reporting a false
+// "no problems found" (exactly what happened pointing the roots at docs/
+// during this test's own review: 0 files, 0 calls, PASS in 0.01s). Raise
+// these deliberately (with a note here, and the new measured numbers) once
+// real growth pushes the logged counts close to the floor; never lower them
+// just to make a failing run pass.
+const (
+	minGoFilesWalked           = 300
+	minGenerateCallsClassified = 30
+)
 
 // repoRoot resolves the repository root relative to this test file, so the
 // scan works regardless of the working directory `go test` was invoked from.
@@ -375,10 +410,13 @@ func extractTagExpr(ctxArg ast.Expr, pkg string, localVars map[string]ast.Expr) 
 // for Generate(ctx, systemPrompt, userMessage, sessionID) calls (exactly the
 // digest.Generator signature — verified against the concrete Generate
 // implementations, no other 4-arg "Generate" method exists in the repo) and
-// classifying each one. Returns human-readable failure strings; empty means
-// every call in this file passed.
-func (sc *sourceScanner) scanFile(f scannedFile) []string {
+// classifying each one. Returns human-readable failure strings (empty means
+// every call in this file passed) plus the number of Generate calls found in
+// this file, whether or not they passed — the caller uses that count for the
+// coverage floor (see minGenerateCallsClassified).
+func (sc *sourceScanner) scanFile(f scannedFile) ([]string, int) {
 	var failures []string
+	found := 0
 	for _, decl := range f.file.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Body == nil {
@@ -401,6 +439,7 @@ func (sc *sourceScanner) scanFile(f scannedFile) []string {
 				if !ok || sel.Sel.Name != "Generate" || len(stmt.Args) != 4 {
 					return true
 				}
+				found++
 				pos := f.fset.Position(stmt.Pos())
 				loc := f.relPath + ":" + strconv.Itoa(pos.Line)
 				tagExpr, tagged := extractTagExpr(stmt.Args[0], f.pkg, localVars)
@@ -425,7 +464,7 @@ func (sc *sourceScanner) scanFile(f scannedFile) []string {
 			return true
 		})
 	}
-	return failures
+	return failures, found
 }
 
 func seenInAllowlist(tag string) bool {
