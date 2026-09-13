@@ -1479,7 +1479,7 @@ func TestPersistBatchResults_BlanksInventedMessageRefs(t *testing.T) {
 		},
 	}}}}
 
-	saved := p.persistBatchResults(batch, results, nil, 1, &batchAggregator{})
+	saved, _ := p.persistBatchResults(batch, results, nil, 1, &batchAggregator{})
 	require.Equal(t, 1, saved)
 
 	topics, err := database.ListDigestTopicIdeasAfter(0, 0, 0)

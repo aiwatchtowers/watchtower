@@ -38,6 +38,26 @@ func (db *DB) UpsertChannel(ch Channel) error {
 	return nil
 }
 
+// SetChannelDigestConsideredTS records that everything in the channel up to
+// tsUnix has been rendered into a channel-digest AI call that returned
+// successfully, whether or not the model chose to write a digest for it. The
+// write is monotone — a lower stamp never moves the mark backwards, so batches
+// running concurrently cannot undo each other. UpsertChannel lists its updated
+// columns explicitly, so a later Slack sync never clears this.
+//
+// Truncated to whole seconds to match messages.ts_unix, which is a generated
+// column holding only the whole-second part of the Slack ts.
+func (db *DB) SetChannelDigestConsideredTS(channelID string, tsUnix float64) error {
+	_, err := db.Exec(`
+		UPDATE channels SET digest_considered_ts = ?
+		WHERE id = ? AND (digest_considered_ts IS NULL OR digest_considered_ts < ?)`,
+		int64(tsUnix), channelID, int64(tsUnix))
+	if err != nil {
+		return fmt.Errorf("stamping digest considered ts for %s: %w", channelID, err)
+	}
+	return nil
+}
+
 // GetChannels returns channels matching the given filter.
 func (db *DB) GetChannels(filter ChannelFilter) ([]Channel, error) {
 	query := `SELECT id, name, type, topic, purpose, is_archived, is_member, dm_user_id, num_members, last_read, updated_at FROM channels`

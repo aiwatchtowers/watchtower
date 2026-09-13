@@ -386,12 +386,17 @@ type ChannelDigestCandidate struct {
 	// LastDigestTo is the channel's own latest channel-digest period_to,
 	// or 0 when the channel has never been digested.
 	LastDigestTo float64
+	// ConsideredTS is channels.digest_considered_ts — the newest message the
+	// channel has had rendered into a successful AI call, or 0 when never.
+	// A channel the model keeps declining advances this and not LastDigestTo.
+	ConsideredTS float64
 }
 
 // ChannelsWithUndigestedMessages returns one candidate per channel whose newest
-// message is later than that channel's OWN channel-digest high-water mark
-// (MAX(digests.period_to) for type 'channel'). A channel that has never been
-// digested is compared against neverDigestedSince instead — the first-run
+// message is later than that channel's OWN high-water mark — the later of
+// MAX(digests.period_to) for type 'channel' ("digested through") and
+// channels.digest_considered_ts ("considered through"). A channel with neither
+// is compared against neverDigestedSince instead — the first-run
 // initial-history lookback.
 //
 // This is the per-channel replacement for selecting channels against one global
@@ -399,9 +404,13 @@ type ChannelDigestCandidate struct {
 // batch budget, or was skipped by the cooldown keeps its own older high-water
 // mark, so its messages are offered again next cycle instead of falling below a
 // window start that some other channel's success moved.
+//
+// The HAVING clause mirrors digest.channelDigestSince minus its fast-forward
+// floor; the floor only ever raises the window start, so this pre-filter can
+// never drop a channel the caller would keep.
 func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]ChannelDigestCandidate, error) {
 	rows, err := db.Query(`
-		SELECT m.channel_id, MAX(m.ts_unix), COALESCE(d.period_to, 0)
+		SELECT m.channel_id, MAX(m.ts_unix), COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)
 		FROM messages m
 		LEFT JOIN (
 			SELECT channel_id, MAX(period_to) AS period_to
@@ -409,8 +418,12 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]Chan
 			WHERE type = 'channel'
 			GROUP BY channel_id
 		) d ON d.channel_id = m.channel_id
-		GROUP BY m.channel_id, d.period_to
-		HAVING MAX(m.ts_unix) > CASE WHEN COALESCE(d.period_to, 0) > 0 THEN d.period_to ELSE ? END
+		LEFT JOIN channels c ON c.id = m.channel_id
+		GROUP BY m.channel_id, d.period_to, c.digest_considered_ts
+		HAVING MAX(m.ts_unix) > CASE
+			WHEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)) > 0
+			THEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0))
+			ELSE ? END
 		ORDER BY m.channel_id`, neverDigestedSince)
 	if err != nil {
 		return nil, fmt.Errorf("querying channels with undigested messages: %w", err)
@@ -420,7 +433,7 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]Chan
 	var candidates []ChannelDigestCandidate
 	for rows.Next() {
 		var c ChannelDigestCandidate
-		if err := rows.Scan(&c.ChannelID, &c.NewestMessageTS, &c.LastDigestTo); err != nil {
+		if err := rows.Scan(&c.ChannelID, &c.NewestMessageTS, &c.LastDigestTo, &c.ConsideredTS); err != nil {
 			return nil, fmt.Errorf("scanning channel digest candidate: %w", err)
 		}
 		candidates = append(candidates, c)

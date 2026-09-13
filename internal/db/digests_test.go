@@ -361,6 +361,67 @@ func TestChannelsWithUndigestedMessages(t *testing.T) {
 	assert.Equal(t, "C3", candidates[1].ChannelID)
 }
 
+// TestChannelsWithUndigestedMessages_ConsideredMark pins that the
+// considered-through mark takes a channel out of the candidate set exactly like
+// a digest would. A channel the model declines writes no digests row, so
+// without this it would be re-offered forever.
+func TestChannelsWithUndigestedMessages_ConsideredMark(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "declined", Type: "public"}))
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'msg')")
+	require.NoError(t, err)
+
+	candidates, err := db.ChannelsWithUndigestedMessages(1000000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 0.0, candidates[0].ConsideredTS, "never considered")
+
+	// Considered through the message → no longer a candidate, with no digest row.
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000000))
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000)
+	require.NoError(t, err)
+	assert.Empty(t, candidates)
+
+	// New traffic past the mark brings it back, carrying the mark.
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '3000000.000001', 'U1', 'newer')")
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 2000000.0, candidates[0].ConsideredTS)
+	assert.Equal(t, 0.0, candidates[0].LastDigestTo, "declined channels never get a digest row")
+}
+
+func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	consideredTS := func() any {
+		t.Helper()
+		var ts any
+		require.NoError(t, db.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = 'C1'`).Scan(&ts))
+		return ts
+	}
+	assert.Nil(t, consideredTS(), "never considered stays NULL")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000))
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 1000))
+	assert.Equal(t, int64(2000), consideredTS(), "a lower stamp must not move the mark backwards")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 3000))
+	assert.Equal(t, int64(3000), consideredTS())
+
+	// A later Slack sync must not clear the mark.
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general-renamed", Type: "public", Topic: "t"}))
+	assert.Equal(t, int64(3000), consideredTS(), "UpsertChannel must not clear the digest considered mark")
+}
+
 func TestDigestTypeConstraint(t *testing.T) {
 	db, err := Open(":memory:")
 	require.NoError(t, err)

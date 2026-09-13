@@ -507,7 +507,7 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 	windows := make([]channelWindow, 0, len(candidates))
 	skippedByFloor := 0
 	for _, c := range candidates {
-		since := channelDigestSince(c.LastDigestTo, firstRunSince, fastForwardTS)
+		since := channelDigestSince(c, firstRunSince, fastForwardTS)
 		if c.NewestMessageTS <= since {
 			// The fast-forward floor sits past this channel's newest message:
 			// the backlog it accrued while the feature was off stays undigested
@@ -522,11 +522,43 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 	return windows, nil
 }
 
-// channelDigestSince is the window start for one channel: its own digest
-// high-water mark, the first-run lookback when it has never been digested,
-// raised to the global FEAT-03 fast-forward floor when that floor is later.
-func channelDigestSince(lastDigestTo, firstRunSince, fastForwardTS float64) float64 {
-	since := lastDigestTo
+// stampConsidered records that everything in this entry reached a channel-digest
+// AI call that returned, so the channel's next window starts after it even when
+// the model wrote no digest for it. The mark is the newest message in
+// entry.msgs — what was actually rendered, never what was merely available:
+// buildBatchEntry hands over a load trimmed to the row cap, and the bot-heavy
+// path hands over only the extracted human context.
+//
+// Best-effort: a failed stamp costs a re-render next cycle, never data, so it
+// must not fail the channel's digest.
+func (p *Pipeline) stampConsidered(e *batchEntry) {
+	var newest float64
+	for _, m := range e.msgs {
+		if m.TSUnix > newest {
+			newest = m.TSUnix
+		}
+	}
+	if newest <= 0 {
+		return
+	}
+	if err := p.db.SetChannelDigestConsideredTS(e.channelID, newest); err != nil {
+		p.logger.Printf("digest: warning: stamping considered mark for #%s: %v", e.channelName, err)
+	}
+}
+
+// channelDigestSince is the window start for one channel: the later of what it
+// was digested through (digests.period_to) and what it was merely considered
+// through (channels.digest_considered_ts — material the model saw and chose not
+// to write a digest about), falling back to the first-run lookback when it has
+// neither, and raised to the global FEAT-03 fast-forward floor when that floor
+// is later.
+//
+// Both marks are needed. Without period_to a digested channel would re-digest
+// itself; without digest_considered_ts a channel the model keeps declining
+// never advances at all, and once its widening backlog outgrows the per-channel
+// message cap the part that no longer fits can never reach a prompt again.
+func channelDigestSince(c db.ChannelDigestCandidate, firstRunSince, fastForwardTS float64) float64 {
+	since := max(c.LastDigestTo, c.ConsideredTS)
 	if since <= 0 {
 		since = firstRunSince
 	}
@@ -652,6 +684,26 @@ func (p *Pipeline) buildBatchEntries(windows []channelWindow, nowUnix float64) [
 	return entries
 }
 
+// trimPartialBoundarySecond drops the trailing messages sharing the newest
+// ts_unix from a message load that hit the row cap. messages.ts_unix has
+// whole-second resolution, so the considered-through mark stamped from these
+// messages cannot distinguish "up to and including second N" from "part of
+// second N": without the trim, siblings of the last message that did not fit
+// would be skipped when the next window starts at N. msgs must be oldest-first
+// and non-empty; a load where every row shares one second is returned whole
+// (nothing better is available, and an empty batch would stall the channel).
+func trimPartialBoundarySecond(msgs []db.Message) []db.Message {
+	last := msgs[len(msgs)-1].TSUnix
+	cut := len(msgs)
+	for cut > 0 && msgs[cut-1].TSUnix == last {
+		cut--
+	}
+	if cut == 0 {
+		return msgs
+	}
+	return msgs[:cut]
+}
+
 type batchEntryStatus int
 
 const (
@@ -663,14 +715,15 @@ const (
 
 func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry, batchEntryStatus) {
 	channelID := w.channelID
-	msgs, err := p.db.GetMessagesByTimeRange(channelID, w.since, nowUnix)
+	msgs, err := p.db.GetOldestMessagesByTimeRange(channelID, w.since, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error getting messages for %s: %v", channelID, err)
 		return batchEntry{}, batchEntrySkipError
 	}
 	if len(msgs) == db.DefaultTimeRangeLimit {
-		p.logger.Printf("digest: warning: #%s hit message limit (%d), digest may be based on partial data",
-			p.channelName(channelID), db.DefaultTimeRangeLimit)
+		msgs = trimPartialBoundarySecond(msgs)
+		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
+			p.channelName(channelID), db.DefaultTimeRangeLimit, len(msgs))
 	}
 
 	visible, botVisible := p.countVisibleMessages(msgs)
@@ -925,6 +978,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	agg.generated.Add(1)
 	p.totalMessageCount.Add(int64(len(e.msgs)))
 	p.updatePeriodBounds(sinceUnix, lastMsgTS)
+	p.stampConsidered(&e)
 
 	p.lastStepMu.Lock()
 	p.LastStepMessageCount = len(e.msgs)
@@ -977,15 +1031,26 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	p.lastStepMu.Unlock()
 
 	stepStart := time.Now()
-	results, usage, pv, err := p.generateBatchDigest(ctx, batch, nowUnix)
+	out, err := p.generateBatchDigest(ctx, batch, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error generating batch (%d channels): %v", len(batch), err)
 		agg.recordError(err)
 		agg.completed.Add(int32(len(batch)))
 		return
 	}
+	usage := out.usage
 
-	saved := p.persistBatchResults(batch, results, usage, pv, agg)
+	saved, storeFailed := p.persistBatchResults(batch, out.results, usage, out.promptVersion, agg)
+
+	// The call returned, so every channel it rendered was considered — including
+	// the ones the model chose to write nothing about, which is the whole point
+	// of the mark. A channel whose own digest failed to store is left alone so
+	// the next cycle retries it.
+	for _, e := range out.rendered {
+		if !storeFailed[e.channelID] {
+			p.stampConsidered(e)
+		}
+	}
 
 	if usage != nil {
 		agg.totalInput.Add(int64(usage.InputTokens))
@@ -1010,16 +1075,17 @@ func (p *Pipeline) processBatchEntry(ctx context.Context, batch []batchEntry, to
 	p.lastStepMu.Unlock()
 
 	p.logger.Printf("digest: batch: %d channels, %d results from AI, %d saved",
-		len(batch), len(results), saved)
+		len(batch), len(out.results), saved)
 }
 
 // persistBatchResults stores AI batch results back to the DB and returns the
-// number successfully saved. The first result carries the batch-level usage;
-// subsequent results pass nil to avoid double-counting tokens.
-func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, usage *Usage, promptVersion int, agg *batchAggregator) int {
+// number successfully saved plus the channels whose store failed. The first
+// result carries the batch-level usage; subsequent results pass nil to avoid
+// double-counting tokens.
+func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChannelResult, usage *Usage, promptVersion int, agg *batchAggregator) (saved int, storeFailed map[string]bool) {
 	lookup := newBatchEntryLookup(batch)
+	storeFailed = make(map[string]bool)
 
-	saved := 0
 	for rIdx, r := range results {
 		entry, ambiguous := lookup.resolve(r.ChannelID)
 		if entry == nil {
@@ -1037,9 +1103,11 @@ func (p *Pipeline) persistBatchResults(batch []batchEntry, results []BatchChanne
 		}
 		if p.persistOneBatchResult(entry, r, resultUsage, promptVersion, agg) {
 			saved++
+		} else {
+			storeFailed[entry.channelID] = true
 		}
 	}
-	return saved
+	return saved, storeFailed
 }
 
 // batchEntryLookup resolves an AI batch result's channel id back to the
@@ -1699,26 +1767,32 @@ func parseBatchDigestResult(raw string) ([]BatchChannelResult, error) {
 	return filtered, nil
 }
 
-// generateBatchDigest generates a single LLM call for multiple low-activity channels.
-// Returns per-channel results, combined usage, prompt version, and error.
-func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry, to float64) ([]BatchChannelResult, *Usage, int, error) {
-	// Each entry carries its own window start, so the batch header states the
-	// widest one and every channel block states its own.
-	fromStr := time.Unix(int64(earliestSince(entries)), 0).Local().Format("2006-01-02 15:04")
-	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02 15:04")
+// batchDigestOutput is one batch AI call's outcome. rendered names the entries
+// whose messages actually reached the prompt — the set the considered-through
+// mark may be stamped for, which is not the same as the set the model chose to
+// answer about.
+type batchDigestOutput struct {
+	results       []BatchChannelResult
+	rendered      []*batchEntry
+	usage         *Usage
+	promptVersion int
+}
 
+// renderBatchChannelBlocks formats one channel block per entry and reports the
+// entries that produced one. An entry whose messages all filter out renders
+// nothing and is therefore never reported as considered.
+func (p *Pipeline) renderBatchChannelBlocks(entries []batchEntry, toStr string) (blocks string, rendered []*batchEntry) {
 	var channelBlocks strings.Builder
-	var previousContexts strings.Builder
-	totalMsgs := 0
 
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		// Sort messages chronologically
 		sort.Slice(e.msgs, func(i, j int) bool { return e.msgs[i].TSUnix < e.msgs[j].TSUnix })
 
 		// Load reactions
 		tss := make([]string, len(e.msgs))
-		for i, m := range e.msgs {
-			tss[i] = m.TS
+		for j, m := range e.msgs {
+			tss[j] = m.TS
 		}
 		reactionMap, _ := p.db.GetReactionsForMessages(e.channelID, tss)
 
@@ -1743,20 +1817,28 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 		}
 		channelBlocks.WriteString(formatted)
 		channelBlocks.WriteString("\n")
-		totalMsgs += len(e.msgs)
+		rendered = append(rendered, e)
 	}
 
-	if totalMsgs == 0 {
-		return nil, nil, 0, fmt.Errorf("no visible messages in batch")
-	}
+	return channelBlocks.String(), rendered
+}
 
-	prevCtxNote := ""
-	if previousContexts.Len() > 0 {
-		prevCtxNote = previousContexts.String()
+// generateBatchDigest generates a single LLM call for multiple low-activity channels.
+func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry, to float64) (*batchDigestOutput, error) {
+	// Each entry carries its own window start, so the batch header states the
+	// widest one and every channel block states its own.
+	fromStr := time.Unix(int64(earliestSince(entries)), 0).Local().Format("2006-01-02 15:04")
+	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02 15:04")
+
+	channelBlocks, rendered := p.renderBatchChannelBlocks(entries, toStr)
+	if len(rendered) == 0 {
+		return nil, fmt.Errorf("no visible messages in batch")
 	}
 
 	tmpl, pv := p.getPrompt(prompts.DigestChannelBatch, channelBatchDigestPrompt)
-	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), prevCtxNote, channelBlocks.String())
+	// The 5th slot is the batch-level previous-context note; per-channel
+	// context is embedded in each channel block instead, so it is always empty.
+	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), "", channelBlocks)
 	if prefs := p.learnedPrefs(); prefs != "" {
 		fullPrompt = prefs + "\n\n" + fullPrompt
 	}
@@ -1765,11 +1847,14 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 
 	raw, usage, _, err := p.generator.Generate(WithSource(ctx, "digest.channel_batch"), systemPrompt, userMessage, "")
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("claude batch call failed: %w", err)
+		return nil, fmt.Errorf("claude batch call failed: %w", err)
 	}
 
 	results, err := parseBatchDigestResult(raw)
-	return results, usage, pv, err
+	if err != nil {
+		return nil, err
+	}
+	return &batchDigestOutput{results: results, rendered: rendered, usage: usage, promptVersion: pv}, nil
 }
 
 // isFirstRun checks if there are any existing channel digests in the DB.

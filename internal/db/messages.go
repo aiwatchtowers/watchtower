@@ -174,6 +174,35 @@ func (db *DB) GetMessagesByTimeRange(channelID string, from, to float64) ([]Mess
 	return scanMessages(rows)
 }
 
+// GetOldestMessagesByTimeRange returns messages in a channel within a Unix
+// timestamp range, OLDEST first, limited to DefaultTimeRangeLimit rows.
+//
+// The direction is load-bearing for the channel-digest window, its only
+// caller. That window starts at the channel's own watermark and runs to now, so
+// when a backlog exceeds the cap something has to be left out — and only a
+// remainder at the NEWER end can be reached on a later cycle, once the
+// watermark has advanced past what was rendered. Newest-first truncation
+// strands the older remainder permanently, because the watermark never moves
+// back over it. GetMessagesByTimeRange keeps its newest-first contract for the
+// chat context builder, which wants the most recent messages and advances no
+// watermark.
+func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64) ([]Message, error) {
+	rows, err := db.Query(`
+		SELECT channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, ts_unix, raw_json
+		FROM messages
+		WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?
+		ORDER BY ts_unix ASC
+		LIMIT ?`,
+		channelID, from, to, DefaultTimeRangeLimit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying oldest messages by time range: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessages(rows)
+}
+
 // CountMessagesByTimeRange returns the number of messages in a time range.
 func (db *DB) CountMessagesByTimeRange(from, to float64) (int, error) {
 	var count int
