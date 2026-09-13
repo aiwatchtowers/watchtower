@@ -2047,6 +2047,95 @@ func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err err
 	return engaged, dismissed, nil
 }
 
+// Memory step-state steps (memory_step_state.step, see 00069) — the three
+// staggered semantic steps that needed a "done today" memo.
+const (
+	MemoryStepRewrite = "rewrite" // per-entity: node_id is the entity id
+	MemoryStepReflect = "reflect" // workspace-wide: node_id is ""
+	MemoryStepMap     = "map"     // workspace-wide: node_id is ""
+)
+
+// MemoryStepState returns one step's memo: the RFC3339 UTC stamp of its last
+// ATTEMPT and (map only) the fingerprint of the input it last rendered from.
+// node_id is the entity id for MemoryStepRewrite and "" for the workspace-wide
+// steps. A step that never ran reads as ("", "", nil) rather than an error, so
+// an empty memo is a pass-through (the gate opens).
+//
+// Runtime cadence state: memory_step_state is MEM-02-exempt like
+// memory_engagement — DropMemoryIndex deliberately leaves it alone (see 00069).
+func (db *DB) MemoryStepState(step, nodeID string) (lastRunAt, fingerprint string, err error) {
+	err = db.QueryRow(`SELECT last_run_at, fingerprint FROM memory_step_state WHERE step = ? AND node_id = ?`,
+		step, nodeID).Scan(&lastRunAt, &fingerprint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("reading memory step state %s/%s: %w", step, nodeID, err)
+	}
+	return lastRunAt, fingerprint, nil
+}
+
+// MemoryStepStates returns every memo row of one step as nodeID → last_run_at —
+// the rewrite step's per-entity lookup, read once per run instead of once per
+// candidate entity.
+func (db *DB) MemoryStepStates(step string) (map[string]string, error) {
+	rows, err := db.Query(`SELECT node_id, last_run_at FROM memory_step_state WHERE step = ?`, step)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory step state for %s: %w", step, err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var nodeID, at string
+		if err := rows.Scan(&nodeID, &at); err != nil {
+			return nil, fmt.Errorf("scanning memory step state for %s: %w", step, err)
+		}
+		out[nodeID] = at
+	}
+	return out, rows.Err()
+}
+
+// SetMemoryStepState upserts one step's memo. Passing a fingerprint of "" on a
+// rewrite/reflect stamp is correct — only the map uses that column.
+func (db *DB) SetMemoryStepState(step, nodeID, lastRunAt, fingerprint string) error {
+	if _, err := db.Exec(`INSERT INTO memory_step_state (step, node_id, last_run_at, fingerprint)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(step, node_id) DO UPDATE SET
+			last_run_at = excluded.last_run_at,
+			fingerprint = excluded.fingerprint`, step, nodeID, lastRunAt, fingerprint); err != nil {
+		return fmt.Errorf("stamping memory step state %s/%s: %w", step, nodeID, err)
+	}
+	return nil
+}
+
+// SetMemoryStepStates stamps a whole batch of per-node memos for one step in ONE
+// transaction (the BumpEngagements precedent): either every stamp lands or none
+// do, so a partially-stamped rewrite run can never leave half its attempted
+// entities un-memoed and half memoed. An empty batch is a no-op.
+func (db *DB) SetMemoryStepStates(step string, nodeIDs []string, lastRunAt string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning memory step state tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	const stmt = `INSERT INTO memory_step_state (step, node_id, last_run_at, fingerprint)
+		VALUES (?, ?, ?, '')
+		ON CONFLICT(step, node_id) DO UPDATE SET last_run_at = excluded.last_run_at`
+	for _, nodeID := range nodeIDs {
+		if _, err := tx.Exec(stmt, step, nodeID, lastRunAt); err != nil {
+			return fmt.Errorf("stamping memory step state %s/%s: %w", step, nodeID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory step state tx: %w", err)
+	}
+	return nil
+}
+
 // DropMemoryIndex empties the vault-derived memory index tables (nodes,
 // aliases, provenance, fts) in one transaction so a full reindex can rebuild
 // them from the vault (MEM-02).
@@ -2054,7 +2143,10 @@ func (db *DB) LinkedEntityEngagement(id string) (engaged, dismissed int, err err
 // memory_engagement and memory_dispute_flags carry a REFERENCES
 // memory_nodes(id) FK but are deliberately NOT cleared here — they are
 // runtime state that must survive a reindex (MEM-02-exempt, the
-// memory_entity_hints precedent). Emptying memory_nodes while those rows
+// memory_entity_hints precedent). memory_step_state (see 00069) is exempt for
+// the same reason and carries no FK at all, so it needs nothing from the
+// toggle below — it is simply absent from the delete list. Emptying
+// memory_nodes while the FK-carrying rows
 // still reference it would otherwise violate the FK the instant DELETE FROM
 // memory_nodes runs, so foreign_keys is disabled for the duration of the
 // drop, leaving those rows briefly orphaned; Reconcile's subsequent walk

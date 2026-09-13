@@ -1450,6 +1450,27 @@ CREATE TABLE IF NOT EXISTS memory_digest_shadow (
     UNIQUE(channel_id, period_from, period_to)
 );
 
+-- Wave-4 cost fix (see 00069): the "done today" memo for the three staggered
+-- memory steps. dueForRewrite/dueForReflect are day-granular and STATELESS, so
+-- on their slot day they answered "due" on every daemon cycle; the strong map
+-- render had no change gate on its AI call at all. One row per (step, node_id):
+-- node_id is the entity id for the per-node 'rewrite' step and '' for the
+-- workspace-wide 'reflect'/'map' steps. last_run_at is the last ATTEMPT (not
+-- success — a dispute-only reflect run writes no vault commit, so the git log
+-- cannot serve as its memo); fingerprint is the sha256 of the rendered map
+-- prompt input. No FK onto memory_nodes (DropMemoryIndex toggles FKs off around
+-- its delete; a stale row is harmless and self-overwrites on the next stamp).
+-- Runtime cadence state, NOT vault-derived: deliberately excluded from
+-- DropMemoryIndex like memory_engagement/memory_entity_hints — a reindex that
+-- erased it would re-trigger the strong-tier cost spike it removes (MEM-02).
+CREATE TABLE IF NOT EXISTS memory_step_state (
+    step        TEXT NOT NULL,            -- 'rewrite' | 'reflect' | 'map'
+    node_id     TEXT NOT NULL DEFAULT '', -- entity id for 'rewrite'; '' for the workspace-wide steps
+    last_run_at TEXT NOT NULL DEFAULT '', -- RFC3339 UTC of the last attempt
+    fingerprint TEXT NOT NULL DEFAULT '', -- sha256 of the map prompt input; '' for the other steps
+    PRIMARY KEY (step, node_id)
+);
+
 -- Slice B Task 7 (see 00039): dark retrieval-compare telemetry
 -- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
 -- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that

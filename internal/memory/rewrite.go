@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 )
@@ -39,7 +40,8 @@ type rewriteResult struct {
 
 // RewriteEntityPages is the strong-tier entity page-rewrite step (MEM-01 +
 // MEM-08). It selects entities due for a rewrite (a deterministic 7-day id-hash
-// stagger AND at least one linked episode to rewrite from), and for each one
+// stagger, NOT already attempted this UTC day, AND at least one linked episode
+// to rewrite from), and for each one
 // asks the strong model to rewrite the page's ## What / ## Current / ## Facts
 // from the linked episodes' stories. The model only proposes: every provenance
 // marker it emits is re-validated against the supplied episodes (unknown markers
@@ -56,6 +58,12 @@ type rewriteResult struct {
 // them as its rewritten-subject scope. The pipeline gates the call behind
 // memory.semantic.enabled (Task 11); this function itself is unconditional so it
 // can be unit-tested directly.
+//
+// maxEntities is a per-RUN cap, never a per-day one: the memo means each cycle
+// picks up where the previous one left off, so on a large vault a slot day's
+// total may now exceed maxEntities — which is the point. Before the memo every
+// due entity past position maxEntities in the ORDER BY id scan was never
+// rewritten at all; the saving here is the repeats, not the total.
 func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now time.Time) (rewritten []string, failed int, usage *digest.Usage, err error) {
 	if p.generator == nil {
 		return nil, 0, nil, nil
@@ -78,11 +86,23 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		mirrorNodeIDs[nodeID] = true
 	}
 
+	// The "done today" memo (see 00069). dueForRewrite is stateless and
+	// day-granular and ListMemoryNodes is ORDER BY id, so without this the same
+	// first maxEntities due pages were re-rewritten by the strong model on every
+	// daemon cycle of their slot day — and every due entity past position
+	// maxEntities was never rewritten at all. Read once per run: one query
+	// instead of one per candidate.
+	stamps, err := p.db.MemoryStepStates(db.MemoryStepRewrite)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
 	var (
-		nodes []Node
-		ids   []string
-		acc   digest.Usage
-		calls int
+		nodes     []Node
+		ids       []string
+		attempted []string
+		acc       digest.Usage
+		calls     int
 	)
 	tmpl := p.getPrompt(prompts.MemoryEntityRewrite)
 	for _, row := range rows {
@@ -98,6 +118,14 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		if !dueForRewrite(row.ID, now) {
 			continue
 		}
+		// Ordered after dueForRewrite (cheapest first) and before ReadNode, so a
+		// memoed entity costs neither a vault read nor an AI call. Same-UTC-day is
+		// the whole stagger window here: dueForRewrite fires this entity on exactly
+		// one day per rewriteStaggerDays, so "already attempted today" and "already
+		// attempted this window" are the same predicate.
+		if sameUTCDay(stamps[row.ID], now) {
+			continue
+		}
 		page, rerr := p.vault.ReadNode(row.ID)
 		if rerr != nil {
 			p.logf("memory: rewrite: read %s: %v", row.ID, rerr)
@@ -111,6 +139,11 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		system, user := buildRewritePrompt(tmpl, p.Language, page, episodes)
 		raw, u, _, gerr := p.generator.Generate(digest.WithSource(ctx, rewriteSource), system, user, "")
 		calls++
+		// Stamped on ATTEMPT, not on success: the call is what costs, and a page
+		// whose rewrite keeps failing would otherwise burn one strong-tier call per
+		// daemon cycle all slot day — the exact repeat this memo exists to stop. The
+		// trade is explicit: a transient failure costs that entity its weekly slot.
+		attempted = append(attempted, row.ID)
 		addUsage(&acc, u)
 		if gerr != nil {
 			p.logf("memory: rewrite %s: generate: %v", row.ID, gerr) // isolated — page untouched
@@ -149,6 +182,13 @@ func (p *Pipeline) RewriteEntityPages(ctx context.Context, maxEntities int, now 
 		// failed (a model outage, a schema drift) surfaces here instead of a
 		// silent zero-rewrite run.
 		p.logf("memory: rewrite: attempted=%d succeeded=%d failed=%d", calls, len(rewritten), failed)
+	}
+	// Stamp before the vault commit: an attempted call is recorded even when the
+	// batch write below fails, so a failing commit cannot make the run re-spend
+	// the same calls on the next cycle. A stamp failure is logged, not fatal — it
+	// costs repeats, it never loses a rewrite.
+	if err := p.db.SetMemoryStepStates(db.MemoryStepRewrite, attempted, now.UTC().Format(time.RFC3339)); err != nil {
+		p.logf("memory: rewrite: stamp step state: %v", err)
 	}
 	if len(nodes) == 0 {
 		return rewritten, failed, usage, nil
@@ -205,6 +245,21 @@ func dueForRewrite(id string, now time.Time) bool {
 	day := now.UTC().Unix() / 86400
 	slot := rewriteStaggerOffset(id) / (24 * 3600) // 0..rewriteStaggerDays-1
 	return day%rewriteStaggerDays == slot
+}
+
+// sameUTCDay reports whether an RFC3339 memo stamp falls on the same UTC day as
+// now — the "already attempted this cycle" predicate shared by the rewrite and
+// reflect memos (see 00069). An empty or unparseable stamp reads as "no memo",
+// so the gate opens: a corrupt row costs repeats, never a silently skipped step.
+func sameUTCDay(stamp string, now time.Time) bool {
+	if stamp == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return false
+	}
+	return t.UTC().Format("2006-01-02") == now.UTC().Format("2006-01-02")
 }
 
 // rewriteStaggerOffset maps an id to a deterministic offset in seconds within
