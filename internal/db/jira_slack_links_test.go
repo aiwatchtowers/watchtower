@@ -232,3 +232,87 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 		assert.Len(t, links, 2, "%s: the copy must not drop a row the new indexes accept", issueKey)
 	}
 }
+
+// UpsertJiraSlackLinkBatch is the message-sync path's writer: same per-link
+// semantics as UpsertJiraSlackLink, one commit for the whole page. It must
+// route each kind to its own conflict target — a batch that prepared one
+// statement for everything would silently give the other two kinds no dedup.
+func TestUpsertJiraSlackLinkBatch_RoutesEachKindToItsOwnIdentity(t *testing.T) {
+	database := openTestDB(t)
+
+	trackID, digestID := 7, 9
+	links := []JiraSlackLink{
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.002", LinkType: "mention"},
+		// Each kind's second entry differs only outside that kind's own
+		// identity, so it must merge into the first — which it can only do if
+		// the batch routed it to its own conflict target.
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &trackID, LinkType: "track"},
+		{IssueKey: "PROJ-1", ChannelID: "1:C2", TrackID: &trackID, LinkType: "track"},
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", DigestID: &digestID, LinkType: "decision"},
+		{IssueKey: "PROJ-1", ChannelID: "1:C2", DigestID: &digestID, LinkType: "decision"},
+	}
+
+	tx, err := database.Begin()
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertJiraSlackLinkBatch(tx, links))
+	require.NoError(t, tx.Commit())
+
+	stored, err := database.GetJiraSlackLinksByIssue("PROJ-1")
+	require.NoError(t, err)
+
+	kinds := map[string]int{}
+	for _, l := range stored {
+		kinds[l.LinkType]++
+	}
+	assert.Equal(t, map[string]int{"mention": 2, "track": 1, "decision": 1}, kinds,
+		"each kind must conflict on its own identity inside one batch")
+}
+
+// Re-syncing a page re-processes its messages, so a repeated batch must dedupe
+// exactly as the single-link writer does.
+func TestUpsertJiraSlackLinkBatch_IsIdempotent(t *testing.T) {
+	database := openTestDB(t)
+
+	links := []JiraSlackLink{
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
+	}
+	for range 2 {
+		tx, err := database.Begin()
+		require.NoError(t, err)
+		require.NoError(t, database.UpsertJiraSlackLinkBatch(tx, links))
+		require.NoError(t, tx.Commit())
+	}
+
+	stored, err := database.GetJiraSlackLinksByIssue("PROJ-1")
+	require.NoError(t, err)
+	assert.Len(t, stored, 1)
+}
+
+// The batch shares the single writer's refusal of an unknown kind (such a row
+// matches no partial index and would never dedupe), and it refuses before
+// touching the table rather than after writing part of the page.
+func TestUpsertJiraSlackLinkBatch_UnknownLinkTypeIsRefused(t *testing.T) {
+	database := openTestDB(t)
+
+	tx, err := database.Begin()
+	require.NoError(t, err)
+	err = database.UpsertJiraSlackLinkBatch(tx, []JiraSlackLink{
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
+		{IssueKey: "PROJ-2", ChannelID: "1:C1", MessageTS: "1000.002", LinkType: "sighting"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sighting")
+	require.NoError(t, tx.Rollback())
+
+	stored, err := database.GetJiraSlackLinksByIssue("PROJ-1")
+	require.NoError(t, err)
+	assert.Empty(t, stored, "a refused batch must leave nothing behind")
+}
+
+func TestUpsertJiraSlackLinkBatch_NilTransactionIsRefused(t *testing.T) {
+	database := openTestDB(t)
+	assert.Error(t, database.UpsertJiraSlackLinkBatch(nil, []JiraSlackLink{
+		{IssueKey: "PROJ-1", ChannelID: "1:C1", MessageTS: "1000.001", LinkType: "mention"},
+	}))
+}

@@ -581,31 +581,77 @@ const (
 			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
 )
 
-// UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
-// identity of the link's own kind.
+// jiraSlackLinkUpsert resolves a link to the statement matching its kind's own
+// partial unique index, returning the link with its kind normalised.
 //
 // A kind with no identity has no dedup: its rows match no partial index, so
 // every write inserts. An empty LinkType is therefore normalised to "mention"
 // (the column's own default) rather than written through — it is what a caller
 // gets by forgetting a field — and any other value is refused outright instead
 // of growing the table without bound.
-func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
-	var query string
+func jiraSlackLinkUpsert(link JiraSlackLink) (JiraSlackLink, string, error) {
 	switch link.LinkType {
 	case "", "mention":
-		link.LinkType, query = "mention", upsertJiraSlackLinkMention
+		link.LinkType = "mention"
+		return link, upsertJiraSlackLinkMention, nil
 	case "track":
-		query = upsertJiraSlackLinkTrack
+		return link, upsertJiraSlackLinkTrack, nil
 	case "decision":
-		query = upsertJiraSlackLinkDecision
+		return link, upsertJiraSlackLinkDecision, nil
 	default:
-		return fmt.Errorf("upserting jira slack link %s: unknown link_type %q", link.IssueKey, link.LinkType)
+		return link, "", fmt.Errorf("upserting jira slack link %s: unknown link_type %q", link.IssueKey, link.LinkType)
 	}
+}
 
-	_, err := db.Exec(query,
-		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType)
+// UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
+// identity of the link's own kind.
+func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
+	link, query, err := jiraSlackLinkUpsert(link)
 	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(query,
+		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
 		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
+	}
+	return nil
+}
+
+// UpsertJiraSlackLinkBatch writes a batch of Jira-Slack links within an
+// existing transaction, preparing one statement per link kind present (the
+// UpsertMessageBatch shape). Semantics per link are identical to
+// UpsertJiraSlackLink; the difference is that a whole page of links costs one
+// commit instead of one per link. That matters on the message-sync path, where
+// SetMaxOpenConns(1) makes every separate write serialise against the sync's
+// own.
+func (db *DB) UpsertJiraSlackLinkBatch(tx *sql.Tx, links []JiraSlackLink) error {
+	if tx == nil {
+		return fmt.Errorf("UpsertJiraSlackLinkBatch: nil transaction")
+	}
+	stmts := make(map[string]*sql.Stmt, 3)
+	defer func() {
+		for _, stmt := range stmts {
+			stmt.Close()
+		}
+	}()
+
+	for _, link := range links {
+		link, query, err := jiraSlackLinkUpsert(link)
+		if err != nil {
+			return err
+		}
+		stmt, ok := stmts[query]
+		if !ok {
+			stmt, err = tx.Prepare(query)
+			if err != nil {
+				return fmt.Errorf("preparing jira slack link upsert: %w", err)
+			}
+			stmts[query] = stmt
+		}
+		if _, err := stmt.Exec(
+			link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
+			return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
+		}
 	}
 	return nil
 }

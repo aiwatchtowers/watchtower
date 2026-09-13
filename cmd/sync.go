@@ -572,6 +572,12 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.TrackLinker = tracksPipe
+	// One shared detector across both pipelines, so the known-project-key set
+	// is loaded once rather than once per pipeline.
+	if det := newJiraKeyDetector(cfg, database); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	d.SetDigestPipeline(pipe)
 	d.SetTracksPipeline(tracksPipe)
 	d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
@@ -627,6 +633,10 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		logger.Printf("slack: failed to list accounts: %v", err)
 		return nil
 	}
+	// One detector shared by every account's orchestrator: its known-key cache
+	// is workspace-wide (jira_slack_links is deliberately not account-scoped)
+	// and its only mutable state is behind a mutex.
+	keyDetector := newJiraKeyDetector(cfg, database)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -645,9 +655,33 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		if keyDetector != nil {
+			orch.SetJiraKeyDetector(keyDetector)
+		}
 		orchestrators = append(orchestrators, orch)
 	}
 	return orchestrators
+}
+
+// newJiraKeyDetector returns a Jira key detector for the pipelines and sync
+// orchestrators to hook, or nil when this install has no Jira.
+//
+// The gate is cfg.Jira.Enabled and nothing else. It is false by default and
+// flipped true by `jira add`/`jira login` (enableJiraPhase), so it is on for
+// exactly the installs that have a Jira site connected — which is also the
+// only state in which GetKnownProjectKeys can return anything. Deliberately
+// NOT one of the jira.features.* toggles: this step collects the data every
+// Jira surface reads (--jira/--no-jira, the Desktop "Linked Jira Issues"
+// badges, get_task_context, find_experts, who-to-ping), and putting it behind
+// a per-feature toggle would hide a data-collection step from the owner.
+//
+// Callers must nil-check rather than pass the result straight to a
+// Set…Detector: a typed nil stored in an interface field is not nil.
+func newJiraKeyDetector(cfg *config.Config, database *db.DB) *jira.KeyDetector {
+	if !cfg.Jira.Enabled {
+		return nil
+	}
+	return jira.NewKeyDetector(database)
 }
 
 // recordSlackWireError records a per-account wiring failure (missing/unreadable
@@ -980,6 +1014,10 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	pipe := digest.New(database, cfg, gen, logger)
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	pipe.TrackLinker = tracksPipe
+	if det := newJiraKeyDetector(cfg, database); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	pipe.OnProgress = func(done, total int, status string) {
 		digestSpinner.UpdateProgress(done, total, status)
 	}

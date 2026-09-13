@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"regexp"
@@ -101,6 +102,58 @@ func (d *KeyDetector) ProcessMessage(channelID, messageTS, text string) (int, er
 		}
 	}
 	return len(keys), nil
+}
+
+// ProcessMessageBatch detects Jira keys across a page of synced Slack messages
+// and records every resulting mention link in ONE transaction.
+//
+// ProcessMessage runs one Exec per detected key outside any transaction, which
+// is fine for a handful of calls but not on the message-sync path: a page holds
+// up to 200 messages and the DB runs with SetMaxOpenConns(1), so each of those
+// writes would serialise against the sync's own. Nothing else differs — the
+// links written are exactly what ProcessMessage would write per message.
+//
+// msgs carry the values already destined for the messages table, so a link's
+// (channel_id, message_ts) pair is by construction the same namespaced channel
+// id and raw Slack timestamp that messages.(channel_id, ts) holds — which is
+// what every reader of a mention link joins back against.
+func (d *KeyDetector) ProcessMessageBatch(msgs []db.Message) (int, error) {
+	// One key-set load per page rather than one per candidate message: while
+	// the set is empty it is deliberately not memoized (see knownProjectKeys),
+	// so every message carrying a candidate token would otherwise re-run the
+	// query.
+	if len(d.knownProjectKeys()) == 0 {
+		return 0, nil
+	}
+
+	var links []db.JiraSlackLink
+	for _, msg := range msgs {
+		for _, key := range d.DetectKeys(msg.Text) {
+			links = append(links, db.JiraSlackLink{
+				IssueKey:  key,
+				ChannelID: msg.ChannelID,
+				MessageTS: msg.TS,
+				LinkType:  "mention",
+			})
+		}
+	}
+	if len(links) == 0 {
+		return 0, nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("beginning jira slack link transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := d.db.UpsertJiraSlackLinkBatch(tx, links); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing jira slack links: %w", err)
+	}
+	return len(links), nil
 }
 
 // ProcessTrack detects Jira keys in track text and source refs.

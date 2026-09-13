@@ -312,5 +312,10 @@ func (o *Orchestrator) upsertSearchPage(msgs []db.Message) (int, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("committing search messages: %w", err)
 	}
+
+	// The search path — not the per-channel history path — is what an ordinary
+	// incremental sync runs, so the hook belongs on both or the detector stays
+	// dead outside --full/--channels runs.
+	o.detectJiraKeys(msgs)
 	return count, nil
 }
