@@ -530,7 +530,7 @@ func runMemorySeed(cmd *cobra.Command, _ []string) error {
 		defer unlock()
 		n, err := memory.SeedEntities(vault, database, memory.SeedConfig{
 			MinMessages: cfg.Memory.SeedMinMessages, WindowDays: memorySeedWindowDays,
-		})
+		}, memoryStderrLogf(cmd))
 		if err != nil {
 			return err
 		}
@@ -544,13 +544,14 @@ func runMemorySeed(cmd *cobra.Command, _ []string) error {
 	}
 	printed := 0
 	for _, c := range candidates {
-		// Same idempotency filter as SeedEntities: the first alias is the key.
-		_, err := database.LookupMemoryAlias(c.aliases[0])
-		if err == nil {
-			continue // already seeded (or manually created)
+		// Same idempotency filter as SeedEntities: a candidate ANY of whose
+		// aliases already resolves is stitched onto that page, not created.
+		owned, err := memorySeedCandidateOwned(database, c.aliases)
+		if err != nil {
+			return err
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("looking up alias %q: %w", c.aliases[0], err)
+		if owned {
+			continue // already seeded (or manually created)
 		}
 		if printed == 0 {
 			fmt.Fprintln(out, "Would create (dry run, nothing written):")
@@ -565,6 +566,24 @@ func runMemorySeed(cmd *cobra.Command, _ []string) error {
 }
 
 // ── seed dry-run listing ──────────────────────────────────────────────────────
+
+// memorySeedCandidateOwned reports whether any of a candidate's aliases already
+// resolves to a node — the dry run's mirror of SeedEntities's every-alias
+// idempotency check, so the preview never announces a page the real run would
+// merely stitch an alias onto.
+func memorySeedCandidateOwned(database *db.DB, aliases []string) (bool, error) {
+	for _, a := range aliases {
+		_, err := database.LookupMemoryAlias(a)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, sql.ErrNoRows):
+		default:
+			return false, fmt.Errorf("looking up alias %q: %w", a, err)
+		}
+	}
+	return false, nil
+}
 
 // memorySeedWindowDays mirrors internal/memory's unexported seedWindowDays
 // (the 30-day activity lookback from the design spec).

@@ -322,7 +322,7 @@ func (p *Pipeline) runFocusStep(runID int64, stats *RunStats) int {
 func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, focusSteps int, acc *usageAccumulator, stats *RunStats) (batchSteps int, actStaged *stagedChat, err error) {
 	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
 	// memory.sources.gmail so the source is literally dark when off.
-	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar})
+	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar}, p.logf)
 	if err != nil {
 		return 0, nil, err
 	}

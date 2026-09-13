@@ -102,7 +102,7 @@ func TestIngestLinksChannelAndSenderEntities(t *testing.T) {
 	seedUserRow(t, d, "U1ALICE", "alice")
 	seedChannelRow(t, d, "C1GEN", "general")
 	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000001", time.Now().Unix()), "U1ALICE", "recent activity")
-	_, err := SeedEntities(v, d, SeedConfig{MinMessages: 1, WindowDays: 30})
+	_, err := SeedEntities(v, d, SeedConfig{MinMessages: 1, WindowDays: 30}, nil)
 	require.NoError(t, err)
 
 	seedIngestSituation(t, d, "Billing outage")
