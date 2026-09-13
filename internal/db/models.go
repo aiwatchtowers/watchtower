@@ -553,6 +553,7 @@ type InboxFilter struct {
 	ChannelID       string // "" = any
 	Limit           int    // 0 = no limit
 	IncludeResolved bool   // include resolved/dismissed
+	IncludeArchived bool   // include archived_at IS NOT NULL rows (default: excluded)
 }
 
 // CalendarCalendar represents a Google Calendar.
