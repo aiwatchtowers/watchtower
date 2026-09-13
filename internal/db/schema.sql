@@ -942,13 +942,21 @@ CREATE TABLE IF NOT EXISTS jira_slack_links (
     track_id INTEGER,
     digest_id INTEGER,
     link_type TEXT NOT NULL DEFAULT 'mention',
-    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    UNIQUE(issue_key, channel_id, message_ts)
+    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key);
 CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts);
 CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id);
 CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(digest_id);
+-- One identity per link kind (see 00067): only a mention carries a real
+-- message_ts, so a track link is identified by its track and a decision link by
+-- its digest. A shared identity made them overwrite one another.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_mention_identity
+    ON jira_slack_links(issue_key, channel_id, message_ts) WHERE link_type = 'mention';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_track_identity
+    ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_decision_identity
+    ON jira_slack_links(issue_key, digest_id) WHERE link_type = 'decision';
 
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_slack ON jira_issues(assignee_slack_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assignee_slack_id, status_category);

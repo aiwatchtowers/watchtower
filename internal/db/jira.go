@@ -552,14 +552,47 @@ func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	return states, rows.Err()
 }
 
-// UpsertJiraSlackLink inserts or updates a Jira-Slack link.
-func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
-	_, err := db.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+// Each link kind has its own identity and therefore its own conflict target,
+// one per partial unique index from migration 00067: a mention is identified by
+// the message it was found in, a track link by its track, a decision link by its
+// digest. A single shared target made a track link and a decision link for the
+// same issue key and channel the same physical row, because neither of them
+// writes a message_ts. The merge semantics within a kind are unchanged.
+const (
+	upsertJiraSlackLinkMention = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
 		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_key, channel_id, message_ts) DO UPDATE SET
+		ON CONFLICT(issue_key, channel_id, message_ts) WHERE link_type = 'mention' DO UPDATE SET
 			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
 			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
-			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`,
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+
+	upsertJiraSlackLinkTrack = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_key, track_id) WHERE link_type = 'track' DO UPDATE SET
+			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+
+	upsertJiraSlackLinkDecision = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_key, digest_id) WHERE link_type = 'decision' DO UPDATE SET
+			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+)
+
+// UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
+// identity of the link's own kind.
+func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
+	query := upsertJiraSlackLinkMention
+	switch link.LinkType {
+	case "track":
+		query = upsertJiraSlackLinkTrack
+	case "decision":
+		query = upsertJiraSlackLinkDecision
+	}
+
+	_, err := db.Exec(query,
 		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType)
 	if err != nil {
 		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
