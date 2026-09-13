@@ -163,3 +163,40 @@ func TestRunForWindow_CancelledContextReportsInterruption(t *testing.T) {
 	assert.Equal(t, 1, gen.calls)
 	assert.Equal(t, 1, created, "tracks stored before the interruption are still returned")
 }
+
+// cancelThenFailGenerator cancels the run's context and then fails the call,
+// the way a provider subprocess dies when the daemon is stopped mid-batch.
+type cancelThenFailGenerator struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (g *cancelThenFailGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	g.cancel()
+	return "", nil, "", errBatchGenerator
+}
+
+// A batch cut off mid-call by a shutdown must be reported as an interruption,
+// not as "all N batch(es) failed": the outcome is the same frozen watermark
+// either way, but blaming the provider for a clean Ctrl-C is exactly the kind
+// of misleading operator signal this wave removes.
+func TestRunForWindow_CancellationDuringLastBatchIsNotAnAllFailedError(t *testing.T) {
+	database := testDB(t)
+	seedTrackWindow(t, database, 1) // a single channel — one batch, so it is also the last
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gen := &cancelThenFailGenerator{cancel: cancel}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, _, err := pipe.Run(ctx)
+	require.Error(t, err)
+	assert.Equal(t, 1, gen.calls)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, errBatchGenerator, "a cancelled batch must not be attributed to the provider")
+	assert.Contains(t, err.Error(), "interrupted after 0 of 1 batch(es)")
+	assert.NotContains(t, err.Error(), "batch(es) failed")
+}

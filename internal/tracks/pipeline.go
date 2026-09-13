@@ -626,6 +626,13 @@ func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry,
 		n, err := p.generateBatchTracks(ctx, batch, userID, userName, from, to)
 		if err != nil {
 			p.logger.Printf("tracks: error in batch %d/%d: %v", i+1, len(batches), err)
+			// A batch cut off mid-call by a cancelled run is a shutdown, not a
+			// provider failure: attribute it as such, or the last batch of a
+			// window would report "all N batch(es) failed" on a clean Ctrl-C.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				res.aborted = ctxErr
+				break
+			}
 			res.failed++
 			res.lastErr = err
 		} else {

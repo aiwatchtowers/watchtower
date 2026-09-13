@@ -771,3 +771,113 @@ func TestSyncStopsWatermarkAtFirstFailureButStillStoresLaterMessages(t *testing.
 		t.Errorf("want exactly 2 stored rows, got %d: %+v", len(rows), rows)
 	}
 }
+
+// newTestSyncerForMux wires the shared Gmail/token httptest fakes around mux
+// and returns a syncer with its own temp database and account.
+func newTestSyncerForMux(t *testing.T, mux *http.ServeMux) (*Syncer, *db.DB, int64) {
+	t.Helper()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	}))
+	t.Cleanup(tokenSrv.Close)
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	t.Cleanup(func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok })
+
+	database := db.OpenTestDB(t)
+	if err := database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test.slack.com"}); err != nil {
+		t.Fatalf("seeding workspace: %v", err)
+	}
+	accountID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	if err != nil {
+		t.Fatalf("seeding google account: %v", err)
+	}
+	cfg := &config.Config{}
+	cfg.Gmail = config.GmailConfig{Enabled: true, InitialHistoryDays: 7, MaxMessagesPerSync: 100, MaxBodyBytes: 51200}
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return NewSyncer(c, database, cfg, nil, accountID), database, accountID
+}
+
+// TestSyncDeliberateSkipsDoNotStallWatermark is the inverse of the
+// stop-at-first-failure guard: the two skips that are *correct* non-storage —
+// a noise-labelled message and an already-seen one — must NOT freeze the
+// watermark. Both fixtures put the skipped message BEFORE a stored one in
+// oldest-first order, so treating the skip as a loss would be observable:
+// the watermark would stay behind the newest stored message, and since the
+// same message is skipped on every cycle the account would stop ingesting
+// mail permanently while still reporting success.
+func TestSyncDeliberateSkipsDoNotStallWatermark(t *testing.T) {
+	const oldUnix = 1700000000 // skipped
+	const newUnix = 1700003600 // stored, one hour later
+
+	t.Run("noise label", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"messages":[{"id":"mNew"},{"id":"mPromo"}]}`) // newest-first
+		})
+		mux.HandleFunc("/users/me/messages/mPromo", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"id":"mPromo","threadId":"t1","labelIds":["INBOX","CATEGORY_PROMOTIONS"],
+              "snippet":"promo","internalDate":"%d000","payload":{"headers":[]}}`, oldUnix)
+		})
+		mux.HandleFunc("/users/me/messages/mNew", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"id":"mNew","threadId":"t2","labelIds":["INBOX"],"snippet":"new",
+              "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"New"}]}}`, newUnix)
+		})
+		s, database, accountID := newTestSyncerForMux(t, mux)
+
+		n, err := s.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("want 1 stored (the promo message is filtered), got %d", n)
+		}
+		watermark, err := database.GetGmailAccountWatermark(accountID)
+		if err != nil {
+			t.Fatalf("watermark: %v", err)
+		}
+		if watermark != float64(newUnix) {
+			t.Errorf("watermark = %v, want %v — a noise-label skip is deliberate non-storage, it must not freeze the watermark", watermark, newUnix)
+		}
+	})
+
+	t.Run("already seen", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"messages":[{"id":"mNew"},{"id":"mOld"}]}`) // newest-first
+		})
+		mux.HandleFunc("/users/me/messages/mOld", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"id":"mOld","threadId":"t1","labelIds":["INBOX"],"snippet":"old",
+              "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Old"}]}}`, oldUnix)
+		})
+		mux.HandleFunc("/users/me/messages/mNew", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"id":"mNew","threadId":"t2","labelIds":["INBOX"],"snippet":"new",
+              "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"New"}]}}`, newUnix)
+		})
+		s, database, accountID := newTestSyncerForMux(t, mux)
+		// mOld sits at the watermark, so the already-seen filter skips it.
+		if err := database.SetGmailAccountWatermark(accountID, float64(oldUnix)); err != nil {
+			t.Fatalf("seeding watermark: %v", err)
+		}
+
+		n, err := s.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("want 1 stored (mOld is already seen), got %d", n)
+		}
+		watermark, err := database.GetGmailAccountWatermark(accountID)
+		if err != nil {
+			t.Fatalf("watermark: %v", err)
+		}
+		if watermark != float64(newUnix) {
+			t.Errorf("watermark = %v, want %v — an already-seen skip is deliberate non-storage, it must not freeze the watermark", watermark, newUnix)
+		}
+	})
+}
