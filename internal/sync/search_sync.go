@@ -15,6 +15,50 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// searchDateFormat is the date-only layout search.messages "after:"/"before:"
+// filters and the search_last_date watermark both use.
+const searchDateFormat = "2006-01-02"
+
+// maxSearchCatchUpDays bounds how far a stalled search-sync will catch up,
+// independent of initial_history_days (which governs only a true first
+// run). Slack's search.messages index has a practical recall depth beyond
+// which reaching further back this way isn't reliable, so a daemon that was
+// down longer than this is better served logging the gap and starting from
+// the cap than silently skipping the missed messages while stamping the
+// watermark to today as if nothing were missed.
+const maxSearchCatchUpDays = 30
+
+// searchWindow computes the search.messages "after:" date to query from, the
+// size of the gap (in days) since the account was last synced, and whether
+// that gap had to be clamped to maxSearchCatchUpDays. It is pure — no Slack
+// client, no DB — so the window/clamp math is unit-testable on its own.
+//
+// initial_history_days applies only on a true first run: an empty lastDate,
+// or one that fails to parse (should never happen since Watchtower is the
+// only writer, but a corrupt value must not fail the sync). Once a
+// watermark exists, the window is always lastDate minus a 2-day overlap
+// (Slack's search index has an indexing delay) — initial_history_days plays
+// no further part, so a daemon that was down longer than it no longer
+// silently skips the gap.
+func searchWindow(now time.Time, lastDate string, initialDays int) (after string, gapDays int, clamped bool) {
+	if lastDate != "" {
+		if t, err := time.Parse(searchDateFormat, lastDate); err == nil {
+			candidate := t.AddDate(0, 0, -2)
+			gapDays = int(now.Sub(candidate).Hours() / 24)
+			if gapDays > maxSearchCatchUpDays {
+				return now.AddDate(0, 0, -maxSearchCatchUpDays).Format(searchDateFormat), gapDays, true
+			}
+			return candidate.Format(searchDateFormat), gapDays, false
+		}
+	}
+
+	days := initialDays
+	if days <= 0 {
+		days = 30
+	}
+	return now.AddDate(0, 0, -days).Format(searchDateFormat), days, false
+}
+
 // searchChannelType maps a search result CtxChannel to our type string.
 func searchChannelType(ch slack.CtxChannel) string {
 	if ch.IsMPIM {
@@ -33,38 +77,22 @@ func searchChannelType(ch slack.CtxChannel) string {
 // without per-channel conversations.history calls. This dramatically reduces
 // API calls for incremental sync (~8-10 calls vs ~50+).
 func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
-	days := o.config.Sync.InitialHistoryDays
-	if days <= 0 {
-		days = 30
-	}
-
 	// Determine search start date.
 	lastDate, err := o.db.GetSlackAccountSearchWatermark(o.accountID)
 	if err != nil {
 		return fmt.Errorf("getting search_last_date: %w", err)
 	}
 
-	// Always cap at initial_history_days window
-	earliest := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
-
-	var searchAfter string
-	if lastDate != "" {
-		// Parse and subtract 2 days for overlap to account for Slack search indexing delays
-		t, err := time.Parse("2006-01-02", lastDate)
-		if err != nil {
-			o.logger.Printf("warning: invalid search_last_date %q, using default", lastDate)
-			searchAfter = earliest
-		} else {
-			candidate := t.AddDate(0, 0, -2).Format("2006-01-02")
-			// Take the more recent of (search_last_date - 2 days) and (now - initial_history_days)
-			if candidate > earliest {
-				searchAfter = candidate
-			} else {
-				searchAfter = earliest
-			}
+	now := time.Now()
+	searchAfter, gapDays, clamped := searchWindow(now, lastDate, o.config.Sync.InitialHistoryDays)
+	if clamped {
+		unclampedAfter := now.AddDate(0, 0, -gapDays).Format(searchDateFormat)
+		msg := fmt.Sprintf("search sync: gap of %d days exceeds the %d-day catch-up cap; messages between %s and %s were not fetched",
+			gapDays, maxSearchCatchUpDays, unclampedAfter, searchAfter)
+		o.logger.Printf("warning: %s", msg)
+		if err := o.db.SetSlackAccountError(o.accountID, msg); err != nil {
+			return fmt.Errorf("recording search sync gap: %w", err)
 		}
-	} else {
-		searchAfter = earliest
 	}
 
 	query := fmt.Sprintf("after:%s", searchAfter)
@@ -216,8 +244,8 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	}
 
 	o.progress.SetDiscovery(page, page, len(seenChannels), len(seenUsers))
-	o.logger.Printf("search sync complete: %d channels, %d users, %d messages from %d pages (query=%q, initial_history_days=%d)",
-		len(seenChannels), len(seenUsers), totalMessages, page, query, days)
+	o.logger.Printf("search sync complete: %d channels, %d users, %d messages from %d pages (query=%q, gap_days=%d)",
+		len(seenChannels), len(seenUsers), totalMessages, page, query, gapDays)
 	return nil
 }
 
