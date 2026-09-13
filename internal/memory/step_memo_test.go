@@ -286,6 +286,22 @@ func mapMemoGen() *fakeGen {
 	}}
 }
 
+// mapWhat and mapWhatChanged are the map fixtures' entity text — the value that
+// reaches the strong render's prompt input via the page's ## Current line. They
+// are the SAME BYTE LENGTH on purpose: a fingerprint that hashed len(user)
+// rather than the bytes would otherwise still "detect" the change, and
+// TestRenderMapRendersWhenInputChanges would pass against an implementation not
+// keyed on the input at all.
+//
+// They are constants, not repeated literals, so the length assertion below reads
+// the very values the fixtures pass to indexEntity. Asserting over inline copies
+// would guard nothing: an edit to the fixture's literal alone would leave the
+// assertion comparing two untouched strings and silently reopen the hole.
+const (
+	mapWhat        = "a project"
+	mapWhatChanged = "a prqject"
+)
+
 func readMapFile(t *testing.T, v *Vault) string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(v.path, mapFileName))
@@ -298,7 +314,7 @@ func readMapFile(t *testing.T, v *Vault) string {
 // identical vault/index state the second render makes no call at all.
 func TestRenderMapSkipsUnchangedInput(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", "a project"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", mapWhat))
 	gen := mapMemoGen()
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
@@ -320,7 +336,7 @@ func TestRenderMapSkipsUnchangedInput(t *testing.T) {
 // map that never renders at all.
 func TestRenderMapRendersWhenInputChanges(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	ent := indexEntity("ent_00000000000000000000000001", "Acme", "a project")
+	ent := indexEntity("ent_00000000000000000000000001", "Acme", mapWhat)
 	writeAndIndex(t, v, d, ent)
 	gen := mapMemoGen()
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
@@ -329,13 +345,12 @@ func TestRenderMapRendersWhenInputChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, gen.calls, 1)
 
-	// The strong map's input carries each top entity's ## Current first line. The
-	// new value is the SAME BYTE LENGTH as the old one on purpose: a fingerprint
-	// that hashed len(user) rather than the bytes would otherwise still "detect"
-	// this change, and the guard would pass against an implementation that is not
-	// keyed on the input at all.
-	moved := indexEntity("ent_00000000000000000000000001", "Acme", "a prqject")
-	require.Len(t, "a prqject", len("a project"), "the fixture must not vary the input's length")
+	// The strong map's input carries each top entity's ## Current first line. Both
+	// the fixture and the assertion read the same two constants, so the change is
+	// provably byte-for-byte equal in length — see mapWhat/mapWhatChanged.
+	require.Len(t, mapWhatChanged, len(mapWhat),
+		"the map fixture's changed input must not vary the input's LENGTH, or a length-only fingerprint would pass this guard")
+	moved := indexEntity("ent_00000000000000000000000001", "Acme", mapWhatChanged)
 	writeAndIndex(t, v, d, moved)
 
 	_, err = p.renderMap(context.Background(), 2, true)
@@ -353,7 +368,7 @@ func TestRenderMapRendersWhenInputChanges(t *testing.T) {
 // fallbackMap, whose os.Stat recreated it; the gate must not lose that.
 func TestRenderMapRestoresMissingFileOnFingerprintMatch(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", "a project"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", mapWhat))
 	gen := mapMemoGen()
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
@@ -375,7 +390,7 @@ func TestRenderMapRestoresMissingFileOnFingerprintMatch(t *testing.T) {
 // input unchanged, so the next cycle is a legitimate retry.
 func TestRenderMapFailureDoesNotStampFingerprint(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", "a project"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", mapWhat))
 	calls := 0
 	gen := &fakeGen{reply: func(string) (string, error) {
 		calls++
@@ -401,7 +416,7 @@ func TestRenderMapFailureDoesNotStampFingerprint(t *testing.T) {
 // the semantic tier on would silently suppress the first strong render.
 func TestRenderMapMechanicalPathNeverStamps(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", "a project"))
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", mapWhat))
 	gen := mapMemoGen()
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 

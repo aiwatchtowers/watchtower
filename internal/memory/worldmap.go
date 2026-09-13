@@ -234,9 +234,15 @@ func (p *Pipeline) mapInputFingerprintStored() (string, error) {
 
 // mapFileExists reports whether map.md is on disk — the fingerprint gate's
 // second condition, since a skip writes nothing at all. A stat error other than
-// "missing" also reads as absent, so the gate fails toward rendering.
+// "missing" also reads as absent, so the gate fails toward rendering (never
+// toward a stale or missing map) — but it is logged rather than swallowed: a
+// persistent permission/IO failure would otherwise burn one strong-tier call per
+// daemon cycle with nothing in the log to explain it.
 func (p *Pipeline) mapFileExists() bool {
 	_, err := os.Stat(filepath.Join(p.vault.path, mapFileName))
+	if err != nil && !os.IsNotExist(err) {
+		p.logf("memory: map: stat %s: %v (treating as absent, will render)", mapFileName, err)
+	}
 	return err == nil
 }
 
