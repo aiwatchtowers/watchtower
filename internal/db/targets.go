@@ -193,12 +193,17 @@ func (db *DB) RecordTargetNextStepAttempt(id, attempts int, attemptedAt string) 
 // Known limitation (owner-accepted, not fixed here): the "edited since"
 // escape hatch is keyed on raw updated_at, and RecomputeParentProgress
 // (below) bumps a PARENT target's updated_at on every call, whether or not
-// its computed progress actually changed — it fires on any child status
-// transition. A non-leaf target with actively churning children can
-// therefore look "freshly edited" on every cycle and exceed the 3/day budget
-// indefinitely. This predates this predicate (the same column already drove
-// next_step_at staleness) and is bounded by child churn, not unbounded;
-// narrowing updated_at's semantics would touch all four callers of
+// its computed progress actually changed. The trigger surface is broader
+// than any single child status transition: RecomputeParentProgress runs from
+// CreateTarget (a new child added), UpdateTarget (any field edit on a child,
+// both the old and new parent on a re-parent), UpdateTargetStatus (a child
+// status transition), DeleteTarget (a child removed), and
+// PromoteSubItemToChild (a sub-item promoted into a child). A non-leaf
+// target with actively churning children can therefore look "freshly
+// edited" on every cycle and exceed the 3/day budget indefinitely. This
+// predates this predicate (the same column already drove next_step_at
+// staleness) and is bounded by child churn, not unbounded; narrowing
+// updated_at's semantics would touch all five call sites of
 // RecomputeParentProgress, which is wider than this budget and riskier than
 // the hole. Left as-is by controller ruling.
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
