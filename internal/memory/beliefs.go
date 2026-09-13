@@ -287,16 +287,64 @@ func (p *Pipeline) applyProposeNew(op beliefOpJSON, kept []episodeRef, now time.
 	}, true
 }
 
+// filterNewEvidence drops the incoming evidence lines the belief already
+// records, keyed on the WHOLE rendered line — rank, direction, channel id and
+// ts, all four fields exact, never a prefix or a substring of the body. So
+// "chat:12" never collapses into "chat:123", a ts of "…000100" never collapses
+// into "…0001001", the same message cited in the opposite direction stays a
+// distinct data point, and an owner-rank line is never swallowed by an observed
+// one with the same ref. Duplicates WITHIN one op are collapsed too, so what the
+// math weighs matches what lands in the body (appendToSection writes an
+// identical line only once). Evidence the parser could not read is absent from
+// existing and therefore suppresses nothing — an unparseable bullet fails OPEN,
+// toward applying the op (MEM-06: a non-canonical bullet carries no rank weight
+// either).
+func filterNewEvidence(newEv, existing []beliefEvidence) []beliefEvidence {
+	seen := make(map[string]bool, len(existing)+len(newEv))
+	for _, e := range existing {
+		seen[e.render()] = true
+	}
+	fresh := make([]beliefEvidence, 0, len(newEv))
+	for _, e := range newEv {
+		key := e.render()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		fresh = append(fresh, e)
+	}
+	return fresh
+}
+
 // applyExistingOp mutates an in-scope belief. The op only takes effect when the
 // rank math (applyOp) allows or downgrades it; a downgraded retire lands as
 // shaken (MEM-06 owner-rank protection).
+//
+// Evidence the belief already records is filtered out first (filterNewEvidence),
+// which does two things. (1) A `confirm` that cites ONLY evidence already on the
+// page is a no-op: without this, the same ref re-cited on every daemon cycle
+// bumps stability and confidence each time — evidence the belief never earned —
+// which flipThreshold(stability) then turns into practical un-retirability, and
+// whose frontmatter-only commits reflection reads back as "flapping". The
+// no-op rule is ALL kept refs already stored, never any: an op carrying one new
+// ref is genuinely new evidence and applies in full. (2) For EVERY op, a
+// re-cited ref is no longer weighed twice in combined — double-weighting a
+// single against-ref made a retire flip easier than the hysteresis intends.
+// Both changes move the math strictly more conservative.
 func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]Node, kept []episodeRef, now time.Time) (node Node, applied, mathRejected bool) {
 	node, ok := candidatesByID[op.BeliefID]
 	if !ok {
 		return Node{}, false, false // out of scope / unknown belief id
 	}
-	newEv := newEvidenceLines(kept, beliefOp(op.Op))
-	combined := append(weighAll(parseBeliefEvidence(node.Body, p.logf), now), weighAll(newEv, now)...)
+	existing := parseBeliefEvidence(node.Body, p.logf)
+	newEv := filterNewEvidence(newEvidenceLines(kept, beliefOp(op.Op)), existing)
+	if beliefOp(op.Op) == opConfirm && len(newEv) == 0 {
+		// Not mathRejected: RunStats.BeliefOpsRejected means "refused by the rank
+		// math", and this op never reached it.
+		p.logf("memory: beliefs: confirm on %s is a no-op (all cited evidence already recorded)", op.BeliefID)
+		return Node{}, false, false
+	}
+	combined := append(weighAll(existing, now), weighAll(newEv, now)...)
 	state := beliefState{Confidence: node.Confidence, Stability: node.Stability, Status: node.Status}
 	next, decision := applyOp(state, beliefOp(op.Op), combined)
 	if decision == opRejected {
