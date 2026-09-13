@@ -31,6 +31,61 @@ package enum CLIRunnerError: LocalizedError {
     }
 }
 
+// MARK: - CLILog
+
+/// Log lines for a CLI invocation, shared by `ProcessCLIRunner` and by the
+/// ad-hoc `Process` wrappers that predate it (`CatchUpViewModel`), so a CLI
+/// failure leaves the same trace whichever wrapper ran it.
+///
+/// House logging style is a plain tagged `print` — this codebase has no OSLog
+/// facility and this is not the place to introduce one.
+package enum CLILog {
+    /// Longest stderr excerpt a log line carries — the same bound
+    /// `CLIRunnerError.errorDescription` already applies to the same text, so a
+    /// runaway child cannot flood the log.
+    package static let stderrLimit = 300
+
+    /// A log-safe rendering of an invocation: the leading subcommand path (at
+    /// most two tokens) plus flag NAMES, never flag values.
+    ///
+    /// Secrets are kept off argv by contract (QC-03,
+    /// `docs/inventory/quick-connections.md`), but ordinary arguments still
+    /// carry free text — a feedback comment, a regen correction, a file path —
+    /// which has no business in a log file.
+    package static func label(_ args: [String]) -> String {
+        let subcommand = args.prefix { !$0.hasPrefix("-") }.prefix(2)
+        // `--flag=value` carries its value in the same token: keep the name only.
+        let flags = args.filter { $0.hasPrefix("-") }
+            .map { String($0.split(separator: "=", maxSplits: 1)[0]) }
+        return (Array(subcommand) + flags).joined(separator: " ")
+    }
+
+    /// The bounded stderr excerpt a log line carries.
+    package static func detail(_ stderr: String) -> String {
+        let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count <= stderrLimit ? trimmed : String(trimmed.prefix(stderrLimit)) + "…"
+    }
+
+    /// Logs a CLI call that failed. The thrown error alone is not enough: every
+    /// caller turns it into one line of UI text that the next reload replaces,
+    /// so a crash leaves no trace to diagnose afterwards.
+    package static func failure(args: [String], exitCode: Int32, stderr: String) {
+        print("[CLI] \(label(args)) failed (exit \(exitCode)): \(detail(stderr))")
+    }
+
+    /// Logs a call that SUCCEEDED while writing to stderr — the degradation
+    /// warnings of the exit-0 envelope family (`recap_ok`, `segments_ok`,
+    /// `connections add`'s non-claude-provider notice). Dropping those on the
+    /// floor is the gap the Swift conventions already name
+    /// (`docs/review/review-rules.md`, "Go ↔ Swift dual-path contracts").
+    /// Silent when the child wrote nothing.
+    package static func warning(args: [String], stderr: String) {
+        let text = detail(stderr)
+        guard !text.isEmpty else { return }
+        print("[CLI] \(label(args)) exited 0 with stderr: \(text)")
+    }
+}
+
 // MARK: - ProcessCLIRunner
 
 /// Production implementation that launches the `watchtower` binary via `Process`.
@@ -89,11 +144,15 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
                 throw CancellationError()
             }
             let exitCode = process.terminationStatus
+            let stderr = String(data: stderrData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if exitCode != 0 {
-                let stderr = String(data: stderrData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                CLILog.failure(args: args, exitCode: exitCode, stderr: stderr)
                 throw CLIRunnerError.nonZeroExit(code: exitCode, stderr: stderr)
             }
+            // Exit 0 with stderr is a warning the child wanted heard; without
+            // this it was read off the pipe and dropped on the floor.
+            CLILog.warning(args: args, stderr: stderr)
             return stdoutData
         } onCancel: {
             process.terminate()
