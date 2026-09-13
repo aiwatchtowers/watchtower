@@ -161,6 +161,21 @@ func (db *DB) SetSlackAccountAuthState(id int64, status, errMsg string) error {
 	return nil
 }
 
+// SetSlackAccountError records errMsg on accountID's error column without
+// touching status — for a data gap (e.g. a search-sync catch-up window that
+// had to be clamped) rather than an auth failure, which is what
+// SetSlackAccountAuthState's status transitions are for.
+func (db *DB) SetSlackAccountError(id int64, errMsg string) error {
+	res, err := db.Exec(`UPDATE slack_accounts SET error = ? WHERE id = ?`, errMsg, id)
+	if err != nil {
+		return fmt.Errorf("setting error for slack account %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting error: no slack_accounts row %d", id)
+	}
+	return nil
+}
+
 // SetSlackAccountRemoved marks accountID as removed and disables it — a
 // non-destructive soft delete, so the row (and any data it left behind)
 // stays reachable by ID.

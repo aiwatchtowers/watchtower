@@ -725,6 +725,35 @@ func TestGetInboxItems_IncludeResolved(t *testing.T) {
 	assert.Len(t, items, 1)
 }
 
+// TestGetInboxItems_ExcludesArchivedByDefault pins H7: a pending item can be
+// archived (auto-archive after 7/14 days, see ArchiveExpiredAmbient/
+// ArchiveStaleActionable) without its status ever leaving "pending" — so a
+// status-only filter used to return archived rows too. On a live install
+// this meant ~2,500 archived-but-pending rows flowing into every reactions
+// sync cycle. IncludeArchived opts back in for callers that want them (the
+// CLI's --include-archived).
+func TestGetInboxItems_ExcludesArchivedByDefault(t *testing.T) {
+	db := openTestDB(t)
+
+	alive, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
+	require.NoError(t, err)
+	archived, err := db.CreateInboxItem(InboxItem{ChannelID: "C2", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "mention"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE inbox_items SET archived_at = ? WHERE id = ?`, "2026-09-01T00:00:00Z", archived)
+	require.NoError(t, err)
+
+	// Both rows are still "pending" — archiving does not change status.
+	items, err := db.GetInboxItems(InboxFilter{Status: "pending"})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, alive, int64(items[0].ID))
+
+	// IncludeArchived opts back in.
+	items, err = db.GetInboxItems(InboxFilter{Status: "pending", IncludeArchived: true})
+	require.NoError(t, err)
+	assert.Len(t, items, 2)
+}
+
 func TestCheckUserRepliedBefore(t *testing.T) {
 	db := openTestDB(t)
 

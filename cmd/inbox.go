@@ -29,6 +29,7 @@ var (
 	inboxFlagPriority               string
 	inboxFlagType                   string
 	inboxFlagAll                    bool
+	inboxFlagIncludeArchived        bool
 	inboxFlagJSON                   bool
 	inboxGenFlagProgressJSON        bool
 	inboxFeedbackRating             string
@@ -120,6 +121,7 @@ func init() {
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
 	inboxCmd.Flags().BoolVar(&inboxFlagAll, "all", false, "include resolved and dismissed items")
+	inboxCmd.Flags().BoolVar(&inboxFlagIncludeArchived, "include-archived", false, "include archived items (auto-archived pending items are hidden by default)")
 	inboxCmd.Flags().BoolVar(&inboxFlagJSON, "json", false, "output as JSON")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
 	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
@@ -143,6 +145,7 @@ func runInbox(cmd *cobra.Command, _ []string) error {
 		Priority:        inboxFlagPriority,
 		TriggerType:     inboxFlagType,
 		IncludeResolved: inboxFlagAll,
+		IncludeArchived: inboxFlagIncludeArchived,
 	}
 
 	items, err := database.GetInboxItems(f)

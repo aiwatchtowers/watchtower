@@ -171,6 +171,9 @@ func (db *DB) GetInboxItems(f InboxFilter) ([]InboxItem, error) {
 	if !f.IncludeResolved {
 		conditions = append(conditions, "status NOT IN ('resolved', 'dismissed')")
 	}
+	if !f.IncludeArchived {
+		conditions = append(conditions, "archived_at IS NULL")
+	}
 	if f.Status != "" {
 		conditions = append(conditions, "status = ?")
 		args = append(args, f.Status)

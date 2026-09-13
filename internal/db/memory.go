@@ -82,7 +82,23 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string,
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`INSERT INTO memory_nodes
+	if err := UpsertMemoryNodeTx(tx, row, body, aliases, provenance...); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory node tx for %s: %w", row.ID, err)
+	}
+	return nil
+}
+
+// UpsertMemoryNodeTx is UpsertMemoryNode's body inside a caller-owned
+// transaction, so several nodes can be indexed atomically with each other and
+// with the caller's own work. The seeder uses it to write the index BEFORE the
+// vault's git commit and roll back if that commit fails (audit C2): a node is
+// never in git history without being in the index for the same run.
+func UpsertMemoryNodeTx(tx *sql.Tx, row MemoryNodeRow, body string, aliases []string, provenance ...ProvenanceRow) error {
+	_, err := tx.Exec(`INSERT INTO memory_nodes
 		(id, type, tier, status, redirect_to, title, path, content_hash, indexed_at, subject, confidence, importance_score)
 		VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -137,10 +153,6 @@ func (db *DB) UpsertMemoryNode(row MemoryNodeRow, body string, aliases []string,
 			row.ID, p.Scheme, p.ChannelID, p.TSRaw, p.TSUnix, p.SenderID); err != nil {
 			return fmt.Errorf("inserting provenance %s/%s for %s: %w", p.ChannelID, p.TSRaw, row.ID, err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing memory node tx for %s: %w", row.ID, err)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -214,7 +215,9 @@ func tightenVaultPerms(vaultPath string) {
 
 // vaultGitignore keeps editor/OS churn (Obsidian workspace state, Finder
 // metadata, temp files) invisible to git status, so it can never be swept
-// into a memory(owner-edit) commit.
+// into a memory(owner-edit) commit. recover.go's isIgnoredVaultPath matches
+// these same three patterns by hand (go-git's hard reset would otherwise
+// delete them) — change one and change the other.
 const vaultGitignore = ".obsidian/\n.DS_Store\n*.tmp\n"
 
 // initVault creates the directory, git-inits it, and commits the initial
@@ -256,7 +259,7 @@ func initVault(vaultPath string) (*git.Repository, error) {
 // CLI command can never interleave vault commits and watermark writes. Returns
 // the unlock func, or ErrLocked when another run holds the lock.
 func (v *Vault) Lock() (func(), error) {
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(v.path), "memory.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(v.lockPath(), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open lock file: %w", err)
 	}
@@ -267,10 +270,44 @@ func (v *Vault) Lock() (func(), error) {
 		}
 		return nil, fmt.Errorf("memory: flock: %w", err)
 	}
+	// Record the holder so a refused command can name the process to stop
+	// (LockHolderPID). Best-effort by design: the lock is held either way, and
+	// a diagnostic that cannot be written must never fail the run that holds it.
+	if terr := f.Truncate(0); terr == nil {
+		_, _ = f.WriteAt([]byte(fmt.Sprintf("pid=%d\n", os.Getpid())), 0)
+	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 	}, nil
+}
+
+// lockPath is the memory lock file: memory.lock in the vault's parent (the
+// workspace directory), the one place Lock and LockHolderPID agree on.
+func (v *Vault) lockPath() string {
+	return filepath.Join(filepath.Dir(v.path), "memory.lock")
+}
+
+// LockHolderPID returns the pid Lock recorded in the lock file, so a command
+// refused with ErrLocked can name the holder instead of saying only that
+// something holds it. ok is false when no lock file exists or its contents do
+// not carry a pid — the stamp is best-effort (see Lock), and a released lock
+// leaves its last holder's pid behind, so this is a diagnostic to print
+// alongside ErrLocked, never a liveness check.
+func (v *Vault) LockHolderPID() (int, bool) {
+	data, err := os.ReadFile(v.lockPath())
+	if err != nil {
+		return 0, false
+	}
+	field := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(field, "pid=") {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(field, "pid="))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
 
 func signature() *object.Signature {

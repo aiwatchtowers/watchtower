@@ -8,11 +8,15 @@ const (
 	// DefaultAIModel is retired as a live default: setup used to seed this
 	// literal into config.yaml, so resolution treats a legacy ai.model equal to
 	// it as "unset" (see internal/providers.ResolveModelsFor). Do not repoint it.
-	DefaultAIModel                = "claude-sonnet-4-6"
-	DefaultOllamaURL              = "http://localhost:11434"
-	DefaultAIContextBudget        = 150000
-	DefaultAIWorkers              = 5
-	DefaultSyncWorkers            = 1
+	DefaultAIModel         = "claude-sonnet-4-6"
+	DefaultOllamaURL       = "http://localhost:11434"
+	DefaultAIContextBudget = 150000
+	DefaultAIWorkers       = 5
+	DefaultSyncWorkers     = 1
+	// DefaultInitialHistDays bounds the Slack search-sync window on a true
+	// first run only (an account with no search_last_date watermark yet).
+	// Once a watermark exists, catch-up depth is governed by
+	// sync.maxSearchCatchUpDays instead — see internal/sync/search_sync.go.
 	DefaultInitialHistDays        = 2
 	DefaultPollInterval           = 15 * time.Minute
 	DefaultSyncThreads            = true

@@ -60,12 +60,30 @@ type seedCandidate struct {
 }
 
 // SeedEntities creates skeleton entity pages for active people, channels
-// with recent traffic, and Jira project keys (mechanical, no AI). An entity
-// whose natural key already resolves to a node is skipped, so re-running is
-// a no-op: nothing to create means no vault commit at all. Created nodes are
-// committed once ("memory(seed): N entities") and mirrored into the SQLite
-// index in the same call.
-func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
+// with recent traffic, and Jira project keys (mechanical, no AI). It returns
+// the number of pages CREATED; stitched ones (below) are not counted.
+//
+// Idempotency is decided over EVERY alias of a candidate, not just its natural
+// key: a candidate whose aliases already live on a page is never re-created,
+// and if that page is missing some of them (the pre-migration-00048 person page
+// aliased by the bare "U123" while the candidate now arrives as "1:U123") the
+// missing aliases are APPENDED to it — identity stitching, the same mechanism
+// that unifies a Gmail sender with a Slack person. A candidate whose aliases
+// span TWO existing pages is left alone entirely and logged: merging them is
+// the semantic tier's job (Merge), not the seeder's.
+//
+// Nothing to write means no vault commit at all. Writes are committed once
+// ("memory(seed): N entities") and mirrored into the SQLite index in the same
+// call — index FIRST, inside one transaction, so a node is never in git history
+// without being in the index for the same run and a failed run leaves neither
+// (audit C2: before this, a duplicate page reached git and then died on the
+// UNIQUE alias constraint, quarantining the orphan file every cycle after).
+//
+// logf may be nil (logging is dropped).
+func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig, logf func(string, ...any)) (int, error) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	since := float64(time.Now().AddDate(0, 0, -cfg.WindowDays).Unix())
 
 	var candidates []seedCandidate
@@ -79,65 +97,244 @@ func SeedEntities(v *Vault, database *db.DB, cfg SeedConfig) (int, error) {
 		candidates = append(candidates, batch...)
 	}
 
-	// claimed tracks the aliases already taken by nodes accepted THIS run
-	// (lower-cased for the COLLATE NOCASE alias grammar). The DB idempotency
-	// check (LookupMemoryAlias) only sees committed nodes — this run's new nodes
-	// are not mirrored into the index until the commit loop below — so without
-	// this set two candidates that share an alias (a Gmail sender whose email is
-	// also a Slack person's email, seeded together on a fresh workspace's first
-	// run) would both be created and collide on the UNIQUE alias constraint. The
-	// set makes identity stitching hold WITHIN a run, not only across runs.
-	claimed := make(map[string]bool)
-	var nodes []Node
-	var ids []string
-	for _, c := range candidates {
-		if claimed[strings.ToLower(c.aliases[0])] {
-			continue // stitched to an entity already accepted this run
-		}
-		_, err := database.LookupMemoryAlias(c.aliases[0])
-		if err == nil {
-			continue // already seeded (or manually created) — idempotency
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("memory: seed lookup %q: %w", c.aliases[0], err)
-		}
-		n := Node{
-			ID:      NewID("entity"),
-			Type:    "entity",
-			Tier:    "long",
-			Status:  "active",
-			Title:   c.title,
-			Aliases: c.aliases,
-			Body:    entitySkeletonBody(c.title, c.what),
-		}
-		n.Refs.PeopleCard = c.peopleCard
-		for _, a := range c.aliases {
-			claimed[strings.ToLower(a)] = true
-		}
-		nodes = append(nodes, n)
-		ids = append(ids, n.ID)
+	plan, err := planSeedWrites(v, database, candidates, logf)
+	if err != nil {
+		return 0, err
 	}
-	if len(nodes) == 0 {
+	if len(plan.write) == 0 {
 		return 0, nil
 	}
 
-	msg := CommitMsg{
-		Op:      "seed",
-		Summary: fmt.Sprintf("%d entities", len(nodes)),
-		Cause:   "seed",
-		NodeIDs: ids,
+	summary := fmt.Sprintf("%d entities", len(plan.write))
+	if plan.stitched > 0 {
+		summary = fmt.Sprintf("%d entities (%d stitched)", len(plan.write), plan.stitched)
 	}
-	if _, err := v.WriteNodes(nodes, msg); err != nil {
+	ids := make([]string, len(plan.write))
+	for i, n := range plan.write {
+		ids[i] = n.ID
+	}
+	msg := CommitMsg{Op: "seed", Summary: summary, Cause: "seed", NodeIDs: ids}
+
+	if err := writeSeedNodes(v, database, plan.write, msg); err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	mem := newOwnerEditedMemo(v)
-	for _, n := range nodes {
-		if err := upsertIndexNode(database, mem.lookup, n, now); err != nil {
-			return 0, err
+	return plan.created, nil
+}
+
+// seedPlan is the decided write set of one seeding pass: the nodes to write
+// (newly minted ones plus existing pages that gained aliases) and how many of
+// each kind, for the returned count and the commit summary.
+type seedPlan struct {
+	write    []Node
+	created  int
+	stitched int
+}
+
+// planSeedWrites decides, candidate by candidate, what this run writes —
+// create, stitch aliases onto an existing page, or stand down — without
+// writing anything. See SeedEntities's doc for the rules.
+func planSeedWrites(v *Vault, database *db.DB, candidates []seedCandidate, logf func(string, ...any)) (seedPlan, error) {
+	// claimed maps an alias (lower-cased for the COLLATE NOCASE alias grammar)
+	// to the node that owns it AMONG THE NODES ACCEPTED THIS RUN. The DB
+	// idempotency check (LookupMemoryAlias) only sees nodes indexed before this
+	// call — this run's writes are not mirrored until SeedEntities commits —
+	// so without this map two candidates that share an alias (a Gmail sender
+	// whose email is also a Slack person's email, seeded together on a fresh
+	// workspace's first run) would both be created and collide on the UNIQUE
+	// alias constraint. The map makes identity stitching hold WITHIN a run, not
+	// only across runs.
+	claimed := make(map[string]string)
+	staged := make(map[string]int) // node id -> index into plan.write
+	var plan seedPlan
+	for _, c := range candidates {
+		owners, unowned, err := resolveCandidate(database, claimed, c.aliases)
+		if err != nil {
+			return seedPlan{}, err
+		}
+		switch {
+		case len(owners) > 1:
+			// A merge, not a seed: leave both pages untouched.
+			logf("memory: seed: candidate %q spans nodes %s and %s, skipping", c.aliases[0], owners[0], owners[1])
+		case len(owners) == 1:
+			if len(unowned) == 0 {
+				continue // already seeded, with every alias — idempotency
+			}
+			idx, fromVault, err := stageSeedUpdate(v, staged, &plan.write, owners[0])
+			if err != nil {
+				// The index names a page the vault cannot produce. One broken
+				// file must not brick the seed step (the Reconcile quarantine
+				// discipline); Reconcile drops the stale row, and the next run
+				// re-offers this candidate.
+				logf("memory: seed: stitching %v onto %s: %v", unowned, owners[0], err)
+				continue
+			}
+			plan.write[idx].Aliases = append(plan.write[idx].Aliases, unowned...)
+			for _, a := range unowned {
+				claimed[strings.ToLower(a)] = owners[0]
+			}
+			if fromVault {
+				// Count only pages that PRE-EXISTED this run. Appending an
+				// alias to a page minted moments ago (a second candidate
+				// resolving to it through claimed) is part of creating it.
+				plan.stitched++
+			}
+		default:
+			n := Node{
+				ID:      NewID("entity"),
+				Type:    "entity",
+				Tier:    "long",
+				Status:  "active",
+				Title:   c.title,
+				Aliases: unowned, // == c.aliases: no alias resolved to anything
+				Body:    entitySkeletonBody(c.title, c.what),
+			}
+			n.Refs.PeopleCard = c.peopleCard
+			for _, a := range n.Aliases {
+				claimed[strings.ToLower(a)] = n.ID
+			}
+			staged[n.ID] = len(plan.write)
+			plan.write = append(plan.write, n)
+			plan.created++
 		}
 	}
-	return len(nodes), nil
+	return plan, nil
+}
+
+// writeSeedNodes validates the write set's aliases against the index, commits
+// it to the vault, and then mirrors it into the index in one short transaction.
+//
+// Validate-FIRST, not index-first: **a validate-first run never creates a
+// UNIQUE collision** — after planSeedWrites every alias either belongs to the
+// node that carries it or belongs to nobody, so validateSeedAliases is an
+// internal-consistency assertion that aborts with NOTHING written if the plan
+// and the index ever disagree. Wrapping the git commit inside the index
+// transaction instead would be a stronger guarantee on paper and a worse one in
+// practice: WriteNodes runs a go-git `wt.Add` per node, each of which walks the
+// whole worktree, so on a large vault the SQLite write lock would be held for
+// minutes — and the pool is one connection with a 5 s busy_timeout, so every
+// concurrent Desktop write would fail with "database is locked".
+//
+// The residual window is therefore a node in git whose index write failed; the
+// next Reconcile picks it up as Added (it is a file with no index row), which is
+// exactly the self-healing path MEM-02 already guarantees. Every DB read the
+// index rows need is hoisted out of the transaction (prepareIndexNode) because
+// the SQLite handle is single-connection (db.Open sets SetMaxOpenConns(1)) and a
+// read issued while the transaction holds that connection would deadlock.
+func writeSeedNodes(v *Vault, database *db.DB, write []Node, msg CommitMsg) error {
+	if err := validateSeedAliases(database, write); err != nil {
+		return err
+	}
+	if _, err := v.WriteNodes(write, msg); err != nil {
+		return err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	prepared := make([]preparedIndexNode, len(write))
+	for i, n := range write {
+		p, err := prepareIndexNode(database, mem.lookup, n, now)
+		if err != nil {
+			return err
+		}
+		prepared[i] = p
+	}
+
+	tx, err := database.Begin()
+	if err != nil {
+		return fmt.Errorf("memory: seed index tx: %w", err)
+	}
+	defer tx.Rollback()
+	for _, p := range prepared {
+		if err := p.upsertTx(tx); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory: seed index commit: %w", err)
+	}
+	return nil
+}
+
+// validateSeedAliases checks that every alias of every node about to be written
+// is free or already owned by that same node — both across the write set and
+// against the index. A violation is unreachable after planSeedWrites, so it is
+// reported as an internal inconsistency and aborts the pass before anything is
+// written, rather than surfacing later as a UNIQUE constraint failure with a
+// duplicate page already committed to git (audit C2).
+func validateSeedAliases(database *db.DB, write []Node) error {
+	claimant := make(map[string]string) // lower(alias) -> node id claiming it here
+	for _, n := range write {
+		for _, a := range n.Aliases {
+			key := strings.ToLower(a)
+			if other, ok := claimant[key]; ok && other != n.ID {
+				return fmt.Errorf("memory: seed: alias %q claimed by both %s and %s", a, other, n.ID)
+			}
+			claimant[key] = n.ID
+
+			owner, err := database.LookupMemoryAlias(a)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+			case err != nil:
+				return fmt.Errorf("memory: seed validate %q: %w", a, err)
+			case owner != n.ID:
+				return fmt.Errorf("memory: seed: alias %q already belongs to %s, not %s", a, owner, n.ID)
+			}
+		}
+	}
+	return nil
+}
+
+// resolveCandidate resolves every alias of a candidate against the nodes
+// accepted earlier in this run and then the index, returning the distinct
+// owning node ids in first-seen order plus the aliases nobody owns yet (in
+// the candidate's own casing, deduplicated case-insensitively so a candidate
+// carrying two spellings of one alias cannot collide with itself).
+func resolveCandidate(database *db.DB, claimed map[string]string, aliases []string) ([]string, []string, error) {
+	var owners, unowned []string
+	seenOwner := make(map[string]bool, len(aliases))
+	seenFree := make(map[string]bool, len(aliases))
+	for _, a := range aliases {
+		key := strings.ToLower(a)
+		id, ok := claimed[key]
+		if !ok {
+			var lookupErr error
+			id, lookupErr = database.LookupMemoryAlias(a)
+			switch {
+			case lookupErr == nil:
+			case errors.Is(lookupErr, sql.ErrNoRows):
+				if !seenFree[key] {
+					seenFree[key] = true
+					unowned = append(unowned, a)
+				}
+				continue
+			default:
+				return nil, nil, fmt.Errorf("memory: seed lookup %q: %w", a, lookupErr)
+			}
+		}
+		if !seenOwner[id] {
+			seenOwner[id] = true
+			owners = append(owners, id)
+		}
+	}
+	return owners, unowned, nil
+}
+
+// stageSeedUpdate returns the index in write of the node to stitch aliases
+// onto, reading it from the vault the first time this run touches it.
+// fromVault reports whether this call did that read — false for a node already
+// in the write set, which is how the caller tells a stitch onto a pre-existing
+// page from one onto a page minted earlier in the same run.
+func stageSeedUpdate(v *Vault, staged map[string]int, write *[]Node, nodeID string) (idx int, fromVault bool, err error) {
+	if idx, ok := staged[nodeID]; ok {
+		return idx, false, nil
+	}
+	n, err := v.ReadNode(nodeID)
+	if err != nil {
+		return 0, false, err
+	}
+	staged[nodeID] = len(*write)
+	*write = append(*write, n)
+	return staged[nodeID], true, nil
 }
 
 // entitySkeletonBody renders the v1 entity template: H1 plus the What /
@@ -229,21 +426,15 @@ func seedChannels(database *db.DB, _ SeedConfig, since float64) ([]seedCandidate
 // seeded even while Jira sync is dead so the aliases are ready when it
 // revives. No activity window: project keys are few and stable.
 func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate, error) {
-	rows, err := database.Query(`SELECT DISTINCT project_key FROM jira_issues ORDER BY project_key`)
+	keys, err := database.ListJiraProjectKeys()
 	if err != nil {
-		return nil, fmt.Errorf("memory: seed jira projects query: %w", err)
+		return nil, fmt.Errorf("memory: seed jira projects: %w", err)
 	}
-	defer rows.Close()
-
-	var out []seedCandidate
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("memory: seed jira projects scan: %w", err)
-		}
+	out := make([]seedCandidate, 0, len(keys))
+	for _, key := range keys {
 		out = append(out, seedCandidate{title: key, aliases: []string{key}})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // seedGmailSenders returns one candidate per distinct from_email that sent at

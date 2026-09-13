@@ -2,6 +2,7 @@ package memory
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -142,13 +143,48 @@ func appendToLinks(body, line string) string {
 // passes a per-call ownerEditedMemo's lookup method, never v.OwnerEdited
 // directly.
 func upsertIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, indexedAt string) error {
-	rel, err := nodeRelPath(n.ID)
+	p, err := prepareIndexNode(database, ownerEdited, n, indexedAt)
 	if err != nil {
 		return err
 	}
+	if err := database.UpsertMemoryNode(p.row, p.body, p.aliases, p.provenance...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", n.ID, err)
+	}
+	return nil
+}
+
+// preparedIndexNode is one node's index payload, fully computed: every DB READ
+// it needs (importance signals, provenance senders) has already happened, so it
+// can be written from inside a transaction. That matters because the SQLite
+// handle is single-connection (db.Open sets SetMaxOpenConns(1)) — a read issued
+// while a transaction holds that one connection would deadlock.
+type preparedIndexNode struct {
+	row        db.MemoryNodeRow
+	body       string
+	aliases    []string
+	provenance []db.ProvenanceRow
+}
+
+// upsertTx mirrors the prepared node into the index inside a caller-owned
+// transaction.
+func (p preparedIndexNode) upsertTx(tx *sql.Tx) error {
+	if err := db.UpsertMemoryNodeTx(tx, p.row, p.body, p.aliases, p.provenance...); err != nil {
+		return fmt.Errorf("memory: index %s: %w", p.row.ID, err)
+	}
+	return nil
+}
+
+// prepareIndexNode computes a node's index payload, hashing the same rendered
+// bytes that WriteNodes put on disk (so a later Reconcile sees the file as
+// unchanged). See upsertIndexNode for the ownerEdited contract.
+func prepareIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error), n Node, indexedAt string) (preparedIndexNode, error) {
+	rel, err := nodeRelPath(n.ID)
+	if err != nil {
+		return preparedIndexNode{}, err
+	}
 	importance, err := computeNodeImportance(database, ownerEdited, n, rel)
 	if err != nil {
-		return fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
+		return preparedIndexNode{}, fmt.Errorf("memory: computing importance for %s: %w", n.ID, err)
 	}
 	sum := sha256.Sum256(n.Render())
 	row := db.MemoryNodeRow{
@@ -165,8 +201,10 @@ func upsertIndexNode(database *db.DB, ownerEdited func(rel string) (bool, error)
 		Confidence:      n.Confidence, // file-derived (belief-only; 0 otherwise), see 00019
 		ImportanceScore: importance,
 	}
-	if err := database.UpsertMemoryNode(row, n.Body, n.Aliases, provenanceRows(n, dbSenderResolver{database}, nil)...); err != nil {
-		return fmt.Errorf("memory: index %s: %w", n.ID, err)
-	}
-	return nil
+	return preparedIndexNode{
+		row:        row,
+		body:       n.Body,
+		aliases:    n.Aliases,
+		provenance: provenanceRows(n, dbSenderResolver{database}, nil),
+	}, nil
 }

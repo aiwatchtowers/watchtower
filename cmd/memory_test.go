@@ -11,6 +11,7 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -125,7 +126,8 @@ func TestCLI_MemoryCommandRegistered(t *testing.T) {
 			for _, sub := range c.Commands() {
 				subs[sub.Name()] = true
 			}
-			for _, want := range []string{"status", "reindex", "open", "recall", "consolidate", "seed", "digest-compare"} {
+			for _, want := range []string{"status", "reindex", "open", "recall", "consolidate", "seed", "digest-compare",
+				"reset-to", "migrate-slack-ids"} {
 				assert.True(t, subs[want], "memory %s subcommand should be registered", want)
 			}
 		}
@@ -505,6 +507,38 @@ func TestCLI_MemoryFactoryPassesLogf(t *testing.T) {
 		"the factory must pass logf through to the pipeline")
 }
 
+// TestCLI_MemoryFactoryGeneratorIsTimeoutBounded pins H8 for the memory
+// pipeline. It is the one pipeline wired outside cliPooledGenerator, and it
+// used to get a bare cliGenerator — so every memory AI call ran unbounded
+// while the daemon phase held sync.lock, which is exactly the freeze the
+// timeout was introduced to end.
+func TestCLI_MemoryFactoryGeneratorIsTimeoutBounded(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, true)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	bound, ok := digest.CallTimeout(cliBoundedGenerator(cfg))
+	require.True(t, ok, "the memory pipeline's generator must carry a wall-clock bound")
+	assert.Equal(t, digest.DaemonAICallTimeout, bound)
+
+	// ...and the factory must source it there rather than building its own.
+	old := cliBoundedGenerator
+	t.Cleanup(func() { cliBoundedGenerator = old })
+	calls := 0
+	cliBoundedGenerator = func(c *config.Config) digest.Generator {
+		calls++
+		return old(c)
+	}
+	_ = newMemoryPipelineFactory(database, vault, cfg, t.Logf)
+	assert.Equal(t, 1, calls, "the factory must build its generator through cliBoundedGenerator")
+}
+
 // TestCLI_MemoryIndex prints the mechanical index.md (the browsing surface of
 // the two-tier world map).
 func TestCLI_MemoryIndex(t *testing.T) {
@@ -534,4 +568,227 @@ func TestCLI_MemoryIndex_NotGenerated(t *testing.T) {
 	memoryIndexCmd.SetOut(&buf)
 	require.NoError(t, memoryIndexCmd.RunE(memoryIndexCmd, nil))
 	assert.Contains(t, buf.String(), "not generated yet")
+}
+
+// vaultHead returns the vault repository's current HEAD hash.
+func vaultHead(t *testing.T, vaultPath string) string {
+	t.Helper()
+	repo, err := git.PlainOpen(vaultPath)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
+	return head.Hash().String()
+}
+
+// setDryRun sets a command's --dry-run flag for the life of the test (the
+// command vars are package-level, so the value must not leak into the next one).
+func setDryRun(t *testing.T, cmd *cobra.Command, on bool) {
+	t.Helper()
+	require.NoError(t, cmd.Flags().Set("dry-run", fmt.Sprintf("%t", on)))
+	t.Cleanup(func() { _ = cmd.Flags().Set("dry-run", "false") })
+}
+
+// TestCLI_MemoryResetTo_DryRunPreviewsAndWritesNothing: the preview reports
+// the target and what would be discarded, and leaves the vault where it is.
+func TestCLI_MemoryResetTo_DryRunPreviewsAndWritesNothing(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedMemoryEntityFixture(t, vaultPath, database)
+	database.Close()
+	target := vaultHead(t, vaultPath)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	_, err = vault.WriteNodes([]memory.Node{{
+		ID: memory.NewID("episode"), Type: "episode", Tier: "short", Status: "active",
+		Body: "# Later\n\nAdded after the target commit.\n",
+	}}, memory.CommitMsg{Op: "extract", Summary: "later", Cause: "test"})
+	require.NoError(t, err)
+	head := vaultHead(t, vaultPath)
+
+	setDryRun(t, memoryResetToCmd, true)
+	var buf bytes.Buffer
+	memoryResetToCmd.SetOut(&buf)
+	require.NoError(t, memoryResetToCmd.RunE(memoryResetToCmd, []string{target}))
+
+	out := buf.String()
+	assert.Contains(t, out, "Commits discarded: 1")
+	assert.Contains(t, out, "Files removed:     1")
+	assert.Contains(t, out, "Ignored files preserved: 0")
+	assert.Contains(t, out, "Dry run — nothing written.")
+	assert.Equal(t, head, vaultHead(t, vaultPath), "a dry run never moves HEAD")
+}
+
+// TestCLI_MemoryResetTo_ResetsReindexesAndFastForwards: the real run rewinds
+// the vault, rebuilds the index from it, and stamps the extraction watermarks
+// to now so the discarded window is not re-extracted (FEAT-03).
+func TestCLI_MemoryResetTo_ResetsReindexesAndFastForwards(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	keptID := seedMemoryEntityFixture(t, vaultPath, database)
+	database.Close()
+	target := vaultHead(t, vaultPath)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	dropped := memory.Node{
+		ID: memory.NewID("episode"), Type: "episode", Tier: "short", Status: "active",
+		Body: "# Later\n\nAdded after the target commit.\n",
+	}
+	_, err = vault.WriteNodes([]memory.Node{dropped}, memory.CommitMsg{Op: "extract", Summary: "later", Cause: "test"})
+	require.NoError(t, err)
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	_, err = memory.Reconcile(vault, database, t.Logf)
+	require.NoError(t, err)
+	require.NoError(t, database.SetMemoryWatermark(1700000000))
+	database.Close()
+
+	var buf bytes.Buffer
+	memoryResetToCmd.SetOut(&buf)
+	require.NoError(t, memoryResetToCmd.RunE(memoryResetToCmd, []string{target}))
+	assert.Contains(t, buf.String(), "Vault reset to "+target)
+	assert.Contains(t, buf.String(), "fast-forwarded")
+
+	assert.Equal(t, target, vaultHead(t, vaultPath))
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	_, err = database.GetMemoryNode(keptID)
+	assert.NoError(t, err, "the surviving node stays indexed")
+	_, err = database.GetMemoryNode(dropped.ID)
+	assert.Error(t, err, "the discarded node leaves the index with its file")
+
+	wm, err := database.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Greater(t, wm, float64(time.Now().Add(-time.Hour).Unix()), "watermark fast-forwarded to now")
+}
+
+// TestCLI_MemoryResetTo_RefusesWhileLocked: a memory run in progress (the
+// daemon's phase, or another CLI command) blocks the reset, and the refusal
+// names the holder's pid.
+func TestCLI_MemoryResetTo_RefusesWhileLocked(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedMemoryEntityFixture(t, vaultPath, database)
+	database.Close()
+	target := vaultHead(t, vaultPath)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	unlock, err := vault.Lock()
+	require.NoError(t, err)
+	defer unlock()
+
+	var buf bytes.Buffer
+	memoryResetToCmd.SetOut(&buf)
+	err = memoryResetToCmd.RunE(memoryResetToCmd, []string{target})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "another memory run is in progress")
+	assert.Contains(t, err.Error(), fmt.Sprintf("pid %d", os.Getpid()))
+	assert.Equal(t, target, vaultHead(t, vaultPath))
+}
+
+// TestCLI_MemoryMigrateSlackIDs_DryRunAndRun: the preview samples the
+// rewrites without writing; the real run commits them and rebuilds the index.
+func TestCLI_MemoryMigrateSlackIDs_DryRunAndRun(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO slack_accounts (id, team_id, team_name, current_user_id)
+		VALUES (3, 'T003', 'team', '3:U0123ABCD')`)
+	require.NoError(t, err)
+
+	vault, err := memory.OpenVault(vaultPath)
+	require.NoError(t, err)
+	n := memory.Node{
+		ID: memory.NewID("entity"), Type: "entity", Tier: "long", Status: "active",
+		Aliases: []string{"U0123ABCD"},
+		Body:    "# Alice\n\n## What\nLegacy page.\n",
+	}
+	_, err = vault.WriteNodes([]memory.Node{n}, memory.CommitMsg{Op: "seed", Summary: "legacy", Cause: "test"})
+	require.NoError(t, err)
+	_, err = memory.Reconcile(vault, database, t.Logf)
+	require.NoError(t, err)
+	database.Close()
+	before := vaultHead(t, vaultPath)
+
+	setDryRun(t, memoryMigrateSlackIDsCmd, true)
+	var buf bytes.Buffer
+	memoryMigrateSlackIDsCmd.SetOut(&buf)
+	require.NoError(t, memoryMigrateSlackIDsCmd.RunE(memoryMigrateSlackIDsCmd, nil))
+	out := buf.String()
+	assert.Contains(t, out, "Nodes to rewrite:    1 (entity 1)")
+	assert.Contains(t, out, "U0123ABCD → 3:U0123ABCD")
+	assert.Contains(t, out, "Dry run — nothing written.")
+	assert.Equal(t, before, vaultHead(t, vaultPath))
+
+	require.NoError(t, memoryMigrateSlackIDsCmd.Flags().Set("dry-run", "false"))
+	buf.Reset()
+	require.NoError(t, memoryMigrateSlackIDsCmd.RunE(memoryMigrateSlackIDsCmd, nil))
+	assert.Contains(t, buf.String(), "index rebuilt")
+	assert.NotEqual(t, before, vaultHead(t, vaultPath))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	nodeID, err := database.LookupMemoryAlias("3:U0123ABCD")
+	require.NoError(t, err)
+	assert.Equal(t, n.ID, nodeID)
+}
+
+// TestCLI_MemoryMigrateSlackIDs_NoBareIDs reports cleanly (and writes nothing)
+// on a vault that is already migrated.
+func TestCLI_MemoryMigrateSlackIDs_NoBareIDs(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO slack_accounts (id, team_id, team_name, current_user_id)
+		VALUES (3, 'T003', 'team', '3:U0123ABCD')`)
+	require.NoError(t, err)
+	seedMemoryEntityFixture(t, vaultPath, database)
+	database.Close()
+	before := vaultHead(t, vaultPath)
+
+	var buf bytes.Buffer
+	memoryMigrateSlackIDsCmd.SetOut(&buf)
+	require.NoError(t, memoryMigrateSlackIDsCmd.RunE(memoryMigrateSlackIDsCmd, nil))
+	assert.Contains(t, buf.String(), "Nothing to migrate")
+	assert.Equal(t, before, vaultHead(t, vaultPath))
+}
+
+// TestCLI_MemoryResetTo_TargetIsHeadIsANoOp: asking to reset to the commit
+// HEAD already points at stops after the preview — nothing is reindexed and
+// no watermark moves.
+func TestCLI_MemoryResetTo_TargetIsHeadIsANoOp(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedMemoryEntityFixture(t, vaultPath, database)
+	require.NoError(t, database.SetMemoryWatermark(1700000000))
+	database.Close()
+	head := vaultHead(t, vaultPath)
+
+	var buf bytes.Buffer
+	memoryResetToCmd.SetOut(&buf)
+	require.NoError(t, memoryResetToCmd.RunE(memoryResetToCmd, []string{head}))
+	assert.Contains(t, buf.String(), "already at the target commit")
+	assert.Equal(t, head, vaultHead(t, vaultPath))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	wm, err := database.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1700000000), wm, "a no-op reset never fast-forwards")
 }

@@ -182,7 +182,7 @@ final class SlackAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the account set change takes effect now.
-            Task { await DaemonManager.restart() }
+            Task { await DaemonManager.restartLogging() }
         } else if result.exitCode == 15 || result.exitCode == 9 {
             // SIGTERM/SIGKILL — user cancelled
             error = nil

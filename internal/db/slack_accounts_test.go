@@ -98,6 +98,32 @@ func TestSlackAccount_SetAuthState_RoundTrip(t *testing.T) {
 	assert.Equal(t, "token expired", got.Error)
 }
 
+func TestSlackAccount_SetError_MissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.SetSlackAccountError(999, "boom")
+	require.Error(t, err)
+}
+
+// TestSlackAccount_SetError_LeavesStatusUnchanged pins the narrow contract:
+// unlike SetSlackAccountAuthState, SetSlackAccountError writes only the
+// error column — a data gap (e.g. a clamped search-sync catch-up window) is
+// not an auth failure and must not perturb status.
+func TestSlackAccount_SetError_LeavesStatusUnchanged(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetSlackAccountAuthState(id, "ok", ""))
+
+	require.NoError(t, d.SetSlackAccountError(id, "gap of 47 days exceeds the 30-day catch-up cap"))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "SetSlackAccountError must not touch status")
+	assert.Equal(t, "gap of 47 days exceeds the 30-day catch-up cap", got.Error)
+}
+
 // TestSlackAccount_SetRemoved_NonDestructive verifies removal marks the row
 // removed/disabled without deleting it — GetSlackAccount/ListSlackAccounts
 // still return it, but ListEnabledSlackAccounts excludes it.

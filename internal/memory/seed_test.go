@@ -1,7 +1,11 @@
 package memory
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -76,7 +80,7 @@ func TestSeedPersonNodeShape(t *testing.T) {
 	seedMessages(t, d, "C1GEN", "U1ALICE", 5)
 	cardID := seedPeopleCard(t, d, "U1ALICE", "Team lead for billing.")
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, created, "one person + one channel")
 
@@ -102,7 +106,7 @@ func TestSeedPersonWithoutCardOrEmail(t *testing.T) {
 	seedChannel(t, d, "C1GEN", "general", "", "")
 	seedMessages(t, d, "C1GEN", "U2BOB", 3)
 
-	_, err := SeedEntities(v, d, seedTestConfig)
+	_, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, "U2BOB")
@@ -118,7 +122,7 @@ func TestSeedChannelNode(t *testing.T) {
 	seedChannel(t, d, "C2DEPLOY", "deploys", "Deploy announcements", "Ship it")
 	seedMessages(t, d, "C2DEPLOY", "U1ALICE", 1)
 
-	_, err := SeedEntities(v, d, seedTestConfig)
+	_, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, "C2DEPLOY")
@@ -136,7 +140,7 @@ func TestSeedChannelWhatFallsBackToPurpose(t *testing.T) {
 	seedChannel(t, d, "C3OPS", "ops", "", "Operational firefighting")
 	seedMessages(t, d, "C3OPS", "U1ALICE", 1)
 
-	_, err := SeedEntities(v, d, seedTestConfig)
+	_, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, "C3OPS")
@@ -149,7 +153,7 @@ func TestSeedJiraProjectNode(t *testing.T) {
 	seedJiraIssue(t, d, "PROJX-1", "PROJX")
 	seedJiraIssue(t, d, "PROJX-2", "PROJX")
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "distinct project keys, not one node per issue")
 
@@ -167,7 +171,7 @@ func TestSeedThresholdAndBotRespected(t *testing.T) {
 	seedMessages(t, d, "C1GEN", "U3QUIET", 2) // below MinMessages=3
 	seedMessages(t, d, "C1GEN", "U4BOT", 10)  // bot: excluded regardless of volume
 
-	_, err := SeedEntities(v, d, seedTestConfig)
+	_, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 
 	_, err = Resolve(v, d, "U3QUIET")
@@ -183,7 +187,7 @@ func TestSeedIdempotentSecondRun(t *testing.T) {
 	seedMessages(t, d, "C1GEN", "U1ALICE", 4)
 	seedJiraIssue(t, d, "PROJX-1", "PROJX")
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 3, created)
 
@@ -192,7 +196,7 @@ func TestSeedIdempotentSecondRun(t *testing.T) {
 	nodesAfterFirst, err := d.ListMemoryNodes()
 	require.NoError(t, err)
 
-	created, err = SeedEntities(v, d, seedTestConfig)
+	created, err = SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "second run creates nothing")
 
@@ -265,7 +269,7 @@ func TestSeedGmailSenderNewPerson(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedGmailSenderN(t, d, "Ext.Sender@Example.com", "External Sender", 3)
 
-	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "one external sender → one person entity")
 
@@ -282,12 +286,12 @@ func TestSeedGmailSenderBelowThresholdSkipped(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedGmailSenderN(t, d, "sparse@example.com", "Sparse", 2) // below MinMessages=3
 
-	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "a below-threshold sender is not seeded")
 
 	seedGmailSenderN(t, d, "sparse@example.com", "Sparse", 3) // now 5 total, over the floor
-	created, err = SeedEntities(v, d, seedGmailTestConfig)
+	created, err = SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "the same sender is seeded once it clears the floor")
 }
@@ -299,7 +303,7 @@ func TestSeedGmailSenderMachineSenderDropped(t *testing.T) {
 	seedGmailSenderN(t, d, "no-reply@vendor.io", "Vendor Bot", 25) // high volume
 	seedGmailSenderN(t, d, "notifications@github.com", "GitHub", 10)
 
-	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "machine senders are dropped regardless of volume")
 
@@ -313,7 +317,7 @@ func TestSeedGmailSenderTitleFallsBackToLocalPart(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedGmailSenderN(t, d, "billing@vendor.io", "", 3)
 
-	_, err := SeedEntities(v, d, seedGmailTestConfig)
+	_, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, "billing@vendor.io")
@@ -332,7 +336,7 @@ func TestSeedGmailSenderStitchedToSlackPerson(t *testing.T) {
 	// Alice also appears as a high-volume Gmail sender (case-differing) — must NOT duplicate.
 	seedGmailSenderN(t, d, "Alice@example.com", "Alice A.", 4)
 
-	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, created, "alice (person) + #general — NO duplicate for the gmail sender")
 
@@ -350,7 +354,7 @@ func TestSeedGmailSenderGateOff(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedGmailSenderN(t, d, "ext@example.com", "Ext", 10)
 
-	created, err := SeedEntities(v, d, seedTestConfig) // Gmail: false
+	created, err := SeedEntities(v, d, seedTestConfig, nil) // Gmail: false
 	require.NoError(t, err)
 	assert.Zero(t, created, "no senders seeded when the gmail source is off")
 }
@@ -361,11 +365,11 @@ func TestSeedGmailSenderIdempotent(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedGmailSenderN(t, d, "sender@example.com", "Sender", 3)
 
-	created, err := SeedEntities(v, d, seedGmailTestConfig)
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 
-	created, err = SeedEntities(v, d, seedGmailTestConfig)
+	created, err = SeedEntities(v, d, seedGmailTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "second run creates nothing")
 }
@@ -377,7 +381,7 @@ func TestSeedGmailSenderOutsideWindowSkipped(t *testing.T) {
 	old := time.Now().AddDate(0, 0, -60).UTC().Format(time.RFC3339)
 	seedGmailMessage(t, d, "m1", "t1", "stale@example.com", "Stale", "Hi", "body", old)
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "out-of-window sender not seeded")
 }
@@ -432,7 +436,7 @@ func TestSeedCalendarSeries(t *testing.T) {
 	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-08T10:00:00Z", end: "2026-07-08T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
 	seedCalendarEvent(t, d, calEvent{id: "evt-2", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
 
-	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	created, err := SeedEntities(v, d, seedCalendarTestConfig, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, created, "two instances of one series → one calseries entity")
 
@@ -451,7 +455,7 @@ func TestSeedCalendarSeriesNonRecurringNone(t *testing.T) {
 	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "One-off", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: false})
 	seedCalendarEvent(t, d, calEvent{id: "evt-2", title: "Rec no id", start: "2026-07-15T11:00:00Z", end: "2026-07-15T11:30:00Z", isRecurring: true, rawJSON: `{"summary":"x"}`})
 
-	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	created, err := SeedEntities(v, d, seedCalendarTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "no recurringEventId → no series entity")
 }
@@ -463,7 +467,7 @@ func TestSeedCalendarSeriesMalformedRawJSONSkipped(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Bad", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{not json`})
 
-	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	created, err := SeedEntities(v, d, seedCalendarTestConfig, nil)
 	require.NoError(t, err, "malformed raw_json is skipped, not an error")
 	assert.Zero(t, created)
 }
@@ -474,7 +478,7 @@ func TestSeedCalendarSeriesGateOff(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
 
-	created, err := SeedEntities(v, d, seedTestConfig) // Calendar: false
+	created, err := SeedEntities(v, d, seedTestConfig, nil) // Calendar: false
 	require.NoError(t, err)
 	assert.Zero(t, created, "no series seeded when the calendar source is off")
 }
@@ -485,11 +489,11 @@ func TestSeedCalendarSeriesIdempotent(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedCalendarEvent(t, d, calEvent{id: "evt-1", title: "Weekly Sync", start: "2026-07-15T10:00:00Z", end: "2026-07-15T10:30:00Z", isRecurring: true, rawJSON: `{"recurringEventId":"series-A"}`})
 
-	created, err := SeedEntities(v, d, seedCalendarTestConfig)
+	created, err := SeedEntities(v, d, seedCalendarTestConfig, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, created)
 
-	created, err = SeedEntities(v, d, seedCalendarTestConfig)
+	created, err = SeedEntities(v, d, seedCalendarTestConfig, nil)
 	require.NoError(t, err)
 	assert.Zero(t, created, "second run creates nothing")
 }
@@ -500,10 +504,256 @@ func TestSeedCommitMessage(t *testing.T) {
 	seedChannel(t, d, "C1GEN", "general", "", "")
 	seedMessages(t, d, "C1GEN", "U1ALICE", 3)
 
-	created, err := SeedEntities(v, d, seedTestConfig)
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, created)
 
 	head := headCommit(t, openTestRepo(t, v.path))
 	assert.Contains(t, head.Message, "memory(seed): 2 entities")
+}
+
+// legacyEntityNode builds a page in the shape SeedEntities writes, for tests
+// that need an entity that already existed before this run.
+func legacyEntityNode(title string, aliases ...string) Node {
+	return Node{
+		ID:      NewID("entity"),
+		Type:    "entity",
+		Tier:    "long",
+		Status:  "active",
+		Title:   title,
+		Aliases: aliases,
+		Body:    entitySkeletonBody(title, ""),
+	}
+}
+
+// TestSeedStitchesNamespacedAliasOntoLegacyPage reproduces the 2026-08-03
+// production crash (audit C2): migration 00048 namespaced users.id/channels.id,
+// so a seed candidate's natural key became "1:U123" while its already-seeded
+// page still carried the bare "U123" plus the person's e-mail. Matching only
+// the FIRST alias missed that page, minted a duplicate, committed it to git,
+// and then died on the e-mail alias's UNIQUE constraint — freezing every
+// memory run from then on. The candidate must stitch onto the existing page
+// instead.
+func TestSeedStitchesNamespacedAliasOntoLegacyPage(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+
+	// The vault as it was seeded BEFORE 00048: the person's page is keyed by
+	// the bare user id and carries her e-mail. (The channel page is already
+	// namespaced — a channel candidate carries ONE alias, so a bare channel
+	// page has nothing to stitch by and is simply re-created; harmless, since
+	// no alias is shared, and the semantic tier's dedupe collapses it.)
+	person := legacyEntityNode("Alice Adams", "U123", "a@x.test")
+	channel := legacyEntityNode("#general", "1:C1GEN")
+	writeAndIndex(t, v, d, person)
+	writeAndIndex(t, v, d, channel)
+
+	// The database AFTER 00048: the same person and channel, namespaced.
+	seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+	seedChannel(t, d, "1:C1GEN", "general", "", "")
+	seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+	repo := openTestRepo(t, v.path)
+	commitsBefore := commitCount(t, repo)
+
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
+	require.NoError(t, err, "the namespaced candidate must not collide on the e-mail alias")
+	assert.Zero(t, created, "both candidates stitch onto existing pages, nothing is created")
+
+	byNamespaced, err := Resolve(v, d, "1:U123")
+	require.NoError(t, err)
+	assert.Equal(t, person.ID, byNamespaced.ID, "the namespaced alias resolves to the legacy page")
+	assert.Subset(t, byNamespaced.Aliases, []string{"U123", "a@x.test", "1:U123"},
+		"the legacy page gained the namespaced alias, keeping the old ones")
+
+	byChannel, err := Resolve(v, d, "1:C1GEN")
+	require.NoError(t, err)
+	assert.Equal(t, channel.ID, byChannel.ID)
+
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	assert.Len(t, nodes, 2, "no duplicate entity minted")
+	assert.Equal(t, commitsBefore+1, commitCount(t, repo), "one commit for the alias stitch")
+}
+
+// TestSeedSkipsCandidateSpanningTwoNodes: the candidate's user id and e-mail
+// already live on DIFFERENT pages. Unifying them is a merge — the semantic
+// tier's job — so the seeder must touch neither page, create nothing, write no
+// commit, and say once why it stood down.
+func TestSeedSkipsCandidateSpanningTwoNodes(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	byID := legacyEntityNode("Alice", "1:U123")
+	byEmail := legacyEntityNode("A. Adams", "a@x.test")
+	writeAndIndex(t, v, d, byID)
+	writeAndIndex(t, v, d, byEmail)
+	writeAndIndex(t, v, d, legacyEntityNode("#general", "1:C1GEN"))
+
+	seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+	seedChannel(t, d, "1:C1GEN", "general", "", "")
+	seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+	repo := openTestRepo(t, v.path)
+	commitsBefore := commitCount(t, repo)
+
+	var logs []string
+	created, err := SeedEntities(v, d, seedTestConfig, func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	})
+	require.NoError(t, err)
+	assert.Zero(t, created, "a spanning candidate is never seeded")
+
+	require.Len(t, logs, 1, "exactly one line about the spanning candidate")
+	assert.Contains(t, logs[0], "spans nodes")
+	assert.Contains(t, logs[0], byID.ID)
+	assert.Contains(t, logs[0], byEmail.ID)
+
+	assert.Equal(t, commitsBefore, commitCount(t, repo), "nothing written")
+	for _, n := range []Node{byID, byEmail} {
+		got, err := Resolve(v, d, n.ID)
+		require.NoError(t, err)
+		assert.Equal(t, n.Aliases, got.Aliases, "page %s left untouched", n.ID)
+	}
+	nodes, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	assert.Len(t, nodes, 3, "no fourth page minted")
+}
+
+// TestSeedAliasArrangementsNeverCollide walks the alias arrangements a live
+// vault can be in after the multi-account migrations — bare page vs namespaced
+// candidate and back, partial overlaps, case differences, a split identity —
+// and pins that none of them makes the seeder return a UNIQUE-constraint error
+// (the audit C2 failure mode is impossible by construction, not merely
+// unobserved). The person is always the same human: user "1:U123", e-mail
+// "a@x.test".
+func TestSeedAliasArrangementsNeverCollide(t *testing.T) {
+	cases := []struct {
+		name        string
+		pages       [][]string // aliases of the entity pages already in the vault
+		wantCreated int
+		wantStitch  []string // aliases the person's page must carry afterwards
+	}{
+		{
+			name:        "legacy bare page gains the namespaced alias",
+			pages:       [][]string{{"U123", "a@x.test"}},
+			wantCreated: 0,
+			wantStitch:  []string{"U123", "a@x.test", "1:U123"},
+		},
+		{
+			name:        "namespaced page already complete",
+			pages:       [][]string{{"1:U123", "a@x.test"}},
+			wantCreated: 0,
+			wantStitch:  []string{"1:U123", "a@x.test"},
+		},
+		{
+			name:        "page keyed by e-mail alone gains the user id",
+			pages:       [][]string{{"a@x.test"}},
+			wantCreated: 0,
+			wantStitch:  []string{"a@x.test", "1:U123"},
+		},
+		{
+			name:        "page keyed by user id alone gains the e-mail",
+			pages:       [][]string{{"1:U123"}},
+			wantCreated: 0,
+			wantStitch:  []string{"1:U123", "a@x.test"},
+		},
+		{
+			name:        "case-differing e-mail is not appended twice",
+			pages:       [][]string{{"U123", "A@X.TEST"}},
+			wantCreated: 0,
+			wantStitch:  []string{"U123", "A@X.TEST", "1:U123"},
+		},
+		{
+			name:        "no page at all — an ordinary create",
+			pages:       nil,
+			wantCreated: 1,
+			wantStitch:  []string{"1:U123", "a@x.test"},
+		},
+		{
+			name:        "identity split across two pages — neither is touched",
+			pages:       [][]string{{"1:U123"}, {"a@x.test"}},
+			wantCreated: 0,
+			wantStitch:  []string{"1:U123"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, d := newTestVault(t), newTestDB(t)
+			// The channel page always exists, so the counts below describe the
+			// person alone.
+			writeAndIndex(t, v, d, legacyEntityNode("#general", "1:C1GEN"))
+			for i, aliases := range tc.pages {
+				writeAndIndex(t, v, d, legacyEntityNode(fmt.Sprintf("Page %d", i), aliases...))
+			}
+			seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+			seedChannel(t, d, "1:C1GEN", "general", "", "")
+			seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+			created, err := SeedEntities(v, d, seedTestConfig, nil)
+			require.NoError(t, err, "no alias arrangement may collide on memory_aliases")
+			assert.Equal(t, tc.wantCreated, created)
+
+			n, err := Resolve(v, d, tc.wantStitch[0])
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantStitch, n.Aliases)
+
+			nodes, err := d.ListMemoryNodes()
+			require.NoError(t, err)
+			assert.Len(t, nodes, 1+len(tc.pages)+tc.wantCreated, "page count")
+		})
+	}
+}
+
+// TestSeedStitchDoesNotAbortPipelineRun: the live symptom of the C2 crash was
+// that seeding (step 2) returned an error, so no later step of the memory run
+// ever executed. Over the same legacy-alias arrangement the whole run must now
+// complete.
+func TestSeedStitchDoesNotAbortPipelineRun(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	writeAndIndex(t, v, d, legacyEntityNode("Alice Adams", "U123", "a@x.test"))
+	seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+	seedChannel(t, d, "1:C1GEN", "general", "", "")
+	seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+	gen := &fakeGen{reply: func(string) (string, error) { return "[]", nil }}
+	stats, err := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf).Run(context.Background())
+	require.NoError(t, err, "a stitched candidate must not abort the run")
+	assert.Equal(t, 1, stats.Seeded, "the channel is created; the person is stitched, not counted")
+}
+
+// TestSeedGitFailureIndexesNothing pins the validate-first ordering's half of
+// the C2 fix: the index is written only AFTER the vault commit succeeds, so a
+// failed git write leaves the index exactly as it was. (The reverse — git
+// without an index row — is Reconcile's self-healing Added case, and is the
+// deliberate cost of not holding the SQLite write lock across go-git's
+// whole-worktree staging walk.)
+func TestSeedGitFailureIndexesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	v, d := newTestVault(t), newTestDB(t)
+	seedUser(t, d, "1:U123", "Alice Adams", "a@x.test", 0)
+	seedChannel(t, d, "1:C1GEN", "general", "", "")
+	seedMessages(t, d, "1:C1GEN", "1:U123", 3)
+
+	repo := openTestRepo(t, v.path)
+	commitsBefore := commitCount(t, repo)
+	nodesBefore, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	require.Empty(t, nodesBefore)
+
+	// Make the node write fail: entities/ becomes read-only for its owner.
+	entities := filepath.Join(v.path, "entities")
+	require.NoError(t, os.Chmod(entities, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(entities, 0o700) })
+
+	created, err := SeedEntities(v, d, seedTestConfig, nil)
+	require.Error(t, err, "an unwritable vault must fail the pass")
+	assert.Contains(t, err.Error(), "memory: write node", "the git write is what failed")
+	assert.Zero(t, created)
+
+	nodesAfter, err := d.ListMemoryNodes()
+	require.NoError(t, err)
+	assert.Empty(t, nodesAfter, "nothing indexed when the vault write failed")
+	aliases, err := d.LookupMemoryAlias("1:U123")
+	assert.ErrorIs(t, err, sql.ErrNoRows, "no alias row leaked (got %q)", aliases)
+	assert.Equal(t, commitsBefore, commitCount(t, repo), "no commit")
 }
