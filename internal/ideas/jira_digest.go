@@ -23,14 +23,26 @@ const jiraExcerptBytes = 500
 // updated_at.
 const jiraFloorInitBackoff = 5 * time.Second
 
-// maxCommentsPerIssue caps a hot issue at its OLDEST N comments so one
-// thousand-comment ticket cannot dominate the prompt (the
-// maxMessagesPerThread precedent, including its direction and the reason for
-// it). Oldest because this pass owns a floor: after the issue is rendered the
-// floor advances past its updated_at, and the next run's
-// ListJiraCommentsSince starts above that, so anything the cap left out is
-// gone for good unless it is the part still ahead of the floor. Keeping the
-// newest 20 of 50 buried the other 30 (IDEA-01).
+// maxCommentsPerIssue caps a hot issue at its newest N comments so one
+// thousand-comment ticket cannot dominate the prompt. ListJiraCommentsSince
+// returns each issue's comments oldest-first, so the newest are the tail.
+//
+// Deliberately NOT the maxMessagesPerThread direction, despite looking like the
+// same situation: that cap keeps its OLDEST messages because Gmail's floor is
+// MESSAGE-granular — renderedEmailWindow walks every loaded message and stops
+// at the first one the cap dropped, so a thread's excluded tail holds the floor
+// below itself and is mined next run. Jira's floor is ISSUE-granular:
+// renderedJiraFloor matches whole issues against the tag set, so nothing can
+// hold the floor below a rendered issue's own updated_at. Either direction
+// therefore loses the comments past the cap — ListJiraIssuesUpdatedSince
+// reloads on a strict >, so the issue is not returned again and
+// ListJiraCommentsSince never sees them — and for a decisions miner the newest
+// are the half worth keeping. Making the Jira floor comment-aware is the real
+// fix and needs the digest package's advancesWindow invariant ported across
+// packages (otherwise an issue whose comments alone exceed the cap stalls
+// forever); until then this limitation is stated in IDEA-01 rather than
+// papered over. The issue itself — key, summary, status, description — is
+// always rendered, so what is lost is supplementary context, not a unit.
 const maxCommentsPerIssue = 20
 
 // renderJiraBlock groups issues per project ("=== PROJECT <KEY> ==="
@@ -59,7 +71,7 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 
 	var b strings.Builder
 	tags := make(map[string]bool, len(issues))
-	st := &jiraRenderState{maxChars: maxChars, budget: maxChars, drainThrough: drainThrough}
+	st := &jiraRenderState{budget: maxChars, drainThrough: drainThrough}
 	for _, project := range order {
 		header := fmt.Sprintf("=== PROJECT %s ===\n", project)
 		unit, keys := st.renderProject(header, byProject[project], commentsByIssue)
@@ -86,7 +98,6 @@ func renderJiraBlock(issues []db.JiraIssue, commentsByIssue map[string][]db.Jira
 // been rendered at all (the always-one escape), and how much of the boundary
 // group has been drained (the tie escape).
 type jiraRenderState struct {
-	maxChars int
 	budget   int
 	n        int
 	rendered bool
@@ -110,7 +121,7 @@ func (st *jiraRenderState) renderProject(header string, issues []db.JiraIssue, c
 		first := !st.rendered && len(keys) == 0
 		tie := st.drainThrough != "" && is.UpdatedAt == st.drainThrough &&
 			st.drained < maxTieDrainUnits &&
-			st.written+len(header)+unit.Len()+len(block) <= tieDrainCharCeiling(st.maxChars)
+			st.written+len(header)+unit.Len()+len(block) <= tieDrainCharCeiling
 		if !fits && !first && !tie {
 			st.n--
 			if st.drainThrough == "" {
@@ -148,7 +159,7 @@ func renderJiraIssue(n int, is db.JiraIssue, comments []db.JiraComment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%d] %s %s — %s — %s — comments:\n", n, is.Key, is.Summary, is.Status,
 		capBytes(oneLine(is.DescriptionText), jiraExcerptBytes))
-	for _, c := range renderedComments(comments) {
+	for _, c := range newestComments(comments) {
 		fmt.Fprintf(&b, "  - %s: %s\n", c.Author, capBytes(oneLine(c.BodyText), jiraExcerptBytes))
 	}
 	return b.String()
@@ -211,14 +222,15 @@ func countUnrenderedJiraTies(issues []db.JiraIssue, renderedTags map[string]bool
 	return n
 }
 
-// renderedComments returns at most maxCommentsPerIssue comments, keeping the
-// OLDEST (the head of the oldest-first slice ListJiraCommentsSince returns) —
-// see maxCommentsPerIssue for why the direction is load-bearing.
-func renderedComments(comments []db.JiraComment) []db.JiraComment {
+// newestComments returns at most maxCommentsPerIssue comments, keeping the
+// newest (the tail of the oldest-first slice ListJiraCommentsSince returns) —
+// see maxCommentsPerIssue for why this direction, unlike Gmail's, cannot be
+// flipped into a floor guarantee.
+func newestComments(comments []db.JiraComment) []db.JiraComment {
 	if len(comments) <= maxCommentsPerIssue {
 		return comments
 	}
-	return comments[:maxCommentsPerIssue]
+	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
 // normalizeJiraStreamPeriod converts a Jira-format timestamp (raw
@@ -303,7 +315,7 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 	// a statistic: the ceiling is sized so ordinary bulk edits cannot reach it.
 	p.logf("ideas: ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at %s; the floor passes that timestamp, so they will not be mined",
 		accountID, countUnrenderedJiraTies(issues, tags, boundary), boundary,
-		drainCeilings(len(block), budget))
+		drainCeilings(len(block)))
 	return block, tags, boundary
 }
 

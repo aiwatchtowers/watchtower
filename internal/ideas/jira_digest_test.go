@@ -510,7 +510,7 @@ func TestIdeas01_JiraTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T)
 
 	assert.Equal(t, wantRendered, strings.Count(seenBlock, " — Open — "),
 		"the drain must take the group up to the ceiling and stop exactly there")
-	assert.Less(t, len(seenBlock), tieDrainCharCeiling(1)/2,
+	assert.Less(t, len(seenBlock), tieDrainCharCeiling/2,
 		"this fixture must exercise the unit ceiling, not the byte ceiling")
 
 	newFloor, err := d.IdeasJiraFloor(acctID)
@@ -522,7 +522,7 @@ func TestIdeas01_JiraTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T)
 	assert.Contains(t, out, "ERROR", "hitting the ceiling is a fault, not a note")
 	assert.Contains(t, out, fmt.Sprintf(
 		"ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
-		acctID, wantUnrendered, u1, maxTieDrainUnits, tieDrainCharCeiling(1)),
+		acctID, wantUnrendered, u1, maxTieDrainUnits, tieDrainCharCeiling),
 		"the fault must name the source, the count, the timestamp and both ceilings")
 }
 
@@ -563,7 +563,7 @@ func TestIdeas01_JiraTieDrainStopsAtByteCeiling(t *testing.T) {
 	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
 	require.Equal(t, 1, gen.calls)
 
-	ceiling := tieDrainCharCeiling(1)
+	const ceiling = tieDrainCharCeiling
 	assert.Equal(t, wantRendered, strings.Count(seenBlock, " — Open — "),
 		"the drain must stop on bytes, having taken as many tie-mates as the ceiling allows")
 	assert.LessOrEqual(t, len(seenBlock), ceiling, "the block must never exceed the byte ceiling")

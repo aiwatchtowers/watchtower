@@ -455,12 +455,12 @@ func TestIdeas01_EmailTieGroupBeyondCeiling_BoundedAndFloorAdvances(t *testing.T
 	assert.Contains(t, out, "ERROR", "hitting the ceiling is a fault, not a note")
 	assert.Contains(t, out, fmt.Sprintf(
 		"ERROR: gmail account %d: %d thread(s) sharing second %d were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
-		acctID, wantUnrendered, base+10, maxTieDrainUnits, tieDrainCharCeiling(1)),
+		acctID, wantUnrendered, base+10, maxTieDrainUnits, tieDrainCharCeiling),
 		"the fault must name the source, the count, the timestamp and both ceilings")
 	// The UNIT ceiling is what stopped this drain, so the block must sit far
 	// below the byte ceiling — otherwise this test is silently exercising the
 	// other bound.
-	assert.Less(t, len(seenBlock), tieDrainCharCeiling(1)/2,
+	assert.Less(t, len(seenBlock), tieDrainCharCeiling/2,
 		"this fixture must exercise the unit ceiling, not the byte ceiling")
 }
 
@@ -508,7 +508,7 @@ func TestIdeas01_EmailTieDrainStopsAtByteCeiling(t *testing.T) {
 	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
 	require.Equal(t, 1, gen.calls)
 
-	ceiling := tieDrainCharCeiling(1)
+	const ceiling = tieDrainCharCeiling
 	assert.Equal(t, wantRendered, strings.Count(seenBlock, "gmail:"),
 		"the drain must stop on bytes, having taken as many tie-mates as the ceiling allows")
 	assert.LessOrEqual(t, len(seenBlock), ceiling, "the block must never exceed the byte ceiling")
@@ -524,6 +524,49 @@ func TestIdeas01_EmailTieDrainStopsAtByteCeiling(t *testing.T) {
 		"ERROR: gmail account %d: %d thread(s) sharing second %d were NOT rendered — the boundary drain stopped at its ceilings (%d units / %d chars,",
 		acctID, wantUnrendered, base+10, maxTieDrainUnits, ceiling),
 		"a byte-ceiling breach must report the same counted fault as a unit-ceiling breach")
+}
+
+// TestIdeas01_RaisedPromptBudgetDoesNotRaiseTheDrainCeiling pins the dangerous
+// direction of the byte ceiling's clamp (final-review A5): it is tied to the
+// DEFAULT prompt budget, not the configured one, so raising
+// ideas.max_prompt_chars cannot raise the protection out from under itself. A
+// budget-relative ceiling at 120 000 — a value this codebase already uses for
+// catchup.max_prompt_chars — would reach 1.2 MB, past a 200k-token context,
+// restoring the over-context stall the bound exists to prevent.
+//
+// Same fixture as the byte-ceiling guard, with the budget raised 120 000x: the
+// drain must still stop at exactly the same place.
+func TestIdeas01_RaisedPromptBudgetDoesNotRaiseTheDrainCeiling(t *testing.T) {
+	d := newTestDB(t)
+	base := time.Now().Add(-time.Hour).Unix()
+	acctID := seedGoogleAccount(t, d, float64(base))
+	setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+
+	const seeded, wantRendered = 8, 5
+	const fatSubject = 100000
+	same := time.Unix(base+10, 0).UTC().Format(time.RFC3339)
+	for i := 0; i < seeded; i++ {
+		seedGmailMessageIdeas(t, d, acctID, fmt.Sprintf("m%03d", i), fmt.Sprintf("thr-%03d", i),
+			"a@example.com", "Ann", strings.Repeat("s", fatSubject), "body", same)
+	}
+
+	var seenBlock string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		seenBlock = user
+		return `{"topics":[]}`, nil
+	}}
+	p := New(d, testCfgWithBudget(120000), gen, testLogger())
+	require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+	require.Equal(t, 1, gen.calls)
+
+	assert.LessOrEqual(t, len(seenBlock), tieDrainCharCeiling,
+		"a raised ideas.max_prompt_chars must not raise the drain's byte ceiling")
+	assert.Equal(t, wantRendered, strings.Count(seenBlock, "gmail:"),
+		"the drain must stop at the same place whatever the configured budget is")
+
+	floor, err := d.IdeasEmailFloor(acctID)
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+10), floor, "and still advance past the boundary, never retreat")
 }
 
 // TestIdeas01_EmailCappedThreadTail_StaysAboveTheFloor covers the

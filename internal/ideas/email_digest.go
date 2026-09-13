@@ -117,30 +117,34 @@ const maxTieDrainUnits = 1000
 // retreats — a drain that stops without advancing is the stall two rounds of
 // this wave were spent removing.
 //
-// Ten times the prompt budget: five times a 200-issue bulk edit's ~120 KB, so
-// ordinary bulk activity cannot reach it, while 600 KB at the default 60 000
-// stays inside a ~200k-token light-tier context with margin (~150k tokens at
-// ~4 chars/token), which is the thing being protected. The floor at the
-// DEFAULT budget is deliberate: the drain already bypasses
-// ideas.max_prompt_chars by design, and the model's context does not shrink
-// because the owner lowered a cost knob.
+// Ten times the DEFAULT prompt budget: five times a 200-issue bulk edit's
+// ~120 KB, so ordinary bulk activity cannot reach it, while 600 KB stays inside
+// a ~200k-token light-tier context with margin (~150k tokens at ~4 chars/token),
+// which is the thing being protected.
 const tieDrainBudgetFactor = 10
 
-// tieDrainCharCeiling is the largest block the boundary drain may build.
-func tieDrainCharCeiling(maxChars int) int {
-	if maxChars < config.DefaultIdeasMaxPromptChars {
-		maxChars = config.DefaultIdeasMaxPromptChars
-	}
-	return maxChars * tieDrainBudgetFactor
-}
+// tieDrainCharCeiling is the largest block the boundary drain may build. It is
+// pinned to the DEFAULT prompt budget rather than the configured one, in BOTH
+// directions, which is why it is a constant and not a function of
+// ideas.max_prompt_chars:
+//   - A LOWERED budget must not shrink it. The drain already bypasses
+//     ideas.max_prompt_chars by design, and the model's context does not shrink
+//     because the owner turned down a cost knob; a budget-relative ceiling would
+//     start discarding tie-mates far below any real context limit.
+//   - A RAISED budget must not grow it. That is the dangerous direction: at
+//     120 000 (the value catchup.max_prompt_chars already uses) a relative
+//     ceiling would reach 1.2 MB ≈ 300k tokens, past a 200k context — raising
+//     the protection out from under itself and restoring the very over-context
+//     stall the bound exists to prevent.
+const tieDrainCharCeiling = config.DefaultIdeasMaxPromptChars * tieDrainBudgetFactor
 
 // drainCeilings renders both bounds plus what the drain actually built, so a
 // fault line says which ceiling stopped it without the renderer having to
 // report that separately: a block at the char ceiling was stopped by bytes, a
 // small block by units.
-func drainCeilings(blockChars, maxChars int) string {
+func drainCeilings(blockChars int) string {
 	return fmt.Sprintf("its ceilings (%d units / %d chars, block %d chars)",
-		maxTieDrainUnits, tieDrainCharCeiling(maxChars), blockChars)
+		maxTieDrainUnits, tieDrainCharCeiling, blockChars)
 }
 
 // emailThread is one Gmail thread grouped for the ideas email pre-digest — a
@@ -258,7 +262,7 @@ func renderEmailBlock(accountID int64, threads []emailThread, maxChars int, drai
 		n++
 		line := renderEmailThread(n, tag, th)
 		tie := drainThrough != 0 && th.messages[0].TSUnix == drainThrough &&
-			drained < maxTieDrainUnits && b.Len()+len(line) <= tieDrainCharCeiling(maxChars)
+			drained < maxTieDrainUnits && b.Len()+len(line) <= tieDrainCharCeiling
 		if len(line) > budget && len(tags) > 0 && !tie {
 			n-- // keep the numbering contiguous, like renderProject's twin
 			if drainThrough == 0 {
@@ -498,7 +502,7 @@ func (p *Pipeline) renderEmailWindow(accountID int64, msgs []db.GmailExtractMess
 	// statistic: the ceiling is sized so ordinary traffic cannot reach it.
 	p.logf("ideas: ERROR: gmail account %d: %d thread(s) sharing second %.0f were NOT rendered — the boundary drain stopped at %s; the floor passes that second, so they will not be mined",
 		accountID, countUnrenderedEmailTies(accountID, threads, tags, win.boundaryTS), win.boundaryTS,
-		drainCeilings(len(block), budget))
+		drainCeilings(len(block)))
 	return block, tags, emailWindow{minTS: msgs[0].TSUnix, maxTS: win.boundaryTS, ok: true}
 }
 
