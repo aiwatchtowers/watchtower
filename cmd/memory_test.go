@@ -584,6 +584,7 @@ func TestCLI_MemoryResetTo_DryRunPreviewsAndWritesNothing(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "Commits discarded: 1")
 	assert.Contains(t, out, "Files removed:     1")
+	assert.Contains(t, out, "Ignored files preserved: 0")
 	assert.Contains(t, out, "Dry run — nothing written.")
 	assert.Equal(t, head, vaultHead(t, vaultPath), "a dry run never moves HEAD")
 }
@@ -731,4 +732,31 @@ func TestCLI_MemoryMigrateSlackIDs_NoBareIDs(t *testing.T) {
 	require.NoError(t, memoryMigrateSlackIDsCmd.RunE(memoryMigrateSlackIDsCmd, nil))
 	assert.Contains(t, buf.String(), "Nothing to migrate")
 	assert.Equal(t, before, vaultHead(t, vaultPath))
+}
+
+// TestCLI_MemoryResetTo_TargetIsHeadIsANoOp: asking to reset to the commit
+// HEAD already points at stops after the preview — nothing is reindexed and
+// no watermark moves.
+func TestCLI_MemoryResetTo_TargetIsHeadIsANoOp(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, false)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedMemoryEntityFixture(t, vaultPath, database)
+	require.NoError(t, database.SetMemoryWatermark(1700000000))
+	database.Close()
+	head := vaultHead(t, vaultPath)
+
+	var buf bytes.Buffer
+	memoryResetToCmd.SetOut(&buf)
+	require.NoError(t, memoryResetToCmd.RunE(memoryResetToCmd, []string{head}))
+	assert.Contains(t, buf.String(), "already at the target commit")
+	assert.Equal(t, head, vaultHead(t, vaultPath))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	wm, err := database.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1700000000), wm, "a no-op reset never fast-forwards")
 }

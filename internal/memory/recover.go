@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,6 +40,7 @@ type ResetPlan struct {
 	FilesRemoved   int    // tracked files present at HEAD and absent at the target
 	Dirty          []string
 	DirtyCount     int // uncommitted worktree paths; Dirty carries the first dirtySampleCap
+	IgnoredFiles   int // gitignored files present in the worktree, carried across the reset
 }
 
 // PlanReset resolves ref against the vault repository and reports what a hard
@@ -85,6 +89,10 @@ func PlanReset(v *Vault, ref string) (ResetPlan, error) {
 	if err != nil {
 		return ResetPlan{}, err
 	}
+	ignored, err := ignoredVaultFiles(v.path)
+	if err != nil {
+		return ResetPlan{}, err
+	}
 	return ResetPlan{
 		Head:           head.Hash.String(),
 		Target:         target.Hash.String(),
@@ -92,6 +100,7 @@ func PlanReset(v *Vault, ref string) (ResetPlan, error) {
 		FilesRemoved:   removed,
 		Dirty:          dirty,
 		DirtyCount:     dirtyCount,
+		IgnoredFiles:   len(ignored),
 	}, nil
 }
 
@@ -122,8 +131,24 @@ func ResetTo(v *Vault, database *db.DB, plan ResetPlan, logf func(string, ...any
 	if err != nil {
 		return Stats{}, fmt.Errorf("memory: reset: vault worktree: %w", err)
 	}
-	if err := wt.Reset(&git.ResetOptions{Commit: plumbing.NewHash(plan.Target), Mode: git.HardReset}); err != nil {
-		return Stats{}, fmt.Errorf("memory: reset: hard reset to %s: %w", plan.Target, err)
+
+	// go-git's hard reset deletes every worktree path that is not in the index,
+	// and — unlike git(1) — that includes the ones .gitignore covers, which here
+	// is the owner's Obsidian configuration. Carry them across by hand.
+	snapshot, err := snapshotIgnoredFiles(v.path)
+	if err != nil {
+		return Stats{}, err
+	}
+
+	resetErr := wt.Reset(&git.ResetOptions{Commit: plumbing.NewHash(plan.Target), Mode: git.HardReset})
+	// Restore even when the reset failed: it may have deleted ignored files
+	// before failing, and the copies are the only remaining source.
+	if err := snapshot.restore(v.path); err != nil {
+		return Stats{}, err // keeps the copies on disk; the error names where they are
+	}
+	snapshot.discard()
+	if resetErr != nil {
+		return Stats{}, fmt.Errorf("memory: reset: hard reset to %s: %w", plan.Target, resetErr)
 	}
 	// git tracks no empty directories, so a reset that removed every file of a
 	// node directory can leave the directory itself gone — which Reconcile's
@@ -216,6 +241,137 @@ func treePaths(t *object.Tree) (map[string]bool, error) {
 			out[name] = true
 		}
 	}
+}
+
+// isIgnoredVaultPath reports whether a vault-relative path is covered by the
+// vault's own .gitignore (vaultGitignore, vault.go — the two MUST stay in
+// step): anything under a .obsidian directory, any .DS_Store, any *.tmp.
+// Matching the patterns here rather than parsing the file keeps this readable;
+// the pattern set is fixed and written by initVault itself.
+func isIgnoredVaultPath(rel string) bool {
+	segments := strings.Split(filepath.ToSlash(rel), "/")
+	for _, seg := range segments[:len(segments)-1] {
+		if seg == ".obsidian" {
+			return true
+		}
+	}
+	base := segments[len(segments)-1]
+	return base == ".obsidian" || base == ".DS_Store" || strings.HasSuffix(base, ".tmp")
+}
+
+// ignoredVaultFiles lists the gitignored files present in the worktree, as
+// vault-relative slash paths. The .git directory is not part of the worktree
+// and is never walked.
+func ignoredVaultFiles(vaultPath string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(vaultPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(vaultPath, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if isIgnoredVaultPath(rel) {
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: reset: listing ignored vault files: %w", err)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// ignoredFileSnapshot holds copies of the vault's gitignored files while the
+// hard reset runs.
+type ignoredFileSnapshot struct {
+	dir   string // temp directory holding the copies; "" when there was nothing to copy
+	paths []string
+}
+
+// snapshotIgnoredFiles copies every gitignored worktree file to a temp
+// directory. A failure here aborts before the reset, so nothing is lost.
+func snapshotIgnoredFiles(vaultPath string) (*ignoredFileSnapshot, error) {
+	paths, err := ignoredVaultFiles(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return &ignoredFileSnapshot{}, nil
+	}
+	dir, err := os.MkdirTemp("", "watchtower-vault-ignored-")
+	if err != nil {
+		return nil, fmt.Errorf("memory: reset: staging ignored vault files: %w", err)
+	}
+	snap := &ignoredFileSnapshot{dir: dir, paths: paths}
+	for _, rel := range paths {
+		if err := copyVaultFile(filepath.Join(vaultPath, filepath.FromSlash(rel)), filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			snap.discard()
+			return nil, err
+		}
+	}
+	return snap, nil
+}
+
+// restore puts back every snapshotted file the reset removed. A file the reset
+// left alone is not rewritten. On failure the copies stay on disk and the error
+// names the directory holding them — the owner's Obsidian config is not
+// something to lose to a cleanup.
+func (s *ignoredFileSnapshot) restore(vaultPath string) error {
+	for _, rel := range s.paths {
+		dst := filepath.Join(vaultPath, filepath.FromSlash(rel))
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		if err := copyVaultFile(filepath.Join(s.dir, filepath.FromSlash(rel)), dst); err != nil {
+			return fmt.Errorf("%w (the reset succeeded; copies of the ignored files are in %s)", err, s.dir)
+		}
+	}
+	return nil
+}
+
+// discard removes the snapshot's temp directory.
+func (s *ignoredFileSnapshot) discard() {
+	if s.dir == "" {
+		return
+	}
+	_ = os.RemoveAll(s.dir)
+}
+
+// copyVaultFile copies one file, creating the destination's directories, at
+// the vault's own owner-only modes.
+func copyVaultFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), vaultDirMode); err != nil {
+		return fmt.Errorf("memory: reset: preparing %s: %w", dst, err)
+	}
+	in, err := os.Open(src) // #nosec G304 -- a path walked from the vault itself
+	if err != nil {
+		return fmt.Errorf("memory: reset: reading %s: %w", src, err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, vaultFileMode) // #nosec G304
+	if err != nil {
+		return fmt.Errorf("memory: reset: writing %s: %w", dst, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return fmt.Errorf("memory: reset: copying %s: %w", src, err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("memory: reset: closing %s: %w", dst, err)
+	}
+	return nil
 }
 
 // worktreeDirt returns the uncommitted worktree paths (sorted, sampled to

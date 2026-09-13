@@ -296,19 +296,15 @@ func runMemoryReindex(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 	out := cmd.OutOrStdout()
 
-	vault, err := memory.OpenExistingVault(memoryVaultPath(cfg))
-	if errors.Is(err, memory.ErrVaultNotInitialized) {
-		fmt.Fprintln(out, "Memory vault not initialized; nothing to reindex.")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	// Reindex rewrites the whole index from the vault files, so it must not
 	// interleave with a consolidation run writing them.
-	unlock, err := vault.Lock()
+	vault, unlock, err := openVaultForRecovery(cfg)
 	if err != nil {
 		return err
+	}
+	if vault == nil {
+		fmt.Fprintln(out, "Memory vault not initialized; nothing to reindex.")
+		return nil
 	}
 	defer unlock()
 
@@ -381,6 +377,7 @@ func runMemoryResetTo(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Target commit:     %s\n", plan.Target)
 	fmt.Fprintf(out, "Commits discarded: %d\n", plan.CommitsDropped)
 	fmt.Fprintf(out, "Files removed:     %d\n", plan.FilesRemoved)
+	fmt.Fprintf(out, "Ignored files preserved: %d\n", plan.IgnoredFiles)
 	if plan.DirtyCount > 0 {
 		fmt.Fprintf(out, "Uncommitted changes: %d (%s) — a hard reset would discard them\n",
 			plan.DirtyCount, strings.Join(plan.Dirty, ", "))
@@ -389,21 +386,28 @@ func runMemoryResetTo(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "Dry run — nothing written.")
 		return nil
 	}
+	if plan.Head == plan.Target {
+		fmt.Fprintln(out, "HEAD is already at the target commit — nothing to reset.")
+		return nil
+	}
 
 	stats, err := memory.ResetTo(vault, database, plan, memoryStderrLogf(cmd))
 	if err != nil {
 		return err
 	}
-	rows, err := database.ListMemoryNodes()
-	if err != nil {
-		return fmt.Errorf("listing memory nodes: %w", err)
-	}
-	fmt.Fprintf(out, "Vault reset to %s; reindexed %d nodes.\n", plan.Target, len(rows))
-	if stats.Quarantined > 0 {
-		fmt.Fprintf(out, "%d file(s) quarantined (parse/index failure — see warnings above).\n", stats.Quarantined)
-	}
+	// The watermarks come first: everything below is reporting, and a reporting
+	// failure must not leave the vault reset but the watermarks un-stamped.
 	if err := features.FastForward("memory", database, time.Now()); err != nil {
 		return fmt.Errorf("the vault is reset and reindexed, but fast-forwarding the memory watermarks failed: %w", err)
+	}
+	fmt.Fprintf(out, "Vault reset to %s (%d ignored file(s) preserved).\n", plan.Target, plan.IgnoredFiles)
+	if rows, lerr := database.ListMemoryNodes(); lerr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "note: could not count the reindexed nodes: %v\n", lerr)
+	} else {
+		fmt.Fprintf(out, "Reindexed %d nodes.\n", len(rows))
+	}
+	if stats.Quarantined > 0 {
+		fmt.Fprintf(out, "%d file(s) quarantined (parse/index failure — see warnings above).\n", stats.Quarantined)
 	}
 	fmt.Fprintln(out, "Memory extraction watermarks fast-forwarded to now (the discarded window is not re-extracted).")
 	return nil
@@ -453,9 +457,18 @@ func printSlackIDMigration(out io.Writer, stats memory.SlackIDMigration, dryRun 
 	if stats.Unreadable > 0 {
 		fmt.Fprintf(out, "%d file(s) skipped (unparseable — see warnings above).\n", stats.Unreadable)
 	}
-	if len(stats.Samples) > 0 {
-		fmt.Fprintln(out, "Sample:")
-		for _, s := range stats.Samples {
+	// Every alias rewrite is printed (a wrong one changes a page's identity —
+	// this list is what the operator checks before the real run); provenance
+	// rewrites are many and mechanical, so those are a sample.
+	if len(stats.AliasSamples) > 0 {
+		fmt.Fprintln(out, "Alias rewrites (all):")
+		for _, s := range stats.AliasSamples {
+			fmt.Fprintf(out, "  %s\n", s)
+		}
+	}
+	if len(stats.ProvenanceSamples) > 0 {
+		fmt.Fprintf(out, "Provenance rewrites (first %d):\n", len(stats.ProvenanceSamples))
+		for _, s := range stats.ProvenanceSamples {
 			fmt.Fprintf(out, "  %s\n", s)
 		}
 	}

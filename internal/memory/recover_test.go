@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	git "github.com/go-git/go-git/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -173,4 +174,66 @@ func TestLockHolderPIDNamesTheHolder(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, os.Getpid(), pid)
 	unlock()
+}
+
+// TestResetToPreservesIgnoredFiles: go-git's hard reset deletes every worktree
+// path missing from the index, INCLUDING the ones .gitignore covers — which in
+// this vault is the owner's Obsidian configuration. The reset must carry them
+// across untouched.
+func TestResetToPreservesIgnoredFiles(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RX1", "entity", "Alpha")
+	writeNodes(t, v, a)
+	target := headHash(t, v)
+	writeNodes(t, v, vaultTestNode("ep_01ARZ3NDEKTSV4RRFFQ69G5RX2", "episode", "Beta"))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(v.path, ".obsidian"), 0o700))
+	workspace := filepath.Join(v.path, ".obsidian", "workspace.json")
+	require.NoError(t, os.WriteFile(workspace, []byte(`{"main":"layout"}`), 0o600))
+	scratch := filepath.Join(v.path, "scratch.tmp")
+	require.NoError(t, os.WriteFile(scratch, []byte("scratch"), 0o600))
+
+	plan, err := PlanReset(v, target)
+	require.NoError(t, err)
+	assert.Zero(t, plan.DirtyCount, "gitignored files are not worktree dirt")
+	assert.Equal(t, 2, plan.IgnoredFiles)
+
+	_, err = ResetTo(v, d, plan, t.Logf)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(workspace)
+	require.NoError(t, err, "the owner's Obsidian config must survive the reset")
+	assert.Equal(t, `{"main":"layout"}`, string(got))
+	gotScratch, err := os.ReadFile(scratch)
+	require.NoError(t, err)
+	assert.Equal(t, "scratch", string(gotScratch))
+}
+
+// TestPlanResetTargetIsHead: resetting to the commit HEAD already points at is
+// a no-op the plan reports as such (the CLI stops there).
+func TestPlanResetTargetIsHead(t *testing.T) {
+	v := newTestVault(t)
+	writeNodes(t, v, vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5RY1", "entity", "Alpha"))
+	head := headHash(t, v)
+
+	plan, err := PlanReset(v, head)
+	require.NoError(t, err)
+	assert.Equal(t, head, plan.Head)
+	assert.Equal(t, head, plan.Target)
+	assert.Zero(t, plan.CommitsDropped)
+	assert.Zero(t, plan.FilesRemoved)
+}
+
+// TestPlanResetEmptyHistory: a repository with no commit yet has no HEAD to
+// rewind — refused cleanly, not panicked through.
+func TestPlanResetEmptyHistory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	v, err := OpenExistingVault(dir)
+	require.NoError(t, err)
+
+	_, err = PlanReset(v, "HEAD")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HEAD")
 }

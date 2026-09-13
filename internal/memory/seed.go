@@ -426,21 +426,15 @@ func seedChannels(database *db.DB, _ SeedConfig, since float64) ([]seedCandidate
 // seeded even while Jira sync is dead so the aliases are ready when it
 // revives. No activity window: project keys are few and stable.
 func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate, error) {
-	rows, err := database.Query(`SELECT DISTINCT project_key FROM jira_issues ORDER BY project_key`)
+	keys, err := database.ListJiraProjectKeys()
 	if err != nil {
-		return nil, fmt.Errorf("memory: seed jira projects query: %w", err)
+		return nil, fmt.Errorf("memory: seed jira projects: %w", err)
 	}
-	defer rows.Close()
-
-	var out []seedCandidate
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("memory: seed jira projects scan: %w", err)
-		}
+	out := make([]seedCandidate, 0, len(keys))
+	for _, key := range keys {
 		out = append(out, seedCandidate{title: key, aliases: []string{key}})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // seedGmailSenders returns one candidate per distinct from_email that sent at

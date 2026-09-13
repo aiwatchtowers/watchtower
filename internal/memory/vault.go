@@ -215,7 +215,9 @@ func tightenVaultPerms(vaultPath string) {
 
 // vaultGitignore keeps editor/OS churn (Obsidian workspace state, Finder
 // metadata, temp files) invisible to git status, so it can never be swept
-// into a memory(owner-edit) commit.
+// into a memory(owner-edit) commit. recover.go's isIgnoredVaultPath matches
+// these same three patterns by hand (go-git's hard reset would otherwise
+// delete them) — change one and change the other.
 const vaultGitignore = ".obsidian/\n.DS_Store\n*.tmp\n"
 
 // initVault creates the directory, git-inits it, and commits the initial

@@ -119,7 +119,9 @@ func TestMigrateSlackIDsDryRunWritesNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, stats.NodesChanged)
 	assert.False(t, stats.Committed)
-	assert.NotEmpty(t, stats.Samples)
+	assert.Equal(t, []string{person.ID + ": U0123ABCD → 7:U0123ABCD"}, stats.AliasSamples,
+		"every alias rewrite is listed, not sampled")
+	assert.Len(t, stats.ProvenanceSamples, 1)
 
 	assert.Equal(t, before, headHash(t, v))
 	got, err := v.ReadNode(person.ID)

@@ -122,6 +122,29 @@ func (db *DB) GetJiraSelectedBoards(accountID int64) ([]JiraBoard, error) {
 	return boards, rows.Err()
 }
 
+// ListJiraProjectKeys returns the distinct Jira project keys across every
+// connected site, ordered. Deliberately account-unscoped: its callers ask
+// "which project keys exist at all" — memory's entity seeding, which aliases a
+// key bare (see internal/memory's seedJiraProjects), and the Slack-id
+// migration, which must therefore leave such an alias alone.
+func (db *DB) ListJiraProjectKeys() ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT project_key FROM jira_issues ORDER BY project_key`)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira project keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scanning jira project key: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
 // ListSelectedJiraBoards returns selected boards across every account —
 // for account-agnostic surfaces (briefing, status) that then scope
 // per-board work by the row's AccountID.

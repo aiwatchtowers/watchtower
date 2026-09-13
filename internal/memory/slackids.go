@@ -23,8 +23,15 @@ import (
 // never matches, which is what makes the migration idempotent.
 var bareSlackIDRe = regexp.MustCompile(`^[UWCGD][A-Z0-9]{8,}$`)
 
-// slackIDSampleCap bounds the preview's sample of rewrites.
-const slackIDSampleCap = 10
+// provenanceSampleCap bounds the preview's provenance sample. Alias rewrites
+// are NOT sampled: they are few, and they are the risky class (a false
+// positive renames a page's identity), so the preview prints all of them for
+// the operator to read before the real run.
+const provenanceSampleCap = 10
+
+// slackIDProgressEvery is how often the scan logs its position — one line per
+// this many nodes, so a large vault shows progress instead of silence.
+const slackIDProgressEvery = 100
 
 // SlackIDMigration is what one MigrateSlackIDs pass did (or, in dry-run mode,
 // would do).
@@ -40,8 +47,12 @@ type SlackIDMigration struct {
 	// parsed and were skipped.
 	Conflicts  int
 	Unreadable int
-	Samples    []string
-	Committed  bool
+	// AliasSamples carries EVERY alias rewrite ("<node id>: old → new"); a
+	// mis-rewritten alias changes a page's identity, so the preview shows the
+	// whole list. ProvenanceSamples is a sample, capped at provenanceSampleCap.
+	AliasSamples      []string
+	ProvenanceSamples []string
+	Committed         bool
 }
 
 // MigrateSlackIDs rewrites every bare Slack id the vault still carries — in
@@ -77,14 +88,17 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 	}
 	stats.Unreadable = unreadable
 
-	jiraKeys, err := jiraProjectKeys(database)
+	jiraKeys, err := jiraProjectKeySet(database)
 	if err != nil {
 		return stats, err
 	}
 
 	plan := &slackIDPlan{accountID: accountID, jiraKeys: jiraKeys, owners: aliasOwners(nodes), stats: &stats, logf: logf}
 	var write []Node
-	for _, n := range nodes {
+	for i, n := range nodes {
+		if i > 0 && i%slackIDProgressEvery == 0 {
+			logf("memory: migrate: scanned %d/%d nodes (%d to rewrite so far)", i, len(nodes), stats.NodesChanged)
+		}
 		rewritten, ok := plan.node(n)
 		if !ok {
 			continue
@@ -107,6 +121,10 @@ func MigrateSlackIDs(v *Vault, database *db.DB, dryRun bool, logf func(string, .
 		Cause:   "migrate",
 		NodeIDs: ids,
 	}
+	// One commit, but go-git stages each node with its own worktree walk, so on
+	// a large vault this single call is the slow part — say so before it starts
+	// rather than going silent for minutes.
+	logf("memory: migrate: committing %d node(s) as one vault commit (this stages each node separately and can take minutes)", len(write))
 	if _, err := v.WriteNodes(write, msg); err != nil {
 		return stats, err
 	}
@@ -153,7 +171,7 @@ func (p *slackIDPlan) aliases(n Node) ([]string, bool) {
 		if ns, ok := p.namespaced(a, n.ID); ok {
 			changed = true
 			p.stats.AliasRewrites++
-			p.sample(n.ID, a, ns)
+			p.stats.AliasSamples = append(p.stats.AliasSamples, rewriteLine(n.ID, a, ns))
 			value = ns
 		}
 		key := strings.ToLower(value)
@@ -225,7 +243,9 @@ func (p *slackIDPlan) provenance(n Node) (string, int) {
 		ns := slack.Namespace(p.accountID, fields[0])
 		lines[i] = strings.Replace(line, fields[0], ns, 1)
 		rewrites++
-		p.sample(n.ID, fields[0], ns)
+		if len(p.stats.ProvenanceSamples) < provenanceSampleCap {
+			p.stats.ProvenanceSamples = append(p.stats.ProvenanceSamples, rewriteLine(n.ID, fields[0], ns))
+		}
 	}
 	if rewrites == 0 {
 		return n.Body, 0
@@ -234,12 +254,9 @@ func (p *slackIDPlan) provenance(n Node) (string, int) {
 	return strings.Join(lines, "\n"), rewrites
 }
 
-// sample records one rewrite for the preview, up to slackIDSampleCap.
-func (p *slackIDPlan) sample(nodeID, from, to string) {
-	if len(p.stats.Samples) >= slackIDSampleCap {
-		return
-	}
-	p.stats.Samples = append(p.stats.Samples, fmt.Sprintf("%s: %s → %s", nodeID, from, to))
+// rewriteLine renders one rewrite for the preview.
+func rewriteLine(nodeID, from, to string) string {
+	return fmt.Sprintf("%s: %s → %s", nodeID, from, to)
 }
 
 // aliasOwners maps every alias in the vault to the node carrying it, so a
@@ -274,24 +291,19 @@ func singleSlackAccountID(database *db.DB) (int64, error) {
 	}
 }
 
-// jiraProjectKeys returns the distinct Jira project keys the database knows,
-// upper-cased as they are stored — the exclusion set for alias rewrites.
-func jiraProjectKeys(database *db.DB) (map[string]bool, error) {
-	rows, err := database.Query(`SELECT DISTINCT project_key FROM jira_issues`)
+// jiraProjectKeySet returns the Jira project keys the database knows, as they
+// are stored — the exclusion set for alias rewrites (seedJiraProjects aliases
+// each of them bare, and a long uppercase key matches the bare-Slack-id shape).
+func jiraProjectKeySet(database *db.DB) (map[string]bool, error) {
+	keys, err := database.ListJiraProjectKeys()
 	if err != nil {
-		return nil, fmt.Errorf("memory: migrate: listing jira project keys: %w", err)
+		return nil, fmt.Errorf("memory: migrate: %w", err)
 	}
-	defer rows.Close()
-
-	keys := make(map[string]bool)
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("memory: migrate: scanning jira project key: %w", err)
-		}
-		keys[key] = true
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[key] = true
 	}
-	return keys, rows.Err()
+	return set, nil
 }
 
 // readAllNodes reads every node file in the vault worktree, in directory
