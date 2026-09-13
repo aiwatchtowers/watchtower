@@ -13,7 +13,7 @@ const targetSelectCols = `id, text, intent, level, custom_label, period_start, p
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
-	next_step, next_step_at`
+	next_step, next_step_at, next_step_attempts, next_step_attempted_at`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -22,7 +22,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.ParentID, &t.Status, &t.Priority, &t.Ownership,
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
-		&t.NextStep, &t.NextStepAt,
+		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -151,6 +151,23 @@ func (db *DB) SetTargetNextStep(id int, nextStep, generatedAt string) error {
 	return nil
 }
 
+// RecordTargetNextStepAttempt records that a next-step generation attempt was
+// made for a target, whether it succeeded or failed. It is the sole writer of
+// the per-target attempt budget consulted by GetTargetsNeedingNextStep;
+// callers compute `attempts` themselves (see targets.nextAttemptCount) since
+// the reset-vs-increment decision needs the target's own updated_at, which
+// this function does not have.
+func (db *DB) RecordTargetNextStepAttempt(id, attempts int, attemptedAt string) error {
+	_, err := db.Exec(
+		`UPDATE targets SET next_step_attempts = ?, next_step_attempted_at = ? WHERE id = ?`,
+		attempts, attemptedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("recording next_step attempt for target %d: %w", id, err)
+	}
+	return nil
+}
+
 // GetTargetsNeedingNextStep returns active targets (todo/in_progress/blocked)
 // whose next_step is missing or stale — i.e. never generated, or generated
 // before the target's last edit. Ordered by priority then nearest due date so
@@ -162,10 +179,25 @@ func (db *DB) SetTargetNextStep(id int, nextStep, generatedAt string) error {
 // targets.updated_at. A badge is free; a daemon pass here is a strong-model
 // call per target, so chat-only aging is left to the operator's one click.
 // If that trade is revisited, the two rules move together.
+//
+// A per-target attempt budget (next_step_attempts/next_step_attempted_at,
+// migration 00068) additionally excludes a target that has already burned its
+// daily budget of failed attempts, UNLESS one of two escape hatches applies:
+// the target was edited since its last attempt (a fresh problem, not a
+// retry of the same failure — always eligible regardless of attempts), or
+// the UTC calendar day has rolled over since the last attempt (the daily
+// budget resets). This is deliberately per-row: a global counter would let
+// one perpetually-failing target silence next-step generation for every
+// other target that also needs a refresh that day. See RecordTargetNextStepAttempt.
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')
 		  AND (next_step_at = '' OR next_step_at < updated_at)
+		  AND (
+		    next_step_attempted_at < updated_at
+		    OR next_step_attempts < 3
+		    OR date(next_step_attempted_at) < date('now')
+		  )
 		ORDER BY
 		  CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
 		  CASE WHEN due_date = '' THEN 1 ELSE 0 END,

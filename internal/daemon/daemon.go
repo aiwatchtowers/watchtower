@@ -1228,10 +1228,18 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 		return
 	}
 	d.trackedPipelineRun("next_step", func() pipelineRunStats {
-		n, err := d.nextStepPipe.GenerateAllNextSteps(ctx)
-		if err != nil {
+		n, attempted, err := d.nextStepPipe.GenerateAllNextSteps(ctx)
+		switch {
+		case err != nil:
 			d.logger.Printf("next-step error: %v", err)
-		} else if n > 0 {
+		case attempted > 0 && n == 0:
+			// Distinguish "every selected target failed" from "nothing
+			// needed a refresh" — both used to record identically as
+			// items_found=0 with no error, so an owner could not tell a
+			// silently-failing batch from a quiet one.
+			err = fmt.Errorf("next-step: all %d selected target(s) failed this cycle", attempted)
+			d.logger.Printf("%v", err)
+		case n > 0:
 			d.logger.Printf("next-step: refreshed %d target(s)", n)
 		}
 		return pipelineRunStats{items: n, err: err}
