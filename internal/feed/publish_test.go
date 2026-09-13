@@ -213,3 +213,44 @@ func TestDash06_SourceFailureDoesNotBlockOthers(t *testing.T) {
 		t.Fatal("briefing must be published despite the recap source failing")
 	}
 }
+
+// An orphaned recap (event deleted, event_id set to NULL by migration 00056's
+// ON DELETE SET NULL) must not take the whole recap publish down with it:
+// feed_items.source_id is NOT NULL and SQLite aborts the entire INSERT … SELECT
+// on a constraint violation, so before the fix one such row permanently stopped
+// every event-linked recap from reaching the feed.
+func TestPublishRecapSkipsOrphanedRecapWithoutBlockingLinkedOnes(t *testing.T) {
+	d := db.OpenTestDB(t)
+	setCutoff(t, d, "2026-07-01T00:00:00Z")
+
+	insertCalendarEvent(t, d, "ev1", "2026-07-09T10:00:00Z")
+	if _, err := d.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at)
+		VALUES ('ev1', '', '{}', '2026-07-09T11:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	// The orphan: its calendar event was swept by stale-cleanup.
+	if _, err := d.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json, created_at)
+		VALUES (NULL, '', '{}', '2026-07-09T11:30:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newTestPipeline(t, d, 30).Publish(testNow); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	item, err := d.GetFeedItem("meeting_recap", "ev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item == nil {
+		t.Fatal("event-linked recap missing from the feed — an orphaned recap aborted the publish")
+	}
+
+	var recapItems int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM feed_items WHERE item_type = 'meeting_recap'`).Scan(&recapItems); err != nil {
+		t.Fatal(err)
+	}
+	if recapItems != 1 {
+		t.Fatalf("want exactly 1 recap feed item (the orphan is skipped, not published), got %d", recapItems)
+	}
+}
