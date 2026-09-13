@@ -1,12 +1,14 @@
 package jira
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -15,11 +17,10 @@ var jiraKeyPattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+-\d+)\b`)
 
 // KeyDetector detects Jira issue keys in text and links them to Slack messages.
 type KeyDetector struct {
-	db            *db.DB
-	logger        *log.Logger
-	knownKeys     map[string]bool
-	knownKeysOnce sync.Once
-	mu            sync.RWMutex
+	db        *db.DB
+	logger    *log.Logger
+	knownKeys map[string]bool
+	mu        sync.RWMutex
 }
 
 // NewKeyDetector creates a new KeyDetector.
@@ -30,22 +31,46 @@ func NewKeyDetector(database *db.DB) *KeyDetector {
 	}
 }
 
-// DetectKeys finds all Jira issue keys in text, filtering by known project keys.
-func (d *KeyDetector) DetectKeys(text string) []string {
-	d.knownKeysOnce.Do(func() {
-		if err := d.refreshKnownKeys(); err != nil {
-			d.logger.Printf("failed to load known project keys: %v", err)
-		}
-	})
+// NewKeyDetectorIfEnabled returns a detector for the pipelines and the sync
+// orchestrators to hook, or nil when this install has no Jira. It is the ONE
+// place the gate is expressed, so a new call site cannot accidentally invent a
+// different one.
+//
+// The gate is cfg.Jira.Enabled and nothing else. It is false by default and
+// flipped true by `jira add`/`jira login` (enableJiraPhase), so it is on for
+// exactly the installs that have a Jira site connected — which is also the only
+// state in which GetKnownProjectKeys can return anything. Deliberately NOT one
+// of the jira.features.* toggles: this step collects the data every Jira
+// surface reads (--jira/--no-jira, the Desktop "Linked Jira Issues" badges,
+// get_task_context, find_experts, who-to-ping), and putting it behind a
+// per-feature toggle would hide a data-collection step from the owner.
+//
+// Callers must nil-check rather than pass the result straight to a
+// Set…Detector: a typed nil stored in an interface field is not nil.
+func NewKeyDetectorIfEnabled(cfg *config.Config, database *db.DB) *KeyDetector {
+	if !cfg.Jira.Enabled {
+		return nil
+	}
+	return NewKeyDetector(database)
+}
 
+// DetectKeys finds all Jira issue keys in text, filtering by known project keys.
+//
+// A token is a Jira key only if its project is one this workspace actually
+// synced: unknown means no. Without that rule an empty key set turned every
+// [A-Z][A-Z0-9_]+-\d+ token into a "Jira key" — UTF-8, COVID-19, SHA-256,
+// RFC-9728 — and wrote it into jira_slack_links, which feeds AI prompts, the
+// Desktop and the get_task_context dev surface.
+func (d *KeyDetector) DetectKeys(text string) []string {
 	matches := jiraKeyPattern.FindAllString(text, -1)
 	if len(matches) == 0 {
 		return nil
 	}
 
-	d.mu.RLock()
-	known := d.knownKeys
-	d.mu.RUnlock()
+	known := d.knownProjectKeys()
+	if len(known) == 0 {
+		return nil
+	}
 
 	seen := make(map[string]bool)
 	var result []string
@@ -55,13 +80,35 @@ func (d *KeyDetector) DetectKeys(text string) []string {
 		}
 		seen[m] = true
 
-		proj := extractProjectKey(m)
-		// If we have no known keys yet, accept all matches.
-		if len(known) == 0 || known[proj] {
+		if known[extractProjectKey(m)] {
 			result = append(result, m)
 		}
 	}
 	return result
+}
+
+// knownProjectKeys returns the cached project keys, loading them when the cache
+// is still empty. Only a non-empty result is ever memoized: a daemon that
+// starts before the first Jira sync would otherwise cache the empty set for its
+// whole lifetime and never detect a key again. Reloading while the set is empty
+// is a SELECT DISTINCT over two small tables. A load error keeps the set empty,
+// which detects nothing — unknown means no, never yes.
+func (d *KeyDetector) knownProjectKeys() map[string]bool {
+	d.mu.RLock()
+	known := d.knownKeys
+	d.mu.RUnlock()
+	if len(known) > 0 {
+		return known
+	}
+
+	if err := d.refreshKnownKeys(); err != nil {
+		d.logger.Printf("failed to load known project keys: %v", err)
+		return nil
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.knownKeys
 }
 
 // ProcessMessage detects Jira keys in a Slack message and records links.
@@ -79,6 +126,58 @@ func (d *KeyDetector) ProcessMessage(channelID, messageTS, text string) (int, er
 		}
 	}
 	return len(keys), nil
+}
+
+// ProcessMessageBatch detects Jira keys across a page of synced Slack messages
+// and records every resulting mention link in ONE transaction.
+//
+// ProcessMessage runs one Exec per detected key outside any transaction, which
+// is fine for a handful of calls but not on the message-sync path: a page holds
+// up to 200 messages and the DB runs with SetMaxOpenConns(1), so each of those
+// writes would serialise against the sync's own. Nothing else differs — the
+// links written are exactly what ProcessMessage would write per message.
+//
+// msgs carry the values already destined for the messages table, so a link's
+// (channel_id, message_ts) pair is by construction the same namespaced channel
+// id and raw Slack timestamp that messages.(channel_id, ts) holds — which is
+// what every reader of a mention link joins back against.
+func (d *KeyDetector) ProcessMessageBatch(msgs []db.Message) (int, error) {
+	// One key-set load per page rather than one per candidate message: while
+	// the set is empty it is deliberately not memoized (see knownProjectKeys),
+	// so every message carrying a candidate token would otherwise re-run the
+	// query.
+	if len(d.knownProjectKeys()) == 0 {
+		return 0, nil
+	}
+
+	var links []db.JiraSlackLink
+	for _, msg := range msgs {
+		for _, key := range d.DetectKeys(msg.Text) {
+			links = append(links, db.JiraSlackLink{
+				IssueKey:  key,
+				ChannelID: msg.ChannelID,
+				MessageTS: msg.TS,
+				LinkType:  "mention",
+			})
+		}
+	}
+	if len(links) == 0 {
+		return 0, nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("beginning jira slack link transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := d.db.UpsertJiraSlackLinkBatch(tx, links); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing jira slack links: %w", err)
+	}
+	return len(links), nil
 }
 
 // ProcessTrack detects Jira keys in track text and source refs.
@@ -146,7 +245,6 @@ func (d *KeyDetector) ResetCache() {
 	d.mu.Lock()
 	d.knownKeys = nil
 	d.mu.Unlock()
-	d.knownKeysOnce = sync.Once{}
 }
 
 // extractProjectKey extracts the project key from an issue key ("PROJ-123" -> "PROJ").

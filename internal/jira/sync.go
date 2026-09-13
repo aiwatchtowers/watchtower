@@ -131,13 +131,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				s.logger.Printf("auth revoked, aborting sync: %v", err)
 				return total, err
 			}
+			// Sync keeps going across projects and returns nil, so the daemon
+			// log is the ONLY place this failure would otherwise land. Record
+			// it on the project's own row, which `jira status` renders and the
+			// next successful pass clears.
 			s.logger.Printf("sync error for project %s: %v", projectKey, err)
-			if syncState == nil {
-				syncState = &db.JiraSyncState{AccountID: s.accountID, ProjectKey: projectKey}
+			if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+				s.logger.Printf("recording sync error for project %s: %v", projectKey, rerr)
 			}
-			syncState.LastError = err.Error()
-			syncState.LastErrorAt = time.Now().UTC().Format(time.RFC3339)
-			_ = s.db.UpdateJiraSyncState(s.accountID, syncState.ProjectKey, syncState.LastSyncedAt, syncState.IssuesSynced)
 			continue
 		}
 
@@ -200,6 +201,40 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 
 	return total, nil
+}
+
+// ResolveUsers maps newly-seen Jira users onto Slack users and re-derives the
+// denormalized Slack id columns on jira_issues.
+//
+// Sync itself only ever creates a SHELL jira_user_map row (Jira account id,
+// email, display name) and then reads the mapping back read-only, so without
+// this step every Jira user first seen by a daemon-driven install keeps an
+// empty slack_user_id forever — and with it an empty assignee_slack_id on
+// every one of their issues, which every reader comparing against an external
+// identity reads as "this person has no work". Until 2026-09-13 the step ran
+// only from `jira users resolve` and the tail of a manual `jira sync`, which
+// is to say: not at all on an install driven by the daemon.
+//
+// A pass that rewrote nothing says nothing, so only a non-zero repair is
+// logged: on a healthy install the counts fall to zero and stay there, and a
+// line that keeps reappearing means something is still re-introducing stale
+// ids. The syncer's logger is the daemon's (wireJiraSyncers replaces it), so
+// this lands in daemon.log with the rest of the pass.
+func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) error {
+	if s.mapper == nil {
+		return nil
+	}
+	if err := s.mapper.ResolveAll(ctx, manualMap); err != nil {
+		return err
+	}
+	assignees, reporters, err := s.db.BackfillJiraSlackIDs()
+	if err != nil {
+		return err
+	}
+	if assignees > 0 || reporters > 0 {
+		s.logger.Printf("re-derived slack ids on %d assignee and %d reporter rows", assignees, reporters)
+	}
+	return nil
 }
 
 // buildIncrementalJQL builds the JQL for an incremental project sync.

@@ -489,6 +489,34 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 	return snaps, firstErr
 }
 
+// migrateJiraFeatureKeys runs the one-time jira.features key repair and
+// returns the config the daemon should run with: the reloaded one when the
+// repair actually moved a value, otherwise cfg untouched. Log-only on
+// failure — an unrepaired file reads exactly as it did before, which is the
+// pre-repair status quo rather than a fail-open, and the next start retries.
+//
+// Daemon start is the ONLY caller that reaches an install which never opens
+// `jira features`, i.e. every Desktop-only owner, so the call site in
+// runSyncDaemon is load-bearing and pinned by
+// TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration.
+func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Config {
+	repaired, err := config.MigrateJiraFeatureKeys(flagConfig)
+	if err != nil {
+		logger.Printf("jira feature-key migration error: %v (continuing with current config)", err)
+		return cfg
+	}
+	if !repaired {
+		return cfg
+	}
+	freshCfg, err := config.Load(flagConfig)
+	if err != nil {
+		logger.Printf("failed to reload config after jira feature-key migration: %v (continuing with current config)", err)
+		return cfg
+	}
+	logger.Printf("jira feature-key migration applied; config reloaded")
+	return freshCfg
+}
+
 // runSyncDaemon builds a daemon.Daemon around the already-wired Slack
 // orchestrators, attaches every pipeline stage (unconditionally — each
 // pipeline's own daemon phase gates its execution on that feature's own
@@ -527,6 +555,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		}
 	}
 
+	cfg = migrateJiraFeatureKeys(cfg, logger)
+
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
@@ -542,6 +572,12 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.TrackLinker = tracksPipe
+	// One shared detector across both pipelines, so the known-project-key set
+	// is loaded once rather than once per pipeline.
+	if det := jira.NewKeyDetectorIfEnabled(cfg, database); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	d.SetDigestPipeline(pipe)
 	d.SetTracksPipeline(tracksPipe)
 	d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
@@ -597,6 +633,10 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		logger.Printf("slack: failed to list accounts: %v", err)
 		return nil
 	}
+	// One detector shared by every account's orchestrator: its known-key cache
+	// is workspace-wide (jira_slack_links is deliberately not account-scoped)
+	// and its only mutable state is behind a mutex.
+	keyDetector := jira.NewKeyDetectorIfEnabled(cfg, database)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -615,6 +655,9 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		if keyDetector != nil {
+			orch.SetJiraKeyDetector(keyDetector)
+		}
 		orchestrators = append(orchestrators, orch)
 	}
 	return orchestrators
@@ -950,6 +993,10 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	pipe := digest.New(database, cfg, gen, logger)
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	pipe.TrackLinker = tracksPipe
+	if det := jira.NewKeyDetectorIfEnabled(cfg, database); det != nil {
+		pipe.SetJiraKeyDetector(det)
+		tracksPipe.SetJiraKeyDetector(det)
+	}
 	pipe.OnProgress = func(done, total int, status string) {
 		digestSpinner.UpdateProgress(done, total, status)
 	}

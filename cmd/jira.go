@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -137,7 +138,29 @@ var jiraSyncCmd = &cobra.Command{
 var jiraFeaturesCmd = &cobra.Command{
 	Use:   "features",
 	Short: "Show Jira feature toggles",
-	RunE:  runJiraFeatures,
+	// PersistentPreRunE runs the one-time jira.features key repair before
+	// any `jira features` subcommand reads or writes the config. The order
+	// is load-bearing: an enable that wrote first would be followed by a
+	// migration reading a file it no longer describes, and the repaired key
+	// would be the one the migration then skipped as "already present".
+	// Log-only on error, like the feature-gate migration's own call sites,
+	// so a migration hiccup never blocks list/enable/disable/reset.
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `jira features` subcommand would
+	// silently skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
+		if _, err := config.MigrateJiraFeatureKeys(flagConfig); err != nil {
+			log.Printf("warning: jira feature-key migration failed: %v", err)
+		}
+		return nil
+	},
+	RunE: runJiraFeatures,
 }
 
 var jiraFeaturesEnableCmd = &cobra.Command{
@@ -768,13 +791,34 @@ func runJiraStatus(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(out, "Issues synced: %d\n", issueCount)
 
 	states, _ := database.GetJiraSyncStates()
-	for _, s := range states {
-		if s.LastSyncedAt != "" {
-			fmt.Fprintf(out, "Last sync (%d:%s): %s\n", s.AccountID, s.ProjectKey, s.LastSyncedAt)
-		}
-	}
+	printJiraSyncStates(out, states)
 
 	return nil
+}
+
+// printJiraSyncStates renders the per-project sync rows.
+//
+// Two things were invisible here. A project that has never synced successfully
+// printed nothing at all — its last_synced_at is empty, so the line was
+// skipped, which reads exactly like "that project is not configured" rather
+// than "it has failed every pass since you added it". And the failure itself
+// was never shown, so a project that succeeded once and has failed ever since
+// showed a stale timestamp with nothing to say it was stale.
+//
+// The error text is truncated because it can carry a whole HTTP response body
+// (see Client.do); the untruncated text is in the daemon log.
+func printJiraSyncStates(out io.Writer, states []db.JiraSyncState) {
+	for _, s := range states {
+		lastSync := s.LastSyncedAt
+		if lastSync == "" {
+			lastSync = "never"
+		}
+		fmt.Fprintf(out, "Last sync (%d:%s): %s\n", s.AccountID, s.ProjectKey, lastSync)
+		if s.LastError != "" {
+			oneLine := strings.Join(strings.Fields(s.LastError), " ")
+			fmt.Fprintf(out, "  Last error (%s): %s\n", s.LastErrorAt, truncate(oneLine, 200))
+		}
+	}
 }
 
 func runJiraBoards(cmd *cobra.Command, _ []string) error {
@@ -944,20 +988,42 @@ func runJiraUsersMap(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	mapping := db.JiraUserMap{
-		JiraAccountID:   jiraAccountID,
-		SlackUserID:     slackUserID,
-		MatchMethod:     "manual",
-		MatchConfidence: 1.0,
-		ResolvedAt:      now,
-	}
-	if err := database.UpsertJiraUserMap(mapping); err != nil {
-		return fmt.Errorf("upserting user map: %w", err)
+	resolved, err := mapJiraUserToSlack(database, jiraAccountID, slackUserID)
+	if err != nil {
+		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Mapped Jira user %s → Slack user %s (manual, confidence=1.0)\n", jiraAccountID, slackUserID)
+	fmt.Fprintf(cmd.OutOrStdout(), "Mapped Jira user %s → Slack user %s (manual, confidence=1.0)\n", jiraAccountID, resolved)
 	return nil
+}
+
+// mapJiraUserToSlack records a manual Jira→Slack mapping, resolving the typed
+// Slack id to the users.id it names first.
+//
+// The argument is whatever an operator read off the Slack UI, which is a bare
+// "U0123ABCD" — a form that has matched no column in this database since
+// migration 00048 namespaced every Slack id. Stored verbatim it produced a
+// mapping that looked right in `jira users` and then propagated onto every one
+// of that person's issues on the next upsert, where every reader comparing
+// against an external identity saw nothing. An id naming no synced user is
+// refused rather than stored.
+func mapJiraUserToSlack(database *db.DB, jiraAccountID, slackUserID string) (string, error) {
+	resolved, err := database.ResolveSlackUserID(slackUserID)
+	if err != nil {
+		return "", fmt.Errorf("resolving slack user: %w", err)
+	}
+
+	mapping := db.JiraUserMap{
+		JiraAccountID:   jiraAccountID,
+		SlackUserID:     resolved,
+		MatchMethod:     "manual",
+		MatchConfidence: 1.0,
+		ResolvedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := database.UpsertJiraUserMap(mapping); err != nil {
+		return "", fmt.Errorf("upserting user map: %w", err)
+	}
+	return resolved, nil
 }
 
 func runJiraUsersResolve(cmd *cobra.Command, _ []string) error {
@@ -984,11 +1050,15 @@ func runJiraUsersResolve(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Backfill assignee_slack_id on existing issues.
-	if err := database.BackfillJiraSlackIDs(); err != nil {
+	assignees, reporters, err := database.BackfillJiraSlackIDs()
+	if err != nil {
 		return fmt.Errorf("backfilling slack IDs: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
+	if assignees > 0 || reporters > 0 {
+		fmt.Fprintf(out, "Re-derived Slack ids on %d assignee and %d reporter rows.\n", assignees, reporters)
+	}
 	maps, _ := database.GetJiraUserMaps()
 	matched := 0
 	for _, m := range maps {
@@ -1100,8 +1170,12 @@ func runJiraSync(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Backfill slack IDs on issues that were synced before user mapping was resolved.
-	_ = database.BackfillJiraSlackIDs()
+	// Backfill slack IDs on issues that were synced before user mapping was
+	// resolved. The counts belong to `jira users resolve`, whose whole job this
+	// is; here it is a tail step, so only a failure is worth a line.
+	if _, _, berr := database.BackfillJiraSlackIDs(); berr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: backfilling slack IDs failed: %v\n", berr)
+	}
 
 	return nil
 }
@@ -1169,6 +1243,34 @@ var featureNames = []string{
 	"my_issues", "awaiting_input", "who_ping", "track_linking",
 	"team_workload", "blocker_map", "iteration_progress", "epic_progress",
 	"write_back", "release_dashboard", "without_jira",
+}
+
+// jiraFeatureConfigKeys maps every feature name this CLI accepts — the short
+// spelling and, where it differs, the long one — to the key the toggle is
+// written under inside `jira.features`. That key is the field's mapstructure
+// tag, which is the only spelling config.Load decodes and the only one the
+// two Swift readers of the raw yaml look for.
+//
+// The accepted names must stay in step with featureToggleRef; the keys must
+// stay in step with config.JiraFeatureToggles' mapstructure tags.
+// TestJiraFeatureConfigKeys_MatchStructAndToggleRef pins both.
+var jiraFeatureConfigKeys = map[string]string{
+	"my_issues":              "my_issues_in_briefing",
+	"my_issues_in_briefing":  "my_issues_in_briefing",
+	"awaiting_input":         "awaiting_my_input",
+	"awaiting_my_input":      "awaiting_my_input",
+	"who_ping":               "who_ping",
+	"track_linking":          "track_jira_linking",
+	"track_jira_linking":     "track_jira_linking",
+	"team_workload":          "team_workload",
+	"blocker_map":            "blocker_map",
+	"iteration_progress":     "iteration_progress",
+	"epic_progress":          "epic_progress",
+	"write_back":             "write_back_suggestions",
+	"write_back_suggestions": "write_back_suggestions",
+	"release_dashboard":      "release_dashboard",
+	"without_jira":           "without_jira_detection",
+	"without_jira_detection": "without_jira_detection",
 }
 
 func runJiraFeatures(cmd *cobra.Command, _ []string) error {
@@ -1249,24 +1351,22 @@ func runJiraFeaturesDisable(cmd *cobra.Command, args []string) error {
 	return setJiraFeatureToggle(cmd, args[0], false)
 }
 
+// setJiraFeatureToggle writes one toggle as a scalar `jira.features.<key>`
+// entry, the same shape setConfigKey uses for every other feature toggle in
+// the product. It deliberately does NOT write the whole
+// config.JiraFeatureToggles struct: viper serializes through yaml.v3, the
+// struct carries no yaml tags, and yaml.v3 therefore falls back to the
+// lowercased Go field name — so every toggle the CLI wrote landed as
+// `myissuesinbriefing`, which matches no mapstructure tag and read back as
+// false forever. Writing one scalar key also leaves the other ten alone,
+// instead of cementing ten explicit falses read out of an all-false struct.
 func setJiraFeatureToggle(cmd *cobra.Command, name string, value bool) error {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	features := cfg.Jira.Features
-	ptr, ok := featureToggleRef(&features, name)
+	key, ok := jiraFeatureConfigKeys[name]
 	if !ok {
 		return fmt.Errorf("unknown feature %q; valid: %s", name, strings.Join(featureNames, ", "))
 	}
-	*ptr = value
 
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("jira.features", features)
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	if err := setConfigKey(flagConfig, "jira.features."+key, value); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
@@ -1304,10 +1404,16 @@ func runJiraFeaturesReset(cmd *cobra.Command, _ []string) error {
 
 	defaults := config.DefaultJiraFeatures(role)
 
+	// Eleven scalar keys in one write, for the reason setJiraFeatureToggle
+	// documents: the struct has no yaml tags, so writing it produces keys no
+	// reader can see.
 	v := viper.New()
 	v.SetConfigFile(flagConfig)
 	_ = v.ReadInConfig()
-	v.Set("jira.features", defaults)
+	for _, name := range featureNames {
+		ptr, _ := featureToggleRef(&defaults, name)
+		v.Set("jira.features."+jiraFeatureConfigKeys[name], ptr != nil && *ptr)
+	}
 	if err := writeConfigAtomic(v, flagConfig); err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}

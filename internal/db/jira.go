@@ -447,23 +447,70 @@ func (db *DB) UpsertJiraUserMap(mapping JiraUserMap) error {
 	return nil
 }
 
-// BackfillJiraSlackIDs updates assignee_slack_id and reporter_slack_id on existing issues from jira_user_map.
-func (db *DB) BackfillJiraSlackIDs() error {
-	_, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id = COALESCE(
+// BackfillJiraSlackIDs re-derives assignee_slack_id and reporter_slack_id on
+// existing issues from jira_user_map, the single source of truth for the
+// Jira→Slack identity.
+//
+// It corrects a stored value that DISAGREES with the map, not only an empty
+// one. The former "fill empty cells only" guard is why migration 00048 left
+// these two columns permanently broken: 00048 namespaced jira_user_map and
+// users.id but never rewrote this denormalized copy, so every issue last
+// upserted before it kept a bare "U123" that no namespaced reader can match
+// again — and a backfill that skipped non-empty cells skipped exactly those
+// rows. Because Jira sync is incremental by updated_at, a quiet issue is never
+// re-upserted, so the stale population never drains on its own either.
+//
+// Re-deriving needs no Slack account id and therefore makes no guess about
+// which workspace a bare id belonged to: assignee_account_id is an Atlassian
+// id no migration touched, and the correct namespaced value already sits in
+// the map under that key. The cost is that the map wins over a value written
+// directly onto an issue — which is the intent, since every writer of these
+// columns copies the map anyway.
+//
+// Rows with no Atlassian account id, and rows whose account id has no resolved
+// map entry, are left exactly as they are: a missing mapping is not evidence
+// that the stored value is wrong.
+//
+// It returns how many rows each statement actually rewrote. Those counts are
+// the only place the repair is observable: they say whether a pass converged
+// or is still finding stale rows, and a steady non-zero count means something
+// keeps re-introducing them. A correct implementation returns 0, 0 on the pass
+// after the one that repaired an install — an implementation that rewrites
+// every mapped row regardless keeps returning the full row count, which on
+// jira_issues is the largest churn in the database and is otherwise invisible.
+func (db *DB) BackfillJiraSlackIDs() (assignees, reporters int64, err error) {
+	res, err := db.Exec(`UPDATE jira_issues SET assignee_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
-		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != ''), '')
-		WHERE assignee_account_id != '' AND assignee_slack_id = ''`)
+		 WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')
+		WHERE assignee_account_id != ''
+		  AND EXISTS (SELECT 1 FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')
+		  AND assignee_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.assignee_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
-		return fmt.Errorf("backfilling assignee slack IDs: %w", err)
+		return 0, 0, fmt.Errorf("backfilling assignee slack IDs: %w", err)
 	}
-	_, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id = COALESCE(
+	assignees, err = res.RowsAffected()
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting backfilled assignee slack IDs: %w", err)
+	}
+
+	res, err = db.Exec(`UPDATE jira_issues SET reporter_slack_id =
 		(SELECT jum.slack_user_id FROM jira_user_map jum
-		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != ''), '')
-		WHERE reporter_account_id != '' AND reporter_slack_id = ''`)
+		 WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')
+		WHERE reporter_account_id != ''
+		  AND EXISTS (SELECT 1 FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')
+		  AND reporter_slack_id != (SELECT jum.slack_user_id FROM jira_user_map jum
+		 	WHERE jum.jira_account_id = jira_issues.reporter_account_id AND jum.slack_user_id != '')`)
 	if err != nil {
-		return fmt.Errorf("backfilling reporter slack IDs: %w", err)
+		return assignees, 0, fmt.Errorf("backfilling reporter slack IDs: %w", err)
 	}
-	return nil
+	reporters, err = res.RowsAffected()
+	if err != nil {
+		return assignees, 0, fmt.Errorf("counting backfilled reporter slack IDs: %w", err)
+	}
+	return assignees, reporters, nil
 }
 
 // GetJiraUserMaps returns all Jira user mappings.
@@ -504,15 +551,51 @@ func (db *DB) GetJiraUserMapByAccountID(id string) (*JiraUserMap, error) {
 	return &m, nil
 }
 
-// UpdateJiraSyncState inserts or updates the sync state for a Jira project on one account.
+// UpdateJiraSyncState records a SUCCESSFUL sync of one project on one account,
+// and therefore CLEARS last_error/last_error_at.
+//
+// last_error is "the error, if any, from the most recent attempt" — singular,
+// sitting next to last_synced_at, and the same thing slack_accounts and
+// google_accounts already mean by status/error. Never clearing it would leave
+// `jira status` printing a recent sync beside a weeks-old error with no way to
+// tell which one is current, which is more misleading than the silence this
+// replaces. The accepted cost is that a flapping project keeps no history: an
+// intermittent failure vanishes the moment the next pass succeeds. If those
+// turn out to be the common case, a consecutive_failures counter is the
+// follow-up — not a second, never-cleared error column.
 func (db *DB) UpdateJiraSyncState(accountID int64, projectKey, lastSyncedAt string, issuesSynced int) error {
 	_, err := db.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(account_id, project_key) DO UPDATE SET last_synced_at=excluded.last_synced_at,
-			issues_synced=excluded.issues_synced`,
+			issues_synced=excluded.issues_synced, last_error='', last_error_at=''`,
 		accountID, projectKey, lastSyncedAt, issuesSynced)
 	if err != nil {
 		return fmt.Errorf("updating jira sync state %s: %w", projectKey, err)
+	}
+	return nil
+}
+
+// RecordJiraSyncError records why one project's sync failed, leaving the
+// watermark columns alone — a failed attempt synced nothing, so last_synced_at
+// and issues_synced still describe the last time it worked.
+//
+// The counterpart to UpdateJiraSyncState, and deliberately a separate function:
+// the failure path has no watermark of its own to write, and the previous
+// attempt to fold both into one call ended up re-writing a row with the values
+// it had just read out of it while the error text fell out of scope unused.
+//
+// This is per-project sync health, not the account's grant health: it drives no
+// Re-login button and clears on the project's next success, so it does not
+// collide with the rule that a daemon pass may only ever stamp "revoked" onto
+// jira_accounts.status.
+func (db *DB) RecordJiraSyncError(accountID int64, projectKey, lastError, lastErrorAt string) error {
+	_, err := db.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_error, last_error_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(account_id, project_key) DO UPDATE SET last_error=excluded.last_error,
+			last_error_at=excluded.last_error_at`,
+		accountID, projectKey, lastError, lastErrorAt)
+	if err != nil {
+		return fmt.Errorf("recording jira sync error %s: %w", projectKey, err)
 	}
 	return nil
 }
@@ -552,17 +635,123 @@ func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	return states, rows.Err()
 }
 
-// UpsertJiraSlackLink inserts or updates a Jira-Slack link.
-func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
-	_, err := db.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+// Each link kind has its own identity and therefore its own conflict target,
+// one per partial unique index from migration 00067: a mention is identified by
+// the message it was found in, a track link by its track, a decision link by its
+// digest. A single shared target made a track link and a decision link for the
+// same issue key and channel the same physical row, because neither of them
+// writes a message_ts. The merge semantics within a kind are unchanged.
+const (
+	upsertJiraSlackLinkMention = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
 		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(issue_key, channel_id, message_ts) DO UPDATE SET
+		ON CONFLICT(issue_key, channel_id, message_ts) WHERE link_type = 'mention' DO UPDATE SET
 			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
 			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
-			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`,
-		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType)
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+
+	upsertJiraSlackLinkTrack = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_key, track_id) WHERE link_type = 'track' DO UPDATE SET
+			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+
+	upsertJiraSlackLinkDecision = `INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, track_id, digest_id, link_type)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(issue_key, digest_id) WHERE link_type = 'decision' DO UPDATE SET
+			track_id=COALESCE(excluded.track_id, jira_slack_links.track_id),
+			digest_id=COALESCE(excluded.digest_id, jira_slack_links.digest_id),
+			link_type=COALESCE(excluded.link_type, jira_slack_links.link_type)`
+)
+
+// jiraSlackLinkUpsert resolves a link to the statement matching its kind's own
+// partial unique index, returning the link with its kind normalised.
+//
+// A kind with no identity has no dedup: its rows match no partial index, so
+// every write inserts. An empty LinkType is therefore normalised to "mention"
+// (the column's own default) rather than written through — it is what a caller
+// gets by forgetting a field — and any other value is refused outright instead
+// of growing the table without bound.
+func jiraSlackLinkUpsert(link JiraSlackLink) (JiraSlackLink, string, error) {
+	switch link.LinkType {
+	case "", "mention":
+		link.LinkType = "mention"
+		return link, upsertJiraSlackLinkMention, nil
+	case "track":
+		return link, upsertJiraSlackLinkTrack, nil
+	case "decision":
+		return link, upsertJiraSlackLinkDecision, nil
+	default:
+		return link, "", fmt.Errorf("upserting jira slack link %s: unknown link_type %q", link.IssueKey, link.LinkType)
+	}
+}
+
+// UpsertJiraSlackLink inserts or updates a Jira-Slack link, conflicting on the
+// identity of the link's own kind.
+func (db *DB) UpsertJiraSlackLink(link JiraSlackLink) error {
+	link, query, err := jiraSlackLinkUpsert(link)
 	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(query,
+		link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
 		return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
+	}
+	return nil
+}
+
+// UpsertJiraSlackLinkBatch writes a batch of Jira-Slack links within an
+// existing transaction, preparing one statement per link kind present (the
+// UpsertMessageBatch shape). Semantics per link are identical to
+// UpsertJiraSlackLink; the difference is that a whole page of links costs one
+// commit instead of one per link. That matters on the message-sync path, where
+// SetMaxOpenConns(1) makes every separate write serialise against the sync's
+// own.
+//
+// Every link is resolved to its kind's statement BEFORE any of them executes,
+// so a batch carrying one unknown link_type is refused whole rather than
+// leaving the links ahead of it written into the caller's transaction — the
+// caller should not have to rely on its own rollback to get that.
+func (db *DB) UpsertJiraSlackLinkBatch(tx *sql.Tx, links []JiraSlackLink) error {
+	if tx == nil {
+		return fmt.Errorf("UpsertJiraSlackLinkBatch: nil transaction")
+	}
+
+	type resolved struct {
+		link  JiraSlackLink
+		query string
+	}
+	pending := make([]resolved, 0, len(links))
+	for _, link := range links {
+		link, query, err := jiraSlackLinkUpsert(link)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, resolved{link: link, query: query})
+	}
+
+	stmts := make(map[string]*sql.Stmt, 3)
+	defer func() {
+		for _, stmt := range stmts {
+			stmt.Close()
+		}
+	}()
+
+	for _, p := range pending {
+		link, query := p.link, p.query
+		stmt, ok := stmts[query]
+		if !ok {
+			prepared, err := tx.Prepare(query)
+			if err != nil {
+				return fmt.Errorf("preparing jira slack link upsert: %w", err)
+			}
+			stmt = prepared
+			stmts[query] = stmt
+		}
+		if _, err := stmt.Exec(
+			link.IssueKey, link.ChannelID, link.MessageTS, link.TrackID, link.DigestID, link.LinkType); err != nil {
+			return fmt.Errorf("upserting jira slack link %s: %w", link.IssueKey, err)
+		}
 	}
 	return nil
 }

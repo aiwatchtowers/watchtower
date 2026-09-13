@@ -232,8 +232,8 @@ func TestPatchConfigYAML_SecondCallReusesExistingSection(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(p, []byte("active_workspace: test\n"), 0o600))
 
-	require.NoError(t, patchConfigYAML(p, map[string]bool{"digest.enabled": true}))
-	require.NoError(t, patchConfigYAML(p, map[string]bool{"digest.min_messages_enabled": false}))
+	require.NoError(t, patchConfigYAML(p, map[string]bool{"digest.enabled": true}, nil))
+	require.NoError(t, patchConfigYAML(p, map[string]bool{"digest.min_messages_enabled": false}, nil))
 
 	v := rawConfig(t, p)
 	assert.True(t, v.GetBool("digest.enabled"), "the first call's value must survive the second")
@@ -248,7 +248,7 @@ func TestPatchConfigYAML_SecondCallReusesExistingSection(t *testing.T) {
 // file must surface as a wrapped error, never a panic or a silent no-op.
 func TestPatchConfigYAML_ReadFileError(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "absent.yaml")
-	err := patchConfigYAML(p, map[string]bool{"features.migrated": true})
+	err := patchConfigYAML(p, map[string]bool{"features.migrated": true}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config")
 }
@@ -260,7 +260,7 @@ func TestPatchConfigYAML_MalformedYAML(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(p, []byte("digest:\n\tenabled: true\n"), 0o600))
 
-	err := patchConfigYAML(p, map[string]bool{"features.migrated": true})
+	err := patchConfigYAML(p, map[string]bool{"features.migrated": true}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing config")
 }
@@ -273,7 +273,7 @@ func TestPatchConfigYAML_EmptyFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(p, []byte("# nothing here yet\n"), 0o600))
 
-	require.NoError(t, patchConfigYAML(p, map[string]bool{"features.migrated": true}))
+	require.NoError(t, patchConfigYAML(p, map[string]bool{"features.migrated": true}, nil))
 
 	v := rawConfig(t, p)
 	assert.True(t, v.IsSet("features.migrated"))
@@ -287,7 +287,7 @@ func TestPatchConfigYAML_RootNotAMapping(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(p, []byte("- a\n- b\n"), 0o600))
 
-	err := patchConfigYAML(p, map[string]bool{"features.migrated": true})
+	err := patchConfigYAML(p, map[string]bool{"features.migrated": true}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is not a mapping")
 }

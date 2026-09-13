@@ -90,7 +90,7 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 	// legacy is returned even when the write fails: "this install needs the
 	// mapping and did not get it" is exactly the signal the daemon's
 	// fail-closed path (ApplyLegacyDigestOff) keys on.
-	return legacy, patchConfigYAML(configPath, sets)
+	return legacy, patchConfigYAML(configPath, sets, nil)
 }
 
 // ApplyLegacyDigestOff applies the legacy digest.enabled=false mapping to an
@@ -132,7 +132,10 @@ func ApplyLegacyDigestOff(cfg *Config) {
 // the path to each target key are touched or created here — every sibling
 // (the workspaces block, comments, key order, casing) is left exactly as
 // parsed.
-func patchConfigYAML(configPath string, sets map[string]bool) error {
+//
+// Each key in deletes is removed from the document; deletions are applied
+// after the sets, so a key named by both ends up absent.
+func patchConfigYAML(configPath string, sets map[string]bool, deletes []string) error {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
@@ -153,6 +156,9 @@ func patchConfigYAML(configPath string, sets map[string]bool) error {
 
 	for key, value := range sets {
 		setYAMLPath(root, strings.Split(key, "."), value)
+	}
+	for _, key := range deletes {
+		deleteYAMLPath(root, strings.Split(key, "."))
 	}
 
 	var buf strings.Builder
@@ -200,6 +206,35 @@ func setYAMLPath(root *yaml.Node, path []string, value bool) {
 		}
 
 		node = valNode
+	}
+}
+
+// deleteYAMLPath removes the key/value pair named by path's last segment
+// from the mapping it lives in, leaving every node off the path exactly as
+// parsed — the deletion counterpart of setYAMLPath. A path segment that is
+// absent, or that names a node which is not a mapping, is a no-op: the
+// caller is describing a key that this document does not have.
+func deleteYAMLPath(root *yaml.Node, path []string) {
+	node := root
+	for i, seg := range path {
+		if node.Kind != yaml.MappingNode {
+			return
+		}
+		idx := -1
+		for j := 0; j+1 < len(node.Content); j += 2 {
+			if node.Content[j].Value == seg {
+				idx = j
+				break
+			}
+		}
+		if idx < 0 {
+			return
+		}
+		if i == len(path)-1 {
+			node.Content = append(node.Content[:idx], node.Content[idx+2:]...)
+			return
+		}
+		node = node.Content[idx+1]
 	}
 }
 

@@ -489,6 +489,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
+	setJiraFeatureDefaults(v)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
 	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)

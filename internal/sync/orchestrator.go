@@ -40,6 +40,43 @@ type Orchestrator struct {
 	progress             *Progress
 	channelNames         map[string]string // namespaced channel ID -> name, populated during message sync
 	discoveredChannelIDs map[string]bool   // namespaced channel IDs found active by discovery phase
+
+	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
+	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
+	jiraKeyDetector interface {
+		ProcessMessageBatch(msgs []db.Message) (int, error)
+	}
+}
+
+// SetJiraKeyDetector sets an optional Jira key detector for linking synced
+// Slack messages to the Jira issues they mention.
+func (o *Orchestrator) SetJiraKeyDetector(detector interface {
+	ProcessMessageBatch(msgs []db.Message) (int, error)
+}) {
+	o.jiraKeyDetector = detector
+}
+
+// detectJiraKeys links the Jira issue keys mentioned in a page of messages that
+// has just been committed. Called after the page's transaction commits, never
+// before: a rolled-back page leaves no message for a link to point at, and the
+// detector opens a transaction of its own — on a single-connection pool that
+// would wait for the page's still-open transaction to finish and deadlock.
+//
+// Best-effort, like the digest and tracks hooks: the links are derived data, so
+// a detection failure is logged and the sync carries on with the messages it
+// already persisted.
+func (o *Orchestrator) detectJiraKeys(msgs []db.Message) {
+	if o.jiraKeyDetector == nil || len(msgs) == 0 {
+		return
+	}
+	n, err := o.jiraKeyDetector.ProcessMessageBatch(msgs)
+	if err != nil {
+		o.logger.Printf("warning: jira key detection failed: %v", err)
+		return
+	}
+	if n > 0 {
+		o.logger.Printf("jira: linked %d issue key mention(s) across %d messages", n, len(msgs))
+	}
 }
 
 // NewOrchestrator creates a new sync orchestrator scoped to one connected

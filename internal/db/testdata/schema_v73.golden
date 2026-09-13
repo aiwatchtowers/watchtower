@@ -158,14 +158,26 @@ CREATE INDEX idx_jira_issues_updated ON jira_issues(updated_at)
 index	idx_jira_slack_links_channel
 CREATE INDEX idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts)
 
+index	idx_jira_slack_links_decision_identity
+CREATE UNIQUE INDEX idx_jira_slack_links_decision_identity
+ON jira_slack_links(issue_key, digest_id) WHERE link_type = 'decision'
+
 index	idx_jira_slack_links_digest
 CREATE INDEX idx_jira_slack_links_digest ON jira_slack_links(digest_id)
 
 index	idx_jira_slack_links_issue
 CREATE INDEX idx_jira_slack_links_issue ON jira_slack_links(issue_key)
 
+index	idx_jira_slack_links_mention_identity
+CREATE UNIQUE INDEX idx_jira_slack_links_mention_identity
+ON jira_slack_links(issue_key, channel_id, message_ts) WHERE link_type = 'mention'
+
 index	idx_jira_slack_links_track
 CREATE INDEX idx_jira_slack_links_track ON jira_slack_links(track_id)
+
+index	idx_jira_slack_links_track_identity
+CREATE UNIQUE INDEX idx_jira_slack_links_track_identity
+ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track'
 
 index	idx_meeting_notes_event
 CREATE INDEX idx_meeting_notes_event ON meeting_notes(event_id)
@@ -919,7 +931,7 @@ UNIQUE(account_id, project_key, name)
 )
 
 table	jira_slack_links
-CREATE TABLE jira_slack_links (
+CREATE TABLE "jira_slack_links" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 issue_key TEXT NOT NULL,
 channel_id TEXT NOT NULL DEFAULT '',
@@ -927,8 +939,7 @@ message_ts TEXT NOT NULL DEFAULT '',
 track_id INTEGER,
 digest_id INTEGER,
 link_type TEXT NOT NULL DEFAULT 'mention',
-detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-UNIQUE(issue_key, channel_id, message_ts)
+detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	jira_sprints

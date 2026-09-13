@@ -54,6 +54,7 @@ type DayPlanRunner interface {
 // through the concrete Syncer.
 type jiraAccountSyncer interface {
 	Sync(ctx context.Context) (int, error)
+	ResolveUsers(ctx context.Context, manualMap map[string]string) error
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
 }
@@ -639,6 +640,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
+		d.resolveJiraUsers(ctx, s)
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
 		}
@@ -671,6 +673,26 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		} else if synced > 0 {
 			d.logger.Printf("jira-targets: synced %d target status(es)", synced)
 		}
+	}
+}
+
+// resolveJiraUsers runs one account's Jira→Slack identity resolution after a
+// clean pass, so the Slack id columns the syncer denormalizes onto every issue
+// are actually populated on a daemon-driven install. The syncer alone never
+// resolves anything: it creates shell jira_user_map rows and reads them back.
+//
+// A failure here is logged and goes no further. Mapping identities is
+// bookkeeping over data already synced — it says nothing about the grant, so
+// it must not reach the account row, which this phase may only ever stamp
+// "revoked" (see phaseJiraSync's doc comment). A cancelled context is daemon
+// shutdown and skips the work entirely, for the same reason the auth-state
+// write does.
+func (d *Daemon) resolveJiraUsers(ctx context.Context, s jiraAccountSyncer) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := s.ResolveUsers(ctx, d.config.Jira.UserMap); err != nil {
+		d.logger.Printf("jira: account %d: user resolve error: %v", s.AccountID(), err)
 	}
 }
 

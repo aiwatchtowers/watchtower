@@ -208,16 +208,21 @@ func TestPhaseJiraSyncGenericFailureLeavesAuthStateUntouched(t *testing.T) {
 // Atlassian, so the branch that matters most here is unreachable offline
 // without it.
 type stubJiraSyncer struct {
-	accountID int64
-	issues    int
-	err       error
-	inTok     int
-	outTok    int
-	apiTok    int
+	accountID    int64
+	issues       int
+	err          error
+	inTok        int
+	outTok       int
+	apiTok       int
+	resolveCalls int
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
-func (s *stubJiraSyncer) AccountID() int64                  { return s.accountID }
+func (s *stubJiraSyncer) ResolveUsers(context.Context, map[string]string) error {
+	s.resolveCalls++
+	return nil
+}
+func (s *stubJiraSyncer) AccountID() int64 { return s.accountID }
 func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
@@ -334,4 +339,118 @@ func TestPhaseJiraSyncTargetStatusesSurviveOneAccountFailure(t *testing.T) {
 	got, err := database.GetTargetByID(target.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "done", got.Status, "a healthy account's targets must reflect Jira even when another account failed")
+}
+
+// TestPhaseJiraSyncResolvesUsersAfterCleanPass closes the gap that made the
+// jira_issues Slack-id columns empty on every daemon-driven install:
+// UserMapper.ResolveAll and BackfillJiraSlackIDs had exactly two callers, both
+// CLI, so a Jira user first seen by the daemon kept the shell jira_user_map row
+// the syncer creates — empty slack_user_id forever, and with it an empty
+// assignee_slack_id on every one of their issues.
+//
+// Both halves are asserted: the mapping AND the denormalized copy on the issue.
+// Resolving without backfilling leaves every already-synced issue exactly as
+// broken as before, which is the shape of the half-fix this pass exists to
+// prevent.
+func TestPhaseJiraSyncResolvesUsersAfterCleanPass(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	// No selected boards → the real Syncer is a clean offline no-op, which is
+	// the branch the resolve step hangs off.
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+
+	require.NoError(t, database.UpsertUser(db.User{ID: "1:UALICE", Name: "alice", Email: "alice@example.com"}))
+	require.NoError(t, database.UpsertJiraUserMap(db.JiraUserMap{
+		JiraAccountID: "jira-alice", Email: "alice@example.com", DisplayName: "Alice",
+	}))
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: acct, Key: "OPS-1", ProjectKey: "OPS", Summary: "Work",
+		AssigneeAccountID: "jira-alice", ReporterAccountID: "jira-alice",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+	d.phaseJiraSync(context.Background())
+
+	mapping, err := database.GetJiraUserMapByAccountID("jira-alice")
+	require.NoError(t, err)
+	require.NotNil(t, mapping)
+	assert.Equal(t, "1:UALICE", mapping.SlackUserID, "a daemon pass must resolve newly-seen Jira users")
+
+	var assignee, reporter string
+	require.NoError(t, database.QueryRow(
+		`SELECT assignee_slack_id, reporter_slack_id FROM jira_issues WHERE account_id = ? AND key = 'OPS-1'`, acct,
+	).Scan(&assignee, &reporter))
+	assert.Equal(t, "1:UALICE", assignee, "a daemon pass must push the resolved id onto existing issues")
+	assert.Equal(t, "1:UALICE", reporter)
+}
+
+// A failed pass says nothing new about identities and may have left the
+// account half-synced, so the resolve step belongs to the clean branch only —
+// and a broken sibling must not suppress a healthy account's resolve, the same
+// fan-out isolation the auth-state write and the target-status reflection
+// already follow.
+func TestPhaseJiraSyncSkipsUserResolveOnFailure(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	brokenAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	healthyAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	broken := &stubJiraSyncer{accountID: brokenAcct, err: errors.New("jira api 503")}
+	healthy := &stubJiraSyncer{accountID: healthyAcct}
+	d.jiraSyncers = []jiraAccountSyncer{broken, healthy}
+
+	d.phaseJiraSync(context.Background())
+
+	assert.Zero(t, broken.resolveCalls, "a failed pass must not run the resolve step")
+	assert.Equal(t, 1, healthy.resolveCalls, "a broken sibling must not suppress a healthy account's resolve")
+}
+
+// TestPhaseJiraSyncResolvesUsersForEveryCleanAccount is the multi-account axis
+// of "once per account", and it needs TWO clean accounts to exist: with a
+// single one in the fixture, a regression to "resolve the first clean syncer
+// and then stop" is invisible, and so is one that resolves only the last.
+//
+// Failure it pins: two connected sites both syncing cleanly, but only site 1's
+// newly-seen Jira users ever resolve — so every issue on site 2 keeps an empty
+// assignee_slack_id forever. That is the §A6 bug, half-fixed, and per-account
+// fan-out isolation is the premise of the whole Jira multi-account sub-project.
+func TestPhaseJiraSyncResolvesUsersForEveryCleanAccount(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	firstAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	secondAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	first := &stubJiraSyncer{accountID: firstAcct}
+	second := &stubJiraSyncer{accountID: secondAcct}
+	d.jiraSyncers = []jiraAccountSyncer{first, second}
+
+	d.phaseJiraSync(context.Background())
+
+	assert.Equal(t, 1, first.resolveCalls, "the first clean account must resolve exactly once")
+	assert.Equal(t, 1, second.resolveCalls, "every clean account must resolve, not just the first")
+}
+
+// A cancelled context is daemon shutdown: the resolve step writes to the
+// database the shutdown is tearing down, and skipping it is the same rule the
+// auth-state write follows.
+func TestPhaseJiraSyncSkipsUserResolveOnCancelledContext(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+
+	stub := &stubJiraSyncer{accountID: acct}
+	d.jiraSyncers = []jiraAccountSyncer{stub}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+
+	assert.Zero(t, stub.resolveCalls, "a shutdown must not start identity resolution")
 }

@@ -3,6 +3,9 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
+
+	watchtowerslack "watchtower/internal/slack"
 )
 
 // UserFilter provides options for filtering user queries.
@@ -124,6 +127,77 @@ func (db *DB) GetUserByEmailFold(email string) (*User, error) {
 		FROM users WHERE LOWER(email) = LOWER(?) AND email != '' AND is_deleted = 0
 		ORDER BY id ASC LIMIT 1`, email)
 	return scanUser(row)
+}
+
+// ResolveSlackUserID maps a hand-typed Slack user id onto the users.id that
+// names it, so a value an operator read off the Slack UI ("U0123ABCD") lands in
+// the namespaced form ("1:U0123ABCD") every reader compares against. Since
+// migration 00048 a bare id matches no column in this database, and a writer
+// that stores one produces a row nothing can ever join — silently, because
+// every consumer reads a miss as "no signal".
+//
+// It resolves rather than guesses: an input that already names a users row is
+// returned unchanged, and a bare id is accepted only when exactly one account's
+// users row carries it. Nothing matched, or several accounts matched, is an
+// error the caller must surface — never a stored value.
+func (db *DB) ResolveSlackUserID(input string) (string, error) {
+	id := strings.TrimSpace(input)
+	if id == "" {
+		return "", fmt.Errorf("empty slack user id")
+	}
+
+	// An exact hit needs no interpretation, whichever form it is in.
+	var exact string
+	err := db.QueryRow(`SELECT id FROM users WHERE id = ?`, id).Scan(&exact)
+	if err == nil {
+		return exact, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", fmt.Errorf("looking up slack user %s: %w", id, err)
+	}
+
+	// A namespaced input that missed names a specific account's row that does
+	// not exist. Re-pointing it at another account's row with the same raw id
+	// would silently attribute one workspace's person to another.
+	if _, _, namespaced := watchtowerslack.SplitAccountID(id); namespaced {
+		return "", fmt.Errorf("no synced Slack user %s", id)
+	}
+
+	matches, err := db.slackUserIDsWithRawID(id)
+	if err != nil {
+		return "", err
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no synced Slack user matches %q (sync Slack first, or pass the full id such as 1:%s)", id, id)
+	default:
+		return "", fmt.Errorf("%q matches several Slack accounts (%s) — pass the full id", id, strings.Join(matches, ", "))
+	}
+}
+
+// slackUserIDsWithRawID returns every users.id whose raw Slack id (the part
+// after the "<account>:" prefix) equals rawID. The prefix is split in Go rather
+// than matched with SQL LIKE so a wildcard in the input cannot widen the match.
+func (db *DB) slackUserIDsWithRawID(rawID string) ([]string, error) {
+	rows, err := db.Query(`SELECT id FROM users ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("querying users: %w", err)
+	}
+	defer rows.Close()
+
+	var matches []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning user ID: %w", err)
+		}
+		if _, raw, _ := watchtowerslack.SplitAccountID(id); raw == rawID {
+			matches = append(matches, id)
+		}
+	}
+	return matches, rows.Err()
 }
 
 // EnsureUser inserts a minimal stub user record if not already present.

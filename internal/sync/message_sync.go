@@ -449,6 +449,8 @@ func (o *Orchestrator) upsertMessagePage(channelID string, messages []goslack.Me
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("committing transaction: %w", err)
 	}
+
+	o.detectJiraKeys(dbMsgs)
 	return count, nil
 }
 
