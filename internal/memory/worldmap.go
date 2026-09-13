@@ -159,8 +159,11 @@ func (p *Pipeline) renderMap(ctx context.Context, runID int64, strong bool) (*di
 // — but the AI CALL that produced those bytes was not gated at all: one strong
 // render per daemon cycle, forever. The fingerprint closes that: when the input
 // the model would see is byte-identical to the one the committed map.md was
-// rendered from, the call is skipped and map.md is left exactly as it is (no
-// fallback write either — the committed map already IS that render).
+// rendered from AND that file is still on disk, the call is skipped and map.md
+// is left exactly as it is (no fallback write either — the committed map already
+// IS that render). The file condition matters because the skip returns before
+// any write: a matching fingerprint over a missing map.md would otherwise leave
+// nothing to recreate it.
 //
 // The fingerprint is stamped on SUCCESS only, deliberately unlike the
 // rewrite/reflect memos: a failed generate leaves the input unchanged, so the
@@ -176,8 +179,15 @@ func (p *Pipeline) renderStrongMap(ctx context.Context, runID int64) (*digest.Us
 	stored, serr := p.mapInputFingerprintStored()
 	if serr != nil {
 		p.logf("memory: map: read step state: %v", serr) // fail open: render rather than skip
-	} else if stored != "" && stored == fingerprint {
-		return nil, nil // identical input — map.md is already this render
+	} else if stored != "" && stored == fingerprint && p.mapFileExists() {
+		// Identical input — map.md is already this render. The file check is not
+		// belt-and-braces: the skip returns before ANY write, so a matching
+		// fingerprint over a MISSING map.md would leave nothing to recreate it.
+		// That is reachable — `watchtower memory reset-to` rewinds the vault past
+		// the map commit, and the owner can delete the file — and before the
+		// fingerprint gate every strong cycle either rewrote map.md or fell
+		// through to fallbackMap, whose os.Stat recreated it.
+		return nil, nil
 	}
 
 	raw, usage, _, gerr := p.generator.Generate(digest.WithSource(ctx, renderMapSource), system, user, "")
@@ -220,6 +230,14 @@ func mapInputFingerprint(user string) string {
 func (p *Pipeline) mapInputFingerprintStored() (string, error) {
 	_, fingerprint, err := p.db.MemoryStepState(db.MemoryStepMap, "")
 	return fingerprint, err
+}
+
+// mapFileExists reports whether map.md is on disk — the fingerprint gate's
+// second condition, since a skip writes nothing at all. A stat error other than
+// "missing" also reads as absent, so the gate fails toward rendering.
+func (p *Pipeline) mapFileExists() bool {
+	_, err := os.Stat(filepath.Join(p.vault.path, mapFileName))
+	return err == nil
 }
 
 // beliefEntry is one active belief line in the strong map input.
@@ -361,7 +379,7 @@ func capMapBytes(s string) string {
 // writes a tiny mechanical stub pointing at index.md so memory_map always has a
 // target. Used when the semantic tier is off or the strong render failed.
 func (p *Pipeline) fallbackMap(runID int64) error {
-	if _, err := os.Stat(filepath.Join(p.vault.path, mapFileName)); err == nil {
+	if p.mapFileExists() {
 		return nil // keep the previous committed map.md
 	}
 	content := "# World map\n\nSee `index.md` for the full memory index.\n"

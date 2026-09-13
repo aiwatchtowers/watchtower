@@ -329,8 +329,13 @@ func TestRenderMapRendersWhenInputChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, gen.calls, 1)
 
-	// The strong map's input carries each top entity's ## Current first line.
-	moved := indexEntity("ent_00000000000000000000000001", "Acme", "a project that shipped")
+	// The strong map's input carries each top entity's ## Current first line. The
+	// new value is the SAME BYTE LENGTH as the old one on purpose: a fingerprint
+	// that hashed len(user) rather than the bytes would otherwise still "detect"
+	// this change, and the guard would pass against an implementation that is not
+	// keyed on the input at all.
+	moved := indexEntity("ent_00000000000000000000000001", "Acme", "a prqject")
+	require.Len(t, "a prqject", len("a project"), "the fixture must not vary the input's length")
 	writeAndIndex(t, v, d, moved)
 
 	_, err = p.renderMap(context.Background(), 2, true)
@@ -338,6 +343,31 @@ func TestRenderMapRendersWhenInputChanges(t *testing.T) {
 	require.Len(t, gen.calls, 2, "a changed world re-renders the map")
 	assert.NotEqual(t, gen.calls[0], gen.calls[1], "the second call saw the new input")
 	assert.Contains(t, readMapFile(t, v), "render 2")
+}
+
+// TestRenderMapRestoresMissingFileOnFingerprintMatch: the fingerprint skip
+// returns before ANY write, so a matching fingerprint over a MISSING map.md
+// would leave nothing to recreate it — and that is reachable (`memory reset-to`
+// rewinds the vault past the map commit; the owner can delete the file). Before
+// the gate, every strong cycle either rewrote map.md or fell through to
+// fallbackMap, whose os.Stat recreated it; the gate must not lose that.
+func TestRenderMapRestoresMissingFileOnFingerprintMatch(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	writeAndIndex(t, v, d, indexEntity("ent_00000000000000000000000001", "Acme", "a project"))
+	gen := mapMemoGen()
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	_, err := p.renderMap(context.Background(), 1, true)
+	require.NoError(t, err)
+	require.Len(t, gen.calls, 1)
+
+	// The world has not changed — only the file is gone.
+	require.NoError(t, os.Remove(filepath.Join(v.path, mapFileName)))
+
+	_, err = p.renderMap(context.Background(), 2, true)
+	require.NoError(t, err)
+	assert.Len(t, gen.calls, 2, "a missing map.md re-renders even on a fingerprint match")
+	assert.Contains(t, readMapFile(t, v), "render 2", "map.md is back on disk")
 }
 
 // TestRenderMapFailureDoesNotStampFingerprint: the map stamps on SUCCESS only
