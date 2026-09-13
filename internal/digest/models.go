@@ -16,7 +16,13 @@ const (
 // source→tier table for every Generator backend (Claude, Codex, Ollama).
 func TierForSource(source string) Tier {
 	switch source {
-	case SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest", "meeting.followup", "meeting.speaker_guess", "ideas.digest_email", "ideas.digest_jira", "dictation.clean", "reactioncmd.command":
+	case SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest", "meeting.followup", "meeting.speaker_guess", "ideas.digest_email", "ideas.digest_jira", "dictation.clean", "reactioncmd.command",
+		// The two feedback-comment interpreters: a short comment + a fixed
+		// rating turned into a bounded {rule_type, scope_key, weight, reason}
+		// list — same shape/size class as ideas.digest_email/ideas.digest_jira
+		// above, not the free-form synthesis the rest of the strong tier does
+		// (decision 9, fix wave 4, task 6).
+		"inbox.situation_learn", "catchup.learn":
 		return TierLight
 	default:
 		return TierStrong

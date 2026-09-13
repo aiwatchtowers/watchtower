@@ -46,7 +46,7 @@ func (p *Pipeline) GenerateTranscriptNotes(ctx context.Context, eventID, transcr
 	userMessage := "Below is the full single-track meeting transcript (speakers are not labeled). " +
 		"Generate the meeting-notes markdown exactly per the system prompt.\n\n=== TRANSCRIPT ===\n" + trimmed
 
-	aiResponse, usage, _, err := p.generator.Generate(ctx, systemPrompt, userMessage, "")
+	aiResponse, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.notes"), systemPrompt, userMessage, "")
 	if err != nil {
 		return "", nil, fmt.Errorf("AI generation: %w", err)
 	}

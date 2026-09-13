@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 )
 
@@ -53,7 +54,7 @@ func (p *Pipeline) ExtractDiscussionTopics(
 	systemPrompt := fmt.Sprintf(tmpl, titleCtx, langDirective, trimmed)
 	userMessage := "Extract discussion topics from the raw text."
 
-	aiResponse, _, _, err := p.generator.Generate(ctx, systemPrompt, userMessage, "")
+	aiResponse, _, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.extract_topics"), systemPrompt, userMessage, "")
 	if err != nil {
 		return nil, fmt.Errorf("AI generation: %w", err)
 	}

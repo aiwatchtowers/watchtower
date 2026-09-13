@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/targets"
 
@@ -417,7 +418,7 @@ func runTargetsGenerate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, usage, _, err := gen.Generate(ctx, systemPrompt, userMessage, "")
+	result, usage, _, err := gen.Generate(digest.WithSource(ctx, "tasks.generate"), systemPrompt, userMessage, "")
 	if err != nil {
 		return fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -545,7 +546,7 @@ func runTargetsAIUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result, usage, _, err := gen.Generate(ctx, systemPrompt, targetsFlagInstruction, "")
+	result, usage, _, err := gen.Generate(digest.WithSource(ctx, "tasks.update"), systemPrompt, targetsFlagInstruction, "")
 	if err != nil {
 		return fmt.Errorf("AI update failed: %w", err)
 	}

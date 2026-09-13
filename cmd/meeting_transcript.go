@@ -372,6 +372,9 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 // Shared by save and the `recap <id>` retry command. Bookkeeping failures
 // (pipeline_runs) are logged to errOut and never affect the result.
 func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *config.Config, id int64, errOut io.Writer) error {
+	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
+		ctx = context.Background()
+	}
 	tr, err := database.GetMeetingTranscript(id)
 	if err != nil {
 		return err
@@ -633,7 +636,11 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	if tr.EventID.Valid {
 		eventID = tr.EventID.String
 	}
-	notes, usage, err := pipe.GenerateTranscriptNotes(cmd.Context(), eventID, tr.TranscriptText)
+	ctx := cmd.Context()
+	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
+		ctx = context.Background()
+	}
+	notes, usage, err := pipe.GenerateTranscriptNotes(ctx, eventID, tr.TranscriptText)
 	if err != nil {
 		completeRun(0, 0, 0, 0, err.Error())
 		return err
