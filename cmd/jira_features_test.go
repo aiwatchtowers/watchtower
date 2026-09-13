@@ -2,10 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log"
-	"os"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -191,12 +192,42 @@ func TestMigrateJiraFeatureKeys_DaemonHelperReturnsRepairedConfig(t *testing.T) 
 // while those installs keep their squashed keys and inert enables forever.
 // runSyncDaemon cannot be invoked from a test (it builds and runs a daemon
 // until ctx is cancelled), so the call site is asserted on the source.
+//
+// Parsed, not string-matched. A text search fails both ways: splitting the
+// call across lines is gofmt-clean yet reads as missing, and — the one that
+// matters — commenting the call out while leaving the text in place reads as
+// present, which is exactly the "someone disabled it while debugging daemon
+// start" case this test exists for. Parsing with comments discarded and
+// walking only runSyncDaemon's body also pins that the call is in THAT
+// function rather than anywhere in the file.
 func TestRunSyncDaemon_CallsTheJiraFeatureKeyMigration(t *testing.T) {
-	src, err := os.ReadFile("sync.go")
+	file, err := parser.ParseFile(token.NewFileSet(), "sync.go", nil, 0)
 	require.NoError(t, err)
-	// Not assert.Contains: on failure that would dump the whole file.
-	assert.True(t, strings.Contains(string(src), "cfg = migrateJiraFeatureKeys(cfg, logger)"),
-		"runSyncDaemon must run the jira.features key repair at daemon start — the call is gone from cmd/sync.go")
+
+	var runSyncDaemonDecl *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Recv == nil && fn.Name.Name == "runSyncDaemon" {
+			runSyncDaemonDecl = fn
+			break
+		}
+	}
+	require.NotNil(t, runSyncDaemonDecl, "runSyncDaemon must exist in cmd/sync.go")
+
+	var called bool
+	ast.Inspect(runSyncDaemonDecl.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if fun, ok := call.Fun.(*ast.Ident); ok && fun.Name == "migrateJiraFeatureKeys" {
+			called = true
+		}
+		return true
+	})
+	assert.True(t, called,
+		"runSyncDaemon must call migrateJiraFeatureKeys — the jira.features key repair "+
+			"never reaches an install that only ever runs the daemon")
 }
 
 // TestJiraFeaturesCmd_PersistentPreRunMigratesAndRunsRootHook pins both

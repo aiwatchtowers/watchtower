@@ -248,8 +248,9 @@ func TestSquashedJiraFeatureKeys_MatchStruct(t *testing.T) {
 			"%s must map to its mapstructure tag", field.Name)
 		assert.NotEqual(t, squashed, long,
 			"%s spells both keys identically, so the pre-fix writer already wrote the readable key: "+
-				"there is nothing to repair and the migration would DELETE the owner's value. "+
-				"Such a toggle must be left out of this table, not listed in it", field.Name)
+				"there is nothing to repair, and listing it here would make the migration DELETE "+
+				"the owner's value. Such a toggle belongs in neither the table nor this check — "+
+				"exclude it from both, and from the field count above", field.Name)
 	}
 }
 
