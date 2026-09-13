@@ -66,3 +66,18 @@ Plans live under `docs/superpowers/plans/2026-09-13-audit-fix-wave*.md`.
 - **Wave 4 — strong-tier cost**: decision 9.
 - **Wave 5 — the rest with decisions**: reaction-commands FastForward; recap prompt bump; calendar cleanup guard; `TargetBriefCenter` queue; TGT-BRIEF-01 wording; briefing `SetPromptStore`; chat `--` before prompt; Desktop `slack://` raw ids; duplicate logs + rotation.
 - **Not a fix wave**: Inbox brainstorming (decision 3); no-Slack identity (decision 15).
+
+## Wave 1 operator steps
+
+Run with the owner, on the owner's live workspace, after wave 1 is merged and the new binary is installed.
+Everything below is previewable: run each `--dry-run` first and read its output before the real run.
+
+1. **Stop the daemon** — `watchtower sync stop` (or Quit from the tray; the Desktop app respawns the daemon while it is open, so quit the app too). Nothing else may be writing the vault.
+2. **Preview the vault reset** — `watchtower memory reset-to <sha of the "memory(map)" commit from 2026-08-01> --dry-run`.
+   Find the sha with `git -C ~/.local/share/watchtower/<workspace>/memory log --oneline --before=2026-08-02`.
+   The preview prints the current HEAD, the target, how many commits would be discarded and how many files would disappear (expect ~44 600). It refuses if another memory run holds the lock (naming the pid) or if the worktree has uncommitted changes — commit or remove those first.
+3. **Reset for real** — same command without `--dry-run`. It hard-resets the vault, rebuilds the SQLite index from the surviving files, and fast-forwards the memory extraction watermarks to now (the six-week backlog is deliberately **not** re-extracted). On a 553 MB `.git` with tens of thousands of files this is minutes, not seconds — go-git rewrites the index and walks the worktree twice (once for the dirty check, once for the reset). Let it finish.
+4. **Preview the Slack-id backfill** — `watchtower memory migrate-slack-ids --dry-run`. It prints the nodes to rewrite by type, the alias/provenance counts, and a sample of ten rewrites; check the sample for anything that is not a Slack id before continuing. It refuses outright if two or more Slack accounts are connected (including disabled/removed rows).
+5. **Backfill for real** — same command without `--dry-run`. One `memory(migrate)` commit plus a reindex. Re-running it is safe and does nothing.
+6. **Start the daemon** — `watchtower sync --daemon --detach` (or reopen the app, which starts it).
+7. **Re-enable Slack digests** — `watchtower features enable slack-digests` (decision 2: the watermark is fast-forwarded, the six-week gap is not backfilled).

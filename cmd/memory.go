@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
+	"watchtower/internal/features"
 	"watchtower/internal/memory"
 	"watchtower/internal/prompts"
 
@@ -36,6 +38,30 @@ var memoryReindexCmd = &cobra.Command{
 	Use:   "reindex",
 	Short: "Drop the SQLite index and rebuild it from the vault",
 	RunE:  runMemoryReindex,
+}
+
+var memoryResetToCmd = &cobra.Command{
+	Use:   "reset-to <commit>",
+	Short: "Rewind the memory vault to a past commit and rebuild the index",
+	Long: "Operator recovery for a vault whose recent history is wrong. Hard-resets the vault worktree and\n" +
+		"HEAD to <commit> (which must be an ancestor of the current HEAD), rebuilds the SQLite index from\n" +
+		"the surviving files (MEM-02), and fast-forwards the memory extraction watermarks to now, so\n" +
+		"consolidation resumes from the present instead of re-extracting the whole discarded window\n" +
+		"(FEAT-03). Refuses while another memory run holds the lock, and while the vault worktree carries\n" +
+		"uncommitted changes — a hard reset would discard them. Preview everything with --dry-run first.",
+	Args: cobra.ExactArgs(1),
+	RunE: runMemoryResetTo,
+}
+
+var memoryMigrateSlackIDsCmd = &cobra.Command{
+	Use:   "migrate-slack-ids",
+	Short: "Rewrite bare Slack ids in the vault to the account-namespaced form",
+	Long: "One-off backfill for the ids migration 00048 could not reach: the vault is markdown, so every\n" +
+		"alias and ## Provenance ref written before Slack ids became \"<accountID>:<rawID>\" stayed bare and\n" +
+		"is invisible to every namespaced lookup. Rewrites them in one commit and rebuilds the index.\n" +
+		"Requires exactly one connected Slack account (counting disabled and removed ones) — with two,\n" +
+		"which account a bare id belongs to is not guessable. Idempotent: a second run does nothing.",
+	RunE: runMemoryMigrateSlackIDs,
 }
 
 var memoryOpenCmd = &cobra.Command{
@@ -119,9 +145,12 @@ func init() {
 	rootCmd.AddCommand(memoryCmd)
 	memoryCmd.AddCommand(memoryStatusCmd, memoryReindexCmd, memoryOpenCmd,
 		memoryRecallCmd, memoryConsolidateCmd, memorySeedCmd, memoryIndexCmd,
-		memoryDigestCompareCmd, memoryRetrieveCompareCmd)
+		memoryDigestCompareCmd, memoryRetrieveCompareCmd,
+		memoryResetToCmd, memoryMigrateSlackIDsCmd)
 
 	memoryRecallCmd.Flags().Int("limit", 10, "max results to print")
+	memoryResetToCmd.Flags().Bool("dry-run", false, "print what the reset would discard without writing")
+	memoryMigrateSlackIDsCmd.Flags().Bool("dry-run", false, "print what would be rewritten without writing")
 	memorySeedCmd.Flags().Bool("dry-run", false, "print what would be CREATED without writing (alias stitches and skips are not previewed)")
 	memoryDigestCompareCmd.Flags().Duration("since", 7*24*time.Hour, "compare legacy channel digests written within this lookback")
 	memoryDigestCompareCmd.Flags().String("out", "docs/specs/memory-digest-compare-report.md", "path to write the markdown compare report")
@@ -296,6 +325,160 @@ func runMemoryReindex(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "%d file(s) quarantined (parse/index failure — see warnings above).\n", stats.Quarantined)
 	}
 	return nil
+}
+
+// openVaultForRecovery opens an existing vault and takes the memory lock — the
+// runMemoryReindex preamble, shared by the two recovery commands because both
+// rewrite the vault and its index wholesale and must never interleave with a
+// consolidation run. A held lock is refused by naming the holder's pid.
+// A missing vault is not an error: the vault is returned as nil with no error,
+// and the caller prints its own "nothing to do" line.
+func openVaultForRecovery(cfg *config.Config) (*memory.Vault, func(), error) {
+	vault, err := memory.OpenExistingVault(memoryVaultPath(cfg))
+	if errors.Is(err, memory.ErrVaultNotInitialized) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	unlock, err := vault.Lock()
+	if errors.Is(err, memory.ErrLocked) {
+		if pid, ok := vault.LockHolderPID(); ok {
+			return nil, nil, fmt.Errorf("%w (held by pid %d — stop the daemon or wait for that run to finish)", memory.ErrLocked, pid)
+		}
+		return nil, nil, fmt.Errorf("%w (stop the daemon or wait for that run to finish)", memory.ErrLocked)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return vault, unlock, nil
+}
+
+func runMemoryResetTo(cmd *cobra.Command, args []string) error {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	cfg, database, err := memoryConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+
+	vault, unlock, err := openVaultForRecovery(cfg)
+	if err != nil {
+		return err
+	}
+	if vault == nil {
+		fmt.Fprintln(out, "Memory vault not initialized; nothing to reset.")
+		return nil
+	}
+	defer unlock()
+
+	plan, err := memory.PlanReset(vault, args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Current HEAD:      %s\n", plan.Head)
+	fmt.Fprintf(out, "Target commit:     %s\n", plan.Target)
+	fmt.Fprintf(out, "Commits discarded: %d\n", plan.CommitsDropped)
+	fmt.Fprintf(out, "Files removed:     %d\n", plan.FilesRemoved)
+	if plan.DirtyCount > 0 {
+		fmt.Fprintf(out, "Uncommitted changes: %d (%s) — a hard reset would discard them\n",
+			plan.DirtyCount, strings.Join(plan.Dirty, ", "))
+	}
+	if dryRun {
+		fmt.Fprintln(out, "Dry run — nothing written.")
+		return nil
+	}
+
+	stats, err := memory.ResetTo(vault, database, plan, memoryStderrLogf(cmd))
+	if err != nil {
+		return err
+	}
+	rows, err := database.ListMemoryNodes()
+	if err != nil {
+		return fmt.Errorf("listing memory nodes: %w", err)
+	}
+	fmt.Fprintf(out, "Vault reset to %s; reindexed %d nodes.\n", plan.Target, len(rows))
+	if stats.Quarantined > 0 {
+		fmt.Fprintf(out, "%d file(s) quarantined (parse/index failure — see warnings above).\n", stats.Quarantined)
+	}
+	if err := features.FastForward("memory", database, time.Now()); err != nil {
+		return fmt.Errorf("the vault is reset and reindexed, but fast-forwarding the memory watermarks failed: %w", err)
+	}
+	fmt.Fprintln(out, "Memory extraction watermarks fast-forwarded to now (the discarded window is not re-extracted).")
+	return nil
+}
+
+func runMemoryMigrateSlackIDs(cmd *cobra.Command, _ []string) error {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	cfg, database, err := memoryConfigAndDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+
+	vault, unlock, err := openVaultForRecovery(cfg)
+	if err != nil {
+		return err
+	}
+	if vault == nil {
+		fmt.Fprintln(out, "Memory vault not initialized; nothing to migrate.")
+		return nil
+	}
+	defer unlock()
+
+	stats, err := memory.MigrateSlackIDs(vault, database, dryRun, memoryStderrLogf(cmd))
+	if err != nil {
+		return err
+	}
+	printSlackIDMigration(out, stats, dryRun)
+	return nil
+}
+
+// printSlackIDMigration renders one migration pass: the counts, the sample of
+// rewrites, and what was (or was not) written.
+func printSlackIDMigration(out io.Writer, stats memory.SlackIDMigration, dryRun bool) {
+	if stats.NodesChanged == 0 {
+		fmt.Fprintln(out, "Nothing to migrate — the vault carries no bare Slack ids.")
+	} else {
+		fmt.Fprintf(out, "Slack account:       %d\n", stats.AccountID)
+		fmt.Fprintf(out, "Nodes to rewrite:    %d (%s)\n", stats.NodesChanged, formatNodeTypeCounts(stats.ByType))
+		fmt.Fprintf(out, "Alias rewrites:      %d\n", stats.AliasRewrites)
+		fmt.Fprintf(out, "Provenance rewrites: %d\n", stats.ProvenanceRewrites)
+	}
+	if stats.Conflicts > 0 {
+		fmt.Fprintf(out, "%d alias(es) left alone — the namespaced form already belongs to another page (merge them instead).\n", stats.Conflicts)
+	}
+	if stats.Unreadable > 0 {
+		fmt.Fprintf(out, "%d file(s) skipped (unparseable — see warnings above).\n", stats.Unreadable)
+	}
+	if len(stats.Samples) > 0 {
+		fmt.Fprintln(out, "Sample:")
+		for _, s := range stats.Samples {
+			fmt.Fprintf(out, "  %s\n", s)
+		}
+	}
+	switch {
+	case dryRun:
+		fmt.Fprintln(out, "Dry run — nothing written.")
+	case stats.Committed:
+		fmt.Fprintln(out, "Vault committed (memory(migrate)) and index rebuilt.")
+	}
+}
+
+// formatNodeTypeCounts renders a node-type histogram in a stable order.
+func formatNodeTypeCounts(counts map[string]int) string {
+	types := make([]string, 0, len(counts))
+	for t := range counts {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	parts := make([]string, len(types))
+	for i, t := range types {
+		parts[i] = fmt.Sprintf("%s %d", t, counts[t])
+	}
+	return strings.Join(parts, ", ")
 }
 
 func runMemoryOpen(cmd *cobra.Command, args []string) error {
