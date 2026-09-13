@@ -499,7 +499,9 @@ func (p *Pipeline) resolveChannelWindows(nowUnix float64) ([]channelWindow, erro
 		fastForwardTS = 0
 	}
 
-	candidates, err := p.db.ChannelsWithUndigestedMessages(firstRunSince)
+	// nowUnix is the same upper bound buildBatchEntry then loads with, so a
+	// channel is only ever offered when the load can actually serve it.
+	candidates, err := p.db.ChannelsWithUndigestedMessages(firstRunSince, nowUnix)
 	if err != nil {
 		return nil, fmt.Errorf("finding channels with undigested messages: %w", err)
 	}

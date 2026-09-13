@@ -381,7 +381,8 @@ func (db *DB) ChannelsWithNewMessages(sinceUnix float64) ([]string, error) {
 // digests have not covered yet.
 type ChannelDigestCandidate struct {
 	ChannelID string
-	// NewestMessageTS is the newest message ts_unix in the channel.
+	// NewestMessageTS is the newest message ts_unix in the channel at or before
+	// the `to` bound — the newest message a load over the same bound can serve.
 	NewestMessageTS float64
 	// LastDigestTo is the channel's own latest channel-digest period_to,
 	// or 0 when the channel has never been digested.
@@ -408,7 +409,15 @@ type ChannelDigestCandidate struct {
 // The HAVING clause mirrors digest.channelDigestSince minus its fast-forward
 // floor; the floor only ever raises the window start, so this pre-filter can
 // never drop a channel the caller would keep.
-func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]ChannelDigestCandidate, error) {
+//
+// `to` MUST be the same upper bound the caller then loads with. Without it this
+// query would offer a channel whose only newer message the load cannot serve —
+// a message whose Slack-assigned ts_unix is ahead of the local clock, through
+// skew or a sync race — and the window would either load empty or re-render the
+// same second every cycle, writing a zero-width digest row each time. A
+// discovery query and a loader that disagree about which messages exist is the
+// shape this whole change exists to remove, so they take the same bound.
+func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince, to float64) ([]ChannelDigestCandidate, error) {
 	rows, err := db.Query(`
 		SELECT m.channel_id, MAX(m.ts_unix), COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)
 		FROM messages m
@@ -419,6 +428,7 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]Chan
 			GROUP BY channel_id
 		) d ON d.channel_id = m.channel_id
 		LEFT JOIN channels c ON c.id = m.channel_id
+		WHERE m.ts_unix <= ?
 		-- Group by the channel alone: both joins match at most one row per
 		-- channel, so the bare d/c columns are functionally dependent on it.
 		-- Adding them to the GROUP BY costs two temp B-trees (one for the group,
@@ -428,7 +438,7 @@ func (db *DB) ChannelsWithUndigestedMessages(neverDigestedSince float64) ([]Chan
 			WHEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0)) > 0
 			THEN max(COALESCE(d.period_to, 0), COALESCE(c.digest_considered_ts, 0))
 			ELSE ? END
-		ORDER BY m.channel_id`, neverDigestedSince)
+		ORDER BY m.channel_id`, to, neverDigestedSince)
 	if err != nil {
 		return nil, fmt.Errorf("querying channels with undigested messages: %w", err)
 	}

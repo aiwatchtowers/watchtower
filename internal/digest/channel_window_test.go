@@ -461,6 +461,62 @@ func TestChannelWindow_CapSpanningTwoSecondsStillAdvances(t *testing.T) {
 		"with the burst consumed the channel has nothing left to offer")
 }
 
+// TestChannelWindow_FutureTimestampsDoNotKeepAChannelSpinning pins that
+// discovery and the loader agree about which messages exist. Discovery tested
+// `MAX(ts_unix) > mark` with no upper bound while the load is bounded by the
+// nowUnix sampled at the top of the run, so a message whose Slack-assigned
+// ts_unix sits ahead of the local clock — clock skew, or the narrow sync race —
+// made a channel a candidate the load could not serve. Two shapes followed: a
+// window that loads empty (one wasted load per cycle), or one that reloads the
+// same second and writes a zero-width digest row after an AI call, every cycle.
+// Self-healing once wall-clock passes the timestamp, but silent until then.
+func TestChannelWindow_FutureTimestampsDoNotKeepAChannelSpinning(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1 // keep the cooldown out of the way after cycle one
+
+	seedChannel(t, database, "C_AHEAD_ONLY", "ahead-only")
+	seedChannel(t, database, "C_AHEAD_TAIL", "ahead-tail")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// No volume needed: the defect is in a predicate, not a cap.
+	future := time.Now().Add(1 * time.Hour).Unix()
+	seedMessage(t, database, "C_AHEAD_ONLY", fmt.Sprintf("%d.000000", future), "U1", "from-the-future")
+
+	// The second channel has loadable traffic in one second plus a future tail,
+	// so after cycle one digests that second the future message is all that
+	// would keep it a candidate.
+	sec := time.Now().Add(-2 * time.Hour).Unix()
+	for i := range 5 {
+		seedMessage(t, database, "C_AHEAD_TAIL", fmt.Sprintf("%d.%06d", sec, i+1), "U1", fmt.Sprintf("loadable-%d-end", i))
+	}
+	seedMessage(t, database, "C_AHEAD_TAIL", fmt.Sprintf("%d.000000", future), "U1", "tail-from-the-future")
+
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, testLogger())
+
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_AHEAD_ONLY"),
+		"a channel whose only message the load cannot serve must never be offered")
+
+	for range 3 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, gen.promptsContaining("loadable-0-end"),
+		"the loadable second is digested once, not re-rendered every cycle behind a future message")
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_AHEAD_TAIL"),
+		"and the channel stops being offered once everything the load can serve is covered")
+
+	digests, err := database.GetDigests(db.DigestFilter{ChannelID: "C_AHEAD_TAIL", Type: "channel"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1, "exactly one digest row, not one zero-width row per cycle")
+	assert.Greater(t, digests[0].PeriodTo, digests[0].PeriodFrom, "and it covers a real window")
+}
+
 // TestChannelWindow_CeilingBreachAdvancesLoudly pins the last place the
 // progress invariant could have been broken rather than asserted: when even the
 // BoundarySecondRowLimit reload cannot get past the second the window opens on,
