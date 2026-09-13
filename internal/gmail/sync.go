@@ -96,11 +96,13 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	syncedAt := now.Format(time.RFC3339)
 	count := 0
 	maxSeen := watermark
+	stalled := false // set once a message is lost, so maxSeen stops advancing past the gap
 
 	for _, id := range ids {
 		m, err := s.client.GetMessage(ctx, id)
 		if err != nil {
 			s.logger.Printf("gmail: fetch message %s: %v", id, err)
+			stalled = true
 			continue
 		}
 		// Noise filter (before storage/AI).
@@ -132,12 +134,23 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		row.SyncedAt = syncedAt
 		if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
+			stalled = true
+			continue
+		}
+		count++
+		// Messages are processed oldest-first, so once any message has been lost
+		// (fetch or upsert failure — not the deliberate noise/already-seen skips
+		// above) the watermark must stop advancing past that gap: a later
+		// message's success must not let SetGmailAccountWatermark commit a value
+		// past a message that was never stored, or that message becomes
+		// permanently unreachable (the next cycle's after:<watermark> query and
+		// the already-seen filter both exclude it).
+		if stalled {
 			continue
 		}
 		if msgUnix > maxSeen {
 			maxSeen = msgUnix
 		}
-		count++
 	}
 
 	if maxSeen > watermark {
