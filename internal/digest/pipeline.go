@@ -761,19 +761,22 @@ const (
 
 func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry, batchEntryStatus) {
 	channelID := w.channelID
-	msgs, err := p.loadWindowMessages(w, nowUnix)
+	msgs, consideredFloor, err := p.loadWindowMessages(w, nowUnix)
 	if err != nil {
 		p.logger.Printf("digest: error getting messages for %s: %v", channelID, err)
 		return batchEntry{}, batchEntrySkipError
 	}
-	// Every mechanical skip below covers this whole load, so that is what its
-	// mark records — the accepted path stamps its own (possibly narrower)
-	// rendered set instead.
+	// Every mechanical skip below covers this whole load, so loadedThrough is
+	// what its mark records — the accepted path stamps its own (possibly
+	// narrower) rendered set instead. consideredFloor is 0 except when the load
+	// reported it cannot get past the second the window opens on, and then it
+	// carries the mark past that second so the channel cannot freeze there.
 	loaded := msgs
+	loadedThrough := max(newestTS(loaded), consideredFloor)
 
 	visible, botVisible := p.countVisibleMessages(msgs)
 	if visible == 0 {
-		p.stampConsidered(channelID, newestTS(loaded))
+		p.stampConsidered(channelID, loadedThrough)
 		if len(msgs) >= p.cfg.Digest.MinMessages {
 			return batchEntry{}, batchEntrySkipNoVisible
 		}
@@ -784,7 +787,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 	// Bot-heavy channel: ≥90% visible messages from bots.
 	if float64(botVisible)/float64(visible) >= 0.9 {
 		if humanVisible == 0 {
-			p.stampConsidered(channelID, newestTS(loaded))
+			p.stampConsidered(channelID, loadedThrough)
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		msgs = p.extractHumanContext(msgs)
@@ -795,7 +798,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 			}
 		}
 		if visible == 0 {
-			p.stampConsidered(channelID, newestTS(loaded))
+			p.stampConsidered(channelID, loadedThrough)
 			return batchEntry{}, batchEntrySkipBotOnly
 		}
 		p.logger.Printf("digest: #%s is bot-heavy, extracted %d context messages around human replies",
@@ -809,7 +812,7 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 	// the rest as noise, so that is what the mark records instead.
 	consideredThrough := newestTS(msgs)
 	if !advancesWindow(msgs, w.since) {
-		consideredThrough = newestTS(loaded)
+		consideredThrough = loadedThrough
 	}
 
 	return batchEntry{
@@ -831,33 +834,62 @@ func (p *Pipeline) buildBatchEntry(w channelWindow, nowUnix float64) (batchEntry
 // pins the channel on those rows for good — the same dead end as trimming away
 // everything. Both are the one condition advancesWindow states, and both take
 // the over-cap reload below.
-func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) ([]db.Message, error) {
-	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
+func (p *Pipeline) loadWindowMessages(w channelWindow, nowUnix float64) (msgs []db.Message, consideredFloor float64, err error) {
+	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.DefaultTimeRangeLimit)
 	if err != nil || len(msgs) < db.DefaultTimeRangeLimit {
-		return msgs, err
+		return msgs, 0, err
 	}
 
 	if trimmed, ok := trimPartialBoundarySecond(msgs); ok && advancesWindow(trimmed, w.since) {
 		p.logger.Printf("digest: #%s hit the message limit (%d): digesting its oldest %d message(s), the rest follows next cycle",
 			p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(trimmed))
-		return trimmed, nil
+		return trimmed, 0, nil
 	}
 
-	// Nothing the cap left behind moves the window. Reload with a far higher
-	// ceiling so the load reaches past the second the window starts in: a
-	// bounded overshoot of the cap beats a channel that can never move.
-	msgs, err = p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
+	// Nothing the cap left behind moves the window.
+	return p.loadOpeningSecondOverCap(w, nowUnix)
+}
+
+// loadOpeningSecondOverCap reloads the window under BoundarySecondRowLimit, a
+// bounded overshoot of the row cap, so the load reaches past the second the
+// window opens on — the only way out when everything under the cap sits in that
+// second.
+//
+// consideredFloor is non-zero only when even the ceiling cannot get past it.
+// That is the last place the progress invariant could be broken rather than
+// asserted, and the disposition is deliberate: advance past the stuck second
+// anyway, losing what did not fit, and say so loudly. Freezing the channel
+// there would cost one AI call and one zero-width digest row every cycle
+// forever, and nothing in the logs would tell it apart from a quiet channel —
+// a silent stall is the worse of the two failures. The ideas pipeline makes the
+// same call at its own boundary.
+func (p *Pipeline) loadOpeningSecondOverCap(w channelWindow, nowUnix float64) ([]db.Message, float64, error) {
+	msgs, err := p.db.GetOldestMessagesByTimeRange(w.channelID, w.since, nowUnix, db.BoundarySecondRowLimit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(msgs) == db.BoundarySecondRowLimit {
 		if trimmed, ok := trimPartialBoundarySecond(msgs); ok && advancesWindow(trimmed, w.since) {
 			msgs = trimmed
 		}
 	}
-	p.logger.Printf("digest: #%s holds more than %d message(s) in the second its window opens on: digesting %d message(s) over the limit",
-		p.channelName(w.channelID), db.DefaultTimeRangeLimit, len(msgs))
-	return msgs, nil
+
+	name := p.channelName(w.channelID)
+	if advancesWindow(msgs, w.since) {
+		p.logger.Printf("digest: #%s holds more than %d message(s) in the second its window opens on: digesting %d message(s) over the limit",
+			name, db.DefaultTimeRangeLimit, len(msgs))
+		return msgs, 0, nil
+	}
+
+	second := int64(w.since)
+	if total, cerr := p.db.CountMessagesInChannelRange(w.channelID, w.since, w.since); cerr == nil {
+		p.logger.Printf("digest: ERROR: #%s holds %d message(s) in second %d, past the %d-row ceiling: digesting %d, leaving %d unrendered, and advancing past that second — the alternative is a channel frozen on it forever",
+			name, total, second, db.BoundarySecondRowLimit, len(msgs), max(total-len(msgs), 0))
+	} else {
+		p.logger.Printf("digest: ERROR: #%s holds more than the %d-row ceiling in second %d: digesting %d, leaving the rest unrendered, and advancing past that second — the alternative is a channel frozen on it forever (counting the second failed: %v)",
+			name, db.BoundarySecondRowLimit, second, len(msgs), cerr)
+	}
+	return msgs, w.since + 1, nil
 }
 
 // countVisibleMessages returns (visible, bot-authored visible). Messages with

@@ -1,8 +1,10 @@
 package digest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -457,6 +459,72 @@ func TestChannelWindow_CapSpanningTwoSecondsStillAdvances(t *testing.T) {
 		"the later second must reach a prompt — a trim back to the window start makes no progress")
 	assert.Equal(t, float64(-1), windowFor(t, p, "C_BURSTY"),
 		"with the burst consumed the channel has nothing left to offer")
+}
+
+// TestChannelWindow_CeilingBreachAdvancesLoudly pins the last place the
+// progress invariant could have been broken rather than asserted: when even the
+// BoundarySecondRowLimit reload cannot get past the second the window opens on,
+// because that single second holds more rows than the ceiling.
+//
+// The disposition is to advance past that second anyway — losing what did not
+// fit — and to say so with a counted ERROR naming the channel, the second and
+// the number skipped. Freezing there would burn one AI call and one zero-width
+// digest row every cycle forever, indistinguishable in the logs from a quiet
+// channel. Unreachable through Slack; asserted so the invariant holds
+// everywhere the code claims it does.
+func TestChannelWindow_CeilingBreachAdvancesLoudly(t *testing.T) {
+	database := testDB(t)
+	cfg := testConfig()
+	cfg.Digest.MinMessages = 1 // keep the cooldown out of the way after cycle one
+
+	seedChannel(t, database, "C_CEILING", "ceiling")
+	seedUser(t, database, "U1", "alice", "Alice")
+
+	// One row past the ceiling, all inside a single second, so not even the
+	// over-cap reload can leave that second.
+	//
+	// Seeded in one statement, and all but the first few rows with empty text:
+	// the messages_ai FTS trigger skips an empty message, and it is quadratic
+	// otherwise (a full messages_fts scan per inserted row), which would cost
+	// this test ~19s. The few visible rows are the oldest of the second, so the
+	// load carries them and the channel takes the ordinary accepted path.
+	const inOneSecond = db.BoundarySecondRowLimit + 1
+	const visible = 5
+	sec := time.Now().Add(-6 * time.Hour).Unix()
+	for i := range visible {
+		seedMessage(t, database, "C_CEILING", fmt.Sprintf("%d.%06d", sec, i+1), "U1", fmt.Sprintf("ceiling-%d-end", i))
+	}
+	_, err := database.Exec(`
+		WITH RECURSIVE seq(n) AS (SELECT ? UNION ALL SELECT n + 1 FROM seq WHERE n < ?)
+		INSERT INTO messages (channel_id, ts, user_id, text)
+		SELECT 'C_CEILING', printf('%d.%06d', ?, n), 'U1', '' FROM seq`,
+		visible+1, inOneSecond, sec)
+	require.NoError(t, err)
+	seedMessage(t, database, "C_CEILING", fmt.Sprintf("%d.000000", sec+120), "U1", "after-the-ceiling")
+
+	var logBuf bytes.Buffer
+	gen := &promptCapturingGenerator{responses: map[string]string{
+		"digest.channel":       validDigestJSON(),
+		"digest.channel_batch": `[]`,
+	}}
+	p := New(database, cfg, gen, log.New(&logBuf, "", 0))
+
+	for range 3 {
+		_, _, err := p.RunChannelDigests(context.Background())
+		require.NoError(t, err)
+	}
+
+	assert.Contains(t, logBuf.String(), "ERROR: #ceiling",
+		"a breach of the row ceiling must be loud, naming the channel")
+	assert.Contains(t, logBuf.String(), fmt.Sprintf("in second %d", sec),
+		"and naming the second it could not get past")
+	assert.Contains(t, logBuf.String(), "leaving 1 unrendered",
+		"and counting what it skipped")
+
+	assert.True(t, gen.sawPrompt("after-the-ceiling"),
+		"the window must advance past the stuck second, not freeze on it")
+	assert.Equal(t, float64(-1), windowFor(t, p, "C_CEILING"),
+		"and the channel must finish rather than re-offer the same second forever")
 }
 
 // TestChannelWindow_BotHeavyContextInsideTheOpeningSecondStillAdvances pins the

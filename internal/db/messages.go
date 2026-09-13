@@ -213,6 +213,19 @@ func (db *DB) GetOldestMessagesByTimeRange(channelID string, from, to float64, l
 	return scanMessages(rows)
 }
 
+// CountMessagesInChannelRange returns how many messages one channel holds in a
+// Unix timestamp range, both bounds inclusive. Unlike the loaders it is not
+// capped, so a caller can report how much a row cap left behind.
+func (db *DB) CountMessagesInChannelRange(channelID string, from, to float64) (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ? AND ts_unix >= ? AND ts_unix <= ?`,
+		channelID, from, to).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting messages in %s: %w", channelID, err)
+	}
+	return count, nil
+}
+
 // CountMessagesByTimeRange returns the number of messages in a time range.
 func (db *DB) CountMessagesByTimeRange(from, to float64) (int, error) {
 	var count int
