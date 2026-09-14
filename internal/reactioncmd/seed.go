@@ -69,7 +69,9 @@ func assertEveryEnabledAccountResolved(database *db.DB, accounts []Account) erro
 	for _, acct := range enabled {
 		if !resolved[acct.ID] {
 			return fmt.Errorf("slack account #%d could not be reached (no usable token); "+
-				"run 'watchtower slack login --account %d' and enable the feature again", acct.ID, acct.ID)
+				"run 'watchtower slack login --account %d' — or 'watchtower slack disable %d' "+
+				"if that organization is gone for good — and enable the feature again",
+				acct.ID, acct.ID, acct.ID)
 		}
 	}
 	return nil

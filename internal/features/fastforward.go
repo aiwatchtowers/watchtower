@@ -43,10 +43,6 @@ func FastForward(id string, database *db.DB, now time.Time, deps Deps) error {
 	}
 }
 
-// fastForwardSecretaryInbox stamps both watermarks the inbox pipeline's own
-// Run advances: detection/triage's inbox_last_processed_ts (INBOX-09) and
-// the composer's compose_last_run_ts (DASH-02) — re-enabling the pillar
-// must skip both stages' backlog, not just detection's.
 // Deps carries the capabilities a hook needs that internal/features cannot
 // build for itself — today only the reaction-commands ledger seed, which needs
 // a Slack client per connected account (cmd/reaction_commands.go owns that
@@ -77,6 +73,10 @@ func fastForwardReactionCommands(database *db.DB, deps Deps) error {
 	return nil
 }
 
+// fastForwardSecretaryInbox stamps both watermarks the inbox pipeline's own
+// Run advances: detection/triage's inbox_last_processed_ts (INBOX-09) and
+// the composer's compose_last_run_ts (DASH-02) — re-enabling the pillar
+// must skip both stages' backlog, not just detection's.
 func fastForwardSecretaryInbox(database *db.DB, now time.Time) error {
 	ts := float64(now.Unix())
 	if err := database.SetInboxLastProcessedTS(ts); err != nil {

@@ -1,10 +1,12 @@
 package reactioncmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"testing"
@@ -80,6 +82,16 @@ func newTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, items 
 		return []Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: stubLister{items: items}}}, nil
 	}
 	return New(database, &config.Config{}, gen, newTestRegistry(t, database), accountsFn, nil)
+}
+
+// newLoggingTestPipeline is newTestPipeline with the pipeline's logger wired to
+// a buffer, so the operator-visible log lines can be asserted.
+func newLoggingTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, items []slack.ReactedItem, logs *bytes.Buffer) *Pipeline {
+	t.Helper()
+	accountsFn := func(context.Context) ([]Account, error) {
+		return []Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: stubLister{items: items}}}, nil
+	}
+	return New(database, &config.Config{}, gen, newTestRegistry(t, database), accountsFn, log.New(logs, "", 0))
 }
 
 func countAgentActions(t *testing.T, database *db.DB, status string) int {
@@ -279,20 +291,28 @@ func TestReactionCmd_DispatchCapDefersOverflow(t *testing.T) {
 	// fixture that puts it last would only notice indirectly.
 	items := append([]slack.ReactedItem{freeSkipReaction(t, database)}, dictionaryReactions("C1", maxDispatchPerRun+2)...)
 	gen := &mockGenerator{out: `{"text":"Handle this","reason":"owner flagged it"}`}
-	p := newTestPipeline(t, database, gen, items)
+	logs := new(bytes.Buffer)
+	p := newLoggingTestPipeline(t, database, gen, items, logs)
 
 	n1, err := p.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, maxDispatchPerRun, n1)
+	// The deferred count is the only operator-visible evidence that a backlog is
+	// draining rather than stuck, so assert the rendered numbers, not just that
+	// something was logged.
+	assert.Contains(t, logs.String(), fmt.Sprintf(
+		"dispatched %d, deferred 2 to the next cycle (cap %d)", maxDispatchPerRun, maxDispatchPerRun))
 	assert.Equal(t, maxDispatchPerRun, gen.calls, "the free skip does not consume budget")
 	assert.Equal(t, maxDispatchPerRun, countRows(t, database, "agent_actions"))
 	// cap dispatched + the free skip; the 2 deferred ones stay UNrecorded so
 	// the next poll sees them as unseen.
 	assert.Equal(t, maxDispatchPerRun+1, countRows(t, database, "reaction_commands"))
 
+	logs.Reset()
 	n2, err := p.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 2, n2, "the deferred remainder drains on the next poll")
+	assert.NotContains(t, logs.String(), "deferred", "a run that stays under the cap defers nothing")
 	assert.Equal(t, maxDispatchPerRun+2, gen.calls, "no re-compose of the first batch")
 	assert.Equal(t, maxDispatchPerRun+2, countRows(t, database, "agent_actions"), "no duplicate proposals")
 	assert.Equal(t, maxDispatchPerRun+3, countRows(t, database, "reaction_commands"))

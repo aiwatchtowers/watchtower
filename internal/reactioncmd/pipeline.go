@@ -178,8 +178,9 @@ func ledgerKey(channelID, ts, emoji string) string {
 // dispatch composes and proposes one command's action. It returns the terminal
 // ledger status to record (dispatched/skipped/failed), the agent-action id (0
 // unless dispatched), a detail string, and record=false for a TRANSIENT failure
-// — or a candidate deferred by the run's budget — that must NOT be recorded — leaving the reaction unseen so the next poll
-// retries it instead of burning it permanently.
+// that must NOT be recorded — leaving the reaction unseen so the next poll
+// retries it instead of burning it permanently. A candidate the run's budget
+// deferred takes that same unrecorded path, for the same reason.
 func (p *Pipeline) dispatch(ctx context.Context, c candidate, budget *dispatchBudget) (status string, actionID int64, detail string, record bool) {
 	if c.Mapping.Kind != "builtin_tool" || c.Mapping.Tool == "" {
 		return "skipped", 0, "emoji maps to no built-in tool", true
