@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/digest"
 )
 
 // Usage holds token metrics from an AI call.
@@ -133,12 +134,30 @@ func NewClient(model, dbPath, claudePath string) *Client {
 	}
 }
 
-// buildArgs constructs the common CLI arguments.
-// When sessionID is non-empty, --resume is used instead of --system-prompt
-// (the system prompt is already baked into the existing session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) []string {
-	args := []string{
-		"-p", userMessage,
+// promptFlagAndStdin builds the "-p" flag (and its inline value, when safe)
+// for buildArgs, plus the same message again as stdin content when it must
+// travel that way instead of via argv: either it exceeds
+// digest.StdinThreshold (ARG_MAX safety — the digest.generateArgs precedent,
+// hour-long meeting transcripts run to hundreds of KB) or it begins with
+// '-', which a bare positional right after "-p" would then be parsed as a
+// new flag rather than consumed as -p's value — claude's --print takes an
+// OPTIONAL value, so a following dash-led token is never taken as it. A bare
+// "-p" with no following value makes claude read the prompt from stdin.
+func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
+	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
+		return []string{"-p"}, userMessage
+	}
+	return []string{"-p", userMessage}, ""
+}
+
+// buildArgs constructs the common CLI arguments, plus stdin content when
+// userMessage must travel that way instead of inline (see
+// promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
+// of --system-prompt (the system prompt is already baked into the existing
+// session).
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
+	promptArgs, stdin := promptFlagAndStdin(userMessage)
+	args := append(promptArgs,
 		"--output-format", outputFormat,
 		"--model", c.model,
 		// Allowlist: the watchtower MCP server — read-only in dev mode; in
@@ -163,15 +182,15 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
-		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
-			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
+		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,"+
+			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS,"+
 			"ExitPlanMode,SlashCommand,Skill",
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
 		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
 		"--setting-sources", "project,local",
-	}
+	)
 	// Claude CLI requires --verbose for stream-json output format.
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
@@ -204,7 +223,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	} else {
 		args = append(args, "--system-prompt", systemPrompt)
 	}
-	return args
+	return args, stdin
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -331,7 +350,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -342,6 +361,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			defer os.Remove(c.mcpConfigTempPath)
 		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+		if promptStdin != "" {
+			cmd.Stdin = strings.NewReader(promptStdin)
+		}
 		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 		cmd.Cancel = func() error {
 			return cmd.Process.Signal(os.Interrupt)
@@ -437,7 +459,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
@@ -446,6 +468,9 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		defer os.Remove(c.mcpConfigTempPath)
 	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+	if promptStdin != "" {
+		cmd.Stdin = strings.NewReader(promptStdin)
+	}
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
