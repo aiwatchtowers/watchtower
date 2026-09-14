@@ -123,3 +123,13 @@ func TestRunProfile_RequiresConfig(t *testing.T) {
 	err := profileCmd.RunE(profileCmd, nil)
 	assert.Error(t, err)
 }
+
+func TestProfileStyleSample_Registered(t *testing.T) {
+	sub, _, err := rootCmd.Find([]string{"profile", "style-sample"})
+	require.NoError(t, err)
+	require.Equal(t, "style-sample", sub.Name())
+
+	// cobra returns the parent when the child is unknown; assert it is not the child.
+	found, _, _ := rootCmd.Find([]string{"inbox", "style-sample"})
+	require.NotEqual(t, "style-sample", found.Name(), "inbox style-sample must be gone")
+}
