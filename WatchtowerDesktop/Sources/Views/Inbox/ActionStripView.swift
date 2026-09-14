@@ -2,12 +2,13 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Inbox tab's content: a flat strip of due reminders and pending agent-
-/// action proposals — the reaction-command surface, replacing the situations
-/// Dashboard (`InboxFeedView`, which stays in place for the demolition
-/// follow-up to remove). The Dashboard's two sibling tabs did not move with
-/// it: the learned-rules manager and the assistant profile editor still feed
-/// triage, so they keep their door here behind the same segmented control
-/// `InboxFeedView` had (`.learned`/`.profile` render the very same views).
+/// action proposals — the reaction-command surface, which replaced the
+/// situations Dashboard (now deleted). The Dashboard's two sibling tabs did
+/// not go with it: the learned-rules manager still feeds the digest/tracks/
+/// briefing/catch-up prompts (`ListLearnedRulesByPipeline`) and the assistant
+/// profile editor still feeds Catch-Up compose and the idea chat, so they
+/// keep their door here behind this view's own segmented control
+/// (`.learned`/`.profile`).
 /// Reads `appState.actionStripViewModel` (AppState-owned so it survives
 /// navigation, the `SlackAccountsViewModel` house pattern) and
 /// re-`refresh()`s on every appear — cross-process daemon/CLI writes don't
@@ -98,7 +99,7 @@ struct ActionStripView: View {
         }
     }
 
-    /// The `IdeasView`/`DashboardView` house pattern: a write failure
+    /// The `IdeasView` house pattern: a write failure
     /// otherwise vanishes into `vm.lastError` with nothing rendering it.
     private func errorBanner(_ message: String) -> some View {
         HStack(spacing: 8) {

@@ -4,7 +4,7 @@ import WatchtowerCore
 
 /// Assistant chat about ONE meeting recording. Persisted conversation per
 /// transcript (`chat_conversations.context_type = "meeting"`), streaming via
-/// `AIServiceProtocol` — same skeleton as SituationChatViewModel, but the
+/// `AIServiceProtocol` — same skeleton as TrackChatViewModel, but the
 /// context is the transcript + recap, and the full transcript text is
 /// reachable via the get_transcript MCP tool instead of being inlined
 /// wholesale (hour-long transcripts would blow the interactive CLI's ARG_MAX).
@@ -140,7 +140,7 @@ final class MeetingChatViewModel {
             : nil
         // Resumed sessions drop the system prompt (CLI --resume); carry the
         // meeting context with the message so an expired session never loses
-        // track of what is being discussed (same rationale as SituationChat).
+        // track of what is being discussed (same rationale as TargetChatViewModel).
         let effectivePrompt = currentSessionID == nil
             ? text
             : "\(Self.meetingContextBlock(transcript, recapContent: recapContent))\n\n\(text)"
@@ -307,7 +307,7 @@ final class MeetingChatViewModel {
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — same pattern as
-        // SituationChatViewModel/TrackChatViewModel/TargetChatViewModel.
+        // TrackChatViewModel/TargetChatViewModel.
         let memoryBlock = memoryChatEnabled
             ? renderMemorySection(
                 hotMap: hotMap(vaultDir: memoryVaultDir),

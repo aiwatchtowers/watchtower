@@ -14,10 +14,9 @@ struct CreateTargetSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var prefill: TargetPrefill? = nil
-    /// Fires after a successful insert with the new target id. Used by the inbox
-    /// callsite (Task 14) to backfill `inbox_items.target_id` via
-    /// `InboxQueries.linkTarget`, and by TargetsListView to land on the new
-    /// target's streaming chat after an Enter-submit. Other callsites pass nil.
+    /// Fires after a successful insert with the new target id. Used by
+    /// TargetsListView to land on the new target's streaming chat after an
+    /// Enter-submit. Other callsites pass nil.
     var onCreated: ((Int) -> Void)? = nil
 
     @State private var text: String = ""

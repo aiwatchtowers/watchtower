@@ -3,8 +3,8 @@ import XCTest
 
 /// The two skill files every chat-surface prompt test needs, so a test can
 /// assert that every enabled skill reaches the surface's prompt. Shared by
-/// the Idea/Meeting/Track skills prompt tests; `SituationChatPromptTests` and
-/// `TargetChatViewModelTests` predate it and keep their own local helpers.
+/// the Idea/Meeting/Track skills prompt tests; `TargetChatViewModelTests`
+/// predates it and keeps its own local helpers.
 enum SkillsPromptFixtures {
     static let untangleName = "thread-untangle"
     static let breakdownName = "target-breakdown"

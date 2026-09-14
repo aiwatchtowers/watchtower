@@ -16,10 +16,6 @@ final class SidebarCountsViewModel {
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
-    var inboxPendingCount: Int = 0
-    var inboxHighPriorityCount: Int = 0
-    /// Open-situation count, driving the Dashboard sidebar badge (see D9 dashboard task).
-    var situationsCount: Int = 0
     /// What the Inbox tab actually shows since it became the action strip:
     /// proposals awaiting the owner + due reminders.
     var inboxStripCount: Int = 0
@@ -78,9 +74,14 @@ final class SidebarCountsViewModel {
             // Observe row counts of every source table so any write (including
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
-                let tables = ["tracks", "briefings", "targets", "inbox_items", "digests",
+                // agent_actions and reminders are the Inbox badge's own two
+                // sources (inboxStripCount) — before the inbox demolition the
+                // badge only ever re-fired because inbox_items/situations
+                // happened to be in this list.
+                let tables = ["tracks", "briefings", "targets", "digests",
                               "stream_digests", "catchup_recaps",
-                              "situations", "memory_dispute_flags", "ideas"]
+                              "memory_dispute_flags", "ideas",
+                              "agent_actions", "reminders"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {
@@ -107,16 +108,13 @@ final class SidebarCountsViewModel {
         let totalTrackCount: Int
         let unreadDigestCount: Int
         // var (not let): user-independent, so the zero path (no workspace user
-        // yet) still surfaces them, like situationsCount/ideasCount below.
+        // yet) still surfaces them, like inboxStripCount/ideasCount below.
         var unreadStreamCount: Int
         var unreadDecisionCount: Int
         let unreadBriefingCount: Int
         let recommendationCount: Int
         let activeTaskCount: Int
         let overdueTaskCount: Int
-        let inboxPendingCount: Int
-        let inboxHighPriorityCount: Int
-        var situationsCount: Int
         var inboxStripCount: Int
         var memoryDisputedCount: Int
         var ideasCount: Int
@@ -132,9 +130,6 @@ final class SidebarCountsViewModel {
             recommendationCount: 0,
             activeTaskCount: 0,
             overdueTaskCount: 0,
-            inboxPendingCount: 0,
-            inboxHighPriorityCount: 0,
-            situationsCount: 0,
             inboxStripCount: 0,
             memoryDisputedCount: 0,
             ideasCount: 0,
@@ -151,8 +146,6 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // Open situations, likewise independent of the current user.
-                let openSituations = try SituationQueries.openCount(db)
                 // The Inbox tab's strip: pending/failed proposals + due reminders,
                 // user-independent and tolerant of a pre-agent-actions schema.
                 let nowUTC = ISO8601DateFormatter().string(from: Date())
@@ -170,7 +163,6 @@ final class SidebarCountsViewModel {
                 guard let uid = try TrackQueries.fetchCurrentUserID(db) else {
                     var zero = Counts.zero
                     zero.unacknowledgedRecapCount = waitingRecap
-                    zero.situationsCount = openSituations
                     zero.inboxStripCount = stripCount
                     zero.memoryDisputedCount = disputed
                     zero.ideasCount = ideasForReview
@@ -180,14 +172,6 @@ final class SidebarCountsViewModel {
                 }
                 let trackCounts = try TrackQueries.fetchCounts(db)
                 let taskCounts = try TargetQueries.fetchCounts(db)
-
-                let inboxCounts: (pending: Int, unread: Int, highPriority: Int)
-                do {
-                    inboxCounts = try InboxQueries.fetchCounts(db)
-                } catch {
-                    print("SidebarCounts inbox count failed: \(error)")
-                    inboxCounts = (pending: 0, unread: 0, highPriority: 0)
-                }
 
                 let recCount: Int
                 do {
@@ -208,9 +192,6 @@ final class SidebarCountsViewModel {
                     recommendationCount: recCount,
                     activeTaskCount: taskCounts.active,
                     overdueTaskCount: taskCounts.overdue,
-                    inboxPendingCount: inboxCounts.unread,
-                    inboxHighPriorityCount: inboxCounts.highPriority,
-                    situationsCount: openSituations,
                     inboxStripCount: stripCount,
                     memoryDisputedCount: disputed,
                     ideasCount: ideasForReview,
@@ -233,9 +214,6 @@ final class SidebarCountsViewModel {
         recommendationCount = c.recommendationCount
         activeTaskCount = c.activeTaskCount
         overdueTaskCount = c.overdueTaskCount
-        inboxPendingCount = c.inboxPendingCount
-        inboxHighPriorityCount = c.inboxHighPriorityCount
-        situationsCount = c.situationsCount
         inboxStripCount = c.inboxStripCount
         memoryDisputedCount = c.memoryDisputedCount
         ideasCount = c.ideasCount

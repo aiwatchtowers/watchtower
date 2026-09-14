@@ -57,8 +57,7 @@ struct IdeasView: View {
     }
 
     /// Write failures otherwise vanish into `vm.errorMessage` with nothing
-    /// rendering it — the owner sees a button that silently did nothing
-    /// (DashboardView:31 precedent).
+    /// rendering it — the owner sees a button that silently did nothing.
     private func errorBanner(_ message: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")

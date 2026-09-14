@@ -504,24 +504,6 @@ package enum TestDatabase {
         )
     }
 
-    // MARK: - Inbox Feedback Fixtures
-
-    package static func insertFeedbackRecord(
-        _ db: Database,
-        inboxItemId: Int = 1,
-        rating: Int = 1,
-        reason: String = "useful",
-        createdAt: String = "2026-04-23T10:00:00Z"
-    ) throws {
-        try db.execute(
-            sql: """
-                INSERT INTO inbox_feedback (inbox_item_id, rating, reason, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-            arguments: [inboxItemId, rating, reason, createdAt]
-        )
-    }
-
     // MARK: - Calendar Fixtures
 
     package static func ensureCalendar(
@@ -665,27 +647,6 @@ package enum TestDatabase {
                              aiReason, summary, whyMatters, chronology, cardStatus, targetID,
                              trackID, convertedTargetID, convertedTrackID, lastSignalAt,
                              resolvedReason, suggestedResolution, createdAt, updatedAt])
-        return db.lastInsertedRowID
-    }
-
-    // MARK: - Feed Item Fixtures
-
-    @discardableResult
-    package static func insertFeedItem(
-        _ db: Database,
-        itemType: String,
-        sourceID: String,
-        eventTs: String,
-        importance: Int = 50,
-        hiddenAt: String? = nil,
-        seenAt: String? = nil
-    ) throws -> Int64 {
-        try db.execute(
-            sql: """
-            INSERT INTO feed_items (item_type, source_id, event_ts, importance, hidden_at, seen_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            arguments: [itemType, sourceID, eventTs, importance, hiddenAt, seenAt])
         return db.lastInsertedRowID
     }
 

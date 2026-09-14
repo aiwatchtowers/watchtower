@@ -308,7 +308,7 @@ struct TargetDetailView: View {
     /// wrapped in a ScrollView here: it already nests one (the message list)
     /// plus the ChatInput's NSScrollView, and a scroll view inside a scroll
     /// view leaves the outer one stuck — neither end of the conversation is
-    /// reachable (the `SituationDiscussInputBar` house gotcha; the same reason
+    /// reachable (the nested-NSScrollView collapse house gotcha; the same reason
     /// `RecordingDetailView` scrolls per tab rather than around them).
     @ViewBuilder
     private var tabContent: some View {
@@ -319,7 +319,7 @@ struct TargetDetailView: View {
                 Divider()
                 // Docked below the scroll, never inside it: ChatInput wraps an
                 // NSScrollView, which misbehaves nested in a SwiftUI ScrollView
-                // (the `SituationDiscussInputBar` placement, same reason).
+                // (the nested-NSScrollView collapse gotcha, same reason).
                 assistantInlineInput
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)

@@ -122,8 +122,10 @@ final class InboxItemTests: XCTestCase {
 
     func testReadyCardWithEmptyOptionalFieldsHidesTheirBlocks() throws {
         // Go pipeline contract: only why_matters is guaranteed non-empty on a ready card.
-        // hasThreadDigest / hasDraftReply gate the digest paragraph and the copyable
-        // draft box in InboxCardView, so empty sections must report false here.
+        // hasThreadDigest / hasDraftReply gated the digest paragraph and the copyable
+        // draft box in the card UI, so empty sections must report false here. Nothing
+        // renders them since the inbox demolition; the predicates stay pinned because
+        // the frozen card columns are still read back off historical rows.
         let db = try TestDatabase.create()
         try db.write { db in
             try TestDatabase.insertInboxItem(

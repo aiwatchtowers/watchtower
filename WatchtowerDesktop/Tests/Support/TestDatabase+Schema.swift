@@ -334,15 +334,6 @@ extension TestDatabase {
     );
     CREATE INDEX IF NOT EXISTS idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key);
 
-    CREATE TABLE IF NOT EXISTS inbox_feedback (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        inbox_item_id INTEGER NOT NULL,
-        rating        INTEGER NOT NULL CHECK(rating IN (-1,1)),
-        reason        TEXT DEFAULT '',
-        created_at    TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_inbox_feedback_item ON inbox_feedback(inbox_item_id);
-
     CREATE TABLE IF NOT EXISTS slack_accounts (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         team_id           TEXT NOT NULL DEFAULT '',
@@ -875,20 +866,6 @@ extension TestDatabase {
         sample_count INTEGER NOT NULL DEFAULT 1,
         updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
-    CREATE TABLE IF NOT EXISTS feed_items (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
-        source_id   TEXT NOT NULL,
-        event_ts    TEXT NOT NULL,
-        importance  INTEGER NOT NULL DEFAULT 50,
-        hidden_at   TEXT,
-        seen_at     TEXT,
-        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        UNIQUE(item_type, source_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
-
     CREATE TABLE IF NOT EXISTS memory_nodes (
         id            TEXT PRIMARY KEY,
         type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),

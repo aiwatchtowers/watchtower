@@ -54,7 +54,6 @@ struct CalendarEventsView: View {
     /// True once ANY calendar source is connected — Google OAuth OR at least
     /// one healthy CalDAV/ICS account — so connecting only e.g. an iCloud
     /// calendar (without ever touching Google) unlocks the events UI too.
-    /// Mirrors InboxFeedView.hasEmailSource.
     private var hasCalendarSource: Bool {
         google.calendar.isConnected
             || (appState.calendarAccountsViewModel?.accounts.contains { $0.isOK } ?? false)

@@ -4,7 +4,7 @@ import WatchtowerCore
 
 /// Drives the Inbox → Profile tab: the secretary brief editor plus the
 /// communication style profile (editable text + on-demand regeneration via
-/// `watchtower inbox style-sample`). Owned by AppState so an in-flight
+/// `watchtower profile style-sample`). Owned by AppState so an in-flight
 /// generation survives tab/sidebar navigation.
 @MainActor
 @Observable
@@ -81,7 +81,7 @@ final class SecretaryProfileViewModel {
         }
     }
 
-    /// Runs `watchtower inbox style-sample` and reloads. Guarded against
+    /// Runs `watchtower profile style-sample` and reloads. Guarded against
     /// re-entry and against clobbering unsaved manual edits.
     func generateStyle() async {
         guard canGenerate else { return }
@@ -92,7 +92,7 @@ final class SecretaryProfileViewModel {
             return
         }
         do {
-            _ = try await runner.run(args: ["inbox", "style-sample"])
+            _ = try await runner.run(args: ["profile", "style-sample"])
             load()
         } catch {
             errorMessage = "Failed to generate style profile: \(error.localizedDescription)"

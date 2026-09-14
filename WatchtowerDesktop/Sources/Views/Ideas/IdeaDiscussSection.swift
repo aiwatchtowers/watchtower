@@ -9,7 +9,7 @@ import WatchtowerCore
 /// input field is docked by the owning `IdeaDetailPane` below the scroll
 /// (`IdeaDiscussInputBar`) — `ChatInput` wraps a nested NSScrollView that
 /// collapses inside a SwiftUI ScrollView, so it must live outside it (same
-/// placement as `SituationDiscussSection`). Expansion state and the chat VM
+/// placement as `TargetDetailView`'s chat section). Expansion state and the chat VM
 /// belong to the pane for the same reason; the section stays inert while
 /// collapsed (one cheap message-count read).
 struct IdeaDiscussSection: View {

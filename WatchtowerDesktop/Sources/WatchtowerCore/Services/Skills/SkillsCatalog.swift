@@ -278,7 +278,7 @@ package enum SkillsCatalog {
     /// A chat surface joins the set by adding its `context_type` here — see
     /// `promptBlock(contextType:dir:)`, which every chat VM goes through.
     package static let chatContextTypes: Set<String> = [
-        "situation", "meeting", "target", "track", "idea"
+        "meeting", "target", "track", "idea"
     ]
 
     /// The active workspace's skills directory

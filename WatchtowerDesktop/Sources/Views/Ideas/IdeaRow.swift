@@ -3,7 +3,7 @@ import WatchtowerCore
 
 // MARK: - IdeaRow
 //
-// One row in the Ideas registry's master list. Mirrors SituationRow's shape:
+// One row in the Ideas registry's master list:
 // kind glyph + 2-line title, an orange dot when the idea needs a second look,
 // trailing relative last-mention date.
 struct IdeaRow: View {

@@ -141,16 +141,6 @@ final class AppState {
     /// Memory browser ViewModel — persists across tab switches.
     private(set) var memoryViewModel: MemoryViewModel?
 
-    /// Dashboard ViewModel — persists across tab switches so an in-flight
-    /// "Generate" run (and its `isGenerating` flag) survives navigating away
-    /// from and back to the Dashboard tab, instead of being orphaned when a
-    /// view-local instance was torn down.
-    private(set) var dashboardViewModel: DashboardViewModel?
-
-    /// Feed ViewModel — persists across tab switches so filters and
-    /// selection survive navigating away from and back to the feed.
-    private(set) var feedViewModel: FeedViewModel?
-
     /// Ideas & Decisions registry ViewModel — persists across tab switches so
     /// filters and selection survive navigating away from and back to the tab.
     private(set) var ideasViewModel: IdeasViewModel?
@@ -346,7 +336,7 @@ final class AppState {
     /// no owner emails → «Я» keeps its legacy absolute mic-dominance
     /// priority. Failures are printed, never silent (the renderRoles
     /// diagnostics convention). `func`, not `private func`, so @testable
-    /// tests can wire a test DB through it (the initDashboard precedent).
+    /// tests can wire a test DB through it (the initSecretaryProfile precedent).
     func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
         meetingRecorderCenter.voicePrintsLoader = {
             do {
@@ -624,7 +614,6 @@ final class AppState {
         initDayPlan(dbPool: manager.dbPool)
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
-        initDashboard(dbManager: manager)
         initIdeas(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initEmailAccounts(dbPool: manager.dbPool)
@@ -665,30 +654,18 @@ final class AppState {
         memoryViewModel = MemoryViewModel(dbPool: dbPool)
     }
 
-    /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via
-    /// `@testable import` to prove `dashboardViewModel` identity persists across accesses,
-    /// without going through the real-filesystem/CLI-subprocess machinery in `initialize()`.
-    func initDashboard(dbManager: DatabaseManager) {
-        let vm = DashboardViewModel(dbManager: dbManager)
-        vm.startObserving()
-        dashboardViewModel = vm
-        let feedVM = FeedViewModel(dbManager: dbManager)
-        feedVM.startObserving()
-        feedViewModel = feedVM
-    }
-
-    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
-    /// directly via `@testable import` to prove `ideasViewModel` identity
-    /// persists across accesses.
+    /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
+    /// same XCTest entry point open for `ideasViewModel` — no test uses it today.
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
     }
 
-    /// Not marked `private` (mirrors `initDashboard` above) so XCTest can call it
-    /// directly via `@testable import` to prove `secretaryProfileViewModel`
-    /// identity persists across accesses.
+    /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
+    /// directly via `@testable import` to prove `secretaryProfileViewModel` identity
+    /// persists across accesses, without going through the real-filesystem/CLI-subprocess
+    /// machinery in `initialize()` (`SecretaryProfileViewModelTests`).
     func initSecretaryProfile(dbManager: DatabaseManager) {
         secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
     }

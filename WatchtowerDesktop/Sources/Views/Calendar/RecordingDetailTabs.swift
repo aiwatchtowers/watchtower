@@ -892,8 +892,7 @@ struct SpeakerRenameSheet: View {
 // MARK: - Chat tab
 
 /// Assistant chat about this meeting. The ChatInput is docked BELOW the
-/// ScrollView (nested-NSScrollView collapse — same constraint as
-/// SituationDiscussInputBar).
+/// ScrollView (the nested-NSScrollView collapse house gotcha).
 struct RecordingChatTab: View {
     @Bindable var chatVM: MeetingChatViewModel
 

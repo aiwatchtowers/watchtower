@@ -70,56 +70,45 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.catchUpTotalCount, 0, "only a finished recap asks to be read")
     }
 
-    /// The Dashboard sidebar badge is the count of open situations — the Feed tab
-    /// no longer counts unread inbox items directly (see D9 dashboard task).
-    func testSituationsCountReflectsOnlyOpenSituations() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-
-        try await manager.dbPool.write { db in
-            try TestDatabase.insertSituation(db, status: "open")
-            try TestDatabase.insertSituation(db, status: "open")
-            try TestDatabase.insertSituation(db, status: "done")
-            try TestDatabase.insertSituation(db, status: "snoozed")
-        }
-
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
-        await vm.loadInitial()
-
-        XCTAssertEqual(vm.situationsCount, 2)
-    }
-
     /// The Inbox badge counts what the action strip shows — proposals awaiting
-    /// the owner (pending + failed) and due reminders — not the muted
-    /// situations backlog, which would otherwise badge an empty strip.
-    func testInboxStripCountCountsProposalsAndDueReminders() async throws {
+    /// the owner (pending + failed) and due reminders — and nothing else. The
+    /// frozen situations backlog and the detector's `inbox_items` feed have no
+    /// screen of their own since the inbox demolition, so neither may badge the
+    /// tab: both are inserted here precisely to prove they contribute zero.
+    func testInboxBadgeCountsStripOnly() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
         try await manager.dbPool.write { db in
             try TestDatabase.insertSituation(db, status: "open")
+            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
             _ = try TestDatabase.insertAgentAction(db, turnID: "t1", status: "pending")
             _ = try TestDatabase.insertAgentAction(db, turnID: "t2", status: "failed")
             _ = try TestDatabase.insertAgentAction(db, turnID: "t3", status: "applied")
-            try db.execute(sql: "INSERT INTO reminders (message_ref, note, remind_at, status) VALUES ('C1@1','due','2000-01-01T00:00:00Z','pending')")
-            try db.execute(sql: "INSERT INTO reminders (message_ref, note, remind_at, status) VALUES ('C2@2','x','2999-01-01T00:00:00Z','pending')")
+            try db.execute(sql: """
+                INSERT INTO reminders (message_ref, note, remind_at, status)
+                VALUES ('C1@1','due','2000-01-01T00:00:00Z','pending')
+                """)
+            try db.execute(sql: """
+                INSERT INTO reminders (message_ref, note, remind_at, status)
+                VALUES ('C2@2','x','2999-01-01T00:00:00Z','pending')
+                """)
         }
 
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
 
         XCTAssertEqual(vm.inboxStripCount, 3, "2 proposals awaiting the owner + 1 due reminder")
-        XCTAssertEqual(vm.situationsCount, 1, "situations still counted separately, no longer the Inbox badge")
     }
 
-    func testSituationsCountIsZeroOnEmptyDB() async throws {
+    func testInboxBadgeIsZeroOnEmptyDB() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
 
-        XCTAssertEqual(vm.situationsCount, 0)
+        XCTAssertEqual(vm.inboxStripCount, 0)
     }
 
     /// The Ideas badge is the count of ideas awaiting owner review — matches

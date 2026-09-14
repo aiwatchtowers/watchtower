@@ -4,7 +4,7 @@ import WatchtowerCore
 // MARK: - IdeaDetailPane
 //
 // The rich single-idea review screen on the right of the Ideas registry's
-// master-detail split (modeled on SituationReviewPane). Shows kind/status
+// master-detail split (the master-detail house pattern). Shows kind/status
 // badges, the title, a needs-review banner, the essence text, a similar-to
 // hint when the miner flagged one, the mentions chronology, a bottom rating
 // row (👍/👎 + teaching comment), and a status-dependent action bar. All
@@ -15,8 +15,7 @@ struct IdeaDetailPane: View {
     let idea: Idea
     /// Every idea currently loaded in the review queue + registry — the
     /// candidate pool for the merge picker. Passed as plain data (not the
-    /// view model) to keep this pane's dependency surface small, the
-    /// SituationReviewPane precedent.
+    /// view model) to keep this pane's dependency surface small.
     let allIdeas: [Idea]
     let onApprove: () -> Void
     let onReject: () -> Void
