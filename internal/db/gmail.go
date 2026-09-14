@@ -54,7 +54,7 @@ func GmailAccountIDFromChannelID(channelID string) (int64, bool) {
 
 // ClearGmailData removes the Gmail data synced for one account on the user's
 // request: its gmail_messages rows, the inbox items its detector minted (their
-// inbox_feedback and situation_signals rows cascade via FK), the situations
+// situation_signals rows cascade via FK), the situations
 // those signals leave orphaned, and the learned rules scoped to its channel
 // ids. Every other account's rows are untouched, and so is the rest of the
 // inbox.
@@ -103,8 +103,7 @@ func (db *DB) ClearGmailData(accountID int64) error {
 	if _, err := tx.Exec(`DELETE FROM gmail_messages WHERE account_id = ?`, accountID); err != nil {
 		return fmt.Errorf("gmail purge: deleting messages: %w", err)
 	}
-	// This account's Gmail inbox signals. inbox_feedback and situation_signals
-	// rows cascade via FK.
+	// This account's Gmail inbox signals. situation_signals rows cascade via FK.
 	if _, err := tx.Exec(`DELETE FROM inbox_items WHERE channel_id LIKE ? || ':%'`, prefix); err != nil {
 		return fmt.Errorf("gmail purge: deleting inbox items: %w", err)
 	}

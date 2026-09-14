@@ -59,9 +59,6 @@ CREATE INDEX idx_digests_period ON digests(period_from, period_to)
 index	idx_digests_type
 CREATE INDEX idx_digests_type ON digests(type)
 
-index	idx_feed_items_event_ts
-CREATE INDEX idx_feed_items_event_ts ON feed_items(event_ts DESC)
-
 index	idx_feedback_entity
 CREATE INDEX idx_feedback_entity ON feedback(entity_type, entity_id)
 
@@ -91,9 +88,6 @@ CREATE INDEX idx_ideas_status ON ideas(status, updated_at DESC)
 
 index	idx_imap_messages_synced
 CREATE INDEX idx_imap_messages_synced ON imap_messages(synced_at)
-
-index	idx_inbox_feedback_item
-CREATE INDEX idx_inbox_feedback_item ON inbox_feedback(inbox_item_id)
 
 index	idx_inbox_items_archived
 CREATE INDEX idx_inbox_items_archived ON inbox_items(archived_at)
@@ -619,26 +613,6 @@ error TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
-table	feed_items
-CREATE TABLE feed_items (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-item_type TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
-source_id TEXT NOT NULL,
-event_ts TEXT NOT NULL,
-importance INTEGER NOT NULL DEFAULT 50,
-hidden_at TEXT,
-seen_at TEXT,
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-UNIQUE(item_type, source_id)
-)
-
-table	feed_state
-CREATE TABLE feed_state (
-id INTEGER PRIMARY KEY CHECK (id = 1),
-bootstrap_cutoff TEXT NOT NULL
-)
-
 table	feedback
 CREATE TABLE "feedback" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -751,15 +725,6 @@ permalink TEXT NOT NULL DEFAULT '',
 synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 PRIMARY KEY (account_id, uidvalidity, uid)
-)
-
-table	inbox_feedback
-CREATE TABLE inbox_feedback (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-inbox_item_id INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
-rating INTEGER NOT NULL CHECK(rating IN (-1,1)),
-reason TEXT DEFAULT '' CHECK(reason IN ('','source_noise','wrong_priority','wrong_class','never_show')),
-created_at TEXT NOT NULL
 )
 
 table	inbox_items
@@ -2008,21 +1973,6 @@ END
 8	error	TEXT	notnull=1	dflt=''	pk=0
 9	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
-## feed_items
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	item_type	TEXT	notnull=1	dflt=NULL	pk=0
-2	source_id	TEXT	notnull=1	dflt=NULL	pk=0
-3	event_ts	TEXT	notnull=1	dflt=NULL	pk=0
-4	importance	INTEGER	notnull=1	dflt=50	pk=0
-5	hidden_at	TEXT	notnull=0	dflt=NULL	pk=0
-6	seen_at	TEXT	notnull=0	dflt=NULL	pk=0
-7	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
-8	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
-
-## feed_state
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	bootstrap_cutoff	TEXT	notnull=1	dflt=NULL	pk=0
-
 ## feedback
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	entity_type	TEXT	notnull=1	dflt=NULL	pk=0
@@ -2120,13 +2070,6 @@ END
 12	permalink	TEXT	notnull=1	dflt=''	pk=0
 13	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 14	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
-
-## inbox_feedback
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	inbox_item_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	rating	INTEGER	notnull=1	dflt=NULL	pk=0
-3	reason	TEXT	notnull=0	dflt=''	pk=0
-4	created_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## inbox_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

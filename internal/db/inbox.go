@@ -607,65 +607,6 @@ func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceT
 	return candidates, rows.Err()
 }
 
-// ListStreamCandidatesSince returns non-trigger messages newer than sinceTS
-// for the full-stream triage scan, oldest first, capped at limit. Excludes
-// deleted/subtyped messages, empty authors, the owner's own messages across
-// every connected Slack account (ownerUserIDs — an empty slice excludes
-// none), DM channels (DMs are trigger-detected separately), messages already
-// in inbox_items, and messages whose thread already has a pending inbox item.
-func (db *DB) ListStreamCandidatesSince(ownerUserIDs []string, sinceTS float64, limit int) ([]InboxCandidate, error) {
-	placeholders := make([]string, len(ownerUserIDs))
-	args := []any{sinceTS}
-	for i, id := range ownerUserIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	// NOT IN () is invalid SQL, so the exclusion clause is omitted entirely
-	// when no owner ids are known — the degenerate case excludes nothing.
-	exclude := ""
-	if len(ownerUserIDs) > 0 {
-		exclude = "AND m.user_id NOT IN (" + strings.Join(placeholders, ",") + ")"
-	}
-	args = append(args, limit)
-	query := fmt.Sprintf(`
-		SELECT m.channel_id, m.ts, COALESCE(m.thread_ts,''), m.user_id, m.text, COALESCE(m.permalink,''), m.ts_unix
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix > ?
-		  AND m.is_deleted = 0
-		  AND COALESCE(m.subtype,'') = ''
-		  AND m.user_id != ''
-		  %s
-		  AND c.type != 'dm'
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items i
-		      WHERE i.channel_id = m.channel_id AND i.message_ts = m.ts)
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items i2
-		      WHERE i2.channel_id = m.channel_id
-		        AND i2.thread_ts != ''
-		        AND (i2.thread_ts = COALESCE(m.thread_ts,'') OR i2.thread_ts = m.ts)
-		        AND i2.status = 'pending')
-		ORDER BY m.ts_unix ASC
-		LIMIT ?`, exclude)
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("listing stream candidates: %w", err)
-	}
-	defer rows.Close()
-
-	var candidates []InboxCandidate
-	for rows.Next() {
-		var c InboxCandidate
-		if err := rows.Scan(&c.ChannelID, &c.MessageTS, &c.ThreadTS, &c.SenderUserID, &c.Text, &c.Permalink, &c.TSUnix); err != nil {
-			return nil, fmt.Errorf("scanning stream candidate: %w", err)
-		}
-		c.TriggerType = "stream"
-		candidates = append(candidates, c)
-	}
-	return candidates, rows.Err()
-}
-
 // SetInboxCard stores a generated secretary card on an item.
 func (db *DB) SetInboxCard(id int, whyMatters, threadDigest, draftReply string) error {
 	_, err := db.Exec(`UPDATE inbox_items

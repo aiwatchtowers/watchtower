@@ -152,7 +152,6 @@ func gmailPurgeFixture(t *testing.T, d *DB) (acctA, acctB int64) {
 		VALUES (2, ?, 'mb1', 'sender@example.com', 'email_received')`, GmailChannelID(acctB, "tb1"))
 	exec(`INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type)
 		VALUES (3, 'C1', '1.1', 'U1', 'mention')`)
-	exec(`INSERT INTO inbox_feedback (inbox_item_id, rating, created_at) VALUES (1, 1, ?)`, eventTS)
 
 	// Learned rules: one per account's Gmail channel, one keyed to a Slack
 	// channel and one keyed to a sender identity.
@@ -223,8 +222,6 @@ func TestClearGmailData_IsolatedToOneAccount(t *testing.T) {
 	// Account A's Gmail data is gone.
 	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?`, acctA))
 	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = ?`, GmailChannelID(acctA, "ta1")))
-	// inbox_feedback on the deleted signal cascades away with it.
-	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_feedback`))
 
 	// Account B is completely untouched.
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?`, acctB))

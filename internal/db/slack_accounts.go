@@ -217,30 +217,3 @@ func (db *DB) SetSlackAccountSearchWatermark(id int64, date string) error {
 	}
 	return nil
 }
-
-// ListOwnerSlackUserIDs returns the namespaced current_user_id of every
-// connected Slack account that has resolved an identity — the owner's
-// identity across all workspaces, for own-message suppression. Deliberately
-// unscoped by enabled/status (unlike ListEnabledSlackAccounts): messages
-// synced before an account was disabled or removed stay in the DB and stay
-// queryable (the non-destructive `slack remove` contract), so excluding a
-// disabled/removed account here would let the owner's own already-synced
-// messages in that account re-enter stream-candidate triage (audit medium,
-// mirrors how autoResolveSlack resolves items against ListSlackAccounts).
-func (db *DB) ListOwnerSlackUserIDs() ([]string, error) {
-	rows, err := db.Query(`SELECT current_user_id FROM slack_accounts
-		WHERE current_user_id != ''`)
-	if err != nil {
-		return nil, fmt.Errorf("listing owner slack user ids: %w", err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning owner slack user id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
