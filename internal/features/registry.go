@@ -97,23 +97,23 @@ var registry = []Feature{
 	{
 		ID:          "slack-digests",
 		Title:       "Slack Digests",
-		Description: "Summarizes Slack channel activity into per-channel digests — topics, decisions, and proposed ideas. Heavy AI use each cycle; it is the substrate several other pipelines mine, including the Assistant Inbox, Tracks, People Cards, Ideas, and the daily Briefing.",
+		Description: "Summarizes Slack channel activity into per-channel digests — topics, decisions, and proposed ideas. Heavy AI use each cycle; it is the substrate several other pipelines mine, including Tracks, People Cards, Ideas, and the daily Briefing.",
 		Tagline:     "Catch up on any channel in a minute",
 		Benefits: []string{
 			"Per-channel digests of topics, decisions and proposed ideas",
-			"The foundation the Assistant Inbox, Tracks, People Cards and Ideas all build on",
+			"The foundation Tracks, People Cards and Ideas all build on",
 			"Read the digest instead of scrolling the whole channel",
 		},
 		Icon:      "doc.text.magnifyingglass",
 		ConfigKey: "digest.enabled",
 		Cost:      CostHeavy,
-		FeedsInto: []string{"secretary-inbox", "tracks", "people-cards", "ideas", "briefing"},
+		FeedsInto: []string{"tracks", "people-cards", "ideas", "briefing"},
 		Enabled:   func(cfg *config.Config) bool { return cfg.Digest.Enabled },
 	},
 	{
 		ID:          "stream-digests",
 		Title:       "Stream Digests",
-		Description: "Summarizes new Gmail threads and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and the Assistant Inbox's Jira-comment detection.",
+		Description: "Summarizes new Gmail threads and changed Jira issues and comments into per-account digests, and syncs the Jira comments that let mention detection fire on them. Medium AI use, independent of Slack Digests even though it is shown nested under it. Feeds Ideas and Attention detection's Jira-comment detection.",
 		Tagline:     "Email and Jira, digested like Slack",
 		Benefits: []string{
 			"New Gmail threads and changed Jira issues summarized per account",

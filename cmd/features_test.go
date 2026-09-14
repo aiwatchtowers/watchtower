@@ -297,7 +297,7 @@ func TestFeaturesDisable_WithDependents(t *testing.T) {
 	cfg, err := config.Load(flagConfig)
 	require.NoError(t, err)
 	assert.False(t, cfg.Digest.Enabled, "slack-digests itself")
-	assert.False(t, cfg.Inbox.Enabled, "secretary-inbox is an enabled dependent")
+	assert.True(t, cfg.Inbox.Enabled, "secretary-inbox reads messages directly, not digests — it must NOT be swept up as a dependent")
 	assert.False(t, cfg.Tracks.Enabled, "tracks is an enabled dependent")
 	assert.False(t, cfg.People.Enabled, "people-cards is an enabled dependent")
 	assert.False(t, cfg.Ideas.Enabled, "ideas is an enabled dependent")

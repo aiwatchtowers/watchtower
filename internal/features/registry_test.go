@@ -137,9 +137,13 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	// briefing -> day-plan (both real consumers: internal/dayplan/gather.go
 	// reads people_cards and the daily briefing directly), independent of
 	// memory — memory is only ONE of three paths that reach it.
-	for _, want := range []string{"secretary-inbox", "tracks", "people-cards", "ideas", "briefing", "day-plan"} {
+	for _, want := range []string{"tracks", "people-cards", "ideas", "briefing", "day-plan"} {
 		assert.True(t, deps[want], "slack-digests dependents should include %q", want)
 	}
+	// secretary-inbox reads messages/mentions/DMs/replies directly, not
+	// digests/digest_topics — slack-digests must not claim it as a dependent
+	// (only stream-digests, via its Jira-comment sync, still feeds it).
+	assert.False(t, deps["secretary-inbox"], "slack-digests has no edge into secretary-inbox")
 	assert.False(t, deps["memory"], "memory defaults off; it must not appear as a dependent")
 
 	// Isolate the memory -> day-plan edge specifically: day-plan has three
