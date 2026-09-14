@@ -74,9 +74,14 @@ final class SidebarCountsViewModel {
             // Observe row counts of every source table so any write (including
             // read_at changes from Catch-Up mark-read on digests) triggers a refresh.
             let observation = ValueObservation.tracking { db -> [Int] in
+                // agent_actions and reminders are the Inbox badge's own two
+                // sources (inboxStripCount) — before the inbox demolition the
+                // badge only ever re-fired because inbox_items/situations
+                // happened to be in this list.
                 let tables = ["tracks", "briefings", "targets", "digests",
                               "stream_digests", "catchup_recaps",
-                              "memory_dispute_flags", "ideas"]
+                              "memory_dispute_flags", "ideas",
+                              "agent_actions", "reminders"]
                 return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
             }
             do {

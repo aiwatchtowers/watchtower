@@ -10,9 +10,9 @@ import WatchtowerTestSupport
 // Constants.databasePath) and shells out to the real `watchtower` CLI binary
 // (runCLIMigrations) — neither is injectable, so it can't be exercised
 // hermetically from XCTest. Instead these tests call `wireMeetingRecorderLoaders`
-// directly (it is non-`private` specifically so @testable import can reach it)
-// with a test-only DatabaseManager, mirroring what `initialize()` does after the
-// real DB opens.
+// directly (it is non-`private` specifically so @testable import can reach it),
+// handing it a test-only DatabasePool, mirroring what `initialize()` does after
+// the real DB opens.
 
 @MainActor
 final class AppStateTests: XCTestCase {
