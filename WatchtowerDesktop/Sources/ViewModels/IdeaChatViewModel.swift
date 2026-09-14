@@ -7,10 +7,10 @@ import WatchtowerCore
 /// Drives the "Discuss with assistant" chat inside the idea detail pane. The
 /// deliberate house-pattern copy of `MeetingChatViewModel` for ideas
 /// (`chat_conversations.context_type = "idea"`), streaming via
-/// `AIServiceProtocol`. Kept lean relative to the situation VM: no member
-/// signals, no counterparty/register-sample/memory blocks — the idea's own
-/// context (kind/status/title/essence/mentions) plus the owner's assistant
-/// brief and style are enough for a discussion about one registry entry.
+/// `AIServiceProtocol`. Kept lean relative to that sibling: no MEMORY block, no
+/// tool mode — the idea's own context (kind/status/title/essence/mentions) plus
+/// the owner's assistant brief and style are enough for a discussion about one
+/// registry entry.
 @MainActor
 @Observable
 final class IdeaChatViewModel {
@@ -138,7 +138,7 @@ final class IdeaChatViewModel {
             : nil
         // Resumed sessions drop the system prompt (CLI --resume); carry the
         // idea context with the message so an expired session never loses
-        // track of what is being discussed (same rationale as SituationChat).
+        // track of what is being discussed (same rationale as TargetChatViewModel).
         let effectivePrompt = currentSessionID == nil
             ? text
             : "\(Self.ideaContextBlock(idea, mentions: mentions))\n\n\(text)"

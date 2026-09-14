@@ -140,7 +140,7 @@ final class MeetingChatViewModel {
             : nil
         // Resumed sessions drop the system prompt (CLI --resume); carry the
         // meeting context with the message so an expired session never loses
-        // track of what is being discussed (same rationale as SituationChat).
+        // track of what is being discussed (same rationale as TargetChatViewModel).
         let effectivePrompt = currentSessionID == nil
             ? text
             : "\(Self.meetingContextBlock(transcript, recapContent: recapContent))\n\n\(text)"

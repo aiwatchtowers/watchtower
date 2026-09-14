@@ -336,7 +336,7 @@ final class AppState {
     /// no owner emails → «Я» keeps its legacy absolute mic-dominance
     /// priority. Failures are printed, never silent (the renderRoles
     /// diagnostics convention). `func`, not `private func`, so @testable
-    /// tests can wire a test DB through it (the initIdeas precedent).
+    /// tests can wire a test DB through it (the initSecretaryProfile precedent).
     func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
         meetingRecorderCenter.voicePrintsLoader = {
             do {
@@ -654,18 +654,18 @@ final class AppState {
         memoryViewModel = MemoryViewModel(dbPool: dbPool)
     }
 
-    /// Not marked `private` (unlike its siblings above) so XCTest can call it directly via
-    /// `@testable import` to prove `ideasViewModel` identity persists across accesses,
-    /// without going through the real-filesystem/CLI-subprocess machinery in `initialize()`.
+    /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
+    /// same XCTest entry point open for `ideasViewModel` — no test uses it today.
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
     }
 
-    /// Not marked `private` (mirrors `initIdeas` above) so XCTest can call it
-    /// directly via `@testable import` to prove `secretaryProfileViewModel`
-    /// identity persists across accesses.
+    /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
+    /// directly via `@testable import` to prove `secretaryProfileViewModel` identity
+    /// persists across accesses, without going through the real-filesystem/CLI-subprocess
+    /// machinery in `initialize()` (`SecretaryProfileViewModelTests`).
     func initSecretaryProfile(dbManager: DatabaseManager) {
         secretaryProfileViewModel = SecretaryProfileViewModel(dbManager: dbManager)
     }

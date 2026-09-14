@@ -93,7 +93,7 @@ final class IdeaChatViewModelTests: XCTestCase {
 
     /// A resumed turn drops the system prompt (the CLI uses --resume), so the
     /// per-turn prompt must itself carry the idea context block (mirrors
-    /// SituationChatViewModelTests.testResumedTurnCarriesSituationContext).
+    /// TargetChatViewModelTests.testResumedTurnCarriesTaskContextAndActionContract).
     func testResumedTurnCarriesIdeaContext() async throws {
         let idea = try makeIdea()
         try await dbManager.dbPool.write { db in
