@@ -16,9 +16,10 @@ has had zero call sites since Wave 2 and is deleted in the demolition's **Deskto
 half**, the second of the two stacked PRs. The `situations` and
 `situation_signals` tables **remain** as read-only history: migration 00070 froze
 every `open` situation to `stale`, and no writer is left in the codebase —
-`internal/db/situations.go` keeps three readers (`GetSituation`,
-`ListSituations`, `ListSituationSignals`), with `ConvertedSituationIDs`
-(memory's conversion cross-link) living in `internal/db/memory.go`. The
+`internal/db/situations.go` keeps one reader (`ListSituationSignals`), with
+`ConvertedSituationIDs` (memory's conversion cross-link) living in
+`internal/db/memory.go`. The former `GetSituation`/`ListSituations` readers had
+no production callers and were deleted in the final-review fix wave. The
 `converted_target_id`/`converted_track_id` links plus
 `targets.source_type='situation'` rows stay valid so a target or track created
 from a situation can still point back at its origin. The guard tests behind

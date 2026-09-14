@@ -38,7 +38,17 @@ either by the per-source detector, which passes `classifier.go`'s
 `reaction`/`jira_comment_watching`/`jira_status_change`/`jira_priority_change`/
 `calendar_cancelled`/`decision_made`/`briefing_ready`/`email_cc` are `ambient`),
 or — when a detector leaves the fields blank — by `db.CreateInboxItem`'s
-`actionable`/`medium` fallback. `DefaultItemClass` sets no priority at all;
+`actionable`/`medium` fallback. `DefaultItemClass` is consulted only by the
+Jira/Calendar/Gmail/IMAP/watchtower detectors; the Slack path
+(`createItemsFromCandidates` in `internal/inbox/pipeline.go`) never sets
+`ItemClass` on the `db.InboxItem` it builds, so all four Slack triggers —
+including `reaction`, which the table above lists as `ambient` — fall through
+to `CreateInboxItem`'s `actionable`/`medium` fallback instead. Consequence: a
+Slack `reaction` item is actually `actionable` in practice, so it never
+qualifies for `ArchiveExpiredAmbient`'s 7-day sweep — and given the documented
+`reaction` auto-resolve gap (`autoResolveSlack` never matches trigger type
+`"reaction"`, below), it sits pending until `ArchiveStaleActionable`'s 14-day
+sweep instead. `DefaultItemClass` sets no priority at all;
 a detector may pass its own (`watchtower_detector.go` mints `briefing_ready` at
 `low`). Triage was the only thing that ever re-classified an item, so with it
 gone the class is a static property of the trigger type rather than a judgment.

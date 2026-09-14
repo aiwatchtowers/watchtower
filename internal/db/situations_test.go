@@ -44,10 +44,6 @@ func TestSituationRoundTripAndSignals(t *testing.T) {
 	sig2 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "mention"})
 
 	id := insertSituation(t, d, "release X blocked", "")
-	s, err := d.GetSituation(id)
-	require.NoError(t, err)
-	require.Equal(t, "open", s.Status, "status must default open")
-	require.Equal(t, "none", s.CardStatus)
 
 	attachSituationSignal(t, d, id, int(sig1))
 	attachSituationSignal(t, d, id, int(sig2))
@@ -66,77 +62,4 @@ func TestInboxItemComposedAtRoundTrip(t *testing.T) {
 	it, err := d.GetInboxItem(id)
 	require.NoError(t, err)
 	require.Equal(t, "", it.ComposedAt)
-}
-
-// TestGetSituationReadsConversionLinks pins GetSituation's nullable conversion
-// columns: a converted situation carries its target id and leaves the untouched
-// track id NULL (the DASH-03 link the frozen history still has to render).
-func TestGetSituationReadsConversionLinks(t *testing.T) {
-	d := openTestDB(t)
-	id := insertSituation(t, d, "convert me", "converted")
-	targetID, err := d.CreateTarget(Target{Text: "converted target", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
-	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE situations SET converted_target_id = ? WHERE id = ?`, targetID, id)
-	require.NoError(t, err)
-
-	s, err := d.GetSituation(id)
-	require.NoError(t, err)
-	require.Equal(t, "converted", s.Status)
-	require.NotNil(t, s.ConvertedTargetID)
-	require.Equal(t, int(targetID), *s.ConvertedTargetID)
-	require.Nil(t, s.ConvertedTrackID)
-}
-
-func containsSituationID(situations []DashboardSituation, id int) bool {
-	for _, s := range situations {
-		if s.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-func TestListSituationsFiltersByStatusAndSince(t *testing.T) {
-	d := openTestDB(t)
-
-	mk := func(title, status, lastSignal string, rank float64) int {
-		t.Helper()
-		res, err := d.Exec(`INSERT INTO situations (title, status, rank, last_signal_at)
-			VALUES (?, ?, ?, ?)`, title, status, rank, lastSignal)
-		require.NoError(t, err)
-		id, err := res.LastInsertId()
-		require.NoError(t, err)
-		return int(id)
-	}
-
-	openNew := mk("fresh open", "open", "2026-08-08T10:00:00Z", 5)
-	mk("old open", "open", "2026-08-01T10:00:00Z", 9)
-	mk("done one", "done", "2026-08-08T11:00:00Z", 7)
-	noSignalID := mk("no signal yet", "open", "", 1)
-
-	// Status filter.
-	got, err := d.ListSituations(SituationFilter{Status: "open"})
-	require.NoError(t, err)
-	require.Len(t, got, 3)
-	require.Equal(t, "old open", got[0].Title, "highest rank first")
-	require.True(t, containsSituationID(got, noSignalID), "a situation with no signal yet must be present when no SinceISO bound is given")
-
-	// Since filter applies to last_signal_at, and a situation that never
-	// received a signal (last_signal_at = '') is deliberately excluded once a
-	// bound is given — it sorts below any real timestamp.
-	got, err = d.ListSituations(SituationFilter{Status: "open", SinceISO: "2026-08-05T00:00:00Z"})
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, openNew, got[0].ID)
-	require.False(t, containsSituationID(got, noSignalID), "a situation with no signal yet must be excluded once a SinceISO bound is given")
-
-	// No filter returns every status.
-	got, err = d.ListSituations(SituationFilter{})
-	require.NoError(t, err)
-	require.Len(t, got, 4)
-
-	// Limit is honored.
-	got, err = d.ListSituations(SituationFilter{Limit: 1})
-	require.NoError(t, err)
-	require.Len(t, got, 1)
 }

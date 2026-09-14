@@ -9,7 +9,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Module | Inventory file | Code paths |
 |---|---|---|
 | Inbox Pulse (attention detection) | [inbox-pulse.md](inbox-pulse.md) | `internal/inbox/`, `WatchtowerDesktop/Sources/Views/Inbox/` |
-| Dashboard — **RETIRED 2026-09-14** | [dashboard.md](dashboard.md) | *(tombstone — no live code path; `situations`/`situation_signals` survive as read-only history behind `internal/db/situations.go`'s three remaining readers)* |
+| Dashboard — **RETIRED 2026-09-14** | [dashboard.md](dashboard.md) | *(tombstone — no live code path; `situations`/`situation_signals` survive as read-only history behind two remaining readers, `ListSituationSignals` in `internal/db/situations.go` and `ConvertedSituationIDs` in `internal/db/memory.go`)* |
 | Tracks | [tracks.md](tracks.md) | `internal/tracks/`, `internal/db/tracks.go`, `WatchtowerDesktop/Sources/Views/Tracks/`, `WatchtowerDesktop/Sources/ViewModels/TracksViewModel.swift` |
 | Targets (brief chat + creation) | [targets.md](targets.md) | `WatchtowerDesktop/Sources/Views/Targets/`, `WatchtowerDesktop/Sources/ViewModels/TargetChatViewModel.swift`, `WatchtowerDesktop/Sources/Services/TargetActionExecutor.swift`, `WatchtowerDesktop/Sources/Services/TargetBriefCenter.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/` (ProposedAction, TargetActionParser, TargetComposerLogic, TargetQueries), `internal/prompts/defaults.go` (`defaultTrackRun` grammar) |
 | Catch-up | [catchup.md](catchup.md) | `internal/catchup/`, `internal/db/catchup.go`, `internal/db/catchup_store.go`, `WatchtowerDesktop/Sources/{Views,ViewModels}/CatchUp*`, `WatchtowerDesktop/Sources/WatchtowerCore/{Models/CatchUpModels.swift,Database/Queries/CatchUpQueries.swift}` |
