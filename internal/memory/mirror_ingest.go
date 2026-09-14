@@ -1,8 +1,8 @@
 package memory
 
 // This file is the Phase-5 5C mechanical operational-mirror builder (behind
-// memory.sources.operational): a no-AI Run step (3c, after the calendar builder
-// 3b and before Slack extraction 4) that mirrors the owner's own work items —
+// memory.sources.operational): a no-AI Run step (2c, after the calendar builder
+// 2b and before Slack extraction 3) that mirrors the owner's own work items —
 // targets and tracks — into the vault as long-lived ENTITY nodes (a target/track
 // is a state machine, not a story arc, so it is an entity, not an episode). Each
 // mirror carries:
@@ -33,8 +33,9 @@ package memory
 // transition (its ## Open loops clear) no matter how long ago the row settled —
 // the old updated_at window stranded stale-dismissed mirrors forever. Known
 // limitation: a target/track created AND driven terminal between two pipeline runs
-// never gets a mirror (no existing alias at scan time); its story still reaches
-// memory via the situation episodes — a conservative default, no counter. It is a pure READER
+// never gets a mirror (no existing alias at scan time) — its story is simply
+// absent from memory (the situations ingest that used to carry it is retired,
+// see conversionLinks below); a conservative default, no counter. It is a pure READER
 // of targets/tracks/situations (MEM-14): every write lands in the vault or the
 // memory index.
 
@@ -301,9 +302,11 @@ func (p *Pipeline) mirrorNode(spec mirrorSpec) (*Node, bool, error) {
 
 // conversionLinks resolves the DASH-03 conversion cross-links for one mirror:
 // each situation converted into this target/track resolves via its situation:<id>
-// alias to the episode node, and yields a crossLink{epID, "- [[ep_…|title]]"}. A
-// situation not yet ingested (alias miss) is a silent skip, backfilled on a later
-// re-scan; any other lookup error freezes the step.
+// alias to the episode node, and yields a crossLink{epID, "- [[ep_…|title]]"}. The
+// situations ingest that used to mint situation:<id> aliases is retired (the
+// source dried up 2026-09-06), so a situation with no alias today never gets
+// one — the miss below is a permanent skip for any situation converted after
+// that date, not a backfill candidate; any other lookup error freezes the step.
 func (p *Pipeline) conversionLinks(targetID, trackID int) ([]crossLink, error) {
 	sitIDs, err := p.db.ConvertedSituationIDs(targetID, trackID)
 	if err != nil {
@@ -313,7 +316,7 @@ func (p *Pipeline) conversionLinks(targetID, trackID int) ([]crossLink, error) {
 	for _, sid := range sitIDs {
 		epID, lerr := p.db.LookupMemoryAlias(fmt.Sprintf("situation:%d", sid))
 		if errors.Is(lerr, sql.ErrNoRows) {
-			continue // not yet ingested — silent skip, backfilled later
+			continue // no alias minted — the situations ingest is retired, so this is permanent
 		}
 		if lerr != nil {
 			return nil, fmt.Errorf("memory: operational mirror: situation alias %d: %w", sid, lerr)

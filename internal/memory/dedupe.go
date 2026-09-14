@@ -44,10 +44,13 @@ func DedupeEpisodes(v *Vault, database *db.DB, maxMerges int, logf func(string, 
 	}
 	// Situation mirrors are excluded entirely — winner AND loser (M2): two
 	// situations can share an inbox signal, so their mirrors legitimately share
-	// a provenance ref while being DIFFERENT stories; a merge makes the
-	// situations-ingest refresh ping-pong the merged node's content every run.
-	// A mirror's identity is its situation: alias, not ref overlap (the
-	// gmailthread:/calevent: alias-keyed idempotency precedent).
+	// a provenance ref while being DIFFERENT stories; a merge would collide two
+	// distinct stories under one node id and break the alias-keyed identity
+	// conversionLinks and the mirror builder rely on to resolve situation:<id> →
+	// episode node. A mirror's identity is its situation: alias, not ref overlap
+	// (the gmailthread:/calevent: alias-keyed idempotency precedent) — these are
+	// pre-existing episodes from the retired situations ingest (the source dried
+	// up 2026-09-06), not nodes a live writer still refreshes.
 	sitMirrors, err := database.SituationMirrorNodeIDs()
 	if err != nil {
 		return 0, err

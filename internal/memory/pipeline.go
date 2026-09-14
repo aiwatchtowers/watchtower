@@ -693,13 +693,11 @@ type runWindow struct {
 	tsUnix []float64
 }
 
-// runExtract is consolidation step 4: load raw messages above the watermark
+// runExtract is consolidation step 3: load raw messages above the watermark
 // (capped at MaxChunkMessages — the rest stays as debt for the next run),
 // group them into per-channel windows, and extract episodes window by window.
 //
-// v1 simplifications (Phase 3 territory, deliberate):
-//   - windows already covered by a situation episode are NOT skipped —
-//     extraction dedupe against situation coverage is left to Phase 3;
+// v1 simplification (Phase 3 territory, deliberate):
 //   - channelWindow.RunningSummary is left empty (the digests table stores it
 //     as a JSON blob, not the one-liner the prompt wants).
 //
