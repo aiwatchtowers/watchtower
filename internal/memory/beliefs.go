@@ -337,11 +337,15 @@ func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]No
 		return Node{}, false, false // out of scope / unknown belief id
 	}
 	existing := parseBeliefEvidence(node.Body, p.logf)
-	newEv := filterNewEvidence(newEvidenceLines(kept, beliefOp(op.Op)), existing)
-	if beliefOp(op.Op) == opConfirm && len(newEv) == 0 {
+	thisOp := beliefOp(op.Op)
+	newEv := filterNewEvidence(newEvidenceLines(kept, thisOp), existing)
+	if (thisOp == opConfirm || thisOp == opWeaken) && len(newEv) == 0 {
 		// Not mathRejected: RunStats.BeliefOpsRejected means "refused by the rank
-		// math", and this op never reached it.
-		p.logf("memory: beliefs: confirm on %s is a no-op (all cited evidence already recorded)", op.BeliefID)
+		// math", and this op never reached it. Scoped to confirm+weaken per owner
+		// decision 9 (wave 5) — shake carries a status-transition side effect
+		// (active -> shaken) from zero new evidence and retire's decision is
+		// already evidence-gated, so neither is widened here.
+		p.logf("memory: beliefs: %s on %s is a no-op (all cited evidence already recorded)", thisOp, op.BeliefID)
 		return Node{}, false, false
 	}
 	combined := append(weighAll(existing, now), weighAll(newEv, now)...)

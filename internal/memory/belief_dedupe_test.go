@@ -29,7 +29,7 @@ func dedupeEpisodeNode(id string, refs ...episodeRef) Node {
 // dedupeFixture wires the standard belief-pass scene: one entity subject linking
 // one episode whose provenance is refs, plus the belief under test. It returns
 // the pipeline and a function that runs one belief pass over the given ops.
-func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *testing.T, ops ...beliefOpJSON)) {
+func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int, capHit bool)) {
 	t.Helper()
 	v, d := newTestVault(t), newTestDB(t)
 	subjectID := bel.Subject
@@ -42,11 +42,12 @@ func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *
 	gen := &fakeGen{reply: func(string) (string, error) { return reply, nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	return v, func(t *testing.T, ops ...beliefOpJSON) {
+	return v, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int, capHit bool) {
 		t.Helper()
 		reply = opsJSON(t, ops...)
-		_, _, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
+		touched, rejected, capHit, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 		require.NoError(t, err)
+		return touched, rejected, capHit
 	}
 }
 
@@ -296,4 +297,120 @@ func TestFilterNewEvidenceCollapsesDuplicatesWithinOneOp(t *testing.T) {
 	assert.Equal(t, other, fresh[1])
 
 	assert.Empty(t, filterNewEvidence([]beliefEvidence{e, e}, []beliefEvidence{e}))
+}
+
+// --- weaken (wave 5, decision 9's flagged follow-up to the confirm no-op above) ---
+//
+// newEvidenceLines mints AGAINST lines for weaken and FOR lines for confirm
+// (support = op == opConfirm || op == opProposeNew). So every fixture below
+// stores its "already recorded" line as Support: false — a literal copy of the
+// confirm fixtures' Support: true line would never dedupe against a weaken and
+// the no-op test would pass for the wrong reason (the op would simply apply).
+
+// A weaken whose every cited ref is already an ## Evidence AGAINST line changes
+// nothing: no confidence step, no body edit, no vault commit, no ## History
+// line — mirrors TestReviseBeliefsConfirmWithAlreadyRecordedEvidenceIsNoOp.
+// opWeaken touches only Confidence (belief_math.go's applyOp: no Status, no
+// Stability), so unlike confirm there is no status side effect to pin here.
+func TestReviseBeliefsWeakenWithAlreadyRecordedEvidenceIsNoOp(t *testing.T) {
+	tsFor := dedupeTS(5, "000100")
+	tsAgainst := dedupeTS(5, "000200")
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", dedupeSubject, 0.5, 2, "active",
+		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C1CHAN", TS: tsFor},
+		beliefEvidence{Rank: rankObserved, Support: false, ChannelID: "C1CHAN", TS: tsAgainst})
+	v, run := dedupeFixture(t, bel,
+		episodeRef{ChannelID: "C1CHAN", TS: tsFor},
+		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst})
+
+	touched, rejected, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
+		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: tsAgainst}}, Rationale: "the same bad sign again"})
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0.5, got.Confidence, "a re-cited ref buys no confidence step")
+	assert.Equal(t, 2, got.Stability, "weaken never touches stability")
+	assert.Equal(t, bel.Body, got.Body, "body byte-identical: no evidence line, no ## History line")
+	assert.Zero(t, beliefCommitCount(t, v), "no vault commit — so reflection sees no churn")
+	assert.Equal(t, 0, touched, "the op reaches applyOp for neither branch...")
+	assert.Equal(t, 0, rejected, "...so RunStats.BeliefOpsRejected stays honest: this was never refused by the rank math")
+}
+
+// The no-op rule is ALL cited refs already stored, never ANY: a weaken citing
+// one new ref still applies in full, dropping confidence by exactly one step —
+// mirrors TestReviseBeliefsConfirmWithOneNewRefStillApplies.
+func TestReviseBeliefsWeakenWithOneNewRefStillApplies(t *testing.T) {
+	tsFor := dedupeTS(5, "000100")
+	tsAgainst := dedupeTS(5, "000200")
+	tsFresh := dedupeTS(4, "000300")
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", dedupeSubject, 0.5, 2, "active",
+		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C1CHAN", TS: tsFor},
+		beliefEvidence{Rank: rankObserved, Support: false, ChannelID: "C1CHAN", TS: tsAgainst})
+	v, run := dedupeFixture(t, bel,
+		episodeRef{ChannelID: "C1CHAN", TS: tsFor},
+		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst},
+		episodeRef{ChannelID: "C1CHAN", TS: tsFresh})
+
+	touched, rejected, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken", Evidence: []episodeRef{
+		{ChannelID: "C1CHAN", TS: tsAgainst}, // already recorded
+		{ChannelID: "C1CHAN", TS: tsFresh},   // new
+	}, Rationale: "one old, one new"})
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.4, got.Confidence, 1e-9, "partly-new evidence still weakens by exactly one step")
+	assert.Equal(t, 2, got.Stability, "weaken never touches stability")
+	assert.Equal(t, 1, countEvidenceRef(got.Body, "C1CHAN "+tsAgainst), "the stored ref is not duplicated")
+	assert.Equal(t, 1, countEvidenceRef(got.Body, "C1CHAN "+tsFresh), "the new ref is appended once")
+	assert.Equal(t, 1, beliefCommitCount(t, v))
+	assert.Equal(t, 1, touched)
+	assert.Equal(t, 0, rejected)
+}
+
+// Direction is part of the key for weaken too: a stored FOR line does not
+// suppress a weaken citing the same ref, because weaken always mints an
+// AGAINST line for it — the two are distinct data points. This is the item's
+// specific trap: it is what would make a literal copy of the confirm no-op
+// fixture (which stores a FOR line) degenerate into "applies, for the wrong
+// reason" instead of exercising the no-op path.
+func TestWeakenDedupeKeyIncludesDirection(t *testing.T) {
+	ts := dedupeTS(5, "000100")
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", dedupeSubject, 0.5, 1, "active",
+		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C1CHAN", TS: ts})
+	v, run := dedupeFixture(t, bel, episodeRef{ChannelID: "C1CHAN", TS: ts})
+
+	touched, _, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
+		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: ts}}, Rationale: "reads as doubt after all"})
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, touched, "an opposite-direction line is a distinct data point — the weaken applies")
+	assert.InDelta(t, 0.4, got.Confidence, 1e-9)
+	assert.Contains(t, got.Body, "- observed for C1CHAN "+ts, "the stored for line is untouched")
+	assert.Contains(t, got.Body, "- observed against C1CHAN "+ts, "the against line is appended")
+}
+
+// Scope pin (decision 9, wave 5, scoped to confirm+weaken only): shake keeps
+// its unconditional shape and still applies on only-already-recorded evidence,
+// because unlike weaken it carries a status transition (active -> shaken) that
+// a bare re-citation must not silently swallow — see docs/inventory/memory.md's
+// changelog entry for the reasoning. If a later change widens the no-op past
+// weaken without an owner call, this is the test that catches it.
+func TestShakeWithAlreadyRecordedEvidenceStillApplies(t *testing.T) {
+	tsFor := dedupeTS(5, "000100")
+	tsAgainst := dedupeTS(5, "000200")
+	bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", dedupeSubject, 0.5, 2, "active",
+		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C1CHAN", TS: tsFor},
+		beliefEvidence{Rank: rankObserved, Support: false, ChannelID: "C1CHAN", TS: tsAgainst})
+	v, run := dedupeFixture(t, bel,
+		episodeRef{ChannelID: "C1CHAN", TS: tsFor},
+		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst})
+
+	touched, _, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "shake",
+		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: tsAgainst}}, Rationale: "still not sure"})
+
+	got, err := v.ReadNode(bel.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shaken", got.Status, "shake still applies on only-stored evidence — the no-op rule is scoped to confirm+weaken")
+	assert.Equal(t, 1, touched)
+	assert.Equal(t, 1, beliefCommitCount(t, v), "shake still writes a commit from zero new evidence")
 }
