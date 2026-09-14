@@ -13,11 +13,8 @@ wants the strands separated, not a recap in message order.
 ## Steps
 
 1. Get the material.
-   - In a situation chat: `get_situation` with the situation id — its signals
-     are the messages the story was built from.
-   - For the wider thread or channel around it: `list_messages` with the
-     channel (and a keyword when the thread is large). Newest first — read the
-     whole slice before writing anything.
+   - `list_messages` with the channel (and a keyword when the thread is
+     large). Newest first — read the whole slice before writing anything.
    - If the discussion happened on a call, `list_transcripts` with a keyword,
      then `get_transcript` for the matching recording.
 2. Group the messages into strands: one strand per question asked or topic

@@ -23,7 +23,6 @@ with the facts you already gathered attached so they can answer in a word.
 ## Steps
 
 1. Gather the facts before asking anything.
-   - `get_situation` for the situation's card, chronology and signals.
    - `list_messages` (channel or person, plus a keyword) for what was actually
      said since the last update.
    - `list_transcripts` / `get_transcript` when a meeting is part of the story.
