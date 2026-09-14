@@ -366,7 +366,6 @@ func (d *Daemon) runSync(ctx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseFastInbox(ctx)
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
@@ -709,22 +708,6 @@ func (d *Daemon) resolveJiraUsers(ctx context.Context, s jiraAccountSyncer) {
 	}
 }
 
-// phaseFastInbox surfaces Slack/Jira/Calendar mentions in the UI immediately,
-// before the LLM-heavy digest pipeline. Phase 5 (phaseInbox) still runs later
-// to detect decision_made/briefing_ready from fresh digests.
-func (d *Daemon) phaseFastInbox(ctx context.Context) {
-	if !d.config.Inbox.Enabled {
-		return
-	}
-	if d.inboxPipe == nil {
-		return
-	}
-	d.applyInboxCurrentUser()
-	if err := d.inboxPipe.RunFastDetection(ctx); err != nil {
-		d.logger.Printf("inbox fast detect error: %v", err)
-	}
-}
-
 // phaseChannelDigests generates per-channel digests (MAP phase that produces
 // people_signals consumed later by phasePeopleCards).
 func (d *Daemon) phaseChannelDigests(ctx context.Context) {
@@ -943,9 +926,9 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	})
 }
 
-// phaseInbox runs the full inbox pipeline (decision_made/briefing_ready from
-// fresh digests, AI triage, secretary card generation). Runs after digest/tracks/
-// people so detectors see fresh data.
+// phaseInbox runs the inbox detection pipeline (mechanical, no AI):
+// Slack/Jira/Calendar/Gmail/IMAP triggers, briefing_ready, auto-resolve,
+// archive. Runs after digest/tracks/people so detectors see fresh data.
 func (d *Daemon) phaseInbox(ctx context.Context) {
 	if !d.config.Inbox.Enabled {
 		return

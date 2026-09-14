@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// seedInboxItem inserts a minimal pending inbox item and returns its id.
+func seedInboxItem(t *testing.T, d *DB, sender, channel, trigger string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, priority, created_at, updated_at)
+		VALUES (?,?,?,?,'pending','medium',?,?)`,
+		channel, "1.0", sender, trigger,
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
 func TestInbox_SetItemClass(t *testing.T) {
 	database := openTestDB(t)
 	id := seedInboxItem(t, database, "U1", "C1", "mention")

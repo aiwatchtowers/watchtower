@@ -13,7 +13,6 @@ var Defaults = map[string]string{
 	PeopleReduce:               defaultPeopleReduce,
 	PeopleTeam:                 defaultPeopleTeam,
 	BriefingDaily:              defaultBriefingDaily,
-	InboxTriage:                defaultInboxTriage,
 	DigestChannelBatch:         defaultDigestChannelBatch,
 	TracksExtractBatch:         defaultTracksExtractBatch,
 	PeopleBatch:                defaultPeopleBatch,
@@ -32,8 +31,6 @@ var Defaults = map[string]string{
 	TrackCompose:               defaultTrackCompose,
 	TrackRun:                   defaultTrackRun,
 	TrackShortlist:             defaultTrackShortlist,
-	InboxCompose:               defaultInboxCompose,
-	InboxSituationCard:         defaultInboxSituationCard,
 	MemoryExtractEpisodes:      defaultMemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch: defaultMemoryExtractEpisodesBatch,
 	MemoryExtractEmailEpisodes: defaultMemoryExtractEmailEpisodes,
@@ -62,7 +59,6 @@ var AllIDs = []string{
 	PeopleTeam,
 	PeopleBatch,
 	BriefingDaily,
-	InboxTriage,
 	TasksGenerate,
 	TasksUpdate,
 	MeetingPrep,
@@ -78,8 +74,6 @@ var AllIDs = []string{
 	TrackCompose,
 	TrackRun,
 	TrackShortlist,
-	InboxCompose,
-	InboxSituationCard,
 	MemoryExtractEpisodes,
 	MemoryExtractEpisodesBatch,
 	MemoryExtractEmailEpisodes,
@@ -109,7 +103,6 @@ var DefaultVersions = map[string]int{
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
 	BriefingDaily:              7, // v7: the secretary/assistant persona merge — one assistant everywhere
-	InboxTriage:                2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	DigestChannelBatch:         5, // v5: instruct the model to echo channel_id verbatim from the block header (C1)
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
@@ -126,8 +119,6 @@ var DefaultVersions = map[string]int{
 	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
 	TrackRun:                   1, // v1: custom-track timeline events from recent cross-source activity
 	TrackShortlist:             1, // v1: cheap title-only relevance filter for custom-track backfill
-	InboxCompose:               4, // v4: the secretary/assistant persona merge — one assistant everywhere
-	InboxSituationCard:         2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	MemoryExtractEpisodes:      2, // v2: the secretary/assistant persona merge — one assistant everywhere
 	MemoryExtractEpisodesBatch: 3, // v3: the secretary/assistant persona merge — one assistant everywhere
 	MemoryExtractEmailEpisodes: 2, // v2: the secretary/assistant persona merge — one assistant everywhere
@@ -158,7 +149,6 @@ var Descriptions = map[string]string{
 	PeopleReduce:               "People card — unified profile from signals",
 	PeopleTeam:                 "Team summary — cross-user attention & tips",
 	BriefingDaily:              "Daily briefing — personalized morning summary",
-	InboxTriage:                "Inbox: triage scan of new activity",
 	DigestChannelBatch:         "Channel batch digest — multi-channel analysis for low-activity channels",
 	PeopleBatch:                "People batch cards — lightweight cards for low-data users in one AI call",
 	TasksGenerate:              "Task generation — AI-powered task breakdown with checklist, priority, and due date",
@@ -176,8 +166,6 @@ var Descriptions = map[string]string{
 	TrackRun:                   "Custom track run — timeline events from recent cross-source activity",
 	TrackCompose:               "Custom track compose — draft a custom-track title + watch instruction from a free-text user request",
 	TrackShortlist:             "Custom track shortlist — cheap title-only relevance filter that picks candidate activity for a custom-track backfill before the full extract",
-	InboxCompose:               "Dashboard: fold new signals into situations",
-	InboxSituationCard:         "Dashboard: context packet for one situation",
 	MemoryExtractEpisodes:      "Memory: extract noteworthy episodes from one channel window of raw messages",
 	MemoryExtractEpisodesBatch: "Memory: extract noteworthy episodes from several low-activity channel windows in one call",
 	MemoryExtractEmailEpisodes: "Memory: extract one episode per Gmail thread (memory.sources.gmail)",
@@ -1169,110 +1157,6 @@ Rules:
 - Judge from the title alone. When ambiguous but possibly related, INCLUDE it — stage 2 discards false positives. Only drop titles clearly unrelated.
 - Use the exact kind and id printed in brackets. Do not invent ids.
 - Respect the selection cap stated in the request. An empty {"refs": []} is valid when nothing fits.`
-
-const defaultInboxTriage = `%s
-
-You are the user's chief-of-staff assistant. You read EVERYTHING that happened
-in their Slack/Jira/Calendar since the last scan and decide what deserves their
-attention. Be ruthless: most messages are noise for this specific user.
-
-%s
-
-Classify every candidate below into exactly one tier:
-- "action"    — the user personally must respond or act. Missing it has consequences.
-- "awareness" — the user should know (a decision, an escalation, movement on their
-                projects/people), but nobody is waiting on them.
-- "ignore"    — noise for this user. Bot chatter, FYI they don't care about,
-                threads that don't touch their scope.
-
-Rules:
-- Judge against the brief above: the user's own words outrank everything else.
-- Respect Mutes/Boosts. A muted source needs an extraordinary reason to surface.
-- Never invent candidates. Return a verdict for every key exactly once.
-- Candidates marked [TRIGGER] were detected as direct signals (mention/DM/
-  assignment). You may demote them to "awareness" but NEVER to "ignore".
-- priority: how urgent within its tier ("high"|"medium"|"low").
-- reason: ONE short sentence, in the user's language, explaining the verdict
-  from the user's point of view.
-
-%s
-
-Return ONLY a JSON object (no markdown fences):
-{"verdicts":[{"key":"item:12","tier":"action","priority":"high","reason":"..."}]}`
-
-const defaultInboxCompose = `%s
-
-You are the user's chief-of-staff assistant maintaining their work dashboard.
-The dashboard shows SITUATIONS: each one is a SINGLE concrete story — one
-specific request, thread, or decision — not a topic category. Two signals
-belong together only if they are actually part of the SAME unfolding matter
-(same request/thread/decision, and check who is involved and where — a new
-sender or a different channel is a strong sign it's a different matter).
-Sharing a subject, system, or keyword ("access", "YubiKey", "the file") is
-NOT enough — different people asking different things that merely sound
-similar are DIFFERENT situations. Never invent a connecting narrative the
-messages don't actually support.
-Your job every cycle: fold new material into the dashboard so the user stays
-on top of everything — matched to their goals (their active targets and
-tracks, listed in the brief) AND anything important outside those goals.
-Nothing important may slip by; routine noise must not surface — but a wrong
-merge is worse than a missed one: when unsure whether two signals are the
-same matter, create a separate situation instead of merging.
-
-%s
-
-=== OPEN SITUATIONS (current dashboard state) ===
-%s
-
-Fold the new material below into the dashboard:
-- "merge": a new signal/event continues an existing open situation — the
-  SAME concrete matter, not just a similar topic → add it there. NEVER
-  create a duplicate situation for a matter already open, and NEVER merge a
-  signal into a situation over a different matter just because the subject
-  overlaps.
-- "create": a genuinely new matter worth the user's attention. kind:
-  "external" (not tied to their work items), "target_update" /
-  "track_update" (activity on an active target/track — set target_id or
-  track_id), "mixed".
-- "rerank": an open situation became more/less urgent.
-- "suggest_resolve": the new material shows an open situation concluded
-  WITHOUT the user needing to act — the question was answered and accepted,
-  the blocker lifted, the decision made elsewhere. Propose closing it;
-  reason: one sentence, what resolved it, in the user's language. The user
-  confirms — never suggest on weak or partial evidence, and never instead
-  of a needed merge (emit both).
-- Signals not worth the dashboard: simply do not reference them.
-- priority: high|medium|low. rank: 0.0-1.0 relative urgency for feed order.
-- reason: ONE sentence, user's point of view, in the user's language.
-
-%s
-
-Return ONLY a JSON object (no markdown fences):
-{"ops":[
- {"op":"create","title":"...","kind":"external","priority":"high","rank":0.9,"reason":"...","signals":["sig:12","evt:3","tgt:7"],"target_id":null,"track_id":null},
- {"op":"merge","situation_id":4,"signals":["sig:15"],"rerank":0.7,"reason":"..."},
- {"op":"rerank","situation_id":2,"rank":0.3,"reason":"..."},
- {"op":"suggest_resolve","situation_id":9,"reason":"..."}
-]}`
-
-const defaultInboxSituationCard = `%s
-
-You are the user's chief-of-staff assistant preparing the context packet for
-one situation on their work dashboard.
-
-%s
-
-Using the situation and its member signals below, produce:
-- summary: 2-4 sentences — what is happening, CURRENT STATE FIRST.
-- why_matters: 1-2 sentences judged against the brief (which of the user's
-  goals it touches, or why it matters even outside them).
-- chronology: one line per member signal, oldest first, format
-  "<who> — <one-line essence>". No timestamps, no markdown.
-
-%s
-
-Return ONLY a JSON object (no markdown fences):
-{"summary":"...","why_matters":"...","chronology":"..."}`
 
 // defaultMemoryExtractEpisodes is the raw-text episode extractor for the
 // secretary memory vault (cheap tier — see "memory.extract_episodes" in the

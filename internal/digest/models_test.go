@@ -9,7 +9,7 @@ import (
 )
 
 func TestTierForSource(t *testing.T) {
-	light := []string{SourceLight, "inbox.triage", "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "inbox.situation_learn", "catchup.learn"}
+	light := []string{SourceLight, "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "catchup.learn"}
 	for _, src := range light {
 		if got := TierForSource(src); got != TierLight {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)
@@ -20,7 +20,6 @@ func TestTierForSource(t *testing.T) {
 		"digest.channel", "digest.daily", "digest.weekly",
 		"tracks.extract_batch", "people.reduce", "people.team",
 		"briefing.daily", "", "unknown.source",
-		prompts.InboxCompose, prompts.InboxSituationCard,
 		// Phase-3 memory semantic tier routes strong (absence from the
 		// light-tier switch above); Phase-4 reflection likewise.
 		prompts.MemoryEntityRewrite, prompts.MemoryReviseBeliefs, prompts.MemoryRenderMap,

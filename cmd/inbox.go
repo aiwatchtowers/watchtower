@@ -17,7 +17,6 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/inbox"
-	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -31,8 +30,6 @@ var (
 	inboxFlagIncludeArchived        bool
 	inboxFlagJSON                   bool
 	inboxGenFlagProgressJSON        bool
-	inboxFeedbackRating             string
-	inboxFeedbackComment            string
 	inboxBackfillMentionsFlagSince  string
 	inboxBackfillMentionsFlagDryRun bool
 	inboxBackfillMentionsFlagForce  bool
@@ -92,13 +89,6 @@ var inboxTaskCmd = &cobra.Command{
 	RunE:  runInboxTask,
 }
 
-var inboxFeedbackCmd = &cobra.Command{
-	Use:   "feedback <situation-id>",
-	Short: "Record feedback on a dashboard situation (--rating up|down [--comment])",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runInboxFeedback,
-}
-
 var inboxStyleSampleCmd = &cobra.Command{
 	Use:   "style-sample",
 	Short: "Distill a communication style profile from your own Slack messages",
@@ -115,7 +105,7 @@ var inboxBackfillMentionsCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(inboxCmd)
-	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd, inboxStyleSampleCmd, inboxBackfillMentionsCmd)
+	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxStyleSampleCmd, inboxBackfillMentionsCmd)
 
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
@@ -123,8 +113,6 @@ func init() {
 	inboxCmd.Flags().BoolVar(&inboxFlagIncludeArchived, "include-archived", false, "include archived items (auto-archived pending items are hidden by default)")
 	inboxCmd.Flags().BoolVar(&inboxFlagJSON, "json", false, "output as JSON")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
-	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
-	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackComment, "comment", "", "free-text comment; derives learned rules via the AI interpreter")
 	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions after this date (YYYY-MM-DD, parsed as UTC midnight; that instant itself is excluded); required")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagDryRun, "dry-run", false, "report what would be recovered without creating any inbox items")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagForce, "force", false, fmt.Sprintf("allow --since further back than %d days", backfillMentionsMaxLookbackDays))
@@ -432,7 +420,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
 
 	if inboxGenFlagProgressJSON {
 		type pj struct {
@@ -469,8 +456,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 			}
 			if pipe.LastStepDurationSeconds > 0 {
 				p.StepDurationSec = pipe.LastStepDurationSeconds
-				p.StepInputTokens = pipe.LastStepInputTokens
-				p.StepOutputTokens = pipe.LastStepOutputTokens
 			}
 			emit(p)
 
@@ -570,46 +555,6 @@ func runInboxTask(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Created target #%d from inbox item #%d\n", targetID, id)
-	return nil
-}
-
-func runInboxFeedback(cmd *cobra.Command, args []string) error {
-	situationID, err := strconv.Atoi(args[0])
-	if err != nil || situationID <= 0 {
-		return fmt.Errorf("invalid situation id %q", args[0])
-	}
-	rating, err := parseRating(inboxFeedbackRating)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	applyProviderOverride(cfg)
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer database.Close()
-
-	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
-	gen, closeGen := cliPooledGenerator(cfg, logger)
-	defer closeGen()
-
-	pipe := inbox.New(database, cfg, gen, logger)
-	if err := pipe.SubmitSituationFeedback(cmd.Context(), situationID, rating, inboxFeedbackComment); err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on situation %d.\n", situationID)
 	return nil
 }
 

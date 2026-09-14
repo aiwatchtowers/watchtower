@@ -10,8 +10,7 @@ import (
 )
 
 // styleSampleSystemPrompt drives the communication-style distillation.
-// Package-private const (same decision as situationLearnSystemPrompt) — not
-// user-editable via the prompt store.
+// Package-private const — not user-editable via the prompt store.
 const styleSampleSystemPrompt = `You are analyzing how one person writes on Slack, to produce a "communication style profile" that another AI will later use to draft replies in this person's voice.
 
 Below are samples of the person's OWN messages, grouped by audience (direct messages, private channels, public channels), plus an optional analyst's note about their communication style.

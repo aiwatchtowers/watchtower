@@ -59,12 +59,22 @@ func TestUpdateInboxItemSnippet(t *testing.T) {
 	assert.Equal(t, "https://link", got.Permalink)
 }
 
+// markInboxItemComposed stamps composed_at directly. The composer that used to
+// write this column is gone (the inbox demolition), but UpdateInboxItemSnippet's
+// composed_at handling is still live on the detector fold path, so these tests
+// seed the column themselves.
+func markInboxItemComposed(t *testing.T, d *DB, id int64) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE inbox_items SET composed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
+	require.NoError(t, err)
+}
+
 func TestUpdateInboxItemSnippetClearsComposedAt(t *testing.T) {
 	db := openTestDB(t)
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
 	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
 	require.NoError(t, err)
-	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+	markInboxItemComposed(t, db, id)
 
 	before, err := db.GetInboxItemByID(int(id))
 	require.NoError(t, err)
@@ -86,7 +96,7 @@ func TestUpdateInboxItemSnippetKeepsComposedAtWhenOwnerDismissed(t *testing.T) {
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
 	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
 	require.NoError(t, err)
-	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+	markInboxItemComposed(t, db, id)
 
 	sitID, err := db.CreateSituation(DashboardSituation{Title: "old story", Kind: "external", Priority: "medium", Status: "dismissed"})
 	require.NoError(t, err)
@@ -112,7 +122,7 @@ func TestUpdateInboxItemSnippetClearsComposedAtWhenUnowned(t *testing.T) {
 	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
 	id, err := db.CreateInboxItem(makeInboxItem("C1", "1.0"))
 	require.NoError(t, err)
-	require.NoError(t, db.MarkSignalsComposed([]int{int(id)}))
+	markInboxItemComposed(t, db, id)
 
 	before, err := db.GetInboxItemByID(int(id))
 	require.NoError(t, err)

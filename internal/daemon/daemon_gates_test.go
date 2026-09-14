@@ -72,11 +72,7 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				cfg.Inbox.Enabled = false
 				d.SetInboxPipeline(inbox.New(database, cfg, gen, l))
 			},
-			// Both inbox phases share the same gate key — exercise both.
-			run: func(d *Daemon) {
-				d.phaseFastInbox(context.Background())
-				d.phaseInbox(context.Background())
-			},
+			run: func(d *Daemon) { d.phaseInbox(context.Background()) },
 		},
 		{
 			name: "tracks",

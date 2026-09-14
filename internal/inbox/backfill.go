@@ -39,19 +39,16 @@ type BackfillMentionsResult struct {
 
 // BackfillMentions recovers @mentions that a broken or newly-connected
 // detector never turned into inbox items, without reading or writing
-// inbox_last_processed_ts. Unlike Run/RunFastDetection, which always scan
-// forward from the shared watermark across every trigger type, this scans
-// only mentions, only from the explicit `since` argument: recovering a known
-// dead window must never re-process the DMs, thread replies and ordinary
-// channel traffic that window also contains, and must never touch the
-// cursor every detector and triage share (INBOX-09).
+// inbox_last_processed_ts. Unlike Run, which always scans forward from the
+// shared watermark across every trigger type, this scans only mentions, only
+// from the explicit `since` argument: recovering a known dead window must
+// never re-process the DMs, thread replies and ordinary channel traffic that
+// window also contains, and must never touch the cursor every detector
+// shares (INBOX-09).
 //
-// It makes no AI call. Items are created untriaged, landing in the
-// conservative 'actionable' default class — INBOX-01 lets triage only
-// downgrade a trigger item's class, never upgrade one, so an untriaged item
-// is the safe default. The next daemon cycle's composer picks them up by
-// status, not by watermark (ListUncomposedSignals selects on
-// composed_at IS NULL), so no further step is needed here.
+// It makes no AI call. Items land in the conservative 'actionable' default
+// class (DefaultItemClass), the same class the live detectors give a
+// mention, so a recovered item reads exactly like one detected on time.
 //
 // This path deliberately does NOT reuse createItemsFromCandidates (the
 // per-cycle detectSlackTriggers path) — see backfillAccountMentions' doc
@@ -141,8 +138,7 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 //     a multi-week window it can just as easily be a different, currently
 //     live conversation that happens to share a thread — folding would
 //     silently rewrite that item's message_ts backwards and, via
-//     UpdateInboxItemSnippet, reset its ai_reason/read_at and risk pulling a
-//     composed situation back through a strong-tier re-compose.
+//     UpdateInboxItemSnippet, reset its ai_reason/read_at.
 //
 // So: no grouping, no fold, and UpdateInboxItemSnippet/MergeWaitingUserIDs
 // are never called from this path — every candidate becomes its own
