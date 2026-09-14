@@ -113,9 +113,14 @@ written only by a `Registry.Propose` call or a `remind_me`
 `Execute`/`InsertReminder`, all gesture-triggered. There is no third writer,
 and no scan of ambient Slack/Jira/Calendar/Gmail traffic feeds either table.
 
-**Why locked:** The whole point of replacing the situations Dashboard with
-the strip was "no trash bin by construction" (design §1) — a flat list that
-never accumulates ambient noise the owner didn't ask for.
+**Why locked:** The whole point of the strip taking over from the situations
+Dashboard was "no trash bin by construction" (design §1) — a flat list that
+never accumulates ambient noise the owner didn't ask for. As of 2026-09-14 the
+Dashboard is not merely superseded but **removed** (spec
+`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`), so the strip is
+the only thing the sidebar's "Inbox" tab shows besides its Learned and Profile
+segments — which makes this contract the sole remaining guarantee that nothing
+ambient can reach that tab.
 
 **Test guards:** No dedicated negative test (an absence-of-writer property); covered indirectly by every writer-side guard above (`TestReactionCmd_DispatchesNewCommandAsProposal`, AGENT-05's guards in `docs/inventory/agent-actions.md`) each being reachable only from a gesture, plus `WatchtowerDesktop/Tests/Core/AgentActionQueriesTests.swift::testFetchStripReturnsNonTerminalAcrossConversations` and `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testRefreshPopulatesActionAndReminderRows` (the read side pulls only from `agent_actions`/`reminders`, nothing else).
 
@@ -203,5 +208,6 @@ surface must never grow an implicit Slack-write side effect.
 
 ## Changelog
 
+- 2026-09-14 (**inbox demolition**, spec `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`): **no contract semantics changed, no guard relaxed** — wording only. Where STRIP-01..03 described the strip as having "replaced" the situations Dashboard, the Dashboard is now *removed*: every writer of `situations`/`situation_signals` is deleted and the tables are frozen read-only history, the `inbox.situations.enabled` key Wave 2 introduced to mute the composer is gone with the composer itself, and the already-unreachable `InboxFeedView`/`Views/Dashboard/` Swift files go in the demolition's Desktop half. The strip is unchanged code and remains what the sidebar's "Inbox" tab shows, alongside its Learned and Profile segments. Wave 2 §10 deferred exactly this demolition; it is now done.
 - 2026-09-06: file created. REACT-01..05 backfilled from the Wave 1 spec/code (`internal/reactioncmd/`, migration 00063, merged 2026-09-05 as commit `4b9d01d3`) — this is their first inventory entry, not a change to their definitions. STRIP-01..03 and REMIND-01..02 added by Wave 2 (`docs/superpowers/specs/2026-09-06-reaction-commands-wave2-inbox-action-strip-design.md`): four new tools (`create_track`, `create_idea`, `remind_me`, `brief_context`), the `reminders` table (migration 00065), and the inbox action strip (`ActionStripView`/`ActionStripViewModel`) replacing the situations Dashboard as the Inbox tab's content. `docs/inventory/README.md`'s module table gained a "Reaction Commands" row pointing here in the same pass.
 - 2026-09-12 (merge into main, PR #152 review): `remind_me` now normalizes `remind_at` before `InsertReminder` (`normalizeRemindAt`, `internal/tools/remind.go`): RFC 3339 with any offset → stored UTC `YYYY-MM-DDTHH:MM:SSZ`; a bare owner-local `YYYY-MM-DDTHH:MM` is interpreted in the daemon's zone (the `create_target` due precedent); anything else is a `ValidationError`. REMIND-01's "inert until due" relied on this implicitly — both due readers (`db.ListDueReminders`, Swift `ReminderQueries.fetchDue`) compare the column as TEXT against a UTC "Z" now, so an unnormalized offset fired at the wrong instant and a natural-language value never. The reaction compose context gains an "Owner's local time now" line (offset + zone) so a relative default ("tomorrow 09:00") is deterministic. `connect_jira_board`'s partial-success `warning` (and any tool's `result_json.warning`) now renders on the chat card. The four Wave 2 tools are now `Surfaces: ["reaction"]`: with empty Surfaces they mounted in the main and target chats, where a turn could create a track/idea/reminder outside the chat's mandate (TGT-BRIEF-01 axis 3) with no reacted message to bind to and — for the three tools seeded `execute` — no Approve card; the seeded trust itself is unchanged (an owner call on the reaction path, §7 of the Wave 2 design). Two Wave 2 gaps in the Desktop repoint closed the same day: the Learned-rules manager and the assistant Profile editor (hosted only by the retired `InboxFeedView`) had lost their only door — `ActionStripView` now carries the same Actions/Learned/Profile segmented control; and the Inbox sidebar badge now counts the strip's content (`AgentActionQueries.awaitingOwnerCount` + `ReminderQueries.dueCount`) instead of the muted situations backlog.

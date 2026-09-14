@@ -12,19 +12,36 @@
 **Module:** `internal/inbox/` + `WatchtowerDesktop/Sources/Views/Inbox/`
 **Last full audit:** 2026-07-06
 
-## INBOX-01 — Two tiers: action vs awareness
+**What it is (since 2026-09-14).** `internal/inbox` is a **mechanical** pipeline
+with zero AI calls. `Pipeline.Run` = dedup → detectors (Slack mentions / DMs /
+thread replies / reaction requests per enabled account, Jira, Calendar, Gmail,
+IMAP, and the `briefing_ready` watchtower detector) → rule-based auto-resolve
+(INBOX-02) → archive/unsnooze → watermark (INBOX-09). `inbox_items` has **no
+screen of its own**: its readers are Catch-Up's `needs_you` area, the daily
+briefing, meeting prep, custom-track scan material and the Slack reaction
+refresh. The sidebar "Inbox" tab is the action strip (`docs/inventory/reaction-commands.md`)
+with the Learned (INBOX-05) and Profile tabs beside it. Everything that used to
+*think* here — triage, the implicit learner, the situations composer and
+situation cards — was removed by the inbox demolition
+(`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`); the contracts
+that protected those stages are kept below under **Retired**, never deleted and
+never relaxed.
 
-**Status:** Enforced
+## INBOX-01 — Two tiers: action vs awareness — RETIRED 2026-09-14
 
-**Observable:** Every signal still carries one of two classes. **Actionable** items demand a response and persist until handled. **Ambient** items are awareness-only and fade on their own. Triage (the `inbox.triage` AI call) may only **downgrade** a class (actionable → ambient), never upgrade one; a trigger-created item is never dropped outright even on an `ignore` verdict, it is at most demoted to ambient. Upgrades require explicit user action. Both classes still feed the composer (`inbox.compose`, see `docs/inventory/dashboard.md`) that clusters signals into situations. What changed is presentation only: the dashboard no longer shows two visual sections ("Needs action" expanded cards vs "FYI" compact rows) — it surfaces action/ambient signals through a single assistant-ranked situation feed instead, with the class informing rank/priority rather than which section an item lands in.
+**Status:** Retired (2026-09-14) — triage removed. Every trigger item is now
+minted `actionable`/`medium` by `classifier.go`'s `DefaultItemClass`, which is
+the only class writer left; no AI stage reads or rewrites the class. Retired by
+`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. The guard tests
+TestInbox01_TriggerNeverIgnored and TestInbox01_TriageNeverUpgrades lived in
+internal/inbox/triage_test.go and were deleted together with the behaviour they
+guarded — not relaxed.
 
-**Why locked:** Without this split, Inbox collapses into a single noisy feed and the "no inbox-zero pressure" promise dies.
+**Historical record (no longer in force):** Every signal still carries one of two classes. **Actionable** items demand a response and persist until handled. **Ambient** items are awareness-only and fade on their own. Triage (the `inbox.triage` AI call) may only **downgrade** a class (actionable → ambient), never upgrade one; a trigger-created item is never dropped outright even on an `ignore` verdict, it is at most demoted to ambient. Upgrades require explicit user action. Both classes still feed the composer (`inbox.compose`, see `docs/inventory/dashboard.md`) that clusters signals into situations. What changed is presentation only: the dashboard no longer shows two visual sections ("Needs action" expanded cards vs "FYI" compact rows) — it surfaces action/ambient signals through a single assistant-ranked situation feed instead, with the class informing rank/priority rather than which section an item lands in.
 
-**Test guards:**
-- `internal/inbox/triage_test.go::TestInbox01_TriggerNeverIgnored`
-- `internal/inbox/triage_test.go::TestInbox01_TriageNeverUpgrades`
+**Why it was locked:** Without this split, Inbox collapsed into a single noisy feed and the "no inbox-zero pressure" promise died.
 
-**Locked since:** 2026-04-27
+**Locked 2026-04-27 → retired 2026-09-14.**
 
 ## INBOX-02 — Inbox understands what I've already answered
 
@@ -32,7 +49,7 @@
 
 **Observable:** I reply in Slack/DM/thread, comment on a Jira issue, or RSVP a calendar invite — the corresponding inbox item disappears **without my click**. Inbox follows the conversation; I never close the same thing twice.
 
-**Why locked:** This is the basic promise that makes Inbox lower-friction than native Slack/Jira/Calendar notifications. Break it and users stop trusting the feed and revert to the original sources.
+**Why locked:** This is the basic promise that makes attention detection lower-friction than native Slack/Jira/Calendar notifications. Break it and the item stays pending forever, so Catch-Up's "needs you" list and the Briefing's attention section fill with work the owner already finished — which is exactly how a recap surface loses the owner's trust. With no per-item screen left, nothing else can catch a stale item; this contract is the only thing keeping the feeder honest.
 
 **Test guards:**
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveSlackOnUserReply`
@@ -43,117 +60,134 @@
 
 **Locked since:** 2026-04-27 (target_due family added 2026-05-01)
 
-## INBOX-03 — Surfaces signals that would have been buried in noise
+## INBOX-03 — Surfaces signals that would have been buried in noise — RETIRED 2026-09-14
 
-**Status:** Enforced
+**Status:** Retired (2026-09-14) — stream surfacing removed. The full-stream
+triage scan that minted `stream` rows from ordinary channel traffic is gone, so
+`inbox_items` now holds trigger rows only; "what was going on that matters" is
+answered by Digests, Tracks and Catch-Up. Retired by
+`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. Its guards —
+TestInbox03_StreamSignalSurfaced (internal/inbox/e2e_test.go),
+TestTriage_HardMutedStreamCandidateSkipped (internal/inbox/triage_test.go) and
+TestInbox03_UserPrefsRankedByRelevance (internal/inbox/user_preferences_test.go)
+— were deleted with the behaviour they guarded, not relaxed.
 
-**Observable:** If 200 messages flow past me in a day and one needed a reaction, Inbox surfaces it. Not "all mentions" — specifically the ones that look like signal in the surrounding volume. Noisy sources (deploy channels, dependabot, chatty Jira projects) do not crowd out high-signal ones.
+**Historical record (no longer in force):** If 200 messages flow past me in a day and one needed a reaction, Inbox surfaces it. Not "all mentions" — specifically the ones that look like signal in the surrounding volume. Noisy sources (deploy channels, dependabot, chatty Jira projects) do not crowd out high-signal ones.
 
-**Why locked:** Without this, Inbox is just an alias for `@mentions` and adds nothing over native Slack notifications.
+**Why it was locked:** Without this, Inbox was just an alias for `@mentions` and added nothing over native Slack notifications.
 
-**Test guards:**
-- `internal/inbox/e2e_test.go::TestInbox03_StreamSignalSurfaced`
-- `internal/inbox/triage_test.go::TestTriage_HardMutedStreamCandidateSkipped`
-- `internal/inbox/user_preferences_test.go::TestInbox03_UserPrefsRankedByRelevance`
+**Locked 2026-04-27 (gap closed 2026-07-06 by full-stream triage) → retired 2026-09-14.**
 
-**Locked since:** 2026-04-27 (gap closed 2026-07-06 by full-stream triage, see changelog)
+## INBOX-04 — Inbox learns gradually, not by single click — RETIRED 2026-09-14
 
-## INBOX-04 — Inbox learns gradually, not by single click
+**Status:** Retired (2026-09-14) — implicit learner removed. `RunImplicitLearner`
+learned from dismissals in a UI that no longer exists, and the `inbox_feedback`
+table it aggregated was dropped by migration 00070 (0 rows on the live install).
+`inbox_learned_rules` survives as the cross-pipeline rule store — see INBOX-05.
+Retired by `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. Its
+guards — the TestInbox04_* families in internal/inbox/learner_test.go and
+internal/inbox/feedback_test.go — were deleted with the behaviour they guarded,
+not relaxed. The one TestInbox04_-named test that survives,
+`internal/db/schema_contracts_test.go::TestInbox04_NoLegacyExplicitFeedbackTable`,
+asserts only that `inbox_learned_rules` exists and the legacy
+`explicit_feedback` table does not; it keeps its historical name and now guards
+INBOX-05's rule store.
 
-**Status:** Enforced
+**Historical record (no longer in force):** A single 👎 does not silence a source forever — it is one signal in a pool. Muting / boosting decisions emerge from accumulated evidence (explicit feedback **plus** implicit dismissals, response times, recency). Behavior shifts smoothly over time, like Spotify recommendations, not like a toggle. The exception is the explicit "Never show me this" action, which is a deliberate one-click escape hatch and writes a `source='user_rule'` immediately.
 
-**Observable:** A single 👎 does not silence a source forever — it is one signal in a pool. Muting / boosting decisions emerge from accumulated evidence (explicit feedback **plus** implicit dismissals, response times, recency). Behavior shifts smoothly over time, like Spotify recommendations, not like a toggle. The exception is the explicit "Never show me this" action, which is a deliberate one-click escape hatch and writes a `source='user_rule'` immediately.
+**Why it was locked:** A single-click kill switch makes users either afraid to give feedback ("I might over-mute") or distrustful when feedback doesn't bite ("I clicked once and nothing changed"). Gradual accumulation was the only model that earned trust at both ends. The escape hatch was an exception kept for cases where the user *really* meant it — and was visible in the Learned tab as a manual rule.
 
-**Why locked:** A single-click kill switch makes users either afraid to give feedback ("I might over-mute") or distrustful when feedback doesn't bite ("I clicked once and nothing changed"). Gradual accumulation is the only model that earns trust at both ends. The escape hatch is an exception kept for cases where the user *really* means it — and is visible in the Learned tab as a manual rule.
+**Locked 2026-04-28 → retired 2026-09-14.**
 
-**Test guards:**
-- `internal/inbox/learner_test.go::TestInbox04_GradualMuteFromAccumulatedDismissals`
-- `internal/inbox/learner_test.go::TestInbox04_NoRuleBelowEvidenceThreshold`
-- `internal/inbox/learner_test.go::TestInbox04_LearnerAggregatesExplicitWithImplicit`
-- `internal/inbox/learner_test.go::TestInbox04_LearnerNoRuleBelowCombinedThreshold`
-- `internal/inbox/learner_test.go::TestInbox04_LearnerPositiveBoostFromExplicit`
-- `internal/inbox/learner_test.go::TestInbox04_LearnerNeverShowExcludedFromPool`
-- `internal/inbox/feedback_test.go::TestInbox04_NeverShowStillInstantHardMute`
-- `internal/inbox/feedback_test.go::TestInbox04_SourceNoiseDoesNotCreateRule`
-- `internal/inbox/feedback_test.go::TestInbox04_WrongClassChangesItemButNotRule`
-- `internal/inbox/feedback_test.go::TestInbox04_WrongPriorityDoesNotCreateRule`
-- `internal/inbox/feedback_test.go::TestInbox04_PositiveFeedbackDoesNotCreateRule`
-- `internal/db/schema_contracts_test.go::TestInbox04_NoLegacyExplicitFeedbackTable`
+## INBOX-05 — I can see and edit what the assistant has learned about me
 
-**Locked since:** 2026-04-28
+**Status:** Enforced (reworded 2026-09-14)
 
-## INBOX-05 — I can see and edit what Inbox has learned about me
+**Observable:** The "Learned" tab on the inbox action strip is the visible,
+editable store of `inbox_learned_rules` — mutes, boosts, manual rules — each
+with weight, source ("learned from my feedback" / "I added this manually"), and
+an inline remove/edit. I can add a rule, remove a rule, change a weight; changes
+persist. The store is **cross-pipeline, not inbox-local**. Its **readers** are
+the digest, tracks, briefing and catch-up pipelines, which inject rules into
+their prompts via `ListLearnedRulesByPipeline`. Its **writers** are exactly two:
+this tab (manual `source='user_rule'` rows) and `watchtower catchup feedback`,
+which mints a rule from a per-topic 👍/👎 that carried a comment. With the
+inbox's own implicit learner retired (INBOX-04), no automatic writer remains, so
+every row in the table is traceable to something the owner typed. The output a
+rule changes is a digest, track, briefing or recap — never an `inbox_items` row.
 
-**Status:** Enforced
-
-**Observable:** The "Learned" tab inside Inbox shows the system's current model of me — mutes, boosts, manual rules — with weight, source ("learned from 12 dismissals" / "I added this manually"), and an inline remove/edit. I can add a rule, remove a rule, change a weight; changes persist and reflect in subsequent pinned/feed cycles.
-
-**Why locked:** Without visibility, the learning system is a black box and trust collapses. Without editability, users cannot recover from misclassifications — feedback becomes a one-way street.
+**Why locked:** Without visibility, the learning system is a black box and trust collapses. Without editability, users cannot recover from misclassifications — feedback becomes a one-way street. The rule store outliving the inbox screen makes the tab *more* load-bearing, not less: it is now the only place a learned preference can be inspected or undone.
 
 **Test guards:**
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_add_manual_rule`
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_remove_rule`
 - `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
+- `internal/db/schema_contracts_test.go::TestInbox04_NoLegacyExplicitFeedbackTable` (historical name — the rule store exists and the legacy `explicit_feedback` table does not)
 
-**Locked since:** 2026-04-27
+**Locked since:** 2026-04-27 (reworded to the cross-pipeline rule store 2026-09-14)
 
-## INBOX-06 — Manual rules outrank statistics
+## INBOX-06 — Manual rules outrank statistics — RETIRED 2026-09-14
 
-**Status:** Enforced
+**Status:** Retired (2026-09-14) — no implicit writer remains. With the implicit
+learner gone (INBOX-04), nothing can overwrite a `source='user_rule'` row, so
+the protection has no aggressor left to protect against; the surviving
+`source='implicit'` rows are inert history. Retired by
+`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. Its Go guard
+TestInbox06_UserRuleProtectedFromImplicitOverwrite lived in
+internal/inbox/learner_test.go and was deleted with the learner, not relaxed;
+the Swift twin
+`WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_06_manual_rule_overrides_implicit`
+survives as a query-level pin on the same precedence rule and is not being
+weakened here.
 
-**Observable:** Any rule I author by hand in the "Learned" tab (`source='user_rule'`) is never overwritten by the automatic implicit learner. If I say "mute @bob," statistics across the next month do not silently undo me.
+**Historical record (no longer in force):** Any rule I author by hand in the "Learned" tab (`source='user_rule'`) is never overwritten by the automatic implicit learner. If I say "mute @bob," statistics across the next month do not silently undo me.
 
-**Why locked:** Without this, the "Learned" tab is theatre — the user edits a rule, walks away, and the aggregator overrides them. Explicit user intent must beat statistical aggregates.
+**Why it was locked:** Without this, the "Learned" tab was theatre — the user edits a rule, walks away, and the aggregator overrides them. Explicit user intent had to beat statistical aggregates.
 
-**Test guards:**
-- `internal/inbox/learner_test.go::TestInbox06_UserRuleProtectedFromImplicitOverwrite`
-- `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_06_manual_rule_overrides_implicit`
+**Locked 2026-04-27 → retired 2026-09-14.**
 
-**Locked since:** 2026-04-27
+## INBOX-07 — AI failure does not lose state — RETIRED 2026-09-14
 
-## INBOX-07 — AI failure does not lose state
+**Status:** Retired (2026-09-14) — no AI stage remains. `internal/inbox` makes
+zero `Generate` calls, so there is no AI failure mode left for this contract to
+describe; detector failure is covered by INBOX-09, which is unchanged in
+substance. Retired by
+`docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. Its guards
+TestInbox07_InvalidJSONLeavesStateUntouched (internal/inbox/triage_test.go) and
+TestInbox07_FeedUntouchedOnTriageError (internal/inbox/pipeline_test.go) were
+deleted with the triage stage, not relaxed.
 
-**Status:** Enforced
+**Historical record (no longer in force):** When the assistant's triage AI call (`inbox.triage`) errors out or returns unparseable JSON, existing state is preserved untouched until a future cycle succeeds. No item is created, reclassified, or dropped for the untriaged messages, and the failure is reflected in the watermark (see INBOX-09). The feed never blanks out, items do not reshuffle, the user can keep working on whatever they were focused on. (The equivalent guarantee for the dashboard's compose/situation-card AI calls was DASH-02, itself retired the same day — see `docs/inventory/dashboard.md`.)
 
-**Observable:** When the assistant's triage AI call (`inbox.triage`) errors out or returns unparseable JSON, existing state is preserved untouched until a future cycle succeeds. No item is created, reclassified, or dropped for the untriaged messages, and the failure is reflected in the watermark (see INBOX-09). The feed never blanks out, items do not reshuffle, the user can keep working on whatever they were focused on. (The equivalent guarantee for the dashboard's compose/situation-card AI calls, which replaced the per-item secretary card stage this contract used to also cover, is DASH-02 in `docs/inventory/dashboard.md`.)
+**Why it was locked:** Inbox was a "pulse" surface. A flapping AI call that periodically blanked the feed would have taught the user to distrust the screen. Stability beats freshness when the alternative is chaos.
 
-**Why locked:** Inbox is a "pulse" surface. A flapping AI call that periodically blanks the feed would teach the user to distrust the screen. Stability beats freshness when the alternative is chaos.
-
-**Test guards:**
-- `internal/inbox/triage_test.go::TestInbox07_InvalidJSONLeavesStateUntouched`
-- `internal/inbox/pipeline_test.go::TestInbox07_FeedUntouchedOnTriageError`
-
-**Locked since:** 2026-04-27 (extended to cards 2026-07-05, narrowed back to triage 2026-07-06 when per-item cards were retired, see changelog)
+**Locked 2026-04-27 (extended to cards 2026-07-05, narrowed back to triage 2026-07-06) → retired 2026-09-14.**
 
 ## INBOX-09 — Detection failure never advances the watermark
 
 **Status:** Enforced
 
-**Observable:** The inbox watermark (`inbox_last_processed_ts`) tracks how far detection *and* triage have scanned. When a detector pass fails (Slack sync error, a source detector returning an error), the watermark stays where it was — it never jumps forward on wall-clock time, regardless of how triage fared. The next cycle re-scans the same window, so a mention/DM that arrived during a failed pass is still surfaced once detection recovers. Nothing is silently skipped.
+**Observable:** The inbox watermark (`inbox_last_processed_ts`) tracks how far detection has scanned. **A detector error never advances it:** when any detector pass fails (Slack sync error, a source detector returning an error), the watermark stays where it was and never jumps forward on wall-clock time — `decideWatermark(detectErr)` freezes it, and `Run` returns that error so the failure is visible in `pipeline_runs`. The next cycle re-scans the same window, so a mention/DM that arrived during a failed pass is still surfaced once detection recovers. Nothing is silently skipped. A clean pass advances the watermark to `now − 30 min` (a deliberate buffer for Slack search-indexing lag, not a partial advance); there is no partial-advance arm any more, because there is no second stage to be partially through (the triage-progress rule was retired with triage on 2026-09-14 — see the changelog).
 
-**Partial-advance rule:** When detection is clean but full-stream triage is capped (hit `MaxTriageMessages`) or fails partway through a chunked run, the watermark advances only to the timestamp of the **last fully-triaged message** — never past a message that was never sent to the AI or whose chunk errored. A muted candidate's timestamp may only push the watermark forward if every unmuted candidate at or before it was successfully triaged; a muted message past an untriaged/failed one does not smuggle the watermark forward.
+**Feature Manager extension (2026-08-16, narrowed 2026-09-14):** re-enabling the Attention-detection feature (`watchtower features enable secretary-inbox`, or the Desktop Feature Manager) fast-forwards `inbox_last_processed_ts` to the moment of the enable. That is a write to this watermark from OUTSIDE the pipeline, and deliberately so: it is an explicit owner action meaning "resume from now", not pipeline logic advancing over unprocessed material, so the failure rule above is untouched (nothing was scanned and skipped — the owner chose not to back-fill the window the feature was off). The hook used to also fast-forward the composer's `compose_last_run_ts`; with the composer removed that column is vestigial and the hook no longer touches it. See `docs/inventory/features.md` FEAT-03.
 
-**Feature Manager extension (2026-08-16):** re-enabling the Assistant Inbox feature (`watchtower features enable secretary-inbox`, or the Desktop Feature Manager) fast-forwards `inbox_last_processed_ts` — and the composer's `compose_last_run_ts` — to the moment of the enable. That is a write to this watermark from OUTSIDE the pipeline, and deliberately so: it is an explicit owner action meaning "resume from now", not pipeline logic advancing over unprocessed material, so the failure rule above is untouched (nothing was scanned and skipped — the owner chose not to back-fill the window the feature was off). See `docs/inventory/features.md` FEAT-03.
-
-**Why locked:** The watermark only ever moves forward, so any window it skips is lost forever. Advancing it on failure (by wall-clock time, or past an untriaged message) means a transient Slack/detector/triage error permanently drops every mention, DM, or stream signal in that gap — a silent data loss the user cannot detect or recover from. Freezing the watermark on failure, and capping partial advances at the last fully-processed message, trades a cheap re-scan for zero lost signals. A detector error always freezes the watermark even if triage made progress, because detectors and triage scan the same ts window — advancing over triage's progress would still skip whatever the failed detector never saw.
+**Why locked:** The watermark only ever moves forward, so any window it skips is lost forever. Advancing it on failure (by wall-clock time) means a transient Slack/detector error permanently drops every mention or DM in that gap — a silent data loss the user cannot detect or recover from. Freezing the watermark on failure trades a cheap re-scan for zero lost signals.
 
 **Multi-account extension (2026-07-30):** `inbox_last_processed_ts` stays a single, workspace-wide cursor — Google multi-account did NOT fork it into one per account. The Gmail detector (`DetectGmailAccounts`) now iterates every connected `google_accounts` row and scans that account's own `gmail_messages` (queried scoped by `account_id`), but every account is checked against the same shared `sinceTime` cursor — one account erroring still freezes the whole workspace watermark like any other detector error, with no per-account carve-out. This is a scope extension of the existing detector-error rule, not a new watermark: `google_accounts.gmail_last_internal_date` (the Gmail API *sync* watermark gating how far `gmail.Syncer` has fetched) is a separate cursor entirely, unrelated to inbox detection. The Gmail inbox `channel_id` also changed shape: it is now `gmail:<accountID>:<threadID>` (previously a bare `<threadID>`), the same discriminator pattern IMAP already uses (`imap:<acct>:...`); the multi-account migration rewrote existing `inbox_items.channel_id` values plus the `channel:`-scoped mute rules and learned-rule references so nothing silently stopped matching.
 
-**Multi-account extension (2026-07-31, Slack — same semantics):** `inbox_last_processed_ts` stays the single, workspace-wide detection cursor for Slack too; multi-Slack did NOT fork it per account. The Slack detector reads `messages` whose `channel_id`/`user_id` are now namespaced `"<accountID>:<rawSlackID>"` strings; detectors that compare those columns directly (the stream-candidate scan) inherit account-scoping for free — no special `channel_id` construction (unlike Gmail), no detector signature change, still the same shared `sinceTime` cursor. **The four trigger detectors are now per-account too (closed 2026-08-15, see changelog):** `FindPendingMentions`, `FindPendingDMs`, `FindThreadRepliesToUser`, and `FindReactionRequests` each take an `accountID` and add `m.channel_id LIKE ? || ':%'` to their query; `detectSlackAccounts` (`internal/inbox/pipeline.go`) calls `detectSlackTriggers` once per `ListEnabledSlackAccounts()` row, passing that account's own `current_user_id` — never a single pinned identity — and joins every account's error so one account's detector failure never silently drops a sibling account's results within the same cycle (a detector error still freezes the single shared watermark, unchanged by this). Auto-resolve keys off the same per-account shape for `mention`/`dm`/`thread_reply` items (the `reaction` gap this does not close is documented in the changelog entry below): `autoResolveSlack` derives each pending item's account from its own `channel_id` prefix and checks it against *that* account's own `current_user_id` (via `ListSlackAccounts`, including disabled accounts, since disable/remove leave already-synced items resolvable) instead of a single pinned identity. Per-Slack-account sync progress lives in a separate cursor entirely — `slack_accounts.search_last_date` (the search-sync watermark, moved off the `workspace` singleton) — unrelated to inbox detection, exactly as `google_accounts.gmail_last_internal_date` is. **Own-message-exclusion widening (extension of the existing filter, not a new contract):** unlike the trigger detectors above, this widening is about the separate stream-candidate path (ordinary channel traffic considered for triage) — it already excluded the owner's own messages by a single Slack user id; it now excludes *every* connected account's owner id — `db.ListOwnerSlackUserIDs()` returns all non-empty namespaced `current_user_id`s and feeds `ListStreamCandidatesSince(ownerIDs, ...)`, so a message the owner sent in *any* connected Slack org is suppressed by that org's own `current_user_id` (a direct string compare, since both sides are stored `"<acct>:<Uxxx>"`). This is a per-account widening of the pre-existing single-owner exclusion, not a new behavior class (contrast the Gmail case, where own-message suppression was genuinely new). No contract number changes.
+**Multi-account extension (2026-07-31, Slack — same semantics):** `inbox_last_processed_ts` stays the single, workspace-wide detection cursor for Slack too; multi-Slack did NOT fork it per account. The Slack detector reads `messages` whose `channel_id`/`user_id` are now namespaced `"<accountID>:<rawSlackID>"` strings; detectors that compare those columns directly inherit account-scoping for free — no special `channel_id` construction (unlike Gmail), still the same shared `sinceTime` cursor. **The four trigger detectors are now per-account too (closed 2026-08-15, see changelog):** `FindPendingMentions`, `FindPendingDMs`, `FindThreadRepliesToUser`, and `FindReactionRequests` each take an `accountID` and add `m.channel_id LIKE ? || ':%'` to their query; `detectSlackAccounts` (`internal/inbox/pipeline.go`) calls `detectSlackTriggers` once per `ListEnabledSlackAccounts()` row, passing that account's own `current_user_id` — never a single pinned identity — and joins every account's error so one account's detector failure never silently drops a sibling account's results within the same cycle (a detector error still freezes the single shared watermark, unchanged by this). Auto-resolve keys off the same per-account shape for `mention`/`dm`/`thread_reply` items (the `reaction` gap this does not close is documented in the changelog entry below): `autoResolveSlack` derives each pending item's account from its own `channel_id` prefix and checks it against *that* account's own `current_user_id` (via `ListSlackAccounts`, including disabled accounts, since disable/remove leave already-synced items resolvable) instead of a single pinned identity. Per-Slack-account sync progress lives in a separate cursor entirely — `slack_accounts.search_last_date` (the search-sync watermark, moved off the `workspace` singleton) — unrelated to inbox detection, exactly as `google_accounts.gmail_last_internal_date` is. (A second widening shipped the same day — the per-account own-message exclusion on the stream-candidate scan, `db.ListOwnerSlackUserIDs()` feeding `ListStreamCandidatesSince` — is gone as of 2026-09-14: the stream-candidate path existed only to feed triage and was removed with it, along with both functions. Own-message suppression on the *trigger* detectors is unaffected and still per-account.)
 
 **Test guards:**
 - `internal/inbox/pipeline_test.go::TestInbox09_WatermarkFrozenOnDetectorError`
-- `internal/inbox/pipeline_test.go::TestInbox09_WatermarkFrozenOnTriageError`
-- `internal/inbox/pipeline_test.go::TestInbox09_CappedTriageAdvancesWatermarkPartially`
-- `internal/inbox/pipeline_test.go::TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped`
-- `internal/inbox/triage_test.go::TestTriage_MutedBeyondFailedChunkDoesNotAdvanceWatermark`
 - `internal/inbox/pipeline_test.go::TestInbox09_SlackDetectorErrorFreezesWatermark` — a genuine Slack detector failure freezes the watermark.
 - `internal/inbox/pipeline_test.go::TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark` — an account with no resolved identity is skipped cleanly and does NOT freeze the watermark, unlike a genuine failure. **Gap, not covered by any test:** one account's genuine detector error not stopping a sibling account's detection in the same cycle — no mechanism was found to make one account's Slack query fail while a sibling's succeeds against the same shared `messages`/`reactions` tables (every column the four detectors scan is `NOT NULL`, `COALESCE`-wrapped, or a `NOT NULL`-derived `GENERATED STORED` column per `schema.sql`, and no DB-layer test seam exists in this repo to fake it); see `TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation` (skipped, not a guard) for the investigation trail.
 
-**Locked since:** 2026-07-05 (partial-advance rule added 2026-07-06, see changelog; multi-account detector scoping noted 2026-07-30 for Google and 2026-07-31 for Slack, same semantics; Slack trigger-detector scoping completed 2026-08-15, see changelog)
+**Locked since:** 2026-07-05 (partial-advance rule added 2026-07-06 and retired with triage 2026-09-14, see changelog; multi-account detector scoping noted 2026-07-30 for Google and 2026-07-31 for Slack, same semantics; Slack trigger-detector scoping completed 2026-08-15, see changelog)
 
 ## Changelog
 
+- 2026-09-14 — **Inbox demolition** (owner-approved, spec `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`, resolving audit decision 3). The inbox stops being a screen and becomes Catch-Up's silent, mechanical feeder. **Retired:** INBOX-01 (two-tier triage — triage removed), INBOX-03 (stream surfacing removed), INBOX-04 (implicit learner removed), INBOX-06 (no implicit writer remains), INBOX-07 (no AI stage remains). Their sections are kept above under a Retired heading with their historical text; their guard tests were deleted **together with the behaviour they guarded** — the approved demolition, not a weakening, and no surviving guard was relaxed, renamed out of the `TestInboxNN_` convention, or split. **Kept:** INBOX-02 (auto-resolve — the reason detection survives at all) and INBOX-09 (detector failure never advances the watermark), the latter reworded to drop the triage partial-advance arm. **Reworded:** INBOX-05 is now the cross-pipeline learned-rules contract — the Learned tab is the visible store of `inbox_learned_rules`, which digest/tracks/briefing/catch-up read via `ListLearnedRulesByPipeline` and `catchup feedback` writes. Code removed from this module: `triage.go`, `learner.go`, `compose.go`, `situation_card.go`, `situation_feedback.go`, `feedback.go`, `brief.go`, `user_preferences.go`, the whole `internal/feed` package, `RunFastDetection`/`phaseFastInbox`, `phaseFeed`, `cmd/situations.go`, `cmd/feed.go` and the `inbox feedback` subcommand; `style_sample.go` moved to `watchtower profile style-sample` (prompt id `inbox.style_sample` kept as a stable identifier). The `watchtower` detector keeps `briefing_ready` and loses the `decision_made` branch entirely — both its digest-decisions source and the memory-dispute source added on 2026-07-16 — so the `TestWatchtowerDetector_Dispute*` guards named in that entry are gone with it; see `docs/inventory/memory.md` MEM-05/MEM-10 for the memory side, which now only sets `memory_dispute_flags` with no reader. Migration 00070 froze open `situations` to `stale`, resolved pending `decision_made` items, dropped `inbox_feedback`/`feed_items`/`feed_state`, and deregistered the `inbox.triage`/`inbox.compose`/`inbox.situation_card`/`inbox.situation_learn` prompt rows. `situations`/`situation_signals` survive as read-only history — see `docs/inventory/dashboard.md` (tombstone). Config keys removed: `inbox.max_triage_messages`, `inbox.max_awareness_cards`, `inbox.situations.enabled`, `dashboard.*`, `feed.*`. Also folded in: `GetInboxItemsForBriefing` now filters `archived_at IS NULL`, so the briefing's top-20 no longer includes rows `ArchiveStaleActionable` retired 14+ days ago.
+  - **Known gap carried over, not closed:** `reaction` items still never auto-resolve — `autoResolveSlack`'s switch lists `"reaction_request"`, a value the `inbox_items.trigger_type` CHECK does not permit, while `FindReactionRequests` writes `"reaction"`. Pre-existing since before the multi-account work; changing it is a behavior change under the Enforced INBOX-02 contract and remains the owner's call.
 - 2026-08-19: persona merge (owner decision 2026-08-19): the two-persona concept (secretary/assistant) is collapsed into a single **assistant** — wording-only here; no contract semantics, guard tests, or gates changed. Historical changelog entries keep the old word. See "The assistant & chat contracts" in `docs/review/review-rules.md`.
 - 2026-04-27: file created with 8 contracts (INBOX-01..08). Five are Enforced (01, 02, 05, 06, 07), two are Partial (03, 04), one is Aspirational (08). Tracked gaps recorded inline on Partial/Aspirational entries.
 - 2026-04-28: INBOX-04 closed gap — explicit feedback now feeds into evidence pool via learner; never_show stays as one-click escape hatch (source='user_rule'). Migration v72 drops legacy source='explicit_feedback' rules.
