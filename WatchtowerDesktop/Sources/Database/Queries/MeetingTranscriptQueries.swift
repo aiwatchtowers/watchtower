@@ -57,12 +57,18 @@ enum MeetingTranscriptQueries {
     }
 
     /// Recordings master list (ad-hoc + event-linked), newest first. A recap
-    /// "exists" when the row has summary_json OR its event has a
-    /// meeting_recaps row (the recap collision guard can put it in either).
-    /// Perf guard: the heavy blobs — transcript_text, summary_json,
-    /// segments_json, speakers_json and chapters_json — are NEVER selected
-    /// here, only a 200-char snippet plus booleans; the calendar_events
-    /// LEFT JOIN pulls the linked event's title ONLY, no heavy event columns.
+    /// "exists" when the row has summary_json, OR its event has a
+    /// meeting_recaps row, OR a meeting_recaps row links back to this
+    /// transcript directly by transcript_id (the ad-hoc / event_id-NULL case
+    /// — `r.event_id = t.event_id` never matches when both sides are NULL,
+    /// which otherwise hid a real ad-hoc recap from the list badge even
+    /// though the detail view, which reads meeting_recaps by transcript_id
+    /// too, rendered it fine). Perf guard: the heavy blobs — transcript_text,
+    /// summary_json, segments_json, speakers_json and chapters_json — are
+    /// NEVER selected here, only a 200-char snippet plus booleans; the
+    /// calendar_events LEFT JOIN pulls the linked event's title ONLY, no
+    /// heavy event columns; the added OR is still index-backed EXISTS, not a
+    /// new column selection.
     static func fetchRecordingList(_ db: Database, limit: Int = 200) throws -> [RecordingListItem] {
         try RecordingListItem.fetchAll(
             db,
@@ -70,7 +76,10 @@ enum MeetingTranscriptQueries {
                 SELECT t.id, t.event_id, e.title AS event_title,
                        t.title, t.duration_sec, t.lang_stats, t.created_at,
                        (t.summary_json IS NOT NULL
-                        OR EXISTS (SELECT 1 FROM meeting_recaps r WHERE r.event_id = t.event_id)) AS has_recap,
+                        OR EXISTS (
+                            SELECT 1 FROM meeting_recaps r
+                            WHERE r.event_id = t.event_id OR r.transcript_id = t.id
+                        )) AS has_recap,
                        (t.notes_md IS NOT NULL) AS has_notes,
                        substr(t.transcript_text, 1, 200) AS snippet
                 FROM meeting_transcripts t

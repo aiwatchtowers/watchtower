@@ -328,7 +328,7 @@ final class MeetingChatViewModel {
 
         \(meetingContextBlock(transcript, recapContent: recapContent))
 
-        \(memoryBlock)=== TRANSCRIPT EXCERPT (single-track, speakers not labeled, may mix ru/uk/en) ===
+        \(memoryBlock)=== TRANSCRIPT EXCERPT (may mix ru/uk/en; a "[label]" line prefix identifies the speaker — "[Я]" is the recording owner, "[Speaker N]" an unidentified voice, anything else a real name; a line with no prefix carries no attribution) ===
         \(excerpt)
         \(truncated ? "(…truncated — use get_transcript with the transcript id above for the full text)" : "(full transcript shown)")
 

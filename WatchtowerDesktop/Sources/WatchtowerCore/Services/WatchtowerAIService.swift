@@ -89,6 +89,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// Build the `watchtower ai query` argument list. Pulled out of `run()` so
     /// the CLI-flag mapping (in particular `--provider`) can be unit tested
     /// without spawning a process.
+    ///
+    /// The prompt is always passed after an unconditional `--` separator, with
+    /// every flag ahead of it — never only when the prompt happens to start
+    /// with a dash. Without the separator, a prompt like "-v looks wrong" is
+    /// parsed by cobra as flags, not as the positional argument. This mirrors
+    /// the Go-side cobra test added alongside it (`cmd/ai_test.go`) — the two
+    /// orderings (flags, `--`, prompt) must match.
     package static func buildArgs(
         prompt: String,
         systemPrompt: String?,
@@ -98,7 +105,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         provider: String?,
         toolMode: ChatToolMode?
     ) -> [String] {
-        var args = ["ai", "query", prompt]
+        var args = ["ai", "query"]
 
         if let systemPrompt, !systemPrompt.isEmpty {
             args += ["--system-prompt", systemPrompt]
@@ -118,6 +125,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         if let toolMode {
             args += toolMode.cliArgs
         }
+        args += ["--", prompt]
         return args
     }
 
