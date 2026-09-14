@@ -239,6 +239,28 @@ func TestGetInboxItemsForBriefing(t *testing.T) {
 	assert.Equal(t, "high", items[0].Priority)
 }
 
+// TestGetInboxItemsForBriefing_ExcludesArchived pins the wave-2 GetInboxItems
+// fix (TestGetInboxItems_ExcludesArchivedByDefault) applied to the briefing
+// query too: an item stays "pending" after ArchiveStaleActionable archives
+// it, so a status-only filter let stale actionable rows back into the
+// briefing's top-20.
+func TestGetInboxItemsForBriefing_ExcludesArchived(t *testing.T) {
+	db := openTestDB(t)
+
+	live, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention", Snippet: "live"})
+	require.NoError(t, err)
+	archived, err := db.CreateInboxItem(InboxItem{ChannelID: "C2", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "mention", Snippet: "archived"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE inbox_items SET archived_at = ? WHERE id = ?`, "2026-09-01T00:00:00Z", archived)
+	require.NoError(t, err)
+
+	items, err := db.GetInboxItemsForBriefing()
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, int(live), items[0].ID)
+	assert.Equal(t, "live", items[0].Snippet)
+}
+
 func TestBulkUpdateInboxPriorities(t *testing.T) {
 	db := openTestDB(t)
 

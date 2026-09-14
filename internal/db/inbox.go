@@ -313,7 +313,7 @@ func (db *DB) GetInboxCounts() (int, int, error) {
 // GetInboxItemsForBriefing returns pending inbox items for the daily briefing.
 func (db *DB) GetInboxItemsForBriefing() ([]InboxItem, error) {
 	rows, err := db.Query(`SELECT ` + inboxSelectCols + ` FROM inbox_items
-		WHERE status = 'pending'
+		WHERE status = 'pending' AND archived_at IS NULL
 		ORDER BY
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
 			created_at DESC
