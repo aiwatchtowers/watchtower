@@ -194,7 +194,8 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if err := features.FastForward(id, database, time.Now(), featureFastForwardDeps(cmd, cfg)); err != nil {
+	deps, seededCount := featureFastForwardDeps(cmd, cfg)
+	if err := features.FastForward(id, database, time.Now(), deps); err != nil {
 		return fmt.Errorf("%q was not enabled: fast-forwarding: %w", id, err)
 	}
 
@@ -204,27 +205,49 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Enabled %q (%s = true).\n", id, f.ConfigKey)
-	fmt.Fprintln(out, "Fast-forwarded any backlog watermarks to now, so it resumes from now instead of catching up on history.")
+	// Reaction commands has no watermark to fast-forward (fastforward.go's
+	// doc comment): its hook seeds the reaction ledger instead, so it earns
+	// its own line naming what actually happened, not the watermark claim.
+	if id == "reaction-commands" {
+		fmt.Fprintf(out, "Seeded %d pre-existing reaction(s) into the ledger (they will never dispatch).\n", *seededCount)
+	} else {
+		fmt.Fprintln(out, "Fast-forwarded any backlog watermarks to now, so it resumes from now instead of catching up on history.")
+	}
 	return nil
 }
 
+// seedReactionLedgerFn seeds the reaction-commands ledger via a live Slack
+// read (reactions.list under each connected account's own token, through the
+// same resolver the daemon poll uses). A package var — the
+// newDayPlanPipelineFactory house pattern — so a test can substitute a stub
+// without a real Slack account.
+var seedReactionLedgerFn = func(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) (int, error) {
+	return reactioncmd.SeedLedger(ctx, database, reactionCommandsAccountsFn(database, cfg, logger))
+}
+
 // featureFastForwardDeps wires the capabilities a fast-forward hook needs but
-// internal/features cannot build: today the reaction-commands ledger seed,
-// which reads reactions.list under each connected account's own token through
-// the same resolver the daemon poll uses. The command's context is captured
-// here so a cancelled enable cancels the Slack reads with it.
-func featureFastForwardDeps(cmd *cobra.Command, cfg *config.Config) features.Deps {
+// internal/features cannot build: today the reaction-commands ledger seed.
+// The command's context is captured here so a cancelled enable cancels the
+// Slack reads with it.
+//
+// It also returns a pointer that runFeaturesEnable reads AFTER FastForward
+// returns, so the seeded count survives past the Deps.SeedReactions closure
+// instead of being discarded — FastForward's own signature (error only)
+// never had anywhere to carry it back.
+func featureFastForwardDeps(cmd *cobra.Command, cfg *config.Config) (features.Deps, *int) {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	logger := log.New(cmd.ErrOrStderr(), "[features] ", log.LstdFlags)
+	seeded := new(int)
 	return features.Deps{
 		SeedReactions: func(database *db.DB) error {
-			_, err := reactioncmd.SeedLedger(ctx, database, reactionCommandsAccountsFn(database, cfg, logger))
+			n, err := seedReactionLedgerFn(ctx, database, cfg, logger)
+			*seeded = n
 			return err
 		},
-	}
+	}, seeded
 }
 
 func runFeaturesDisable(cmd *cobra.Command, args []string) error {
