@@ -458,10 +458,15 @@ func TestSync_HistoryWindowWidensTimeMin(t *testing.T) {
 
 // TestSync_HistoryWindowSparesReferencedEvent is TestSync_HistoryWindowWidensTimeMin's
 // fixture with one addition: evt-20d carries a meeting_transcripts row. It
-// proves owner decision 14's guard reaches the daemon's Sync path (not just
-// the internal/db SQL helper) — a caller that stopped calling
-// DeleteStaleCalendarEvents, or called it with the wrong calendar_id, would
-// pass the unit-level guard while still failing here.
+// proves owner decision 14's guard reaches the daemon's Sync path end to end
+// (not just the internal/db SQL helper in isolation) — e.g. a rewrite that
+// correlates the guard's NOT EXISTS subqueries against the wrong column
+// would fail here even though it might slip past a narrower unit test. It
+// does NOT cover a caller that stops invoking DeleteStaleCalendarEvents
+// altogether or passes the wrong calendar_id — TestSync_HistoryWindowWidensTimeMin
+// (the unreferenced evt-20d case) is what catches that, since this test's
+// referenced event would still survive "for the wrong reason" if the delete
+// never ran at all.
 func TestSync_HistoryWindowSparesReferencedEvent(t *testing.T) {
 	now := time.Now().UTC()
 	old10 := now.Add(-10 * 24 * time.Hour)

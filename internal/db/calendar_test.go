@@ -371,9 +371,20 @@ func TestDeleteStaleCalendarEvents(t *testing.T) {
 // association is what regenerated recap/notes/chapters and the attendee
 // voice-print pool depend on. Every combination of the two references is its
 // own row so a guard scoped to only one table, or one using OR instead of
-// AND, is caught (see docs/superpowers plan wave 5 task 3): a recap-only
-// event (the paste flow creates recaps with no transcript) is the cell a
-// transcript-only NOT EXISTS would miss.
+// AND, is caught (see docs/superpowers/plans/2026-09-13-audit-fix-wave5.md,
+// Task 3): a recap-only event (the paste flow creates recaps with no
+// transcript) is the cell a transcript-only NOT EXISTS would miss.
+//
+// The fixture also seeds an ad-hoc transcript and an already-detached recap,
+// both with a NULL event_id — the first-class product states of "recorded
+// without a calendar event" and "the event was already deleted" (the whole
+// premise of migration 00056). Without them, every meeting_transcripts /
+// meeting_recaps row in the fixture has a non-NULL event_id, so a
+// `calendar_events.id NOT IN (SELECT event_id FROM meeting_transcripts)`
+// spelling (SQL's classic NULL trap: one NULL in the subquery makes NOT IN
+// evaluate to NULL/false for every row) would pass this whole test while, on
+// a live install, silently stopping stale-cleanup from ever deleting
+// anything again.
 func TestDeleteStaleCalendarEvents_SparesReferencedEvents(t *testing.T) {
 	db := openTestDB(t)
 
@@ -413,6 +424,16 @@ func TestDeleteStaleCalendarEvents_SparesReferencedEvents(t *testing.T) {
 
 	require.NoError(t, db.UpsertMeetingRecap("evt-recap", "source", "{}", 0))
 	require.NoError(t, db.UpsertMeetingRecap("evt-both", "source", "{}", transcriptForBoth))
+
+	// An ad-hoc recording (never linked to any calendar event) and an
+	// already-detached recap (its event already gone, event_id SET NULL by
+	// the FK — the 00056 scenario). Neither references any of the fixture's
+	// events, but both must keep event_id NULL in the tables a NOT EXISTS
+	// correlates against, poisoning a NOT IN rewrite for every row.
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{Title: "Ad-hoc", TranscriptText: "hello"})
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json) VALUES (NULL, ?, ?)`, "source", "{}")
+	require.NoError(t, err)
 
 	cutoff := "2099-01-01T00:00:00Z"
 
