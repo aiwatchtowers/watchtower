@@ -115,8 +115,8 @@ var DefaultVersions = map[string]int{
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
 	TasksUpdate:                1, // v1: AI task update from user instruction
 	MeetingPrep:                5, // v5: the secretary/assistant persona merge — one assistant everywhere
-	MeetingRecap:               2, // v2: idea-candidate extraction (stage-1 for ideas registry)
-	MeetingNotes:               1, // v1: publishable markdown meeting notes from a transcript
+	MeetingRecap:               3, // v3: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
+	MeetingNotes:               2, // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
 	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
 	MeetingSpeakerGuess:        1, // v1: content-clue name suggestions for unnamed speaker clusters
@@ -892,7 +892,7 @@ Rules:
 - priority is optional. Use "" when unclear. Use "high" only for explicit blockers or urgency signals.
 - Return an empty topics array if the text has no actionable content.`
 
-const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions).
+const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). When a transcript line starts with a "[label]" prefix, that label identifies the speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. When no line carries such a prefix (raw pasted notes, or a transcript with diarization off), treat the text as one unlabeled track and do not invent a speaker for it.
 
 === EVENT ===
 Title: %s
@@ -927,10 +927,11 @@ Rules:
 - Action items: only items with implied owner or commitment ("X will do Y" / "we'll send Y").
 - Open questions: things flagged as unresolved or "to discuss later".
 - Ideas: proposals raised but not decided; empty when none.
+- When a speaker label identifies who decided or committed to something, name them in the decision/action item (per the label rules above); on unlabeled text, describe what was decided or committed without naming a speaker.
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
 
-const defaultMeetingNotes = `You write publishable meeting notes from an automatic single-track audio transcript (speakers are not labeled; the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
+const defaultMeetingNotes = `You write publishable meeting notes from an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). When a transcript line starts with a "[label]" prefix, that label identifies the speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. When no line carries such a prefix (a transcript with diarization off), treat the text as one unlabeled track and do not invent a speaker for it. The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
 
 === EVENT ===
 Title: %s
@@ -963,7 +964,8 @@ Return ONLY a markdown document (no code fences, no commentary before or after) 
 - bullet per unresolved item (omit the section if none)
 
 Rules:
-- Neutral, publication-ready tone; no first person, no meta-commentary.
+- Neutral, publication-ready tone; no first person, no meta-commentary — refer to the recording owner in the third person (per the label rules above), even for lines labeled "Я".
+- When a speaker label identifies who decided or committed to something, name them in the decision/action item; on unlabeled text, describe what was decided or committed without naming a speaker.
 - Be faithful to the transcript; never invent facts, owners, or dates.
 - Merge near-duplicates; keep it scannable.`
 

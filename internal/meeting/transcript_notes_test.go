@@ -35,6 +35,27 @@ func TestGenerateTranscriptNotesTranscriptInUserMessage(t *testing.T) {
 	}
 }
 
+// TestGenerateTranscriptNotesUserMessageDropsStaleLabelClaim pins the
+// 2026-09-13 fix (owner decision 13): the user message must no longer claim
+// speakers are never labeled, even when the transcript carries diarized
+// "[label]" line prefixes (RenderTranscriptSegments, internal/meeting/segments.go).
+func TestGenerateTranscriptNotesUserMessageDropsStaleLabelClaim(t *testing.T) {
+	mock := &recordingMockGenerator{response: "# Notes"}
+	pipe := &Pipeline{generator: mock}
+
+	labeledTranscript := "[Я] привет как дела\n[Speaker 1] нормально\n[Я] отлично"
+	_, _, err := pipe.GenerateTranscriptNotes(context.Background(), "", labeledTranscript)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(mock.lastUserMessage, "not labeled") {
+		t.Errorf("user message must not claim speakers are not labeled, got: %q", mock.lastUserMessage)
+	}
+	if !strings.Contains(mock.lastUserMessage, labeledTranscript) {
+		t.Errorf("user message should still carry the full labeled transcript, got: %q", mock.lastUserMessage)
+	}
+}
+
 func TestGenerateTranscriptNotesStripsCodeFence(t *testing.T) {
 	mock := &recordingMockGenerator{response: "```markdown\n# Notes\nbody\n```"}
 	pipe := &Pipeline{generator: mock}

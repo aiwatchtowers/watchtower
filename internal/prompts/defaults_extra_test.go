@@ -58,6 +58,44 @@ func TestPersonaMergeVersionFloors(t *testing.T) {
 	}
 }
 
+// TestMeetingPromptsSpeakerAttribution pins the 2026-09-13 fix (owner
+// decision 13): meeting.recap and meeting.notes stopped claiming transcripts
+// are never speaker-labeled, even though diarized transcripts carry "[Я]" /
+// "[Speaker N]" / person-name line prefixes (RenderTranscriptSegments,
+// internal/meeting/segments.go). The guidance must stay conditional — the
+// paste flow (meeting.recap only) and a transcript with diarization off both
+// deliver unlabeled text — so the template must describe BOTH the labeled
+// and the unlabeled case, not replace one claim with its opposite.
+func TestMeetingPromptsSpeakerAttribution(t *testing.T) {
+	floors := map[string]int{
+		MeetingRecap: 3,
+		MeetingNotes: 2,
+	}
+	for id, floor := range floors {
+		t.Run(id, func(t *testing.T) {
+			// 1. Version floor: a reworded-but-unbumped template must fail
+			// here even though the text assertions below would pass it.
+			assert.GreaterOrEqual(t, DefaultVersions[id], floor,
+				"%q must carry the speaker-attribution wording at v%d or later", id, floor)
+
+			tmpl := Defaults[id]
+			require.NotEmpty(t, tmpl, "missing default for %q", id)
+
+			// 2. The stale, factually-wrong claim must be gone.
+			assert.NotContains(t, tmpl, "speakers are not labeled",
+				"%q must not claim transcripts are never speaker-labeled", id)
+
+			// 3. Both the labeled and the unlabeled case must be described.
+			// A one-sided rewrite (unconditionally "labeled" or silently
+			// dropping the guidance) passes assertion 2 but fails here.
+			assert.Contains(t, tmpl, "[label]",
+				"%q must describe the labeled case (a \"[label]\" line prefix)", id)
+			assert.Contains(t, tmpl, "unlabeled",
+				"%q must describe the unlabeled case", id)
+		})
+	}
+}
+
 // TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
 // (plus the Phase-4 reflection prompt) into every registration surface:
 // constant → Defaults template, AllIDs display order, DefaultVersions,
