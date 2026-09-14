@@ -88,10 +88,16 @@ func TestMeetingPromptsSpeakerAttribution(t *testing.T) {
 			// 3. Both the labeled and the unlabeled case must be described.
 			// A one-sided rewrite (unconditionally "labeled" or silently
 			// dropping the guidance) passes assertion 2 but fails here.
+			// "do not invent a speaker" is asserted rather than the bare word
+			// "unlabeled" because that word also appears in the Rules bullet
+			// ("on unlabeled text, describe…") — a bare-word assertion stays
+			// green even if the main conditional sentence naming the
+			// unlabeled case is deleted from both templates entirely. The
+			// phrase below occurs only in that main sentence.
 			assert.Contains(t, tmpl, "[label]",
 				"%q must describe the labeled case (a \"[label]\" line prefix)", id)
-			assert.Contains(t, tmpl, "unlabeled",
-				"%q must describe the unlabeled case", id)
+			assert.Contains(t, tmpl, "do not invent a speaker",
+				"%q must describe the unlabeled case (no invented speaker)", id)
 		})
 	}
 }

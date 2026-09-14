@@ -892,7 +892,7 @@ Rules:
 - priority is optional. Use "" when unclear. Use "high" only for explicit blockers or urgency signals.
 - Return an empty topics array if the text has no actionable content.`
 
-const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). When a transcript line starts with a "[label]" prefix, that label identifies the speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. When no line carries such a prefix (raw pasted notes, or a transcript with diarization off), treat the text as one unlabeled track and do not invent a speaker for it.
+const defaultMeetingRecap = `You produce a structured recap of a meeting based on raw notes the user pasted, or on an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). A transcript line that starts with a "[label]" prefix has a labeled speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. A line that carries no prefix (raw pasted notes, or a transcript with diarization off) is unlabeled — do not invent a speaker for it.
 
 === EVENT ===
 Title: %s
@@ -931,7 +931,7 @@ Rules:
 - Use empty arrays if a category has nothing.
 - Strip markdown (**bold**, numbered lists, emojis) from output strings.`
 
-const defaultMeetingNotes = `You write publishable meeting notes from an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). When a transcript line starts with a "[label]" prefix, that label identifies the speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. When no line carries such a prefix (a transcript with diarization off), treat the text as one unlabeled track and do not invent a speaker for it. The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
+const defaultMeetingNotes = `You write publishable meeting notes from an automatic audio transcript (the transcript may mix ru/uk/en and contain recognition noise — ignore obvious mis-transcriptions). A transcript line that starts with a "[label]" prefix has a labeled speaker: "Я" is the recording owner — refer to them in the output language's natural third-person terms (e.g. "the meeting owner"), never print the bare "Я" token as if it were a name; "Speaker N" is an unidentified voice; anything else is a real name assigned during diarization. A line that carries no prefix (a transcript with diarization off) is unlabeled — do not invent a speaker for it. The notes will be pasted into Slack or Confluence for people who were NOT at the meeting.
 
 === EVENT ===
 Title: %s
