@@ -2,6 +2,7 @@ package targets
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -330,6 +331,95 @@ func TestGetTargetsNeedingNextStep_FreshEditGrantsBudgetSameDay(t *testing.T) {
 	if got := nextAttemptCount(reloaded, now); got != 1 {
 		t.Errorf("a fresh edit must reset the counter to 1 regardless of the old attempt count, got %d", got)
 	}
+}
+
+// seedChildTarget creates an active "todo" target parented under parentID —
+// the fixture builder for the parent-progress budget tests below.
+func seedChildTarget(t *testing.T, d *db.DB, text string, parentID int64) int64 {
+	t.Helper()
+	id, err := d.CreateTarget(db.Target{
+		Text: text, Status: "todo", Ownership: "mine", Priority: "medium",
+		SourceType: "manual", PeriodStart: "2026-07-01",
+		ParentID: sql.NullInt64{Int64: parentID, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("create child target %q under %d: %v", text, parentID, err)
+	}
+	return id
+}
+
+// TestGetTargetsNeedingNextStep_ParentBudgetUnaffectedByNoOpChildEdit pins the
+// wave-5 fix behind the "edited since" escape hatch: a non-leaf target's
+// attempt budget must reset only when a child edit actually moves the
+// computed average progress (internal/db.recomputeParentProgressOn), not on
+// every write that happens to touch a child. Exercises the eligibility
+// predicate two ancestor levels deep (grandparent -> parent -> children),
+// since the walker rewrites every ancestor's updated_at on the way up and a
+// fix scoped to only the first level would still pass a single-level check.
+// A sibling target with its own budget is asserted throughout so a
+// global-counter implementation cannot pass by accident.
+func TestGetTargetsNeedingNextStep_ParentBudgetUnaffectedByNoOpChildEdit(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	grandparent := seedActiveTarget(t, d, "grandparent")
+	parent := seedChildTarget(t, d, "parent", grandparent)
+	child1 := seedChildTarget(t, d, "child1", parent)
+	seedChildTarget(t, d, "child2", parent) // a second child so AVG is a real average
+
+	sibling := seedActiveTarget(t, d, "sibling with budget")
+
+	// Move child1 to in_progress so the ancestors start at a non-trivial
+	// AVG(0.5, 0.0) = 0.25 — the no-op leg below needs something real to
+	// leave unchanged.
+	if err := d.UpdateTargetStatus(int(child1), "in_progress"); err != nil {
+		t.Fatalf("seed child1 in_progress: %v", err)
+	}
+
+	// Exhaust today's budget on both ancestors, seeded strictly in the past
+	// (not "now") so a later real progress change is guaranteed to produce a
+	// strictly later updated_at regardless of clock resolution.
+	past := time.Now().UTC().Add(-5 * time.Minute).Format(isoUTC)
+	seedAttempts(t, d, parent, 3, past, past)
+	seedAttempts(t, d, grandparent, 3, past, past)
+
+	assertEligibility := func(t *testing.T, wantParent, wantGrandparent bool, label string) {
+		t.Helper()
+		need, err := d.GetTargetsNeedingNextStep(0)
+		if err != nil {
+			t.Fatalf("%s: GetTargetsNeedingNextStep: %v", label, err)
+		}
+		if got := targetNeedsNextStep(need, parent); got != wantParent {
+			t.Errorf("%s: parent eligibility = %v, want %v", label, got, wantParent)
+		}
+		if got := targetNeedsNextStep(need, grandparent); got != wantGrandparent {
+			t.Errorf("%s: grandparent eligibility = %v, want %v", label, got, wantGrandparent)
+		}
+		if !targetNeedsNextStep(need, sibling) {
+			t.Errorf("%s: sibling target with budget remaining must still be selected", label)
+		}
+	}
+
+	assertEligibility(t, false, false, "before any child edit")
+
+	// No-op leg: edit a non-progress field on child1 through UpdateTarget —
+	// the average must not move, so neither ancestor's budget may reset.
+	got1 := reloadTarget(t, d, child1, "before no-op edit")
+	got1.Text = "child1 (renamed)"
+	if err := d.UpdateTarget(*got1); err != nil {
+		t.Fatalf("no-op edit on child1: %v", err)
+	}
+	assertEligibility(t, false, false, "after no-op child edit")
+
+	// Real-change leg: flip child1 to done — the average moves, so both
+	// ancestors get a fresh budget (their updated_at moves past the attempt).
+	if err := d.UpdateTargetStatus(int(child1), "done"); err != nil {
+		t.Fatalf("real-change edit on child1: %v", err)
+	}
+	assertEligibility(t, true, true, "after progress-moving child edit")
 }
 
 // TestGenerateNextStep_SuccessLeavesNoBudgetBlockingFutureRefresh: a
