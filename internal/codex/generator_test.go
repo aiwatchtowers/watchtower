@@ -189,7 +189,7 @@ echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\"
 		want string
 	}{
 		{"untagged uses strong", context.Background(), "model:big-model"},
-		{"light source uses light", digest.WithSource(context.Background(), "inbox.triage"), "model:mini-model"},
+		{"light source uses light", digest.WithSource(context.Background(), "digest.period"), "model:mini-model"},
 		{"strong source uses strong", digest.WithSource(context.Background(), "digest.channel"), "model:big-model"},
 	}
 	for _, tt := range tests {
