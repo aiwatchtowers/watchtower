@@ -61,7 +61,6 @@ struct SidebarView: View {
     private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
     private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
     private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
-    private var situationsCount: Int { counts?.situationsCount ?? 0 }
     private var inboxStripCount: Int { counts?.inboxStripCount ?? 0 }
     private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
     private var ideasCount: Int { counts?.ideasCount ?? 0 }

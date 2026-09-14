@@ -8,27 +8,6 @@ package enum ItemClass: String, Codable, Equatable {
     case ambient
 }
 
-// MARK: - InboxConversationMessage
-
-/// A single message in the live conversation rendered inline inside an expanded `InboxCardView`.
-/// Loaded on demand from the local `messages` table — represents the current state
-/// of the thread/channel, not the snapshot frozen into `inbox_items.context` at detect time.
-package struct InboxConversationMessage: Identifiable, Equatable {
-    package let id: String       // message ts (channel-local)
-    package let author: String   // resolved display name
-    package let text: String     // cleaned via SlackTextParser
-    package let isTrigger: Bool  // matches the inbox item's message_ts
-    package let date: Date
-
-    package init(id: String, author: String, text: String, isTrigger: Bool, date: Date) {
-        self.id = id
-        self.author = author
-        self.text = text
-        self.isTrigger = isTrigger
-        self.date = date
-    }
-}
-
 // MARK: - InboxItem
 
 package struct InboxItem: FetchableRecord, Identifiable, Equatable {
