@@ -29,7 +29,7 @@ func dedupeEpisodeNode(id string, refs ...episodeRef) Node {
 // dedupeFixture wires the standard belief-pass scene: one entity subject linking
 // one episode whose provenance is refs, plus the belief under test. It returns
 // the pipeline and a function that runs one belief pass over the given ops.
-func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int, capHit bool)) {
+func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int)) {
 	t.Helper()
 	v, d := newTestVault(t), newTestDB(t)
 	subjectID := bel.Subject
@@ -42,12 +42,12 @@ func dedupeFixture(t *testing.T, bel Node, refs ...episodeRef) (*Vault, func(t *
 	gen := &fakeGen{reply: func(string) (string, error) { return reply, nil }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
 
-	return v, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int, capHit bool) {
+	return v, func(t *testing.T, ops ...beliefOpJSON) (touched, rejected int) {
 		t.Helper()
 		reply = opsJSON(t, ops...)
-		touched, rejected, capHit, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
+		touched, rejected, _, _, err := p.ReviseBeliefs(context.Background(), []string{subjectID}, nil, 20, beliefNow)
 		require.NoError(t, err)
-		return touched, rejected, capHit
+		return touched, rejected
 	}
 }
 
@@ -322,7 +322,7 @@ func TestReviseBeliefsWeakenWithAlreadyRecordedEvidenceIsNoOp(t *testing.T) {
 		episodeRef{ChannelID: "C1CHAN", TS: tsFor},
 		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst})
 
-	touched, rejected, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
+	touched, rejected := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
 		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: tsAgainst}}, Rationale: "the same bad sign again"})
 
 	got, err := v.ReadNode(bel.ID)
@@ -350,7 +350,7 @@ func TestReviseBeliefsWeakenWithOneNewRefStillApplies(t *testing.T) {
 		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst},
 		episodeRef{ChannelID: "C1CHAN", TS: tsFresh})
 
-	touched, rejected, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken", Evidence: []episodeRef{
+	touched, rejected := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken", Evidence: []episodeRef{
 		{ChannelID: "C1CHAN", TS: tsAgainst}, // already recorded
 		{ChannelID: "C1CHAN", TS: tsFresh},   // new
 	}, Rationale: "one old, one new"})
@@ -378,7 +378,7 @@ func TestWeakenDedupeKeyIncludesDirection(t *testing.T) {
 		beliefEvidence{Rank: rankObserved, Support: true, ChannelID: "C1CHAN", TS: ts})
 	v, run := dedupeFixture(t, bel, episodeRef{ChannelID: "C1CHAN", TS: ts})
 
-	touched, _, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
+	touched, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "weaken",
 		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: ts}}, Rationale: "reads as doubt after all"})
 
 	got, err := v.ReadNode(bel.ID)
@@ -405,7 +405,7 @@ func TestShakeWithAlreadyRecordedEvidenceStillApplies(t *testing.T) {
 		episodeRef{ChannelID: "C1CHAN", TS: tsFor},
 		episodeRef{ChannelID: "C1CHAN", TS: tsAgainst})
 
-	touched, _, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "shake",
+	touched, _ := run(t, beliefOpJSON{BeliefID: bel.ID, Op: "shake",
 		Evidence: []episodeRef{{ChannelID: "C1CHAN", TS: tsAgainst}}, Rationale: "still not sure"})
 
 	got, err := v.ReadNode(bel.ID)

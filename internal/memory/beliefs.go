@@ -321,16 +321,20 @@ func filterNewEvidence(newEv, existing []beliefEvidence) []beliefEvidence {
 // shaken (MEM-06 owner-rank protection).
 //
 // Evidence the belief already records is filtered out first (filterNewEvidence),
-// which does two things. (1) A `confirm` that cites ONLY evidence already on the
-// page is a no-op: without this, the same ref re-cited on every daemon cycle
-// bumps stability and confidence each time — evidence the belief never earned —
-// which flipThreshold(stability) then turns into practical un-retirability, and
-// whose frontmatter-only commits reflection reads back as "flapping". The
-// no-op rule is ALL kept refs already stored, never any: an op carrying one new
-// ref is genuinely new evidence and applies in full. (2) For EVERY op, a
-// re-cited ref is no longer weighed twice in combined — double-weighting a
-// single against-ref made a retire flip easier than the hysteresis intends.
-// Both changes move the math strictly more conservative.
+// which does two things. (1) A `confirm` or `weaken` that cites ONLY evidence
+// already on the page is a no-op: without this, the same ref re-cited on every
+// daemon cycle bumps stability and confidence (confirm) or drains confidence
+// (weaken) each time — evidence the belief never earned — which
+// flipThreshold(stability) then turns into practical un-retirability, and whose
+// frontmatter-only commits reflection reads back as "flapping". The no-op rule
+// is ALL kept refs already stored, never any: an op carrying one new ref is
+// genuinely new evidence and applies in full. Scoped to confirm+weaken only —
+// shake carries a real status transition from zero new evidence and retire's
+// decision is already evidence-gated, so neither is widened here (owner
+// decision 9). (2) For EVERY op, a re-cited ref is no longer weighed twice in
+// combined — double-weighting a single against-ref made a retire flip easier
+// than the hysteresis intends. Both changes move the math strictly more
+// conservative.
 func (p *Pipeline) applyExistingOp(op beliefOpJSON, candidatesByID map[string]Node, kept []episodeRef, now time.Time) (node Node, applied, mathRejected bool) {
 	node, ok := candidatesByID[op.BeliefID]
 	if !ok {
