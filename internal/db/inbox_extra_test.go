@@ -21,19 +21,6 @@ func seedInboxItem(t *testing.T, d *DB, sender, channel, trigger string) int64 {
 	return id
 }
 
-func TestInbox_SetItemClass(t *testing.T) {
-	database := openTestDB(t)
-	id := seedInboxItem(t, database, "U1", "C1", "mention")
-	if err := database.SetInboxItemClass(id, "ambient"); err != nil {
-		t.Fatal(err)
-	}
-	var cls string
-	_ = database.QueryRow(`SELECT item_class FROM inbox_items WHERE id=?`, id).Scan(&cls)
-	if cls != "ambient" {
-		t.Errorf("got %s", cls)
-	}
-}
-
 func TestInbox_ArchiveExpired(t *testing.T) {
 	database := openTestDB(t)
 

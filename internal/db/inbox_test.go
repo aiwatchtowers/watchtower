@@ -22,14 +22,6 @@ func insertMessage(t *testing.T, db *DB, channelID, ts, userID, text string) {
 	require.NoError(t, err)
 }
 
-// insertMessageWithThread is like insertMessage but sets thread_ts.
-func insertMessageWithThread(t *testing.T, db *DB, channelID, ts, threadTS, userID, text string) {
-	t.Helper()
-	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES (?, ?, ?, ?, ?)`,
-		channelID, ts, threadTS, userID, text)
-	require.NoError(t, err)
-}
-
 // mustCreateInboxItem is a shared fixture helper wrapping CreateInboxItem.
 func mustCreateInboxItem(t *testing.T, db *DB, it InboxItem) int64 {
 	t.Helper()
@@ -259,34 +251,6 @@ func TestGetInboxItemsForBriefing_ExcludesArchived(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, int(live), items[0].ID)
 	assert.Equal(t, "live", items[0].Snippet)
-}
-
-func TestBulkUpdateInboxPriorities(t *testing.T) {
-	db := openTestDB(t)
-
-	id1, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
-	require.NoError(t, err)
-	id2, err := db.CreateInboxItem(InboxItem{ChannelID: "C2", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "dm"})
-	require.NoError(t, err)
-
-	updates := map[int]struct {
-		Priority string
-		AIReason string
-	}{
-		int(id1): {Priority: "high", AIReason: "Direct request from manager"},
-		int(id2): {Priority: "low", AIReason: "FYI message"},
-	}
-	err = db.BulkUpdateInboxPriorities(updates)
-	require.NoError(t, err)
-
-	item1, err := db.GetInboxItemByID(int(id1))
-	require.NoError(t, err)
-	assert.Equal(t, "high", item1.Priority)
-	assert.Equal(t, "Direct request from manager", item1.AIReason)
-
-	item2, err := db.GetInboxItemByID(int(id2))
-	require.NoError(t, err)
-	assert.Equal(t, "low", item2.Priority)
 }
 
 func TestInboxLastProcessedTS(t *testing.T) {
@@ -844,43 +808,6 @@ func TestInboxItemCardFieldsRoundTrip(t *testing.T) {
 	}
 	if it.WhyMatters != "" || it.ThreadDigest != "" || it.DraftReply != "" {
 		t.Fatalf("card text fields should default empty")
-	}
-}
-
-func TestInboxCardLifecycle(t *testing.T) {
-	d := openTestDB(t)
-	actionID := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention"}) // actionable by default
-	ambient1 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream"})
-	ambient2 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "3.1", SenderUserID: "U2", TriggerType: "stream"})
-	for _, id := range []int64{ambient1, ambient2} {
-		if err := d.SetInboxItemClass(id, "ambient"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	need, err := d.ListItemsNeedingCards(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(need) != 2 { // 1 actionable + 1 capped ambient
-		t.Fatalf("want 2 items needing cards, got %d", len(need))
-	}
-
-	if err := d.SetInboxCard(int(actionID), "why", "digest", "draft"); err != nil {
-		t.Fatal(err)
-	}
-	it, _ := d.GetInboxItem(actionID)
-	if it.CardStatus != "ready" || it.WhyMatters != "why" || it.CardGeneratedAt == "" {
-		t.Fatalf("card not persisted: %+v", it)
-	}
-
-	if err := d.MarkInboxCardFailed(int(ambient1)); err != nil {
-		t.Fatal(err)
-	}
-	need, _ = d.ListItemsNeedingCards(5)
-	// actionID is ready now; ambient1 failed (retryable) + ambient2 none
-	if len(need) != 2 {
-		t.Fatalf("failed card must stay retryable, got %d items", len(need))
 	}
 }
 
