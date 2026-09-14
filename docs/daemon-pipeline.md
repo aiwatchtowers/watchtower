@@ -521,8 +521,8 @@ Data is available in the desktop app (Usage tab).
 |----------|------|
 | Configuration | `~/.local/share/watchtower/{workspace}/config.yaml` |
 | Database | `~/.local/share/watchtower/{workspace}/watchtower.db` |
-| Daemon log (every logger line; rotated past 20 MiB while the daemon runs, previous generation `watchtower.log.1`) | `~/.local/share/watchtower/{workspace}/watchtower.log` |
-| Crash log (the detached child's raw stdout/stderr: Go runtime panics and the parent's rotation note; rotated at daemon start) | `~/.local/share/watchtower/{workspace}/daemon.log` |
+| Daemon log (every line from the daemon's own logger; rotated past 20 MiB while the daemon runs, previous generation `watchtower.log.1`) | `~/.local/share/watchtower/{workspace}/watchtower.log` |
+| Crash log (the detached child's raw stdout/stderr: Go runtime panics, the parent's rotation note, and any output from loggers not routed through the daemon logger — the stdlib default logger, the Jira sub-loggers; rotated at daemon start) | `~/.local/share/watchtower/{workspace}/daemon.log` |
 | Sync result | `~/.local/share/watchtower/{workspace}/last_sync.json` |
 | People timestamp | `~/.local/share/watchtower/{workspace}/last_people.txt` |
 | Briefing timestamp | `~/.local/share/watchtower/{workspace}/last_briefing.txt` |

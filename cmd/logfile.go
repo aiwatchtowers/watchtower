@@ -42,11 +42,18 @@ func newRotatingFile(path string, maxSize int64) (*rotatingFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening log file: %w", err)
 	}
-	r := &rotatingFile{path: path, maxSize: maxSize, f: f}
-	if info, err := f.Stat(); err == nil {
-		r.n = info.Size()
+	// Seed the counter from what is already on disk, so a daemon restarting
+	// onto a nearly-full log rotates on its next write rather than a whole
+	// cap later. A Stat failure on a descriptor just opened is close to
+	// unreachable, but swallowing it would silently start the counter at zero
+	// — exactly the bug the seeding exists to prevent — so it is reported
+	// through the caller's error path instead.
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sizing log file %s: %w", path, err)
 	}
-	return r, nil
+	return &rotatingFile{path: path, maxSize: maxSize, f: f, n: info.Size()}, nil
 }
 
 // newSyncLogWriter opens the daemon's own log stream, watchtower.log, behind
@@ -118,9 +125,12 @@ func (r *rotatingFile) Close() error {
 // stderr too, but a detached child's stdout and stderr ARE daemon.log
 // (runSyncDetach hands the child that file), so every line landed in both
 // files byte for byte. watchtower.log is now the one log stream and daemon.log
-// keeps its distinct role as the crash channel — Go runtime panics and the
-// parent's rotation note. Passing the flag keeps that decision visible at the
-// call site and gives the guard test the case to pin.
+// keeps its distinct role as the stderr channel — Go runtime panics, the
+// parent's rotation note, and whatever still logs to stderr instead of through
+// this logger (the stdlib default logger, the Jira sub-loggers; see
+// docs/backlog/2026-09-14-stray-loggers-still-write-to-daemon-log.md). Passing
+// the flag keeps that decision visible at the call site and gives the guard
+// test the case to pin.
 //
 // `--verbose --detach` still duplicates: that is the operator asking for it.
 func logWriterFor(logFile io.Writer, verbose, detached bool) io.Writer {
