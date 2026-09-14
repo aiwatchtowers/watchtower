@@ -48,7 +48,10 @@ struct LogsSettings: View {
         var caption: String? {
             switch self {
             case .sync: nil
-            case .daemon: "Go runtime panics, the launch-time rotation note, and output from loggers not routed through the daemon logger. Everything from the daemon's own logger is in the Sync Log."
+            case .daemon:
+                "Go runtime panics, the launch-time rotation note, and output from loggers "
+                    + "not routed through the daemon logger. "
+                    + "Everything from the daemon's own logger is in the Sync Log."
             }
         }
     }
