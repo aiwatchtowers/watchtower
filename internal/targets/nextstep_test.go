@@ -381,8 +381,20 @@ func TestGetTargetsNeedingNextStep_ParentBudgetUnaffectedByNoOpChildEdit(t *test
 
 	// Exhaust today's budget on both ancestors, seeded strictly in the past
 	// (not "now") so a later real progress change is guaranteed to produce a
-	// strictly later updated_at regardless of clock resolution.
-	past := time.Now().UTC().Add(-5 * time.Minute).Format(isoUTC)
+	// strictly later updated_at regardless of clock resolution. Clamped to
+	// today's UTC midnight: a plain "now - 5min" would cross into yesterday
+	// during the first five minutes of a UTC day, and the eligibility
+	// predicate's own day-rollover escape hatch (date(attempted_at) <
+	// date('now')) would then grant a fresh budget on its own, making the
+	// "before any child edit" negative assertion flip independent of this
+	// fix.
+	now := time.Now().UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	pastTime := now.Add(-5 * time.Minute)
+	if pastTime.Before(midnight) {
+		pastTime = midnight.Add(1 * time.Second)
+	}
+	past := pastTime.Format(isoUTC)
 	seedAttempts(t, d, parent, 3, past, past)
 	seedAttempts(t, d, grandparent, 3, past, past)
 
