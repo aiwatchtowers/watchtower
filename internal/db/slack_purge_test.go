@@ -45,8 +45,6 @@ func TestClearSlackData(t *testing.T) {
 	exec(`INSERT INTO situations (id, title) VALUES (11, 'jira backed')`)
 	exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (10, 1)`)
 	exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (11, 2)`)
-	exec(`INSERT INTO feed_items (item_type, source_id, event_ts) VALUES ('situation', '10', '2026-07-01T00:00:00Z')`)
-	exec(`INSERT INTO feed_items (item_type, source_id, event_ts) VALUES ('situation', '11', '2026-07-01T00:00:00Z')`)
 
 	// Data from other sources must survive.
 	exec(`INSERT INTO google_accounts (email, label) VALUES ('a@x.com', 'A')`)
@@ -78,12 +76,10 @@ func TestClearSlackData(t *testing.T) {
 	assert.Zero(t, count(`SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:C1'`))
 	assert.Zero(t, count(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type = 'mention'`))
 	assert.Zero(t, count(`SELECT COUNT(*) FROM situations WHERE id = 10`))
-	assert.Zero(t, count(`SELECT COUNT(*) FROM feed_items WHERE source_id = '10'`))
 
 	// Other sources survive.
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type = 'jira_assigned'`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM situations WHERE id = 11`))
-	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM feed_items WHERE source_id = '11'`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM inbox_learned_rules WHERE scope_key = 'channel:JIRA-1'`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM gmail_messages`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM targets`))

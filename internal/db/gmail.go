@@ -54,10 +54,10 @@ func GmailAccountIDFromChannelID(channelID string) (int64, bool) {
 
 // ClearGmailData removes the Gmail data synced for one account on the user's
 // request: its gmail_messages rows, the inbox items its detector minted (their
-// inbox_feedback and situation_signals rows cascade via FK), the situations and
-// feed rows those signals leave orphaned, and the learned rules scoped to its
-// channel ids. Every other account's rows are untouched, and so is the rest of
-// the inbox.
+// inbox_feedback and situation_signals rows cascade via FK), the situations
+// those signals leave orphaned, and the learned rules scoped to its channel
+// ids. Every other account's rows are untouched, and so is the rest of the
+// inbox.
 //
 // Only "channel:gmail:<id>:<thread>" learned rules go — they name one thread of
 // one account and can never match again once that account's items are gone,
@@ -114,18 +114,11 @@ func (db *DB) ClearGmailData(accountID int64) error {
 		return fmt.Errorf("gmail purge: deleting learned rules: %w", err)
 	}
 
-	// Touched situations left with no signals at all, then the feed rows whose
-	// source situation is gone.
+	// Touched situations left with no signals at all.
 	for _, id := range touched {
 		if _, err := tx.Exec(`DELETE FROM situations WHERE id = ?
 			AND id NOT IN (SELECT situation_id FROM situation_signals)`, id); err != nil {
 			return fmt.Errorf("gmail purge: deleting orphaned situation %d: %w", id, err)
-		}
-		if _, err := tx.Exec(`DELETE FROM feed_items WHERE item_type = 'situation'
-			AND source_id = ?
-			AND source_id NOT IN (SELECT CAST(id AS TEXT) FROM situations)`,
-			strconv.FormatInt(id, 10)); err != nil {
-			return fmt.Errorf("gmail purge: deleting orphaned feed item %d: %w", id, err)
 		}
 	}
 

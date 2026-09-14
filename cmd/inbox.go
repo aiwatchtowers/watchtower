@@ -16,7 +16,6 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/feed"
 	"watchtower/internal/inbox"
 	"watchtower/internal/prompts"
 
@@ -513,12 +512,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("inbox pipeline: %w", err)
 		}
-
-		if cfg.Feed.Enabled {
-			if _, err := feed.New(database, cfg, logger).Publish(time.Now()); err != nil {
-				logger.Printf("feed publish after generate: %v", err) // non-fatal, mirrors daemon phaseFeed
-			}
-		}
 		return nil
 	}
 
@@ -535,12 +528,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("inbox pipeline: %w", err)
-	}
-
-	if cfg.Feed.Enabled {
-		if _, err := feed.New(database, cfg, logger).Publish(time.Now()); err != nil {
-			logger.Printf("feed publish after generate: %v", err) // non-fatal, mirrors daemon phaseFeed
-		}
 	}
 
 	fmt.Fprintf(out, "Inbox: %d new items detected, %d resolved\n", created, resolved)

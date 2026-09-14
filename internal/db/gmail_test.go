@@ -176,9 +176,6 @@ func gmailPurgeFixture(t *testing.T, d *DB) (acctA, acctB int64) {
 	exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (11, 2)`)
 	exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (12, 1)`)
 	exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (12, 3)`)
-	for _, sid := range []string{"10", "11", "12", "13"} {
-		exec(`INSERT INTO feed_items (item_type, source_id, event_ts) VALUES ('situation', ?, ?)`, sid, eventTS)
-	}
 
 	return acctA, acctB
 }
@@ -233,7 +230,6 @@ func TestClearGmailData_IsolatedToOneAccount(t *testing.T) {
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ?`, acctB))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = ?`, GmailChannelID(acctB, "tb1")))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM situations WHERE id = 11`))
-	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM feed_items WHERE source_id = '11'`))
 
 	// The Slack signal survives.
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM inbox_items WHERE channel_id = 'C1'`))
@@ -259,9 +255,9 @@ func TestClearGmailData_LearnedRules(t *testing.T) {
 }
 
 // TestClearGmailData_OrphanedSituations: a situation left with no signals is
-// swept together with its feed row, but one still holding a non-Gmail signal
-// survives — and so does a signal-less situation the purge never touched,
-// which the composer legitimately mints from target/track material.
+// swept, but one still holding a non-Gmail signal survives — and so does a
+// signal-less situation the purge never touched, which the composer
+// legitimately mints from target/track material.
 func TestClearGmailData_OrphanedSituations(t *testing.T) {
 	d := openTestDB(t)
 	acctA, _ := gmailPurgeFixture(t, d)
@@ -269,14 +265,11 @@ func TestClearGmailData_OrphanedSituations(t *testing.T) {
 	require.NoError(t, d.ClearGmailData(acctA))
 
 	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM situations WHERE id = 10`))
-	assert.Zero(t, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM feed_items WHERE source_id = '10'`))
 
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM situations WHERE id = 12`))
-	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM feed_items WHERE source_id = '12'`))
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM situation_signals WHERE situation_id = 12`))
 
 	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM situations WHERE id = 13`))
-	assert.Equal(t, 1, gmailPurgeCount(t, d, `SELECT COUNT(*) FROM feed_items WHERE source_id = '13'`))
 }
 
 // TestClearGmailData_PreservesWatermarks guards the design decision: no
