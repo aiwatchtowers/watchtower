@@ -22,10 +22,10 @@ import (
 
 // ── shared attempt-marker unit tests ────────────────────────────────────────
 //
-// Both day-plan and briefing route through the same recordX/xAttemptsExhausted
-// pair backed by attemptMarker, so the exhaustion/reset arithmetic is pinned
-// once here, deterministically (no wall-clock dependency), rather than
-// duplicated per pipeline.
+// Day-plan, briefing, and the daily rollup all route through the same
+// recordX/xAttemptsExhausted pair backed by attemptMarker, so the
+// exhaustion/reset arithmetic is pinned once here, deterministically (no
+// wall-clock dependency), rather than duplicated per pipeline.
 
 // TestDayPlanAttempts_ThreeFailuresExhaustBudget pins the counter itself: the
 // 3rd recorded attempt exhausts the budget for that date, and a 4th attempt
@@ -359,8 +359,10 @@ func TestDaemon_BriefingBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 
 // TestDaemon_BriefingBackoff_LogsGivingUpOnceBudgetExhausted is the briefing
 // counterpart of TestDaemon_DayPlanBackoff_LogsGivingUpOnceBudgetExhausted —
-// pinned separately because the two record*Attempt functions are independent
-// copies today and a future edit could diverge them silently otherwise.
+// pinned separately because the record*Attempt functions (day-plan, briefing,
+// and — see TestDaemon_RollupBackoff_* below — the daily rollup) are three
+// independent copies today and a future edit could diverge them silently
+// otherwise.
 func TestDaemon_BriefingBackoff_LogsGivingUpOnceBudgetExhausted(t *testing.T) {
 	d, _, gen := briefingBackoffTestSetup(t)
 	var buf bytes.Buffer
@@ -436,5 +438,207 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 	d2.loadBriefingAttempts()
 
 	d2.phaseBriefing(context.Background())
+	assert.Equal(t, 0, gen2.calls, "a restarted daemon must honor the already-spent budget instead of resetting it")
+}
+
+// ── daily rollup: end-to-end through the real daemon phase ──────────────────
+//
+// Unlike runDayPlanPhase/phaseBriefing, phaseTracksAndRollups takes no `now`
+// parameter — RunDailyRollup always computes its own window from
+// time.Now().UTC() — so these tests drive real wall-clock cycles instead of
+// injected calendar-day transitions, and TestDaemon_RollupBackoff_ResetsNextCalendarDay
+// simulates a day boundary by rewriting rollupAttemptDate directly, the
+// approach the verification report names for this shape.
+
+// rollupBackoffTestSetup seeds two channel digests on DISTINCT channels
+// inside today's UTC window. Two rows on the SAME channel would collapse via
+// UpsertDigest's uniqueness constraint and turn every budget test below into
+// a vacuous benign-skip test (dailyRollupNeeded's "< 2 channel digests" arm
+// firing on every cycle instead of reaching Generate) — the one-element-
+// fixture trap the report calls out explicitly.
+func rollupBackoffTestSetup(t *testing.T) (*Daemon, *db.DB, *erroringGenerator) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	wsDir := dir + "/.local/share/watchtower/test-ws"
+	require.NoError(t, os.MkdirAll(wsDir, 0o755))
+
+	database, err := db.Open(wsDir + "/watchtower.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test-ws", Domain: "test-ws"}))
+
+	seedTwoChannelDigests(t, database)
+
+	cfg := &config.Config{
+		ActiveWorkspace: "test-ws",
+		Digest:          config.DigestConfig{Enabled: true, Language: "English"},
+	}
+	gen := &erroringGenerator{}
+	d := newDaemon(nil, cfg)
+	d.SetLogger(log.New(io.Discard, "", 0))
+	d.SetDB(database)
+	d.SetDigestPipeline(digest.New(database, cfg, gen, d.logger))
+	return d, database, gen
+}
+
+// seedTwoChannelDigests inserts channel digests on C1 and C2, both inside
+// today's UTC window (the exact window runDailyRollupForDate computes from
+// time.Now().UTC()) — enough for dailyRollupNeeded to reach the real
+// AI-generate call instead of its "< 2 channel digests" benign skip.
+func seedTwoChannelDigests(t *testing.T, database *db.DB) {
+	t.Helper()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24*time.Hour - time.Second)
+	for _, ch := range []string{"C1", "C2"} {
+		_, err := database.UpsertDigest(db.Digest{
+			ChannelID:    ch,
+			Type:         "channel",
+			PeriodFrom:   float64(dayStart.Unix()),
+			PeriodTo:     float64(dayEnd.Unix()),
+			Summary:      "some discussion in " + ch,
+			Topics:       `[]`,
+			Decisions:    `[]`,
+			ActionItems:  `[]`,
+			MessageCount: 5,
+		})
+		require.NoError(t, err)
+	}
+}
+
+func TestDaemon_RollupBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
+	d, _, gen := rollupBackoffTestSetup(t)
+
+	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background())
+	require.Equal(t, 3, gen.calls, "three real failures should each reach the AI generate call")
+
+	d.phaseTracksAndRollups(context.Background())
+	assert.Equal(t, 3, gen.calls, "a 4th cycle on the same day must launch nothing once the budget is spent")
+
+	// Clock-free assertion that the marker's date is the UTC date, not local
+	// — the wave-2 lesson: never port a floor/budget rule between pipelines
+	// by analogy without checking granularity. RunDailyRollup computes its
+	// window in UTC, so a budget keyed on the local date would drift apart
+	// from it outside UTC.
+	data, err := os.ReadFile(d.rollupAttemptsPath())
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(data), time.Now().UTC().Format("2006-01-02")),
+		"the rollup attempt marker must be keyed on the UTC date, not local")
+}
+
+// TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget uses the "< 2
+// channel digests" benign-skip arm specifically (dailyRollupNeeded is never
+// even reached), per the report's warning: this is the arm an implementer is
+// most likely to get wrong by gating *before* it, and the "!needed" arm alone
+// would not distinguish a correct implementation from one that miscounts
+// only the other benign returns.
+func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	wsDir := dir + "/.local/share/watchtower/test-ws"
+	require.NoError(t, os.MkdirAll(wsDir, 0o755))
+
+	database, err := db.Open(wsDir + "/watchtower.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test-ws", Domain: "test-ws"}))
+
+	// Only ONE channel digest this time: dailyRollupNeeded's "< 2 channel
+	// digests" arm returns nil before ever looking at existing daily rows.
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24*time.Hour - time.Second)
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID:    "C1",
+		Type:         "channel",
+		PeriodFrom:   float64(dayStart.Unix()),
+		PeriodTo:     float64(dayEnd.Unix()),
+		Summary:      "some discussion",
+		Topics:       `[]`,
+		Decisions:    `[]`,
+		ActionItems:  `[]`,
+		MessageCount: 5,
+	})
+	require.NoError(t, err)
+
+	cfg := &config.Config{
+		ActiveWorkspace: "test-ws",
+		Digest:          config.DigestConfig{Enabled: true, Language: "English"},
+	}
+	gen := &erroringGenerator{}
+	d := newDaemon(nil, cfg)
+	d.SetLogger(log.New(io.Discard, "", 0))
+	d.SetDB(database)
+	d.SetDigestPipeline(digest.New(database, cfg, gen, d.logger))
+
+	for i := 0; i < 5; i++ {
+		d.phaseTracksAndRollups(context.Background())
+	}
+
+	assert.Equal(t, 0, gen.calls, "a benign <2-channel-digests skip must never reach the AI generate call")
+	assert.Equal(t, 0, d.rollupAttempts, "a benign skip must not consume any budget")
+}
+
+func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
+	d, _, gen := rollupBackoffTestSetup(t)
+
+	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background())
+	require.Equal(t, 3, gen.calls)
+	require.True(t, d.rollupAttemptsExhausted(time.Now().UTC().Format("2006-01-02")), "today's budget must be exhausted")
+
+	// phaseTracksAndRollups has no injectable `now` (unlike
+	// runDayPlanPhase/phaseBriefing) — RunDailyRollup always computes its own
+	// window from time.Now().UTC() — so a new UTC calendar day is simulated
+	// by rewriting the in-memory attempt date to yesterday, the shape the
+	// verification report names for this pipeline.
+	d.rollupAttemptDate = time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+
+	// The new day must get its OWN full budget of 3, not just let one
+	// straggler attempt through and then immediately re-exhaust because the
+	// counter carried over from yesterday instead of resetting to 0 before
+	// incrementing (a single extra call cannot tell "reset to a fresh 3"
+	// apart from "kept counting from 3").
+	d.phaseTracksAndRollups(context.Background())
+	assert.Equal(t, 4, gen.calls, "a new calendar day must get a fresh budget and actually launch a real attempt")
+	d.phaseTracksAndRollups(context.Background())
+	assert.Equal(t, 5, gen.calls, "the new day's 2nd attempt must also launch — its budget must not have inherited yesterday's spent count")
+	d.phaseTracksAndRollups(context.Background())
+	assert.Equal(t, 6, gen.calls, "the new day's 3rd attempt must also launch")
+
+	// Now the new day's own budget of 3 is spent — a 4th attempt the same day
+	// must be refused again.
+	d.phaseTracksAndRollups(context.Background())
+	assert.Equal(t, 6, gen.calls, "the new day's 4th cycle must launch nothing once ITS budget is spent")
+}
+
+// TestDaemon_RollupBackoff_SurvivesRestart is the test an in-memory-only
+// counter could never pass: attempts recorded by one Daemon instance must
+// still block a brand new Daemon instance (a simulated restart) pointed at
+// the same workspace directory.
+func TestDaemon_RollupBackoff_SurvivesRestart(t *testing.T) {
+	d1, database, gen1 := rollupBackoffTestSetup(t)
+
+	d1.phaseTracksAndRollups(context.Background())
+	d1.phaseTracksAndRollups(context.Background())
+	d1.phaseTracksAndRollups(context.Background())
+	require.Equal(t, 3, gen1.calls)
+
+	// Simulate a daemon restart: a brand new Daemon over the same
+	// config/workspace and a fresh generator, restoring only what
+	// loadRollupAttempts reads back from disk.
+	d2 := newDaemon(nil, d1.config)
+	d2.SetLogger(log.New(io.Discard, "", 0))
+	d2.SetDB(database)
+	gen2 := &erroringGenerator{}
+	d2.SetDigestPipeline(digest.New(database, d1.config, gen2, d2.logger))
+	d2.loadRollupAttempts()
+
+	d2.phaseTracksAndRollups(context.Background())
 	assert.Equal(t, 0, gen2.calls, "a restarted daemon must honor the already-spent budget instead of resetting it")
 }
