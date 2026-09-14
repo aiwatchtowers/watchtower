@@ -459,10 +459,13 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 // time.Now() would write the real machine's current UTC date instead of
 // this fixture's, and the exact-match assertion below would fail
 // deterministically, regardless of the machine's own time zone or time of
-// day). TestDaemon_RollupBackoff_ResetsNextCalendarDay still simulates a day
-// boundary by rewriting rollupAttemptDate directly, the approach the
-// verification report names for this shape.
-var rollupFixedNow = time.Date(2026, 9, 14, 23, 30, 0, 0, time.FixedZone("UTC-10", -10*3600))
+// day). Deliberately a date in the past (not "tomorrow" relative to when
+// this was written): an exact-match assertion against a future-dated literal
+// would stop distinguishing "the fix" from "a call-site regression to
+// time.Now()" the day the real calendar caught up to it. TestDaemon_RollupBackoff_ResetsNextCalendarDay
+// still simulates a day boundary by rewriting rollupAttemptDate directly,
+// the approach the verification report names for this shape.
+var rollupFixedNow = time.Date(2019, 3, 7, 23, 30, 0, 0, time.FixedZone("UTC-10", -10*3600))
 
 // TestRollupBudgetDate_UsesUTCNotLocal is the deterministic counterpart to
 // the wall-clock UTC-date assertion inside
@@ -475,10 +478,10 @@ var rollupFixedNow = time.Date(2026, 9, 14, 23, 30, 0, 0, time.FixedZone("UTC-10
 // directly — deterministic regardless of the machine or time of day running
 // the test.
 func TestRollupBudgetDate_UsesUTCNotLocal(t *testing.T) {
-	require.Equal(t, "2026-09-14", rollupFixedNow.Format("2006-01-02"), "sanity: the local date must be the 14th")
-	require.Equal(t, "2026-09-15", rollupFixedNow.UTC().Format("2006-01-02"), "sanity: the UTC date must be the 15th")
+	require.Equal(t, "2019-03-07", rollupFixedNow.Format("2006-01-02"), "sanity: the local date must be the 7th")
+	require.Equal(t, "2019-03-08", rollupFixedNow.UTC().Format("2006-01-02"), "sanity: the UTC date must be the 8th")
 
-	assert.Equal(t, "2026-09-15", rollupBudgetDate(rollupFixedNow), "rollupBudgetDate must return the UTC date, not the local one")
+	assert.Equal(t, "2019-03-08", rollupBudgetDate(rollupFixedNow), "rollupBudgetDate must return the UTC date, not the local one")
 }
 
 // rollupBackoffTestSetup seeds two channel digests on DISTINCT channels
@@ -558,7 +561,7 @@ func TestDaemon_RollupBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 	// time of day.
 	data, err := os.ReadFile(d.rollupAttemptsPath())
 	require.NoError(t, err)
-	assert.Equal(t, "2026-09-15,3", string(data),
+	assert.Equal(t, "2019-03-08,3", string(data),
 		"the rollup attempt marker must be keyed on rollupFixedNow's UTC date, not local and not a separate wall-clock read")
 }
 
@@ -654,10 +657,10 @@ func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 	require.True(t, d.rollupAttemptsExhausted(rollupBudgetDate(rollupFixedNow)), "today's budget must be exhausted")
 
 	// A new UTC calendar day is simulated by rewriting the in-memory attempt
-	// date to the day before rollupFixedNow's own UTC date ("2026-09-14",
-	// one day before the "2026-09-15" all three calls above recorded), the
+	// date to the day before rollupFixedNow's own UTC date ("2019-03-07",
+	// one day before the "2019-03-08" all three calls above recorded), the
 	// shape the verification report names for this pipeline.
-	d.rollupAttemptDate = "2026-09-14"
+	d.rollupAttemptDate = "2019-03-07"
 
 	// The new day must get its OWN full budget of 3, not just let one
 	// straggler attempt through and then immediately re-exhaust because the
