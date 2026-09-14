@@ -219,7 +219,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 // logged: on a healthy install the counts fall to zero and stay there, and a
 // line that keeps reappearing means something is still re-introducing stale
 // ids. The syncer's logger is the daemon's (wireJiraSyncers replaces it), so
-// this lands in daemon.log with the rest of the pass.
+// this lands in watchtower.log with the rest of the pass.
 func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) error {
 	if s.mapper == nil {
 		return nil

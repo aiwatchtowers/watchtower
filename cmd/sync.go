@@ -116,12 +116,11 @@ func syncResultPath(cfg *config.Config) string {
 	return filepath.Join(cfg.WorkspaceDir(), "last_sync.json")
 }
 
-// maxLogSize is the size past which a log file is rotated at open:
-// the current file is renamed to "<name>.1" (replacing the previous
-// generation) and a fresh file is started. In-process growth between
-// daemon restarts stays unbounded by design — a long-lived tray-launched
-// daemon can overshoot the cap by its uptime's worth of logging (~MBs/day)
-// until the next restart (reboot, app update, rebuild) rotates it.
+// maxLogSize is the size past which a log file is rotated: the current file
+// is renamed to "<name>.1" (replacing the previous generation) and a fresh
+// file is started. daemon.log is checked at open (runSyncDetach); the
+// daemon's own stream, watchtower.log, is additionally kept under the cap
+// while the process runs, by the rotatingFile writer in logfile.go.
 const maxLogSize = 20 * 1024 * 1024
 
 // rotateLogIfOversized renames path to path+".1" when the file exceeds
@@ -129,6 +128,13 @@ const maxLogSize = 20 * 1024 * 1024
 // logging only — rotation must never block a sync, so the caller proceeds
 // and appends to the existing file on failure.
 func rotateLogIfOversized(path string) error {
+	return rotateLogIfLargerThan(path, maxLogSize)
+}
+
+// rotateLogIfLargerThan is rotateLogIfOversized with the cap supplied by the
+// caller, so rotatingFile can share exactly these rename semantics under the
+// small cap its tests inject.
+func rotateLogIfLargerThan(path string, maxSize int64) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -136,7 +142,7 @@ func rotateLogIfOversized(path string) error {
 		}
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
-	if info.Size() <= maxLogSize {
+	if info.Size() <= maxSize {
 		return nil
 	}
 	// os.Rename replaces an existing ".1" atomically on POSIX.
@@ -327,27 +333,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	// Always write logs to watchtower.log; also to stderr when verbose or detached.
-	syncLog := syncLogFilePath(cfg)
-	if err := os.MkdirAll(filepath.Dir(syncLog), 0o755); err != nil {
-		return fmt.Errorf("creating log directory: %w", err)
-	}
-	rotationErr := rotateLogIfOversized(syncLog)
-	logFile, err := os.OpenFile(syncLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// Every log line goes to watchtower.log, which the rotating writer keeps
+	// under maxLogSize while the daemon runs; stderr is added only under
+	// --verbose (see logWriterFor for why a detached child must not get it).
+	logFile, err := newSyncLogWriter(cfg)
 	if err != nil {
-		return fmt.Errorf("opening log file: %w", err)
+		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
-	var logWriter io.Writer = logFile
 	isDetachedChild := os.Getenv(daemon.DetachEnvKey) == "1"
-	if flagVerbose || isDetachedChild {
-		logWriter = io.MultiWriter(logFile, os.Stderr)
-	}
-	logger := log.New(logWriter, "", log.LstdFlags)
-	if rotationErr != nil {
-		logger.Printf("log rotation: %v (continuing without rotation)", rotationErr)
-	}
+	logger := log.New(logWriterFor(logFile, flagVerbose, isDetachedChild), "", log.LstdFlags)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
