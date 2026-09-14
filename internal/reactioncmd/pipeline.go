@@ -19,6 +19,37 @@ import (
 	"watchtower/internal/tools"
 )
 
+// maxDispatchPerRun bounds the AI compose calls one Run may spend across ALL
+// accounts. reactions.list has no time filter, so a poll always re-enumerates
+// the owner's ~2000 most recent reactions; the ledger is what makes that cheap,
+// and this budget is what keeps a burst (or a dictionary edit that re-opens an
+// emoji's history) from turning into an unbounded batch of AI calls in one
+// cycle. At the 6 h daemon throttle it drains 100/day; `watchtower
+// reaction-commands poll` is the owner's manual drain when that is too slow.
+const maxDispatchPerRun = 25
+
+// dispatchBudget is one Run's shared compose allowance. It counts AI calls, not
+// ledger rows: a candidate whose emoji maps to no built-in tool (or to a tool
+// the registry does not hold) is recorded `skipped` before compose is reached
+// and costs nothing, so it must not consume a slot.
+type dispatchBudget struct {
+	remaining int
+	deferred  int
+}
+
+// take claims one compose call, reporting false once the run's budget is spent.
+// A refused candidate is counted as deferred and must NOT be recorded: it stays
+// unseen and the next poll picks it up, which is exactly the semantics a
+// transient failure already relies on (FilterUnseenReactionCommands).
+func (b *dispatchBudget) take() bool {
+	if b.remaining <= 0 {
+		b.deferred++
+		return false
+	}
+	b.remaining--
+	return true
+}
+
 // ReactionLister is the slice of the Slack client the pipeline needs: list the
 // items a user reacted to. *slack.Client (internal/slack) satisfies it.
 type ReactionLister interface {
@@ -76,8 +107,9 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	}
 	total := 0
 	var firstErr error
+	budget := &dispatchBudget{remaining: maxDispatchPerRun}
 	for _, acct := range accounts {
-		n, err := p.processAccount(ctx, acct, dict)
+		n, err := p.processAccount(ctx, acct, dict, budget)
 		total += n
 		if err != nil {
 			p.logf("reaction-commands: account #%d: %v", acct.AccountID, err)
@@ -86,10 +118,14 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 			}
 		}
 	}
+	if budget.deferred > 0 {
+		p.logf("reaction-commands: dispatched %d, deferred %d to the next cycle (cap %d)",
+			total, budget.deferred, maxDispatchPerRun)
+	}
 	return total, firstErr
 }
 
-func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[string]db.ReactionCommandMapping) (int, error) {
+func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[string]db.ReactionCommandMapping, budget *dispatchBudget) (int, error) {
 	rawOwner := acct.OwnerID
 	if _, raw, ok := watchtowerslack.SplitAccountID(acct.OwnerID); ok {
 		rawOwner = raw
@@ -121,7 +157,7 @@ func (p *Pipeline) processAccount(ctx context.Context, acct Account, dict map[st
 	dispatched := 0
 	for _, u := range unseen {
 		c := byKey[ledgerKey(u.ChannelID, u.MessageTS, u.Emoji)]
-		status, actionID, detail, record := p.dispatch(ctx, c)
+		status, actionID, detail, record := p.dispatch(ctx, c, budget)
 		if !record {
 			continue // transient — leave unseen so the next poll retries
 		}
@@ -142,15 +178,20 @@ func ledgerKey(channelID, ts, emoji string) string {
 // dispatch composes and proposes one command's action. It returns the terminal
 // ledger status to record (dispatched/skipped/failed), the agent-action id (0
 // unless dispatched), a detail string, and record=false for a TRANSIENT failure
-// that must NOT be recorded — leaving the reaction unseen so the next poll
+// — or a candidate deferred by the run's budget — that must NOT be recorded — leaving the reaction unseen so the next poll
 // retries it instead of burning it permanently.
-func (p *Pipeline) dispatch(ctx context.Context, c candidate) (status string, actionID int64, detail string, record bool) {
+func (p *Pipeline) dispatch(ctx context.Context, c candidate, budget *dispatchBudget) (status string, actionID int64, detail string, record bool) {
 	if c.Mapping.Kind != "builtin_tool" || c.Mapping.Tool == "" {
 		return "skipped", 0, "emoji maps to no built-in tool", true
 	}
 	tool, ok := p.registry.Get(c.Mapping.Tool)
 	if !ok {
 		return "skipped", 0, "tool not registered: " + c.Mapping.Tool, true
+	}
+	// The budget is claimed HERE, past the two free skips above and immediately
+	// before the one AI call, so an unmapped emoji never spends a slot.
+	if !budget.take() {
+		return "", 0, "", false
 	}
 	args, transient, err := p.compose(ctx, c)
 	if err != nil {

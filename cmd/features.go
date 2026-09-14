@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/features"
+	"watchtower/internal/reactioncmd"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -192,7 +194,7 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if err := features.FastForward(id, database, time.Now()); err != nil {
+	if err := features.FastForward(id, database, time.Now(), featureFastForwardDeps(cmd, cfg)); err != nil {
 		return fmt.Errorf("%q was not enabled: fast-forwarding: %w", id, err)
 	}
 
@@ -204,6 +206,25 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "Enabled %q (%s = true).\n", id, f.ConfigKey)
 	fmt.Fprintln(out, "Fast-forwarded any backlog watermarks to now, so it resumes from now instead of catching up on history.")
 	return nil
+}
+
+// featureFastForwardDeps wires the capabilities a fast-forward hook needs but
+// internal/features cannot build: today the reaction-commands ledger seed,
+// which reads reactions.list under each connected account's own token through
+// the same resolver the daemon poll uses. The command's context is captured
+// here so a cancelled enable cancels the Slack reads with it.
+func featureFastForwardDeps(cmd *cobra.Command, cfg *config.Config) features.Deps {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := log.New(cmd.ErrOrStderr(), "[features] ", log.LstdFlags)
+	return features.Deps{
+		SeedReactions: func(database *db.DB) error {
+			_, err := reactioncmd.SeedLedger(ctx, database, reactionCommandsAccountsFn(database, cfg, logger))
+			return err
+		},
+	}
 }
 
 func runFeaturesDisable(cmd *cobra.Command, args []string) error {
