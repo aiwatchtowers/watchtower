@@ -3,9 +3,10 @@ import GRDB
 
 // MARK: - Shared chat relevant-memory engine (Secretary Memory Slice C)
 //
-// Extracted from SituationChatViewModel's original relevantMemory/memorySection
-// (Phase 4), generalized so Track/Target/Meeting chat can share the same
-// ranking-and-render logic. Each chat type computes its own `subjects: [String]`
+// Extracted from the since-removed situation Discuss chat's original
+// relevantMemory/memorySection (Phase 4), generalized so Track/Target/Meeting
+// chat can share the same ranking-and-render logic. Each chat type computes
+// its own `subjects: [String]`
 // (which Slack channel/user ids or emails this chat is "about") next to its own
 // code, then calls into this file. Ranking now uses `memory_nodes.importance_score`
 // (Slice A/B on the Go side, read here via the same shared SQLite mirror) instead

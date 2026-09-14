@@ -105,7 +105,7 @@ enum ImapSettingsParser {
 
 /// Drives the embedded "Setup Assistant" chat next to the IMAP form in the
 /// Add Email Account sheet. Same streaming skeleton as
-/// `SituationChatViewModel`/`MeetingChatViewModel` (that duplication is the
+/// `MeetingChatViewModel`/`TrackChatViewModel` (that duplication is the
 /// house pattern), but EPHEMERAL: a setup wizard chat is throwaway, so nothing
 /// is persisted to `chat_conversations`/`chat_messages` — only the CLI
 /// `sessionID` is kept for turn-to-turn continuity within one sheet

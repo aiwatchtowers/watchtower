@@ -255,7 +255,7 @@ final class SkillsCatalogTests: XCTestCase {
 
     func testChatContextTypesMatchesTheContract() {
         XCTAssertEqual(SkillsCatalog.chatContextTypes,
-                       ["situation", "meeting", "target", "track", "idea"])
+                       ["meeting", "target", "track", "idea"])
     }
 
     /// The overload every chat VM goes through: the context type it stores on

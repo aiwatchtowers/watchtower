@@ -4,8 +4,8 @@ import WatchtowerCore
 
 /// Read-only status mirror for Gmail connection state — only `isConnected`
 /// (via `checkStatus()`/`checkStatusAsync()`) is used anywhere in the app
-/// (`GoogleConnectFlow.gmail`, read by `InboxFeedView`/
-/// `GoogleConnectOptionsView`). Unlike its `GoogleAuthService` sibling, no
+/// (`GoogleConnectFlow.gmail`, read by `GoogleConnectOptionsView`). Unlike
+/// its `GoogleAuthService` sibling, no
 /// call site drives a standalone Gmail-only OAuth flow — that always goes
 /// through `GoogleConnectFlow.connect()`'s combined consent — so this class
 /// intentionally has no `connect()`/`cancelConnect()`.

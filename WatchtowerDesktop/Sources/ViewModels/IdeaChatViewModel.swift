@@ -5,7 +5,7 @@ import WatchtowerCore
 // MARK: - IdeaChatViewModel
 
 /// Drives the "Discuss with assistant" chat inside the idea detail pane. The
-/// deliberate house-pattern copy of `SituationChatViewModel` for ideas
+/// deliberate house-pattern copy of `MeetingChatViewModel` for ideas
 /// (`chat_conversations.context_type = "idea"`), streaming via
 /// `AIServiceProtocol`. Kept lean relative to the situation VM: no member
 /// signals, no counterparty/register-sample/memory blocks — the idea's own

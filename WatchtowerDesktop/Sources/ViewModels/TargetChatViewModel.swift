@@ -1078,7 +1078,7 @@ final class TargetChatViewModel {
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — same pattern as
-        // SituationChatViewModel/TrackChatViewModel.
+        // TrackChatViewModel/MeetingChatViewModel.
         let memoryBlock = memoryChatEnabled
             ? renderMemorySection(
                 hotMap: hotMap(vaultDir: memoryVaultDir),

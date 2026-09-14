@@ -341,7 +341,7 @@ final class TrackChatViewModel {
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — the same pattern
-        // SituationChatViewModel's buildSystemPrompt already uses. On the
+        // MeetingChatViewModel's buildSystemPrompt already uses. On the
         // disabled path the block is an empty string, so the prompt is
         // byte-identical to pre-Slice-C output — no memory read runs.
         let memoryBlock = memoryChatEnabled

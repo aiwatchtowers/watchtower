@@ -7,7 +7,7 @@ import WatchtowerCore
 /// recording embedded below; a `.recording` entry renders `RecordingDetailView`
 /// directly, full pane. "Prepare" pane-swaps to `MeetingPrepDetailView`
 /// (unchanged, owns its own scrolling — never nested inside another
-/// ScrollView, the `SituationDiscussInputBar` house gotcha).
+/// ScrollView, the nested-NSScrollView collapse house gotcha).
 struct MeetingDetailView: View {
     let entry: MeetingListEntry
     @Bindable var prepVM: MeetingPrepViewModel

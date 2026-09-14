@@ -3,8 +3,8 @@ import SwiftUI
 /// Compact chat panel docked to the right of the Add Calendar cards while the
 /// setup assistant is open: header, scrollable message list (house chat
 /// bubbles), and a `ChatInput` at the bottom. The input lives OUTSIDE the
-/// message ScrollView (nested-NSScrollView collapse — same placement rule as
-/// `SituationDiscussInputBar`). Deliberate copy of `EmailSetupAssistantPanel`.
+/// message ScrollView (the nested-NSScrollView collapse house gotcha).
+/// Deliberate copy of `EmailSetupAssistantPanel`.
 ///
 /// Split out of `AddCalendarAccountView.swift` (sentrux god-file gate — that
 /// file's structural fan-out crossed the project-wide threshold once an

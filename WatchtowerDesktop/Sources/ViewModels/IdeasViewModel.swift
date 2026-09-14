@@ -5,7 +5,7 @@ import WatchtowerCore
 /// Drives the Ideas & Decisions registry: a review queue (freshly proposed or
 /// explicitly flagged ideas) plus a filterable browsable registry of everything
 /// else. See `internal/db/ideas.go` on the Go side and `IdeaQueries` for the
-/// underlying reads/writes. Structure mirrors `DashboardViewModel`.
+/// underlying reads/writes. Structure mirrors `TargetsViewModel`.
 @MainActor
 @Observable
 final class IdeasViewModel {
@@ -67,7 +67,7 @@ final class IdeasViewModel {
     private var backfillTask: Task<Void, Never>?
 
     /// Overrides CLI resolution for tests; production falls back to
-    /// `ProcessCLIRunner.makeDefault()` (mirrors `DashboardViewModel`).
+    /// `ProcessCLIRunner.makeDefault()` (mirrors `TargetsViewModel`).
     private let cliRunner: CLIRunnerProtocol?
 
     /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
@@ -254,8 +254,7 @@ final class IdeasViewModel {
     /// Converts an idea into a Target: creates the target from the idea's
     /// title/essence (`source_type: "idea"`), marks the idea converted with a
     /// link back to it, and returns the new target id so the caller can
-    /// navigate via `AppState.navigateToTarget` — mirroring the Dashboard's
-    /// situation-to-target conversion flow (`DashboardView`/`CreateTargetSheet`).
+    /// navigate via `AppState.navigateToTarget`.
     @discardableResult
     func convertToTarget(_ idea: Idea) -> Int? {
         do {
