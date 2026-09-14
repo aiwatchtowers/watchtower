@@ -43,7 +43,7 @@ func (p *Pipeline) GenerateTranscriptNotes(ctx context.Context, eventID, transcr
 		recapBlock,
 		prompts.Directive(lang),
 	)
-	userMessage := "Below is the full single-track meeting transcript (speakers are not labeled). " +
+	userMessage := "Below is the full meeting transcript. It may carry \"[label]\" line prefixes identifying the speaker, or be a single unlabeled track. " +
 		"Generate the meeting-notes markdown exactly per the system prompt.\n\n=== TRANSCRIPT ===\n" + trimmed
 
 	aiResponse, usage, _, err := p.generator.Generate(digest.WithSource(ctx, "meeting.notes"), systemPrompt, userMessage, "")

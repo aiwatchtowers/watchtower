@@ -230,6 +230,39 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
+    /// Ad-hoc transcript (event_id NULL) whose recap links back by
+    /// transcript_id only (also event_id NULL): `r.event_id = t.event_id`
+    /// is NULL = NULL, which SQL never treats as a match, so before the
+    /// `OR r.transcript_id = t.id` clause the list badge showed "no recap"
+    /// for a recording the detail view rendered a recap for fine.
+    func test_recordingListCountsTranscriptLinkedRecapOnAdHocRow() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 1, title: "AdHoc")
+            try TestDatabase.insertMeetingRecap(db, transcriptID: 1, recapJSON: self.summaryJSON)
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            XCTAssertTrue(items[0].hasRecap, "meeting_recaps row linked by transcript_id counts as a recap")
+        }
+    }
+
+    /// An unrelated recap (different transcript_id, no shared event) must
+    /// not make this ad-hoc row look like it has a recap.
+    func test_recordingListDoesNotCountUnrelatedRecapAsRecap() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertMeetingTranscript(db, id: 1, title: "AdHoc")
+            try TestDatabase.insertMeetingTranscript(db, id: 2, title: "Other")
+            try TestDatabase.insertMeetingRecap(db, transcriptID: 2, recapJSON: self.summaryJSON)
+        }
+        try db.read { db in
+            let items = try MeetingTranscriptQueries.fetchRecordingList(db)
+            let adHoc = try XCTUnwrap(items.first { $0.id == 1 })
+            XCTAssertFalse(adHoc.hasRecap, "a recap linked to a different transcript must not count")
+        }
+    }
+
     func test_saveNotesWritesMarkdownAndBumpsUpdatedAt() throws {
         let db = try TestDatabase.create()
         try db.write { db in

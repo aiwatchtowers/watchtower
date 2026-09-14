@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/digest"
 )
 
 // writeMockClaude creates a shell script that mimics the claude CLI for testing.
@@ -33,7 +35,8 @@ func TestNewClient_DefaultClaudeCmd(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args := c.buildArgs("system prompt", "user message", "text", "")
+	args, stdin := c.buildArgs("system prompt", "user message", "text", "")
+	assert.Empty(t, stdin)
 
 	assert.Contains(t, args, "-p")
 	assert.Contains(t, args, "user message")
@@ -112,7 +115,7 @@ func flagValue(t *testing.T, args []string, flag string) string {
 
 func TestBuildArgs_WithDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
-	args := c.buildArgs("system prompt", "user message", "text", "")
+	args, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "--mcp-config")
 	// The MCP server is the watchtower binary itself running `mcp --db-path`,
@@ -137,18 +140,138 @@ func TestBuildArgs_WithDBPath(t *testing.T) {
 
 func TestBuildArgs_WithoutDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args := c.buildArgs("system prompt", "user message", "text", "")
+	args, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.NotContains(t, args, "--mcp-config")
 }
 
 func TestBuildArgs_WithSessionID(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
+	args, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
 
 	assert.Contains(t, args, "--resume")
 	assert.Contains(t, args, "session-123")
 	assert.NotContains(t, args, "--system-prompt")
+}
+
+// TestBuildArgs_LeadingDashPromptGoesToStdin pins the leading-dash guard on
+// promptFlagAndStdin: a chat message beginning with '-' must never sit
+// inline after "-p" (claude's --print takes an OPTIONAL value, so a
+// following dash-led token would be parsed as a new flag instead of being
+// consumed as -p's value) even though it is far below StdinThreshold.
+func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+	msg := "-v looks wrong"
+	args, stdin := c.buildArgs("sys", msg, "text", "")
+	if stdin != msg {
+		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
+	}
+	pIdx := -1
+	for i, a := range args {
+		if a == "-p" {
+			pIdx = i
+			break
+		}
+	}
+	if pIdx == -1 {
+		t.Fatal("args has no -p flag")
+	}
+	if pIdx+1 >= len(args) || !strings.HasPrefix(args[pIdx+1], "--") {
+		t.Errorf("token after -p = %q, want a flag (message must not be inline)", args[pIdx+1])
+	}
+	for _, a := range args {
+		if a == msg {
+			t.Error("args contains the leading-dash message; it must travel via stdin only")
+		}
+	}
+}
+
+// TestBuildArgs_StdinThresholdBoundary pins the exact-threshold boundary so
+// the inline and stdin routes never both fire: a message of exactly
+// StdinThreshold bytes stays inline, one byte over routes to stdin.
+func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+
+	exact := strings.Repeat("x", digest.StdinThreshold)
+	args, stdin := c.buildArgs("sys", exact, "text", "")
+	if stdin != "" {
+		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+	}
+	assertFlagValue(t, args, "-p", exact)
+
+	over := exact + "x"
+	args2, stdin2 := c.buildArgs("sys", over, "text", "")
+	if stdin2 != over {
+		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
+	}
+	for _, a := range args2 {
+		if a == over {
+			t.Error("over-threshold message must not appear inline in args")
+		}
+	}
+	// "-p" must be bare on the stdin route: the next token must be a flag,
+	// never a value (an implementation that swaps the message for "" and
+	// still passes it inline, e.g. "-p" ""), would pass the two checks
+	// above while still being wrong.
+	pIdx := -1
+	for i, a := range args2 {
+		if a == "-p" {
+			pIdx = i
+			break
+		}
+	}
+	if pIdx == -1 {
+		t.Fatal("args2 has no -p flag")
+	}
+	if pIdx+1 >= len(args2) || !strings.HasPrefix(args2[pIdx+1], "--") {
+		t.Errorf("token after -p = %q, want a flag (message must not be inline, even as an empty value)", args2[pIdx+1])
+	}
+}
+
+// TestQuerySync_LeadingDashMessageReachesStdin proves the leading-dash route
+// wires all the way to the subprocess for QuerySync: a fake claude binary
+// reads its stdin and echoes a marker back only when it finds it there.
+func TestQuerySync_LeadingDashMessageReachesStdin(t *testing.T) {
+	const marker = "STDIN-MARKER-ai-client-sync-01"
+	mockPath := writeMockClaude(t, `input=$(cat)
+case "$input" in
+*`+marker+`*) printf '{"type":"result","result":"got:`+marker+`"}' ;;
+*) printf '{"type":"result","result":"marker-missing"}' ;;
+esac
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	msg := "-v " + marker
+	result, _, err := c.QuerySync(context.Background(), "system", msg, "")
+	require.NoError(t, err)
+	assert.Equal(t, "got:"+marker, result, "the leading-dash message did not reach the subprocess via stdin")
+}
+
+// TestQuery_LeadingDashMessageReachesStdin is QuerySync's streaming sibling:
+// the leading-dash route must also be wired on the Query call site.
+func TestQuery_LeadingDashMessageReachesStdin(t *testing.T) {
+	const marker = "STDIN-MARKER-ai-client-stream-02"
+	script := `input=$(cat)
+case "$input" in
+*` + marker + `*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"got:` + marker + `"}]}}\n' ;;
+*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"marker-missing"}]}}\n' ;;
+esac
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	msg := "-v " + marker
+	textCh, errCh, _ := c.Query(context.Background(), "system", msg, "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+	require.NoError(t, <-errCh)
+	assert.Equal(t, "got:"+marker, result.String(), "the leading-dash message did not reach the subprocess via stdin")
 }
 
 func TestQuerySync_Success(t *testing.T) {
@@ -557,7 +680,7 @@ func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
 		t.Fatalf("command = %v, want nil (no stdio keys on an http entry)", acme.Command)
 	}
 
-	args := c.buildArgs("sys", "hi", "json", "")
+	args, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
 }
 
@@ -592,7 +715,7 @@ func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
-	args := c.buildArgs("sys", "hi", "json", "")
+	args, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
 }
 
@@ -607,7 +730,7 @@ func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
 
 func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args := c.buildArgs("sys", "hi", "stream-json", "")
+	args, _ := c.buildArgs("sys", "hi", "stream-json", "")
 	for _, a := range args {
 		if a == "--allowed-tools" {
 			t.Fatalf("legacy flag leaked into claude args")
@@ -620,7 +743,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 	c.SetExternalMCPServers([]ExternalMCPServer{{
 		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
 	}})
-	args := c.buildArgs("sys", "hi", "json", "")
+	args, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
 	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
 	if strings.Contains(strings.Join(args, " "), "secret123") {
@@ -638,7 +761,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 
 func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args := c.buildArgs("sys", "hi", "json", "")
+	args, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config")
 	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
 		t.Fatalf("expected inline JSON, got %q", val)

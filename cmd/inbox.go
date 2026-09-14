@@ -619,6 +619,7 @@ func runInboxFeedback(cmd *cobra.Command, args []string) error {
 	defer closeGen()
 
 	pipe := inbox.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	if err := pipe.SubmitSituationFeedback(cmd.Context(), situationID, rating, inboxFeedbackComment); err != nil {
 		return err
 	}
@@ -650,6 +651,7 @@ func runInboxStyleSample(cmd *cobra.Command, _ []string) error {
 	defer closeGen()
 
 	pipe := inbox.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	if err := pipe.GenerateStyleProfile(cmd.Context()); err != nil {
 		return err
 	}
@@ -746,7 +748,9 @@ func newBackfillMentionsPipeline(cmd *cobra.Command) (pipe *inbox.Pipeline, clos
 	}
 
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
-	return inbox.New(database, cfg, nil, logger), func() { database.Close() }, nil
+	pipe = inbox.New(database, cfg, nil, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
+	return pipe, func() { database.Close() }, nil
 }
 
 // buildBackfillMentionsEnvelope converts one BackfillMentions result into

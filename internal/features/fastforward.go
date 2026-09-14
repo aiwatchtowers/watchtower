@@ -16,11 +16,15 @@ import (
 // no writes): digests/tracks/people-cards are cap-bounded per daemon cycle
 // already and simply resume where their own watermark left off.
 //
-// Every hook below reuses an existing internal/db setter — the same one its
+// Most hooks below reuse an existing internal/db setter — the same one its
 // owning pipeline calls to advance its own watermark — rather than writing
 // SQL of its own; FastForward reproduces what a fresh self-init already
-// does, it does not invent new watermark semantics.
-func FastForward(id string, database *db.DB, now time.Time) error {
+// does, it does not invent new watermark semantics. Reaction commands are the
+// one exception and the reason `deps` exists: they have no watermark at all
+// (reactions.list carries no time filter), so "resume from now" can only be
+// expressed by recording the owner's existing reactions as already-seen — a
+// live Slack read this package cannot build for itself.
+func FastForward(id string, database *db.DB, now time.Time, deps Deps) error {
 	switch id {
 	case "secretary-inbox":
 		return fastForwardSecretaryInbox(database, now)
@@ -32,9 +36,41 @@ func FastForward(id string, database *db.DB, now time.Time) error {
 		return fastForwardSlackDigests(database, now)
 	case "memory":
 		return fastForwardMemory(database, now)
+	case "reaction-commands":
+		return fastForwardReactionCommands(database, deps)
 	default:
 		return nil
 	}
+}
+
+// Deps carries the capabilities a hook needs that internal/features cannot
+// build for itself — today only the reaction-commands ledger seed, which needs
+// a Slack client per connected account (cmd/reaction_commands.go owns that
+// wiring, and the seed logic itself lives in internal/reactioncmd, which owns
+// the ReactionLister seam). A caller with no such hook to run passes the zero
+// value. The context the seeder runs under is the caller's own, captured in the
+// closure: FastForward is a synchronous owner action, not a background job.
+type Deps struct {
+	SeedReactions func(*db.DB) error
+}
+
+// fastForwardReactionCommands records every reaction the owner has already
+// placed as seen-but-never-run, so enabling the feature cannot replay the
+// owner's whole reaction history as commands — several of which
+// (create_idea/remind_me/brief_context) carry `execute` trust and would apply
+// inline rather than merely propose.
+//
+// An unwired seeder is an error, never a silent success: the feature would then
+// be enabled over an empty ledger, which is precisely the state whose first
+// poll replays everything.
+func fastForwardReactionCommands(database *db.DB, deps Deps) error {
+	if deps.SeedReactions == nil {
+		return fmt.Errorf("fast-forwarding reaction commands: no ledger seeder was wired for this call")
+	}
+	if err := deps.SeedReactions(database); err != nil {
+		return fmt.Errorf("seeding the reaction ledger: %w", err)
+	}
+	return nil
 }
 
 // fastForwardSecretaryInbox stamps both watermarks the inbox pipeline's own

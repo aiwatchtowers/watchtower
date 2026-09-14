@@ -163,6 +163,7 @@ func catchupPipeline() (*catchup.Pipeline, *db.DB, func(), error) {
 	p := catchup.New(database, cfg, gen, logger)
 	p.SetPromptStore(prompts.New(database, nil))
 	digestPipe := digest.New(database, cfg, gen, logger)
+	digestPipe.SetPromptStore(prompts.New(database, nil))
 	ideasPipe := ideas.New(database, cfg, gen, logger)
 	ideasPipe.SetPromptStore(prompts.New(database, nil))
 	p.SetTopUp(cliTopUp{digests: digestPipe, ideas: ideasPipe, workspaceDir: cfg.WorkspaceDir()})

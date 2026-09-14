@@ -517,6 +517,91 @@ func TestRecomputeParentProgress_CycleGuard(t *testing.T) {
 	_ = err
 }
 
+// TestRecomputeParentProgress_UpdatedAtOnlyMovesWhenProgressChanges pins the
+// wave-5 fix (audit finding H2 / owner decision 9): recomputeParentProgressOn
+// must bump an ancestor's updated_at only when the computed average progress
+// actually changed, never on every call. Uses TWO children so the average is
+// a real average, not a single child's value passed through (the one-element
+// fixture a broken "copy" implementation would still satisfy), and checks
+// BOTH the immediate parent and a grandparent, since the walker rewrites
+// every ancestor on the way up and a fix scoped to only the first level would
+// still pass a single-level assertion.
+func TestRecomputeParentProgress_UpdatedAtOnlyMovesWhenProgressChanges(t *testing.T) {
+	db := openTestDB(t)
+
+	grandparentID, err := db.CreateTarget(makeTarget("Grandparent", "todo", "high"))
+	require.NoError(t, err)
+
+	parent := makeTarget("Parent", "todo", "high")
+	parent.ParentID = sql.NullInt64{Int64: grandparentID, Valid: true}
+	parentID, err := db.CreateTarget(parent)
+	require.NoError(t, err)
+
+	child1 := makeTarget("Child 1", "in_progress", "medium")
+	child1.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+	child1ID, err := db.CreateTarget(child1)
+	require.NoError(t, err)
+
+	child2 := makeTarget("Child 2", "in_progress", "medium")
+	child2.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
+	_, err = db.CreateTarget(child2)
+	require.NoError(t, err)
+
+	// AVG(0.5, 0.5) = 0.5 propagates all the way up: parent = 0.5,
+	// grandparent (whose only child is parent) = 0.5 too.
+	parentBefore, err := db.GetTargetByID(int(parentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, parentBefore.Progress, 0.001, "sanity: parent progress")
+	grandparentBefore, err := db.GetTargetByID(int(grandparentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, grandparentBefore.Progress, 0.001, "sanity: grandparent progress")
+
+	// Backdate both ancestors to a known, fixed past stamp, then read it back
+	// so the assertions below compare against a value actually in the row
+	// (not the literal we wrote, in case of any driver-level reformatting).
+	const backdated = "2020-01-01T00:00:00Z"
+	_, err = db.Exec(`UPDATE targets SET updated_at = ? WHERE id IN (?, ?)`, backdated, parentID, grandparentID)
+	require.NoError(t, err)
+	parentBackdated, err := db.GetTargetByID(int(parentID))
+	require.NoError(t, err)
+	require.Equal(t, backdated, parentBackdated.UpdatedAt)
+	grandparentBackdated, err := db.GetTargetByID(int(grandparentID))
+	require.NoError(t, err)
+	require.Equal(t, backdated, grandparentBackdated.UpdatedAt)
+
+	// --- No-op leg: edit a non-progress field on child1 through UpdateTarget
+	// (still routes through RecomputeParentProgress). The average must not
+	// move, so neither ancestor's updated_at may move either.
+	got1, err := db.GetTargetByID(int(child1ID))
+	require.NoError(t, err)
+	got1.Text = "Child 1 (renamed)"
+	require.NoError(t, db.UpdateTarget(*got1))
+
+	parentNoOp, err := db.GetTargetByID(int(parentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, parentNoOp.Progress, 0.001, "no-op leg: parent progress unchanged")
+	assert.Equal(t, backdated, parentNoOp.UpdatedAt, "no-op leg: parent updated_at must not move")
+
+	grandparentNoOp, err := db.GetTargetByID(int(grandparentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.5, grandparentNoOp.Progress, 0.001, "no-op leg (chain): grandparent progress unchanged")
+	assert.Equal(t, backdated, grandparentNoOp.UpdatedAt, "no-op leg (chain): grandparent updated_at must not move")
+
+	// --- Real-change leg: flip child1 to done. AVG(1.0, 0.5) = 0.75, a real
+	// move, so both ancestors' updated_at must advance off the backdated stamp.
+	require.NoError(t, db.UpdateTargetStatus(int(child1ID), "done"))
+
+	parentChanged, err := db.GetTargetByID(int(parentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.75, parentChanged.Progress, 0.001, "real-change leg: parent progress moved")
+	assert.NotEqual(t, backdated, parentChanged.UpdatedAt, "real-change leg: parent updated_at must move")
+
+	grandparentChanged, err := db.GetTargetByID(int(grandparentID))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.75, grandparentChanged.Progress, 0.001, "real-change leg (chain): grandparent progress moved")
+	assert.NotEqual(t, backdated, grandparentChanged.UpdatedAt, "real-change leg (chain): grandparent updated_at must move")
+}
+
 // ── UpdateTarget / progress recompute ───────────────────────────────────────
 
 func TestUpdateTarget_RecomputesParentProgress(t *testing.T) {

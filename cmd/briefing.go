@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 	"watchtower/internal/ui"
 
 	"github.com/dustin/go-humanize"
@@ -137,6 +138,7 @@ func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 	defer savePool()
 
 	pipe := briefing.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	id, err := pipe.Run(cmd.Context())
 	if err != nil {

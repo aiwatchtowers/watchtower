@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -59,7 +60,9 @@ var dayPlanGenerateCmd = &cobra.Command{
 // newDayPlanPipelineFactory is the seam tests override to inject a mock generator.
 var newDayPlanPipelineFactory = func(database *db.DB, cfg *config.Config, logger *log.Logger) (*dayplan.Pipeline, error) {
 	gen := cliGenerator(cfg)
-	return dayplan.New(database, cfg, gen, logger), nil
+	pipe := dayplan.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
+	return pipe, nil
 }
 
 func init() {
@@ -249,6 +252,7 @@ func runDayPlanCheckConflicts(cmd *cobra.Command, args []string) error {
 
 	logger := log.New(cmd.ErrOrStderr(), "", 0)
 	pipe := dayplan.New(database, cfg, nil, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	if err := pipe.SyncCalendarItemsForDate(cmd.Context(), userID, date); err != nil {
 		return fmt.Errorf("syncing calendar items: %w", err)

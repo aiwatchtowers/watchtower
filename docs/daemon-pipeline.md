@@ -314,6 +314,8 @@ Aggregates all channel digests for the day into a cross-channel summary. Uses ru
 
 **Throttling (2026-09-13):** not regenerated on every cycle. If today's daily rollup already exists, it is only regenerated when a channel digest newer than that rollup's `created_at` has landed since — otherwise the cycle skips it without an AI call. A regeneration clears the rollup's `read_at` (so it surfaces as unread again); a skipped cycle leaves `read_at` untouched.
 
+**Attempt budget (2026-09-14):** a real failure (the daemon's `RunRollups` call returning a non-nil error — the AI generate/parse/store step, or a DB read error — as opposed to one of the benign skips above, which return nil and cost nothing) counts against a 3-per-day budget, persisted to `rollup_attempts.txt` so it survives a daemon restart, mirroring the briefing/day-plan budgets. Deliberately keyed on the **UTC** calendar date, not local — `RunDailyRollup` itself generates for the UTC day, so keying the budget on the local date would let the two drift apart by hours outside UTC. Once the 3rd failure spends the day's budget, the daemon logs a one-time "giving up" line and stops trying until the next UTC calendar day. This budget lives only in the daemon's `phaseTracksAndRollups` phase — the CLI `digest generate` path is unbudgeted, so a manual run always gets a real attempt.
+
 ### Weekly Rollup
 
 Aggregates daily rollups for the week. Higher level of abstraction — trends and strategic observations.
@@ -439,13 +441,13 @@ With each cycle:
 | Sync | Every 15 min | DB: `search_last_date` | Date of last message |
 | Inbox | Every 15 min | DB: `inbox_last_processed_ts` | Unix timestamp of processing |
 | Digests | Every 15 min | DB: UNIQUE(channel, type, period) | Window + file lock |
-| Daily Rollup | Every 15 min, but skipped without a newer channel digest | DB: `digests.created_at` (today's daily row) | Regenerates only on new/changed channel digests for the day |
+| Daily Rollup | Every 15 min, but skipped without a newer channel digest; capped at 3 real attempts/UTC day | DB: `digests.created_at` (today's daily row) + File: `rollup_attempts.txt` | Regenerates only on new/changed channel digests for the day; date,attempt-count |
 | Tracks | Every 15 min | DB: `pipeline_runs.period_to` | End of last window |
 | People Cards | Once per 24h | File: `last_people.txt` | Unix timestamp |
 | Briefing | Once per day, capped at 3 real attempts/day | File: `last_briefing.txt` + DB: UNIQUE(user, date) + File: `briefing_attempts.txt` | Unix timestamp + date,attempt-count |
 | Day Plan | Once per day after `day_plan.hour` (default 8), capped at 3 real attempts/day; runs right after Briefing in the same cycle | DB: `day_plans` UNIQUE(user, date) + File: `day_plan_attempts.txt` | date,attempt-count |
 
-Files `last_people.txt` and `last_briefing.txt` survive daemon restarts, as does `day_plan_attempts.txt`.
+Files `last_people.txt` and `last_briefing.txt` survive daemon restarts, as do `day_plan_attempts.txt`, `briefing_attempts.txt`, and `rollup_attempts.txt`.
 
 ---
 
@@ -519,9 +521,13 @@ Data is available in the desktop app (Usage tab).
 |----------|------|
 | Configuration | `~/.local/share/watchtower/{workspace}/config.yaml` |
 | Database | `~/.local/share/watchtower/{workspace}/watchtower.db` |
-| Daemon log | `~/.local/share/watchtower/{workspace}/daemon.log` |
+| Daemon log (every line from the daemon's own logger; rotated past 20 MiB while the daemon runs, previous generation `watchtower.log.1`) | `~/.local/share/watchtower/{workspace}/watchtower.log` |
+| Crash log (the detached child's raw stdout/stderr: Go runtime panics, the parent's rotation note, and any output from loggers not routed through the daemon logger — the stdlib default logger, the Jira sub-loggers; rotated at daemon start) | `~/.local/share/watchtower/{workspace}/daemon.log` |
 | Sync result | `~/.local/share/watchtower/{workspace}/last_sync.json` |
 | People timestamp | `~/.local/share/watchtower/{workspace}/last_people.txt` |
 | Briefing timestamp | `~/.local/share/watchtower/{workspace}/last_briefing.txt` |
+| Day-plan attempt budget | `~/.local/share/watchtower/{workspace}/day_plan_attempts.txt` |
+| Briefing attempt budget | `~/.local/share/watchtower/{workspace}/briefing_attempts.txt` |
+| Daily-rollup attempt budget | `~/.local/share/watchtower/{workspace}/rollup_attempts.txt` |
 | Daemon PID | `~/.local/share/watchtower/{workspace}/daemon.pid` |
 | Digest lock | `~/.local/share/watchtower/{workspace}/digest.lock` |

@@ -365,6 +365,109 @@ func TestDeleteStaleCalendarEvents(t *testing.T) {
 	assert.Empty(t, all)
 }
 
+// TestDeleteStaleCalendarEvents_SparesReferencedEvents pins owner decision 14:
+// an event still referenced by a meeting_transcripts or meeting_recaps row
+// must survive stale-cleanup even though its synced_at is old, because the
+// association is what regenerated recap/notes/chapters and the attendee
+// voice-print pool depend on. Every combination of the two references is its
+// own row so a guard scoped to only one table, or one using OR instead of
+// AND, is caught (see docs/superpowers/plans/2026-09-13-audit-fix-wave5.md,
+// Task 3): a recap-only event (the paste flow creates recaps with no
+// transcript) is the cell a transcript-only NOT EXISTS would miss.
+//
+// The fixture also seeds an ad-hoc transcript and an already-detached recap,
+// both with a NULL event_id — the first-class product states of "recorded
+// without a calendar event" and "the event was already deleted" (the whole
+// premise of migration 00056). Without them, every meeting_transcripts /
+// meeting_recaps row in the fixture has a non-NULL event_id, so a
+// `calendar_events.id NOT IN (SELECT event_id FROM meeting_transcripts)`
+// spelling (SQL's classic NULL trap: one NULL in the subquery makes NOT IN
+// evaluate to NULL/false for every row) would pass this whole test while, on
+// a live install, silently stopping stale-cleanup from ever deleting
+// anything again.
+func TestDeleteStaleCalendarEvents_SparesReferencedEvents(t *testing.T) {
+	db := openTestDB(t)
+
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "other", Name: "Other", SyncedAt: "2026-04-01T00:00:00Z"}))
+
+	stale := "2026-04-02T08:00:00Z"
+	staleEnd := "2026-04-02T09:00:00Z"
+
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-plain", CalendarID: "primary", Title: "Plain", StartTime: stale, EndTime: staleEnd,
+	}))
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-transcript", CalendarID: "primary", Title: "Transcript only", StartTime: stale, EndTime: staleEnd,
+	}))
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-recap", CalendarID: "primary", Title: "Recap only", StartTime: stale, EndTime: staleEnd,
+	}))
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-both", CalendarID: "primary", Title: "Both", StartTime: stale, EndTime: staleEnd,
+	}))
+	// Fifth row under a different calendar_id — must never be touched by a
+	// primary-calendar cleanup call, guarding against a rewrite that drops
+	// the calendar_id scope.
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+		ID: "evt-other-calendar", CalendarID: "other", Title: "Other calendar", StartTime: stale, EndTime: staleEnd,
+	}))
+
+	_, err := db.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-transcript", Valid: true}, Title: "T1", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+	transcriptForBoth, err := db.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-both", Valid: true}, Title: "T2", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.UpsertMeetingRecap("evt-recap", "source", "{}", 0))
+	require.NoError(t, db.UpsertMeetingRecap("evt-both", "source", "{}", transcriptForBoth))
+
+	// An ad-hoc recording (never linked to any calendar event) and an
+	// already-detached recap (its event already gone, event_id SET NULL by
+	// the FK — the 00056 scenario). Neither references any of the fixture's
+	// events, but both must keep event_id NULL in the tables a NOT EXISTS
+	// correlates against, poisoning a NOT IN rewrite for every row.
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{Title: "Ad-hoc", TranscriptText: "hello"})
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO meeting_recaps (event_id, source_text, recap_json) VALUES (NULL, ?, ?)`, "source", "{}")
+	require.NoError(t, err)
+
+	cutoff := "2099-01-01T00:00:00Z"
+
+	n, err := db.DeleteStaleCalendarEvents("primary", cutoff)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "exactly the unreferenced event must be deleted")
+
+	assertEventExists := func(id string, want bool, msg string) {
+		t.Helper()
+		got, err := db.GetCalendarEventByID(id)
+		require.NoError(t, err)
+		if want {
+			assert.NotNilf(t, got, "%s: %s should survive", msg, id)
+		} else {
+			assert.Nilf(t, got, "%s: %s should be deleted", msg, id)
+		}
+	}
+
+	assertEventExists("evt-plain", false, "unreferenced")
+	assertEventExists("evt-transcript", true, "transcript-only")
+	assertEventExists("evt-recap", true, "recap-only")
+	assertEventExists("evt-both", true, "transcript and recap")
+	assertEventExists("evt-other-calendar", true, "different calendar, never in scope")
+
+	// Idempotency: a second pass over the same cutoff deletes nothing more.
+	n, err = db.DeleteStaleCalendarEvents("primary", cutoff)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "second pass must be a no-op: the survivors are still referenced")
+
+	assertEventExists("evt-transcript", true, "second pass, transcript-only")
+	assertEventExists("evt-recap", true, "second pass, recap-only")
+	assertEventExists("evt-both", true, "second pass, transcript and recap")
+}
+
 func TestClearCalendarEvents(t *testing.T) {
 	db := openTestDB(t)
 

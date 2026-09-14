@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/guide"
+	"watchtower/internal/prompts"
 	"watchtower/internal/ui"
 
 	"github.com/spf13/cobra"
@@ -350,6 +351,7 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 	gen, savePool := cliPooledGenerator(cfg, logger)
 	defer savePool()
 	pipe := guide.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	pipe.ForceRegenerate = true
 
 	if peopleGenFlagProgressJSON {

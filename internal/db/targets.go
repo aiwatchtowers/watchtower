@@ -190,22 +190,23 @@ func (db *DB) RecordTargetNextStepAttempt(id, attempts int, attemptedAt string) 
 // one perpetually-failing target silence next-step generation for every
 // other target that also needs a refresh that day. See RecordTargetNextStepAttempt.
 //
-// Known limitation (owner-accepted, not fixed here): the "edited since"
-// escape hatch is keyed on raw updated_at, and RecomputeParentProgress
-// (below) bumps a PARENT target's updated_at on every call, whether or not
-// its computed progress actually changed. The trigger surface is broader
-// than any single child status transition: RecomputeParentProgress runs from
-// CreateTarget (a new child added), UpdateTarget (any field edit on a child,
-// both the old and new parent on a re-parent), UpdateTargetStatus (a child
-// status transition), DeleteTarget (a child removed), and
-// PromoteSubItemToChild (a sub-item promoted into a child). A non-leaf
-// target with actively churning children can therefore look "freshly
-// edited" on every cycle and exceed the 3/day budget indefinitely. This
-// predates this predicate (the same column already drove next_step_at
-// staleness) and is bounded by child churn, not unbounded; narrowing
-// updated_at's semantics would touch all five call sites of
-// RecomputeParentProgress, which is wider than this budget and riskier than
-// the hole. Left as-is by controller ruling.
+// Fixed in wave 5 (was a known limitation): the "edited since" escape hatch
+// is keyed on raw updated_at, and RecomputeParentProgress (below) used to
+// bump a PARENT target's updated_at on every call, whether or not its
+// computed progress actually changed — CreateTarget (a new child added),
+// UpdateTarget (any field edit on a child, both the old and new parent on a
+// re-parent), UpdateTargetStatus (a child status transition), DeleteTarget
+// (a child removed), and PromoteSubItemToChild (a sub-item promoted into a
+// child) could all make a non-leaf target look "freshly edited" on every
+// cycle and exceed the 3/day budget indefinitely. All of those routes funnel
+// through the single implementation recomputeParentProgressOn, not five
+// separate call sites as an earlier draft of this comment claimed — the fix
+// is the one-site `AND progress != ?` guard on its UPDATE, which now bumps
+// updated_at only when the computed average actually moved. The ancestor
+// walk itself is unchanged: it still visits every ancestor and still repairs
+// progress drift left by a direct write (e.g. Desktop's
+// TargetQueries.updateProgress), it just no longer touches updated_at on a
+// no-op leg.
 //
 // nextStepAttemptBudget is the per-target daily cap this predicate enforces
 // (targets.next_step_attempts, migration 00068) — a separate knob from the
@@ -490,9 +491,14 @@ func recomputeParentProgressOn(q targetsQuerier, parentID int64) error {
 			}
 		}
 
+		// The AND progress != ? guard is what keeps this write — and the
+		// updated_at bump that rides it — from firing on every call: see the
+		// "fixed in wave 5" comment above GetTargetsNeedingNextStep for why
+		// updated_at must move only when the computed progress actually
+		// changes.
 		_, err = q.Exec(`UPDATE targets SET progress = ?,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-			WHERE id = ?`, newProgress, current)
+			WHERE id = ? AND progress != ?`, newProgress, current, newProgress)
 		if err != nil {
 			return fmt.Errorf("updating parent %d progress: %w", current, err)
 		}
