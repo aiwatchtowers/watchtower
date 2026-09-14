@@ -22,10 +22,14 @@ import (
 
 // ── shared attempt-marker unit tests ────────────────────────────────────────
 //
-// Day-plan, briefing, and the daily rollup all route through the same
-// recordX/xAttemptsExhausted pair backed by attemptMarker, so the
-// exhaustion/reset arithmetic is pinned once here, deterministically (no
-// wall-clock dependency), rather than duplicated per pipeline.
+// Day-plan and briefing each route through their own recordX/xAttemptsExhausted
+// pair, both backed by the shared attemptMarker encoding, so the
+// exhaustion/reset arithmetic for those two is pinned once here per pipeline,
+// deterministically (no wall-clock dependency), rather than only exercised
+// end-to-end. The daily rollup's own pair (recordRollupAttempt/
+// rollupAttemptsExhausted) is a deliberate THIRD independent copy — see the
+// "── daily rollup" section below — and is pinned only end-to-end via the
+// TestDaemon_RollupBackoff_* tests, not by a matching unit-level pair here.
 
 // TestDayPlanAttempts_ThreeFailuresExhaustBudget pins the counter itself: the
 // 3rd recorded attempt exhausts the budget for that date, and a 4th attempt
@@ -443,12 +447,22 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 
 // ── daily rollup: end-to-end through the real daemon phase ──────────────────
 //
-// Unlike runDayPlanPhase/phaseBriefing, phaseTracksAndRollups takes no `now`
-// parameter — RunDailyRollup always computes its own window from
-// time.Now().UTC() — so these tests drive real wall-clock cycles instead of
-// injected calendar-day transitions, and TestDaemon_RollupBackoff_ResetsNextCalendarDay
-// simulates a day boundary by rewriting rollupAttemptDate directly, the
-// approach the verification report names for this shape.
+// phaseTracksAndRollups takes a `now time.Time` parameter (the
+// runDayPlanPhase/phaseBriefing shape) used only for the rollup attempt
+// budget's date — RunDailyRollup itself still always computes its own
+// digest-query window from time.Now().UTC() independently, unaffected by
+// this parameter. rollupFixedNow below is a fixed instant whose local and
+// UTC calendar dates differ by construction, threaded through the exhaust
+// and restart tests so the marker file's date can be pinned exactly
+// (F1: proving the phase actually calls rollupBudgetDate(now) rather than
+// reading the wall clock independently — a call-site regression to
+// time.Now() would write the real machine's current UTC date instead of
+// this fixture's, and the exact-match assertion below would fail
+// deterministically, regardless of the machine's own time zone or time of
+// day). TestDaemon_RollupBackoff_ResetsNextCalendarDay still simulates a day
+// boundary by rewriting rollupAttemptDate directly, the approach the
+// verification report names for this shape.
+var rollupFixedNow = time.Date(2026, 9, 14, 23, 30, 0, 0, time.FixedZone("UTC-10", -10*3600))
 
 // TestRollupBudgetDate_UsesUTCNotLocal is the deterministic counterpart to
 // the wall-clock UTC-date assertion inside
@@ -461,12 +475,10 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 // directly — deterministic regardless of the machine or time of day running
 // the test.
 func TestRollupBudgetDate_UsesUTCNotLocal(t *testing.T) {
-	west10 := time.FixedZone("UTC-10", -10*3600)
-	instant := time.Date(2026, 9, 14, 23, 30, 0, 0, west10)
-	require.Equal(t, "2026-09-14", instant.Format("2006-01-02"), "sanity: the local date must be the 14th")
-	require.Equal(t, "2026-09-15", instant.UTC().Format("2006-01-02"), "sanity: the UTC date must be the 15th")
+	require.Equal(t, "2026-09-14", rollupFixedNow.Format("2006-01-02"), "sanity: the local date must be the 14th")
+	require.Equal(t, "2026-09-15", rollupFixedNow.UTC().Format("2006-01-02"), "sanity: the UTC date must be the 15th")
 
-	assert.Equal(t, "2026-09-15", rollupBudgetDate(instant), "rollupBudgetDate must return the UTC date, not the local one")
+	assert.Equal(t, "2026-09-15", rollupBudgetDate(rollupFixedNow), "rollupBudgetDate must return the UTC date, not the local one")
 }
 
 // rollupBackoffTestSetup seeds two channel digests on DISTINCT channels
@@ -530,23 +542,53 @@ func seedTwoChannelDigests(t *testing.T, database *db.DB) {
 func TestDaemon_RollupBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 	d, _, gen := rollupBackoffTestSetup(t)
 
-	d.phaseTracksAndRollups(context.Background())
-	d.phaseTracksAndRollups(context.Background())
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen.calls, "three real failures should each reach the AI generate call")
 
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 3, gen.calls, "a 4th cycle on the same day must launch nothing once the budget is spent")
 
-	// Clock-free assertion that the marker's date is the UTC date, not local
-	// — the wave-2 lesson: never port a floor/budget rule between pipelines
-	// by analogy without checking granularity. RunDailyRollup computes its
-	// window in UTC, so a budget keyed on the local date would drift apart
-	// from it outside UTC.
+	// Exact-match assertion (not a prefix check against the real wall clock)
+	// that the phase actually threaded rollupFixedNow into rollupBudgetDate:
+	// a call-site regression to time.Now() would write the real machine's
+	// current UTC date here instead, which this literal cannot coincidentally
+	// match (F1) — deterministic regardless of the machine's own time zone or
+	// time of day.
 	data, err := os.ReadFile(d.rollupAttemptsPath())
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(string(data), time.Now().UTC().Format("2006-01-02")),
-		"the rollup attempt marker must be keyed on the UTC date, not local")
+	assert.Equal(t, "2026-09-15,3", string(data),
+		"the rollup attempt marker must be keyed on rollupFixedNow's UTC date, not local and not a separate wall-clock read")
+}
+
+// TestDaemon_RollupBackoff_LogsGivingUpOnceBudgetExhausted is the rollup
+// counterpart of TestDaemon_DayPlanBackoff_LogsGivingUpOnceBudgetExhausted /
+// TestDaemon_BriefingBackoff_LogsGivingUpOnceBudgetExhausted — pinned
+// separately per that comment's note that the three record*Attempt functions
+// are independent copies. This one matters more than the other two: the
+// daemon's rollup call is not wrapped in trackedPipelineRun, so this log
+// line is the owner's ONLY signal that the rollup gave up for the day —
+// there is no pipeline_runs error row to fall back on (see
+// recordRollupAttempt's doc comment).
+func TestDaemon_RollupBackoff_LogsGivingUpOnceBudgetExhausted(t *testing.T) {
+	d, _, gen := rollupBackoffTestSetup(t)
+	var buf bytes.Buffer
+	d.SetLogger(log.New(&buf, "", 0))
+
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	require.Equal(t, 2, gen.calls)
+	assert.Equal(t, 0, strings.Count(buf.String(), "giving up"), "must not log giving-up before the budget is actually spent")
+
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	require.Equal(t, 3, gen.calls)
+	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must log giving-up exactly once when the 3rd failure spends the budget")
+
+	// A 4th (and 5th) cycle the same day is a silent skip — no repeat log line.
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must not repeat the giving-up line on later silent skips the same day")
 }
 
 // TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget uses the "< 2
@@ -595,7 +637,7 @@ func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
 	d.SetDigestPipeline(digest.New(database, cfg, gen, d.logger))
 
 	for i := 0; i < 5; i++ {
-		d.phaseTracksAndRollups(context.Background())
+		d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	}
 
 	assert.Equal(t, 0, gen.calls, "a benign <2-channel-digests skip must never reach the AI generate call")
@@ -605,34 +647,33 @@ func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
 func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 	d, _, gen := rollupBackoffTestSetup(t)
 
-	d.phaseTracksAndRollups(context.Background())
-	d.phaseTracksAndRollups(context.Background())
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen.calls)
-	require.True(t, d.rollupAttemptsExhausted(time.Now().UTC().Format("2006-01-02")), "today's budget must be exhausted")
+	require.True(t, d.rollupAttemptsExhausted(rollupBudgetDate(rollupFixedNow)), "today's budget must be exhausted")
 
-	// phaseTracksAndRollups has no injectable `now` (unlike
-	// runDayPlanPhase/phaseBriefing) — RunDailyRollup always computes its own
-	// window from time.Now().UTC() — so a new UTC calendar day is simulated
-	// by rewriting the in-memory attempt date to yesterday, the shape the
-	// verification report names for this pipeline.
-	d.rollupAttemptDate = time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	// A new UTC calendar day is simulated by rewriting the in-memory attempt
+	// date to the day before rollupFixedNow's own UTC date ("2026-09-14",
+	// one day before the "2026-09-15" all three calls above recorded), the
+	// shape the verification report names for this pipeline.
+	d.rollupAttemptDate = "2026-09-14"
 
 	// The new day must get its OWN full budget of 3, not just let one
 	// straggler attempt through and then immediately re-exhaust because the
 	// counter carried over from yesterday instead of resetting to 0 before
 	// incrementing (a single extra call cannot tell "reset to a fresh 3"
 	// apart from "kept counting from 3").
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 4, gen.calls, "a new calendar day must get a fresh budget and actually launch a real attempt")
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 5, gen.calls, "the new day's 2nd attempt must also launch — its budget must not have inherited yesterday's spent count")
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 6, gen.calls, "the new day's 3rd attempt must also launch")
 
 	// Now the new day's own budget of 3 is spent — a 4th attempt the same day
 	// must be refused again.
-	d.phaseTracksAndRollups(context.Background())
+	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 6, gen.calls, "the new day's 4th cycle must launch nothing once ITS budget is spent")
 }
 
@@ -643,9 +684,9 @@ func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 func TestDaemon_RollupBackoff_SurvivesRestart(t *testing.T) {
 	d1, database, gen1 := rollupBackoffTestSetup(t)
 
-	d1.phaseTracksAndRollups(context.Background())
-	d1.phaseTracksAndRollups(context.Background())
-	d1.phaseTracksAndRollups(context.Background())
+	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen1.calls)
 
 	// Simulate a daemon restart: a brand new Daemon over the same
@@ -658,6 +699,6 @@ func TestDaemon_RollupBackoff_SurvivesRestart(t *testing.T) {
 	d2.SetDigestPipeline(digest.New(database, d1.config, gen2, d2.logger))
 	d2.loadRollupAttempts()
 
-	d2.phaseTracksAndRollups(context.Background())
+	d2.phaseTracksAndRollups(context.Background(), rollupFixedNow)
 	assert.Equal(t, 0, gen2.calls, "a restarted daemon must honor the already-spent budget instead of resetting it")
 }

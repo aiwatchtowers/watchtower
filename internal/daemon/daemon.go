@@ -392,9 +392,10 @@ func (d *Daemon) runSync(ctx context.Context) {
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	var phasesWg gosync.WaitGroup
 	phasesWg.Add(2)
+	rollupNow := time.Now()
 	go func() {
 		defer phasesWg.Done()
-		d.phaseTracksAndRollups(ctx)
+		d.phaseTracksAndRollups(ctx, rollupNow)
 	}()
 	go func() {
 		defer phasesWg.Done()
@@ -884,8 +885,12 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 // but digest.enabled off there is nothing for it to read — gating on
 // Tracks.Enabled alone would still create an empty pipeline_runs row every
 // cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on.
-func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
+// Digest.Enabled alone, unrelated to whether tracks itself is on. now is used
+// only for the rollup attempt budget's date (rollupBudgetDate) — the
+// runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
+// is provably the UTC date of the instant the phase actually ran, not a
+// second, independent read of the wall clock a test cannot control.
+func (d *Daemon) phaseTracksAndRollups(ctx context.Context, now time.Time) {
 	if d.config.Tracks.Enabled && d.config.Digest.Enabled && d.tracksPipe != nil {
 		d.trackedPipelineRun("tracks", func() pipelineRunStats {
 			n, updated, err := d.tracksPipe.Run(ctx)
@@ -925,7 +930,7 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 	// budget, matching day-plan/briefing. See rollupAttemptsExhausted's doc
 	// comment for why the budget key is the UTC date, not local.
 	if d.config.Digest.Enabled && d.digestPipe != nil {
-		date := rollupBudgetDate(time.Now())
+		date := rollupBudgetDate(now)
 		if !d.rollupAttemptsExhausted(date) {
 			if err := d.digestPipe.RunRollups(ctx); err != nil {
 				d.recordRollupAttempt(date)
