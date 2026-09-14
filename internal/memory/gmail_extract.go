@@ -171,7 +171,7 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// runGmailExtract is the Gmail episode-extraction step (Run step 4b, behind
+// runGmailExtract is the Gmail episode-extraction step (Run step 3b, behind
 // memory.sources.gmail), looped over every connected google_accounts row with
 // Gmail enabled (multi-account plan Task 9 — each account carries its own
 // memory_gmail_last_extracted_ts, so a disabled or errored account can never

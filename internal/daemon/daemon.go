@@ -1135,8 +1135,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 }
 
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
-// seeding, situation ingest, episode extraction). Runs after inbox so freshly
-// composed situations are visible, before next-step. The pipeline records its
+// seeding, episode extraction). Runs after inbox, before next-step. The pipeline records its
 // own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
 // no trackedPipelineRun wrapper here. Errors are logged and never abort the
 // cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
@@ -1159,10 +1158,9 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		d.logger.Printf("memory error: %v", err)
 		return
 	}
-	situations := stats.Ingested.Created + stats.Ingested.Updated + stats.Ingested.Finalized
-	if stats.Seeded > 0 || situations > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
-		d.logger.Printf("memory: %d seeded, %d situation node(s), %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
-			stats.Seeded, situations, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
+	if stats.Seeded > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
+		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
+			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
 	}
 }
 

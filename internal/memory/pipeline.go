@@ -42,16 +42,15 @@ func chatContextTypes(chatsOn bool) []string {
 
 // RunStats counts what one consolidation run did.
 type RunStats struct {
-	OwnerEditsCommitted bool        // MEM-03: a dirty worktree was committed as owner-edit first
-	Reconciled          Stats       // index mutations from the reconcile pass
-	Seeded              int         // skeleton entity pages created
-	Ingested            IngestStats // situation → episode mirror counts
-	Messages            int         // raw messages loaded into extraction windows
-	Windows             int         // channel windows built from those messages
-	WindowsFailed       int         // windows whose extraction failed (watermark frozen for them)
-	Episodes            int         // episode nodes written by the extractor
-	RefsRejected        int         // provenance refs dropped by MEM-01 validation
-	Malformed           int         // shape-degenerate extractor episodes (parsed but zero refs)
+	OwnerEditsCommitted bool  // MEM-03: a dirty worktree was committed as owner-edit first
+	Reconciled          Stats // index mutations from the reconcile pass
+	Seeded              int   // skeleton entity pages created
+	Messages            int   // raw messages loaded into extraction windows
+	Windows             int   // channel windows built from those messages
+	WindowsFailed       int   // windows whose extraction failed (watermark frozen for them)
+	Episodes            int   // episode nodes written by the extractor
+	RefsRejected        int   // provenance refs dropped by MEM-01 validation
+	Malformed           int   // shape-degenerate extractor episodes (parsed but zero refs)
 
 	// Gmail source (Phase-5 slice-1, zero unless memory.sources.gmail).
 	GmailEpisodes      int // episode nodes written by the Gmail thread→episode extractor
@@ -85,10 +84,6 @@ type RunStats struct {
 	DisputesFlagged    int // beliefs flagged dispute_pending by reflection (subset of Reflections)
 	ReflectionsDropped int // reflection observations refused by code (invented/sub-threshold/wrong-kind)
 
-	// Phase-5 5D interaction ingest (zero unless memory.sources.actions).
-	InteractionsIngested int // owner interactions folded (feedback + situation verdicts) into episode-mirror annotations
-	EngagementUpdated    int // per-entity engagement aggregates bumped (memory_engagement)
-
 	// Phase-5 slice-3 dark digest-compare (zero unless memory.renders.digest_compare).
 	DigestsCompared     int // shadow rows written by the compare runner (covered + coverage-0 windows)
 	CompareFailed       int // channels whose render/read failed and were isolated
@@ -101,8 +96,8 @@ type RunStats struct {
 }
 
 // Pipeline is the memory consolidation daemon phase: reconcile → seed →
-// ingest → extract (chunked per channel window) → mechanical map.md render,
-// with pipeline_runs/pipeline_steps accounting.
+// extract (chunked per channel window) → mechanical map.md render, with
+// pipeline_runs/pipeline_steps accounting.
 type Pipeline struct {
 	db        *db.DB
 	vault     *Vault
@@ -181,20 +176,19 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 //  1. Owner edits committed first (MEM-03), then Reconcile so the index
 //     absorbs the owner's changes before any machine write of this run.
 //  2. Mechanical entity seeding.
-//  3. Situations → episode nodes.
-//  4. Episode extraction from raw text, chunked per channel window; the
+//  3. Episode extraction from raw text, chunked per channel window; the
 //     watermark advances only behind fully committed windows (MEM-04).
-//  5. Semantic tier (dedupe → concept promotion → page rewrite → belief pass →
+//  4. Semantic tier (dedupe → concept promotion → page rewrite → belief pass →
 //     eviction), gated by memory.semantic.enabled and isolated per step.
-//  6. Mechanical index.md render + map.md render (strong when the semantic tier
+//  5. Mechanical index.md render + map.md render (strong when the semantic tier
 //     is on and within budget, mechanical fallback otherwise).
-//  7. pipeline_runs finalization.
+//  6. pipeline_runs finalization.
 //
-// Failure semantics: errors in steps 1–3 are fatal (the run stops, already
-// committed work stays); a per-window AI failure in step 4 freezes the
+// Failure semantics: errors in steps 1–2 are fatal (the run stops, already
+// committed work stays); a per-window AI failure in step 3 freezes the
 // watermark for that window but never fails the run (window isolation,
 // catchup-style) — it is recorded in the window's pipeline_steps row; a
-// semantic step failure in step 5 is logged and skipped and never fails the run
+// semantic step failure in step 4 is logged and skipped and never fails the run
 // or moves a watermark. A disabled config is a full no-op: nothing written, no
 // pipeline_runs row.
 func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
@@ -240,27 +234,27 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 	// consumer of importance (seeding, ingestion, extraction, semantic).
 	focusSteps := p.runFocusStep(runID, &stats)
 
-	// (2)-(4c): mechanical entity seeding, situation ingest, the calendar/
-	// mirror/jira mechanical source builders, and Slack/Gmail/interaction
-	// extraction — see runMechanicalAndExtraction.
-	batchSteps, actStaged, err := p.runMechanicalAndExtraction(ctx, runID, focusSteps, acc, &stats)
+	// (2)-(3b): mechanical entity seeding, the calendar/mirror/jira mechanical
+	// source builders, and Slack/Gmail extraction — see
+	// runMechanicalAndExtraction.
+	batchSteps, err := p.runMechanicalAndExtraction(ctx, runID, focusSteps, acc, &stats)
 	if err != nil {
 		return stats, p.fatal(runID, acc, &stats, wmBefore, err)
 	}
 
-	// (5) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
+	// (4) Semantic tier (Phase 3) — dark behind memory.semantic.enabled. Each
 	// step is isolated (a failure is logged and never fails the run) and never
 	// advances any watermark (compose/card precedent); the strong-tier AI steps
 	// stop launching once the run's accumulated output tokens exceed the budget.
 	semanticEnabled := p.cfg.Semantic.Enabled
 	if semanticEnabled {
-		p.runSemantic(ctx, runID, batchSteps, actStaged, acc, &stats)
+		p.runSemantic(ctx, runID, batchSteps, acc, &stats)
 	}
 
-	// (6) Renders — see runRenders.
+	// (5) Renders — see runRenders.
 	p.runRenders(ctx, runID, semanticEnabled, acc)
 
-	// (7) Dark digest compare-mode (behind memory.renders.digest_compare): render
+	// (6) Dark digest compare-mode (behind memory.renders.digest_compare): render
 	// each recently legacy-digested channel window from the memory episodes that
 	// now exist (extraction already ran this cycle) and shadow-store the diff. A
 	// pure reader of digests/digest_topics/messages; it writes only
@@ -277,9 +271,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, ingested %+v, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); interactions: %d folded (%d engagement bumps); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
-		stats.Seeded, stats.Ingested, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed, stats.InteractionsIngested, stats.EngagementUpdated,
+	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
+		stats.Seeded, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected, stats.FocusMatched, stats.FocusSwept, stats.FocusFailed)
 	return stats, nil
@@ -307,33 +301,24 @@ func (p *Pipeline) runFocusStep(runID int64, stats *RunStats) int {
 	return n
 }
 
-// runMechanicalAndExtraction runs Run steps 2 through 4c: mechanical entity
-// seeding, situation ingest, the calendar/mirror/jira mechanical source
-// builders (each dark behind its own memory.sources.* gate, run in that
-// dependency order — mirrors need situation episodes + calendar's series
-// entities, jira runs after mirrors), Slack episode extraction, Gmail episode
-// extraction, and mechanical interaction ingest. Seeding, situation ingest,
-// and Slack extraction are fatal to the run on error, matching Run's original
-// contract; every gated source step (calendar/mirrors/jira/gmail/actions) is
-// source-isolated — logged, never fatal, and never touches another source's
-// watermark. Returns the total step count recorded (the semantic tier's step
-// numbering base) and the staged interaction act: refs for the belief pass
-// (nil when memory.sources.actions is off).
-func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, focusSteps int, acc *usageAccumulator, stats *RunStats) (batchSteps int, actStaged *stagedChat, err error) {
+// runMechanicalAndExtraction runs Run steps 2 through 3b: mechanical entity
+// seeding, the calendar/mirror/jira mechanical source builders (each dark
+// behind its own memory.sources.* gate, run in that dependency order — mirrors
+// need calendar's series entities, jira runs after mirrors), Slack episode
+// extraction and Gmail episode extraction. Seeding and Slack extraction are
+// fatal to the run on error, matching Run's original contract; every gated
+// source step (calendar/mirrors/jira/gmail) is source-isolated — logged, never
+// fatal, and never touches another source's watermark. Returns the total step
+// count recorded (the semantic tier's step numbering base).
+func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, focusSteps int, acc *usageAccumulator, stats *RunStats) (batchSteps int, err error) {
 	// (2) Mechanical entity seeding (no AI). Gmail-sender seeding is gated on
 	// memory.sources.gmail so the source is literally dark when off.
 	stats.Seeded, err = SeedEntities(p.vault, p.db, SeedConfig{MinMessages: p.cfg.SeedMinMessages, WindowDays: seedWindowDays, Gmail: p.cfg.Sources.Gmail, Calendar: p.cfg.Sources.Calendar}, p.logf)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
 
-	// (3) Situations → episode nodes (mechanical).
-	stats.Ingested, err = IngestSituations(p.vault, p.db, p.checkMsg, p.logf)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	// (3b) Mechanical calendar past-event → episode builder (dark behind
+	// (2b) Mechanical calendar past-event → episode builder (dark behind
 	// memory.sources.calendar). Runs after seeding (participants + series must be
 	// seeded first) and before Slack extraction. No AI call. Its pipeline_steps
 	// row numbers first, so the Slack extraction batches number after it.
@@ -346,12 +331,11 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 		calSteps = n
 	}
 
-	// (3c) Mechanical target/track entity mirrors (dark behind
-	// memory.sources.operational). Runs after situation ingest (its situation:<id>
-	// episodes must exist for the conversion cross-links) and calendar 3b, before
-	// Slack extraction, so the mirror aliases exist before the same run's chat
-	// ingest / belief pass resolves them. No AI call. A read/resolve error fails the
-	// step (logged, MirrorsFailed) but is never fatal to the run (source isolation).
+	// (2c) Mechanical target/track entity mirrors (dark behind
+	// memory.sources.operational). Runs after calendar 2b and before Slack
+	// extraction, so the mirror aliases exist before the same run's chat ingest /
+	// belief pass resolves them. No AI call. A read/resolve error fails the step
+	// (logged, MirrorsFailed) but is never fatal to the run (source isolation).
 	mirrorSteps := 0
 	if p.cfg.Sources.Operational {
 		n, merr := p.runOperationalMirrors(runID, focusSteps+calSteps, stats)
@@ -361,7 +345,7 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 		mirrorSteps = n
 	}
 
-	// (3d) Mechanical Jira issue → episode builder (dark behind
+	// (2d) Mechanical Jira issue → episode builder (dark behind
 	// memory.sources.jira, owner scope-B: all issues, watermark-bounded, no
 	// backfill). Runs after mirrors and before Slack extraction. No AI call.
 	jiraSteps := 0
@@ -373,14 +357,14 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 		jiraSteps = n
 	}
 
-	// (4) Episode extraction from raw text.
+	// (3) Episode extraction from raw text.
 	slackSteps, err := p.runExtract(ctx, runID, focusSteps+calSteps+mirrorSteps+jiraSteps, acc, stats)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
 	batchSteps = focusSteps + calSteps + mirrorSteps + jiraSteps + slackSteps
 
-	// (4b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
+	// (3b) Gmail thread → episode extraction (dark behind memory.sources.gmail).
 	// Its own watermark (memory_gmail_last_extracted_ts) and the same batch-
 	// isolation contract as Slack extraction: a per-batch failure freezes only
 	// that batch's threads and never fails the run — so a Gmail-step error is
@@ -394,19 +378,7 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 		batchSteps += gmailSteps
 	}
 
-	// (4c) Mechanical interaction ingest (dark behind memory.sources.actions):
-	// its OWN Run step, gated ONLY on Sources.Actions and independent of the
-	// semantic tier — the annotations + engagement aggregates have value without
-	// the belief pass. It stages act: refs for the belief pass; when the semantic
-	// tier is off those staged refs are simply unused (the annotations + engagement
-	// still land).
-	if p.cfg.Sources.Actions {
-		var n int
-		actStaged, n = p.runInteractionIngest(runID, batchSteps, stats)
-		batchSteps += n
-	}
-
-	return batchSteps, actStaged, nil
+	return batchSteps, nil
 }
 
 // runRenders re-renders index.md (the mechanical full listing, always run
@@ -443,7 +415,7 @@ const semanticEvictScoreThreshold = 0.5
 // guarded (an explicit 0 falls back to the default rather than disabling the
 // bound). batchSteps is the count of extraction batch rows already recorded —
 // the fallback base for step numbering when the DB read fails.
-func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, actStaged *stagedChat, acc *usageAccumulator, stats *RunStats) {
+func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int, acc *usageAccumulator, stats *RunStats) {
 	step := p.nextSemanticStep(runID, batchSteps)
 
 	// Phase-4 chat surface (dark unless memory.surfaces.chat): stage owner Discuss
@@ -473,12 +445,6 @@ func (p *Pipeline) runSemantic(ctx context.Context, runID int64, batchSteps int,
 			p.recordSemanticStep(runID, &step, "chat-ingest", stepStatus(ierr), nil, start)
 		}
 	}
-
-	// The Phase-5 5D interaction ingest already ran as its own Run step (4c,
-	// committing its annotations + engagement and advancing its own floor). Its
-	// staged act: refs merge into the belief-pass input here so a model op citing
-	// one validates (MEM-15); it forms no preference beliefs in this slice.
-	staged = mergeStaged(staged, actStaged)
 
 	// Mechanical: episode dedupe.
 	start := time.Now()

@@ -36,10 +36,9 @@ func seedSituationForChannel(t *testing.T, d *db.DB, channelID, userID string) i
 	t.Helper()
 	sigID, err := d.CreateInboxItem(db.InboxItem{ChannelID: channelID, MessageTS: "1.1", SenderUserID: userID, TriggerType: "stream"})
 	require.NoError(t, err)
-	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "situation", Kind: "external", Priority: "medium", Rank: 0.5, AIReason: "x"})
-	require.NoError(t, err)
-	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sigID)}))
-	return int(sitID)
+	sitID := seedSituation(t, d, "situation", "")
+	seedSituationSignal(t, d, sitID, int(sigID))
+	return sitID
 }
 
 // TestIngestChatStatementsStages: a role='user' turn in a situation whose
@@ -131,7 +130,7 @@ func TestRunSemanticChatOwnerEvidence(t *testing.T) {
 	before := dumpInboxSituationState(t, d)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 	assert.Equal(t, 1, stats.ChatTurnsIngested)
 
 	got, err := v.ReadNode(bel.ID)
@@ -165,7 +164,7 @@ func TestRunSemanticChatFloorHeldOnBeliefError(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -199,7 +198,7 @@ func TestRunSemanticChatGateOffNoop(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 	assert.Zero(t, stats.ChatTurnsIngested, "gate off → nothing ingested")
 
 	floor, err := d.MemoryChatTurnFloor()
@@ -300,7 +299,7 @@ func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -328,7 +327,7 @@ func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 
 	floor, err := d.MemoryChatTurnFloor()
 	require.NoError(t, err)
@@ -618,7 +617,7 @@ func TestRunSemanticRememberThisTrackOwnerEvidence(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatsSourceConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 	assert.Equal(t, 1, stats.ChatTurnsIngested)
 
 	got, err := v.ReadNode(bel.ID)
@@ -650,7 +649,7 @@ func TestRunSemanticRememberThisTrackFlagOffNoEvidence(t *testing.T) {
 	p := NewPipeline(d, v, gen, chatIngestConfig(), t.Logf)
 
 	var stats RunStats
-	p.runSemantic(context.Background(), 0, 0, nil, &usageAccumulator{}, &stats)
+	p.runSemantic(context.Background(), 0, 0, &usageAccumulator{}, &stats)
 	assert.Zero(t, stats.ChatTurnsIngested, "flag off → the track turn is not ingested")
 
 	got, err := v.ReadNode(bel.ID)

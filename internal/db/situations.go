@@ -48,8 +48,9 @@ type SituationFilter struct {
 }
 
 // ListSituations lists dashboard situations with optional status/recency
-// filters over the frozen table (memory reads it; see the "Residual writers"
-// note below on why it is frozen).
+// filters over the frozen table (memory reads it; nothing writes it any more —
+// the composer and the dashboard lifecycle went with the inbox demolition, see
+// docs/superpowers/specs/2026-09-14-inbox-demolition-design.md §4).
 func (db *DB) ListSituations(f SituationFilter) ([]DashboardSituation, error) {
 	query := `SELECT ` + situationSelectCols + ` FROM situations`
 	var conds []string
@@ -89,118 +90,6 @@ func (db *DB) ListSituations(f SituationFilter) ([]DashboardSituation, error) {
 		out = append(out, *s)
 	}
 	return out, rows.Err()
-}
-
-// ---- Residual writers ----
-//
-// The situations table is frozen history: no production code path writes to it
-// any more (the composer, the situation cards and the dashboard lifecycle were
-// removed with the inbox demolition — see
-// docs/superpowers/specs/2026-09-14-inbox-demolition-design.md §4). The five
-// writers below survive only because tests in internal/memory (and this
-// package's own tests) seed the frozen table through them; they have no
-// non-test caller. internal/tools, internal/mcp and cmd no longer call them —
-// their test-fixture calls were replaced with raw-SQL seeding when the
-// situations readers were retired (inbox demolition, task 4).
-
-// CreateSituation inserts a new situation and returns its ID.
-func (db *DB) CreateSituation(s DashboardSituation) (int64, error) {
-	if s.Status == "" {
-		s.Status = "open"
-	}
-	if s.Priority == "" {
-		s.Priority = "medium"
-	}
-	if s.Kind == "" {
-		s.Kind = "external"
-	}
-	if s.CardStatus == "" {
-		s.CardStatus = "none"
-	}
-	now := "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
-	res, err := db.Exec(`INSERT INTO situations (title, kind, status, priority, rank, ai_reason,
-		summary, why_matters, chronology, card_status, target_id, track_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+now+`, `+now+`)`,
-		s.Title, s.Kind, s.Status, s.Priority, s.Rank, s.AIReason,
-		s.Summary, s.WhyMatters, s.Chronology, s.CardStatus, s.TargetID, s.TrackID,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("inserting situation: %w", err)
-	}
-	return res.LastInsertId()
-}
-
-// AddSituationSignals attaches inbox items to a situation as signals
-// (INSERT OR IGNORE, so re-adding an already-attached item is a no-op) and
-// bumps the situation's last_signal_at/updated_at timestamps.
-func (db *DB) AddSituationSignals(situationID int, inboxItemIDs []int) error {
-	if len(inboxItemIDs) == 0 {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("beginning tx for situation signals: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	for _, itemID := range inboxItemIDs {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO situation_signals (situation_id, inbox_item_id) VALUES (?, ?)`,
-			situationID, itemID); err != nil {
-			return fmt.Errorf("adding signal %d to situation %d: %w", itemID, situationID, err)
-		}
-	}
-	if _, err := tx.Exec(`UPDATE situations SET
-		last_signal_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id = ?`, situationID); err != nil {
-		return fmt.Errorf("touching situation %d: %w", situationID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing situation signals: %w", err)
-	}
-	return nil
-}
-
-// SetSituationCard stores the card content and marks card_status ready.
-func (db *DB) SetSituationCard(id int, summary, whyMatters, chronology string) error {
-	_, err := db.Exec(`UPDATE situations SET summary = ?, why_matters = ?, chronology = ?,
-		card_status = 'ready', card_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-		summary, whyMatters, chronology, id)
-	if err != nil {
-		return fmt.Errorf("setting situation %d card: %w", id, err)
-	}
-	return nil
-}
-
-// SetSituationStatus changes a situation's status and records the reason.
-func (db *DB) SetSituationStatus(id int, status, reason string) error {
-	_, err := db.Exec(`UPDATE situations SET status = ?, resolved_reason = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, status, reason, id)
-	if err != nil {
-		return fmt.Errorf("setting situation %d status: %w", id, err)
-	}
-	return nil
-}
-
-// MarkSituationConverted marks a situation as converted into a target and/or
-// track. A zero targetID/trackID is stored as NULL (not converted to that kind).
-func (db *DB) MarkSituationConverted(id int, targetID, trackID int) error {
-	var convertedTarget, convertedTrack any
-	if targetID != 0 {
-		convertedTarget = targetID
-	}
-	if trackID != 0 {
-		convertedTrack = trackID
-	}
-	_, err := db.Exec(`UPDATE situations SET status = 'converted',
-		converted_target_id = ?, converted_track_id = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-		convertedTarget, convertedTrack, id)
-	if err != nil {
-		return fmt.Errorf("marking situation %d converted: %w", id, err)
-	}
-	return nil
 }
 
 // ListSituationSignals returns the inbox items attached to a situation,

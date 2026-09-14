@@ -52,7 +52,7 @@ import (
 func targetMirrorAlias(id int) string { return fmt.Sprintf("target:%d", id) }
 func trackMirrorAlias(id int) string  { return fmt.Sprintf("track:%d", id) }
 
-// runOperationalMirrors is Run step 3c (behind memory.sources.operational): the
+// runOperationalMirrors is Run step 2c (behind memory.sources.operational): the
 // mechanical, no-AI mirror of targets/tracks into vault entity nodes. It scans
 // the candidate rows, rebuilds each mirror body deterministically, commits the
 // changed ones as ONE vault commit, and records one pipeline_steps row named

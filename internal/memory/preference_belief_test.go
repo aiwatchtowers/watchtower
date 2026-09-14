@@ -8,13 +8,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
 // preferenceStaged builds a stagedChat carrying one owner-action referencing the
-// given situation act row, subject-mapped to subjectID — the shape the
-// interaction ingest produces for the belief pass.
+// given situation act row, subject-mapped to subjectID — the shape a staged owner
+// action takes on its way into the belief pass.
 func preferenceStaged(actRef string, ts int64, bullet, subjectID string) *stagedChat {
 	return &stagedChat{
 		refs:     map[string]bool{fmt.Sprintf("%s %d", actRef, ts): true},
@@ -33,11 +31,9 @@ func TestBuildReviseBeliefsPromptRendersOwnerActions(t *testing.T) {
 	tsRef := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
 	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", tsRef))
 	writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
-	require.NoError(t, d.BumpEngagements([]db.EngagementBump{
-		{NodeID: subjectID, Engaged: true, At: "2026-03-10T00:00:00Z"},
-		{NodeID: subjectID, Engaged: false, At: "2026-03-11T00:00:00Z"},
-		{NodeID: subjectID, Engaged: false, At: "2026-03-12T00:00:00Z"},
-	}))
+	require.NoError(t, d.BumpEngagement(subjectID, true, "2026-03-10T00:00:00Z"))
+	require.NoError(t, d.BumpEngagement(subjectID, false, "2026-03-11T00:00:00Z"))
+	require.NoError(t, d.BumpEngagement(subjectID, false, "2026-03-12T00:00:00Z"))
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "{}", nil }}
 	cfg := pipelineTestConfig()
@@ -66,8 +62,7 @@ func TestPreferenceBeliefBornFromOwnerAction(t *testing.T) {
 	writeAndIndex(t, v, d, rewriteEpisodeNode(epID, "C1CHAN", tsRef))
 	writeAndIndex(t, v, d, beliefSubjectEntity(subjectID, epID))
 
-	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "s", Summary: "s", Chronology: "c"})
-	require.NoError(t, err)
+	sitID := seedSituation(t, d, "s", "")
 	actRef := fmt.Sprintf("act:situations:%d", sitID)
 
 	gen := &fakeGen{reply: func(string) (string, error) {

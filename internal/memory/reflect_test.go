@@ -319,8 +319,9 @@ func TestReflectGateOffNoStep(t *testing.T) {
 // restated for Phase 4): even with a dispute flag set and every surface gate
 // on, a full memory consolidation run writes nothing to inbox_items /
 // situations / situation_signals and never moves inbox_last_processed_ts. The
-// dispute flag is memory-owned side-table state; only the inbox watchtower
-// detector (internal/inbox) mints the item — the memory package never does.
+// dispute flag is memory-owned side-table state and stays that way: memory only
+// SETS the flag, and since the inbox demolition retired the watchtower
+// detector's decision_made branch no surface reads it at all.
 func TestMemory10_DisputeFlagsNeverTouchInboxFromMemory(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	pipelineFixture(t, d) // workspace + channels + messages
@@ -342,7 +343,6 @@ func TestMemory10_DisputeFlagsNeverTouchInboxFromMemory(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COALESCE(inbox_last_processed_ts, 0) FROM workspace`).Scan(&wmBefore))
 
 	cfg := reflectConfig()
-	cfg.Surfaces.Disputes = true // "even with disputes enabled" — memory never reads this
 	cfg.Surfaces.Chat = true
 	cfg.Surfaces.Briefing = true
 	p := NewPipeline(d, v, &fakeGen{reply: semanticReply}, cfg, t.Logf)

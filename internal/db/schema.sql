@@ -1397,14 +1397,15 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
 
 -- Phase-5 slice-1 per-entity engagement aggregates (see 00042): the
 -- retention-importance input Phase-3's RetentionInputs/RetentionScore
--- stubbed out, fed by the mechanical interaction-ingest step
--- (memory.sources.actions) from inbox_feedback/situation transitions/
--- conversions. A dedicated side table — not memory_nodes columns, not
--- memory_node_stats (which stays write-dead in this slice). Runtime state
--- derived from interaction rows: MEM-02-exempt like memory_entity_hints
--- (NOT like memory_node_stats) — it must survive DropMemoryIndex/reindex
--- because the interaction floor may already have stepped past the rows that
--- produced these aggregates.
+-- stubbed out. Its writer, the mechanical interaction-ingest step, was removed
+-- with the inbox demolition (every one of its sources — inbox_feedback,
+-- situation thumbs, situation verdicts — went with it), so existing rows stay
+-- readable by retention scoring and no new ones are produced. A dedicated side
+-- table — not memory_nodes columns, not memory_node_stats (which stays
+-- write-dead). Runtime state derived from interaction rows: MEM-02-exempt like
+-- memory_entity_hints (NOT like memory_node_stats) — it must survive
+-- DropMemoryIndex/reindex because the rows that produced these aggregates may
+-- be long gone.
 CREATE TABLE IF NOT EXISTS memory_engagement (
     node_id             TEXT PRIMARY KEY REFERENCES memory_nodes(id),
     engaged_count       INTEGER NOT NULL DEFAULT 0,

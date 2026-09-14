@@ -98,9 +98,8 @@ func TestUpdateInboxItemSnippetKeepsComposedAtWhenOwnerDismissed(t *testing.T) {
 	require.NoError(t, err)
 	markInboxItemComposed(t, db, id)
 
-	sitID, err := db.CreateSituation(DashboardSituation{Title: "old story", Kind: "external", Priority: "medium", Status: "dismissed"})
-	require.NoError(t, err)
-	require.NoError(t, db.AddSituationSignals(int(sitID), []int{int(id)}))
+	sitID := insertSituation(t, db, "old story", "dismissed")
+	attachSituationSignal(t, db, sitID, int(id))
 
 	before, err := db.GetInboxItemByID(int(id))
 	require.NoError(t, err)

@@ -1169,7 +1169,7 @@ func TestGmailMessageSender(t *testing.T) {
 
 // TestMemoryChatTurnFloorRoundTrip: the owner-chat ingest floor (Task 1,
 // migration 00019) defaults to 0 on a fresh workspace and persists after
-// SetMemoryChatTurnFloor, mirroring MemoryIngestFloor/SetMemoryIngestFloor.
+// SetMemoryChatTurnFloor, mirroring the extraction watermark's round trip.
 func TestMemoryChatTurnFloorRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 
@@ -1727,36 +1727,6 @@ func TestTrackIDsForTarget(t *testing.T) {
 	none, err := db.TrackIDsForTarget(999999)
 	require.NoError(t, err)
 	assert.Empty(t, none, "a target with no linked track maps to nothing")
-}
-
-// TestMemoryInteractionFloorRoundTrip: the 5D interaction-ingest floor (Task
-// 3, migration 00042) defaults to 0 on a fresh workspace and persists after
-// SetMemoryInteractionFloor, mirroring MemoryChatTurnFloor/
-// SetMemoryChatTurnFloor.
-func TestMemoryInteractionFloorRoundTrip(t *testing.T) {
-	db := openTestDB(t)
-
-	floor, err := db.MemoryInteractionFloor()
-	if err != nil {
-		t.Fatalf("MemoryInteractionFloor on fresh workspace: %v", err)
-	}
-	if floor != 0 {
-		t.Errorf("initial floor = %d, want 0", floor)
-	}
-
-	if _, err := db.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`); err != nil {
-		t.Fatalf("seeding workspace: %v", err)
-	}
-	if err := db.SetMemoryInteractionFloor(7); err != nil {
-		t.Fatalf("SetMemoryInteractionFloor: %v", err)
-	}
-	floor, err = db.MemoryInteractionFloor()
-	if err != nil {
-		t.Fatalf("MemoryInteractionFloor after set: %v", err)
-	}
-	if floor != 7 {
-		t.Errorf("floor after set = %d, want 7", floor)
-	}
 }
 
 // TestBumpEngagementAccumulatesEngagedAndDismissed covers the memory_engagement
