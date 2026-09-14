@@ -132,6 +132,22 @@ Sidebar label stays **"Inbox"** (default taken in session; renaming to "Actions"
 
 `Tests/Support/TestDatabase+Schema.swift` drops the three tables in lockstep with §4.
 
+### Corrections (2026-09-14, at implementation)
+
+- §7's deleted list above is wrong about `TargetPrefillBuilder.fromInbox`: it has a live caller
+  (`fromBriefingItem`, the briefing "Create target" path) and was kept. Only
+  `TargetPrefillBuilder.fromSituation` was deleted.
+- §7's "kept, live" list above is wrong about `SituationQueries`/`Situation`: they were deleted
+  outright, not shrunk to a historical `targets.source_type='situation'` renderer — no such
+  renderer exists; `TargetDetailView` prints an unrecognized `sourceType` as plain capitalized
+  text, the same as any other source type.
+- §10's PR split is wrong about the Swift fixture-schema drop: it rode PR 2 (Desktop), not PR 1
+  (Go), because `SituationQueries`/`FeedItemQueries`/`InboxFeedbackQueries` — the Desktop-side
+  callers of the tables the migration drops — weren't deleted until PR 2.
+- §3.2 didn't list `SecretaryProfileViewModel.generateStyle()` as a Swift caller of
+  `watchtower inbox style-sample`; its CLI argv moved to `["profile", "style-sample"]` along with
+  the `profile style-sample` rename, fixed in the PR 2 review pass.
+
 ---
 
 ## 8. Contracts & documentation

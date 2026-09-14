@@ -80,13 +80,13 @@ struct SystemSettings: View {
                 "Light Model",
                 value: $config.aiModelLight,
                 resolved: catalogProvider?.resolvedLight,
-                help: "Cheap/fast tier: triage, rollups, dictation cleanup"
+                help: "Cheap/fast tier: rollups, digest batches, dictation cleanup"
             )
             modelField(
                 "Strong Model",
                 value: $config.aiModelStrong,
                 resolved: catalogProvider?.resolvedStrong,
-                help: "Quality tier: situation cards, briefings, chat"
+                help: "Quality tier: briefings, recaps, chat"
             )
             if selectedProviderID == "ollama" {
                 ollamaURLRow

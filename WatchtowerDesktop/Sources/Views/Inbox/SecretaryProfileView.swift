@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Inbox → Profile tab: the secretary brief plus the communication style
 /// profile. Both are workspace-level free text; the style profile can also be
-/// regenerated from the owner's own messages via `watchtower inbox style-sample`.
+/// regenerated from the owner's own messages via `watchtower profile style-sample`.
 struct SecretaryProfileView: View {
     @Bindable var vm: SecretaryProfileViewModel
 
@@ -39,7 +39,7 @@ struct SecretaryProfileView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Who you are")
                 .font(.headline)
-            Text("Tell the assistant who you are and what matters. It reads this before every scan.")
+            Text("Tell the assistant who you are and what matters. Catch-Up recaps and the idea chat read this.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             editor(text: $vm.briefText, minHeight: 160)

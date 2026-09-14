@@ -61,7 +61,7 @@ final class SecretaryProfileViewModelTests: XCTestCase {
 
         await vm.generateStyle()
 
-        XCTAssertEqual(runner.invocations, [["inbox", "style-sample"]])
+        XCTAssertEqual(runner.invocations, [["profile", "style-sample"]])
         XCTAssertFalse(vm.isGenerating)
         XCTAssertNil(vm.errorMessage)
     }
