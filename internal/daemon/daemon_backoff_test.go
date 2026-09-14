@@ -450,6 +450,25 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 // simulates a day boundary by rewriting rollupAttemptDate directly, the
 // approach the verification report names for this shape.
 
+// TestRollupBudgetDate_UsesUTCNotLocal is the deterministic counterpart to
+// the wall-clock UTC-date assertion inside
+// TestDaemon_RollupBackoff_ThreeFailuresExhaustBudget: that assertion
+// compares against the real clock, so it only catches a dropped `.UTC()`
+// near the UTC day boundary (whatever the machine's own time zone happens to
+// be at the moment the test runs). This test instead picks a fixed instant
+// whose LOCAL and UTC calendar dates differ (23:30 in a UTC-10 zone is
+// already the next day in UTC) and pins rollupBudgetDate against it
+// directly — deterministic regardless of the machine or time of day running
+// the test.
+func TestRollupBudgetDate_UsesUTCNotLocal(t *testing.T) {
+	west10 := time.FixedZone("UTC-10", -10*3600)
+	instant := time.Date(2026, 9, 14, 23, 30, 0, 0, west10)
+	require.Equal(t, "2026-09-14", instant.Format("2006-01-02"), "sanity: the local date must be the 14th")
+	require.Equal(t, "2026-09-15", instant.UTC().Format("2006-01-02"), "sanity: the UTC date must be the 15th")
+
+	assert.Equal(t, "2026-09-15", rollupBudgetDate(instant), "rollupBudgetDate must return the UTC date, not the local one")
+}
+
 // rollupBackoffTestSetup seeds two channel digests on DISTINCT channels
 // inside today's UTC window. Two rows on the SAME channel would collapse via
 // UpsertDigest's uniqueness constraint and turn every budget test below into

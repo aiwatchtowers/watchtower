@@ -925,7 +925,7 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 	// budget, matching day-plan/briefing. See rollupAttemptsExhausted's doc
 	// comment for why the budget key is the UTC date, not local.
 	if d.config.Digest.Enabled && d.digestPipe != nil {
-		date := time.Now().UTC().Format("2006-01-02")
+		date := rollupBudgetDate(time.Now())
 		if !d.rollupAttemptsExhausted(date) {
 			if err := d.digestPipe.RunRollups(ctx); err != nil {
 				d.recordRollupAttempt(date)
@@ -1599,6 +1599,16 @@ func (d *Daemon) recordBriefingAttempt(date string) {
 // dayPlanAttemptsExhausted.
 func (d *Daemon) briefingAttemptsExhausted(date string) bool {
 	return d.briefingAttemptDate == date && d.briefingAttempts >= maxDailyAIAttempts
+}
+
+// rollupBudgetDate returns the calendar date the daily-rollup attempt budget
+// is keyed on for the instant now: the UTC date, not local. A pure,
+// clock-free function (now is a parameter, not read internally) so the
+// UTC-vs-local choice is unit-testable with a fixed instant whose local and
+// UTC dates differ, independent of the machine's own time zone — see
+// rollupAttemptsExhausted's doc comment for why UTC is correct here.
+func rollupBudgetDate(now time.Time) string {
+	return now.UTC().Format("2006-01-02")
 }
 
 func (d *Daemon) rollupAttemptsPath() string {
