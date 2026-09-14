@@ -37,17 +37,12 @@ func FastForward(id string, database *db.DB, now time.Time) error {
 	}
 }
 
-// fastForwardSecretaryInbox stamps both watermarks the inbox pipeline's own
-// Run advances: detection/triage's inbox_last_processed_ts (INBOX-09) and
-// the composer's compose_last_run_ts (DASH-02) — re-enabling the pillar
-// must skip both stages' backlog, not just detection's.
+// fastForwardSecretaryInbox stamps the detection/triage watermark
+// (inbox_last_processed_ts, INBOX-09) — re-enabling the pillar must skip the
+// backlog that accumulated while it was off.
 func fastForwardSecretaryInbox(database *db.DB, now time.Time) error {
-	ts := float64(now.Unix())
-	if err := database.SetInboxLastProcessedTS(ts); err != nil {
+	if err := database.SetInboxLastProcessedTS(float64(now.Unix())); err != nil {
 		return fmt.Errorf("fast-forwarding inbox watermark: %w", err)
-	}
-	if err := database.SetComposeLastRunTS(ts); err != nil {
-		return fmt.Errorf("fast-forwarding compose watermark: %w", err)
 	}
 	return nil
 }

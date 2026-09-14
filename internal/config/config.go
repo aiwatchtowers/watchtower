@@ -82,18 +82,9 @@ type BriefingConfig struct {
 
 // InboxConfig holds settings for the inbox detection pipeline.
 type InboxConfig struct {
-	Enabled             bool                  `mapstructure:"enabled"`               // enable inbox detection (default: true)
-	MaxItemsPerRun      int                   `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
-	InitialLookbackDays int                   `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
-	MaxTriageMessages   int                   `mapstructure:"max_triage_messages"`   // max stream messages scanned per triage cycle (default: 600)
-	MaxAwarenessCards   int                   `mapstructure:"max_awareness_cards"`   // max ambient items given a secretary card per cycle (default: 3)
-	Situations          InboxSituationsConfig `mapstructure:"situations"`            // gates the situations compose + situation-card stages independently (default: false)
-}
-
-// InboxSituationsConfig gates the situations compose + situation-card stages
-// (the expensive AI clustering) independently of the rest of the inbox.
-type InboxSituationsConfig struct {
-	Enabled bool `mapstructure:"enabled"` // enable dashboard situations compose + cards (default: false)
+	Enabled             bool `mapstructure:"enabled"`               // enable inbox detection (default: true)
+	MaxItemsPerRun      int  `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
+	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
 }
 
 // IdeasConfig holds settings for the ideas & decisions registry pipeline
@@ -118,19 +109,6 @@ type StreamsConfig struct {
 type ReactionCommandsConfig struct {
 	Enabled       bool `mapstructure:"enabled"`        // enable reaction-command detection (default: false)
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls (default: 6)
-}
-
-// FeedConfig holds settings for the dashboard feed publisher (internal/feed).
-type FeedConfig struct {
-	Enabled            bool `mapstructure:"enabled"`              // enable feed publishing (default: true)
-	MeetingLeadMinutes int  `mapstructure:"meeting_lead_minutes"` // minutes before start a meeting enters the feed (default: 30)
-}
-
-// DashboardConfig holds settings for the secretary dashboard's situation
-// composer (internal/inbox/compose.go).
-type DashboardConfig struct {
-	StaleAfterDays    int `mapstructure:"stale_after_days"`    // days of inactivity before an open situation is marked stale (default: 7)
-	MaxComposeSignals int `mapstructure:"max_compose_signals"` // max uncomposed signals considered per compose cycle (default: 200)
 }
 
 // CatchupConfig controls the on-demand absence recap.
@@ -288,8 +266,8 @@ type MemoryConfig struct {
 	BatchMaxChannels     int                  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
 	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
 	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
-	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/disputes/reflection), each dark by default
-	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // Phase-5 slice-1 sources (gmail/actions), each dark by default
+	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/reflection), each dark by default
+	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // memory sources (gmail/calendar/chats/operational/jira), each dark by default
 	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
 	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
 	Focus                MemoryFocusConfig    `mapstructure:"focus"`                   // focus-salience Run step (fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep), dark by default
@@ -314,29 +292,25 @@ type MemorySemanticConfig struct {
 	Preferences        bool `mapstructure:"preferences"`          // Phase-5 slice-4: gate the OWNER ACTIONS block in the belief pass, forming preference beliefs from staged owner-action evidence (default: false)
 }
 
-// MemorySurfacesConfig gates the four Phase-4 memory surfaces independently —
-// each is a no-op when its flag is off, so the four have independent blast
-// radii. All default false (dark by default).
+// MemorySurfacesConfig gates the memory surfaces independently — each is a
+// no-op when its flag is off, so each has an independent blast radius. All
+// default false (dark by default).
 type MemorySurfacesConfig struct {
 	Chat        bool `mapstructure:"chat"`         // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
 	Briefing    bool `mapstructure:"briefing"`     // daily briefing "Memory revisions" journal block (default: false)
-	Disputes    bool `mapstructure:"disputes"`     // inbox watchtower detector surfaces dispute_pending beliefs as dashboard situations (default: false)
 	Reflection  bool `mapstructure:"reflection"`   // weekly strong-tier reflection pass over vault git history (default: false)
 	DayPlan     bool `mapstructure:"day_plan"`     // Phase-5 slice-4: day plan reads open loops from memory entity mirrors (default: false)
 	MeetingPrep bool `mapstructure:"meeting_prep"` // Phase-5 slice-4: meeting prep reads attendee entity pages + beliefs from memory (default: false)
 }
 
-// MemorySourcesConfig gates the two Phase-5 slice-1 memory sources
-// independently — each gated path is a byte-identical no-op when its flag is
-// off, and the two flags have independent blast radii from each other AND from
+// MemorySourcesConfig gates the Phase-5 memory sources independently — each
+// gated path is a byte-identical no-op when its flag is off, and every flag
+// has an independent blast radius from the others AND from
 // Semantic.Enabled/Surfaces.*. This independence is literal: Gmail gates BOTH the
-// thread->episode extractor AND sender->person seeding, and Actions runs the
-// mechanical interaction ingest as its OWN Run step (not a semantic sub-step), so
-// its annotations + engagement land even with the semantic tier off (the staged
-// act: refs are simply unused then). All default false (dark by default).
+// thread->episode extractor AND sender->person seeding. All default false
+// (dark by default).
 type MemorySourcesConfig struct {
 	Gmail       bool `mapstructure:"gmail"`       // Gmail thread->episode extractor + sender->person seeding (default: false)
-	Actions     bool `mapstructure:"actions"`     // mechanical interaction ingest (owner-action evidence, engagement aggregates), its own Run step (default: false)
 	Calendar    bool `mapstructure:"calendar"`    // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
 	Chats       bool `mapstructure:"chats"`       // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
 	Operational bool `mapstructure:"operational"` // Phase-5 slice-4: mechanical target/track entity mirrors in the vault (target:<id>/track:<id>), its own Run step (default: false)
@@ -387,8 +361,6 @@ type Config struct {
 	Ideas            IdeasConfig                 `mapstructure:"ideas"`
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
-	Feed             FeedConfig                  `mapstructure:"feed"`
-	Dashboard        DashboardConfig             `mapstructure:"dashboard"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -450,9 +422,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.enabled", DefaultInboxEnabled)
 	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
-	v.SetDefault("inbox.max_triage_messages", DefaultInboxMaxTriageMessages)
-	v.SetDefault("inbox.max_awareness_cards", DefaultInboxMaxAwarenessCards)
-	v.SetDefault("inbox.situations.enabled", DefaultInboxSituationsEnabled)
 	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
 	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
 	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)
@@ -461,10 +430,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
-	v.SetDefault("feed.enabled", true)
-	v.SetDefault("feed.meeting_lead_minutes", DefaultFeedMeetingLeadMinutes)
-	v.SetDefault("dashboard.stale_after_days", DefaultDashboardStaleAfterDays)
-	v.SetDefault("dashboard.max_compose_signals", DefaultDashboardMaxComposeSignals)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
@@ -516,10 +481,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.semantic.output_budget", 200000)
 	v.SetDefault("memory.surfaces.chat", false) // Phase-4 surfaces dark by default
 	v.SetDefault("memory.surfaces.briefing", false)
-	v.SetDefault("memory.surfaces.disputes", false)
 	v.SetDefault("memory.surfaces.reflection", false)
-	v.SetDefault("memory.sources.gmail", false) // Phase-5 slice-1 sources dark by default
-	v.SetDefault("memory.sources.actions", false)
+	v.SetDefault("memory.sources.gmail", false)    // Gmail source dark by default
 	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
 	v.SetDefault("memory.sources.chats", false)
 	v.SetDefault("memory.renders.digest_compare", false) // Phase-5 slice-3 renders dark by default

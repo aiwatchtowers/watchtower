@@ -134,7 +134,6 @@ func TestConfigSet_MemorySurfaces(t *testing.T) {
 	for _, key := range []string{
 		"memory.surfaces.chat",
 		"memory.surfaces.briefing",
-		"memory.surfaces.disputes",
 		"memory.surfaces.reflection",
 	} {
 		buf := new(bytes.Buffer)
@@ -258,7 +257,6 @@ func TestKnownConfigKeys(t *testing.T) {
 		"digest.workers",
 		"memory.surfaces.chat",
 		"memory.surfaces.briefing",
-		"memory.surfaces.disputes",
 		"memory.surfaces.reflection",
 		"claude_path",
 	}

@@ -96,7 +96,6 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 
 	defaults := defaultConfig(t)
 	wantEnabled := map[string]bool{
-		"feed":            true,
 		"secretary-inbox": true,
 		"slack-digests":   true,
 		"stream-digests":  true,
@@ -114,6 +113,20 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		require.NotNil(t, feat.Enabled, "feature %q has a nil Enabled func", id)
 		assert.Equal(t, want, feat.Enabled(defaults), "feature %q against defaults", id)
 	}
+}
+
+func TestRegistry_InboxIsAttentionDetection(t *testing.T) {
+	f, ok := ByID("secretary-inbox")
+	require.True(t, ok)
+	require.Equal(t, "Attention detection", f.Title)
+	require.Equal(t, CostNone, f.Cost)
+	require.Empty(t, f.SubToggles)
+	require.Equal(t, []string{"briefing"}, f.FeedsInto)
+
+	_, ok = ByID("dashboard")
+	require.False(t, ok, "dashboard feature entry must be gone")
+	_, ok = ByID("feed")
+	require.False(t, ok, "feed feature entry must be gone")
 }
 
 func TestRegistry_DependentsTransitive(t *testing.T) {
@@ -141,7 +154,7 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	memoryOn := loadConfig(t, "memory:\n  enabled: true\n")
 	depsWithMemory := idSet(Dependents("slack-digests", memoryOn))
 	assert.True(t, depsWithMemory["memory"],
-		"memory should appear transitively via secretary-inbox once memory.enabled is true")
+		"memory should appear transitively via tracks once memory.enabled is true")
 	assert.True(t, depsWithMemory["day-plan"],
 		"day-plan should appear transitively via memory once memory.enabled is true")
 

@@ -340,7 +340,7 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 	base := Config{
 		ActiveWorkspace: "keep-me",
 		Digest:          DigestConfig{Enabled: false, MinMessages: 7, Language: "English"},
-		Inbox:           InboxConfig{Enabled: true, MaxTriageMessages: 42},
+		Inbox:           InboxConfig{Enabled: true, MaxItemsPerRun: 42},
 		Streams:         StreamsConfig{Enabled: true, IntervalHours: 3},
 		Tracks:          TracksConfig{Enabled: true},
 		People:          PeopleConfig{Enabled: true},

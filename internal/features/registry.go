@@ -24,7 +24,7 @@ const (
 // Feature describes one entry in the registry.
 type Feature struct {
 	ID          string      // kebab-case, stable: "secretary-inbox"
-	Title       string      // "Assistant Inbox"
+	Title       string      // "Attention detection"
 	Description string      // one user-facing paragraph, English
 	Tagline     string      // one benefit-first phrase, e.g. "Your team's pulse, distilled"
 	Benefits    []string    // 2-3 short benefit bullets, user language, no jargon
@@ -50,20 +50,6 @@ type SubToggle struct {
 // registry is the source of truth: core entries first, then the pillars in
 // spec table order. All() and Dependents() both return this order.
 var registry = []Feature{
-	{
-		ID:          "dashboard",
-		Title:       "Dashboard",
-		Description: "The assistant's home screen: every situation clustered from Slack, email, Jira and calendar activity, with a situation card and Discuss chat per situation, plus a parallel timeline of upcoming meetings. Always on — it is where the rest of Watchtower's output surfaces.",
-		Tagline:     "Everything that needs you, in one place",
-		Benefits: []string{
-			"Situations from Slack, email, Jira and calendar merged into one view",
-			"A situation card explains why each one matters",
-			"Discuss each situation directly with your assistant",
-		},
-		Icon: "tray",
-		Core: true,
-		Cost: CostNone,
-	},
 	{
 		ID:          "targets",
 		Title:       "Targets",
@@ -93,41 +79,20 @@ var registry = []Feature{
 		Cost: CostNone,
 	},
 	{
-		ID:          "feed",
-		Title:       "Feed",
-		Description: "Publishes the merged event feed (situations, upcoming meetings, target updates) that powers the Dashboard timeline. Mechanical bookkeeping with no AI calls — infrastructure the Dashboard depends on, not something you would normally turn off.",
-		Tagline:     "The plumbing that keeps your Dashboard current",
-		Benefits: []string{
-			"Merges situations, meetings and target updates into one timeline",
-			"Mechanical bookkeeping with no AI cost",
-			"Keeps the Dashboard's timeline always current",
-		},
-		Icon:      "rectangle.grid.1x2",
-		ConfigKey: "feed.enabled",
-		Core:      true,
-		Cost:      CostNone,
-		Enabled:   func(cfg *config.Config) bool { return cfg.Feed.Enabled },
-	},
-	{
 		ID:          "secretary-inbox",
-		Title:       "Assistant Inbox",
-		Description: "Triages every new mention, DM and thread reply, clusters them into situations on the Dashboard and writes a situation card per situation. Heavy AI use each cycle. Feeds Memory and the daily Briefing.",
-		Tagline:     "Never lose a thread again",
+		Title:       "Attention detection",
+		Description: "Detects mentions, DMs, thread replies and mail addressed to you and closes them when you answer in the source — no AI. Feeds Catch-Up and the daily Briefing.",
+		Tagline:     "Know what was waiting on you",
 		Benefits: []string{
-			"Every mention, DM and reply triaged for you",
-			"Related messages clustered into one situation",
-			"A situation card tells you why it matters",
+			"Mentions, DMs, replies and mail to you collected across every connected account",
+			"Closed automatically when you answer in Slack, Jira or mail",
+			"Powers Catch-Up's \"needs you\" list and the Briefing — no AI cost",
 		},
 		Icon:      "tray",
 		ConfigKey: "inbox.enabled",
-		Cost:      CostHeavy,
-		FeedsInto: []string{"memory", "briefing"},
-		SubToggles: []SubToggle{{
-			Key:         "inbox.situations.enabled",
-			Title:       "Cluster into situations",
-			Description: "Run the AI that groups inbox activity into Dashboard situations. Off = the inbox shows the action strip only.",
-		}},
-		Enabled: func(cfg *config.Config) bool { return cfg.Inbox.Enabled },
+		Cost:      CostNone,
+		FeedsInto: []string{"briefing"},
+		Enabled:   func(cfg *config.Config) bool { return cfg.Inbox.Enabled },
 	},
 	{
 		ID:          "slack-digests",
@@ -306,11 +271,6 @@ var memorySubToggles = []SubToggle{
 		Description: "Extracts memory episodes from Gmail threads and seeds senders as person entities.",
 	},
 	{
-		Key:         "memory.sources.actions",
-		Title:       "Interaction source",
-		Description: "Folds owner thumbs-up/thumbs-down feedback and situation verdicts into memory as mechanical outcome evidence — no AI call.",
-	},
-	{
 		Key:         "memory.sources.calendar",
 		Title:       "Calendar source",
 		Description: "Builds one episode per ended calendar event, folding in its meeting recap where one exists.",
@@ -339,11 +299,6 @@ var memorySubToggles = []SubToggle{
 		Key:         "memory.surfaces.briefing",
 		Title:       "Briefing surface",
 		Description: "Adds a Memory revisions journal to the daily briefing, noting notable belief changes.",
-	},
-	{
-		Key:         "memory.surfaces.disputes",
-		Title:       "Disputes surface",
-		Description: "Surfaces contradicted beliefs as Dashboard situations so you can resolve them.",
 	},
 	{
 		Key:         "memory.surfaces.reflection",

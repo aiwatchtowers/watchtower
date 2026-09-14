@@ -374,12 +374,10 @@ func TestMemoryConfig_Defaults(t *testing.T) {
 	// Phase-4 surfaces: dark by default, independently gated.
 	assert.False(t, cfg.Memory.Surfaces.Chat, "chat surface off by default")
 	assert.False(t, cfg.Memory.Surfaces.Briefing, "briefing surface off by default")
-	assert.False(t, cfg.Memory.Surfaces.Disputes, "disputes surface off by default")
 	assert.False(t, cfg.Memory.Surfaces.Reflection, "reflection surface off by default")
 
-	// Phase-5 slice-1 sources: dark by default, independently gated.
+	// Memory sources: dark by default, independently gated.
 	assert.False(t, cfg.Memory.Sources.Gmail, "gmail source off by default")
-	assert.False(t, cfg.Memory.Sources.Actions, "actions source off by default")
 
 	// Phase-5 slice-2 sources: dark by default, independently gated.
 	assert.False(t, cfg.Memory.Sources.Calendar, "calendar source off by default")
@@ -426,7 +424,6 @@ func TestMemorySourcesConfig_FromYAML(t *testing.T) {
 memory:
   sources:
     gmail: true
-    actions: true
     calendar: true
     chats: true
 `
@@ -435,7 +432,6 @@ memory:
 	require.NoError(t, err)
 
 	assert.True(t, cfg.Memory.Sources.Gmail)
-	assert.True(t, cfg.Memory.Sources.Actions)
 	assert.True(t, cfg.Memory.Sources.Calendar)
 	assert.True(t, cfg.Memory.Sources.Chats)
 }
@@ -446,7 +442,6 @@ memory:
   surfaces:
     chat: true
     briefing: true
-    disputes: true
     reflection: true
 `
 	path := writeTestConfig(t, yaml)
@@ -455,7 +450,6 @@ memory:
 
 	assert.True(t, cfg.Memory.Surfaces.Chat)
 	assert.True(t, cfg.Memory.Surfaces.Briefing)
-	assert.True(t, cfg.Memory.Surfaces.Disputes)
 	assert.True(t, cfg.Memory.Surfaces.Reflection)
 }
 

@@ -22,27 +22,20 @@ const (
 	// first run only (an account with no search_last_date watermark yet).
 	// Once a watermark exists, catch-up depth is governed by
 	// sync.maxSearchCatchUpDays instead — see internal/sync/search_sync.go.
-	DefaultInitialHistDays        = 2
-	DefaultPollInterval           = 15 * time.Minute
-	DefaultSyncThreads            = true
-	DefaultSyncOnWake             = true
-	DefaultDigestEnabled          = true
-	DefaultDigestMinMsgs          = 10
-	DefaultDigestLang             = "Russian"
-	DefaultDigestWorkers          = 5 // Deprecated: use DefaultAIWorkers. Kept for backward compat.
-	DefaultTracksInterval         = 1 * time.Hour
-	DefaultBriefingEnabled        = true
-	DefaultBriefingHour           = 8
-	DefaultInboxEnabled           = true
-	DefaultInboxMaxItems          = 100
-	DefaultInboxLookbackDays      = 7
-	DefaultInboxMaxTriageMessages = 600
-	DefaultInboxMaxAwarenessCards = 3
-	// DefaultInboxSituationsEnabled gates the dashboard situations compose +
-	// situation-card stages. OFF by default — a deliberate mute of the
-	// expensive AI clustering; triage/detectors/inbox_items keep running.
-	DefaultInboxSituationsEnabled = false
-	DefaultFeedMeetingLeadMinutes = 30
+	DefaultInitialHistDays   = 2
+	DefaultPollInterval      = 15 * time.Minute
+	DefaultSyncThreads       = true
+	DefaultSyncOnWake        = true
+	DefaultDigestEnabled     = true
+	DefaultDigestMinMsgs     = 10
+	DefaultDigestLang        = "Russian"
+	DefaultDigestWorkers     = 5 // Deprecated: use DefaultAIWorkers. Kept for backward compat.
+	DefaultTracksInterval    = 1 * time.Hour
+	DefaultBriefingEnabled   = true
+	DefaultBriefingHour      = 8
+	DefaultInboxEnabled      = true
+	DefaultInboxMaxItems     = 100
+	DefaultInboxLookbackDays = 7
 
 	// Ideas & decisions registry defaults
 	DefaultIdeasEnabled                 = true
@@ -116,10 +109,6 @@ const (
 	DefaultTargetsResolverJiraEnabled         = true
 	DefaultTargetsResolverMCPTimeoutSeconds   = 10
 	DefaultTargetsResolverActiveSnapshotLimit = 100
-
-	// Dashboard (situation composer) defaults
-	DefaultDashboardStaleAfterDays    = 7
-	DefaultDashboardMaxComposeSignals = 200
 
 	// Meeting transcripts: delete recording audio after N days (transcript
 	// text is kept forever). <= 0 disables the retention phase.

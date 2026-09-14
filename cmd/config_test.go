@@ -285,7 +285,6 @@ func TestConfigSet_FeatureGateKeys_NoUnknownWarning(t *testing.T) {
 		"briefing.enabled",
 		"briefing.hour",
 		"day_plan.enabled",
-		"feed.enabled",
 		"calendar.enabled",
 		"gmail.enabled",
 		"jira.enabled",

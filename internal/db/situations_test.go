@@ -56,17 +56,6 @@ func TestSituationRoundTripAndSignals(t *testing.T) {
 	require.Len(t, members, 2)
 }
 
-func TestComposeWatermarkRoundTrip(t *testing.T) {
-	d := openTestDB(t)
-	seedWorkspace(t, d) // use this file's actual workspace fixture helper
-	ts, err := d.GetComposeLastRunTS()
-	require.NoError(t, err)
-	require.Equal(t, 0.0, ts)
-	require.NoError(t, d.SetComposeLastRunTS(123.5))
-	ts, _ = d.GetComposeLastRunTS()
-	require.Equal(t, 123.5, ts)
-}
-
 func TestInboxItemComposedAtRoundTrip(t *testing.T) {
 	// A freshly created item has an empty ComposedAt; assert the column scans.
 	d := openTestDB(t)

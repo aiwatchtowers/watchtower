@@ -45,10 +45,6 @@ func TestFastForward_Inbox(t *testing.T) {
 	inboxTS, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Equal(t, float64(now.Unix()), inboxTS)
-
-	composeTS, err := database.GetComposeLastRunTS()
-	require.NoError(t, err)
-	assert.Equal(t, float64(now.Unix()), composeTS)
 }
 
 func TestFastForward_Ideas(t *testing.T) {
@@ -232,10 +228,6 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		inboxTS, err := database.GetInboxLastProcessedTS()
 		require.NoError(t, err)
 		assert.Zero(t, inboxTS)
-
-		composeTS, err := database.GetComposeLastRunTS()
-		require.NoError(t, err)
-		assert.Zero(t, composeTS)
 
 		digestFloor, streamFloor, transcriptFloor, err := database.GetIdeasFloors()
 		require.NoError(t, err)

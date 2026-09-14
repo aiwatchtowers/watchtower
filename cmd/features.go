@@ -311,7 +311,7 @@ func featureState(f features.Feature, cfg *config.Config) string {
 }
 
 // subToggleEnabled maps a sub-toggle's config key to its live value on a
-// loaded config. Memory's 13 keys (internal/features/registry.go's
+// loaded config. Memory's 11 keys (internal/features/registry.go's
 // memorySubToggles) are the only sub-toggles any registry entry declares
 // today.
 func subToggleEnabled(cfg *config.Config, key string) bool {
@@ -320,8 +320,6 @@ func subToggleEnabled(cfg *config.Config, key string) bool {
 		return cfg.Memory.Semantic.Enabled
 	case "memory.sources.gmail":
 		return cfg.Memory.Sources.Gmail
-	case "memory.sources.actions":
-		return cfg.Memory.Sources.Actions
 	case "memory.sources.calendar":
 		return cfg.Memory.Sources.Calendar
 	case "memory.sources.chats":
@@ -334,8 +332,6 @@ func subToggleEnabled(cfg *config.Config, key string) bool {
 		return cfg.Memory.Surfaces.Chat
 	case "memory.surfaces.briefing":
 		return cfg.Memory.Surfaces.Briefing
-	case "memory.surfaces.disputes":
-		return cfg.Memory.Surfaces.Disputes
 	case "memory.surfaces.reflection":
 		return cfg.Memory.Surfaces.Reflection
 	case "memory.surfaces.day_plan":
@@ -348,8 +344,8 @@ func subToggleEnabled(cfg *config.Config, key string) bool {
 }
 
 // validateToggleableFeature resolves id to a non-core registry entry, or
-// returns an error listing every toggleable id — core features (dashboard,
-// targets, chat, feed) have no CLI toggle by design.
+// returns an error listing every toggleable id — core features (targets,
+// chat) have no CLI toggle by design.
 func validateToggleableFeature(id string) (features.Feature, error) {
 	f, ok := features.ByID(id)
 	if !ok {
