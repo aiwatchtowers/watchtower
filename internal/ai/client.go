@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -157,7 +158,11 @@ func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
 // session).
 func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
 	promptArgs, stdin := promptFlagAndStdin(userMessage)
-	args := append(promptArgs,
+	// slices.Concat always allocates a fresh backing array, so the append
+	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
+	// unlike a plain append(promptArgs, tail...), which happens to be safe
+	// today only because promptFlagAndStdin returns full-capacity literals.
+	args := slices.Concat(promptArgs, []string{
 		"--output-format", outputFormat,
 		"--model", c.model,
 		// Allowlist: the watchtower MCP server — read-only in dev mode; in
@@ -182,15 +187,15 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
-		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,"+
-			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS,"+
+		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
+			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
 			"ExitPlanMode,SlashCommand,Skill",
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
 		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
 		"--setting-sources", "project,local",
-	)
+	})
 	// Claude CLI requires --verbose for stream-json output format.
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")

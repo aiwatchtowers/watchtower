@@ -209,6 +209,23 @@ func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
 			t.Error("over-threshold message must not appear inline in args")
 		}
 	}
+	// "-p" must be bare on the stdin route: the next token must be a flag,
+	// never a value (an implementation that swaps the message for "" and
+	// still passes it inline, e.g. "-p" ""), would pass the two checks
+	// above while still being wrong.
+	pIdx := -1
+	for i, a := range args2 {
+		if a == "-p" {
+			pIdx = i
+			break
+		}
+	}
+	if pIdx == -1 {
+		t.Fatal("args2 has no -p flag")
+	}
+	if pIdx+1 >= len(args2) || !strings.HasPrefix(args2[pIdx+1], "--") {
+		t.Errorf("token after -p = %q, want a flag (message must not be inline, even as an empty value)", args2[pIdx+1])
+	}
 }
 
 // TestQuerySync_LeadingDashMessageReachesStdin proves the leading-dash route
