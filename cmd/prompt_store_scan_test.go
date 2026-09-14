@@ -125,7 +125,14 @@ type ctorKey struct {
 // memory.NewPipeline and any future constructor without a hand-maintained
 // list.
 func discoverPipelineConstructors(files []parsedGoFile) map[ctorKey]bool {
-	// pkg -> set of receiver type names carrying SetPromptStore.
+	receivers := collectPromptStoreReceivers(files)
+	return collectConstructorsForReceivers(files, receivers)
+}
+
+// collectPromptStoreReceivers walks every file's declarations and returns,
+// per package, the set of receiver type names that carry a SetPromptStore
+// method.
+func collectPromptStoreReceivers(files []parsedGoFile) map[string]map[string]bool {
 	receivers := map[string]map[string]bool{}
 	for _, f := range files {
 		for _, decl := range f.file.Decls {
@@ -143,7 +150,13 @@ func discoverPipelineConstructors(files []parsedGoFile) map[ctorKey]bool {
 			receivers[f.pkg][name] = true
 		}
 	}
+	return receivers
+}
 
+// collectConstructorsForReceivers finds every exported, receiverless
+// function whose return type is a pointer to one of the given per-package
+// prompt-store-bearing receiver types.
+func collectConstructorsForReceivers(files []parsedGoFile, receivers map[string]map[string]bool) map[ctorKey]bool {
 	ctors := map[ctorKey]bool{}
 	for _, f := range files {
 		types := receivers[f.pkg]
@@ -155,19 +168,28 @@ func discoverPipelineConstructors(files []parsedGoFile) map[ctorKey]bool {
 			if !ok || fd.Recv != nil || fd.Type.Results == nil || !ast.IsExported(fd.Name.Name) {
 				continue
 			}
-			for _, res := range fd.Type.Results.List {
-				star, ok := res.Type.(*ast.StarExpr)
-				if !ok {
-					continue
-				}
-				ident, ok := star.X.(*ast.Ident)
-				if ok && types[ident.Name] {
-					ctors[ctorKey{pkg: f.pkg, name: fd.Name.Name}] = true
-				}
+			if constructorReturnsAny(fd, types) {
+				ctors[ctorKey{pkg: f.pkg, name: fd.Name.Name}] = true
 			}
 		}
 	}
 	return ctors
+}
+
+// constructorReturnsAny reports whether fd returns a pointer to one of the
+// given type names among its results.
+func constructorReturnsAny(fd *ast.FuncDecl, types map[string]bool) bool {
+	for _, res := range fd.Type.Results.List {
+		star, ok := res.Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := star.X.(*ast.Ident)
+		if ok && types[ident.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 // receiverTypeName unwraps a method receiver (`p *Pipeline` or `p Pipeline`)

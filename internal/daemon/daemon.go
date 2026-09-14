@@ -921,22 +921,28 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// Phase 3: Daily/weekly rollups (track-aware), gated by a persisted
-	// real-attempt budget mirroring day-plan/briefing (maxDailyAIAttempts) —
-	// RunRollups returns nil for every benign outcome (feature off, lock held
-	// by another process, fewer than 2 channel digests, nothing new since the
-	// last rollup) and non-nil only for a real failure, so err != nil is
-	// exactly the real-attempt predicate; a DB read error also consumes
-	// budget, matching day-plan/briefing. See rollupAttemptsExhausted's doc
-	// comment for why the budget key is the UTC date, not local.
-	if d.config.Digest.Enabled && d.digestPipe != nil {
-		date := rollupBudgetDate(now)
-		if !d.rollupAttemptsExhausted(date) {
-			if err := d.digestPipe.RunRollups(ctx); err != nil {
-				d.recordRollupAttempt(date)
-				d.logger.Printf("rollup error: %v", err)
-			}
-		}
+	d.runRollupPhase(ctx, now)
+}
+
+// runRollupPhase runs daily/weekly rollups (track-aware), gated by a
+// persisted real-attempt budget mirroring day-plan/briefing
+// (maxDailyAIAttempts) — RunRollups returns nil for every benign outcome
+// (feature off, lock held by another process, fewer than 2 channel digests,
+// nothing new since the last rollup) and non-nil only for a real failure, so
+// err != nil is exactly the real-attempt predicate; a DB read error also
+// consumes budget, matching day-plan/briefing. See rollupAttemptsExhausted's
+// doc comment for why the budget key is the UTC date, not local.
+func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
+	if !d.config.Digest.Enabled || d.digestPipe == nil {
+		return
+	}
+	date := rollupBudgetDate(now)
+	if d.rollupAttemptsExhausted(date) {
+		return
+	}
+	if err := d.digestPipe.RunRollups(ctx); err != nil {
+		d.recordRollupAttempt(date)
+		d.logger.Printf("rollup error: %v", err)
 	}
 }
 
