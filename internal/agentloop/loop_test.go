@@ -75,13 +75,13 @@ func clientWith(reg registry, url string) *Client {
 // A read tool call is dispatched, its result fed back, and the next (no-tool)
 // turn's content is the answer.
 func TestLoop_ToolCallThenFinalAnswer(t *testing.T) {
-	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
-	srv, calls := scriptedServer(t, toolCallResp("list_situations", `{}`), finalResp("here is what is going on"))
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, calls := scriptedServer(t, toolCallResp("list_targets", `{}`), finalResp("here is what is going on"))
 
 	text, _, err := clientWith(reg, srv.URL).run(context.Background(), "sys", "what is going on", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "here is what is going on", text)
-	assert.Equal(t, []string{"list_situations"}, reg.reads)
+	assert.Equal(t, []string{"list_targets"}, reg.reads)
 	assert.Equal(t, 2, *calls, "one tool round then the answer")
 }
 
@@ -90,8 +90,8 @@ func TestLoop_ToolCallThenFinalAnswer(t *testing.T) {
 // discards any pre-tool text and starts the visible answer fresh after the last
 // boundary.
 func TestLoop_EmitsToolBoundaryBeforeFinalAnswer(t *testing.T) {
-	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
-	srv, _ := scriptedServer(t, toolCallResp("list_situations", `{}`), finalResp("here it is"))
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, _ := scriptedServer(t, toolCallResp("list_targets", `{}`), finalResp("here it is"))
 
 	var chunks []ai.StreamChunk
 	_, _, err := clientWith(reg, srv.URL).run(context.Background(), "", "go", func(ch ai.StreamChunk) { chunks = append(chunks, ch) })
@@ -129,8 +129,8 @@ func TestLoop_ToolErrorFedBackNotFatal(t *testing.T) {
 // A model that always calls a tool terminates at the iteration cap instead of
 // looping forever; the loop never hangs.
 func TestLoop_MaxIterationsCap(t *testing.T) {
-	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
-	srv, calls := scriptedServer(t, toolCallResp("list_situations", `{}`)) // always a tool call
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, calls := scriptedServer(t, toolCallResp("list_targets", `{}`)) // always a tool call
 	c := clientWith(reg, srv.URL)
 	c.maxIter = 3
 
@@ -158,12 +158,12 @@ func TestLoop_OutOfSurfaceToolRejected(t *testing.T) {
 // When the cap is hit with partial content, the answer is marked truncated
 // rather than presented as complete.
 func TestLoop_MaxIterationsCapMarksTruncation(t *testing.T) {
-	reg := &fakeReg{tools: map[string]*tools.Tool{"list_situations": tools.NewListSituations()}, readData: []any{}}
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
 	// Every turn emits content AND a tool call, so it loops to the cap with
 	// non-empty lastContent.
 	withContent := oaResponse{Choices: []oaChoice{{Message: oaMessage{
 		Role: "assistant", Content: "partial progress",
-		ToolCalls: []oaToolCall{{ID: "c1", Type: "function", Function: oaFunction{Name: "list_situations", Arguments: `{}`}}},
+		ToolCalls: []oaToolCall{{ID: "c1", Type: "function", Function: oaFunction{Name: "list_targets", Arguments: `{}`}}},
 	}}}}
 	srv, _ := scriptedServer(t, withContent)
 	c := clientWith(reg, srv.URL)

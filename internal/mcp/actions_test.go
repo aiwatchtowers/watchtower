@@ -97,19 +97,21 @@ func TestChatMode_ListsWriteToolsPerSurface(t *testing.T) {
 // (Register guarantees a non-nil schema, so the raw AddTool path cannot panic.)
 func TestChatMode_MountsReadToolViaRegistry(t *testing.T) {
 	database := seedDB(t)
-	if _, err := database.CreateSituation(db.DashboardSituation{Title: "Deploy broke", Status: "open"}); err != nil {
+	if _, err := database.CreateTarget(db.Target{
+		Text: "Deploy broke", Status: "todo", Priority: "high", Ownership: "mine", SourceType: "manual",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
-	if !toolNames(t, cs)["list_situations"] {
+	if !toolNames(t, cs)["list_targets"] {
 		t.Fatalf("a read tool must be mounted on the chat surface")
 	}
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_situations"})
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_targets"})
 	if err != nil {
-		t.Fatalf("call list_situations: %v", err)
+		t.Fatalf("call list_targets: %v", err)
 	}
 	if res.IsError || !strings.Contains(textContent(t, res), "Deploy broke") {
-		t.Fatalf("list_situations via registry = %s", textContent(t, res))
+		t.Fatalf("list_targets via registry = %s", textContent(t, res))
 	}
 }
 

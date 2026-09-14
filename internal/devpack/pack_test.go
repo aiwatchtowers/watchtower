@@ -7,14 +7,13 @@ import (
 
 func TestSkillsShipWithValidFrontmatter(t *testing.T) {
 	skills := Skills()
-	if len(skills) != 4 {
-		t.Fatalf("expected 4 skills, got %d", len(skills))
+	if len(skills) != 3 {
+		t.Fatalf("expected 3 skills, got %d", len(skills))
 	}
 	want := map[string]bool{
-		"watchtower-task-context":  true,
-		"watchtower-who-to-ask":    true,
-		"watchtower-whats-changed": true,
-		"watchtower-why-decision":  true,
+		"watchtower-task-context": true,
+		"watchtower-who-to-ask":   true,
+		"watchtower-why-decision": true,
 	}
 	for _, s := range skills {
 		if !want[s.Name] {

@@ -32,10 +32,6 @@ func TestSituationRoundTripAndSignals(t *testing.T) {
 	members, err := d.ListSituationSignals(int(id))
 	require.NoError(t, err)
 	require.Len(t, members, 2)
-
-	open, err := d.ListOpenSituations()
-	require.NoError(t, err)
-	require.Len(t, open, 1)
 }
 
 func TestComposeWatermarkRoundTrip(t *testing.T) {

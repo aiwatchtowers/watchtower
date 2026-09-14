@@ -237,13 +237,13 @@ func TestCallRead_UnknownTool(t *testing.T) {
 
 // A no-arg read call arrives as absent, empty, or literal null (an MCP client
 // with no arguments) — all mean "no filters" and must reach Execute, not trip
-// the object-schema validation. list_situations has all-optional args, so a
+// the object-schema validation. list_targets has all-optional args, so a
 // no-arg call is legitimate.
 func TestCallRead_NoArgsNormalizedToEmptyObject(t *testing.T) {
 	reg := New(openDB(t))
-	require.NoError(t, reg.Register(NewListSituations()))
+	require.NoError(t, reg.Register(NewListTargets()))
 	for _, args := range []string{``, `null`, `{}`} {
-		_, err := reg.CallRead(context.Background(), "list_situations", json.RawMessage(args))
+		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(args))
 		require.NoError(t, err, "args %q must be accepted", args)
 	}
 }

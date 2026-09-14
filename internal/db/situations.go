@@ -35,26 +35,6 @@ func (db *DB) GetSituation(id int) (DashboardSituation, error) {
 	return *s, nil
 }
 
-// ListOpenSituations returns all open situations, highest rank first.
-func (db *DB) ListOpenSituations() ([]DashboardSituation, error) {
-	rows, err := db.Query(`SELECT ` + situationSelectCols + ` FROM situations
-		WHERE status = 'open' ORDER BY rank DESC, updated_at DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("listing open situations: %w", err)
-	}
-	defer rows.Close()
-
-	var out []DashboardSituation
-	for rows.Next() {
-		s, err := scanSituation(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning situation: %w", err)
-		}
-		out = append(out, *s)
-	}
-	return out, rows.Err()
-}
-
 // SituationFilter narrows ListSituations. The zero value lists every
 // situation, newest-ranked first, capped at the default limit.
 type SituationFilter struct {
@@ -68,8 +48,8 @@ type SituationFilter struct {
 }
 
 // ListSituations lists dashboard situations with optional status/recency
-// filters. ListOpenSituations remains the unfiltered read; this is the
-// filtered surface the MCP tools and any recency-scoped caller need.
+// filters over the frozen table (memory reads it; see the "Residual writers"
+// note below on why it is frozen).
 func (db *DB) ListSituations(f SituationFilter) ([]DashboardSituation, error) {
 	query := `SELECT ` + situationSelectCols + ` FROM situations`
 	var conds []string
@@ -117,9 +97,11 @@ func (db *DB) ListSituations(f SituationFilter) ([]DashboardSituation, error) {
 // any more (the composer, the situation cards and the dashboard lifecycle were
 // removed with the inbox demolition — see
 // docs/superpowers/specs/2026-09-14-inbox-demolition-design.md §4). The five
-// writers below survive only because tests in internal/memory, internal/mcp,
-// internal/tools and cmd seed the frozen table through them; they have no
-// non-test caller.
+// writers below survive only because tests in internal/memory (and this
+// package's own tests) seed the frozen table through them; they have no
+// non-test caller. internal/tools, internal/mcp and cmd no longer call them —
+// their test-fixture calls were replaced with raw-SQL seeding when the
+// situations readers were retired (inbox demolition, task 4).
 
 // CreateSituation inserts a new situation and returns its ID.
 func (db *DB) CreateSituation(s DashboardSituation) (int64, error) {

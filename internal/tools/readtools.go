@@ -12,8 +12,6 @@ import "watchtower/internal/db"
 // tool set constant (guarded by internal/mcp's TestToolsList).
 func ReadTools() []*Tool {
 	return []*Tool{
-		NewListSituations(),
-		NewGetSituation(),
 		NewGetTodayBriefing(),
 		NewListDigests(),
 		NewGetDigest(),
