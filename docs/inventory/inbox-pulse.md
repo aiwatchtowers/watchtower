@@ -29,9 +29,20 @@ never relaxed.
 
 ## INBOX-01 — Two tiers: action vs awareness — RETIRED 2026-09-14
 
-**Status:** Retired (2026-09-14) — triage removed. Every trigger item is now
-minted `actionable`/`medium` by `classifier.go`'s `DefaultItemClass`, which is
-the only class writer left; no AI stage reads or rewrites the class. Retired by
+**Status:** Retired (2026-09-14) — triage removed. The two classes still exist
+on the column, but they are now set **once, at creation, and never rewritten**:
+either by the per-source detector, which passes `classifier.go`'s
+`DefaultItemClass` for its trigger type (a fixed table — `mention`/`dm`/
+`thread_reply`/`jira_assigned`/`jira_comment_mention`/`calendar_invite`/
+`calendar_time_change`/`target_due`/`email_received` are `actionable`;
+`reaction`/`jira_comment_watching`/`jira_status_change`/`jira_priority_change`/
+`calendar_cancelled`/`decision_made`/`briefing_ready`/`email_cc` are `ambient`),
+or — when a detector leaves the fields blank — by `db.CreateInboxItem`'s
+`actionable`/`medium` fallback. `DefaultItemClass` sets no priority at all;
+a detector may pass its own (`watchtower_detector.go` mints `briefing_ready` at
+`low`). Triage was the only thing that ever re-classified an item, so with it
+gone the class is a static property of the trigger type rather than a judgment.
+Retired by
 `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. The guard tests
 TestInbox01_TriggerNeverIgnored and TestInbox01_TriageNeverUpgrades lived in
 internal/inbox/triage_test.go and were deleted together with the behaviour they
