@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/jira"
+	"watchtower/internal/prompts"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
 
@@ -336,8 +337,11 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 	gen, savePool := cliPooledGenerator(cfg, logger)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	if !digestGenFlagChannelsOnly {
-		pipe.TrackLinker = tracks.New(database, cfg, gen, logger)
+		tracksPipe := tracks.New(database, cfg, gen, logger)
+		tracksPipe.SetPromptStore(prompts.New(database, nil))
+		pipe.TrackLinker = tracksPipe
 	}
 
 	// Only set SinceOverride when --since was explicitly passed.
@@ -635,6 +639,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 	gen, savePool := cliPooledGenerator(cfg, logger)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	runID, _ := database.CreatePipelineRun("digest-summary", "cli", "auto")
 

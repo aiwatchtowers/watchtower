@@ -570,7 +570,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	tracksPipe := tracks.New(database, cfg, gen, logger)
+	tracksPipe.SetPromptStore(prompts.New(database, nil))
 	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	pipe.TrackLinker = tracksPipe
 	// One shared detector across both pipelines, so the known-project-key set
 	// is loaded once rather than once per pipeline.
@@ -580,8 +582,12 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 	d.SetDigestPipeline(pipe)
 	d.SetTracksPipeline(tracksPipe)
-	d.SetPeoplePipeline(guide.New(database, cfg, gen, logger))
-	d.SetBriefingPipeline(briefing.New(database, cfg, gen, logger))
+	peoplePipe := guide.New(database, cfg, gen, logger)
+	peoplePipe.SetPromptStore(prompts.New(database, nil))
+	d.SetPeoplePipeline(peoplePipe)
+	briefingPipe := briefing.New(database, cfg, gen, logger)
+	briefingPipe.SetPromptStore(prompts.New(database, nil))
+	d.SetBriefingPipeline(briefingPipe)
 	inboxPipe := inbox.New(database, cfg, gen, logger)
 	inboxPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetInboxPipeline(inboxPipe)
@@ -991,7 +997,9 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	fmt.Fprintln(out)
 	digestSpinner := ui.NewSpinner(out, "Generating digests...")
 	pipe := digest.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	tracksPipe := tracks.New(database, cfg, gen, logger)
+	tracksPipe.SetPromptStore(prompts.New(database, nil))
 	pipe.TrackLinker = tracksPipe
 	if det := jira.NewKeyDetectorIfEnabled(cfg, database); det != nil {
 		pipe.SetJiraKeyDetector(det)
@@ -1018,6 +1026,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	{
 		peopleSpinner := ui.NewSpinner(out, "Generating people cards...")
 		peoplePipe := guide.New(database, cfg, gen, logger)
+		peoplePipe.SetPromptStore(prompts.New(database, nil))
 		peoplePipe.OnProgress = func(done, total int, status string) {
 			peopleSpinner.UpdateProgress(done, total, status)
 		}
