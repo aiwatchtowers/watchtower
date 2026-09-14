@@ -67,9 +67,22 @@ Plans live under `docs/superpowers/plans/2026-09-13-audit-fix-wave*.md`.
 - **Wave 5 — the rest with decisions**: reaction-commands FastForward; recap prompt bump; calendar cleanup guard; `TargetBriefCenter` queue; TGT-BRIEF-01 wording; briefing `SetPromptStore`; chat `--` before prompt; Desktop `slack://` raw ids; duplicate logs + rotation.
 - **Not a fix wave**: Inbox brainstorming (decision 3); no-Slack identity (decision 15).
 
-### Wave 4 — left open
+### Wave 4 — left open, and the owner's verdicts (2026-09-14)
 
-Decision 9 covered the four cost sources named in its README line. It did **not** settle these, and they should not be read as silently resolved by wave 4:
+Decision 9 covered the four cost sources named in its README line. It did **not** settle the six items below, so wave 4 left each of them explicitly open. **The owner ruled on all six on 2026-09-14**; none of them is an open question any more. Verdicts first, the original write-ups below them for the reasoning:
+
+| Item | Verdict |
+|---|---|
+| `digest.channel` vs `digest.channel_batch` tier | **Accepted as-is.** The single-channel path is rare and the batch path (light) is the common case, so the inconsistency costs little. Revisit only if usage numbers say otherwise. |
+| Rewrite/reflect stamp on attempt (seven-day cost) | **Accepted as-is.** This is the waste the wave exists to cut; two lines plus one test flip it back if pages start going stale. |
+| Next-step cap is leaf-only (`RecomputeParentProgress` bumps a parent's `updated_at`) | **Fix in wave 5.** A cap that does not hold on non-leaf targets is a hole in something this wave just shipped; narrow the bump to fire only when the computed progress actually changes. |
+| `weaken`'s unconditional step | **Fix in wave 5.** Same shape as the `confirm` bug, and the fix mirrors code that has already been reviewed. |
+| Beliefs keeping stability accrued before the `confirm` fix | **Accepted as-is — do not rewind.** Rewriting belief frontmatter from `## History` risks more than the inflated numbers cost; hysteresis erodes them over time. |
+| The daily rollup's own missing failure budget | **Fix in wave 5**, alongside a real attempt budget for that pipeline. |
+
+Also settled on 2026-09-14: **decision 15 (no-Slack identity) is approved** as written and no longer waits on the Inbox brainstorming — nothing in it depends on that answer. **Decision D4 (`who_ping` / `write_back`) moved to the backlog** as `docs/backlog/2026-09-14-jira-who-ping-and-write-back-toggles-gate-nothing.md`. **Decision 3 (the Inbox) stays parked** pending its own session.
+
+The original write-ups:
 
 - **`digest.channel` (strong) vs `digest.channel_batch` (light)** — same prompt shape, same output schema, different tier depending only on which batching path a channel happened to take that cycle. Genuinely out of scope for decision 9 (its own wording is about frequency, not this inconsistency) — needs an owner call between promoting `digest.channel` to light (cheaper, but weakens the busiest channels' digest quality) and demoting `digest.channel_batch` to strong (consistent, but multiplies the common-case call volume). See `internal/digest/tier_scan_test.go`'s `allowedStrongSources` entry and the wave's own verification notes.
 - **Memory rewrite/reflect stamp on attempt, not on success.** `dueForRewrite` and `dueForReflect` each fire on exactly one day in seven (`rewriteStaggerDays`/`reflectStaggerDays = 7`), per entity for rewrite and per workspace for reflect, so a page or workspace whose strong-tier step keeps failing waits a full week — not one day — for the next retry, instead of being re-tried every ~70-minute cycle until then. Put plainly: the cost of one transient failure is seven days, not one. This is deliberate — it is the cost this wave exists to cut, and a repeatedly-failing step retried every cycle was exactly the waste finding H2 named — but it is a two-line change plus one test to flip back to stamp-on-success if the owner would rather eat the retry cost than the wait.
