@@ -3,10 +3,12 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/inbox"
 
 	"github.com/spf13/cobra"
 )
@@ -22,8 +24,16 @@ how Watchtower prioritizes tracks and generates insights.`,
 	RunE: runProfile,
 }
 
+var profileStyleSampleCmd = &cobra.Command{
+	Use:   "style-sample",
+	Short: "Distill a communication style profile from your own Slack messages",
+	Args:  cobra.NoArgs,
+	RunE:  runProfileStyleSample,
+}
+
 func init() {
 	rootCmd.AddCommand(profileCmd)
+	profileCmd.AddCommand(profileStyleSampleCmd)
 }
 
 func runProfile(cmd *cobra.Command, _ []string) error {
@@ -94,6 +104,37 @@ func runProfile(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "\n  Prompt context:\n    %s\n", profile.CustomPromptContext)
 	}
 
+	return nil
+}
+
+func runProfileStyleSample(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+
+	logger := log.New(cmd.ErrOrStderr(), "[profile] ", log.LstdFlags)
+	gen, closeGen := cliPooledGenerator(cfg, logger)
+	defer closeGen()
+
+	pipe := inbox.New(database, cfg, gen, logger)
+	if err := pipe.GenerateStyleProfile(cmd.Context()); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Style profile regenerated.")
 	return nil
 }
 

@@ -5,17 +5,20 @@ import (
 	"time"
 )
 
-func TestInbox_SetItemClass(t *testing.T) {
-	database := openTestDB(t)
-	id := seedInboxItem(t, database, "U1", "C1", "mention")
-	if err := database.SetInboxItemClass(id, "ambient"); err != nil {
+// seedInboxItem inserts a minimal pending inbox item and returns its id.
+func seedInboxItem(t *testing.T, d *DB, sender, channel, trigger string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status, priority, created_at, updated_at)
+		VALUES (?,?,?,?,'pending','medium',?,?)`,
+		channel, "1.0", sender, trigger,
+		time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var cls string
-	_ = database.QueryRow(`SELECT item_class FROM inbox_items WHERE id=?`, id).Scan(&cls)
-	if cls != "ambient" {
-		t.Errorf("got %s", cls)
-	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
 func TestInbox_ArchiveExpired(t *testing.T) {

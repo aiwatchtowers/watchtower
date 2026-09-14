@@ -53,7 +53,7 @@ func TestGenerator_TierRouting(t *testing.T) {
 	}
 
 	// Light-tier source → light model.
-	if _, _, _, err := g.Generate(digest.WithSource(context.Background(), "inbox.triage"), "sys", "msg", ""); err != nil {
+	if _, _, _, err := g.Generate(digest.WithSource(context.Background(), "digest.period"), "sys", "msg", ""); err != nil {
 		t.Fatalf("Generate light: %v", err)
 	}
 	// Strong-tier source → strong model.

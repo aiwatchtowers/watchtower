@@ -79,7 +79,6 @@ func TestToolsList(t *testing.T) {
 		"list_messages",
 		"list_transcripts", "get_transcript",
 		"list_ideas", "get_idea",
-		"list_situations", "get_situation",
 		"get_task_context",
 		"find_experts",
 		"memory_map", "memory_open", "memory_recall",
@@ -127,7 +126,7 @@ func TestAllToolsAreReadOnly(t *testing.T) {
 // for an unchanged row count across the read-only tool calls.
 var guardTables = []string{
 	"targets", "digests", "tracks", "jira_issues", "calendar_events", "people_cards", "briefings", "workspace",
-	"situations", "situation_signals", "inbox_items", "channels", "users", "messages",
+	"inbox_items", "channels", "users", "messages",
 }
 
 // seedGuardFixture seeds everything TestNoToolMutatesDatabase's calls need to
@@ -164,27 +163,7 @@ func seedGuardFixture(t *testing.T, database *db.DB) {
 	}); err != nil {
 		t.Fatalf("seeding jira issue: %v", err)
 	}
-	seedGuardSituation(t, database)
 	seedGuardExpertsFixture(t, database)
-}
-
-// seedGuardSituation gives get_situation a real situation row plus one
-// signal, so GetSituation succeeds and ListSituationSignals actually runs
-// (situations_test.go's TestGetSituationIncludesSignalsAndMissingIdIsSoftError
-// fixture, id 1).
-func seedGuardSituation(t *testing.T, database *db.DB) {
-	t.Helper()
-	if _, err := database.Exec(`INSERT INTO situations (id, title, status, why_matters, summary, chronology)
-		VALUES (1, 'Guard situation', 'open', 'guard the read-only path', 'guard summary', 'guard chronology')`); err != nil {
-		t.Fatalf("seeding situation: %v", err)
-	}
-	if _, err := database.Exec(`INSERT INTO inbox_items (id, trigger_type, channel_id, message_ts, sender_user_id, snippet, status)
-		VALUES (1, 'mention', '1:C1', '111.1', '1:U1', 'guard signal snippet', 'pending')`); err != nil {
-		t.Fatalf("seeding inbox item: %v", err)
-	}
-	if _, err := database.Exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (1, 1)`); err != nil {
-		t.Fatalf("seeding situation signal: %v", err)
-	}
 }
 
 // seedGuardExpertsFixture gives find_experts' topic path a channel, a user
@@ -235,7 +214,6 @@ func readOnlyGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
 		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "list_jira_projects"},
-		{Name: "list_situations"}, {Name: "get_situation", Arguments: map[string]any{"id": 1}},
 		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
 		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},

@@ -8,15 +8,20 @@ import (
 )
 
 // AgeEpisodes is the mechanical episode-aging pass (spec §Retention). Raw
-// extracted episodes are minted active + short and nothing else ever closes
-// them — only situation-finalized episodes reach closed + long through ingest.
+// extracted episodes are minted active + short and nothing else in this
+// package ever closes them. The situations ingest used to mint some episodes
+// straight to closed + long, but that source dried up on 2026-09-06 and was
+// removed — any situation-aliased episode still in the vault is a pre-existing
+// one from before the retirement, not a live writer this pass needs to defer
+// to.
 // Without this pass a non-situation episode would stay active/short forever and
 // never become an eviction candidate. AgeEpisodes transitions an active
-// short-tier NON-situation episode (no situation:<id> alias — those belong to
-// ingest's lifecycle) whose newest provenance event is older than ageAfterDays
-// to closed + long, in one "memory(age)" commit mirrored into the index. Only
-// the aged episodes are touched: situation-aliased episodes and episodes whose
-// newest event is still recent are left byte-identical. Returns the count aged.
+// short-tier NON-situation episode (no situation:<id> alias — i.e. not one of
+// those pre-existing episodes) whose newest provenance event is older than
+// ageAfterDays to closed + long, in one "memory(age)" commit mirrored into the
+// index. Only the aged episodes are touched: situation-aliased episodes and
+// episodes whose newest event is still recent are left byte-identical. Returns
+// the count aged.
 //
 // A per-node read failure is skipped-and-logged (the package quarantine
 // convention) so one corrupted candidate never stops the pass. ageAfterDays
@@ -42,7 +47,7 @@ func AgeEpisodes(v *Vault, database *db.DB, ageAfterDays int, now time.Time, log
 			continue
 		}
 		if hasSituationAlias(n.Aliases) {
-			continue // situation-finalized episodes age through ingest, not here
+			continue // pre-existing situation episode (retired ingest); never one of ours to age
 		}
 		refs := parseProvenance(n.Body)
 		lastTS, ok := lastEventTS(refs)

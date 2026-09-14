@@ -1,4 +1,6 @@
-// Package inbox provides detection and AI prioritization of messages awaiting user response.
+// Package inbox detects messages awaiting the owner's response and resolves
+// them by rule. It makes no AI calls: the inbox is a mechanical feeder for
+// Catch-Up, the daily briefing and meeting prep.
 package inbox
 
 import (
@@ -15,7 +17,6 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -103,8 +104,8 @@ func enrichSnippet(text string, database *db.DB) string {
 			}
 		}
 		// Unresolved (or no DB): keep the raw id rather than dropping the
-		// mention — the downstream triage/compose/situation-card prompts
-		// need to know someone was addressed even when the name is unknown.
+		// mention — a reader of the snippet still needs to know someone was
+		// addressed even when the name is unknown.
 		return "@" + groups[1]
 	})
 	// Resolve <#C123|channel-name> channel refs
@@ -137,14 +138,15 @@ const DefaultLookbackDays = 7
 // ProgressFunc is called during pipeline execution to report progress.
 type ProgressFunc func(done, total int, status string)
 
-// Pipeline detects and prioritizes inbox items from Slack messages.
+// Pipeline detects inbox items from Slack and the external sources, and
+// auto-resolves them by rule. It makes no AI calls; the generator is carried
+// only for the style-profile sampler (style_sample.go).
 type Pipeline struct {
-	db          *db.DB
-	cfg         *config.Config
-	generator   digest.Generator
-	logger      *log.Logger
-	promptStore *prompts.Store
-	OnProgress  ProgressFunc
+	db         *db.DB
+	cfg        *config.Config
+	generator  digest.Generator
+	logger     *log.Logger
+	OnProgress ProgressFunc
 
 	// Current user identity (set via SetCurrentUser or resolved from DB in Run).
 	currentUserID    string
@@ -152,12 +154,6 @@ type Pipeline struct {
 
 	// Step metrics (set before each OnProgress call).
 	LastStepDurationSeconds float64
-	LastStepInputTokens     int
-	LastStepOutputTokens    int
-	// Accumulated usage across all AI calls.
-	totalInputTokens  int
-	totalOutputTokens int
-	totalAPITokens    int
 }
 
 // New creates a new inbox pipeline.
@@ -177,27 +173,11 @@ func (p *Pipeline) SetCurrentUser(id, email string) {
 	p.currentUserEmail = email
 }
 
-// SetPromptStore sets an optional prompt store for loading customized prompts.
-func (p *Pipeline) SetPromptStore(store *prompts.Store) {
-	p.promptStore = store
-}
-
-// AccumulatedUsage returns the total token usage accumulated across all Generate calls.
+// AccumulatedUsage reports the pipeline's token usage. Run makes no AI calls,
+// so it is always zero; the method is kept because the daemon and the CLI
+// report usage uniformly across pipelines.
 func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
-	return p.totalInputTokens, p.totalOutputTokens, 0, p.totalAPITokens
-}
-
-// accumulateUsage folds one Generate call's token usage into the pipeline's
-// running totals and last-step metrics. usage may be nil (no-op).
-func (p *Pipeline) accumulateUsage(usage *digest.Usage) {
-	if usage == nil {
-		return
-	}
-	p.totalInputTokens += usage.InputTokens
-	p.totalOutputTokens += usage.OutputTokens
-	p.totalAPITokens += usage.TotalAPITokens
-	p.LastStepInputTokens = usage.InputTokens
-	p.LastStepOutputTokens = usage.OutputTokens
+	return 0, 0, 0, 0
 }
 
 // resolveCurrentUserID returns the pipeline's current user ID, preferring the
@@ -210,17 +190,9 @@ func (p *Pipeline) resolveCurrentUserID() (string, error) {
 	return p.db.GetCurrentUserID()
 }
 
-// resolveOwnerSlackUserIDs returns every connected, enabled Slack account's
-// own user id, for excluding the owner's own messages from stream
-// candidates. Distinct from resolveCurrentUserID, which stays pinned to
-// account #1 for Jira/style/people-card purposes (Global Constraints #1).
-func (p *Pipeline) resolveOwnerSlackUserIDs() ([]string, error) {
-	return p.db.ListOwnerSlackUserIDs()
-}
-
 // resolveWatermarkWindow returns the last processed timestamp (falling back
 // to now-lookbackDays for a fresh install) and the equivalent time.Time.
-// logPrefix distinguishes Run's log lines from RunFastDetection's.
+// logPrefix prefixes the log lines it emits.
 func (p *Pipeline) resolveWatermarkWindow(logPrefix string) (float64, time.Time) {
 	lastTS, err := p.db.GetInboxLastProcessedTS()
 	if err != nil {
@@ -238,8 +210,7 @@ func (p *Pipeline) resolveWatermarkWindow(logPrefix string) (float64, time.Time)
 }
 
 // dedupThreadItems merges duplicate pending thread inbox items (cleanup from
-// before thread-grouping). logPrefix distinguishes Run's log lines from
-// RunFastDetection's.
+// before thread-grouping). logPrefix prefixes the log lines it emits.
 func (p *Pipeline) dedupThreadItems(logPrefix string) {
 	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
 		p.logger.Printf("%s: dedup error: %v", logPrefix, err)
@@ -248,62 +219,9 @@ func (p *Pipeline) dedupThreadItems(logPrefix string) {
 	}
 }
 
-// loadUntriaged returns pending inbox items that have not yet been through
-// triage (no AI reason recorded).
-func (p *Pipeline) loadUntriaged() ([]db.InboxItem, error) {
-	pendingItems, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
-	if err != nil {
-		return nil, fmt.Errorf("loading pending items for triage: %w", err)
-	}
-	var newItems []db.InboxItem
-	for _, item := range pendingItems {
-		if item.AIReason == "" {
-			newItems = append(newItems, item)
-		}
-	}
-	return newItems, nil
-}
-
-// runTriagePhase runs triage over newItems when a generator is configured,
-// recording step timing/logging identically to the inline version it replaced.
-func (p *Pipeline) runTriagePhase(ctx context.Context, currentUserID string, newItems []db.InboxItem, lastTS float64) (triageOutcome, error) {
-	if p.generator == nil {
-		return triageOutcome{}, nil
-	}
-	stepStart := time.Now()
-	outcome, err := p.runTriage(ctx, currentUserID, newItems, lastTS)
-	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-	if err != nil {
-		p.logger.Printf("inbox: triage error: %v", err)
-	}
-	return outcome, err
-}
-
-// runComposePhase folds new material into dashboard situations when a
-// generator is configured. It mirrors runTriagePhase's nil-generator guard:
-// runCompose has no internal guard and would nil-deref on real input.
-// Compose failures are logged and swallowed — they never fail Run and never
-// touch the inbox watermark (compose owns its own watermark, DASH-02).
-func (p *Pipeline) runComposePhase(ctx context.Context, currentUserID string) (created, merged int) {
-	if p.cfg == nil || !p.cfg.Inbox.Situations.Enabled {
-		return 0, 0
-	}
-	if p.generator == nil {
-		return 0, 0
-	}
-	stepStart := time.Now()
-	created, merged, err := p.runCompose(ctx, currentUserID)
-	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
-	if err != nil {
-		p.logger.Printf("inbox: compose error: %v", err)
-	}
-	return created, merged
-}
-
-// runArchiveAndUnsnooze runs phase 6: auto-archive expired ambient / stale
-// actionable items and unsnooze anything whose snooze has expired, then runs
-// the dashboard situation lifecycle — unsnooze expired situations and mark
-// inactive open ones stale. Returns the total number of inbox items archived.
+// runArchiveAndUnsnooze auto-archives expired ambient / stale actionable
+// items and unsnoozes anything whose snooze has expired. Returns the total
+// number of inbox items archived.
 func (p *Pipeline) runArchiveAndUnsnooze() int {
 	var archived int
 	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
@@ -319,61 +237,30 @@ func (p *Pipeline) runArchiveAndUnsnooze() int {
 	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
 		p.logger.Printf("inbox: unsnooze error: %v", err)
 	}
-
-	// Dashboard situation lifecycle (DASH-02): non-fatal, never touches the
-	// inbox watermark.
-	if _, err := p.db.UnsnoozeExpiredSituations(); err != nil {
-		p.logger.Printf("inbox: unsnooze situations error: %v", err)
-	}
-	if p.cfg != nil && p.cfg.Dashboard.StaleAfterDays > 0 {
-		staleAfter := time.Duration(p.cfg.Dashboard.StaleAfterDays) * 24 * time.Hour
-		if _, err := p.db.MarkStaleSituations(staleAfter); err != nil {
-			p.logger.Printf("inbox: mark stale situations error: %v", err)
-		}
-	}
 	return archived
 }
 
 // decideWatermark computes the new watermark timestamp per INBOX-09 (see
-// docs/inventory/inbox-pulse.md). A detector error ALWAYS freezes the
-// watermark, even when triage capped or made partial progress: detectors and
-// triage scan the same ts window, so advancing over triage's progress would
-// still skip the mentions/DMs the failed detector never saw. Only when
-// detection is clean may triage outcomes move the watermark — over exactly
-// what was processed (capped scan, or the chunks completed before a triage
-// failure), never below lastTS. ok is false when the watermark must stay
-// frozen.
-func decideWatermark(lastTS float64, detectErr, triageErr error, outcome triageOutcome) (ts float64, ok bool) {
-	switch {
-	case detectErr != nil:
+// docs/inventory/inbox-pulse.md): a detector error freezes the watermark so
+// the failed source's window is re-scanned next cycle; a clean pass advances
+// it. ok is false when the watermark must stay frozen.
+func decideWatermark(detectErr error) (ts float64, ok bool) {
+	if detectErr != nil {
 		return 0, false
-	case triageErr != nil:
-		if outcome.MaxProcessedTS > lastTS {
-			return outcome.MaxProcessedTS, true
-		}
-		return 0, false
-	case outcome.Capped:
-		return outcome.MaxProcessedTS, true
-	default:
-		// Use a 30-minute buffer instead of wall-clock time to account for
-		// Slack search API indexing delays — messages may arrive in the DB
-		// with ts_unix values behind wall-clock time.
-		return float64(time.Now().Add(-30 * time.Minute).Unix()), true
 	}
+	// Use a 30-minute buffer instead of wall-clock time to account for
+	// Slack search API indexing delays — messages may arrive in the DB
+	// with ts_unix values behind wall-clock time.
+	return float64(time.Now().Add(-30 * time.Minute).Unix()), true
 }
 
-// Run executes the inbox pipeline: dedup, detect new items, triage (trigger
-// items plus a stream scan), learn, auto-resolve, compose dashboard situations
-// from the new signals, prepare situation cards, auto-archive, then unsnooze.
-// Returns (created count, resolved count, error). Compose and situation-card
-// failures are logged but never fail Run and never affect the inbox watermark
-// (INBOX-09 stays keyed to detect/triage only; feed stability is DASH-02).
+// Run executes the inbox pipeline: dedup, detect new items, auto-resolve,
+// auto-archive, unsnooze, then advance the watermark. It makes no AI calls —
+// the inbox is a mechanical feeder for Catch-Up, the briefing and meeting
+// prep (docs/superpowers/specs/2026-09-14-inbox-demolition-design.md).
+// Returns (created count, resolved count, error). A detector error is
+// logged, freezes the watermark (INBOX-09) and is returned to the caller.
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
-	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
-	p.totalInputTokens = 0
-	p.totalOutputTokens = 0
-	p.totalAPITokens = 0
-
 	if p.cfg != nil && !p.cfg.Inbox.Enabled {
 		return 0, 0, nil
 	}
@@ -389,83 +276,43 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	lastTS, sinceTime := p.resolveWatermarkWindow("inbox")
 
-	const totalSteps = 7
+	const totalSteps = 4
 
 	// Phase 0: Deduplicate existing thread inbox items (cleanup from before thread-grouping).
 	p.dedupThreadItems("inbox")
 
 	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
-	// failure freezes/partially advances the watermark below so no window is skipped).
+	// failure freezes the watermark below so no window is skipped).
 	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime, true)
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, currentUserID, lastTS, sinceTime)
 	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
-	// Phase 2: Triage — the secretary reviews every new trigger item plus a
-	// full scan of ordinary channel traffic (INBOX-01/INBOX-03).
-	p.progress(2, totalSteps, "triaging")
-	newItems, err := p.loadUntriaged()
-	if err != nil {
-		return created, 0, err
-	}
-	outcome, triageErr := p.runTriagePhase(ctx, currentUserID, newItems, lastTS)
-	created += outcome.Created
-
-	// Phase 3: Implicit learning — update mute rules from dismiss patterns.
-	p.progress(3, totalSteps, "learning")
-	var learnedRuleUpdates int
-	if n, err := RunImplicitLearner(ctx, p.db, 30*24*time.Hour); err != nil {
-		p.logger.Printf("inbox: learner error: %v", err)
-	} else {
-		learnedRuleUpdates = n
-	}
-
-	// Phase 4: Auto-resolve — rule-based resolution for all source types.
-	p.progress(4, totalSteps, "auto-resolving")
+	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
+	p.progress(2, totalSteps, "auto-resolving")
 	stepStart = time.Now()
 	resolved := p.autoResolveByRules(ctx)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
-	// Phase 5: Compose — fold new triaged signals, track events, and target
-	// updates into dashboard situations (create / merge / rerank), then write a
-	// secretary card (summary / why-it-matters / chronology) for each situation
-	// that needs one. Both stages are non-fatal: per-situation card failures are
-	// recorded and retried next cycle, and neither stage touches the inbox
-	// watermark (DASH-02). Situation cards share this progress slot with compose.
-	p.progress(5, totalSteps, "composing")
-	composeCreated, composeMerged := p.runComposePhase(ctx, currentUserID)
-	cardsGenerated, cardErr := p.runSituationCards(ctx, currentUserID)
-	if cardErr != nil {
-		p.logger.Printf("inbox: situation cards error: %v", cardErr)
-	}
-
-	// Phase 6: Auto-archive expired/stale items, unsnooze expired snoozes, and
-	// run the dashboard situation lifecycle (unsnooze / mark-stale).
-	p.progress(6, totalSteps, "archiving")
+	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
+	p.progress(3, totalSteps, "archiving")
 	archived := p.runArchiveAndUnsnooze()
 
 	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09.
-	if ts, ok := decideWatermark(lastTS, detectErr, triageErr, outcome); ok {
+	if ts, ok := decideWatermark(detectErr); ok {
 		p.advanceWatermark(ts, lastTS)
 	} else {
-		p.logger.Printf("inbox: detector/triage error, leaving watermark unchanged to avoid losing the skipped window (detectErr=%v triageErr=%v)", detectErr, triageErr)
+		p.logger.Printf("inbox: detector error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
 	}
 
 	p.progress(totalSteps, totalSteps, "done")
 
-	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d I%d T%d), %d auto-resolved, situations +%d/~%d, %d cards, %d auto-archived, %d learned-rule-updates",
-		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, outcome.Created,
-		resolved, composeCreated, composeMerged, cardsGenerated, archived, learnedRuleUpdates)
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d T%d), %d auto-resolved, %d auto-archived",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower,
+		resolved, archived)
 
-	// detectErr is logged but non-fatal (existing behavior, guarded by
-	// TestInbox09_WatermarkFrozenOnDetectorError); triageErr is surfaced to
-	// the caller, joined with detectErr when both occurred.
-	var runErr error
-	if triageErr != nil {
-		runErr = errors.Join(detectErr, triageErr)
-	}
-	return created, resolved, runErr
+	return created, resolved, detectErr
 }
 
 // advanceWatermark sets the inbox watermark to ts, clamped so it never moves
@@ -479,53 +326,10 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 	}
 }
 
-// RunFastDetection runs a lightweight subset of the pipeline: dedup, Slack/Jira/
-// Calendar detection and rule-based auto-resolve. It skips the digest-dependent
-// decision_made/briefing_ready detector, the implicit learner, triage, compose
-// and situation cards, archival, and the watermark advance — all of which the
-// full Run still performs afterwards. Fast-detected items surface as actionable/medium (the
-// CreateInboxItem default) until the next full Run triages them.
-//
-// This lets the daemon surface DMs/mentions in the UI immediately after a Slack
-// sync, instead of waiting for the LLM-heavy digest+tracks phases to finish.
-func (p *Pipeline) RunFastDetection(ctx context.Context) error {
-	if p.cfg != nil && !p.cfg.Inbox.Enabled {
-		return nil
-	}
-
-	currentUserID, err := p.resolveCurrentUserID()
-	if err != nil {
-		return fmt.Errorf("getting current user: %w", err)
-	}
-	if currentUserID == "" {
-		return nil
-	}
-
-	lastTS, sinceTime := p.resolveWatermarkWindow("inbox fast")
-
-	p.dedupThreadItems("inbox fast")
-
-	// RunFastDetection never advances the watermark (the full Run owns that), so
-	// a detector error is already surfaced via the per-detector logs inside
-	// detectAll; no watermark gating is needed here.
-	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, _, _ := p.detectAll(ctx, currentUserID, lastTS, sinceTime, false)
-	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap
-
-	resolved := p.autoResolveByRules(ctx)
-
-	p.logger.Printf("inbox fast: +%d new (S%d J%d C%d G%d M%d), %d auto-resolved",
-		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, resolved)
-
-	return nil
-}
-
-// detectAll runs the per-source detectors and returns counts. When
-// includeWatchtower is false, the watchtower-internal detector
-// (decision_made / briefing_ready, depends on digests + briefings) is skipped —
-// used by RunFastDetection so it can run before the digest pipeline.
+// detectAll runs the per-source detectors and returns counts.
 // The returned error is non-nil if any detector failed; callers use it to gate
 // the watermark advance so a failed pass does not skip its message window.
-func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time, includeWatchtower bool) (slack, jira, cal, gmail, imapCount, wt int, err error) {
+func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
 	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
 		p.logger.Printf("inbox: slack detect error: %v", e)
@@ -557,24 +361,11 @@ func (p *Pipeline) detectAll(ctx context.Context, currentUserID string, lastTS f
 	} else {
 		imapCount = n
 	}
-	if includeWatchtower {
-		if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
-			p.logger.Printf("inbox: watchtower detect error: %v", e)
-			errs = append(errs, fmt.Errorf("watchtower: %w", e))
-		} else {
-			wt = n
-		}
-		// Memory dispute reader ("the arguing secretary"): dispute_pending
-		// beliefs become ordinary decision_made items, gated dark by default.
-		// An error here freezes the watermark exactly like any other detector
-		// (INBOX-09) — it is joined into errs.
-		disputesEnabled := p.cfg != nil && p.cfg.Memory.Surfaces.Disputes
-		if n, e := detectMemoryDisputes(p.db, disputesEnabled); e != nil {
-			p.logger.Printf("inbox: memory dispute detect error: %v", e)
-			errs = append(errs, fmt.Errorf("memory-dispute: %w", e))
-		} else {
-			wt += n
-		}
+	if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: watchtower detect error: %v", e)
+		errs = append(errs, fmt.Errorf("watchtower: %w", e))
+	} else {
+		wt = n
 	}
 	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
@@ -820,16 +611,6 @@ func (p *Pipeline) progress(done, total int, status string) {
 	if p.OnProgress != nil {
 		p.OnProgress(done, total, status)
 	}
-}
-
-func (p *Pipeline) getPrompt(id string) (string, int) {
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.Get(id)
-		if err == nil {
-			return tmpl, version
-		}
-	}
-	return prompts.Defaults[id], 0
 }
 
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,

@@ -4,7 +4,7 @@ package memory
 // memory.sources.jira, owner scope-B: all issues, watermark-bounded). Like the
 // calendar source it makes NO AI call: one updated jira_issues row becomes at
 // most one episode built straight from the structured row. It runs as
-// mechanical Run step 3d, after operational mirrors (3c) and before Slack
+// mechanical Run step 2d, after operational mirrors (2c) and before Slack
 // extraction.
 //
 // Idempotency is alias-keyed (jiraissue:<KEY>, the calevent:/gmailthread:
@@ -37,7 +37,7 @@ func jiraIssueAlias(key string) string { return jiraIssueAliasPrefix + key }
 // (Jira descriptions can be pages long; the episode is a gist, not a mirror).
 const jiraDescriptionCapBytes = 1500
 
-// runJiraIngest is Run step 3d (behind memory.sources.jira): the mechanical,
+// runJiraIngest is Run step 2d (behind memory.sources.jira): the mechanical,
 // no-AI fold of updated Jira issues into episode nodes, looped over every
 // enabled jira_accounts row (the runGmailExtract precedent — each account
 // carries its own memory_jira_last_extracted_ts, so a disabled or errored

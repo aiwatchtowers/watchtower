@@ -22,14 +22,6 @@ func insertMessage(t *testing.T, db *DB, channelID, ts, userID, text string) {
 	require.NoError(t, err)
 }
 
-// insertMessageWithThread is like insertMessage but sets thread_ts.
-func insertMessageWithThread(t *testing.T, db *DB, channelID, ts, threadTS, userID, text string) {
-	t.Helper()
-	_, err := db.Exec(`INSERT INTO messages (channel_id, ts, thread_ts, user_id, text) VALUES (?, ?, ?, ?, ?)`,
-		channelID, ts, threadTS, userID, text)
-	require.NoError(t, err)
-}
-
 // mustCreateInboxItem is a shared fixture helper wrapping CreateInboxItem.
 func mustCreateInboxItem(t *testing.T, db *DB, it InboxItem) int64 {
 	t.Helper()
@@ -239,32 +231,26 @@ func TestGetInboxItemsForBriefing(t *testing.T) {
 	assert.Equal(t, "high", items[0].Priority)
 }
 
-func TestBulkUpdateInboxPriorities(t *testing.T) {
+// TestGetInboxItemsForBriefing_ExcludesArchived pins the wave-2 GetInboxItems
+// fix (TestGetInboxItems_ExcludesArchivedByDefault) applied to the briefing
+// query too: an item stays "pending" after ArchiveStaleActionable archives
+// it, so a status-only filter let stale actionable rows back into the
+// briefing's top-20.
+func TestGetInboxItemsForBriefing_ExcludesArchived(t *testing.T) {
 	db := openTestDB(t)
 
-	id1, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention"})
+	live, err := db.CreateInboxItem(InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U1", TriggerType: "mention", Snippet: "live"})
 	require.NoError(t, err)
-	id2, err := db.CreateInboxItem(InboxItem{ChannelID: "C2", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "dm"})
+	archived, err := db.CreateInboxItem(InboxItem{ChannelID: "C2", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "mention", Snippet: "archived"})
 	require.NoError(t, err)
-
-	updates := map[int]struct {
-		Priority string
-		AIReason string
-	}{
-		int(id1): {Priority: "high", AIReason: "Direct request from manager"},
-		int(id2): {Priority: "low", AIReason: "FYI message"},
-	}
-	err = db.BulkUpdateInboxPriorities(updates)
+	_, err = db.Exec(`UPDATE inbox_items SET archived_at = ? WHERE id = ?`, "2026-09-01T00:00:00Z", archived)
 	require.NoError(t, err)
 
-	item1, err := db.GetInboxItemByID(int(id1))
+	items, err := db.GetInboxItemsForBriefing()
 	require.NoError(t, err)
-	assert.Equal(t, "high", item1.Priority)
-	assert.Equal(t, "Direct request from manager", item1.AIReason)
-
-	item2, err := db.GetInboxItemByID(int(id2))
-	require.NoError(t, err)
-	assert.Equal(t, "low", item2.Priority)
+	require.Len(t, items, 1)
+	assert.Equal(t, int(live), items[0].ID)
+	assert.Equal(t, "live", items[0].Snippet)
 }
 
 func TestInboxLastProcessedTS(t *testing.T) {
@@ -822,162 +808,6 @@ func TestInboxItemCardFieldsRoundTrip(t *testing.T) {
 	}
 	if it.WhyMatters != "" || it.ThreadDigest != "" || it.DraftReply != "" {
 		t.Fatalf("card text fields should default empty")
-	}
-}
-
-func TestListStreamCandidatesSince(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	insertChannel(t, d, "D1", "dm")
-	insertMessage(t, d, "C1", "100.1", "U2", "release blocked on infra") // candidate
-	insertMessage(t, d, "C1", "100.2", "U1", "my own message")           // self → excluded
-	insertMessage(t, d, "D1", "100.3", "U2", "dm text")                  // dm → excluded
-	insertMessage(t, d, "C1", "99.0", "U2", "too old")                   // before watermark
-
-	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 99.5, 100)
-	require.NoError(t, err)
-	if len(got) != 1 || got[0].MessageTS != "100.1" {
-		t.Fatalf("want exactly the C1/100.1 candidate, got %+v", got)
-	}
-	if got[0].TriggerType != "stream" {
-		t.Fatalf("trigger type = %q, want stream", got[0].TriggerType)
-	}
-}
-
-// TestListStreamCandidatesSince_MultipleOwners proves own-message exclusion
-// spans every connected Slack account's owner id, not just one — the
-// multi-account own-message-suppression contract (Task 7).
-func TestListStreamCandidatesSince_MultipleOwners(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "100.1", "U1", "owner msg from account 1") // owner id #1
-	insertMessage(t, d, "C1", "100.2", "U2", "owner msg from account 2") // owner id #2
-	insertMessage(t, d, "C1", "100.3", "U3", "a real other person")      // not an owner
-
-	// Both owner ids excluded → only the non-owner message survives.
-	got, err := d.ListStreamCandidatesSince([]string{"U1", "U2"}, 0, 100)
-	require.NoError(t, err)
-	if len(got) != 1 || got[0].MessageTS != "100.3" {
-		t.Fatalf("want only the non-owner C1/100.3 candidate, got %+v", got)
-	}
-
-	// Excluding only U2 leaves U1's message in — proves the clause targets the
-	// listed ids, not "exclude everything".
-	got, err = d.ListStreamCandidatesSince([]string{"U2"}, 0, 100)
-	require.NoError(t, err)
-	if len(got) != 2 {
-		t.Fatalf("want 2 candidates (U1 + U3) when only U2 excluded, got %+v", got)
-	}
-	for _, c := range got {
-		if c.SenderUserID == "U2" {
-			t.Fatalf("U2 must be excluded, got %+v", got)
-		}
-	}
-
-	// Empty owner slice excludes nothing (degenerate NOT IN () case): all three
-	// messages surface, and the query stays valid SQL.
-	got, err = d.ListStreamCandidatesSince(nil, 0, 100)
-	require.NoError(t, err)
-	if len(got) != 3 {
-		t.Fatalf("empty owner slice must exclude nothing, want 3, got %+v", got)
-	}
-}
-
-func TestListStreamCandidatesSince_SkipsAlreadyInboxed(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "100.1", "U2", "hello")
-	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
-
-	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
-	require.NoError(t, err)
-	if len(got) != 0 {
-		t.Fatalf("already-inboxed message must not be a candidate, got %+v", got)
-	}
-}
-
-func TestListStreamCandidatesSince_SkipsThreadWithPendingItem(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	// Realistic ingestion shape (internal/sync/message_sync.go): the thread
-	// ROOT never has its own thread_ts set — only replies do.
-	insertMessage(t, d, "C1", "100.1", "U2", "root of thread")
-	insertMessageWithThread(t, d, "C1", "100.5", "100.1", "U2", "reply in thread")
-	// A pending inbox item already exists for a REPLY in this thread
-	// (e.g. from mention detection on the reply).
-	mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "100.5", ThreadTS: "100.1", SenderUserID: "U2", TriggerType: "mention"})
-
-	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
-	require.NoError(t, err)
-	// Neither the root (100.1, matched via its own ts as the thread key) nor
-	// the reply (100.5, matched via thread_ts) may surface as candidates.
-	if len(got) != 0 {
-		t.Fatalf("messages in a thread with a pending item must not be stream candidates, got %+v", got)
-	}
-}
-
-func TestListStreamCandidatesSince_ExcludesDeletedAndSubtype(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, is_deleted) VALUES ('C1', '100.1', 'U2', 'deleted msg', 1)`)
-	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, subtype) VALUES ('C1', '100.2', 'U2', 'joined the channel', 'channel_join')`)
-	require.NoError(t, err)
-
-	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 100)
-	require.NoError(t, err)
-	if len(got) != 0 {
-		t.Fatalf("deleted/subtyped messages must not be stream candidates, got %+v", got)
-	}
-}
-
-func TestListStreamCandidatesSince_CapAndOrder(t *testing.T) {
-	d := openTestDB(t)
-	insertChannel(t, d, "C1", "public")
-	for i := 1; i <= 5; i++ {
-		insertMessage(t, d, "C1", fmt.Sprintf("10%d.0", i), "U2", "msg")
-	}
-	got, err := d.ListStreamCandidatesSince([]string{"U1"}, 0, 3)
-	require.NoError(t, err)
-	if len(got) != 3 || got[0].MessageTS != "101.0" || got[2].MessageTS != "103.0" {
-		t.Fatalf("want oldest-first capped at 3, got %+v", got)
-	}
-}
-
-func TestInboxCardLifecycle(t *testing.T) {
-	d := openTestDB(t)
-	actionID := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention"}) // actionable by default
-	ambient1 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream"})
-	ambient2 := mustCreateInboxItem(t, d, InboxItem{ChannelID: "C1", MessageTS: "3.1", SenderUserID: "U2", TriggerType: "stream"})
-	for _, id := range []int64{ambient1, ambient2} {
-		if err := d.SetInboxItemClass(id, "ambient"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	need, err := d.ListItemsNeedingCards(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(need) != 2 { // 1 actionable + 1 capped ambient
-		t.Fatalf("want 2 items needing cards, got %d", len(need))
-	}
-
-	if err := d.SetInboxCard(int(actionID), "why", "digest", "draft"); err != nil {
-		t.Fatal(err)
-	}
-	it, _ := d.GetInboxItem(actionID)
-	if it.CardStatus != "ready" || it.WhyMatters != "why" || it.CardGeneratedAt == "" {
-		t.Fatalf("card not persisted: %+v", it)
-	}
-
-	if err := d.MarkInboxCardFailed(int(ambient1)); err != nil {
-		t.Fatal(err)
-	}
-	need, _ = d.ListItemsNeedingCards(5)
-	// actionID is ready now; ambient1 failed (retryable) + ambient2 none
-	if len(need) != 2 {
-		t.Fatalf("failed card must stay retryable, got %d items", len(need))
 	}
 }
 

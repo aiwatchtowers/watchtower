@@ -283,8 +283,9 @@ type interactionChecker interface {
 
 // actResolver is the scheme-"act" resolver: an act:<table>:<row_id> ref resolves
 // iff row_id exists in a whitelisted owner-interaction table (resolved ambiguity
-// #6 — inbox_feedback / user_interactions / decision_reads / situations). A
-// malformed ref or a non-whitelisted table is a clean non-resolution (ok=false,
+// #6 — user_interactions / decision_reads / situations / feedback; inbox_feedback
+// left the whitelist with the inbox demolition). A malformed ref or a
+// non-whitelisted table is a clean non-resolution (ok=false,
 // no error), so it drops like an invented ref. This existence check is what lets
 // newEvidenceLines mint owner-action rank for an act: ref (MEM-15) — the model
 // can propose the ref, but only a real interaction row makes it count. Drops are

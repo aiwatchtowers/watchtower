@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -49,18 +48,6 @@ func testConfig() *config.Config {
 			Enabled:             true,
 			MaxItemsPerRun:      100,
 			InitialLookbackDays: 7,
-			MaxTriageMessages:   config.DefaultInboxMaxTriageMessages,
-			MaxAwarenessCards:   config.DefaultInboxMaxAwarenessCards,
-			// Situations default off (config.DefaultInboxSituationsEnabled), but
-			// the existing compose/situation-card test suite exercises those
-			// stages directly and predates the gate — keep it on here so this
-			// helper's byte-for-byte behavior is unchanged for every caller.
-			// The gate itself is pinned by TestInbox_SituationsGateOff_SkipsCompose.
-			Situations: config.InboxSituationsConfig{Enabled: true},
-		},
-		Dashboard: config.DashboardConfig{
-			StaleAfterDays:    config.DefaultDashboardStaleAfterDays,
-			MaxComposeSignals: config.DefaultDashboardMaxComposeSignals,
 		},
 	}
 }
@@ -330,34 +317,6 @@ func TestPipeline_Run_NoDuplicates(t *testing.T) {
 	assert.Equal(t, 0, created2)
 }
 
-func TestPipeline_Run_WithAI(t *testing.T) {
-	database := testDB(t)
-	cfg := testConfig()
-
-	seedWorkspaceAndUser(t, database, "U_ME")
-
-	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
-	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> urgent blocker')`, ts)
-	require.NoError(t, err)
-
-	gen := &mockGenerator{
-		response: `{"verdicts": [{"key": "item:1", "tier": "action", "priority": "high", "reason": "Production blocker from team lead"}]}`,
-	}
-
-	p := New(database, cfg, gen, log.Default())
-	created, _, err := p.Run(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, created)
-
-	items, err := database.GetInboxItems(db.InboxFilter{})
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-	assert.Equal(t, "high", items[0].Priority)
-	assert.Equal(t, "Production blocker from team lead", items[0].AIReason)
-}
-
 func TestPipeline_LastProcessedTS(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -540,16 +499,13 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "alice")
 
-	// Seed: a jira issue assigned to alice, a calendar invite for alice, a high-importance digest decision.
+	// Seed: a jira issue assigned to alice, a calendar invite for alice, a briefing.
 	seedJiraIssue(t, d, "WT-1", "alice", time.Now().Add(-5*time.Minute))
 	seedCalendarEvent(t, d, "evt-1", "Sync", `[{"email":"alice@x.com","rsvp_status":"needsAction"}]`, "confirmed",
 		time.Now().Add(-10*time.Minute), time.Now().Add(-10*time.Minute))
-	seedDigestWithHighImportance(t, d, "C1", `[{"type":"decision","topic":"Launch","importance":"high"}]`,
-		time.Now().Add(-5*time.Minute))
+	seedBriefing(t, d, "alice", time.Now().Format("2006-01-02"), time.Now().Add(-5*time.Minute))
 
-	cfg := testConfig()
-	gen := &mockGenerator{response: `{}`}
-	p := New(d, cfg, gen, log.Default())
+	p := New(d, testConfig(), nil, log.Default())
 	p.SetCurrentUser("alice", "alice@x.com")
 
 	_, _, err := p.Run(context.Background())
@@ -563,12 +519,12 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 	}
 	mustCount("jira_assigned", 1)
 	mustCount("calendar_invite", 1)
-	mustCount("decision_made", 1)
+	mustCount("briefing_ready", 1)
 
-	// decision_made should be classified as ambient
+	// briefing_ready should be classified as ambient
 	var cls string
-	d.QueryRow(`SELECT item_class FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&cls) //nolint:errcheck
-	assert.Equal(t, "ambient", cls, "decision_made item_class")
+	d.QueryRow(`SELECT item_class FROM inbox_items WHERE trigger_type='briefing_ready'`).Scan(&cls) //nolint:errcheck
+	assert.Equal(t, "ambient", cls, "briefing_ready item_class")
 }
 
 func TestPipeline_Run_AutoArchiveRuns(t *testing.T) {
@@ -589,40 +545,6 @@ func TestPipeline_Run_AutoArchiveRuns(t *testing.T) {
 	var reason string
 	d.QueryRow(`SELECT archive_reason FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&reason) //nolint:errcheck
 	assert.Equal(t, "seen_expired", reason)
-}
-
-// TestPipeline_AIResolvedField verifies that a triage "awareness" verdict on
-// an actionable trigger item demotes it to ambient (INBOX-01), the new
-// analogue of the old AI-resolve mechanic: an item like a closing-signal
-// mention no longer needs to be resolved outright, just deprioritized —
-// only a rule-based auto-resolve (see autoResolveByRules) can close it.
-func TestPipeline_AIResolvedField(t *testing.T) {
-	database := testDB(t)
-	cfg := testConfig()
-
-	seedWorkspaceAndUser(t, database, "U_ME")
-
-	ts := recentTS(30)
-	_, err := database.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C1', 'general', 'public')`)
-	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U_OTHER', 'Hey <@U_ME> thanks for fixing that')`, ts)
-	require.NoError(t, err)
-
-	gen := &mockGenerator{
-		response: `{"verdicts": [{"key": "item:1", "tier": "awareness", "priority": "low", "reason": "Closing signal — no reply needed"}]}`,
-	}
-
-	p := New(database, cfg, gen, log.Default())
-	created, _, err := p.Run(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, created)
-
-	items, err := database.GetInboxItems(db.InboxFilter{})
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-	assert.Equal(t, "pending", items[0].Status)
-	assert.Equal(t, "ambient", items[0].ItemClass, "triage awareness verdict should demote an actionable trigger item")
-	assert.Equal(t, "Closing signal — no reply needed", items[0].AIReason)
 }
 
 // newPipelineForTest creates a Pipeline with the given user identity pre-set.
@@ -714,113 +636,10 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	}
 }
 
-// TestPipeline_RunFastDetection verifies that RunFastDetection picks up Slack
-// DMs immediately, leaves the watermark untouched, and skips decision_made
-// detection (which depends on digests written later in the daemon cycle).
-func TestPipeline_RunFastDetection(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "alice")
-
-	// A Slack DM addressed to alice — should be picked up by fast detection.
-	dmTS := recentTS(20)
-	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('1:D1', 'dm-bob', 'dm', 'U_BOB')`)
-	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:D1', ?, 'U_BOB', 'привет, есть минутка?')`, dmTS)
-	require.NoError(t, err)
-
-	// A digest with a high-importance decision — should NOT be picked up by fast
-	// detection (DetectWatchtowerInternal is skipped); the full Run picks it up.
-	seedDigestWithHighImportance(t, d, "C1",
-		`[{"type":"decision","topic":"Migrate to v2","importance":"high"}]`,
-		time.Now().Add(-5*time.Minute))
-
-	cfg := testConfig()
-	p := New(d, cfg, nil, log.Default())
-	p.SetCurrentUser("alice", "alice@x.com")
-
-	wmBefore, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-
-	require.NoError(t, p.RunFastDetection(context.Background()))
-
-	dmCount := func() int {
-		var n int
-		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='dm'`).Scan(&n) //nolint:errcheck
-		return n
-	}
-	decisionCount := func() int {
-		var n int
-		d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='decision_made'`).Scan(&n) //nolint:errcheck
-		return n
-	}
-
-	assert.Equal(t, 1, dmCount(), "DM should be detected by fast pass")
-	assert.Equal(t, 0, decisionCount(), "decision_made must NOT be detected by fast pass")
-
-	wmAfter, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-	assert.Equal(t, wmBefore, wmAfter, "RunFastDetection must not advance the watermark")
-
-	// Subsequent full Run must pick up the digest decision and advance the watermark.
-	_, _, err = p.Run(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, dmCount(), "full Run must not duplicate the DM detected by fast pass")
-	assert.Equal(t, 1, decisionCount(), "full Run must detect decision_made from the digest")
-
-	wmAfterFull, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-	assert.Greater(t, wmAfterFull, wmBefore, "full Run must advance the watermark")
-}
-
-// TestPipeline_RunFastDetection_DisabledConfigNoOp: with inbox.enabled=false
-// the fast pass is a clean no-op — no detection, no writes.
-func TestPipeline_RunFastDetection_DisabledConfigNoOp(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "alice")
-
-	// A DM that WOULD be detected if the pipeline were enabled.
-	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
-	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
-	require.NoError(t, err)
-
-	cfg := testConfig()
-	cfg.Inbox.Enabled = false
-	p := New(d, cfg, nil, log.Default())
-	p.SetCurrentUser("alice", "alice@x.com")
-
-	require.NoError(t, p.RunFastDetection(context.Background()))
-
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
-	assert.Equal(t, 0, n, "disabled pipeline must write nothing")
-}
-
-// TestPipeline_RunFastDetection_NoCurrentUserCleanExit: a workspace with no
-// current user (valid but degenerate — e.g. before the first auth.test) exits
-// cleanly with zero writes instead of erroring or mis-detecting.
-func TestPipeline_RunFastDetection_NoCurrentUserCleanExit(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "") // workspace row exists, current_user_id empty
-
-	_, err := d.Exec(`INSERT INTO channels (id, name, type, dm_user_id) VALUES ('D1', 'dm-bob', 'dm', 'U_BOB')`)
-	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('D1', ?, 'U_BOB', 'ping')`, recentTS(10))
-	require.NoError(t, err)
-
-	p := New(d, testConfig(), nil, log.Default())
-
-	require.NoError(t, p.RunFastDetection(context.Background()))
-
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&n))
-	assert.Equal(t, 0, n, "no-current-user fast pass must write nothing")
-}
-
-// TestRunFastDetectionPicksUpGmail: a Gmail message addressed to the current
-// user's email should surface as an email_received inbox item via the fast
-// detection pass, same as Slack/Jira/Calendar sources.
-func TestRunFastDetectionPicksUpGmail(t *testing.T) {
+// TestRunPicksUpGmail: a Gmail message addressed to the current user's email
+// should surface as an email_received inbox item, same as Slack/Jira/Calendar
+// sources.
+func TestRunPicksUpGmail(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspaceAndUser(t, d, "U1")
 
@@ -841,7 +660,8 @@ func TestRunFastDetectionPicksUpGmail(t *testing.T) {
 	p := New(d, testConfig(), nil, log.Default())
 	p.SetCurrentUser("U1", "me@x.com")
 
-	require.NoError(t, p.RunFastDetection(context.Background()))
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
 
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE trigger_type='email_received'`).Scan(&n))
@@ -867,7 +687,7 @@ func TestInbox09_WatermarkFrozenOnDetectorError(t *testing.T) {
 
 	p := New(d, testConfig(), nil, log.Default())
 	_, _, err = p.Run(context.Background())
-	require.NoError(t, err, "a detector failure must not fail the whole run")
+	require.Error(t, err, "a detector failure must be surfaced so the daemon records a failed run")
 
 	ts, err := d.GetInboxLastProcessedTS()
 	require.NoError(t, err)
@@ -897,7 +717,7 @@ func TestInbox09_SlackDetectorErrorFreezesWatermark(t *testing.T) {
 
 	p := New(d, testConfig(), nil, log.Default())
 	_, _, err = p.Run(context.Background())
-	require.NoError(t, err, "a detector failure must not fail the whole run")
+	require.Error(t, err, "a detector failure must be surfaced so the daemon records a failed run")
 
 	tsAfter, err := d.GetInboxLastProcessedTS()
 	require.NoError(t, err)
@@ -999,256 +819,4 @@ func TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark(t *testing.
 // until a real test mechanism is found.
 func TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation(t *testing.T) {
 	t.Skip("no mechanism found to make one Slack account's detector query fail while a sibling's succeeds against the same shared tables — see the doc comment above for what was tried; reported as a documented limitation, not silently treated as covered")
-}
-
-// TestInbox09_WatermarkFrozenOnTriageError guards INBOX-09 for the triage
-// stage: when runTriage itself fails (AI call/parse error), the watermark
-// must NOT advance past what was never fully triaged, and Run must surface
-// the error (unlike a lone detector error, which is swallowed — see
-// TestInbox09_WatermarkFrozenOnDetectorError).
-func TestInbox09_WatermarkFrozenOnTriageError(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "U1")
-
-	const frozen = 1000.0
-	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
-
-	// A stream candidate (no mention/DM) so triage has something to chunk,
-	// but nothing was triaged successfully before the AI call fails.
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "1100.0", "U2", "channel chatter after the watermark")
-
-	cfg := testConfig()
-	gen := &seqGenerator{responses: []string{""}} // triage AI call errors
-	p := New(d, cfg, gen, log.Default())
-	p.SetCurrentUser("U1", "u1@test.com")
-
-	_, _, err := p.Run(context.Background())
-	require.Error(t, err, "a triage failure must be surfaced, unlike a detector-only failure")
-
-	ts, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-	assert.Equal(t, frozen, ts,
-		"triage failure with no progress must leave the inbox watermark untouched")
-}
-
-// TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped guards INBOX-09: a
-// detector error must ALWAYS freeze the watermark, even when the capped
-// stream triage succeeds. Detectors and triage scan the same ts window, so
-// advancing over triage's progress would still permanently skip the
-// mentions/DMs the failed detector never saw.
-func TestInbox09_DetectorErrorFreezesEvenWhenTriageCapped(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "U1")
-
-	const frozen = 50.0
-	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
-
-	// Stream candidates above the watermark, more than the triage cap.
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "101.0", "U2", "first")
-	insertMessage(t, d, "C1", "102.0", "U2", "second")
-	insertMessage(t, d, "C1", "103.0", "U2", "third — beyond the cap")
-
-	// Break one detector: DetectJira queries jira_issues, so dropping it makes
-	// the detector pass return an error while triage still runs and caps.
-	_, err := d.Exec(`DROP TABLE jira_issues`)
-	require.NoError(t, err)
-
-	cfg := testConfig()
-	cfg.Inbox.MaxTriageMessages = 2 // triage caps at ts=102 and succeeds
-	gen := &seqGenerator{responses: []string{`{"verdicts":[]}`}}
-	p := New(d, cfg, gen, log.Default())
-	p.SetCurrentUser("U1", "u1@test.com")
-
-	_, _, err = p.Run(context.Background())
-	require.NoError(t, err, "a detector failure alone must not fail the whole run")
-	require.Equal(t, 1, gen.calls, "triage must still have run (and capped) despite the detector error")
-
-	ts, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-	assert.Equal(t, frozen, ts,
-		"a detector error must freeze the watermark even when the capped triage succeeded")
-}
-
-// TestInbox09_CappedTriageAdvancesWatermarkPartially guards INBOX-09: when
-// the stream scan hits its per-cycle cap (MaxTriageMessages) but triage
-// otherwise succeeds, the watermark advances only over what was actually
-// scanned — not to the standard now-30min buffer, which would skip whatever
-// lies beyond the cap.
-func TestInbox09_CappedTriageAdvancesWatermarkPartially(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "U1")
-
-	// Seed a small non-zero watermark so Run doesn't fall back to the
-	// "no prior watermark" lookback default (now-N-days), which would sit
-	// far above the ts=101..103 test messages and mask the capped-advance
-	// under the "never below lastTS" clamp.
-	require.NoError(t, d.SetInboxLastProcessedTS(50))
-
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "101.0", "U2", "first")
-	insertMessage(t, d, "C1", "102.0", "U2", "second")
-	insertMessage(t, d, "C1", "103.0", "U2", "third — beyond the cap")
-
-	cfg := testConfig()
-	cfg.Inbox.MaxTriageMessages = 2
-	gen := &seqGenerator{responses: []string{`{"verdicts":[]}`}}
-	p := New(d, cfg, gen, log.Default())
-	p.SetCurrentUser("U1", "u1@test.com")
-
-	_, _, err := p.Run(context.Background())
-	require.NoError(t, err)
-
-	ts, err := d.GetInboxLastProcessedTS()
-	require.NoError(t, err)
-	assert.Equal(t, float64(102), ts,
-		"a capped-but-successful triage must advance the watermark only over the scanned window")
-}
-
-// TestInbox07_FeedUntouchedOnTriageError guards INBOX-07: when triage fails,
-// pending items already in the feed must keep their prior status, priority,
-// and item_class — a failed AI call must never look like a silent decision.
-func TestInbox07_FeedUntouchedOnTriageError(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "U1")
-
-	id := mustCreateInboxItem(t, d, db.InboxItem{
-		ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "mention",
-	})
-
-	cfg := testConfig()
-	gen := &seqGenerator{responses: []string{"", ""}} // triage call, then a possible compose call — both error
-	p := New(d, cfg, gen, log.Default())
-	p.SetCurrentUser("U1", "u1@test.com")
-
-	_, _, err := p.Run(context.Background())
-	require.Error(t, err)
-
-	it, err := d.GetInboxItem(id)
-	require.NoError(t, err)
-	assert.Equal(t, "pending", it.Status, "status must be untouched on triage error")
-	assert.Equal(t, "medium", it.Priority, "priority must be untouched on triage error")
-	assert.Equal(t, "actionable", it.ItemClass, "item_class must be untouched on triage error")
-}
-
-// triageKeyRegexp matches the "key=<candidate-key>" token emitted on every
-// triage candidate line (see triage.go's line formats for trigger items and
-// stream messages).
-var triageKeyRegexp = regexp.MustCompile(`key=(\S+)`)
-
-// keyEchoGenerator is a stub AI generator that records every prompt it sees
-// and, for triage calls, echoes back a low-priority "awareness" verdict for
-// each candidate key actually present in the prompt — mirroring how a real
-// model can only judge what it was shown. Non-triage prompts (e.g. card
-// generation) contain no "key=" tokens, so they get an empty verdict list,
-// which is harmless (card parsing just fails and the item is retried later).
-type keyEchoGenerator struct {
-	prompts []string
-}
-
-func (g *keyEchoGenerator) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
-	g.prompts = append(g.prompts, system)
-	matches := triageKeyRegexp.FindAllStringSubmatch(system, -1)
-	verdicts := make([]string, 0, len(matches))
-	for _, m := range matches {
-		verdicts = append(verdicts, fmt.Sprintf(`{"key":%q,"tier":"awareness","priority":"low","reason":"recent"}`, m[1]))
-	}
-	return fmt.Sprintf(`{"verdicts":[%s]}`, strings.Join(verdicts, ",")), &digest.Usage{}, "", nil
-}
-
-// TestTriage_FreshWatermarkUsesLookbackFloor guards the first-run path: Run
-// floors a fresh/zero watermark to now-InitialLookbackDays before calling
-// into triage (see docs/inventory/inbox-pulse.md). Before the fix, runTriage
-// re-read the raw (zero) watermark internally, so a fresh install's first
-// cycle scanned the entire backfilled message history — this test seeds one
-// message far outside the lookback window and one inside it, and asserts the
-// triage prompt only ever contains the recent one.
-func TestTriage_FreshWatermarkUsesLookbackFloor(t *testing.T) {
-	d := newTestDB(t)
-	seedWorkspaceAndUser(t, d, "U1")
-	insertChannel(t, d, "C1", "public")
-
-	oldTS := fmt.Sprintf("%d.000100", time.Now().AddDate(0, 0, -30).Unix())
-	newTS := recentTS(60)
-	insertMessage(t, d, "C1", oldTS, "U2", "ancient channel chatter well before the lookback window")
-	insertMessage(t, d, "C1", newTS, "U2", "recent channel chatter needs a look")
-
-	cfg := testConfig() // InitialLookbackDays: 7
-	gen := &keyEchoGenerator{}
-	p := New(d, cfg, gen, log.Default())
-	p.SetCurrentUser("U1", "u1@test.com")
-
-	_, _, err := p.Run(context.Background())
-	require.NoError(t, err)
-
-	var triagePrompt string
-	found := false
-	for _, pr := range gen.prompts {
-		if strings.Contains(pr, "=== CANDIDATES ===") {
-			require.False(t, found, "expected exactly one triage call for this small fixture")
-			triagePrompt = pr
-			found = true
-		}
-	}
-	require.True(t, found, "expected a triage call")
-	assert.Contains(t, triagePrompt, "recent channel chatter needs a look",
-		"the recent message must be inside the lookback-floored triage window")
-	assert.NotContains(t, triagePrompt, "ancient channel chatter",
-		"a fresh watermark must be floored to now-lookbackDays, not scan the entire backfilled history")
-
-	// The recent message should have been created as a stream item; the
-	// ancient one was never even offered to the AI, so it can't exist.
-	recentItem, _ := d.GetInboxItemByMessage("C1", newTS)
-	assert.NotNil(t, recentItem, "recent stream message should become an inbox item")
-	oldItem, _ := d.GetInboxItemByMessage("C1", oldTS)
-	assert.Nil(t, oldItem, "ancient stream message outside the lookback window must not become an inbox item")
-}
-
-// TestInbox_SituationsGateOff_SkipsCompose pins the inbox.situations.enabled
-// gate: with it off, runComposePhase and runSituationCards must be a no-op
-// AND must never call the generator, even when there is material (new
-// signals, a situation needing a card) that would otherwise be acted on.
-// Triage/detectors/auto-resolve/watermark logic are untouched by this gate —
-// only the two situations stages are muted.
-func TestInbox_SituationsGateOff_SkipsCompose(t *testing.T) {
-	d, p, gen := newComposePipeline(t)
-	p.cfg.Inbox.Situations.Enabled = false
-
-	// Material for compose: fresh triaged signals that would otherwise fold
-	// into a new situation.
-	insertChannel(t, d, "C1", "public")
-	insertMessage(t, d, "C1", "1.1", "U2", "prod down")
-	insertMessage(t, d, "C1", "2.1", "U2", "still down")
-	sig1 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "1.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "prod down"})
-	sig2 := mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "C1", MessageTS: "2.1", SenderUserID: "U2", TriggerType: "stream", Snippet: "still down"})
-
-	// Material for cards: an existing situation that needs one.
-	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "prod incident", Kind: "external", Priority: "high", Rank: 0.9, AIReason: "prod is down"})
-	require.NoError(t, err)
-	require.NoError(t, d.AddSituationSignals(int(sitID), []int{int(sig1), int(sig2)}))
-
-	// Queue responses that would succeed if either stage incorrectly ran, so
-	// a leaked call surfaces as unexpected creation/cards rather than a
-	// silent error.
-	gen.responses = []string{
-		`{"action":"create","title":"Prod incident","kind":"external","priority":"high","reason":"prod is down"}`,
-		`{"summary":"Prod has been down.","why_matters":"uptime.","chronology":"U2 — reported prod down."}`,
-	}
-
-	created, merged := p.runComposePhase(context.Background(), "U1")
-	if created != 0 || merged != 0 {
-		t.Fatalf("gated compose must be a no-op, got created=%d merged=%d", created, merged)
-	}
-
-	cards, err := p.runSituationCards(context.Background(), "U1")
-	if err != nil || cards != 0 {
-		t.Fatalf("gated cards must be a no-op, got %d err=%v", cards, err)
-	}
-
-	assert.Equal(t, 0, gen.calls, "the gate must skip both stages before any generator call")
-
-	s, err := d.GetSituation(int(sitID))
-	require.NoError(t, err)
-	assert.Equal(t, "none", s.CardStatus, "the situation's card must stay untouched while the gate is off")
 }

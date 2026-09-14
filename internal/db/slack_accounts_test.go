@@ -173,65 +173,6 @@ func TestSlackAccount_SearchWatermark_RoundTrip(t *testing.T) {
 	assert.Equal(t, "2026-07-30", date)
 }
 
-func TestSlackAccount_ListOwnerSlackUserIDs(t *testing.T) {
-	d := openTestDB(t)
-
-	_, err := d.CreateSlackAccount(SlackAccount{Label: "Enabled", CurrentUserID: "1:U1"})
-	require.NoError(t, err)
-
-	disabledID, err := d.CreateSlackAccount(SlackAccount{Label: "Disabled", CurrentUserID: "2:U2"})
-	require.NoError(t, err)
-	require.NoError(t, d.SetSlackAccountEnabled(disabledID, false))
-
-	ids, err := d.ListOwnerSlackUserIDs()
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"1:U1", "2:U2"}, ids)
-}
-
-// TestSlackAccount_ListOwnerSlackUserIDs_IncludesDisabledAndRemoved pins the
-// audit-medium fix: messages synced before an account was disabled or
-// removed stay in the DB (the non-destructive `slack remove` contract), so
-// excluding a disabled/removed account's own identity here would let the
-// owner's own already-synced messages in that account re-enter
-// stream-candidate triage after disable/remove.
-func TestSlackAccount_ListOwnerSlackUserIDs_IncludesDisabledAndRemoved(t *testing.T) {
-	d := openTestDB(t)
-
-	disabledID, err := d.CreateSlackAccount(SlackAccount{Label: "Disabled", CurrentUserID: "1:U1"})
-	require.NoError(t, err)
-	require.NoError(t, d.SetSlackAccountEnabled(disabledID, false))
-
-	removedID, err := d.CreateSlackAccount(SlackAccount{Label: "Removed", CurrentUserID: "2:U2"})
-	require.NoError(t, err)
-	require.NoError(t, d.SetSlackAccountRemoved(removedID))
-
-	ids, err := d.ListOwnerSlackUserIDs()
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"1:U1", "2:U2"}, ids)
-}
-
-// TestSlackAccount_ListOwnerSlackUserIDs_EmptyCurrentUserExcluded covers the
-// mid-OAuth degenerate case: an enabled account whose current_user_id hasn't
-// resolved yet is silently excluded, not an error.
-func TestSlackAccount_ListOwnerSlackUserIDs_EmptyCurrentUserExcluded(t *testing.T) {
-	d := openTestDB(t)
-
-	_, err := d.CreateSlackAccount(SlackAccount{Label: "Mid-OAuth"})
-	require.NoError(t, err)
-
-	ids, err := d.ListOwnerSlackUserIDs()
-	require.NoError(t, err)
-	assert.Empty(t, ids)
-}
-
-func TestSlackAccount_ListOwnerSlackUserIDs_NoAccounts(t *testing.T) {
-	d := openTestDB(t)
-
-	ids, err := d.ListOwnerSlackUserIDs()
-	require.NoError(t, err)
-	assert.Empty(t, ids)
-}
-
 func TestGetCurrentUserID_NoSlackAccountsReturnsEmpty(t *testing.T) {
 	d := openTestDB(t)
 

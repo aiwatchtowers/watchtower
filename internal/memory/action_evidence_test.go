@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
 // TestNewEvidenceLinesMintsOwnerActionForActRef: newEvidenceLines mints the
@@ -17,7 +15,7 @@ import (
 // ref's scheme by CODE, never named by the model.
 func TestNewEvidenceLinesMintsOwnerActionForActRef(t *testing.T) {
 	lines := newEvidenceLines([]episodeRef{
-		{ChannelID: "act:inbox_feedback:7", TS: "1720000000"},
+		{ChannelID: "act:situations:7", TS: "1720000000"},
 		{ChannelID: "C1CHAN", TS: "100.0"},
 		{ChannelID: "mail:m1", TS: "1720000001"},
 		{ChannelID: "chat:9", TS: "1720000002"},
@@ -47,8 +45,7 @@ func TestMemory15_ActionRankOnlyFromInteractionRows(t *testing.T) {
 		bel := beliefTestNode("bel_00000000000000000000000001", "Alice is reliable", subjectID, 0.5, 0, "active")
 		writeAndIndex(t, v, d, bel)
 
-		sitID, err := d.CreateSituation(db.DashboardSituation{Title: "s", Summary: "s", Chronology: "c"})
-		require.NoError(t, err)
+		sitID := seedSituation(t, d, "s", "")
 		actRef := fmt.Sprintf("act:situations:%d", sitID)
 
 		gen := &fakeGen{reply: func(string) (string, error) {
@@ -56,8 +53,10 @@ func TestMemory15_ActionRankOnlyFromInteractionRows(t *testing.T) {
 				Evidence: []episodeRef{{ChannelID: actRef, TS: "1720000000"}}, Rationale: "owner acted on it"}), nil
 		}}
 		p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
-		// Stage the act: ref into the input set exactly as the interaction ingest
-		// (Task 7) will — so it passes validateMarkers and reaches the act resolver.
+		// Stage the act: ref into the input set the way a staged owner action
+		// reaches the pass — so it passes validateMarkers and reaches the act
+		// resolver. No production step stages actions since the inbox demolition;
+		// the MEM-15 rank rule this guards is unchanged.
 		staged := &stagedChat{
 			refs:     map[string]bool{actRef + " 1720000000": true},
 			subjects: map[string]bool{subjectID: true},

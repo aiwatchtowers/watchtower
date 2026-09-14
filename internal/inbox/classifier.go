@@ -21,10 +21,10 @@ var defaultClasses = map[string]string{
 }
 
 // DefaultItemClass returns 'actionable' or 'ambient' for a known trigger type, defaulting to 'ambient' for unknown.
-// This remains the source of truth for the per-source detectors (Jira,
-// Calendar, Watchtower-internal), which set ItemClass explicitly at creation
-// time; the triage stage (see triage.go) is the only thing allowed to change
-// it afterward, and only by demotion (actionable → ambient), never upgrade.
+// This is the source of truth for the per-source detectors (Jira, Calendar,
+// Watchtower-internal), which set ItemClass explicitly at creation time.
+// Nothing rewrites the class afterwards — the AI triage stage that used to is
+// gone (see docs/superpowers/specs/2026-09-14-inbox-demolition-design.md).
 func DefaultItemClass(trig string) string {
 	if c, ok := defaultClasses[trig]; ok {
 		return c

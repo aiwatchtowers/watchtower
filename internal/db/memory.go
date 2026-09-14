@@ -737,36 +737,11 @@ func (db *DB) SetMemoryWatermark(ts float64) error {
 	return nil
 }
 
-// MemoryIngestFloor returns the ingest floor: the highest situation id whose
-// terminal (done|stale|converted) scan has already been folded into the vault.
-// listIngestSituations rescans terminal situations only above it (open ones are
-// always scanned). A workspace scalar like the watermark, so MEM-05 holds. A
-// fresh workspace without its singleton row reads as 0.
-func (db *DB) MemoryIngestFloor() (int64, error) {
-	var id int64
-	err := db.QueryRow(`SELECT COALESCE(memory_last_ingested_situation_id, 0) FROM workspace LIMIT 1`).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("getting memory ingest floor: %w", err)
-	}
-	return id, nil
-}
-
-// SetMemoryIngestFloor advances the ingest floor (see MemoryIngestFloor).
-func (db *DB) SetMemoryIngestFloor(id int64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_last_ingested_situation_id = ?`, id); err != nil {
-		return fmt.Errorf("setting memory ingest floor: %w", err)
-	}
-	return nil
-}
-
 // MemoryChatTurnFloor returns the owner-chat ingest floor: the highest
 // chat_messages.id (a Swift-owned table) already folded by
 // ingestChatStatements into the belief pass, so a rerun does not re-stage the
 // same owner Discuss turns as evidence (Phase 4, Task 4). A workspace scalar
-// like MemoryIngestFloor, so MEM-05 holds. A fresh workspace without its
+// like the extraction watermark, so MEM-05 holds. A fresh workspace without its
 // singleton row reads as 0.
 func (db *DB) MemoryChatTurnFloor() (int64, error) {
 	var id int64
@@ -1233,7 +1208,7 @@ func (db *DB) SetMemoryGmailWatermark(accountID int64, ts float64) error {
 // MemoryGmailWatermark. Deliberately a FOURTH, independent watermark
 // alongside memory_last_extracted_ts (Slack extraction),
 // memory_gmail_last_extracted_ts (Gmail extraction), and
-// memory_last_interaction_id (5D interaction-ingest floor) — see 00023. A
+// memory_chat_turn_floor (the owner-chat ingest floor) — see 00023. A
 // fresh workspace without its singleton row reads as 0.
 func (db *DB) MemoryCalendarWatermark() (float64, error) {
 	var ts float64
@@ -1583,9 +1558,9 @@ func (db *DB) queryGmailExtractMessages(accountID int64, op string, tsArg, befor
 // provenance ref may point at (resolved ambiguity #6). A table outside this set
 // is a clean drop in InteractionExists, never an error — and, being a fixed set
 // of literals, it is the only thing interpolated into the existence query, so no
-// injection is possible.
+// injection is possible. inbox_feedback left the set with the inbox demolition,
+// which drops the table.
 var interactionTables = map[string]bool{
-	"inbox_feedback":    true,
 	"user_interactions": true,
 	"decision_reads":    true,
 	"situations":        true,
@@ -1595,10 +1570,10 @@ var interactionTables = map[string]bool{
 // InteractionExists reports whether row id exists in a WHITELISTED
 // owner-interaction table — the write-time existence check behind the act:
 // scheme (MEM-15). A non-whitelisted table is a clean (false, nil) drop, never
-// an error. Existence keys on rowid: inbox_feedback and situations declare an
-// INTEGER PRIMARY KEY (which aliases rowid), while user_interactions and
-// decision_reads have composite/no integer PK, so rowid is the one uniform
-// integer identity across all four whitelisted tables.
+// an error. Existence keys on rowid: situations and feedback declare an INTEGER
+// PRIMARY KEY (which aliases rowid), while user_interactions and decision_reads
+// have composite/no integer PK, so rowid is the one uniform integer identity
+// across every whitelisted table.
 func (db *DB) InteractionExists(table string, id int64) (bool, error) {
 	if !interactionTables[table] {
 		return false, nil
@@ -1614,66 +1589,15 @@ func (db *DB) InteractionExists(table string, id int64) (bool, error) {
 	return true, nil
 }
 
-// MemoryInteractionFloor returns the 5D interaction-ingest floor: the highest
-// owner-interaction row id already folded into episode-mirror outcome
-// annotations and memory_engagement aggregates by the mechanical
-// interaction-ingest step (memory.sources.actions), mirroring
-// MemoryChatTurnFloor. A fresh workspace without its singleton row reads as 0.
-func (db *DB) MemoryInteractionFloor() (int64, error) {
-	var id int64
-	err := db.QueryRow(`SELECT COALESCE(memory_last_interaction_id, 0) FROM workspace LIMIT 1`).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("getting memory interaction floor: %w", err)
-	}
-	return id, nil
-}
-
-// SetMemoryInteractionFloor advances the interaction-ingest floor (see
-// MemoryInteractionFloor). The ingest step advances this only after its
-// vault commit and aggregate writes succeed.
-func (db *DB) SetMemoryInteractionFloor(id int64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_last_interaction_id = ?`, id); err != nil {
-		return fmt.Errorf("setting memory interaction floor: %w", err)
-	}
-	return nil
-}
-
-// MemorySituationFeedbackFloor returns the interaction-ingest floor over
-// feedback(entity_type='situation') — the dashboard's situation-level thumbs
-// (M8, see 00036). A sibling of MemoryInteractionFloor with the same
-// discipline: read at step start, advanced only after the step's vault commit
-// and aggregate writes succeed. A fresh workspace reads as 0.
-func (db *DB) MemorySituationFeedbackFloor() (int64, error) {
-	var id int64
-	err := db.QueryRow(`SELECT COALESCE(memory_last_situation_feedback_id, 0) FROM workspace LIMIT 1`).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("getting memory situation-feedback floor: %w", err)
-	}
-	return id, nil
-}
-
-// SetMemorySituationFeedbackFloor advances the situation-feedback ingest floor
-// (see MemorySituationFeedbackFloor).
-func (db *DB) SetMemorySituationFeedbackFloor(id int64) error {
-	if _, err := db.Exec(`UPDATE workspace SET memory_last_situation_feedback_id = ?`, id); err != nil {
-		return fmt.Errorf("setting memory situation-feedback floor: %w", err)
-	}
-	return nil
-}
-
 // BumpEngagement records one owner interaction against a node's engagement
 // aggregates, incrementing engaged_count when engaged is true, else
 // dismissed_count, and stamping last_interaction_at — the memory_node_stats
-// upsert precedent. The interaction-ingest step applies its per-run bumps
-// atomically through BumpEngagements (all-or-nothing); this single-bump variant
-// is the direct seam tests exercise. Runtime state: MEM-02-exempt like
-// memory_entity_hints, survives DropMemoryIndex (see 00042, resolved ambiguity #3).
+// upsert precedent. The mechanical interaction ingest that used to drive it was
+// removed with the inbox demolition (every one of its sources went), so this is
+// now the seam tests use to exercise the surviving readers — GetEngagement,
+// LinkedEntityEngagement and the retention-importance input. Runtime state:
+// MEM-02-exempt like memory_entity_hints, survives DropMemoryIndex (see 00042,
+// resolved ambiguity #3).
 func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	stmt := `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
 		VALUES (?, 1, ?)
@@ -1693,56 +1617,6 @@ func (db *DB) BumpEngagement(nodeID string, engaged bool, at string) error {
 	return nil
 }
 
-// EngagementBump is one pending per-entity engagement update for the atomic
-// batch applied by BumpEngagements.
-type EngagementBump struct {
-	NodeID  string
-	Engaged bool
-	At      string // last_interaction_at stamp (RFC3339)
-}
-
-// BumpEngagements applies a whole batch of per-entity bumps in ONE transaction:
-// either every bump lands or none do (the tx rolls back on the first error).
-// This is what lets the mechanical interaction-ingest hold its feedback floor on
-// a transient failure without risking a double-count — a half-applied batch
-// followed by a floor rewind would re-count the bumps that had already landed,
-// so all-or-nothing makes the re-scan clean (the chat-ingest transient-error
-// discipline). An empty batch is a no-op.
-func (db *DB) BumpEngagements(bumps []EngagementBump) error {
-	if len(bumps) == 0 {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("beginning engagement bump tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	const dismissedStmt = `INSERT INTO memory_engagement (node_id, dismissed_count, last_interaction_at)
-		VALUES (?, 1, ?)
-		ON CONFLICT(node_id) DO UPDATE SET
-			dismissed_count = dismissed_count + 1,
-			last_interaction_at = excluded.last_interaction_at`
-	const engagedStmt = `INSERT INTO memory_engagement (node_id, engaged_count, last_interaction_at)
-		VALUES (?, 1, ?)
-		ON CONFLICT(node_id) DO UPDATE SET
-			engaged_count = engaged_count + 1,
-			last_interaction_at = excluded.last_interaction_at`
-	for _, b := range bumps {
-		stmt := dismissedStmt
-		if b.Engaged {
-			stmt = engagedStmt
-		}
-		if _, err := tx.Exec(stmt, b.NodeID, b.At); err != nil {
-			return fmt.Errorf("bumping engagement for %s: %w", b.NodeID, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("committing engagement bump tx: %w", err)
-	}
-	return nil
-}
-
 // GetEngagement returns a node's accumulated engagement aggregates. It is a
 // TEST SEAM only: production retention scoring reads engagement through
 // LinkedEntityEngagement (which sums a node's LINKING entities), never a node's
@@ -1758,144 +1632,6 @@ func (db *DB) GetEngagement(nodeID string) (engaged, dismissed int, err error) {
 		return 0, 0, fmt.Errorf("getting engagement for %s: %w", nodeID, err)
 	}
 	return engaged, dismissed, nil
-}
-
-// InteractionFeedback is one owner 👍/👎 (inbox_feedback) row projected for the
-// mechanical interaction ingest (Phase-5 5D), joined to the situation its inbox
-// item belongs to. A feedback item that belongs to no situation yields
-// SituationID 0 (a LEFT JOIN, so the row is still consumed by the floor).
-type InteractionFeedback struct {
-	ID          int64  // inbox_feedback.id — the interaction-ingest floor key
-	SituationID int    // situation the feedback item belongs to (0 = none)
-	Rating      int    // -1 (dismissed) or +1 (engaged)
-	Date        string // created_at as YYYY-MM-DD — the annotation bullet date
-	At          string // created_at verbatim — the memory_engagement last_interaction_at stamp
-	TSUnix      int64  // created_at unix seconds — the act:inbox_feedback:<id> ref ts
-}
-
-// ListInteractionFeedback returns inbox_feedback rows with id strictly above the
-// interaction floor, oldest id first, each joined to the situation its inbox item
-// belongs to — the append-only owner-action log the mechanical interaction ingest
-// folds (memory.sources.actions). READ-ONLY: memory never writes inbox_feedback /
-// situation_signals / situations (MEM-05); it only reads them here, exactly as
-// IngestSituations already does. An item attached to several situations yields one
-// row per situation (all sharing the feedback id, so the floor still advances once
-// past it). inbox_feedback / situation_signals are core (always-migrated) tables,
-// so a query failure propagates (freezing the floor) rather than being masked.
-func (db *DB) ListInteractionFeedback(floor int64) ([]InteractionFeedback, error) {
-	rows, err := db.Query(`
-		SELECT fb.id, COALESCE(ss.situation_id, 0), fb.rating,
-		       strftime('%Y-%m-%d', fb.created_at), fb.created_at,
-		       CAST(strftime('%s', fb.created_at) AS INTEGER)
-		FROM inbox_feedback fb
-		LEFT JOIN situation_signals ss ON ss.inbox_item_id = fb.inbox_item_id
-		WHERE fb.id > ?
-		ORDER BY fb.id, ss.situation_id`, floor)
-	if err != nil {
-		return nil, fmt.Errorf("listing interaction feedback: %w", err)
-	}
-	defer rows.Close()
-
-	var out []InteractionFeedback
-	for rows.Next() {
-		var f InteractionFeedback
-		if err := rows.Scan(&f.ID, &f.SituationID, &f.Rating, &f.Date, &f.At, &f.TSUnix); err != nil {
-			return nil, fmt.Errorf("scanning interaction feedback: %w", err)
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
-// ListSituationFeedback returns feedback(entity_type='situation') rows with id
-// strictly above the situation-feedback floor, oldest id first — the dashboard's
-// situation-level 👍/👎, the interaction ingest's SECOND floor-driven source
-// (M8, see 00036): since bda8032 the Desktop persists the owner's primary
-// rating gesture here on both the Swift fast path and the CLI path, never to
-// inbox_feedback. Projected into the same InteractionFeedback shape (the
-// situation id parsed from entity_id; a non-numeric entity_id yields
-// SituationID 0 and is consumed by the floor like an unattached inbox_feedback
-// row). READ-ONLY: memory never writes feedback (MEM-05 discipline). feedback
-// is a core (always-migrated) table, so a query failure propagates (freezing
-// the floor) rather than being masked.
-func (db *DB) ListSituationFeedback(floor int64) ([]InteractionFeedback, error) {
-	rows, err := db.Query(`
-		SELECT id, COALESCE(CAST(entity_id AS INTEGER), 0), rating,
-		       strftime('%Y-%m-%d', created_at), created_at,
-		       CAST(strftime('%s', created_at) AS INTEGER)
-		FROM feedback
-		WHERE entity_type = 'situation' AND id > ?
-		ORDER BY id`, floor)
-	if err != nil {
-		return nil, fmt.Errorf("listing situation feedback: %w", err)
-	}
-	defer rows.Close()
-
-	var out []InteractionFeedback
-	for rows.Next() {
-		var f InteractionFeedback
-		if err := rows.Scan(&f.ID, &f.SituationID, &f.Rating, &f.Date, &f.At, &f.TSUnix); err != nil {
-			return nil, fmt.Errorf("scanning situation feedback: %w", err)
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
-// InteractionSituation is one terminal owner-action situation (converted /
-// dismissed / done) projected for the mechanical interaction ingest — the
-// owner's own lifecycle verdict on a story.
-type InteractionSituation struct {
-	ID                int
-	Status            string // 'converted' | 'dismissed' | 'done'
-	ConvertedTargetID int
-	ConvertedTrackID  int
-	Date              string // updated_at as YYYY-MM-DD — the stable annotation bullet date
-	At                string // updated_at verbatim — the last_interaction_at stamp
-	TSUnix            int64  // updated_at unix seconds — the act:situations:<id> ref ts
-}
-
-// ListInteractionSituations returns situations the OWNER has terminally acted on
-// (converted / dismissed / done) whose updated_at is at/after sinceRFC3339,
-// oldest id first — the situation-lifecycle half of the mechanical interaction
-// ingest. Owner authorship is decided by resolved_reason: the Desktop's done and
-// dismiss buttons stamp 'user_done'/'user_dismissed' (SituationQueries.swift),
-// while conversion is owner-only by construction (only the Desktop convert flow
-// sets status='converted'). The inbox pipeline's auto-resolve stamps
-// 'signals_resolved' — a SYSTEM action that must never fold as an owner verdict
-// (M7, 2026-07-17 final validation): it would mint false owner-engagement and,
-// with memory.semantic.preferences on, preference beliefs from system behavior.
-// READ-ONLY (MEM-05): situations are read exactly as IngestSituations reads
-// them, never written. The re-scan has no id floor (verdicts are not
-// id-monotonic; the mirror's verdict text is the novelty key), so the updated_at
-// window bounds it: a situation terminal for longer than the window has already
-// had every re-scan chance and is skipped, keeping the unbounded terminal
-// backlog off every run. situations is a core (always-migrated) table, so a
-// query failure propagates rather than being masked.
-func (db *DB) ListInteractionSituations(sinceRFC3339 string) ([]InteractionSituation, error) {
-	rows, err := db.Query(`
-		SELECT id, status, COALESCE(converted_target_id, 0), COALESCE(converted_track_id, 0),
-		       strftime('%Y-%m-%d', updated_at), updated_at, CAST(strftime('%s', updated_at) AS INTEGER)
-		FROM situations
-		WHERE (status = 'converted'
-		       OR (status IN ('dismissed', 'done') AND resolved_reason IN ('user_dismissed', 'user_done')))
-		  AND updated_at >= ?
-		ORDER BY id`, sinceRFC3339)
-	if err != nil {
-		return nil, fmt.Errorf("listing interaction situations: %w", err)
-	}
-	defer rows.Close()
-
-	var out []InteractionSituation
-	for rows.Next() {
-		var s InteractionSituation
-		if err := rows.Scan(&s.ID, &s.Status, &s.ConvertedTargetID, &s.ConvertedTrackID,
-			&s.Date, &s.At, &s.TSUnix); err != nil {
-			return nil, fmt.Errorf("scanning interaction situation: %w", err)
-		}
-		out = append(out, s)
-	}
-	return out, rows.Err()
 }
 
 // MirrorTarget is the read-only projection of a targets row the mechanical

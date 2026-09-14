@@ -175,7 +175,7 @@ func TestAllTablesExist(t *testing.T) {
 		"custom_emojis", "tracks",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
-		"feed_items", "feed_state", "meeting_transcripts", "voice_prints",
+		"meeting_transcripts", "voice_prints",
 		"gmail_messages", "google_accounts", "slack_accounts", "jira_accounts",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",

@@ -21,7 +21,6 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
@@ -91,7 +90,6 @@ type Daemon struct {
 	inboxPipe           *inbox.Pipeline
 	ideasPipe           *ideas.Pipeline
 	memoryPipe          *memory.Pipeline
-	feedPipe            *feed.Pipeline
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline
@@ -203,11 +201,6 @@ func (d *Daemon) SetMemoryPipeline(p *memory.Pipeline) {
 		p.Source = "daemon"
 	}
 	d.memoryPipe = p
-}
-
-// SetFeedPipeline installs the dashboard feed publisher (internal/feed).
-func (d *Daemon) SetFeedPipeline(p *feed.Pipeline) {
-	d.feedPipe = p
 }
 
 // SetNextStepPipeline sets the targets pipeline used to refresh AI next-step
@@ -380,7 +373,6 @@ func (d *Daemon) runSync(ctx context.Context) {
 		d.logger.Printf("sync had errors, but running pipelines on existing data")
 	}
 
-	d.phaseFastInbox(ctx)
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
@@ -419,7 +411,6 @@ func (d *Daemon) runSync(ctx context.Context) {
 	now := time.Now()
 	d.runDayPlanPhase(ctx, now)
 	d.runDayPlanConflictPhase(ctx, now)
-	d.phaseFeed()
 }
 
 // pipelineRunStats are the bookkeeping metrics recorded for a daemon-managed
@@ -725,22 +716,6 @@ func (d *Daemon) resolveJiraUsers(ctx context.Context, s jiraAccountSyncer) {
 	}
 }
 
-// phaseFastInbox surfaces Slack/Jira/Calendar mentions in the UI immediately,
-// before the LLM-heavy digest pipeline. Phase 5 (phaseInbox) still runs later
-// to detect decision_made/briefing_ready from fresh digests.
-func (d *Daemon) phaseFastInbox(ctx context.Context) {
-	if !d.config.Inbox.Enabled {
-		return
-	}
-	if d.inboxPipe == nil {
-		return
-	}
-	d.applyInboxCurrentUser()
-	if err := d.inboxPipe.RunFastDetection(ctx); err != nil {
-		d.logger.Printf("inbox fast detect error: %v", err)
-	}
-}
-
 // phaseChannelDigests generates per-channel digests (MAP phase that produces
 // people_signals consumed later by phasePeopleCards).
 func (d *Daemon) phaseChannelDigests(ctx context.Context) {
@@ -980,9 +955,9 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	})
 }
 
-// phaseInbox runs the full inbox pipeline (decision_made/briefing_ready from
-// fresh digests, AI triage, secretary card generation). Runs after digest/tracks/
-// people so detectors see fresh data.
+// phaseInbox runs the inbox detection pipeline (mechanical, no AI):
+// Slack/Jira/Calendar/Gmail/IMAP triggers, briefing_ready, auto-resolve,
+// archive. Runs after digest/tracks/people so detectors see fresh data.
 func (d *Daemon) phaseInbox(ctx context.Context) {
 	if !d.config.Inbox.Enabled {
 		return
@@ -1189,8 +1164,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 }
 
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
-// seeding, situation ingest, episode extraction). Runs after inbox so freshly
-// composed situations are visible, before next-step. The pipeline records its
+// seeding, episode extraction). Runs after inbox, before next-step. The pipeline records its
 // own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
 // no trackedPipelineRun wrapper here. Errors are logged and never abort the
 // cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
@@ -1213,36 +1187,9 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		d.logger.Printf("memory error: %v", err)
 		return
 	}
-	situations := stats.Ingested.Created + stats.Ingested.Updated + stats.Ingested.Finalized
-	if stats.Seeded > 0 || situations > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
-		d.logger.Printf("memory: %d seeded, %d situation node(s), %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
-			stats.Seeded, situations, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
-	}
-}
-
-// phaseFeed mirrors source tables into the dashboard feed index. Runs last so
-// it sees everything this cycle produced (situations, briefings, recaps, day
-// plans). AI-free and best-effort: errors are logged, never propagated, and
-// never affect the inbox pipeline or its watermarks (DASH-06).
-//
-// Deliberately NOT gated on cfg.Feed.Enabled: Feed is a Core feature in the
-// registry (features.ByID("feed").Core == true, no toggle) precisely because
-// the Dashboard depends on it, so `features enable/disable feed` is refused
-// at the CLI/Desktop layer — but feed.enabled was still an accepted config
-// key that `config set feed.enabled false` could flip directly, permanently
-// killing the Dashboard timeline with no way back through the feature
-// manager. The config field stays parseable (existing configs must still
-// load), it just no longer acts as a kill switch here.
-func (d *Daemon) phaseFeed() {
-	if d.feedPipe == nil {
-		return
-	}
-	n, err := d.feedPipe.Publish(time.Now())
-	if err != nil {
-		d.logger.Printf("feed error: %v", err)
-	}
-	if n > 0 {
-		d.logger.Printf("feed: published %d items", n)
+	if stats.Seeded > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
+		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
+			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
 	}
 }
 

@@ -12,6 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// countingGen is a digest.Generator that records how many times it was
+// invoked, so tests can prove the generator is (not) called.
+type countingGen struct {
+	response string
+	calls    int
+}
+
+func (g *countingGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	return g.response, &digest.Usage{}, "", nil
+}
+
 // erroringGen is a digest.Generator that always fails, modeled on countingGen.
 type erroringGen struct {
 	calls int

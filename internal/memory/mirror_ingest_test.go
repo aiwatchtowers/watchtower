@@ -91,9 +91,7 @@ func TestMirrorConversionCrossLink(t *testing.T) {
 
 	tid, err := d.CreateTarget(db.Target{Text: "Roll out SSO", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	sid, err := d.CreateSituation(db.DashboardSituation{Title: "SSO outage thread", Status: "open"})
-	require.NoError(t, err)
-	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+	sid := seedConvertedSituation(t, d, "SSO outage thread", int(tid), 0)
 
 	// The situation episode already exists in the vault (ingested earlier).
 	epID := "ep_00000000000000000000000042"
@@ -123,9 +121,7 @@ func TestMirrorConversionLinkNoDuplicateOnTitleChange(t *testing.T) {
 
 	tid, err := d.CreateTarget(db.Target{Text: "Roll out SSO", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	sid, err := d.CreateSituation(db.DashboardSituation{Title: "SSO outage thread", Status: "open"})
-	require.NoError(t, err)
-	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+	sid := seedConvertedSituation(t, d, "SSO outage thread", int(tid), 0)
 
 	epID := "ep_00000000000000000000000042"
 	writeAndIndex(t, v, d, Node{
@@ -442,9 +438,7 @@ func TestMemory14_MirrorNeverWritesOperationalTables(t *testing.T) {
 	kid, err := d.UpsertTrack(db.Track{Text: "A track", Category: "task", Ownership: "mine", Priority: "medium",
 		SubItems: `[{"text":"step one","status":"open"}]`})
 	require.NoError(t, err)
-	sid, err := d.CreateSituation(db.DashboardSituation{Title: "Origin story", Status: "open"})
-	require.NoError(t, err)
-	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+	sid := seedConvertedSituation(t, d, "Origin story", int(tid), 0)
 	writeAndIndex(t, v, d, Node{
 		ID: "ep_00000000000000000000000099", Type: "episode", Tier: "long", Status: "closed",
 		Title: "Origin story", Aliases: []string{fmt.Sprintf("situation:%d", sid)},
@@ -453,7 +447,7 @@ func TestMemory14_MirrorNeverWritesOperationalTables(t *testing.T) {
 
 	// A situation signal (part of the MEM-05 dump set).
 	item := seedInboxItem(t, d, "C1", "111.1")
-	require.NoError(t, d.AddSituationSignals(int(sid), []int{item}))
+	seedSituationSignal(t, d, sid, item)
 
 	// A day plan + item.
 	_, err = d.Exec(`INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-07-17', '2026-07-17T00:00:00Z')`)
@@ -488,14 +482,13 @@ func TestMemory14_MirrorNeverWritesOperationalTables(t *testing.T) {
 
 // fullSlice4Config turns on every slice-4 gate (operational mirrors, the
 // day_plan/meeting_prep read-surface gates, preference beliefs) PLUS the
-// earlier-slice sources (gmail/actions/calendar/chats) and the whole semantic
-// tier, so a single Run exercises them all together.
+// earlier-slice sources (gmail/calendar/chats) and the whole semantic tier, so
+// a single Run exercises them all together.
 func fullSlice4Config() config.MemoryConfig {
 	cfg := semanticTestConfig() // Semantic.Enabled + the documented caps + budget
 	cfg.Semantic.Preferences = true
 	cfg.Sources.Operational = true
 	cfg.Sources.Gmail = true
-	cfg.Sources.Actions = true
 	cfg.Sources.Calendar = true
 	cfg.Sources.Chats = true
 	cfg.Sources.Jira = true
@@ -525,16 +518,14 @@ func TestMemory14_FullRunNeverWritesOperationalTables(t *testing.T) {
 	_, err = d.UpsertTrack(db.Track{Text: "A track", Category: "task", Ownership: "mine", Priority: "medium",
 		SubItems: `[{"text":"step one","status":"open"}]`})
 	require.NoError(t, err)
-	sid, err := d.CreateSituation(db.DashboardSituation{Title: "Origin story", Status: "open"})
-	require.NoError(t, err)
-	require.NoError(t, d.MarkSituationConverted(int(sid), int(tid), 0))
+	sid := seedConvertedSituation(t, d, "Origin story", int(tid), 0)
 	writeAndIndex(t, v, d, Node{
 		ID: "ep_00000000000000000000000099", Type: "episode", Tier: "long", Status: "closed",
 		Title: "Origin story", Aliases: []string{fmt.Sprintf("situation:%d", sid)},
 		Body: "# Origin story\n\n## Story\ns\n",
 	})
 	item := seedInboxItem(t, d, "C1", "111.1")
-	require.NoError(t, d.AddSituationSignals(int(sid), []int{item}))
+	seedSituationSignal(t, d, sid, item)
 
 	// A day plan + item — never read by the memory pipeline; it must stay identical.
 	_, err = d.Exec(`INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-07-17', '2026-07-17T00:00:00Z')`)

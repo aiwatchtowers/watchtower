@@ -4,10 +4,10 @@ import "fmt"
 
 // ClearSlackData removes all Slack-sourced rows and the AI products built on
 // them (used on Slack disconnect): raw sync data, digests, tracks, people
-// analytics, briefings, Slack inbox items together with the situations and
-// feed rows they composed, and the Slack sync watermarks. Data from other
-// sources (Gmail, Calendar, Jira), targets, day plans, and the user's own
-// profiles are preserved.
+// analytics, briefings, Slack inbox items together with the situations they
+// composed, and the Slack sync watermarks. Data from other sources (Gmail,
+// Calendar, Jira), targets, day plans, and the user's own profiles are
+// preserved.
 func (db *DB) ClearSlackData() error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -28,7 +28,7 @@ func (db *DB) ClearSlackData() error {
 			('digest','track','decision','user_analysis','briefing','inbox','catchup_theme')`,
 
 		// Slack inbox signals (jira_*/calendar_*/email_*/target_due survive).
-		// inbox_feedback and situation_signals rows cascade via FK. Memory dispute
+		// situation_signals rows cascade via FK. Memory dispute
 		// items (channel_id='memory', trigger_type='decision_made') are NOT
 		// Slack-derived — they surface belief conflicts from the memory vault — so
 		// they are excluded and survive a Slack disconnect.
@@ -36,12 +36,9 @@ func (db *DB) ClearSlackData() error {
 			('mention','dm','thread_reply','reaction','stream','decision_made','briefing_ready')
 			AND channel_id != 'memory'`,
 
-		// Situations left with no signals, then feed rows whose source is gone.
+		// Situations left with no signals.
 		`DELETE FROM situations WHERE id NOT IN
 			(SELECT situation_id FROM situation_signals)`,
-		`DELETE FROM feed_items WHERE item_type = 'situation'
-			AND source_id NOT IN (SELECT CAST(id AS TEXT) FROM situations)`,
-		`DELETE FROM feed_items WHERE item_type = 'briefing'`,
 
 		// AI products computed from Slack messages.
 		`DELETE FROM digest_participants`,

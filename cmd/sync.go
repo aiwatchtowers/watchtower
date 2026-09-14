@@ -26,7 +26,6 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/feed"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/imap"
@@ -584,9 +583,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	briefingPipe := briefing.New(database, cfg, gen, logger)
 	briefingPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetBriefingPipeline(briefingPipe)
-	inboxPipe := inbox.New(database, cfg, gen, logger)
-	inboxPipe.SetPromptStore(prompts.New(database, nil))
-	d.SetInboxPipeline(inboxPipe)
+	d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
 	wireIdeasPipeline(d, database, cfg, gen, logger)
 	wireReactionCommandsPipeline(d, database, cfg, gen, logger)
 	wireMemoryPipeline(d, database, cfg, logger)
@@ -596,7 +593,6 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 	dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetDayPlanPipeline(dayPlanPipe)
-	d.SetFeedPipeline(feed.New(database, cfg, logger))
 	// Seed jira_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
 	// a re-login.

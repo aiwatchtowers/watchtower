@@ -7,13 +7,12 @@ package memory
 // attendees, location, description), and — where a meeting_recaps row exists —
 // that already-AI-produced recap's summary/decisions/actions fold into
 // Story/Outcome (reused, never re-synthesized). It runs as a mechanical Run step
-// (3b), after SeedEntities (participants + series seeded first) and before Slack
+// (2b), after SeedEntities (participants + series seeded first) and before Slack
 // extraction.
 //
 // Idempotency is alias-keyed (calevent:<event_id>, the gmailthread: precedent):
 // a re-scan UPDATEs the episode in place, and a content-equality check makes an
-// unchanged re-scan a no-op (no empty git commit — the interaction-ingest dirty
-// precedent). Because the calendar sync retains only ~24h of past events, the
+// unchanged re-scan a no-op (no empty git commit). Because the calendar sync retains only ~24h of past events, the
 // loader re-scans a bounded lookback overlap so a recap/edit landing after the
 // watermark passed a still-present event refreshes its episode. Its own
 // watermark: memory_calendar_last_extracted_ts (MEM-04-adapted).
@@ -65,7 +64,7 @@ type calAttendee struct {
 	SlackUserID string `json:"slack_user_id"`
 }
 
-// runCalendarIngest is Run step 3b (behind memory.sources.calendar): the
+// runCalendarIngest is Run step 2b (behind memory.sources.calendar): the
 // mechanical, no-AI fold of ended calendar events into episode nodes. It loads
 // ended events above the calendar watermark (bounded-lookback re-scan), builds
 // their episodes in one vault commit, advances the watermark to the newest

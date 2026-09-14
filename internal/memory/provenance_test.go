@@ -245,38 +245,21 @@ func TestCalRegisteredInPipelineRegistry(t *testing.T) {
 	assert.True(t, ok)
 }
 
-// seedInboxFeedback inserts an inbox_items row and an inbox_feedback row
-// referencing it, returning the feedback rowid (== inbox_feedback.id).
-func seedInboxFeedback(t *testing.T, d *db.DB, rating int) int64 {
-	t.Helper()
-	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, status)
-		VALUES ('C1', '1700000001.000100', 'U2', 'mention', 'pending')`)
-	require.NoError(t, err)
-	itemID, err := res.LastInsertId()
-	require.NoError(t, err)
-	res, err = d.Exec(`INSERT INTO inbox_feedback (inbox_item_id, rating, created_at)
-		VALUES (?, ?, '2026-07-16T00:00:00Z')`, itemID, rating)
-	require.NoError(t, err)
-	fbID, err := res.LastInsertId()
-	require.NoError(t, err)
-	return fbID
-}
-
 // TestProvenanceRegistryDispatchesAct: an act:<table>:<row_id> ref routes to the
 // act resolver, resolving iff the row exists in a WHITELISTED table; a missing
 // row and a non-whitelisted table are both clean non-resolutions (registered),
 // never errors (resolved ambiguity #6).
 func TestProvenanceRegistryDispatchesAct(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	fbID := seedInboxFeedback(t, d, -1)
+	sitID := seedSituation(t, d, "s", "")
 	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
 
-	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: fmt.Sprintf("act:inbox_feedback:%d", fbID), TS: "1720000000"})
+	ok, registered, err := p.registry.Validate(episodeRef{ChannelID: fmt.Sprintf("act:situations:%d", sitID), TS: "1720000000"})
 	require.NoError(t, err)
 	assert.True(t, registered, "act is a registered scheme")
 	assert.True(t, ok, "an existing whitelisted interaction row resolves")
 
-	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "act:inbox_feedback:999999", TS: "1"})
+	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "act:situations:999999", TS: "1"})
 	require.NoError(t, err)
 	assert.True(t, registered)
 	assert.False(t, ok, "a missing row does not resolve")
@@ -286,12 +269,13 @@ func TestProvenanceRegistryDispatchesAct(t *testing.T) {
 	assert.True(t, registered, "act scheme is registered even for an unknown table")
 	assert.False(t, ok, "a non-whitelisted table never resolves")
 
-	// A situation row (also whitelisted) resolves.
-	sitID, err := d.CreateSituation(db.DashboardSituation{Title: "s", Summary: "s", Chronology: "c"})
+	// inbox_feedback left the whitelist with the inbox demolition: a ref at it is
+	// refused by the whitelist before any query, so a historic act:inbox_feedback:
+	// ref drops cleanly rather than erroring on the missing table.
+	ok, registered, err = p.registry.Validate(episodeRef{ChannelID: "act:inbox_feedback:1", TS: "1"})
 	require.NoError(t, err)
-	ok, _, err = p.registry.Validate(episodeRef{ChannelID: fmt.Sprintf("act:situations:%d", sitID), TS: "1"})
-	require.NoError(t, err)
-	assert.True(t, ok, "an existing situation resolves through the act resolver")
+	assert.True(t, registered)
+	assert.False(t, ok, "a de-whitelisted table never resolves")
 }
 
 // TestMemory12_UnregisteredSchemeRejectedAtWrite is the MEM-12 formal guard: a

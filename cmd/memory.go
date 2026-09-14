@@ -607,9 +607,8 @@ func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
 	if stats.OwnerEditsCommitted {
 		fmt.Fprintln(out, "Owner edits committed first (memory(owner-edit)).")
 	}
-	fmt.Fprintf(out, "Consolidation done: %d entities seeded, situations %d created / %d updated / %d finalized, %d episodes from %d windows (%d failed, %d messages, %d refs rejected).\n",
-		stats.Seeded, stats.Ingested.Created, stats.Ingested.Updated, stats.Ingested.Finalized,
-		stats.Episodes, stats.Windows, stats.WindowsFailed, stats.Messages, stats.RefsRejected)
+	fmt.Fprintf(out, "Consolidation done: %d entities seeded, %d episodes from %d windows (%d failed, %d messages, %d refs rejected).\n",
+		stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.Messages, stats.RefsRejected)
 	if q := stats.Reconciled.Quarantined; q > 0 {
 		fmt.Fprintf(out, "Warning: %d vault file(s) quarantined during reconcile (parse/index failure — see warnings above).\n", q)
 	}

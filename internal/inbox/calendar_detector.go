@@ -97,8 +97,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 			// the calendar.history_days sync window (default 14 d) gives past
 			// events a fresh synced_at on first sync / re-auth, and without
 			// this guard every dead invite would mint an actionable inbox
-			// item (triage may only downgrade, INBOX-01). An unparseable
-			// end_time keeps the invite (conservative).
+			// item. An unparseable end_time keeps the invite (conservative).
 			if endT, err := time.Parse(time.RFC3339, e.endTime); err == nil && endT.Before(time.Now()) {
 				continue
 			}

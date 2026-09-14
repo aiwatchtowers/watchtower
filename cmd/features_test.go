@@ -129,8 +129,7 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 			assert.Equal(t, "enabled", f.State)
 			assert.False(t, f.Core)
 			assert.Equal(t, "inbox.enabled", f.ConfigKey)
-			assert.Equal(t, "heavy", f.Cost)
-			assert.Contains(t, f.FeedsInto, "memory")
+			assert.Equal(t, "none", f.Cost)
 			assert.Contains(t, f.FeedsInto, "briefing")
 		case "targets":
 			sawTargets = true
@@ -139,7 +138,7 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 		case "memory":
 			sawMemory = true
 			assert.Equal(t, "disabled", f.State, "memory defaults off")
-			assert.Len(t, f.SubToggles, 13)
+			assert.Len(t, f.SubToggles, 11)
 			for _, st := range f.SubToggles {
 				assert.False(t, st.Enabled, "sub-toggle %q should read the default (off)", st.Key)
 			}
@@ -151,7 +150,7 @@ func TestFeaturesList_JSONShape(t *testing.T) {
 }
 
 // TestFeaturesList_JSONReflectsSubToggleWrite pins subToggleEnabled's
-// key->field wiring end to end: write exactly one of memory's 13 sub-toggle
+// key->field wiring end to end: write exactly one of memory's 11 sub-toggle
 // keys through the same setConfigKey path `features enable`/`disable` use,
 // then assert `list --json` reports that one enabled=true and every sibling
 // still false — so a copy-paste mistake in the switch (e.g. two cases
@@ -179,7 +178,7 @@ func TestFeaturesList_JSONReflectsSubToggleWrite(t *testing.T) {
 		}
 	}
 	require.NotNil(t, memory, "memory feature must be present")
-	require.Len(t, memory.SubToggles, 13)
+	require.Len(t, memory.SubToggles, 11)
 
 	for _, st := range memory.SubToggles {
 		if st.Key == "memory.sources.gmail" {
@@ -300,7 +299,7 @@ func TestFeaturesDisable_WithDependents(t *testing.T) {
 	cfg, err := config.Load(flagConfig)
 	require.NoError(t, err)
 	assert.False(t, cfg.Digest.Enabled, "slack-digests itself")
-	assert.False(t, cfg.Inbox.Enabled, "secretary-inbox is an enabled dependent")
+	assert.True(t, cfg.Inbox.Enabled, "secretary-inbox reads messages directly, not digests — it must NOT be swept up as a dependent")
 	assert.False(t, cfg.Tracks.Enabled, "tracks is an enabled dependent")
 	assert.False(t, cfg.People.Enabled, "people-cards is an enabled dependent")
 	assert.False(t, cfg.Ideas.Enabled, "ideas is an enabled dependent")
@@ -336,10 +335,6 @@ func TestFeaturesEnable_RunsFastForward(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, ts, float64(before), "inbox watermark should fast-forward to roughly now")
 	assert.LessOrEqual(t, ts, float64(after), "inbox watermark should fast-forward to roughly now")
-
-	composeTS, err := database.GetComposeLastRunTS()
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, composeTS, float64(before))
 
 	reloaded, err := config.Load(flagConfig)
 	require.NoError(t, err)

@@ -96,7 +96,6 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 
 	defaults := defaultConfig(t)
 	wantEnabled := map[string]bool{
-		"feed":            true,
 		"secretary-inbox": true,
 		"slack-digests":   true,
 		"stream-digests":  true,
@@ -116,6 +115,20 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 	}
 }
 
+func TestRegistry_InboxIsAttentionDetection(t *testing.T) {
+	f, ok := ByID("secretary-inbox")
+	require.True(t, ok)
+	require.Equal(t, "Attention detection", f.Title)
+	require.Equal(t, CostNone, f.Cost)
+	require.Empty(t, f.SubToggles)
+	require.Equal(t, []string{"briefing"}, f.FeedsInto)
+
+	_, ok = ByID("dashboard")
+	require.False(t, ok, "dashboard feature entry must be gone")
+	_, ok = ByID("feed")
+	require.False(t, ok, "feed feature entry must be gone")
+}
+
 func TestRegistry_DependentsTransitive(t *testing.T) {
 	defaults := defaultConfig(t)
 	deps := idSet(Dependents("slack-digests", defaults))
@@ -124,9 +137,13 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	// briefing -> day-plan (both real consumers: internal/dayplan/gather.go
 	// reads people_cards and the daily briefing directly), independent of
 	// memory — memory is only ONE of three paths that reach it.
-	for _, want := range []string{"secretary-inbox", "tracks", "people-cards", "ideas", "briefing", "day-plan"} {
+	for _, want := range []string{"tracks", "people-cards", "ideas", "briefing", "day-plan"} {
 		assert.True(t, deps[want], "slack-digests dependents should include %q", want)
 	}
+	// secretary-inbox reads messages/mentions/DMs/replies directly, not
+	// digests/digest_topics — slack-digests must not claim it as a dependent
+	// (only stream-digests, via its Jira-comment sync, still feeds it).
+	assert.False(t, deps["secretary-inbox"], "slack-digests has no edge into secretary-inbox")
 	assert.False(t, deps["memory"], "memory defaults off; it must not appear as a dependent")
 
 	// Isolate the memory -> day-plan edge specifically: day-plan has three
@@ -141,7 +158,7 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 	memoryOn := loadConfig(t, "memory:\n  enabled: true\n")
 	depsWithMemory := idSet(Dependents("slack-digests", memoryOn))
 	assert.True(t, depsWithMemory["memory"],
-		"memory should appear transitively via secretary-inbox once memory.enabled is true")
+		"memory should appear transitively via tracks once memory.enabled is true")
 	assert.True(t, depsWithMemory["day-plan"],
 		"day-plan should appear transitively via memory once memory.enabled is true")
 

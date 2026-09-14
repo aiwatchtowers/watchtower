@@ -99,29 +99,11 @@ func (db *DB) FindPendingInboxByThread(channelID, threadTS string) (int, error) 
 
 // UpdateInboxItemSnippet updates the snippet, context, raw_text, sender,
 // message_ts and permalink of an existing inbox item (the detector's
-// thread-fold path). It conditionally clears composed_at so a folded thread
-// update re-enters the composer only when there's a sane place for it to
-// land: the item belongs to an open situation (the DASH-01 re-merge target
-// exists) or to no situation at all (never composed, so nothing to
-// resurrect). If the item belongs only to dismissed/snoozed/done/converted/
-// stale situations, composed_at stays set — a dismissal is an explicit user
-// signal, and a snoozed owner isn't in the composer's OPEN block, so clearing
-// composed_at there would mint a duplicate situation instead of re-merging.
+// thread-fold path).
 func (db *DB) UpdateInboxItemSnippet(id int, messageTS, senderUserID, snippet, context, rawText, permalink string) error {
 	_, err := db.Exec(`UPDATE inbox_items SET
 		message_ts = ?, sender_user_id = ?, snippet = ?, context = ?, raw_text = ?, permalink = ?,
 		ai_reason = '', read_at = NULL,
-		composed_at = CASE
-			WHEN EXISTS (
-				SELECT 1 FROM situation_signals ss
-				JOIN situations s ON s.id = ss.situation_id
-				WHERE ss.inbox_item_id = inbox_items.id AND s.status = 'open')
-			  OR NOT EXISTS (
-				SELECT 1 FROM situation_signals ss
-				WHERE ss.inbox_item_id = inbox_items.id)
-			THEN NULL
-			ELSE composed_at
-		END,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?`,
 		messageTS, senderUserID, snippet, context, rawText, permalink, id)
@@ -313,7 +295,7 @@ func (db *DB) GetInboxCounts() (int, int, error) {
 // GetInboxItemsForBriefing returns pending inbox items for the daily briefing.
 func (db *DB) GetInboxItemsForBriefing() ([]InboxItem, error) {
 	rows, err := db.Query(`SELECT ` + inboxSelectCols + ` FROM inbox_items
-		WHERE status = 'pending'
+		WHERE status = 'pending' AND archived_at IS NULL
 		ORDER BY
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
 			created_at DESC
@@ -332,22 +314,6 @@ func (db *DB) GetInboxItemsForBriefing() ([]InboxItem, error) {
 		items = append(items, *it)
 	}
 	return items, rows.Err()
-}
-
-// BulkUpdateInboxPriorities updates priority and ai_reason for multiple inbox items.
-func (db *DB) BulkUpdateInboxPriorities(updates map[int]struct {
-	Priority string
-	AIReason string
-}) error {
-	for id, u := range updates {
-		_, err := db.Exec(`UPDATE inbox_items SET priority = ?, ai_reason = ?,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-			WHERE id = ?`, u.Priority, u.AIReason, id)
-		if err != nil {
-			return fmt.Errorf("updating inbox item %d priority: %w", id, err)
-		}
-	}
-	return nil
 }
 
 // DeduplicateThreadInboxItems merges duplicate pending inbox items for the same
@@ -607,112 +573,6 @@ func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceT
 	return candidates, rows.Err()
 }
 
-// ListStreamCandidatesSince returns non-trigger messages newer than sinceTS
-// for the full-stream triage scan, oldest first, capped at limit. Excludes
-// deleted/subtyped messages, empty authors, the owner's own messages across
-// every connected Slack account (ownerUserIDs — an empty slice excludes
-// none), DM channels (DMs are trigger-detected separately), messages already
-// in inbox_items, and messages whose thread already has a pending inbox item.
-func (db *DB) ListStreamCandidatesSince(ownerUserIDs []string, sinceTS float64, limit int) ([]InboxCandidate, error) {
-	placeholders := make([]string, len(ownerUserIDs))
-	args := []any{sinceTS}
-	for i, id := range ownerUserIDs {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	// NOT IN () is invalid SQL, so the exclusion clause is omitted entirely
-	// when no owner ids are known — the degenerate case excludes nothing.
-	exclude := ""
-	if len(ownerUserIDs) > 0 {
-		exclude = "AND m.user_id NOT IN (" + strings.Join(placeholders, ",") + ")"
-	}
-	args = append(args, limit)
-	query := fmt.Sprintf(`
-		SELECT m.channel_id, m.ts, COALESCE(m.thread_ts,''), m.user_id, m.text, COALESCE(m.permalink,''), m.ts_unix
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix > ?
-		  AND m.is_deleted = 0
-		  AND COALESCE(m.subtype,'') = ''
-		  AND m.user_id != ''
-		  %s
-		  AND c.type != 'dm'
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items i
-		      WHERE i.channel_id = m.channel_id AND i.message_ts = m.ts)
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items i2
-		      WHERE i2.channel_id = m.channel_id
-		        AND i2.thread_ts != ''
-		        AND (i2.thread_ts = COALESCE(m.thread_ts,'') OR i2.thread_ts = m.ts)
-		        AND i2.status = 'pending')
-		ORDER BY m.ts_unix ASC
-		LIMIT ?`, exclude)
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("listing stream candidates: %w", err)
-	}
-	defer rows.Close()
-
-	var candidates []InboxCandidate
-	for rows.Next() {
-		var c InboxCandidate
-		if err := rows.Scan(&c.ChannelID, &c.MessageTS, &c.ThreadTS, &c.SenderUserID, &c.Text, &c.Permalink, &c.TSUnix); err != nil {
-			return nil, fmt.Errorf("scanning stream candidate: %w", err)
-		}
-		c.TriggerType = "stream"
-		candidates = append(candidates, c)
-	}
-	return candidates, rows.Err()
-}
-
-// SetInboxCard stores a generated secretary card on an item.
-func (db *DB) SetInboxCard(id int, whyMatters, threadDigest, draftReply string) error {
-	_, err := db.Exec(`UPDATE inbox_items
-		SET why_matters = ?, thread_digest = ?, draft_reply = ?,
-		    card_status = 'ready',
-		    card_generated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, whyMatters, threadDigest, draftReply, id)
-	if err != nil {
-		return fmt.Errorf("setting inbox card for item %d: %w", id, err)
-	}
-	return nil
-}
-
-// MarkInboxCardFailed flags a card generation failure; the item stays
-// eligible for retry on the next cycle.
-func (db *DB) MarkInboxCardFailed(id int) error {
-	_, err := db.Exec(`UPDATE inbox_items
-		SET card_status = 'failed',
-		    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("marking inbox card failed for item %d: %w", id, err)
-	}
-	return nil
-}
-
-// ListItemsNeedingCards returns pending items without a ready card: all
-// actionable ones plus at most awarenessLimit newest ambient ones.
-func (db *DB) ListItemsNeedingCards(awarenessLimit int) ([]InboxItem, error) {
-	rows, err := db.Query(`
-		SELECT `+inboxSelectCols+` FROM inbox_items
-		WHERE status = 'pending' AND archived_at IS NULL
-		  AND card_status IN ('none','failed')
-		  AND (item_class = 'actionable'
-		       OR id IN (SELECT id FROM inbox_items
-		                 WHERE status='pending' AND archived_at IS NULL
-		                   AND card_status IN ('none','failed') AND item_class='ambient'
-		                 ORDER BY created_at DESC LIMIT ?))
-		ORDER BY item_class, created_at DESC`, awarenessLimit)
-	if err != nil {
-		return nil, fmt.Errorf("listing items needing cards: %w", err)
-	}
-	defer rows.Close()
-	return scanInboxItems(rows)
-}
-
 // CheckUserReplied checks whether the current user has acted on a message:
 // replied in the thread/channel OR reacted with any emoji.
 // For threaded messages, checks if user posted in the thread after message_ts.
@@ -811,13 +671,6 @@ func (db *DB) GetThreadContext(channelID, threadTS string, limit int) ([]struct 
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs, rows.Err()
-}
-
-// SetInboxItemClass sets the item_class ('actionable' or 'ambient') for an inbox item.
-func (db *DB) SetInboxItemClass(id int64, class string) error {
-	_, err := db.Exec(`UPDATE inbox_items SET item_class=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?`,
-		class, id)
-	return err
 }
 
 // ArchiveExpiredAmbient archives ambient items older than threshold, marking reason='seen_expired'.

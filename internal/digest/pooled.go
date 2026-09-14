@@ -88,7 +88,7 @@ func SourceFromContext(ctx context.Context) (string, bool) {
 //
 //	SourceLight → lightweight/fast model (e.g. Haiku, gpt-5.4-mini, ...)
 //
-// Per-pipeline source names (e.g. "digest.channel", "inbox.triage") remain
+// Per-pipeline source names (e.g. "digest.channel", "digest.period") remain
 // valid and are classified by the shared TierForSource table. An unknown or
 // empty source falls back to the harness's strong-tier model.
 const (

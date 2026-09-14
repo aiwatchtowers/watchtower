@@ -4,8 +4,8 @@
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/mcp/` (specifically
-> `taskcontext.go`, `experts.go`, `situations.go`), `internal/devpack/`, or
+> AI assistant: when working in `internal/mcp/` or the registry's read tools
+> (`internal/tools/taskcontext.go`, `experts.go`), `internal/devpack/`, or
 > `cmd/integrate.go`, read this file first. Any proposed change that would
 > break a guard test or remove a contract must be raised as a question
 > before touching code.
@@ -14,8 +14,8 @@ The MCP tools, skill pack, and installer that make Watchtower addressable
 from a developer's coding agent. Design:
 `docs/superpowers/specs/2026-08-09-dev-knowledge-base-design.md`.
 
-**Module:** `internal/mcp/` (`get_task_context`, `find_experts`,
-`list_situations`/`get_situation`) + `internal/devpack/` + `cmd/integrate.go`
+**Module:** `internal/mcp/` (`get_task_context`, `find_experts`) +
+`internal/devpack/` + `cmd/integrate.go`
 **Last full audit:** 2026-08-09
 
 ## DEV-01 — read-only forever
@@ -67,9 +67,11 @@ actually does to the database.
 The behavioral guard is `TestNoToolMutatesDatabase`: it seeds rows, opens a
 read-only session, calls a fixed list of tools, and asserts table row counts
 are unchanged, on top of asserting a direct write against the same
-connection fails. This branch's four new tools (`list_situations`,
-`get_situation`, `get_task_context`, `find_experts`) are all in that explicit
-call list. `list_transcripts` — a pre-existing tool this branch extended with
+connection fails. The tools this surface introduced (`get_task_context`,
+`find_experts`) are in that explicit call list; the two other tools it shipped,
+`list_situations` and `get_situation`, were removed on 2026-09-14 with the
+situations pipeline and left the call list with them. `list_transcripts` — a
+pre-existing tool this branch extended with
 an optional `query` argument (`db.SearchTranscripts`) — is exercised with
 both its bare and `query` forms.
 
@@ -106,9 +108,8 @@ a way for an external agent session to mutate the product's data.
 
 **Status:** Enforced
 
-**Observable:** `get_task_context` (`internal/tools/taskcontext.go`),
-`find_experts` (`internal/tools/experts.go`), and `list_situations`/
-`get_situation` (`internal/tools/situations.go`) are mechanical SQL plus plain
+**Observable:** `get_task_context` (`internal/tools/taskcontext.go`) and
+`find_experts` (`internal/tools/experts.go`) are mechanical SQL plus plain
 Go arithmetic (`find_experts`'s recency-decayed scoring). None calls a
 `digest.Generator`, loads a prompt, or shells out to `claude`/`codex`.
 Interpretation happens in the consumer's own coding agent, on the consumer's
@@ -122,10 +123,10 @@ wrong tool for this layer — it would tie a "give me the facts" call to an AI
 provider, a cost, and a latency budget the dev-facing use case (fast lookups
 inside an agent session) cannot afford.
 
-**Test guards:** no dedicated guard test; enforced by code review — none of
-`taskcontext.go`, `experts.go`, or `situations.go` imports an AI/prompt
-package, checkable with `grep -l "internal/ai\|internal/prompts"
-internal/tools/{taskcontext,experts,situations}.go` (expected: no match).
+**Test guards:** no dedicated guard test; enforced by code review — neither
+`taskcontext.go` nor `experts.go` imports an AI/prompt package, checkable with
+`grep -l "internal/ai\|internal/prompts" internal/tools/{taskcontext,experts}.go`
+(expected: no match).
 
 **Locked since:** 2026-08-09
 
@@ -192,9 +193,9 @@ developer. `watchtower integrate claude-code`/`status`/`remove`
 (`cmd/integrate.go`) run only when the developer types the command; there is
 no daemon phase for this feature (unlike every AI pipeline cataloged
 elsewhere in this repo, which run on `internal/daemon`'s phase loop), no
-hook, and no notification. The four skills
+hook, and no notification. The three skills
 (`internal/devpack/skills/watchtower-{task-context,who-to-ask,
-whats-changed,why-decision}/SKILL.md`) are all invoked *by* the developer's
+why-decision}/SKILL.md`) are all invoked *by* the developer's
 agent recognizing a trigger in the conversation — the agent asks, the MCP
 tools answer; Watchtower never pushes.
 
@@ -215,6 +216,7 @@ match) — and by code review against this contract.
 
 ## Changelog
 
+- 2026-09-14: **inbox demolition** (spec `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`) — the pack is now **three skills, not four**. `list_situations`/`get_situation` (`internal/tools/situations.go`) are deleted along with the situations pipeline, and the `watchtower-whats-changed` skill, which was built entirely on those two tools, is removed from `internal/devpack/skills/` rather than left pointing at a table frozen on 2026-09-06 (audit finding L4). DEV-01's `TestNoToolMutatesDatabase` call list and DEV-02's Observable/grep drop the two tools; DEV-05's skill list drops the skill. **No contract semantics changed and no guard relaxed** — the installer needs no special handling for a shipped file that leaves the pack (DEV-04: `integrate status` reports it, `integrate remove` deletes only marker-carrying files), and the pack-install guards in `internal/devpack/install_test.go` are untouched. A "what changed" skill over Catch-Up would need Catch-Up exposed as a read tool first — a follow-up, not this spec.
 - 2026-09-07: read-tool migration slice 2b — the dependency-carrying read tools
   (`memory_map`/`memory_open`/`memory_recall`, `load_skill`) moved from the last
   per-domain `internal/mcp` handlers (`memory.go`, `skills.go`, both deleted)

@@ -16,9 +16,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/feed"
 	"watchtower/internal/inbox"
-	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -32,8 +30,6 @@ var (
 	inboxFlagIncludeArchived        bool
 	inboxFlagJSON                   bool
 	inboxGenFlagProgressJSON        bool
-	inboxFeedbackRating             string
-	inboxFeedbackComment            string
 	inboxBackfillMentionsFlagSince  string
 	inboxBackfillMentionsFlagDryRun bool
 	inboxBackfillMentionsFlagForce  bool
@@ -93,20 +89,6 @@ var inboxTaskCmd = &cobra.Command{
 	RunE:  runInboxTask,
 }
 
-var inboxFeedbackCmd = &cobra.Command{
-	Use:   "feedback <situation-id>",
-	Short: "Record feedback on a dashboard situation (--rating up|down [--comment])",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runInboxFeedback,
-}
-
-var inboxStyleSampleCmd = &cobra.Command{
-	Use:   "style-sample",
-	Short: "Distill a communication style profile from your own Slack messages",
-	Args:  cobra.NoArgs,
-	RunE:  runInboxStyleSample,
-}
-
 var inboxBackfillMentionsCmd = &cobra.Command{
 	Use:   "backfill-mentions",
 	Short: "Recover @mentions a broken or newly-connected detector missed, without moving the inbox watermark",
@@ -116,7 +98,7 @@ var inboxBackfillMentionsCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(inboxCmd)
-	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxFeedbackCmd, inboxStyleSampleCmd, inboxBackfillMentionsCmd)
+	inboxCmd.AddCommand(inboxShowCmd, inboxResolveCmd, inboxDismissCmd, inboxSnoozeCmd, inboxGenerateCmd, inboxTaskCmd, inboxBackfillMentionsCmd)
 
 	inboxCmd.Flags().StringVar(&inboxFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	inboxCmd.Flags().StringVar(&inboxFlagType, "type", "", "filter by trigger type (mention, dm)")
@@ -124,8 +106,6 @@ func init() {
 	inboxCmd.Flags().BoolVar(&inboxFlagIncludeArchived, "include-archived", false, "include archived items (auto-archived pending items are hidden by default)")
 	inboxCmd.Flags().BoolVar(&inboxFlagJSON, "json", false, "output as JSON")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
-	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackRating, "rating", "", "up or down")
-	inboxFeedbackCmd.Flags().StringVar(&inboxFeedbackComment, "comment", "", "free-text comment; derives learned rules via the AI interpreter")
 	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions after this date (YYYY-MM-DD, parsed as UTC midnight; that instant itself is excluded); required")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagDryRun, "dry-run", false, "report what would be recovered without creating any inbox items")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagForce, "force", false, fmt.Sprintf("allow --since further back than %d days", backfillMentionsMaxLookbackDays))
@@ -433,7 +413,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
 
 	if inboxGenFlagProgressJSON {
 		type pj struct {
@@ -470,8 +449,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 			}
 			if pipe.LastStepDurationSeconds > 0 {
 				p.StepDurationSec = pipe.LastStepDurationSeconds
-				p.StepInputTokens = pipe.LastStepInputTokens
-				p.StepOutputTokens = pipe.LastStepOutputTokens
 			}
 			emit(p)
 
@@ -513,12 +490,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return fmt.Errorf("inbox pipeline: %w", err)
 		}
-
-		if cfg.Feed.Enabled {
-			if _, err := feed.New(database, cfg, logger).Publish(time.Now()); err != nil {
-				logger.Printf("feed publish after generate: %v", err) // non-fatal, mirrors daemon phaseFeed
-			}
-		}
 		return nil
 	}
 
@@ -535,12 +506,6 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("inbox pipeline: %w", err)
-	}
-
-	if cfg.Feed.Enabled {
-		if _, err := feed.New(database, cfg, logger).Publish(time.Now()); err != nil {
-			logger.Printf("feed publish after generate: %v", err) // non-fatal, mirrors daemon phaseFeed
-		}
 	}
 
 	fmt.Fprintf(out, "Inbox: %d new items detected, %d resolved\n", created, resolved)
@@ -583,79 +548,6 @@ func runInboxTask(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Created target #%d from inbox item #%d\n", targetID, id)
-	return nil
-}
-
-func runInboxFeedback(cmd *cobra.Command, args []string) error {
-	situationID, err := strconv.Atoi(args[0])
-	if err != nil || situationID <= 0 {
-		return fmt.Errorf("invalid situation id %q", args[0])
-	}
-	rating, err := parseRating(inboxFeedbackRating)
-	if err != nil {
-		return err
-	}
-
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	applyProviderOverride(cfg)
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer database.Close()
-
-	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
-	gen, closeGen := cliPooledGenerator(cfg, logger)
-	defer closeGen()
-
-	pipe := inbox.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	if err := pipe.SubmitSituationFeedback(cmd.Context(), situationID, rating, inboxFeedbackComment); err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Recorded feedback on situation %d.\n", situationID)
-	return nil
-}
-
-func runInboxStyleSample(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	applyProviderOverride(cfg)
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	database, err := db.Open(cfg.DBPath())
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
-	}
-	defer database.Close()
-
-	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
-	gen, closeGen := cliPooledGenerator(cfg, logger)
-	defer closeGen()
-
-	pipe := inbox.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	if err := pipe.GenerateStyleProfile(cmd.Context()); err != nil {
-		return err
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Style profile regenerated.")
 	return nil
 }
 
@@ -749,7 +641,6 @@ func newBackfillMentionsPipeline(cmd *cobra.Command) (pipe *inbox.Pipeline, clos
 
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
 	pipe = inbox.New(database, cfg, nil, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
 	return pipe, func() { database.Close() }, nil
 }
 

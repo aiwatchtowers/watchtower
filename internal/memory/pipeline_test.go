@@ -81,6 +81,83 @@ func seedMessageRow(t *testing.T, d *db.DB, channelID, ts, userID, text string) 
 	require.NoError(t, err)
 }
 
+// seedInboxItem inserts a minimal inbox item and returns its ID.
+func seedInboxItem(t *testing.T, d *db.DB, channelID, messageTS string) int {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type)
+		VALUES (?, ?, 'U1ALICE', 'mention')`, channelID, messageTS)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return int(id)
+}
+
+// seedSituation inserts a row into the frozen situations table with raw SQL and
+// returns its id. The situations table has had no production writer since the
+// inbox demolition, so memory's fixtures seed it directly instead of through a
+// db writer kept alive for tests; status "" takes the column default ('open').
+func seedSituation(t *testing.T, d *db.DB, title, status string) int {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO situations (title, status) VALUES (?, COALESCE(NULLIF(?, ''), 'open'))`,
+		title, status)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return int(id)
+}
+
+// seedConvertedSituation seeds a situation already converted into the given
+// target (0 = none) and track (0 = none) — the shape the operational mirrors
+// read for their conversion cross-links.
+func seedConvertedSituation(t *testing.T, d *db.DB, title string, targetID, trackID int) int {
+	t.Helper()
+	id := seedSituation(t, d, title, "converted")
+	var target, track any
+	if targetID != 0 {
+		target = targetID
+	}
+	if trackID != 0 {
+		track = trackID
+	}
+	_, err := d.Exec(`UPDATE situations SET converted_target_id = ?, converted_track_id = ? WHERE id = ?`,
+		target, track, id)
+	require.NoError(t, err)
+	return id
+}
+
+// seedSituationSignal links an inbox item to a situation with raw SQL (see
+// seedSituation).
+func seedSituationSignal(t *testing.T, d *db.DB, situationID, inboxItemID int) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO situation_signals (situation_id, inbox_item_id) VALUES (?, ?)`,
+		situationID, inboxItemID)
+	require.NoError(t, err)
+}
+
+// dumpTable renders every row of a table for byte-identical before/after
+// comparisons.
+func dumpTable(t *testing.T, d *db.DB, table string) string {
+	t.Helper()
+	rows, err := d.Query(`SELECT * FROM ` + table + ` ORDER BY rowid`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	var b strings.Builder
+	for rows.Next() {
+		require.NoError(t, rows.Scan(ptrs...))
+		fmt.Fprintf(&b, "%v\n", vals)
+	}
+	require.NoError(t, rows.Err())
+	return b.String()
+}
+
 // pipelineFixture seeds a workspace, two users, and two channels with two
 // recent messages each (channel C1GEN strictly earlier than C2OPS). Returns
 // the base unix second of the first message; message ts values are
@@ -360,12 +437,11 @@ func TestPipelineChunkCapLeavesDebt(t *testing.T) {
 	assert.Equal(t, float64(base+240), wm)
 }
 
-// TestPipelineAIFailureKeepsPriorCommits: reconcile/seed/ingest commits are
-// already on disk when extraction fails — an AI failure never rolls them back.
+// TestPipelineAIFailureKeepsPriorCommits: reconcile/seed commits are already on
+// disk when extraction fails — an AI failure never rolls them back.
 func TestPipelineAIFailureKeepsPriorCommits(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	pipelineFixture(t, d)
-	sitID := seedIngestSituation(t, d, "Billing outage")
 
 	gen := &fakeGen{reply: func(string) (string, error) { return "", fmt.Errorf("model down") }}
 	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
@@ -375,12 +451,9 @@ func TestPipelineAIFailureKeepsPriorCommits(t *testing.T) {
 	assert.Zero(t, stats.Episodes)
 	assert.Equal(t, stats.Windows, stats.WindowsFailed, "every window failed")
 
-	// Seeded entities and the ingested situation episode survive.
+	// Seeded entities survive.
 	_, err = Resolve(v, d, "C1GEN")
 	require.NoError(t, err, "seeded channel entity committed")
-	sit, err := Resolve(v, d, fmt.Sprintf("situation:%d", sitID))
-	require.NoError(t, err, "ingested situation episode committed")
-	assert.Equal(t, "episode", sit.Type)
 
 	// Watermark untouched: no window succeeded.
 	wm, err := d.MemoryWatermark()

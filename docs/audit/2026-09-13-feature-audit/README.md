@@ -39,7 +39,7 @@ All sixteen were taken in the audit session. They are the design input for the f
 |---|---|---|
 | 1 | Memory vault recovery (C2) | `git reset` the vault to the last good commit `memory(map)` 2026-08-01, reindex, reseed. Root fix is mandatory, not optional: seeder idempotency must consider **all** aliases, the index write must precede (or be atomic with) the git commit, and a guard test must pin "a pre-namespaced entity with an e-mail alias is neither duplicated nor aborts `Run`". One-off `1:` backfill of bare Slack ids in vault files and `memory_provenance` (the 00054 precedent). |
 | 2 | Slack digests (C1) | Normalise the model's bare channel id in `persistBatchResults` (test both forms). **Fast-forward** the digest watermark to now; the six-week gap is not backfilled. |
-| 3 | Inbox tab (H1, H2, H23) | **Parked.** Needs a separate brainstorming session — "what is Inbox, is it needed at all" — before anything is demolished or restored. Root fixes that do not depend on the answer proceed. |
+| 3 | Inbox tab (H1, H2, H23) | **Decided 2026-09-14** — inbox becomes Catch-Up's silent feeder; see `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`. |
 | 4 | `jira.features.*` (C5) | yaml tags on the struct + viper round-trip test; seed role defaults via `SetDefault` so an absent key means the role default, not false; one-time config migration deletes the broken lowercase block (the `MigrateFeatureGates` precedent). |
 | 5 | Jira key detector (H4) | **Wire it** in `cmd/sync.go` + a test; backfill-vs-forward-only decided at implementation. |
 | 6 | Reaction commands enable (C6) | `FastForward` seeds the ledger with current reactions as seen/skipped, plus a per-cycle dispatch cap. Feature stays OFF until the owner flips it. |

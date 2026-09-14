@@ -35,11 +35,8 @@ func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
 func TestPersonaMergeVersionFloors(t *testing.T) {
 	floors := map[string]int{
 		BriefingDaily:              7,
-		InboxTriage:                2,
 		MeetingPrep:                5,
 		DayPlanGenerate:            4,
-		InboxCompose:               4,
-		InboxSituationCard:         2,
 		MemoryExtractEpisodes:      2,
 		MemoryExtractEpisodesBatch: 3,
 		MemoryExtractEmailEpisodes: 2,

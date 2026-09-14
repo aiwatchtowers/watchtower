@@ -47,10 +47,9 @@ and approves. Until the owner approves a card, nothing exists.
    existing children. Do not propose what is already there. Outside a target's
    chat, read whatever that surface is about instead, and name the target the
    breakdown would belong to if one already exists.
-2. Get the context the target text does not carry — `list_situations` /
-   `get_situation` for the story it came from, `list_messages` for what was
-   agreed in the channel, `get_transcript` when it was discussed on a call,
-   `list_targets` when it may overlap other work.
+2. Get the context the target text does not carry — `list_messages` for what
+   was agreed in the channel, `get_transcript` when it was discussed on a
+   call, `list_targets` when it may overlap other work.
 3. Decompose into 3–8 pieces. Each piece: one owner, one outcome, testable as
    done or not done. Split by deliverable, not by phase — "write the migration"
    beats "implementation".

@@ -3,8 +3,33 @@ package inbox
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"watchtower/internal/db"
 )
+
+// insertChannel is a local fixture helper (package db has its own private
+// copy; this package needs one too).
+func insertChannel(t *testing.T, d *db.DB, id, chType string) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO channels (id, name, type) VALUES (?, ?, ?)`, id, id, chType)
+	require.NoError(t, err)
+}
+
+// insertMessage is a local fixture helper mirroring internal/db's test helper.
+func insertMessage(t *testing.T, d *db.DB, channelID, ts, userID, text string) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, ?, ?)`, channelID, ts, userID, text)
+	require.NoError(t, err)
+}
+
+// mustCreateInboxItem is a local fixture helper wrapping CreateInboxItem.
+func mustCreateInboxItem(t *testing.T, d *db.DB, it db.InboxItem) int64 {
+	t.Helper()
+	id, err := d.CreateInboxItem(it)
+	require.NoError(t, err)
+	return id
+}
 
 // queryInboxByTrigger returns all inbox_items with the given trigger_type.
 func queryInboxByTrigger(t *testing.T, d *db.DB, triggerType string) []db.InboxItem {

@@ -29,8 +29,15 @@ func (s ownerStatement) refKey() string {
 // run's belief pass: its "act:<table>:<id>" evidence ref, the interaction ts
 // (whole unix seconds, rendered next to the ref so the model may cite
 // "act:<table>:<id> <ts>"), the human-readable bullet describing the action, and
-// the memory entity ids the interaction's situation maps to. Rendered into the
-// OWNER ACTIONS prompt block only behind memory.semantic.preferences.
+// the memory entity ids the interaction maps to. Rendered into the OWNER ACTIONS
+// prompt block only behind memory.semantic.preferences.
+//
+// No production step stages actions any more: the mechanical interaction ingest
+// that produced them read the owner's dashboard 👍/👎 and situation verdicts,
+// and every one of those sources was retired with the inbox demolition. The
+// belief-math surface (the owner-action rank, the act: provenance scheme and
+// memory_engagement) is kept in place and simply receives nothing — removing it
+// is a memory-owned decision under MEM-06..08/12/15.
 type stagedAction struct {
 	ref      string
 	tsUnix   int64
@@ -48,30 +55,6 @@ type stagedChat struct {
 	actions    []stagedAction
 	refs       map[string]bool
 	subjects   map[string]bool
-}
-
-// mergeStaged unions two staged-input sets for the belief pass — the Phase-4
-// chat turns and the Phase-5 act: interaction refs. Either may be nil. The chat
-// set (a) is mutated in place and returned. Only chat turns carry verbatim OWNER
-// SAID statements; the act path carries refs + subjects PLUS owner-action
-// descriptions (the OWNER ACTIONS block, rendered only behind
-// memory.semantic.preferences).
-func mergeStaged(a, b *stagedChat) *stagedChat {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	for r := range b.refs {
-		a.refs[r] = true
-	}
-	for s := range b.subjects {
-		a.subjects[s] = true
-	}
-	a.statements = append(a.statements, b.statements...)
-	a.actions = append(a.actions, b.actions...)
-	return a
 }
 
 // ingestChatStatements is the mechanical head of the Phase-4 chat surface
@@ -219,9 +202,10 @@ func (p *Pipeline) chatSubjects(contextType, contextID string) ([]string, error)
 
 // situationSubjects resolves a situation's signal channels and member user ids
 // to the memory entity ids they alias (via memory_aliases / Resolve), deduped —
-// the belief subjects an owner statement in that situation can bear on. Reading
-// situations/situation_signals is MEM-05-clean: memory only READS inbox tables
-// (as IngestSituations already does), it never writes them.
+// the belief subjects an owner statement in that situation can bear on. The
+// situations table is frozen history since the inbox demolition, so this reads a
+// closed set; reading it is MEM-05-clean — memory only READS inbox tables, it
+// never writes them.
 //
 // It distinguishes a genuine no-entity mapping (an owner turn about a situation
 // memory holds no entity for — empty slice with no error, so the caller consumes

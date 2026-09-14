@@ -4,6 +4,12 @@
 -- Workspace metadata. id/name/domain are a frozen legacy snapshot of Slack
 -- account #1 — current_user_id/search_last_date moved to slack_accounts,
 -- one row per connected Slack workspace (see 00048).
+-- Vestigial since 00070 (inbox demolition — the pipelines that advanced and
+-- read these watermarks are gone; kept rather than dropped to avoid a
+-- table-recreation migration): compose_last_run_ts,
+-- memory_last_ingested_situation_id, memory_last_interaction_id,
+-- memory_last_situation_feedback_id. ClearSlackData still zeroes
+-- compose_last_run_ts, but nothing consumes the value.
 CREATE TABLE IF NOT EXISTS workspace (
     id                TEXT PRIMARY KEY,  -- Slack team_id
     name              TEXT NOT NULL,
@@ -460,6 +466,11 @@ CREATE TABLE IF NOT EXISTS track_events (
 CREATE INDEX IF NOT EXISTS idx_track_events_track ON track_events(track_id, created_at DESC);
 
 -- Inbox items — messages awaiting user response (@mentions, DMs, Jira, Calendar, etc.)
+-- Defaults only since migration 00070 (inbox demolition): item_class, priority
+-- and ai_reason were written by the retired triage stage, and why_matters /
+-- thread_digest / draft_reply / card_status / card_generated_at / composed_at by
+-- the retired card and composer stages. Detection still writes every other
+-- column, so the table is live — recreating it to drop these buys nothing.
 CREATE TABLE IF NOT EXISTS inbox_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id      TEXT NOT NULL,
@@ -521,16 +532,6 @@ CREATE TABLE IF NOT EXISTS inbox_learned_rules (
     UNIQUE(rule_type, scope_key)
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key);
-
--- Inbox feedback — per-item thumbs up/down with reason
-CREATE TABLE IF NOT EXISTS inbox_feedback (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    inbox_item_id INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
-    rating        INTEGER NOT NULL CHECK(rating IN (-1,1)),
-    reason        TEXT DEFAULT '' CHECK(reason IN ('','source_noise','wrong_priority','wrong_class','never_show')),
-    created_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_inbox_feedback_item ON inbox_feedback(inbox_item_id);
 
 -- Catch-Up — one persisted absence recap per time window (see 00061)
 CREATE TABLE IF NOT EXISTS catchup_recaps (
@@ -1268,7 +1269,11 @@ CREATE INDEX IF NOT EXISTS idx_day_plan_items_plan ON day_plan_items(day_plan_id
 CREATE INDEX IF NOT EXISTS idx_day_plan_items_source ON day_plan_items(source_type, source_id);
 
 -- Situations (clusters of inbox signals composed into a single narrative unit
--- for the secretary dashboard)
+-- for the secretary dashboard). Frozen read-only history since migration 00070
+-- (inbox demolition): the composer and its cards are gone, no writer remains,
+-- and every row that was still 'open' was set to 'stale'. Kept because
+-- converted_target_id/converted_track_id links and targets.source_type =
+-- 'situation' rows still point here.
 CREATE TABLE IF NOT EXISTS situations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     title           TEXT NOT NULL,
@@ -1307,32 +1312,6 @@ CREATE TABLE IF NOT EXISTS situation_signals (
     UNIQUE(situation_id, inbox_item_id)
 );
 CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
-
--- Feed index for the dashboard's social-wall feed: one row per feed item,
--- holding chronology and per-item user state only. Content is always joined
--- live from the source tables (situations, calendar_events, briefings,
--- meeting_recaps, day_plans) — never duplicated here.
-CREATE TABLE IF NOT EXISTS feed_items (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_type   TEXT NOT NULL CHECK (item_type IN ('situation','meeting','briefing','meeting_recap','day_plan')),
-    source_id   TEXT NOT NULL,
-    event_ts    TEXT NOT NULL,
-    importance  INTEGER NOT NULL DEFAULT 50,
-    hidden_at   TEXT,
-    seen_at     TEXT,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    UNIQUE(item_type, source_id)
-);
-CREATE INDEX IF NOT EXISTS idx_feed_items_event_ts ON feed_items(event_ts DESC);
-
--- Bootstrap cutoff: the moment this migration ran. The publisher only feeds
--- briefings/recaps/day-plans created after this, so an old backlog doesn't
--- flood the feed on first publish.
-CREATE TABLE IF NOT EXISTS feed_state (
-    id               INTEGER PRIMARY KEY CHECK (id = 1),
-    bootstrap_cutoff TEXT NOT NULL
-);
 
 -- Secretary memory index — rebuildable SQLite mirror of the markdown vault
 -- (files + git are the source of truth; MEM-02: drop all memory_* tables and
@@ -1384,9 +1363,11 @@ CREATE TABLE IF NOT EXISTS memory_entity_hints (
 
 -- Phase-4 dispute flags (see 00019): a SIDE TABLE, not a memory_nodes
 -- column — runtime state set by the belief pass / weekly reflection when a
--- belief's evidence looks contested, read and cleared by the inbox
--- watchtower detector in the same transaction it mints the dispute item
--- (MEM-05). Same memory_node_stats precedent: excluded from the MEM-02
+-- belief's evidence looks contested. Write-only since migration 00070: the
+-- inbox watchtower detector that read and cleared these flags (minting a
+-- decision_made item for the Dashboard) went with the inbox demolition, so
+-- the writers stay under MEM-06..08 and no surface reads them today (MEM-10).
+-- Same memory_node_stats precedent: excluded from the MEM-02
 -- reindex-equivalence comparison by construction (it lives outside
 -- memory_nodes and Reconcile/Rebuild never touch it).
 CREATE TABLE IF NOT EXISTS memory_dispute_flags (
@@ -1397,14 +1378,15 @@ CREATE TABLE IF NOT EXISTS memory_dispute_flags (
 
 -- Phase-5 slice-1 per-entity engagement aggregates (see 00042): the
 -- retention-importance input Phase-3's RetentionInputs/RetentionScore
--- stubbed out, fed by the mechanical interaction-ingest step
--- (memory.sources.actions) from inbox_feedback/situation transitions/
--- conversions. A dedicated side table — not memory_nodes columns, not
--- memory_node_stats (which stays write-dead in this slice). Runtime state
--- derived from interaction rows: MEM-02-exempt like memory_entity_hints
--- (NOT like memory_node_stats) — it must survive DropMemoryIndex/reindex
--- because the interaction floor may already have stepped past the rows that
--- produced these aggregates.
+-- stubbed out. Its writer, the mechanical interaction-ingest step, was removed
+-- with the inbox demolition (every one of its sources — inbox_feedback,
+-- situation thumbs, situation verdicts — went with it), so existing rows stay
+-- readable by retention scoring and no new ones are produced. A dedicated side
+-- table — not memory_nodes columns, not memory_node_stats (which stays
+-- write-dead). Runtime state derived from interaction rows: MEM-02-exempt like
+-- memory_entity_hints (NOT like memory_node_stats) — it must survive
+-- DropMemoryIndex/reindex because the rows that produced these aggregates may
+-- be long gone.
 CREATE TABLE IF NOT EXISTS memory_engagement (
     node_id             TEXT PRIMARY KEY REFERENCES memory_nodes(id),
     engaged_count       INTEGER NOT NULL DEFAULT 0,

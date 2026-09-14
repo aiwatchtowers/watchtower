@@ -150,7 +150,10 @@ func (p *Pipeline) ReviseBeliefs(ctx context.Context, rewrittenSubjects []string
 	// so the model can form preference beliefs. The block is built only when the
 	// gate is on AND actions were staged — otherwise ownerActions is nil and the
 	// prompt is byte-identical to the pre-preferences behavior (the block is
-	// absent, not empty-rendered).
+	// absent, not empty-rendered). Nothing stages actions in production since the
+	// inbox demolition removed every source the mechanical interaction ingest
+	// read, so the block is currently unfed; the rank/scheme/aggregate machinery
+	// stays in place (MEM-15 unchanged) and simply receives nothing.
 	var ownerActions *ownerActionsBlock
 	if p.cfg.Semantic.Preferences && staged != nil && len(staged.actions) > 0 {
 		ownerActions = p.buildOwnerActionsBlock(staged.actions)

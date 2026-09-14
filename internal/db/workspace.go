@@ -59,36 +59,6 @@ func (db *DB) TouchSyncedAt() error {
 	return err
 }
 
-// GetComposeLastRunTS returns the last processed timestamp for the situation composer.
-func (db *DB) GetComposeLastRunTS() (float64, error) {
-	var ts float64
-	err := db.QueryRow(`SELECT COALESCE(compose_last_run_ts, 0) FROM workspace LIMIT 1`).Scan(&ts)
-	if err != nil {
-		return 0, fmt.Errorf("getting compose last run ts: %w", err)
-	}
-	return ts, nil
-}
-
-// SetComposeLastRunTS updates the last processed timestamp for the situation composer.
-func (db *DB) SetComposeLastRunTS(ts float64) error {
-	return setComposeLastRunTSOn(db, ts)
-}
-
-// SetComposeLastRunTSTx is the transactional variant of SetComposeLastRunTS,
-// for callers (the compose apply loop) that need the watermark advance to
-// commit atomically with the rest of that pass's mutations (DASH-02).
-func (db *DB) SetComposeLastRunTSTx(tx *sql.Tx, ts float64) error {
-	return setComposeLastRunTSOn(tx, ts)
-}
-
-func setComposeLastRunTSOn(q situationsExecer, ts float64) error {
-	_, err := q.Exec(`UPDATE workspace SET compose_last_run_ts = ?`, ts)
-	if err != nil {
-		return fmt.Errorf("setting compose last run ts: %w", err)
-	}
-	return nil
-}
-
 // GetDigestFastForwardTS returns the persisted Slack-digest fast-forward floor.
 // Slack digests have no advancing watermark of their own — the pipeline derives
 // the next window from MAX(digests.period_to) — so this floor is what lets a
