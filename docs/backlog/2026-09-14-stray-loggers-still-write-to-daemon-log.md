@@ -51,11 +51,13 @@ daemon phases:
 
 ## Fix shape
 
-Route these through the daemon's logger the way `Syncer` already is: extend `wireJiraSyncers` to
-call the matching `SetLogger` on the analyzer, client, mapper and key detector, and give the
-`internal/db` / `internal/ai` sites an injected logger instead of the package default. That is a
-wiring change across several packages with its own review surface, which is why wave 5 left it
-out of a commit whose point was to stop one stream duplicating into another.
+Route these through the daemon's logger the way `Syncer` already is. `jira.Client` and
+`jira.UserMapper` already have a `SetLogger` (`internal/jira/client.go:44`,
+`internal/jira/users.go:32`) that `wireJiraSyncers` never calls; `BoardAnalyzer` and `KeyDetector`
+have none at all and would need one added before they could be wired the same way. Combined with
+giving the `internal/db` / `internal/ai` sites an injected logger instead of the package default,
+that is a wiring-plus-new-API change across several packages with its own review surface, which is
+why wave 5 left it out of a commit whose point was to stop one stream duplicating into another.
 
 A cheaper partial step, if the full wiring is too wide: `BoardAnalyzer` alone accounts for most of
 the volume.
