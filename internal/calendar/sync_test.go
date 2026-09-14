@@ -2,6 +2,7 @@ package calendar
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -453,6 +454,93 @@ func TestSync_HistoryWindowWidensTimeMin(t *testing.T) {
 	outOfWindow, err := database.GetCalendarEventByID("evt-20d")
 	require.NoError(t, err)
 	assert.Nil(t, outOfWindow, "a 20-day-old event is not re-fetched and gets stale-deleted")
+}
+
+// TestSync_HistoryWindowSparesReferencedEvent is TestSync_HistoryWindowWidensTimeMin's
+// fixture with one addition: evt-20d carries a meeting_transcripts row. It
+// proves owner decision 14's guard reaches the daemon's Sync path (not just
+// the internal/db SQL helper) — a caller that stopped calling
+// DeleteStaleCalendarEvents, or called it with the wrong calendar_id, would
+// pass the unit-level guard while still failing here.
+func TestSync_HistoryWindowSparesReferencedEvent(t *testing.T) {
+	now := time.Now().UTC()
+	old10 := now.Add(-10 * 24 * time.Hour)
+	old20 := now.Add(-20 * 24 * time.Hour)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/calendarList", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(calendarListFixture([2]any{"aliceprimary", true})))
+	})
+	mux.HandleFunc("/calendars/aliceprimary/events", func(w http.ResponseWriter, r *http.Request) {
+		timeMin, err := time.Parse(time.RFC3339, r.URL.Query().Get("timeMin"))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		items := ""
+		for _, e := range []struct {
+			id    string
+			start time.Time
+		}{{"evt-10d", old10}, {"evt-20d", old20}} {
+			if e.start.Before(timeMin) {
+				continue
+			}
+			if items != "" {
+				items += ","
+			}
+			items += fmt.Sprintf(`{"id":%q,"summary":%q,"status":"confirmed",`+
+				`"start":{"dateTime":%q},"end":{"dateTime":%q},"updated":%q}`,
+				e.id, e.id,
+				e.start.Format(time.RFC3339), e.start.Add(time.Hour).Format(time.RFC3339),
+				e.start.Format(time.RFC3339))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"items":[%s]}`, items)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prevAPI := calendarAPIBase
+	calendarAPIBase = srv.URL
+	defer func() { calendarAPIBase = prevAPI }()
+
+	database := db.OpenTestDB(t)
+	acctA, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@x.com", Label: "A"})
+	require.NoError(t, err)
+
+	require.NoError(t, database.UpsertCalendar(acctA, db.CalendarCalendar{ID: "aliceprimary", Name: "A Primary", IsPrimary: true, IsSelected: true}))
+	for _, e := range []struct {
+		id    string
+		start time.Time
+	}{{"evt-10d", old10}, {"evt-20d", old20}} {
+		require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
+			ID: e.id, CalendarID: "aliceprimary",
+			StartTime: e.start.Format(time.RFC3339), EndTime: e.start.Add(time.Hour).Format(time.RFC3339),
+		}, "2000-01-01T00:00:00Z"))
+	}
+
+	// evt-20d has a locally-recorded transcript — it must survive falling out
+	// of the fetch window, unlike the plain TestSync_HistoryWindowWidensTimeMin
+	// case where it gets stale-deleted.
+	_, err = database.InsertMeetingTranscript(db.MeetingTranscript{
+		EventID: sql.NullString{String: "evt-20d", Valid: true}, Title: "Recorded", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+
+	cfg := &config.Config{Calendar: config.CalendarConfig{HistoryDays: 14}}
+	client := &Client{hc: srv.Client(), accessToken: "token-a"}
+
+	_, err = NewSyncer(client, database, cfg, nil, acctA).Sync(context.Background())
+	require.NoError(t, err)
+
+	inWindow, err := database.GetCalendarEventByID("evt-10d")
+	require.NoError(t, err)
+	require.NotNil(t, inWindow, "a 10-day-old event must survive with history_days=14")
+
+	referenced, err := database.GetCalendarEventByID("evt-20d")
+	require.NoError(t, err)
+	assert.NotNil(t, referenced, "a stale event referenced by a meeting_transcripts row must survive")
 }
 
 // TestCalendarHistoryDaysClamp pins the floor (spec: default 14, floor 1 —
