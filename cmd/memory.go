@@ -401,7 +401,7 @@ func runMemoryResetTo(cmd *cobra.Command, args []string) error {
 	}
 	// The watermarks come first: everything below is reporting, and a reporting
 	// failure must not leave the vault reset but the watermarks un-stamped.
-	if err := features.FastForward("memory", database, time.Now()); err != nil {
+	if err := features.FastForward("memory", database, time.Now(), features.Deps{}); err != nil {
 		return fmt.Errorf("the vault is reset and reindexed, but fast-forwarding the memory watermarks failed: %w", err)
 	}
 	fmt.Fprintf(out, "Vault reset to %s (%d ignored file(s) preserved).\n", plan.Target, plan.IgnoredFiles)

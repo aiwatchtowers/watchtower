@@ -4,12 +4,14 @@ import (
 	"context"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -449,4 +451,88 @@ func TestYourDayItemTargetID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.YourDay, 1)
 	assert.Equal(t, 42, result.YourDay[0].TargetID)
+}
+
+// TestPipelineRunForDate_UsesCustomizedPromptAndRecordsVersion pins the
+// behavioural half of the prompt-store wiring fix (verify-daemon.md Item A):
+// when a store is wired, the pipeline must render the STORED template and
+// record the STORED version — not the compiled-in default at version 0.
+//
+// Both assertions live in one test on purpose, because either one alone
+// passes a half-fix:
+//   - version-only would pass for a pipeline that reads the default template
+//     while reporting the seeded version;
+//   - sentinel-only would pass for a pipeline that renders the customization
+//     but keeps writing prompt_version = 0 (what getPrompt's fallback arm
+//     does today).
+//
+// The customized template is built from the default's own %s count, so the
+// fixture never rots when briefing.daily's verb count changes, and the
+// expected version is read back from the store rather than hardcoded, so it
+// never rots on a DefaultVersions bump.
+func TestPipelineRunForDate_UsesCustomizedPromptAndRecordsVersion(t *testing.T) {
+	database := testDB(t)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, now.Location())
+	dayEnd := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID:    "C1",
+		Type:         "channel",
+		PeriodFrom:   float64(dayStart.Unix()),
+		PeriodTo:     float64(dayEnd.Unix()),
+		Summary:      "Discussion about new feature release",
+		Topics:       `["release"]`,
+		Decisions:    `[]`,
+		ActionItems:  `[]`,
+		MessageCount: 15,
+	})
+	require.NoError(t, err)
+
+	// The sentinel must appear nowhere in the shipped default, or "the store
+	// was consulted" would also be satisfied by getPrompt falling through to
+	// prompts.Defaults.
+	const sentinel = "SENTINEL-CUSTOMIZED-BRIEFING-TEMPLATE-9F3A"
+	defaultTmpl := prompts.Defaults[prompts.BriefingDaily]
+	require.NotEmpty(t, defaultTmpl, "briefing.daily must have a built-in default")
+	require.NotContains(t, defaultTmpl, sentinel, "the sentinel must not occur in the default template")
+
+	verbs := strings.Count(defaultTmpl, "%s")
+	require.Greater(t, verbs, 0, "the default template must carry %%s verbs")
+	customTmpl := sentinel + "\n" + strings.Repeat("%s\n", verbs)
+
+	store := prompts.New(database, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.BriefingDaily, customTmpl, "test customization"))
+
+	storedTmpl, storedVersion, err := store.Get(prompts.BriefingDaily)
+	require.NoError(t, err)
+	require.Equal(t, customTmpl, storedTmpl)
+	// Update bumps the seeded version, so the expected version differs from
+	// both 0 (the fallback arm) and the seeded default — a pipeline that
+	// merely Seed()s or ignores the store cannot report it by accident.
+	require.Greater(t, storedVersion, 0)
+
+	gen := &capturingGenerator{response: `{"attention":[],"your_day":[],"what_happened":[],"team_pulse":[],"coaching":[]}`}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+	pipe.SetPromptStore(store)
+
+	today := time.Now().Format("2006-01-02")
+	id, err := pipe.RunForDate(context.Background(), today)
+	require.NoError(t, err)
+	require.Greater(t, id, 0)
+
+	assert.Contains(t, gen.systemMsg, sentinel,
+		"the customized template must reach the system prompt; the default was used instead")
+
+	stored, err := database.GetBriefingByID(id)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, storedVersion, stored.PromptVersion,
+		"the stored briefing must record the prompt store's version, not getPrompt's hardcoded 0")
 }

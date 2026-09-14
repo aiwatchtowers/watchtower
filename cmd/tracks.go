@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/prompts"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
 
@@ -615,6 +616,7 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := tracks.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	out := cmd.OutOrStdout()
 

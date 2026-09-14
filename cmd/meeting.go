@@ -87,6 +87,7 @@ func runMeetingPrep(cmd *cobra.Command, args []string) error {
 	gen := cliGenerator(cfg)
 
 	pipe := meeting.New(database, cfg, gen, nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	ctx := cmd.Context()
 	var result *meeting.MeetingPrepResult
@@ -281,6 +282,7 @@ func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {
 
 	gen := cliGenerator(cfg)
 	pipe := meeting.New(database, cfg, gen, nil)
+	pipe.SetPromptStore(prompts.New(database, nil))
 
 	eventTitle := ""
 	if meetingExtractTopicsFlagEventID != "" {

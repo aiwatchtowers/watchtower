@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -337,6 +339,47 @@ func TestFeaturesEnable_RunsFastForward(t *testing.T) {
 	reloaded, err := config.Load(flagConfig)
 	require.NoError(t, err)
 	assert.True(t, reloaded.Inbox.Enabled, "enable must write the config key too")
+
+	assert.Contains(t, buf.String(), "Fast-forwarded any backlog watermarks to now",
+		"a watermark feature's enable message must be unchanged")
+}
+
+// TestFeaturesEnable_ReactionCommandsReportsSeededCount pins the fix for a
+// review nit on task 1: reaction-commands has no watermark to fast-forward
+// (its hook seeds the reaction ledger instead), so its enable message must
+// name the seeded count rather than repeat the watermark claim, and the
+// count SeedLedger returns must not be discarded on the way to that message.
+// seedReactionLedgerFn is stubbed so the assertion never depends on a real
+// Slack account.
+func TestFeaturesEnable_ReactionCommandsReportsSeededCount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeLegacyConfig(t, "")
+
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	seedDB, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	require.NoError(t, seedDB.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	require.NoError(t, seedDB.Close())
+
+	origSeeder := seedReactionLedgerFn
+	t.Cleanup(func() { seedReactionLedgerFn = origSeeder })
+	seedReactionLedgerFn = func(context.Context, *db.DB, *config.Config, *log.Logger) (int, error) {
+		return 42, nil
+	}
+
+	buf := new(bytes.Buffer)
+	featuresEnableCmd.SetOut(buf)
+	featuresEnableCmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, featuresEnableCmd.RunE(featuresEnableCmd, []string{"reaction-commands"}))
+
+	output := buf.String()
+	assert.Contains(t, output, "42", "the stubbed seed count must reach the enable message")
+	assert.NotContains(t, output, "Fast-forwarded any backlog watermarks",
+		"reaction-commands has no watermark, so it must not claim one was fast-forwarded")
 }
 
 // TestFeaturesEnable_FailedFastForwardLeavesKeyUnwritten pins FEAT-03's

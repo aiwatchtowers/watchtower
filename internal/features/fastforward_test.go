@@ -1,6 +1,7 @@
 package features
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestFastForward_Inbox(t *testing.T) {
 	database := testDB(t)
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 
-	require.NoError(t, FastForward("secretary-inbox", database, now))
+	require.NoError(t, FastForward("secretary-inbox", database, now, Deps{}))
 
 	inboxTS, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
@@ -83,7 +84,7 @@ func TestFastForward_Ideas(t *testing.T) {
 	seededJiraFloor := db.FormatJiraTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
 	require.NoError(t, database.SetIdeasJiraFloor(jiraAcct, seededJiraFloor))
 
-	require.NoError(t, FastForward("ideas", database, now))
+	require.NoError(t, FastForward("ideas", database, now, Deps{}))
 
 	digestFloor, streamFloor, transcriptFloor, err := database.GetIdeasFloors()
 	require.NoError(t, err)
@@ -132,7 +133,7 @@ func TestFastForward_StreamDigests(t *testing.T) {
 	jiraAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-1", SiteURL: "https://x.atlassian.net"})
 	require.NoError(t, err)
 
-	require.NoError(t, FastForward("stream-digests", database, now))
+	require.NoError(t, FastForward("stream-digests", database, now, Deps{}))
 
 	emailFloor, err := database.IdeasEmailFloor(gmailAcct)
 	require.NoError(t, err)
@@ -164,7 +165,7 @@ func TestFastForward_SlackDigests(t *testing.T) {
 	database := testDB(t)
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 
-	require.NoError(t, FastForward("slack-digests", database, now))
+	require.NoError(t, FastForward("slack-digests", database, now, Deps{}))
 
 	ffTS, err := database.GetDigestFastForwardTS()
 	require.NoError(t, err)
@@ -193,7 +194,7 @@ func TestFastForward_Memory(t *testing.T) {
 	jiraAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "cloud-1", SiteURL: "https://x.atlassian.net"})
 	require.NoError(t, err)
 
-	require.NoError(t, FastForward("memory", database, now))
+	require.NoError(t, FastForward("memory", database, now, Deps{}))
 
 	ts, err := database.MemoryWatermark()
 	require.NoError(t, err)
@@ -214,6 +215,39 @@ func TestFastForward_Memory(t *testing.T) {
 	calWM, err := database.MemoryCalendarWatermark()
 	require.NoError(t, err)
 	assert.Equal(t, float64(now.Unix()), calWM)
+}
+
+// TestFastForward_ReactionCommands pins the sixth hook: enabling reaction
+// commands runs the injected ledger seed, and an enable whose seed fails (Slack
+// unreachable, an account with no usable token) fails the hook — which is what
+// keeps `features enable` from writing the config key (FEAT-03's fail-closed
+// ordering, pinned end to end by cmd/features_test.go's
+// TestFeaturesEnable_FailedFastForwardLeavesKeyUnwritten).
+func TestFastForward_ReactionCommands(t *testing.T) {
+	database := testDB(t)
+	now := time.Now()
+
+	called := 0
+	require.NoError(t, FastForward("reaction-commands", database, now, Deps{
+		SeedReactions: func(d *db.DB) error {
+			called++
+			assert.Same(t, database, d, "the hook seeds the database it was handed")
+			return nil
+		},
+	}))
+	assert.Equal(t, 1, called, "the seed runs on enable")
+
+	boom := errors.New("slack unreachable")
+	err := FastForward("reaction-commands", database, now, Deps{
+		SeedReactions: func(*db.DB) error { return boom },
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, boom, "a seed failure fails the enable")
+
+	// A caller that forgot to wire the seeder must NOT silently succeed: that
+	// would enable the feature over an empty ledger, the exact state whose
+	// first poll replays the owner's whole reaction history.
+	require.Error(t, FastForward("reaction-commands", database, now, Deps{}))
 }
 
 // TestFastForward_NoHookIsNil pins FEAT-03's "every other id" half: every
@@ -248,7 +282,7 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		assert.Zero(t, ffTS)
 	}
 
-	require.NoError(t, FastForward("briefing", database, now))
+	require.NoError(t, FastForward("briefing", database, now, Deps{}))
 	assertNoWatermarksWritten(t)
 
 	// Every other registry id without one of the four real hooks: same
@@ -259,16 +293,19 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 		"stream-digests":  true,
 		"slack-digests":   true,
 		"memory":          true,
+		// Reaction commands seed the ledger through the deps seam; its own
+		// test below covers both the wired and the unwired call.
+		"reaction-commands": true,
 	}
 	for _, f := range All() {
 		if hookIDs[f.ID] {
 			continue
 		}
-		require.NoError(t, FastForward(f.ID, database, now), "id %q", f.ID)
+		require.NoError(t, FastForward(f.ID, database, now, Deps{}), "id %q", f.ID)
 	}
 	assertNoWatermarksWritten(t)
 
 	// An id not even in the registry must also be a safe no-op.
-	require.NoError(t, FastForward("not-a-real-feature", database, now))
+	require.NoError(t, FastForward("not-a-real-feature", database, now, Deps{}))
 	assertNoWatermarksWritten(t)
 }

@@ -18,7 +18,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "hello", "--provider", "codex"])
+        XCTAssertEqual(args, ["ai", "query", "--provider", "codex", "--", "hello"])
     }
 
     func testBuildArgsOmitsProviderFlagWhenNil() {
@@ -60,7 +60,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "hello", "--model", "gpt-5.4", "--provider", "codex"])
+        XCTAssertEqual(args, ["ai", "query", "--model", "gpt-5.4", "--provider", "codex", "--", "hello"])
     }
 
     func testBuildArgsEmitsChatToolModeFlags() {
@@ -68,9 +68,31 @@ final class WatchtowerAIServiceTests: XCTestCase {
         let args = WatchtowerAIService.buildArgs(
             prompt: "hi", systemPrompt: nil, sessionID: nil, dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
         )
-        XCTAssertEqual(args, ["ai", "query", "hi", "--db-path", "/tmp/w.db",
+        XCTAssertEqual(args, ["ai", "query", "--db-path", "/tmp/w.db",
                               "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
-                              "--context-type", "target", "--context-id", "42"])
+                              "--context-type", "target", "--context-id", "42", "--", "hi"])
+    }
+
+    /// An unconditional `--` separator: a prompt that looks like a flag
+    /// ("-v looks wrong") must still parse as the positional prompt, not as
+    /// `-v` plus a stray "looks"/"wrong". The separator is emitted for every
+    /// call, never only when the prompt starts with a dash — a conditional
+    /// separator would be a second path to get wrong. Flags must land BEFORE
+    /// `--`, so this asserts the whole array rather than merely
+    /// `args.contains("--")`, which would pass even for the broken ordering
+    /// (`--` before the flags).
+    func testBuildArgsPassesALeadingDashPromptAfterASeparator() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "-v looks wrong",
+            systemPrompt: "S",
+            sessionID: nil,
+            dbPath: nil,
+            model: nil,
+            provider: "codex",
+            toolMode: nil
+        )
+
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt", "S", "--provider", "codex", "--", "-v looks wrong"])
     }
 
     /// AGENT-04: no toolMode → no --tools flag, ever. And the retired

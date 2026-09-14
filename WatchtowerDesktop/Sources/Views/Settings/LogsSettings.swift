@@ -25,7 +25,7 @@ struct LogsSettings: View {
         var label: String {
             switch self {
             case .sync: "Sync Log"
-            case .daemon: "Daemon Log"
+            case .daemon: "Crash Log"
             }
         }
 
@@ -35,11 +35,38 @@ struct LogsSettings: View {
             case .daemon: "gear"
             }
         }
+
+        /// One-line caption shown under the toolbar. `daemon.log` no longer
+        /// mirrors the sync logger's output (cmd/logfile.go's `logWriterFor`
+        /// stopped duplicating every line into it) — the tab is relabelled to
+        /// match what it actually shows. It is NOT panics-only: several
+        /// loggers still write to stderr rather than through the daemon's
+        /// own logger (the stdlib default logger, the Jira sub-loggers —
+        /// see docs/backlog/2026-09-14-stray-loggers-still-write-to-daemon-log.md),
+        /// and stderr is daemon.log. Wording mirrors the data-paths table in
+        /// docs/daemon-pipeline.md (dual-path, task 5's commit 079fde23).
+        var caption: String? {
+            switch self {
+            case .sync: nil
+            case .daemon:
+                "Go runtime panics, the launch-time rotation note, and output from loggers "
+                    + "not routed through the daemon logger. "
+                    + "Everything from the daemon's own logger is in the Sync Log."
+            }
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             logToolbar
+            if let caption = selectedLog.caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Divider()
             logContent
         }

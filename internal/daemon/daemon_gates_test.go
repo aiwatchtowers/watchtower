@@ -84,7 +84,7 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			// Custom tracks shares the tracks gate key (both scan/extract
 			// narrative tracks) — exercise both phase methods.
 			run: func(d *Daemon) {
-				d.phaseTracksAndRollups(context.Background())
+				d.phaseTracksAndRollups(context.Background(), time.Now())
 				d.phaseCustomTrackScan(context.Background())
 			},
 		},
@@ -104,7 +104,7 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				d.SetCustomTracksPipeline(customtracks.New(database, gen, cfg.Digest.Language, l))
 			},
 			run: func(d *Daemon) {
-				d.phaseTracksAndRollups(context.Background())
+				d.phaseTracksAndRollups(context.Background(), time.Now())
 				d.phaseCustomTrackScan(context.Background())
 			},
 		},

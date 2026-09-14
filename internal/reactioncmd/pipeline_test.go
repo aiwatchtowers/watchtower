@@ -1,9 +1,13 @@
 package reactioncmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
+	"sort"
 	"sync"
 	"testing"
 
@@ -52,6 +56,9 @@ func newTestRegistry(t *testing.T, database *db.DB) *tools.Registry {
 	t.Helper()
 	reg := tools.New(database)
 	require.NoError(t, reg.Register(tools.NewCreateTarget()))
+	// create_idea is execute-trusted by migration 00065, so it is the tool that
+	// makes "a historical reaction creates a real entity" observable.
+	require.NoError(t, reg.Register(tools.NewCreateIdea()))
 	schema, err := jsonschema.For[struct {
 		Summary string `json:"summary"`
 		Reason  string `json:"reason"`
@@ -75,6 +82,16 @@ func newTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, items 
 		return []Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: stubLister{items: items}}}, nil
 	}
 	return New(database, &config.Config{}, gen, newTestRegistry(t, database), accountsFn, nil)
+}
+
+// newLoggingTestPipeline is newTestPipeline with the pipeline's logger wired to
+// a buffer, so the operator-visible log lines can be asserted.
+func newLoggingTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, items []slack.ReactedItem, logs *bytes.Buffer) *Pipeline {
+	t.Helper()
+	accountsFn := func(context.Context) ([]Account, error) {
+		return []Account{{AccountID: 1, OwnerID: "1:UOWNER", Lister: stubLister{items: items}}}, nil
+	}
+	return New(database, &config.Config{}, gen, newTestRegistry(t, database), accountsFn, log.New(logs, "", 0))
 }
 
 func countAgentActions(t *testing.T, database *db.DB, status string) int {
@@ -218,4 +235,116 @@ func TestReactionCmd_NoDictionaryIsNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Equal(t, 0, gen.calls)
+}
+
+// newCappedTestPipeline builds a pipeline over several accounts, each with its
+// own reaction history, so the per-Run (not per-account) budget is observable.
+func newCappedTestPipeline(t *testing.T, database *db.DB, gen digest.Generator, perAccount map[int64][]slack.ReactedItem) *Pipeline {
+	t.Helper()
+	accountsFn := func(context.Context) ([]Account, error) {
+		ids := make([]int64, 0, len(perAccount))
+		for id := range perAccount {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		out := make([]Account, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, Account{AccountID: id, OwnerID: "1:UOWNER", Lister: stubLister{items: perAccount[id]}})
+		}
+		return out, nil
+	}
+	return New(database, &config.Config{}, gen, newTestRegistry(t, database), accountsFn, nil)
+}
+
+// dictionaryReactions builds n distinct dispatchable (create_target) owner
+// reactions in one channel.
+func dictionaryReactions(channel string, n int) []slack.ReactedItem {
+	out := make([]slack.ReactedItem, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, msgItem(channel, fmt.Sprintf("10%d.1", i), "UAUTHOR", "handle this", "",
+			slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}}))
+	}
+	return out
+}
+
+// freeSkipReaction is a candidate whose emoji maps to a tool the registry does
+// not hold: dispatch records it "skipped" BEFORE reaching compose, so it costs
+// no AI call and must not consume a slot of the run's budget.
+func freeSkipReaction(t *testing.T, database *db.DB) slack.ReactedItem {
+	t.Helper()
+	_, err := database.Exec(`INSERT OR REPLACE INTO reaction_command_map (emoji, kind, tool, enabled)
+		VALUES ('no_entry', 'builtin_tool', 'not_a_registered_tool', 1)`)
+	require.NoError(t, err)
+	return msgItem("C9", "999.9", "UAUTHOR", "unmapped", "",
+		slack.ItemReaction{Name: "no_entry", Users: []string{"UOWNER"}})
+}
+
+// TestReactionCmd_DispatchCapDefersOverflow pins the per-Run compose budget: a
+// backlog larger than the cap spends exactly maxDispatchPerRun AI calls, the
+// free skip does not eat a slot, and the deferred remainder drains on the next
+// poll without re-proposing anything already dispatched (REACT-03 across the
+// cap boundary).
+func TestReactionCmd_DispatchCapDefersOverflow(t *testing.T) {
+	database := db.OpenTestDB(t)
+	// The free skip comes FIRST on purpose: an implementation that claims the
+	// budget before the free-skip branches would spend a slot on it, and a
+	// fixture that puts it last would only notice indirectly.
+	items := append([]slack.ReactedItem{freeSkipReaction(t, database)}, dictionaryReactions("C1", maxDispatchPerRun+2)...)
+	gen := &mockGenerator{out: `{"text":"Handle this","reason":"owner flagged it"}`}
+	logs := new(bytes.Buffer)
+	p := newLoggingTestPipeline(t, database, gen, items, logs)
+
+	n1, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, maxDispatchPerRun, n1)
+	// The deferred count is the only operator-visible evidence that a backlog is
+	// draining rather than stuck, so assert the rendered numbers, not just that
+	// something was logged.
+	assert.Contains(t, logs.String(), fmt.Sprintf(
+		"dispatched %d, deferred 2 to the next cycle (cap %d)", maxDispatchPerRun, maxDispatchPerRun))
+	assert.Equal(t, maxDispatchPerRun, gen.calls, "the free skip does not consume budget")
+	assert.Equal(t, maxDispatchPerRun, countRows(t, database, "agent_actions"))
+	// cap dispatched + the free skip; the 2 deferred ones stay UNrecorded so
+	// the next poll sees them as unseen.
+	assert.Equal(t, maxDispatchPerRun+1, countRows(t, database, "reaction_commands"))
+
+	logs.Reset()
+	n2, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, n2, "the deferred remainder drains on the next poll")
+	assert.NotContains(t, logs.String(), "deferred", "a run that stays under the cap defers nothing")
+	assert.Equal(t, maxDispatchPerRun+2, gen.calls, "no re-compose of the first batch")
+	assert.Equal(t, maxDispatchPerRun+2, countRows(t, database, "agent_actions"), "no duplicate proposals")
+	assert.Equal(t, maxDispatchPerRun+3, countRows(t, database, "reaction_commands"))
+}
+
+// TestReactionCmd_DispatchCapIsSharedAcrossAccounts pins that the budget is per
+// Run, not per account: two accounts each holding a full backlog still spend
+// maxDispatchPerRun AI calls between them, never 2x.
+func TestReactionCmd_DispatchCapIsSharedAcrossAccounts(t *testing.T) {
+	database := db.OpenTestDB(t)
+	gen := &mockGenerator{out: `{"text":"Handle this","reason":"owner flagged it"}`}
+	p := newCappedTestPipeline(t, database, gen, map[int64][]slack.ReactedItem{
+		1: dictionaryReactions("C1", maxDispatchPerRun),
+		2: dictionaryReactions("C2", maxDispatchPerRun),
+	})
+
+	n, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, maxDispatchPerRun, n, "the cap is shared, not per account")
+	assert.Equal(t, maxDispatchPerRun, gen.calls)
+	assert.Equal(t, maxDispatchPerRun, countRows(t, database, "agent_actions"))
+}
+
+// TestReactionCmd_UnderCapDispatchesEverything pins the degenerate side of the
+// budget: a backlog smaller than the cap is not truncated by it.
+func TestReactionCmd_UnderCapDispatchesEverything(t *testing.T) {
+	database := db.OpenTestDB(t)
+	gen := &mockGenerator{out: `{"text":"Handle this","reason":"owner flagged it"}`}
+	p := newTestPipeline(t, database, gen, dictionaryReactions("C1", 3))
+
+	n, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, 3, gen.calls)
 }

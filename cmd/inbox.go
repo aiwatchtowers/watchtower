@@ -640,7 +640,8 @@ func newBackfillMentionsPipeline(cmd *cobra.Command) (pipe *inbox.Pipeline, clos
 	}
 
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
-	return inbox.New(database, cfg, nil, logger), func() { database.Close() }, nil
+	pipe = inbox.New(database, cfg, nil, logger)
+	return pipe, func() { database.Close() }, nil
 }
 
 // buildBackfillMentionsEnvelope converts one BackfillMentions result into

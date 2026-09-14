@@ -64,10 +64,12 @@ type jiraAccountSyncer interface {
 var minPollInterval = 1 * time.Second
 
 // maxDailyAIAttempts caps how many real (error-producing) attempts the
-// day-plan and briefing phases make in one calendar day before backing off
-// until the next day. A "real attempt" is one that reached the AI/parse/store
-// step and failed — a benign skip (no current user yet, no data yet) costs
-// nothing and is not counted (see recordBriefingAttempt/recordDayPlanAttempt).
+// day-plan, briefing, and daily-rollup phases make in one calendar day before
+// backing off until the next day. A "real attempt" is one that reached the
+// AI/parse/store step and failed — a benign skip (no current user yet, no
+// data yet, fewer than 2 channel digests, nothing new since the last rollup)
+// costs nothing and is not counted (see
+// recordBriefingAttempt/recordDayPlanAttempt/recordRollupAttempt).
 // Deliberately a code constant, not a config key: owner decision 9 (the
 // 2026-09-13 audit fix wave) forbids a new config key for this backoff.
 const maxDailyAIAttempts = 3
@@ -107,15 +109,19 @@ type Daemon struct {
 	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
 
-	// Real-failure attempt budgets for day plan / briefing (max 3/day, see
-	// maxDailyAIAttempts). Loaded from disk at daemon start
-	// (loadDayPlanAttempts/loadBriefingAttempts) and persisted after every
-	// real attempt, so an exhausted budget survives a daemon restart — the
-	// flaw the bare in-memory lastDayPlanDate/lastBriefing fields had.
+	// Real-failure attempt budgets for day plan / briefing / daily rollup (max
+	// 3/day, see maxDailyAIAttempts). Loaded from disk at daemon start
+	// (loadDayPlanAttempts/loadBriefingAttempts/loadRollupAttempts) and
+	// persisted after every real attempt, so an exhausted budget survives a
+	// daemon restart — the flaw the bare in-memory lastDayPlanDate/lastBriefing
+	// fields had. rollupAttemptDate is keyed on the UTC calendar date (not
+	// local, unlike the other two) — see rollupAttemptsExhausted's doc comment.
 	dayPlanAttemptDate  string // YYYY-MM-DD the counter below is for
 	dayPlanAttempts     int
 	briefingAttemptDate string // YYYY-MM-DD the counter below is for
 	briefingAttempts    int
+	rollupAttemptDate   string // YYYY-MM-DD (UTC) the counter below is for
+	rollupAttempts      int
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 }
@@ -298,6 +304,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadLastStreams()
 	d.loadDayPlanAttempts()
 	d.loadBriefingAttempts()
+	d.loadRollupAttempts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -377,9 +384,10 @@ func (d *Daemon) runSync(ctx context.Context) {
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	var phasesWg gosync.WaitGroup
 	phasesWg.Add(2)
+	rollupNow := time.Now()
 	go func() {
 		defer phasesWg.Done()
-		d.phaseTracksAndRollups(ctx)
+		d.phaseTracksAndRollups(ctx, rollupNow)
 	}()
 	go func() {
 		defer phasesWg.Done()
@@ -852,8 +860,12 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 // but digest.enabled off there is nothing for it to read — gating on
 // Tracks.Enabled alone would still create an empty pipeline_runs row every
 // cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on.
-func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
+// Digest.Enabled alone, unrelated to whether tracks itself is on. now is used
+// only for the rollup attempt budget's date (rollupBudgetDate) — the
+// runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
+// is provably the UTC date of the instant the phase actually ran, not a
+// second, independent read of the wall clock a test cannot control.
+func (d *Daemon) phaseTracksAndRollups(ctx context.Context, now time.Time) {
 	if d.config.Tracks.Enabled && d.config.Digest.Enabled && d.tracksPipe != nil {
 		d.trackedPipelineRun("tracks", func() pipelineRunStats {
 			n, updated, err := d.tracksPipe.Run(ctx)
@@ -884,11 +896,28 @@ func (d *Daemon) phaseTracksAndRollups(ctx context.Context) {
 		}
 	}
 
-	// Phase 3: Daily/weekly rollups (track-aware).
-	if d.config.Digest.Enabled && d.digestPipe != nil {
-		if err := d.digestPipe.RunRollups(ctx); err != nil {
-			d.logger.Printf("rollup error: %v", err)
-		}
+	d.runRollupPhase(ctx, now)
+}
+
+// runRollupPhase runs daily/weekly rollups (track-aware), gated by a
+// persisted real-attempt budget mirroring day-plan/briefing
+// (maxDailyAIAttempts) — RunRollups returns nil for every benign outcome
+// (feature off, lock held by another process, fewer than 2 channel digests,
+// nothing new since the last rollup) and non-nil only for a real failure, so
+// err != nil is exactly the real-attempt predicate; a DB read error also
+// consumes budget, matching day-plan/briefing. See rollupAttemptsExhausted's
+// doc comment for why the budget key is the UTC date, not local.
+func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
+	if !d.config.Digest.Enabled || d.digestPipe == nil {
+		return
+	}
+	date := rollupBudgetDate(now)
+	if d.rollupAttemptsExhausted(date) {
+		return
+	}
+	if err := d.digestPipe.RunRollups(ctx); err != nil {
+		d.recordRollupAttempt(date)
+		d.logger.Printf("rollup error: %v", err)
 	}
 }
 
@@ -1528,6 +1557,63 @@ func (d *Daemon) recordBriefingAttempt(date string) {
 // dayPlanAttemptsExhausted.
 func (d *Daemon) briefingAttemptsExhausted(date string) bool {
 	return d.briefingAttemptDate == date && d.briefingAttempts >= maxDailyAIAttempts
+}
+
+// rollupBudgetDate returns the calendar date the daily-rollup attempt budget
+// is keyed on for the instant now: the UTC date, not local. A pure,
+// clock-free function (now is a parameter, not read internally) so the
+// UTC-vs-local choice is unit-testable with a fixed instant whose local and
+// UTC dates differ, independent of the machine's own time zone — see
+// rollupAttemptsExhausted's doc comment for why UTC is correct here.
+func rollupBudgetDate(now time.Time) string {
+	return now.UTC().Format("2006-01-02")
+}
+
+func (d *Daemon) rollupAttemptsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "rollup_attempts.txt")
+}
+
+// loadRollupAttempts is the daily-rollup counterpart to loadDayPlanAttempts.
+func (d *Daemon) loadRollupAttempts() {
+	m := loadAttemptMarker(d.rollupAttemptsPath())
+	d.rollupAttemptDate = m.date
+	d.rollupAttempts = m.attempts
+}
+
+// recordRollupAttempt is the daily-rollup counterpart to
+// recordDayPlanAttempt/recordBriefingAttempt.
+func (d *Daemon) recordRollupAttempt(date string) {
+	if d.rollupAttemptDate != date {
+		d.rollupAttemptDate = date
+		d.rollupAttempts = 0
+	}
+	d.rollupAttempts++
+	if err := saveAttemptMarker(d.rollupAttemptsPath(), attemptMarker{date: date, attempts: d.rollupAttempts}); err != nil {
+		d.logger.Printf("failed to save rollup attempt marker: %v", err)
+	}
+	// See recordDayPlanAttempt's comment: logged once, when the budget is
+	// actually spent. The daemon's rollup call is not wrapped in
+	// trackedPipelineRun (unlike day-plan/briefing), so this line is the
+	// owner's only signal that the rollup gave up for the day — there is no
+	// pipeline_runs error row to fall back on.
+	if d.rollupAttempts == maxDailyAIAttempts {
+		d.logger.Printf("rollup: giving up for %s after %d failed attempts, will retry tomorrow", date, d.rollupAttempts)
+	}
+}
+
+// rollupAttemptsExhausted is the daily-rollup counterpart to
+// dayPlanAttemptsExhausted/briefingAttemptsExhausted.
+//
+// Deliberately keyed on the UTC calendar date, not local, unlike the other
+// two budgets: RunDailyRollup computes its own window in UTC ("M12 fix: use
+// UTC for consistent timezone-independent digest deduplication",
+// internal/digest/pipeline.go), so keying this budget on the local date would
+// let the budget's day boundary and the rollup's own day boundary drift apart
+// by hours outside UTC — a budget spent on "today local" while the rollup
+// still targets "yesterday UTC", or a free budget the moment local midnight
+// passes even though the UTC day (and the rollup it targets) hasn't changed.
+func (d *Daemon) rollupAttemptsExhausted(date string) bool {
+	return d.rollupAttemptDate == date && d.rollupAttempts >= maxDailyAIAttempts
 }
 
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a

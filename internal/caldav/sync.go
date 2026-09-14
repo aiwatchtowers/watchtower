@@ -108,8 +108,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	// Window-replace cleanup, scoped to this account's calendar_id: events no
 	// longer present upstream (or that left the window) were not re-stamped
-	// this cycle and get removed. A cancelled sync must not wipe the rows it
-	// never got to re-stamp, so skip the cleanup on context error.
+	// this cycle and get removed, unless a local recording still references
+	// them (see DeleteStaleCalendarEvents). A cancelled sync must not wipe
+	// the rows it never got to re-stamp, so skip the cleanup on context error.
 	if ctx.Err() == nil {
 		if n, err := s.db.DeleteStaleCalendarEvents(calID, syncedAt); err != nil {
 			s.logger.Printf("caldav account %d: cleanup stale events: %v", s.account.ID, err)

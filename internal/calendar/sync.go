@@ -178,7 +178,8 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		count++
 	}
 
-	// Cleanup stale events per calendar (synced before this run).
+	// Cleanup stale events per calendar (synced before this run), unless a
+	// local recording still references them (see DeleteStaleCalendarEvents).
 	for _, calID := range calendarIDs {
 		if skipStaleDelete[calID] {
 			continue

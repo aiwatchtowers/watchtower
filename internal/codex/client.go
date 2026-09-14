@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/digest"
 )
 
 // Client wraps the Codex CLI for AI queries (ask/chat).
@@ -39,9 +40,25 @@ func NewClient(model, dbPath, codexPath string) *Client {
 	}
 }
 
-// buildArgs constructs the CLI arguments for a codex exec call.
-// workDir is an optional working directory to pass via --cd.
-func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) []string {
+// promptPositionalOrStdin builds the trailing positional prompt argument for
+// `codex exec`, plus the same message again as stdin content when it must
+// travel that way instead: either it exceeds digest.StdinThreshold (ARG_MAX
+// safety — the package-level buildArgs precedent in generator.go, hour-long
+// meeting transcripts run to hundreds of KB) or it begins with '-', which a
+// bare positional would otherwise be parsed as a codex flag rather than the
+// prompt text. codex reads the prompt from stdin when the positional is "-".
+func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
+	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
+		return "-", userMessage
+	}
+	return userMessage, ""
+}
+
+// buildArgs constructs the CLI arguments for a codex exec call, plus stdin
+// content when userMessage must travel that way instead of inline (see
+// promptPositionalOrStdin). workDir is an optional working directory to pass
+// via --cd.
+func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
 	args := []string{
 		"exec",
 		"--model", c.model,
@@ -57,8 +74,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) []string {
 	if systemPrompt != "" {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}
-	args = append(args, userMessage)
-	return args
+	positional, stdin := promptPositionalOrStdin(userMessage)
+	args = append(args, positional)
+	return args, stdin
 }
 
 // Query sends a streaming request via the Codex CLI and returns channels
@@ -85,9 +103,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			workDir = tmpDir
 		}
 
-		args := c.buildArgs(systemPrompt, userMessage, workDir)
+		args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
 
 		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+		if promptStdin != "" {
+			cmd.Stdin = strings.NewReader(promptStdin)
+		}
 		cmd.Cancel = func() error {
 			return cmd.Process.Signal(os.Interrupt)
 		}
@@ -201,9 +222,12 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		workDir = tmpDir
 	}
 
-	args := c.buildArgs(systemPrompt, userMessage, workDir)
+	args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
 
 	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+	if promptStdin != "" {
+		cmd.Stdin = strings.NewReader(promptStdin)
+	}
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}

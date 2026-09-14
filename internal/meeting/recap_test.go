@@ -145,3 +145,32 @@ func TestGenerateRecap_IdeasAbsentIsEmpty(t *testing.T) {
 		t.Errorf("expected no ideas when field is absent, got %v", res.Ideas)
 	}
 }
+
+// TestGenerateRecap_UnlabeledPasteTextGetsConditionalGuidance covers the
+// paste flow's own rendered prompt (GenerateRecap, unlike
+// GenerateTranscriptRecap, puts the source text into the SYSTEM prompt, not
+// the user message — this is the one-element trap named in the wave-5 plan:
+// a labeled-transcript-only fixture across GenerateTranscriptRecap tests
+// would leave the paste flow's rendered prompt entirely unasserted). Raw
+// pasted notes never carry "[label]" line prefixes, so the system prompt
+// must still describe the unlabeled case and must not claim speakers are
+// never labeled (the stale, now-removed claim).
+func TestGenerateRecap_UnlabeledPasteTextGetsConditionalGuidance(t *testing.T) {
+	mock := &recordingMockGenerator{response: `{"summary":"s","key_decisions":[],"action_items":[],"open_questions":[]}`}
+	pipe := &Pipeline{generator: mock}
+
+	unlabeledPaste := "we agreed to ship v2 on friday, budget approved"
+	_, err := pipe.GenerateRecap(context.Background(), "evt-1", unlabeledPaste)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(mock.lastSystemPrompt, "speakers are not labeled") {
+		t.Errorf("system prompt must not claim speakers are never labeled, got: %.500s", mock.lastSystemPrompt)
+	}
+	if !strings.Contains(mock.lastSystemPrompt, "do not invent a speaker") {
+		t.Errorf("system prompt must describe the unlabeled case, got: %.500s", mock.lastSystemPrompt)
+	}
+	if !strings.Contains(mock.lastSystemPrompt, unlabeledPaste) {
+		t.Errorf("system prompt should still carry the pasted text, got: %.500s", mock.lastSystemPrompt)
+	}
+}

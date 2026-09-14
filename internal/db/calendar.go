@@ -234,9 +234,24 @@ func (db *DB) GetNextEvent() (*CalendarEvent, error) {
 	return &events[0], nil
 }
 
-// DeleteStaleCalendarEvents removes events for a calendar synced before the given timestamp.
+// DeleteStaleCalendarEvents removes events for a calendar synced before the
+// given timestamp — "not re-stamped in this sync pass", which covers both an
+// event aging out of the history window and an event removed upstream (the
+// two share this one delete branch, see internal/calendar/sync.go and
+// internal/caldav/sync.go). An event still referenced by a meeting_transcripts
+// or meeting_recaps row is spared even when stale, so a locally-recorded
+// meeting keeps its event association (title/attendees/description) for
+// recap/notes/chapters regeneration and the attendee-scoped voice-print pool
+// (owner decision 14) — including a meeting later cancelled upstream, which
+// therefore persists locally. A row already detached before this guard
+// shipped (event_id already NULL) is not backfilled.
 func (db *DB) DeleteStaleCalendarEvents(calendarID string, beforeSyncedAt string) (int, error) {
-	result, err := db.Exec(`DELETE FROM calendar_events WHERE calendar_id = ? AND synced_at < ?`, calendarID, beforeSyncedAt)
+	result, err := db.Exec(`
+		DELETE FROM calendar_events
+		 WHERE calendar_id = ? AND synced_at < ?
+		   AND NOT EXISTS (SELECT 1 FROM meeting_transcripts t WHERE t.event_id = calendar_events.id)
+		   AND NOT EXISTS (SELECT 1 FROM meeting_recaps    r WHERE r.event_id = calendar_events.id)
+	`, calendarID, beforeSyncedAt)
 	if err != nil {
 		return 0, fmt.Errorf("deleting stale calendar events: %w", err)
 	}
