@@ -230,21 +230,32 @@ Notes:
 
 ## 5. Auth and the Confluence client
 
-- `internal/jira/auth.go` scope string gains the Confluence read scopes
+- `internal/jira/scopes.go` gains a separate `ConfluenceScopes` constant
   (granular: `read:page:confluence read:blogpost:confluence
   read:comment:confluence read:attachment:confluence read:space:confluence
-  read:user:confluence`, plus classic `search:confluence` for CQL search).
-  **Plan task 1 verifies this exact list against the Atlassian docs** and
-  pins it in a test; the list above is the starting hypothesis.
+  read:user:confluence read:content-details:confluence
+  readonly:content.attachment:confluence read:confluence-user`, plus classic
+  `search:confluence` for CQL search). **Plan task 1 verifies this exact
+  list against the Atlassian docs** and pins it in a test; the list above is
+  the starting hypothesis.
+- **Scopes are opt-in, not automatic (R6).** `jira login`/`jira add` keep
+  requesting `JiraScopes` only by default; a new `--with-confluence` flag
+  requests `OAuthScopes` (`JiraScopes + ConfluenceScopes`) instead. This
+  decouples merging this feature from the owner's console setup below — a
+  Jira-only install never sees a failing consent screen, and every
+  needs-consent hint names the flag: `watchtower jira login --account N
+  --with-confluence`.
 - **Owner prerequisite (outside the code):** in developer.atlassian.com, add
   the Confluence API with these scopes to every OAuth app we ship (main,
-  corporate, partner flavors). Without it consent silently omits them.
+  corporate, partner flavors). Without it, a `--with-confluence` consent
+  silently omits them.
 - Existing accounts keep syncing Jira untouched. Confluence for an account
   whose token lacks the scopes → every `ext_sources` row of that account gets
-  `status='needs_consent'`, `error="re-run: watchtower jira login --account N"`.
-  The Jira account's own status is never touched by Confluence failures.
-  Granted scopes are read from the token response's `scope` field, which we
-  persist in the token file (add the field if absent).
+  `status='needs_consent'`, `error="re-run: watchtower jira login --account N
+  --with-confluence"`. The Jira account's own status is never touched by
+  Confluence failures. Granted scopes are read from the token response's
+  `scope` field, which we persist in the token file (add the field if
+  absent).
 - **One refresher per account.** Atlassian refresh tokens rotate; two
   independent clients refreshing the same token file would revoke each other.
   So Confluence calls go through the account's existing `jira.Client`: add a
@@ -266,15 +277,26 @@ recorded as error (`isBenignShutdownErr`).
 Per enabled `ext_sources` row, in order:
 
 1. **Pages + blog posts delta.** CQL
-   `space = "KEY" AND type IN (page, blogpost) AND lastmodified >= "<cursor − 1 min>" ORDER BY lastmodified ASC`,
-   100 per page, ids + version + lastModified only. CQL dates are minute
-   precision, hence the one-minute overlap; the version gate removes the
-   duplicates. For each ref: local `version` equal → skip (no fetch). Else
-   `Fetch` (REST v2, `body-format=storage`), convert (§7), upsert, then
-   reload the page's full comment set (`Comments`) in the same batch. The
-   cursor advances to the batch's max `lastModified` **in the same
-   transaction** as the batch's rows; the pagination token is saved too, so a
-   cycle that runs out of budget mid-backfill resumes from the same page.
+   `space = "KEY" AND type IN (page, blogpost) AND lastmodified >= "<since>" ORDER BY lastmodified ASC`,
+   100 per page, ids + version + lastModified only. `since` is the stored
+   cursor widened by **two independent overlaps that solve two different
+   problems**: the engine's own 1-minute `cursorOverlap` (`internal/extsync`,
+   provider-agnostic — every stream gets it) plus, inside the Confluence
+   fetcher itself, a further **24-hour** overlap (`cqlOverlap`) because CQL
+   reads `lastmodified` in the requesting user's own time zone, which the
+   fetcher never learns — a day covers every zone. Both overlaps are free:
+   the version gate skips anything already at its stored version, so the
+   re-listed rows cost enumeration only, never a re-fetch. For each ref:
+   local `version` equal → skip (no fetch). Else `Fetch` (REST v2,
+   `body-format=storage`), convert (§7), upsert, then reload the page's
+   full comment set (`Comments`) in the same batch. The cursor advances to
+   the batch's max `lastModified` **in the same transaction** as the
+   batch's rows; the pagination token is saved too — as `<since>|<token>`,
+   since a provider token is only valid for the query that produced it — so
+   a cycle that runs out of budget mid-backfill resumes from the same page
+   without skipping anything between the old and new `since`. A cycle makes
+   at most two passes per stream (a resumed pass that completes is followed
+   by one fresh pass from the advanced cursor, which then ends it).
 2. **Comments delta.** CQL `type = comment` with the same shape. Upsert into
    `ext_comments`; stamp the parent document's `children_changed_at` so the
    KB re-renders it (a new comment does not bump the page version).
@@ -289,7 +311,18 @@ Per enabled `ext_sources` row, in order:
    deleted; `trashed` = deleted; `archived` stays with `status='archived'`.
    A page the owner lost access to disappears from `All` and is deleted —
    that is the whole permission model. Comments are also reconciled per page
-   on every page re-fetch (full reload replaces the set).
+   on every page re-fetch (full reload replaces the set). **Implementation
+   deviation (R9/R10):** CQL search omits archived content entirely, so
+   `All(page)` cannot use CQL like `Changed` does — it walks the v2 space
+   page listing instead (which does include archived pages) so `All` stays
+   a superset of `Changed` and reconcile never deletes what the delta just
+   wrote; `All(attachment)` still uses CQL (no v2 space-scoped attachment
+   listing exists), so an attachment on an already-archived page falls out
+   of `All` and gets reconcile-deleted. Consequence: an edit to an
+   already-archived page is invisible to `Changed` (CQL never lists it) and
+   reconcile does not refresh content (only ids/versions), so its indexed
+   text is frozen at archive time until it is un-archived — accepted, since
+   archived pages rarely change.
 6. **Users.** Author ids seen in the batch and missing/older than 30 days in
    `ext_users` are resolved in bulk and cached.
 7. **doc_links** for the batch (§10).
@@ -344,6 +377,15 @@ converter into a single section each.
 Caps: download ≤ 25 MiB; extracted text ≤ 200 000 runes per attachment;
 PDF ≤ 300 pages; OCR ≤ 50 pages per attachment.
 
+**Implementation deviation (Task 9 review):** the pure-Go PDF parser can
+spin forever on a malformed page tree (a self-referencing `/Kids` entry,
+probe-confirmed), which would wedge the daemon. PDF text extraction
+therefore runs inside a killable helper subprocess (the hidden `watchtower
+extract-pdf-text`, `internal/extract/pdfhelper.go`): the parent kills it on
+timeout, and the child self-exits 10 s after its own deadline should its
+parent be the one that dies (an orphan left by a SIGKILLed daemon cannot
+spin forever either).
+
 ### 8.1 OCR helper
 
 - New SwiftPM executable target `watchtower-ocr` in `WatchtowerDesktop`
@@ -362,6 +404,15 @@ PDF ≤ 300 pages; OCR ≤ 50 pages per attachment.
 - Helper missing (CLI-only install, `swift run`) → `ocr_unavailable`, the
   attachment still indexed by name; retried when the helper appears.
   Timeout 60 s per invocation; failure → `ocr_pending` with attempts++.
+- **Implementation deviation (Task 10 review):** a single 60 s call covering
+  all 50 pages of a large scan always timed out in practice, so recognition
+  runs in batches of 10 pages per helper invocation (`ocrBatchPages`, at
+  most 5 calls for the 50-page cap); a failed batch loses only its own
+  pages, the rest are still applied. The helper's code signature
+  (Developer-ID, our own Team ID) is verified before every exec — the same
+  gate the CLI binary store enforces — and it self-exits 10 s after its own
+  deadline should its parent be the one that dies (SIGKILL leaves no
+  orphan), the same shape as the PDF-parsing helper in §8.
 
 ## 9. Feature flag, config, CLI, Desktop
 
@@ -450,11 +501,27 @@ validation, `memory_recall`.
   non-GET request to Confluence (guard: a test transport that fails any
   non-GET during a full sync pass).
 - **EXT-02 — selection is honest.** Only selected spaces are fetched;
-  unselecting (or removing the account) leaves no `ext_*` row and, after the
-  next KB cycle, no `kb_documents` row for that space (guard test).
-- **EXT-03 — binaries are never persisted.** After a sync pass with
-  attachments, the extract temp dir is empty and no table holds attachment
-  bytes (guard test).
+  unselecting a space (or a **hard** delete of its `jira_accounts` row, which
+  cascades) leaves no `ext_*` row and, after the next KB cycle, no
+  `kb_documents` row for that space (guard test). **Implementation
+  deviation (R12):** `jira remove` is non-destructive by design (the row
+  stays, `status='removed'`) — a removed account's already-synced spaces
+  keep their `ext_*` rows and stay searchable, exactly like Slack/Jira
+  history is kept on their own non-destructive removes; only *enabled*
+  accounts get a fetcher, so nothing new is ever fetched for a removed one.
+- **EXT-03 — binaries are never persisted.** The extract temp dir is empty
+  on every return path — success, error or parser panic, not just the happy
+  path — and no table holds attachment bytes (guard test); a crash that
+  skips cleanup entirely is swept at the start of the next engine run.
+- **EXT-04 — the sync engine stays generic.** `internal/extsync` imports no
+  Atlassian-, link- or AI-specific package, directly or transitively;
+  provider behavior comes in through interfaces (`Fetcher`, `Extractor`) and
+  cross-source links through an injected `Options.Relink` hook, never a
+  direct import (guard: `go list -deps` scan). Added post-spec (R1/R3): the
+  engine must not couple to `internal/jira`/`internal/confluence` even for
+  error-sentinel mapping, and the doc-link scanner that needs `internal/kb`
+  lives in its own package (`internal/doclinks/linkscan`), never inside
+  `internal/extsync`.
 
 KB-01..03 extend to the new source (the confluence source is registered in
 the existing KB contract tests; KB-03 resolvability: every hit's `link` is the
@@ -477,9 +544,15 @@ page/attachment URL).
 - `jira`: shared-refresh test — Jira and Confluence views refresh once under
   concurrent 401s.
 - Migration: schema golden, `TestAllTablesExist`.
+- `EXPLAIN QUERY PLAN` guards for the hot queries (the KB lesson: only real
+  data caught that package's planner regression) — `localVersions`/
+  `localCommentVersions`, comments by page, the attachment revisit listing
+  (`internal/extsync/plan_test.go`) and the Confluence `Changed` docs-arm
+  join (`internal/kb/source_ext_changed_test.go`).
 - Real-data smoke before PR: sync one real space end to end on a copy of the
-  real DB, `EXPLAIN QUERY PLAN` guards for the new hot queries (the KB lesson:
-  only real data caught the planner regression).
+  real DB. **Blocked as of this writing on the owner prerequisite in §5**
+  (the Confluence API scopes are not yet enabled on the Atlassian OAuth
+  app) — run once that prerequisite is done.
 
 ## 14. Slices (implementation order, all on this branch)
 
@@ -497,3 +570,43 @@ page/attachment URL).
    invoker, retry.
 8. **doc_links + `get_task_context` section.**
 9. Docs: CLAUDE.md feature note, `docs/app-guide.md`, inventory, smoke.
+
+## 15. Implementation deltas
+
+Rulings made while building against this spec (the plan itself is
+`docs/superpowers/plans/2026-09-26-confluence-knowledge-connector.md`).
+The sections above already carry the ones that change what a reader needs
+to know; this list is the traceability index, not a duplicate explanation.
+
+- **R1** — extsync defines its own `ErrAuthRevoked`/`ErrNeedsConsent`
+  sentinels; the Confluence fetcher maps Jira's errors onto them, so the
+  engine never imports `internal/jira`.
+- **R2** — extsync's `Extractor` gained an optional `HasOCR() bool`
+  interface so the attachment revisit step can skip `ocr_unavailable` rows
+  when OCR truly isn't available.
+- **R3** — kb's Confluence source matches mention tokens with its own
+  regexp instead of importing `internal/confluence`.
+- **R4** — EXT-01's guard is two test files (`internal/jira` +
+  `internal/confluence`) instead of one end-to-end engine test, since the
+  client's base-URL seam is unexported.
+- **R5** — the OCR recognizer lives in a dependency-free library target
+  (`OCRKit`) so SwiftPM can test it without the brittleness of testing an
+  executable target directly.
+- **R6** — Confluence scopes are opt-in via `--with-confluence` (§5).
+- **R7** — the stored stream token is `<since>|<provider token>`, not a
+  bare pagination token (§6).
+- **R8** — a stored token the provider rejects on a resumed call is
+  dropped (persisted as `""`) before the error returns, so the next cycle
+  re-lists fresh instead of wedging on a dead token forever.
+- **R9** — the fetcher uses v1 CQL search for delta enumeration and v1 for
+  attachment download, v2 for everything else (§6, §8.1 note); the plan's
+  original v1-content/v1-comment endpoints do not exist in Atlassian's
+  published spec.
+- **R10** — archived-page handling (§6 step 5).
+- **R11** — `read:confluence-user` added to `ConfluenceScopes` (§5).
+- **R12** — EXT-02's wording corrected: `jira remove` is non-destructive,
+  so only a hard account delete (or an explicit unselect) removes `ext_*`
+  rows (§12).
+- **R13** — migration `00075` adds `idx_jira_issues_synced`/
+  `idx_jira_comments_synced` so `linkscan.ScanSources` doesn't scan those
+  tables per batch.

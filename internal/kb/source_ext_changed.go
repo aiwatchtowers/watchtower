@@ -61,6 +61,18 @@ func horizon(now time.Time) string {
 	return now.UTC().Truncate(time.Second).Format(time.RFC3339)
 }
 
+// extDocsChangedQuery is the docs arm of Changed: every document of the
+// provider whose synced_at or children_changed_at marker falls strictly
+// between the cursor and the horizon. There is no index on the MAX()
+// expression itself; the plan guard (TestConfluence_ChangedDocsQueryPlan)
+// pins that the s.id = d.source_id join still resolves per-source through
+// an index (idx_ext_documents_parent, which happens to lead with
+// source_id), never a scan of the whole ext_documents table.
+const extDocsChangedQuery = `SELECT ? || ':' || d.source_id || ':' || d.ext_id, MAX(d.synced_at, d.children_changed_at)
+	 FROM ext_documents d JOIN ext_sources s ON s.id = d.source_id
+	 WHERE s.provider = ? AND MAX(d.synced_at, d.children_changed_at) > ?
+	   AND MAX(d.synced_at, d.children_changed_at) < ?`
+
 // Changed lists documents whose row was synced or whose comments changed
 // since the cursor, plus documents authored or commented on by a user whose
 // cached name was refreshed since the cursor, so a rename re-renders them.
@@ -70,11 +82,7 @@ func (s extSource) Changed(ctx context.Context, q Queryer, cursor string, now ti
 		return nil, cursor, false, err
 	}
 	h := horizon(now)
-	docKeys, docsNext, err := changedByColumn(ctx, q, cur.Docs,
-		`SELECT ? || ':' || d.source_id || ':' || d.ext_id, MAX(d.synced_at, d.children_changed_at)
-		 FROM ext_documents d JOIN ext_sources s ON s.id = d.source_id
-		 WHERE s.provider = ? AND MAX(d.synced_at, d.children_changed_at) > ?
-		   AND MAX(d.synced_at, d.children_changed_at) < ?`,
+	docKeys, docsNext, err := changedByColumn(ctx, q, cur.Docs, extDocsChangedQuery,
 		s.provider, s.provider, cur.Docs, h)
 	if err != nil {
 		return nil, cursor, false, err

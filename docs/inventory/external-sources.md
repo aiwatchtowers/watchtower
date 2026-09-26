@@ -132,6 +132,17 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-27 (T13 docs pass): EXT-01..04 re-checked against the code —
+  wording unchanged, no drift found. `EXPLAIN QUERY PLAN` guards added for
+  the extsync hot queries (`localVersions`/`localCommentVersions`, comments
+  by page, the attachment revisit listing — `internal/extsync/plan_test.go`)
+  and the Confluence `Changed` docs-arm join
+  (`internal/kb/source_ext_changed_test.go`); every one already resolved
+  through an index (no `+col` fix needed). `docs/superpowers/specs/2026-09-26-confluence-knowledge-connector-design.md`
+  §6/§12 corrected to match (24h CQL overlap vs the engine's own 1-minute
+  cursor overlap; opt-in `--with-confluence` scopes; the real v1/v2 endpoint
+  split; the archived-page gap; the EXT-02 wording below).
+
 - 2026-09-27: EXT-04 added — the engine's doc_links hook is injected
   (`Options.Relink`), the Jira key pattern moved to `internal/jirakey`, and
   the Slack/mail/Jira link scanner lives in `internal/doclinks/linkscan`.

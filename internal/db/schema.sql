@@ -1711,16 +1711,16 @@ CREATE TABLE IF NOT EXISTS ext_sources (
   provider         TEXT NOT NULL CHECK (provider IN ('confluence')),
   jira_account_id  INTEGER REFERENCES jira_accounts(id) ON DELETE CASCADE,
   connection_id    INTEGER REFERENCES external_connections(id) ON DELETE CASCADE,
-  container_key    TEXT NOT NULL,
-  container_ext_id TEXT NOT NULL DEFAULT '',
+  container_key    TEXT NOT NULL,          -- space key
+  container_ext_id TEXT NOT NULL DEFAULT '',-- space id (REST v2)
   container_name   TEXT NOT NULL DEFAULT '',
   enabled          INTEGER NOT NULL DEFAULT 1,
-  page_cursor       TEXT NOT NULL DEFAULT '',
+  page_cursor       TEXT NOT NULL DEFAULT '',  -- RFC3339 lastModified high-water
   comment_cursor    TEXT NOT NULL DEFAULT '',
   attachment_cursor TEXT NOT NULL DEFAULT '',
-  page_token        TEXT NOT NULL DEFAULT '',
-  comment_token     TEXT NOT NULL DEFAULT '',
-  attachment_token  TEXT NOT NULL DEFAULT '',
+  page_token        TEXT NOT NULL DEFAULT '',  -- in-flight pagination token per stream
+  comment_token     TEXT NOT NULL DEFAULT '',  --   (resume mid-backfill; cleared when
+  attachment_token  TEXT NOT NULL DEFAULT '',  --    the stream's enumeration completes)
   backfill_done    INTEGER NOT NULL DEFAULT 0,
   last_reconcile_at TEXT NOT NULL DEFAULT '',
   last_synced_at   TEXT NOT NULL DEFAULT '',
@@ -1746,14 +1746,14 @@ CREATE TABLE IF NOT EXISTS ext_documents (
   author_id     TEXT NOT NULL DEFAULT '',
   created_at    TEXT NOT NULL DEFAULT '',
   modified_at   TEXT NOT NULL DEFAULT '',
-  sections_json TEXT NOT NULL DEFAULT '[]',
+  sections_json TEXT NOT NULL DEFAULT '[]',   -- [{"heading":..,"anchor":..,"text":..}]
   meta_json     TEXT NOT NULL DEFAULT '{}',
   media_type    TEXT NOT NULL DEFAULT '',
   size_bytes    INTEGER NOT NULL DEFAULT 0,
   extract_status TEXT NOT NULL DEFAULT 'ok'
       CHECK (extract_status IN ('ok','skipped_type','too_large','ocr_pending','ocr_unavailable','failed')),
   extract_attempts INTEGER NOT NULL DEFAULT 0,
-  children_changed_at TEXT NOT NULL DEFAULT '',
+  children_changed_at TEXT NOT NULL DEFAULT '',  -- a comment moved: re-render the page
   synced_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (source_id, ext_id)
 );
@@ -1777,7 +1777,7 @@ CREATE INDEX IF NOT EXISTS idx_ext_comments_page ON ext_comments(source_id, page
 
 CREATE TABLE IF NOT EXISTS ext_users (
   provider     TEXT NOT NULL,
-  ext_user_id  TEXT NOT NULL,
+  ext_user_id  TEXT NOT NULL,          -- Atlassian accountId for Confluence
   display_name TEXT NOT NULL DEFAULT '',
   email        TEXT NOT NULL DEFAULT '',
   fetched_at   TEXT NOT NULL DEFAULT '',
@@ -1785,16 +1785,16 @@ CREATE TABLE IF NOT EXISTS ext_users (
 );
 
 CREATE TABLE IF NOT EXISTS doc_links (
-  from_kind TEXT NOT NULL,
-  from_ref  TEXT NOT NULL,
-  to_kind   TEXT NOT NULL,
-  to_ref    TEXT NOT NULL,
+  from_kind TEXT NOT NULL,   -- 'confluence' | 'slack' | 'gmail' | 'jira'
+  from_ref  TEXT NOT NULL,   -- kb-style ref of the mentioning document
+  to_kind   TEXT NOT NULL,   -- 'jira_issue' | 'confluence_page'
+  to_ref    TEXT NOT NULL,   -- 'PROJ-123' | '<cloud_id>:<page_id>'
   detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (from_kind, from_ref, to_kind, to_ref)
 );
 CREATE INDEX IF NOT EXISTS idx_doc_links_to ON doc_links(to_kind, to_ref);
 
-CREATE TABLE IF NOT EXISTS ext_link_state (
-  from_kind TEXT PRIMARY KEY,
-  cursor    TEXT NOT NULL DEFAULT ''
+CREATE TABLE IF NOT EXISTS ext_link_state (          -- doc_links detection watermark per scanned kind
+  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
+  cursor    TEXT NOT NULL DEFAULT ''   -- rowid / synced_at high-water, per kind
 );

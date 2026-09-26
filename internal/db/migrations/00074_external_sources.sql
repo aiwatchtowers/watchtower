@@ -93,7 +93,7 @@ CREATE TABLE doc_links (
 CREATE INDEX idx_doc_links_to ON doc_links(to_kind, to_ref);
 
 CREATE TABLE ext_link_state (          -- doc_links detection watermark per scanned kind
-  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira'
+  from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
   cursor    TEXT NOT NULL DEFAULT ''   -- rowid / synced_at high-water, per kind
 );
 

@@ -679,7 +679,7 @@ PRIMARY KEY (source_id, ext_id)
 
 table	ext_link_state
 CREATE TABLE ext_link_state ( -- doc_links detection watermark per scanned kind
-from_kind TEXT PRIMARY KEY, -- 'slack' | 'gmail' | 'imap' | 'jira'
+from_kind TEXT PRIMARY KEY, -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
 cursor TEXT NOT NULL DEFAULT '' -- rowid / synced_at high-water, per kind
 )
 
