@@ -446,3 +446,40 @@ func TestExtSyncOptions_WiresTheOCRHelper(t *testing.T) {
 	assert.NotNil(t, x.OCR)
 	assert.True(t, x.HasOCR())
 }
+
+// A re-login of an account whose grant already carries the Confluence
+// scopes keeps requesting them without --with-confluence.
+func TestJiraReloginOptions_ScopedTokenKeepsConfluence(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	assert.True(t, kept)
+	assert.True(t, opts.WithConfluence)
+}
+
+// Selected spaces keep Confluence even when the stored grant lost the
+// scopes (the needs_consent recovery path).
+func TestJiraReloginOptions_SelectedSpacesKeepConfluence(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.JiraScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	assert.True(t, kept)
+	assert.True(t, opts.WithConfluence)
+}
+
+// A Jira-only account stays Jira-only: no consent-screen change.
+func TestJiraReloginOptions_JiraOnlyStaysJiraOnly(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.JiraScopes)
+
+	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	assert.False(t, kept)
+	assert.Equal(t, jira.LoginOptions{}, opts)
+
+	cmd := jiraLoginFlagsCmd(t)
+	require.NoError(t, cmd.Flags().Set("with-confluence", "true"))
+	opts, kept = jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+	assert.False(t, kept, "the explicit flag is not the default kicking in")
+	assert.True(t, opts.WithConfluence)
+}

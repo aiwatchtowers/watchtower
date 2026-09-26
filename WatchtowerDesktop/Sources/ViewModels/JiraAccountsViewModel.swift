@@ -85,8 +85,9 @@ final class JiraAccountsViewModel {
 
     /// Builds the `jira login` args for re-consenting an existing account.
     /// Pure and side-effect-free. `withConfluence` adds `--with-confluence`
-    /// (the Confluence scopes, opt-in on the CLI side); the default Re-login
-    /// never asks for them.
+    /// (the Confluence scopes, opt-in on the CLI side). The default Re-login
+    /// omits the flag; the CLI itself keeps the Confluence scopes when the
+    /// account already uses Confluence (`jiraReloginOptions`, cmd/jira.go).
     static func loginArgs(accountID: Int, withConfluence: Bool = false) -> [String] {
         var args = ["jira", "login", "--account", String(accountID), "--app-return"]
         if withConfluence {

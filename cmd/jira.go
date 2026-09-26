@@ -512,6 +512,32 @@ func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
 	return jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn, WithConfluence: withConfluence}
 }
 
+// jiraReloginOptions is jiraLoginOptionsFromFlags for a re-consent of an
+// existing account: without --with-confluence it still requests the
+// Confluence scopes when the account already uses Confluence — its stored
+// grant carries them, or it owns selected spaces — because a new grant
+// replaces the old one, and a plain Re-login (e.g. recovering a revoked
+// Jira) would otherwise silently strip Confluence access. kept reports that
+// default kicking in. --with-confluence stays the opt-in for a first grant.
+func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool) {
+	opts = jiraLoginOptionsFromFlags(cmd)
+	if opts.WithConfluence || !accountUsesConfluence(workspaceDir, database, accountID) {
+		return opts, false
+	}
+	opts.WithConfluence = true
+	return opts, true
+}
+
+// accountUsesConfluence reports whether a Jira account's grant carries the
+// Confluence scopes or the account has selected Confluence spaces.
+func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64) bool {
+	if confluenceScopesOK(workspaceDir, accountID) {
+		return true
+	}
+	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
+	return err == nil && len(srcs) > 0
+}
+
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
@@ -616,7 +642,11 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jiraLoginOptionsFromFlags(cmd))
+	opts, kept := jiraReloginOptions(cmd, cfg.WorkspaceDir(), database, accountID)
+	if kept {
+		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
+	}
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
