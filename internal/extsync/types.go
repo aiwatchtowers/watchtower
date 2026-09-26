@@ -1,0 +1,116 @@
+// Package extsync is the source-agnostic sync engine for external knowledge
+// sources (spec docs/superpowers/specs/2026-09-26-confluence-knowledge-connector-design.md
+// §3, §6). It drives a Fetcher, owns the per-source cursors, pagination
+// tokens, cycle budget and version gate, and writes the ext_* tables. It
+// knows nothing about Confluence: a provider supplies a Fetcher.
+package extsync
+
+import (
+	"context"
+	"io"
+	"log"
+	"time"
+)
+
+// Section is one text section of a document (heading-split body, one per
+// comment, or extracted attachment text). Stored as JSON in
+// ext_documents.sections_json.
+type Section struct {
+	Heading string `json:"heading,omitempty"`
+	Anchor  string `json:"anchor,omitempty"`
+	Text    string `json:"text"`
+}
+
+// Container is one synced external container (a Confluence space).
+type Container struct{ Key, Name, ExtID string }
+
+// ItemKind names the kind of an external item.
+type ItemKind string
+
+// Item kinds. The pages stream enumerates KindPage and KindBlogpost together.
+const (
+	KindPage       ItemKind = "page"
+	KindBlogpost   ItemKind = "blogpost"
+	KindComment    ItemKind = "comment"
+	KindAttachment ItemKind = "attachment"
+)
+
+// ItemRef is one enumeration row: identity, version and modification time,
+// no body.
+type ItemRef struct {
+	Kind     ItemKind
+	ExtID    string
+	Version  int
+	Modified time.Time
+	ParentID string // comment → page, attachment → page/blogpost
+}
+
+// Item is fetched content.
+type Item struct {
+	Ref              ItemRef
+	Title            string
+	URL              string
+	AuthorID         string
+	Created          time.Time
+	Status           string // "current" | "archived"
+	Sections         []Section
+	Meta             map[string]string
+	CommentKind      string // "footer" | "inline" (comments only)
+	AnchorText       string
+	Resolved         bool
+	Download         string // attachments: API path for Download
+	MediaType        string
+	Size             int64
+	MentionedUserIDs []string // author ids referenced in the body (for the users cache)
+}
+
+// User is one resolved external user.
+type User struct{ ID, DisplayName, Email string }
+
+// Fetcher is the provider side of the engine: "what changed of kind K since
+// T", "give me the content", "give me every id".
+type Fetcher interface {
+	Containers(ctx context.Context) ([]Container, error)
+	// Changed lists refs of one kind modified at or after since, ascending by
+	// Modified; page is an opaque pagination token ("" = first page), next ""
+	// means the enumeration is complete.
+	Changed(ctx context.Context, c Container, kind ItemKind, since time.Time, page string) (refs []ItemRef, next string, err error)
+	All(ctx context.Context, c Container, kind ItemKind, page string) (refs []ItemRef, next string, err error)
+	Fetch(ctx context.Context, c Container, ref ItemRef) (*Item, error) // nil,nil = gone
+	Comments(ctx context.Context, c Container, pageID string) ([]Item, error)
+	Download(ctx context.Context, it *Item, limit int64) (io.ReadCloser, error)
+	Users(ctx context.Context, ids []string) (map[string]User, error)
+}
+
+// Extractor turns attachment bytes into sections (internal/extract supplies
+// the implementation).
+type Extractor interface {
+	Extract(ctx context.Context, mediaType, name string, r io.Reader) (sections []Section, status string, err error)
+}
+
+// OCRCapable is optionally implemented by an Extractor: HasOCR reports
+// whether OCR is available, so a retry of OCR-pending attachments can be
+// skipped when it is not.
+type OCRCapable interface{ HasOCR() bool }
+
+// Options configures an Engine.
+type Options struct {
+	Budget    time.Duration    // 0 = unbounded
+	Now       func() time.Time // default time.Now; the engine reads the clock only through it
+	Logger    *log.Logger      // default: discard
+	Extractor Extractor        // nil → attachments stored as skipped_type
+}
+
+// Stats summarizes one Run or RunSource.
+type Stats struct {
+	Fetched, Unchanged, Deleted, Comments int
+	Incomplete                            bool // the budget ran out before every source caught up
+}
+
+func (s *Stats) add(o Stats) {
+	s.Fetched += o.Fetched
+	s.Unchanged += o.Unchanged
+	s.Deleted += o.Deleted
+	s.Comments += o.Comments
+	s.Incomplete = s.Incomplete || o.Incomplete
+}
