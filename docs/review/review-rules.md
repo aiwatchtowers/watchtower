@@ -62,6 +62,7 @@ reviewer should be able to point at code and say pass/fail). Cite the PR or less
 - The AI generator is mocked in tests; a test must never shell out to the real `claude`/`codex` CLI. (seed)
 - `docs/inventory/` guard tests (`Test<Module>NN_`) are load-bearing: do NOT weaken their assertions, rename them out of the convention, or split them into weaker tests. A change that needs to is **stop-and-ask-the-owner**. (seed, CLAUDE.md Behavior Inventory)
 - New behaviour gets a `-race`-clean test; a data race that only appears under `-t race` is a blocker, not a flake. (seed)
+- A test that starts a subprocess (fake `claude`/`codex` stub, helper binary) kills its process group and waits for it in `t.Cleanup`, on the cancel/timeout path too; a stub left reparented to PID 1 after `go test` exits is a blocker. (CLAUDE.md Agent-driven runs)
 
 ## 8. Regression / blast radius
 
