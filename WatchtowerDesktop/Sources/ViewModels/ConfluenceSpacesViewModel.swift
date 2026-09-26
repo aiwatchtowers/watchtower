@@ -40,11 +40,17 @@ final class ConfluenceSpacesViewModel {
             if !backfillDone {
                 return docCount > 0 ? "Syncing… · \(docs)" : "Syncing…"
             }
-            guard let synced = ISO8601DateFormatter().date(from: lastSyncedAt) else { return docs }
-            let relative = RelativeDateTimeFormatter()
-            relative.unitsStyle = .full
-            return "\(docs) · synced \(relative.localizedString(for: synced, relativeTo: now))"
+            guard let synced = Self.isoParser.date(from: lastSyncedAt) else { return docs }
+            return "\(docs) · synced \(Self.relativeFormatter.localizedString(for: synced, relativeTo: now))"
         }
+
+        /// Built once: the rows re-render on every 15 s status poll.
+        private static let isoParser = ISO8601DateFormatter()
+        private static let relativeFormatter: RelativeDateTimeFormatter = {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .full
+            return formatter
+        }()
     }
 
     /// One `confluence spaces --json` row (cmd/confluence.go
@@ -66,26 +72,42 @@ final class ConfluenceSpacesViewModel {
     /// Keys with a select/unselect in flight (their toggles are disabled).
     private(set) var busyKeys: Set<String> = []
     private(set) var isReconsenting = false
+    /// Why the last "Grant Confluence access" failed (the Jira login flow's
+    /// own error), mirrored here so it shows next to the button.
+    private(set) var reconsentError: String?
 
     private let dbPool: DatabasePool
     private let runner: CLIRunnerProtocol?
-    private let onReconsent: @MainActor (Int64) async -> Void
+    private let onReconsent: @MainActor (Int64) async -> String?
+    private let onSelected: @MainActor () async -> Void
     /// The last successful live listing, reused by `refreshStatuses()` so a
     /// status poll never hits the network.
     private var liveSpaces: [LiveSpace] = []
+    /// Bumped by every `load()`; only the newest applies its results and
+    /// clears `isLoading`, so overlapping loads never land out of order.
+    private var loadGeneration = 0
+    /// Whether `errorMessage` came from a failed DB read — the only kind a
+    /// later successful read may clear (a CLI error stays until the next
+    /// CLI call).
+    private var errorIsFromDBRead = false
 
     /// `onReconsent` runs the Jira account's login flow with
-    /// `--with-confluence` (AppState wires it to `JiraAccountsViewModel`).
+    /// `--with-confluence` and returns its error, nil on success (AppState
+    /// wires it to `JiraAccountsViewModel`). `onSelected` runs after a
+    /// successful select — AppState asks the daemon to sync now (the tray's
+    /// Sync Now) so the new space starts without waiting for the next poll.
     init(
         accountID: Int64,
         dbPool: DatabasePool,
         runner: CLIRunnerProtocol?,
-        onReconsent: @escaping @MainActor (Int64) async -> Void = { _ in }
+        onReconsent: @escaping @MainActor (Int64) async -> String? = { _ in nil },
+        onSelected: @escaping @MainActor () async -> Void = {}
     ) {
         self.accountID = accountID
         self.dbPool = dbPool
         self.runner = runner
         self.onReconsent = onReconsent
+        self.onSelected = onSelected
     }
 
     // MARK: - Load
@@ -94,41 +116,76 @@ final class ConfluenceSpacesViewModel {
     /// On a CLI failure the selected spaces still show from the DB alone.
     func load() async {
         guard let runner else {
-            errorMessage = "Watchtower CLI not found"
+            setError("Watchtower CLI not found")
             return
         }
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
-        defer { isLoading = false }
-        errorMessage = nil
+        let listing: Result<[LiveSpace], Error>
         do {
             let data = try await runner.run(args: [
                 "confluence", "spaces", "--account", String(accountID), "--json"
             ])
-            liveSpaces = try JSONDecoder().decode([LiveSpace].self, from: data)
+            listing = .success(try JSONDecoder().decode([LiveSpace].self, from: data))
+        } catch {
+            listing = .failure(error)
+        }
+        let statuses = await readStatuses()
+        // A newer load started meanwhile: it owns the results and the flag.
+        guard generation == loadGeneration else { return }
+        defer { isLoading = false }
+        errorMessage = nil
+        errorIsFromDBRead = false
+        switch listing {
+        case .success(let live):
+            liveSpaces = live
             needsConsent = false
             consentMessage = nil
-        } catch {
+        case .failure(let error):
             liveSpaces = []
             apply(error)
         }
-        await refreshStatuses()
+        applyStatuses(statuses)
     }
 
     /// Re-reads the selected spaces' sync state from the DB (the daemon
     /// writes it from another process, so nothing observes it live) and
     /// re-merges with the last live listing. No CLI call.
     func refreshStatuses() async {
+        applyStatuses(await readStatuses())
+    }
+
+    private func readStatuses() async -> Result<[(ExtSource, Int)], Error> {
         let accountID = accountID
         do {
-            let rows = try await dbPool.read { db -> [(ExtSource, Int)] in
+            return .success(try await dbPool.read { db -> [(ExtSource, Int)] in
                 try ExtSourceQueries.fetchForJiraAccount(db, accountID: accountID).map { src in
                     (src, try ExtSourceQueries.documentCount(db, sourceID: src.id))
                 }
-            }
-            spaces = Self.merge(live: liveSpaces, sources: rows)
+            })
         } catch {
-            errorMessage = "Failed to read Confluence sync state: \(error.localizedDescription)"
+            return .failure(error)
         }
+    }
+
+    private func applyStatuses(_ result: Result<[(ExtSource, Int)], Error>) {
+        switch result {
+        case .success(let rows):
+            spaces = Self.merge(live: liveSpaces, sources: rows)
+            if errorIsFromDBRead {
+                errorMessage = nil
+                errorIsFromDBRead = false
+            }
+        case .failure(let error):
+            errorMessage = "Failed to read Confluence sync state: \(error.localizedDescription)"
+            errorIsFromDBRead = true
+        }
+    }
+
+    private func setError(_ message: String) {
+        errorMessage = message
+        errorIsFromDBRead = false
     }
 
     private static func merge(live: [LiveSpace], sources: [(ExtSource, Int)]) -> [SpaceRow] {
@@ -164,16 +221,18 @@ final class ConfluenceSpacesViewModel {
 
     /// Runs `confluence select|unselect KEY --account N`, then reloads. A
     /// failure keeps the row as it was (the DB is unchanged) and reports the
-    /// CLI's message.
+    /// CLI's message. A successful select also asks the daemon to sync now
+    /// (best-effort); an unselect needs no sync.
     func setSelected(_ key: String, _ on: Bool) async {
         guard let runner else {
-            errorMessage = "Watchtower CLI not found"
+            setError("Watchtower CLI not found")
             return
         }
         guard !busyKeys.contains(key) else { return }
         busyKeys.insert(key)
         defer { busyKeys.remove(key) }
         errorMessage = nil
+        errorIsFromDBRead = false
         do {
             _ = try await runner.run(args: [
                 "confluence", on ? "select" : "unselect", key, "--account", String(accountID)
@@ -181,6 +240,9 @@ final class ConfluenceSpacesViewModel {
         } catch {
             apply(error)
             return
+        }
+        if on {
+            await onSelected()
         }
         await load()
     }
@@ -200,7 +262,8 @@ final class ConfluenceSpacesViewModel {
         guard !isReconsenting else { return }
         isReconsenting = true
         defer { isReconsenting = false }
-        await onReconsent(accountID)
+        reconsentError = nil
+        reconsentError = await onReconsent(accountID)
         await load()
     }
 
@@ -222,7 +285,7 @@ final class ConfluenceSpacesViewModel {
             needsConsent = true
             consentMessage = message
         } else {
-            errorMessage = message
+            setError(message)
         }
     }
 }

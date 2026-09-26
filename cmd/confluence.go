@@ -62,7 +62,8 @@ var newConfluenceFetcher = func(client *jira.Client, siteURL string) extsync.Fet
 }
 
 // errConfluenceConsent is the re-consent hint (the extsync needs_consent
-// text, R6).
+// text, R6). Keep "--with-confluence" in it and in the sign-in-expired hint:
+// the Desktop's ConfluenceSpacesViewModel.needsConsent keys on that token.
 func errConfluenceConsent(accountID int64) error {
 	return fmt.Errorf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID) //nolint:staticcheck // user-facing sentence, product name capitalized
 }

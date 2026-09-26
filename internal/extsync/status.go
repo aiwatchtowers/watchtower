@@ -58,6 +58,8 @@ func (o outcome) err() error {
 	return nil
 }
 
+// The two hint texts below keep the "--with-confluence" token: the Desktop's
+// ConfluenceSpacesViewModel.needsConsent keys on it (dual path).
 func revokedOutcome(jiraAccountID int64) outcome {
 	return outcome{status: statusRevoked, accountWide: true, text: fmt.Sprintf(
 		"Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", jiraAccountID)}

@@ -772,20 +772,33 @@ final class AppState {
     }
 
     /// The Confluence spaces picker for `accountID`, created on first use
-    /// (nil until the DB is open). `runner` only matters on that first call.
+    /// (nil until the DB is open). `runner` and `syncNow` (default: the
+    /// daemon's Sync Now, run after a successful select) only matter on that
+    /// first call; tests pass fakes.
     /// "Grant Confluence access" runs the Jira account's own login flow with
     /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
     /// and errors land where every other Jira re-login's do.
     @discardableResult
     func confluenceSpacesViewModel(
         forJiraAccount accountID: Int64,
-        runner: CLIRunnerProtocol? = ProcessCLIRunner.makeDefault()
+        runner: CLIRunnerProtocol? = ProcessCLIRunner.makeDefault(),
+        syncNow: (@MainActor () async -> Void)? = nil
     ) -> ConfluenceSpacesViewModel? {
         if let existing = confluenceSpacesViewModels[accountID] { return existing }
         guard let pool = databaseManager?.dbPool else { return nil }
-        let vm = ConfluenceSpacesViewModel(accountID: accountID, dbPool: pool, runner: runner) { [weak self] id in
-            await self?.jiraAccountsViewModel?.reloginWithConfluence(accountID: Int(id))
-        }
+        let vm = ConfluenceSpacesViewModel(
+            accountID: accountID,
+            dbPool: pool,
+            runner: runner,
+            onReconsent: { [weak self] id in
+                guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
+                await jira.reloginWithConfluence(accountID: Int(id))
+                return jira.error
+            },
+            // Best-effort, the tray's Sync Now: a failure only means the
+            // daemon picks the space up on its next poll instead.
+            onSelected: syncNow ?? { [weak self] in await self?.daemonManager.syncNow() }
+        )
         confluenceSpacesViewModels[accountID] = vm
         return vm
     }

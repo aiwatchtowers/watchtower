@@ -94,6 +94,12 @@ struct ConfluenceSpacesSection: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         }
+        if let error = vm.reconsentError {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+        }
         Button("Grant Confluence access") {
             vm.reconsent()
         }
@@ -152,7 +158,7 @@ struct ConfluenceSpacesSection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its synced pages, comments and attachment text are removed from Watchtower and leave search.")
+            Text("Its synced pages, comments and attachment text are removed from Watchtower and leave search on the next index cycle.")
         }
     }
 

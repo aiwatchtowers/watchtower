@@ -20,6 +20,38 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
     private var gateArmed = false
     private var gateWaiter: CheckedContinuation<Void, Never>?
     private var gateOpen = false
+    private var gateTaken = false
+
+    /// Per-call `spaces` answers (call index → JSON; past the end,
+    /// `spacesJSON`), and which calls wait for `releaseSpaces(call)`.
+    var spacesQueue: [String] = []
+    var gatedSpacesCalls: Set<Int> = []
+    private(set) var spacesCalls = 0
+    private var spacesWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var releasedSpaces: Set<Int> = []
+
+    var selectCount: Int { invocations.filter { $0.count > 1 && $0[1] == "select" }.count }
+
+    func releaseSpaces(_ call: Int) {
+        lock.lock()
+        releasedSpaces.insert(call)
+        let waiter = spacesWaiters.removeValue(forKey: call)
+        lock.unlock()
+        waiter?.resume()
+    }
+
+    private func waitForSpacesRelease(_ call: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if releasedSpaces.contains(call) {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                spacesWaiters[call] = continuation
+                lock.unlock()
+            }
+        }
+    }
 
     init(pool: DatabasePool) { self.pool = pool }
 
@@ -41,10 +73,23 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
         guard args.first == "confluence", args.count >= 2 else { return Data() }
         switch args[1] {
         case "spaces":
+            lock.lock()
+            let call = spacesCalls
+            spacesCalls += 1
+            let json = call < spacesQueue.count ? spacesQueue[call] : spacesJSON
+            let gated = gatedSpacesCalls.contains(call)
+            lock.unlock()
+            if gated { await waitForSpacesRelease(call) }
             if let spacesError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: spacesError) }
-            return Data(spacesJSON.utf8)
+            return Data(json.utf8)
         case "select":
-            if gateArmed { await waitForGate() }
+            // Only the first select waits: a second one (a guard regression)
+            // must fail the test by count, not hang it.
+            lock.lock()
+            let holdThisCall = gateArmed && !gateTaken
+            if holdThisCall { gateTaken = true }
+            lock.unlock()
+            if holdThisCall { await waitForGate() }
             if let selectError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: selectError) }
             let account = Self.account(in: args)
             try await pool.write { db in
@@ -375,7 +420,10 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         let appState = AppState()
         appState.databaseManager = manager
 
-        var viewVM: ConfluenceSpacesViewModel? = appState.confluenceSpacesViewModel(forJiraAccount: acct, runner: cli)
+        var syncRequests = 0
+        var viewVM: ConfluenceSpacesViewModel? = appState.confluenceSpacesViewModel(forJiraAccount: acct, runner: cli) {
+            syncRequests += 1
+        }
         let task = Task { [weak viewVM] in await viewVM?.setSelected("ENG", true) }
         // Let the select reach the CLI, then "navigate away".
         let deadline = Date().addingTimeInterval(5)
@@ -394,6 +442,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         XCTAssertTrue(reopened === weakVM, "re-opening the pane gets the same VM")
         XCTAssertEqual(reopened?.spaces.first { $0.key == "ENG" }?.selected, true)
         XCTAssertTrue(reopened?.busyKeys.isEmpty ?? false)
+        XCTAssertEqual(syncRequests, 1, "AppState wires the injected Sync Now into the VM")
     }
 
     func testAppStateVMsAreKeyedPerAccount() throws {
@@ -423,6 +472,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
             reconsentedAccounts.append(id)
             cli.spacesError = nil
             cli.spacesJSON = Self.twoSpaces
+            return nil
         }
         await vm.load()
         XCTAssertTrue(vm.needsConsent)
@@ -463,5 +513,206 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
             docCount: 0, backfillDone: true, lastSyncedAt: ""
         )
         XCTAssertEqual(neverStamped.statusLine(now: now), "0 documents")
+    }
+
+    // MARK: - Fix round 1
+
+    /// Spins the main actor until `condition` holds (the CLI fake runs off
+    /// the main actor); fails after 5 s instead of hanging.
+    private func waitUntil(_ what: String, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("timed out waiting for \(what)")
+                return false
+            }
+            await Task.yield()
+        }
+        return true
+    }
+
+    private func makeVM(
+        cli: ScriptedConfluenceCLI,
+        pool: DatabasePool,
+        acct: Int64,
+        syncRequests: @escaping @MainActor () -> Void = {}
+    ) -> ConfluenceSpacesViewModel {
+        ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli) { _ in nil } onSelected: {
+            syncRequests()
+        }
+    }
+
+    func testSuccessfulSelectRequestsOneSync() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        var syncs = 0
+        let vm = makeVM(cli: cli, pool: pool, acct: acct) { syncs += 1 }
+        await vm.load()
+
+        await vm.setSelected("ENG", true)
+
+        XCTAssertEqual(syncs, 1)
+    }
+
+    func testFailedSelectRequestsNoSync() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        cli.selectError = "selecting ENG: database is locked"
+        var syncs = 0
+        let vm = makeVM(cli: cli, pool: pool, acct: acct) { syncs += 1 }
+        await vm.load()
+
+        await vm.setSelected("ENG", true)
+
+        XCTAssertEqual(syncs, 0)
+    }
+
+    func testUnselectRequestsNoSync() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db -> Int64 in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            try TestDatabase.insertExtSource(db, jiraAccountID: acct, containerKey: "OPS", containerName: "Операції")
+            return acct
+        }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        var syncs = 0
+        let vm = makeVM(cli: cli, pool: pool, acct: acct) { syncs += 1 }
+        await vm.load()
+
+        await vm.setSelected("OPS", false)
+
+        XCTAssertEqual(vm.spaces.first { $0.key == "OPS" }?.selected, false)
+        XCTAssertEqual(syncs, 0)
+    }
+
+    /// The older of two overlapping loads finishing first must neither clear
+    /// `isLoading` under the newer one nor apply its (stale) listing.
+    func testOverlappingLoadsOlderFinishingFirstIsIgnored() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesQueue = [#"[{"key":"OLD","name":"Stale","id":"1","selected":false}]"#, Self.twoSpaces]
+        cli.gatedSpacesCalls = [0, 1]
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
+
+        let first = Task { await vm.load() }
+        guard await waitUntil("first spaces call", { cli.spacesCalls == 1 }) else { return }
+        let second = Task { await vm.load() }
+        guard await waitUntil("second spaces call", { cli.spacesCalls == 2 }) else { return }
+
+        cli.releaseSpaces(0)
+        await first.value
+        XCTAssertTrue(vm.isLoading, "the newer load is still running")
+        XCTAssertTrue(vm.spaces.isEmpty, "the superseded listing is not applied")
+
+        cli.releaseSpaces(1)
+        await second.value
+        XCTAssertFalse(vm.isLoading)
+        XCTAssertEqual(vm.spaces.map(\.key), ["ENG", "OPS"])
+    }
+
+    func testOverlappingLoadsOlderFinishingLastIsIgnored() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesQueue = [#"[{"key":"OLD","name":"Stale","id":"1","selected":false}]"#, Self.twoSpaces]
+        cli.gatedSpacesCalls = [0, 1]
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
+
+        let first = Task { await vm.load() }
+        guard await waitUntil("first spaces call", { cli.spacesCalls == 1 }) else { return }
+        let second = Task { await vm.load() }
+        guard await waitUntil("second spaces call", { cli.spacesCalls == 2 }) else { return }
+
+        cli.releaseSpaces(1)
+        await second.value
+        XCTAssertFalse(vm.isLoading)
+        cli.releaseSpaces(0)
+        await first.value
+
+        XCTAssertEqual(vm.spaces.map(\.key), ["ENG", "OPS"], "the stale listing never overwrites the newer one")
+        XCTAssertFalse(vm.isLoading)
+    }
+
+    /// A second toggle of the same space while its CLI call is still running
+    /// is a no-op (the busyKeys guard), never a second `select`.
+    func testDoubleToggleWhileInFlightRunsOneSelect() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        cli.armSelectGate()
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
+        await vm.load()
+
+        let first = Task { await vm.setSelected("ENG", true) }
+        guard await waitUntil("select call", { cli.selectCount == 1 }) else { return }
+        XCTAssertTrue(vm.busyKeys.contains("ENG"))
+
+        await vm.setSelected("ENG", true)
+        XCTAssertEqual(cli.selectCount, 1, "the re-entrant toggle ran no CLI call")
+        XCTAssertTrue(vm.busyKeys.contains("ENG"), "and did not clear the in-flight marker")
+
+        cli.openSelectGate()
+        await first.value
+        XCTAssertEqual(cli.selectCount, 1)
+        XCTAssertTrue(vm.busyKeys.isEmpty)
+        XCTAssertEqual(vm.spaces.first { $0.key == "ENG" }?.selected, true)
+    }
+
+    func testReconsentFailureIsMirroredThenClearedOnSuccess() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesError = Self.consentMessage
+        var nextResult: String? = "Granting Confluence access failed (exit 1)"
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli) { _ in nextResult }
+        await vm.load()
+
+        await vm.reconsentAsync()
+        XCTAssertEqual(vm.reconsentError, "Granting Confluence access failed (exit 1)")
+        XCTAssertTrue(vm.needsConsent)
+
+        nextResult = nil
+        await vm.reconsentAsync()
+        XCTAssertNil(vm.reconsentError)
+    }
+
+    /// A DB-read error clears on the next good read; a CLI error does not
+    /// (only the next CLI call may replace it).
+    func testRefreshStatusesClearsOnlyItsOwnError() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
+        await vm.load()
+
+        try await pool.write { db in try db.execute(sql: "DROP TABLE ext_documents; DROP TABLE ext_sources") }
+        await vm.refreshStatuses()
+        XCTAssertEqual(vm.errorMessage?.hasPrefix("Failed to read Confluence sync state"), true)
+
+        try await pool.write { db in try db.execute(sql: TestDatabase.schema) }
+        await vm.refreshStatuses()
+        XCTAssertNil(vm.errorMessage, "a good read clears the stale DB-read error")
+
+        cli.spacesError = "listing Confluence spaces: HTTP 502"
+        await vm.load()
+        XCTAssertEqual(vm.errorMessage, "listing Confluence spaces: HTTP 502")
+        await vm.refreshStatuses()
+        XCTAssertEqual(vm.errorMessage, "listing Confluence spaces: HTTP 502", "a CLI error survives a status poll")
     }
 }
