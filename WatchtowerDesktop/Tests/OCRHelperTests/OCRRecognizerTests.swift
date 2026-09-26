@@ -1,6 +1,8 @@
 import CoreGraphics
 import CoreText
 import Foundation
+import PDFKit
+import Vision
 import XCTest
 @testable import OCRKit
 
@@ -96,6 +98,65 @@ final class OCRRecognizerTests: XCTestCase {
         let got = try OCRRecognizer.recognize(pdfURL: url, pages: [0])
         XCTAssertEqual(Array(got.keys), [0])
         assertPhrase(got[0])
+    }
+
+    /// A scan stored sideways with /Rotate 90 (what a viewer shows upright)
+    /// must reach Vision upright.
+    func testRecognizesRotatedPDFPage() throws {
+        let image = try renderImage()
+        let url = dir.appendingPathComponent("sideways.pdf")
+        var box = CGRect(x: 0, y: 0, width: 300, height: 1200)
+        let ctx = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        ctx.beginPDFPage(nil)
+        // The text runs bottom-to-top: turned 90° counter-clockwise.
+        ctx.translateBy(x: 300, y: 0)
+        ctx.rotate(by: .pi / 2)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: 1200, height: 300))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        let doc = try XCTUnwrap(PDFDocument(url: url))
+        let pdfPage = try XCTUnwrap(doc.page(at: 0))
+        pdfPage.rotation = 90
+        // A crop box inside the media box: only it is rendered.
+        pdfPage.setBounds(CGRect(x: 0, y: 100, width: 300, height: 1000), for: .cropBox)
+        XCTAssertTrue(doc.write(to: url))
+
+        // Vision copes with some sideways text, so pin the bitmap itself:
+        // upright (landscape) and crop-sized, 2x.
+        let cgDoc = try XCTUnwrap(CGPDFDocument(url as CFURL))
+        let rendered = try XCTUnwrap(OCRRecognizer.render(try XCTUnwrap(cgDoc.page(at: 1))))
+        XCTAssertEqual(rendered.width, 2000)
+        XCTAssertEqual(rendered.height, 600)
+
+        let got = try OCRRecognizer.recognize(pdfURL: url, pages: [0])
+        assertPhrase(got[0])
+    }
+
+    /// The display transform maps the crop box onto (0,0)-(shown size) and
+    /// turns it clockwise: the page's top-left corner lands top-right at 90,
+    /// bottom-right at 180, bottom-left at 270.
+    func testDisplayTransformTurnsClockwise() {
+        let crop = CGRect(x: 10, y: 20, width: 300, height: 1200)
+        let topLeft = CGPoint(x: crop.minX, y: crop.maxY)
+        let cases: [(Int, CGSize, CGPoint)] = [
+            (0, CGSize(width: 300, height: 1200), CGPoint(x: 0, y: 1200)),
+            (90, CGSize(width: 1200, height: 300), CGPoint(x: 1200, y: 300)),
+            (180, CGSize(width: 300, height: 1200), CGPoint(x: 300, y: 0)),
+            (270, CGSize(width: 1200, height: 300), .zero)
+        ]
+        for (rotation, shown, corner) in cases {
+            let t = OCRRecognizer.displayTransform(crop: crop, rotation: rotation)
+            XCTAssertEqual(crop.applying(t), CGRect(origin: .zero, size: shown), "rotation \(rotation)")
+            XCTAssertEqual(topLeft.applying(t), corner, "rotation \(rotation)")
+        }
+    }
+
+    /// Global constraints: accurate recognition, ru/uk/en, correction on.
+    func testRequestSettingsArePinned() {
+        let request = OCRRecognizer.makeRequest()
+        XCTAssertEqual(request.recognitionLevel, .accurate)
+        XCTAssertTrue(request.usesLanguageCorrection)
+        XCTAssertEqual(request.recognitionLanguages, ["ru-RU", "uk-UA", "en-US"])
     }
 
     func testPDFPagesOutOfRangeAreSkipped() throws {

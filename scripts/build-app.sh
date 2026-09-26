@@ -373,7 +373,8 @@ else
     echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
     echo "    which changes every build."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
+    # The OCR helper needs no entitlement at all: never give it the app's.
+    codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
 
