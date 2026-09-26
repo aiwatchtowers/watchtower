@@ -657,7 +657,10 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Slack, mail, Jira, Confluence, calendar"), "Confluence is an indexed source")
         // Same wording as the Go prompt (internal/ai/prompt.go, pinned by
         // TestBuildSystemPrompt_NamesConfluenceSource).
-        XCTAssertTrue(ChatViewModel.knowledgeLinkRule.hasSuffix("A Confluence hit links via its \"link\" (the page or attachment URL); when its chunk_anchor is a URL, that is a deep link to the matching heading or comment."))
+        XCTAssertTrue(ChatViewModel.knowledgeLinkRule.hasSuffix(
+            "A Confluence hit links via its \"link\" (the page or attachment URL); "
+                + "when its chunk_anchor is a URL, that is a deep link to the matching heading or comment."
+        ))
     }
 
     func testBuildSystemPromptEmptyDB() {

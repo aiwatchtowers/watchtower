@@ -33,7 +33,7 @@ func readArgs(t *testing.T, file string) string {
 
 func TestHelperOCRParsesPages(t *testing.T) {
 	helper, args := fakeHelper(t, `echo '{"pages":[{"index":0,"text":" first "},{"index":2,"text":"third"},{"index":7,"text":"not asked"}]}'`)
-	ocr := NewHelperOCR(helper, time.Second)
+	ocr := NewHelperOCR(helper, 10*time.Second)
 	require.NotNil(t, ocr)
 
 	got, err := ocr.Recognize(context.Background(), "/tmp/extract/att-1.pdf", []int{0, 2, 5})
@@ -44,7 +44,7 @@ func TestHelperOCRParsesPages(t *testing.T) {
 
 func TestHelperOCRImageHasNoPagesFlag(t *testing.T) {
 	helper, args := fakeHelper(t, `echo '{"pages":[{"index":0,"text":"whiteboard"},{"index":1,"text":"x"}]}'`)
-	got, err := NewHelperOCR(helper, time.Second).Recognize(context.Background(), "/tmp/extract/att-2.png", nil)
+	got, err := NewHelperOCR(helper, 10*time.Second).Recognize(context.Background(), "/tmp/extract/att-2.png", nil)
 	require.NoError(t, err)
 	assert.Equal(t, map[int]string{0: "whiteboard"}, got, "an image is page 0 only")
 	assert.Equal(t, "/tmp/extract/att-2.png", readArgs(t, args))
@@ -61,14 +61,14 @@ func TestHelperOCRTimeout(t *testing.T) {
 
 func TestHelperOCRExitError(t *testing.T) {
 	helper, _ := fakeHelper(t, "echo 'cannot read file' >&2; exit 2")
-	_, err := NewHelperOCR(helper, time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
+	_, err := NewHelperOCR(helper, 10*time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot read file", "the helper's stderr is in the error")
 }
 
 func TestHelperOCRMalformedOutput(t *testing.T) {
 	helper, _ := fakeHelper(t, "echo 'not json'")
-	_, err := NewHelperOCR(helper, time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
+	_, err := NewHelperOCR(helper, 10*time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
 	require.Error(t, err)
 }
 

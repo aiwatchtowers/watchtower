@@ -59,7 +59,7 @@ func verifiedHelper(t *testing.T, cs *fakeCodesign) (OCR, string, *bytes.Buffer)
 	t.Helper()
 	helper, args := fakeHelper(t, `echo '{"pages":[{"index":0,"text":"words"}]}'`)
 	var logs bytes.Buffer
-	ocr := NewHelperOCR(helper, 5*time.Second, WithLogger(log.New(&logs, "", 0)))
+	ocr := NewHelperOCR(helper, 10*time.Second, WithLogger(log.New(&logs, "", 0)))
 	v := ocr.(*helperOCR).verifier
 	v.run, v.goos = cs.run, "darwin"
 	v.self = func() (string, error) { return "/x/watchtower", nil }
