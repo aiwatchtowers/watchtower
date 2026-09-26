@@ -24,6 +24,9 @@ type Engine struct {
 	// with id >= startAt, wrapping), set when a Run is cut by the budget so
 	// one source's long backfill cannot starve the sources listed after it.
 	startAt int64
+	// reconcileFailedAt holds, per source id, when its last reconcile
+	// failed (see reconcileAllowed).
+	reconcileFailedAt map[int64]time.Time
 }
 
 // New returns an engine over d. Unset Options fields get their defaults.
@@ -34,7 +37,7 @@ func New(d *db.DB, opts Options) *Engine {
 	if opts.Logger == nil {
 		opts.Logger = log.New(io.Discard, "", 0)
 	}
-	return &Engine{db: d, fetchers: map[int64]Fetcher{}, opts: opts}
+	return &Engine{db: d, fetchers: map[int64]Fetcher{}, opts: opts, reconcileFailedAt: map[int64]time.Time{}}
 }
 
 // SetFetcher wires the fetcher for every source owned by jiraAccountID.
@@ -231,8 +234,8 @@ func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *
 		c: Container{Key: src.ContainerKey, Name: src.ContainerName, ExtID: src.ContainerExtID},
 	}
 	err := e.runStreams(ctx, p, b)
-	if err == nil && !st.Incomplete && !b.over() && reconcileDue(src.LastReconcileAt, e.opts.Now()) {
-		err = e.reconcile(ctx, p)
+	if err == nil && !st.Incomplete && !b.over() && e.reconcileAllowed(src, e.opts.Now()) {
+		err = e.runReconcile(ctx, p)
 	}
 	// Users written by committed batches are resolved even after a later
 	// failure, unless the account itself is failing or we are shutting down.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // reconcileSet is one enumeration the daily reconcile compares against: the
@@ -30,6 +32,39 @@ func reconcileDue(lastReconcileAt string, now time.Time) bool {
 	ly, lm, ld := last.UTC().Date()
 	ny, nm, nd := now.UTC().Date()
 	return ly != ny || lm != nm || ld != nd
+}
+
+// reconcileRetryAfter is how long a source whose reconcile failed waits
+// before the next try. The full enumeration is the most expensive thing a
+// source does; without it a persistently failing reconcile (last_reconcile_at
+// stays unstamped, so it stays due) would re-enumerate every cycle.
+const reconcileRetryAfter = 4 * time.Hour
+
+// reconcileAllowed reports whether src's reconcile should run now: due on
+// now's UTC date, and not failed within reconcileRetryAfter. The failure
+// backoff is kept in memory, not in last_reconcile_at: stamping that would
+// make a failed attempt look like a successful reconcile (and push the
+// retry to the next UTC day), and a daemon restart or a manual
+// `confluence sync` retrying at once is the wanted behavior.
+func (e *Engine) reconcileAllowed(src db.ExtSource, now time.Time) bool {
+	if !reconcileDue(src.LastReconcileAt, now) {
+		return false
+	}
+	failed, ok := e.reconcileFailedAt[src.ID]
+	return !ok || now.Sub(failed) >= reconcileRetryAfter
+}
+
+// runReconcile runs reconcile and records its outcome for the backoff. A
+// shutdown-cancelled attempt is not a failure.
+func (e *Engine) runReconcile(ctx context.Context, p pass) error {
+	err := e.reconcile(ctx, p)
+	switch {
+	case err == nil:
+		delete(e.reconcileFailedAt, p.src.ID)
+	case ctx.Err() == nil:
+		e.reconcileFailedAt[p.src.ID] = e.opts.Now()
+	}
+	return err
 }
 
 // reconcile deletes the local documents (and their comments) the provider

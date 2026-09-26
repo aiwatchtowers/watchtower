@@ -93,6 +93,45 @@ func TestReconcileFailureDeletesNothing(t *testing.T) {
 	assert.Equal(t, "2026-09-01T10:00:00Z", loadSource(t, d).LastReconcileAt)
 }
 
+// A failed reconcile is not retried every cycle: the next full enumeration
+// waits reconcileRetryAfter, then a success stamps last_reconcile_at.
+func TestReconcileFailureBacksOff(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	now := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	e := New(d, Options{Now: func() time.Time { return now }})
+	e.SetFetcher(src.JiraAccountID, f)
+	f.mu.Lock()
+	f.failAll = map[ItemKind]error{KindAttachment: errors.New("listing failed")}
+	f.mu.Unlock()
+	pageEnumerations := func() int {
+		all, _ := f.counts()
+		return all[KindPage]
+	}
+
+	_, err := e.Run(context.Background())
+	require.Error(t, err)
+	require.Equal(t, 1, pageEnumerations())
+
+	now = now.Add(time.Hour) // later cycles within the backoff
+	_, err = e.Run(context.Background())
+	require.NoError(t, err, "the reconcile is skipped, not re-failed")
+	now = now.Add(2 * time.Hour)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, pageEnumerations(), "no full enumeration inside the backoff")
+	assert.Empty(t, loadSource(t, d).LastReconcileAt, "a failed attempt is not a reconcile")
+
+	now = time.Date(2026, 9, 1, 14, 0, 0, 0, time.UTC) // reconcileRetryAfter after the failure
+	f.mu.Lock()
+	f.failAll = nil
+	f.mu.Unlock()
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, pageEnumerations(), "retried once the backoff passed")
+	assert.Equal(t, "2026-09-01T14:00:00Z", loadSource(t, d).LastReconcileAt)
+}
+
 func TestReconcileSkippedWhenBudgetSpent(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
