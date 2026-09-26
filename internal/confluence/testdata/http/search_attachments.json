@@ -1,0 +1,44 @@
+{
+  "results": [
+    {
+      "id": "att3",
+      "type": "attachment",
+      "status": "current",
+      "title": "diagram.png",
+      "version": {
+        "number": 2,
+        "when": "2026-09-01T12:00:00.000Z"
+      },
+      "container": {
+        "id": "1",
+        "type": "page",
+        "status": "current",
+        "title": "Release plan"
+      }
+    },
+    {
+      "id": "att8",
+      "type": "attachment",
+      "status": "current",
+      "title": "notes.pdf",
+      "version": {
+        "number": 1,
+        "when": "2026-09-02T12:00:00.000Z"
+      },
+      "container": {
+        "id": "2",
+        "type": "blogpost",
+        "status": "current",
+        "title": "Launch notes"
+      }
+    }
+  ],
+  "start": 0,
+  "limit": 100,
+  "size": 2,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki",
+    "self": "https://acme.atlassian.net/wiki/rest/api/content/search"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "5",
+  "status": "trashed",
+  "title": "Gone page",
+  "authorId": "acc-author",
+  "createdAt": "2026-08-01T10:00:00.000Z",
+  "version": {
+    "number": 2,
+    "createdAt": "2026-09-01T13:00:00.000Z",
+    "authorId": "acc-author",
+    "message": "",
+    "minorEdit": false
+  },
+  "body": {
+    "storage": {
+      "representation": "storage",
+      "value": "<p>bye</p>"
+    }
+  },
+  "_links": {
+    "webui": "/spaces/ENG/pages/5/Gone+page"
+  }
+}

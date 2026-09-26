@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "id": "100",
+      "status": "current",
+      "title": "Re: Release plan",
+      "version": {
+        "number": 2,
+        "createdAt": "2026-09-01T14:00:00.000Z",
+        "authorId": "acc-2",
+        "message": "",
+        "minorEdit": false
+      },
+      "body": {
+        "storage": {
+          "representation": "storage",
+          "value": "<p>Looks good, cc <ac:link><ri:user ri:account-id=\"acc-3\" /></ac:link></p>"
+        }
+      },
+      "pageId": "1"
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

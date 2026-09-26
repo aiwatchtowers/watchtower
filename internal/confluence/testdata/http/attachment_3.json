@@ -1,0 +1,26 @@
+{
+  "id": "att3",
+  "status": "current",
+  "title": "diagram.png",
+  "createdAt": "2026-08-20T10:00:00.000Z",
+  "pageId": "1",
+  "mediaType": "image/png",
+  "mediaTypeDescription": "PNG Image",
+  "comment": "",
+  "fileId": "f-uuid-3",
+  "fileSize": 48213,
+  "webuiLink": "/spaces/ENG/pages/1/Release+plan?preview=%2F1%2Fatt3%2Fdiagram.png",
+  "downloadLink": "/download/attachments/1/diagram.png?version=2&modificationDate=1756728000000&api=v2",
+  "version": {
+    "number": 2,
+    "createdAt": "2026-09-01T12:00:00.000Z",
+    "authorId": "acc-5",
+    "message": "",
+    "minorEdit": false
+  },
+  "_links": {
+    "webui": "/spaces/ENG/pages/1/Release+plan?preview=%2F1%2Fatt3%2Fdiagram.png",
+    "download": "/download/attachments/1/diagram.png?version=2&modificationDate=1756728000000&api=v2",
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

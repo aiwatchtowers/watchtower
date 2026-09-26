@@ -1,0 +1,32 @@
+{
+  "results": [
+    {
+      "id": "1",
+      "type": "page",
+      "status": "current",
+      "title": "Release plan",
+      "ancestors": [
+        {
+          "id": "10001",
+          "type": "page",
+          "status": "current",
+          "title": "Engineering"
+        },
+        {
+          "id": "11",
+          "type": "page",
+          "status": "current",
+          "title": "Releases"
+        }
+      ]
+    }
+  ],
+  "start": 0,
+  "limit": 100,
+  "size": 1,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki",
+    "self": "https://acme.atlassian.net/wiki/rest/api/content/search"
+  }
+}

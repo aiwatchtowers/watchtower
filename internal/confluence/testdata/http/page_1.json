@@ -1,0 +1,47 @@
+{
+  "id": "1",
+  "status": "current",
+  "title": "Release plan",
+  "spaceId": "10",
+  "parentId": "11",
+  "parentType": "page",
+  "authorId": "acc-author",
+  "ownerId": "acc-author",
+  "createdAt": "2026-08-01T10:00:00.000Z",
+  "version": {
+    "number": 3,
+    "createdAt": "2026-09-01T13:00:00.000Z",
+    "authorId": "acc-editor",
+    "message": "",
+    "minorEdit": false
+  },
+  "body": {
+    "storage": {
+      "representation": "storage",
+      "value": "<p>Owner: <ac:link><ri:user ri:account-id=\"acc-1\" /></ac:link></p><h2>Scope</h2><p>Ship ENG-42 before the freeze.</p>"
+    }
+  },
+  "labels": {
+    "results": [
+      {
+        "id": "l1",
+        "name": "release",
+        "prefix": "global"
+      },
+      {
+        "id": "l2",
+        "name": "q3",
+        "prefix": "global"
+      }
+    ],
+    "meta": {
+      "hasMore": false
+    }
+  },
+  "_links": {
+    "webui": "/spaces/ENG/pages/1/Release+plan",
+    "editui": "/pages/resumedraft.action?draftId=1",
+    "tinyui": "/x/AQ",
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

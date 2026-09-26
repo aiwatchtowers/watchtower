@@ -1,0 +1,31 @@
+{
+  "results": [
+    {
+      "id": "200",
+      "status": "current",
+      "title": "Re: Release plan",
+      "version": {
+        "number": 1,
+        "createdAt": "2026-09-01T15:00:00.000Z",
+        "authorId": "acc-4",
+        "message": "",
+        "minorEdit": false
+      },
+      "body": {
+        "storage": {
+          "representation": "storage",
+          "value": "<p>Which freeze?</p>"
+        }
+      },
+      "pageId": "1",
+      "resolutionStatus": "resolved",
+      "properties": {
+        "inlineMarkerRef": "marker-1",
+        "inlineOriginalSelection": "before the freeze"
+      }
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

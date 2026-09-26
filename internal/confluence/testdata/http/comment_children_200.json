@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "id": "201",
+      "status": "current",
+      "title": "Re: Release plan",
+      "version": {
+        "number": 1,
+        "createdAt": "2026-09-01T15:30:00.000Z",
+        "authorId": "acc-2",
+        "message": "",
+        "minorEdit": false
+      },
+      "body": {
+        "storage": {
+          "representation": "storage",
+          "value": "<p>The Q3 one.</p>"
+        }
+      },
+      "parentCommentId": "200"
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "id": "4",
+      "status": "current",
+      "title": "Runbook",
+      "spaceId": "10",
+      "createdAt": "2026-08-10T10:00:00.000Z",
+      "version": {
+        "number": 2,
+        "createdAt": "2026-09-03T08:00:00.000Z",
+        "authorId": "acc-author",
+        "message": "",
+        "minorEdit": false
+      }
+    },
+    {
+      "id": "7",
+      "status": "trashed",
+      "title": "Trashed",
+      "spaceId": "10",
+      "createdAt": "2026-08-10T10:00:00.000Z",
+      "version": {
+        "number": 1,
+        "createdAt": "2026-08-10T10:00:00.000Z",
+        "authorId": "acc-author",
+        "message": "",
+        "minorEdit": false
+      }
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

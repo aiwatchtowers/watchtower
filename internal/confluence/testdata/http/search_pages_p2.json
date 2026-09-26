@@ -1,0 +1,45 @@
+{
+  "results": [
+    {
+      "id": "4",
+      "type": "page",
+      "status": "current",
+      "title": "Runbook",
+      "version": {
+        "number": 2,
+        "when": "2026-09-03T08:00:00.000Z"
+      },
+      "container": {
+        "id": 10,
+        "key": "ENG",
+        "name": "Engineering",
+        "type": "global"
+      }
+    },
+    {
+      "id": "9",
+      "type": "page",
+      "status": "trashed",
+      "title": "Old draft",
+      "version": {
+        "number": 5,
+        "when": "2026-09-03T09:00:00.000Z"
+      },
+      "container": {
+        "id": 10,
+        "key": "ENG",
+        "name": "Engineering",
+        "type": "global"
+      }
+    }
+  ],
+  "start": 0,
+  "limit": 100,
+  "size": 2,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki",
+    "self": "https://acme.atlassian.net/wiki/rest/api/content/search",
+    "prev": "/rest/api/content/search?prev=true&cursor=abc-prev&limit=100"
+  }
+}

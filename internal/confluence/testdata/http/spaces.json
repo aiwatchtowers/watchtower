@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "id": "10",
+      "key": "ENG",
+      "name": "Engineering",
+      "type": "global",
+      "status": "current"
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "next": "/wiki/api/v2/spaces?cursor=sp2&limit=250"
+  }
+}
