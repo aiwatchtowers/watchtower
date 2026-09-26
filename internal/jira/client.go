@@ -85,11 +85,18 @@ func (c *Client) SetLogger(l *log.Logger) {
 	c.logger = l
 }
 
-// do executes an authenticated Jira request against jiraBase()+path. See
-// doURL for the retry/refresh/rate-limit loop; do is the Jira-base-bound
-// convenience wrapper every existing Jira call site uses.
+// jsonAccept is the Accept header every Jira request (and Confluence's
+// GetJSON) sends — both are JSON APIs. Download passes "" instead: an
+// attachment binary is not JSON, and Confluence's download endpoint should
+// not be told to expect it.
+const jsonAccept = "application/json"
+
+// do executes an authenticated Jira request against jiraBase()+path,
+// expecting a JSON response. See doURL for the retry/refresh/rate-limit
+// loop; do is the Jira-base-bound convenience wrapper every existing Jira
+// call site uses.
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	return c.doURL(ctx, method, c.jiraBase()+path, body)
+	return c.doURL(ctx, method, c.jiraBase()+path, body, jsonAccept)
 }
 
 // doURL executes an authenticated HTTP request against a caller-supplied full
@@ -97,10 +104,13 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 // retries). body is the raw request payload (nil for no body); a fresh
 // io.Reader is built from it on every attempt so a retry after a 401 refresh
 // re-sends the full body instead of an already-drained reader (which would
-// otherwise turn a transparent retry into an empty POST). Taking a full URL
-// rather than a base-relative path is what lets ConfluenceAPI reuse this same
-// loop against a different Atlassian product base (see confluence_api.go).
-func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte) (*http.Response, error) {
+// otherwise turn a transparent retry into an empty POST). accept is sent as
+// the Accept header, or omitted entirely when empty — Download passes "" so
+// a binary attachment response is never asked to look like JSON. Taking a
+// full URL rather than a base-relative path is what lets ConfluenceAPI reuse
+// this same loop against a different Atlassian product base (see
+// confluence_api.go).
+func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte, accept string) (*http.Response, error) {
 	for attempt := 0; attempt <= 3; attempt++ {
 		if err := c.rateLimiter.Wait(ctx); err != nil {
 			return nil, err
@@ -120,7 +130,9 @@ func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte)
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/json")
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}

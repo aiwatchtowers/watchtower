@@ -73,7 +73,7 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		fullURL += "?" + q.Encode()
 	}
 
-	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil)
+	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil, jsonAccept)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,9 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 // byte returns ErrTooLarge instead. The caller must Close the returned
 // ReadCloser (on both the success and the io.EOF-terminated read paths).
 func (a *ConfluenceAPI) Download(ctx context.Context, path string, max int64) (io.ReadCloser, error) {
-	resp, err := a.c.doURL(ctx, http.MethodGet, a.base()+path, nil)
+	// No Accept header: an attachment binary is not JSON, and asking
+	// Confluence's download endpoint to expect one is wrong for this request.
+	resp, err := a.c.doURL(ctx, http.MethodGet, a.base()+path, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +121,14 @@ func (a *ConfluenceAPI) Download(ctx context.Context, path string, max int64) (i
 // GrantedScopes returns the scope field of the stored OAuth token — the
 // scopes Atlassian actually granted at consent, which HasConfluenceScopes
 // checks against ConfluenceScopes to decide whether re-consent is needed.
+// Reads under c.mu, the same lock getAccessToken/refreshIfCurrent hold while
+// writing: TokenStore.Save is not atomic (MarshalIndent + WriteFile, no
+// tmp+rename), so a read racing an in-flight refresh could otherwise land
+// mid-write and see truncated or partial JSON.
 func (a *ConfluenceAPI) GrantedScopes() (string, error) {
+	a.c.mu.Lock()
+	defer a.c.mu.Unlock()
+
 	tok, err := a.c.tokenStore.Load()
 	if err != nil {
 		return "", fmt.Errorf("loading token: %w", err)

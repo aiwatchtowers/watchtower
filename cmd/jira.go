@@ -285,10 +285,12 @@ func init() {
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
+	jiraLoginCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
+	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
 	jiraBoardsAnalyzeCmd.Flags().Bool("force", false, "re-analyze even if config hash unchanged")
 	jiraBoardsAnalyzeCmd.Flags().Bool("auto", false, "auto re-analyze boards with changed config (respects 24h cooldown)")
@@ -498,6 +500,18 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 	return site, nil
 }
 
+// jiraLoginOptionsFromFlags builds jira.LoginOptions from the flags shared by
+// `jira login` and `jira add` — with-confluence is opt-in (default false):
+// an Atlassian OAuth app that hasn't enabled the Confluence API in its
+// developer console rejects the wider scope set outright, so requesting it
+// unconditionally would break every login/add for such an app.
+func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
+	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
+	withConfluence, _ := cmd.Flags().GetBool("with-confluence")
+	return jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn, WithConfluence: withConfluence}
+}
+
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
@@ -522,13 +536,11 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	}
 
 	jiraCfg := resolveJiraOAuthConfig()
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jiraLoginOptionsFromFlags(cmd))
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -601,12 +613,10 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	jiraCfg := resolveJiraOAuthConfig()
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jiraLoginOptionsFromFlags(cmd))
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}

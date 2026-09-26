@@ -20,8 +20,28 @@ func TestHasConfluenceScopes(t *testing.T) {
 	assert.False(t, HasConfluenceScopes(nil))
 }
 
-func TestAuthURLRequestsConfluenceScopes(t *testing.T) {
-	u := buildAuthURL(JiraOAuthConfig{ClientID: "id"}, "http://localhost/cb", "st")
+// TestAuthURLScopes_DefaultExcludesConfluence pins the opt-in ruling: a
+// buildAuthURL call with JiraScopes (what Login/Prepare pass by default —
+// LoginOptions.WithConfluence defaults false) must not request any
+// Confluence scope. An Atlassian OAuth app that hasn't enabled the
+// Confluence API in its developer console rejects the wider scope set
+// outright, so requesting it unconditionally would break every
+// `jira login`/`jira add` for such an app.
+func TestAuthURLScopes_DefaultExcludesConfluence(t *testing.T) {
+	u := buildAuthURL(JiraOAuthConfig{ClientID: "id"}, "http://localhost/cb", "st", JiraScopes)
+	parsed, err := url.Parse(u)
+	require.NoError(t, err)
+	got := strings.Fields(parsed.Query().Get("scope"))
+	for _, s := range strings.Fields(ConfluenceScopes) {
+		assert.NotContains(t, got, s)
+	}
+}
+
+// TestAuthURLScopes_WithConfluenceIncludesAll is the opt-in path: a caller
+// that explicitly passes OAuthScopes (LoginOptions.WithConfluence = true)
+// gets every Confluence scope in the requested auth URL.
+func TestAuthURLScopes_WithConfluenceIncludesAll(t *testing.T) {
+	u := buildAuthURL(JiraOAuthConfig{ClientID: "id"}, "http://localhost/cb", "st", OAuthScopes)
 	parsed, err := url.Parse(u)
 	require.NoError(t, err)
 	got := strings.Fields(parsed.Query().Get("scope"))

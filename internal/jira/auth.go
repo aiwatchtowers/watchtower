@@ -155,7 +155,7 @@ func Prepare(cfg JiraOAuthConfig, customRedirectURI string) (*PrepareResult, err
 		redirectURI = fmt.Sprintf("http://localhost:%d%s", defaultRedirectPort, callbackPath)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, JiraScopes)
 
 	return &PrepareResult{
 		AuthorizeURL: authorizeURL,
@@ -164,11 +164,18 @@ func Prepare(cfg JiraOAuthConfig, customRedirectURI string) (*PrepareResult, err
 	}, nil
 }
 
-func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state string) string {
+// buildAuthURL builds the Atlassian authorize URL requesting scope — callers
+// decide which scope set (JiraScopes by default, OAuthScopes when the caller
+// opted into Confluence) rather than buildAuthURL hardcoding one, so
+// requesting Confluence access is opt-in per login, not baked into every
+// Jira connect (see LoginOptions.WithConfluence — an OAuth app without the
+// Confluence API enabled in the developer console rejects the wider scope
+// set outright, breaking `jira login`/`jira add` for everyone by default).
+func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state, scope string) string {
 	params := url.Values{
 		"audience":      {"api.atlassian.com"},
 		"client_id":     {cfg.ClientID},
-		"scope":         {OAuthScopes},
+		"scope":         {scope},
 		"redirect_uri":  {redirectURI},
 		"state":         {state},
 		"response_type": {"code"},
@@ -340,6 +347,12 @@ type LoginOptions struct {
 	// watchtower-auth:// scheme so macOS brings the desktop app back to the
 	// foreground after consent — the slack/google.LoginOptions.AppReturn shape.
 	AppReturn bool
+	// WithConfluence requests OAuthScopes (JiraScopes + ConfluenceScopes)
+	// instead of the default JiraScopes-only. Opt-in: an Atlassian OAuth app
+	// that hasn't enabled the Confluence API in its developer console rejects
+	// the wider scope set outright, so requesting it unconditionally would
+	// break every `jira login`/`jira add` for such an app.
+	WithConfluence bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -364,7 +377,11 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	scope := JiraScopes
+	if opt.WithConfluence {
+		scope = OAuthScopes
+	}
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
 	resultCh := make(chan callbackResult, 1)
 

@@ -19,7 +19,7 @@ import (
 
 func TestBuildAuthURL_IncludesScopesAndClientID(t *testing.T) {
 	cfg := JiraOAuthConfig{ClientID: "atlas-app-id", ClientSecret: "shh"}
-	got := buildAuthURL(cfg, "http://localhost:18511/callback", "state-xyz")
+	got := buildAuthURL(cfg, "http://localhost:18511/callback", "state-xyz", JiraScopes)
 
 	u, err := url.Parse(got)
 	require.NoError(t, err)
@@ -45,7 +45,7 @@ func TestBuildAuthURL_IncludesScopesAndClientID(t *testing.T) {
 }
 
 func TestBuildAuthURL_EscapesScopeSpacesAsPercent20(t *testing.T) {
-	got := buildAuthURL(JiraOAuthConfig{ClientID: "x"}, "http://localhost/cb", "s")
+	got := buildAuthURL(JiraOAuthConfig{ClientID: "x"}, "http://localhost/cb", "s", JiraScopes)
 	// Atlassian rejects '+' as a scope separator; the helper rewrites it to %20.
 	// Special chars (':') are URL-encoded as %3A.
 	assert.NotContains(t, got, "+write")
@@ -311,6 +311,16 @@ func (b *syncTestBuffer) String() string {
 // AppReturn_SuccessPageRedirects analog on Jira's plain-HTTP loopback flow.
 func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
 	t.Helper()
+	_, body := runLoginCapture(t, opts)
+	return body
+}
+
+// runLoginCapture is runLoginCaptureSuccessBody's full form, also returning
+// the authorize URL Login printed (SkipBrowserOpen path) before the loopback
+// callback completed the flow — the seam TestLogin_ScopeReflectsWithConfluence
+// uses to assert on the requested scope.
+func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody string) {
+	t.Helper()
 
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"access_token":"at","refresh_token":"rt","expires_in":3600}`))
@@ -329,7 +339,6 @@ func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
 		resultCh <- err
 	}()
 
-	var authorizeURL string
 	require.Eventually(t, func() bool {
 		s := out.String()
 		idx := strings.Index(s, "https://")
@@ -372,7 +381,7 @@ func runLoginCaptureSuccessBody(t *testing.T, opts LoginOptions) string {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Login did not complete in time")
 	}
-	return string(body)
+	return authorizeURL, string(body)
 }
 
 // With AppReturn set, the success page must send the browser back to the app
@@ -387,6 +396,28 @@ func TestLogin_AppReturn_SuccessPageRedirects(t *testing.T) {
 func TestLogin_NoAppReturn_SuccessPageIsPlain(t *testing.T) {
 	body := runLoginCaptureSuccessBody(t, LoginOptions{})
 	assert.NotContains(t, body, "watchtower-auth://")
+}
+
+// TestLogin_ScopeReflectsWithConfluence pins the opt-in ruling end to end
+// through Login itself (not just buildAuthURL): the default LoginOptions{}
+// must request JiraScopes only, and WithConfluence: true must widen the
+// requested auth URL to OAuthScopes.
+func TestLogin_ScopeReflectsWithConfluence(t *testing.T) {
+	authorizeURL, _ := runLoginCapture(t, LoginOptions{})
+	parsed, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	scope := strings.Fields(parsed.Query().Get("scope"))
+	for _, s := range strings.Fields(ConfluenceScopes) {
+		assert.NotContains(t, scope, s, "default Login must not request Confluence scopes")
+	}
+
+	authorizeURL, _ = runLoginCapture(t, LoginOptions{WithConfluence: true})
+	parsed, err = url.Parse(authorizeURL)
+	require.NoError(t, err)
+	scope = strings.Fields(parsed.Query().Get("scope"))
+	for _, s := range strings.Fields(ConfluenceScopes) {
+		assert.Contains(t, scope, s, "WithConfluence must request every Confluence scope")
+	}
 }
 
 // Sanity-check that exchangeCode marshals payloads in JSON (not form-encoded).
