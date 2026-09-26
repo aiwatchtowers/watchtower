@@ -33,23 +33,39 @@ const (
 	maxOCRStderr = 4 << 10
 )
 
+// ErrOCRUnavailable is returned by an OCR that cannot run at all (its
+// helper failed verification): the attachment is recorded ocr_unavailable,
+// never ocr_pending, and is recognized once a valid helper appears.
+var ErrOCRUnavailable = errors.New("extract: OCR unavailable")
+
 // helperOCR runs the watchtower-ocr helper (Vision, on device) on a
 // spooled file: `watchtower-ocr <file> [--pages 0,2,5]`, stdout
 // {"pages":[{"index":0,"text":"…"}]}.
 type helperOCR struct {
-	path    string
-	timeout time.Duration
+	path     string
+	timeout  time.Duration
+	verifier *helperVerifier
 }
 
 // NewHelperOCR returns the OCR backed by the helper at path, or a nil OCR
 // (OCR unavailable) when path is empty — an untyped nil, so
-// Extractor.HasOCR reports false.
-func NewHelperOCR(path string, timeout time.Duration) OCR {
+// Extractor.HasOCR reports false. Before every run the helper's code
+// signature is checked against our own (see helperVerifier).
+func NewHelperOCR(path string, timeout time.Duration, opts ...HelperOption) OCR {
 	if path == "" {
 		return nil
 	}
-	return &helperOCR{path: path, timeout: timeout}
+	h := &helperOCR{path: path, timeout: timeout, verifier: newHelperVerifier(nil)}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
+
+// Available reports whether the helper passes the signature check now
+// (cached per file identity). Extractor.HasOCR consults it, so rows stored
+// ocr_unavailable are not downloaded again while the helper is rejected.
+func (h *helperOCR) Available() bool { return h.verifier.allowed(h.path) }
 
 type ocrHelperOutput struct {
 	Pages []struct {
@@ -60,9 +76,16 @@ type ocrHelperOutput struct {
 
 // Recognize runs the helper on path under the timeout. pages nil means an
 // image (no --pages flag, only index 0 is kept); otherwise only the
-// requested pages are kept. A timeout, crash, non-zero exit or malformed
-// output is an error; a cancelled ctx returns ctx's error.
+// requested pages are kept. A helper failing the signature check is
+// ErrOCRUnavailable and never runs. A timeout, crash, non-zero exit or
+// malformed output is an error; a cancelled ctx returns ctx's error.
 func (h *helperOCR) Recognize(ctx context.Context, path string, pages []int) (map[int]string, error) {
+	if pages != nil && len(pages) == 0 {
+		return map[int]string{}, nil // nothing asked; an image passes nil
+	}
+	if !h.Available() {
+		return nil, ErrOCRUnavailable
+	}
 	out, err := h.run(ctx, path, pages)
 	if err != nil {
 		return nil, err
@@ -110,7 +133,7 @@ func (h *helperOCR) run(ctx context.Context, path string, pages []int) ([]byte, 
 // helperArgs is the helper's argument list; path is always an absolute
 // temp file, never mistaken for a flag.
 func helperArgs(path string, pages []int) []string {
-	if pages == nil {
+	if len(pages) == 0 {
 		return []string{path}
 	}
 	list := make([]string, len(pages))

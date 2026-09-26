@@ -65,8 +65,20 @@ var (
 	_ extsync.TempSweeper   = (*Extractor)(nil)
 )
 
-// HasOCR reports whether an OCR is wired (controller ruling R2).
-func (x *Extractor) HasOCR() bool { return x.OCR != nil }
+// HasOCR reports whether an OCR is wired and can run now (controller ruling
+// R2): an OCR that reports availability (the helper's signature check) is
+// asked. It is what keeps HasOCR ⇔ Extract never answering ocr_unavailable.
+func (x *Extractor) HasOCR() bool {
+	if x.OCR == nil {
+		return false
+	}
+	a, ok := x.OCR.(availabilityReporter)
+	return !ok || a.Available()
+}
+
+// availabilityReporter is optionally implemented by an OCR that may be
+// wired yet unable to run (the helper OCR's signature check).
+type availabilityReporter interface{ Available() bool }
 
 // Supports reports whether Extract handles the type: exactly the types for
 // which it never answers StatusSkippedType.

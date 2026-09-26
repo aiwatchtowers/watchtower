@@ -2,6 +2,7 @@ package extract
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -42,19 +43,43 @@ func (x *Extractor) pdfText(ctx context.Context, path string) ([]extsync.Section
 		return nil, StatusFailed, err
 	}
 	scans := scanPages(pages)
-	ocrFailed := false
-	if len(scans) > 0 && x.OCR != nil {
-		got, err := x.OCR.Recognize(ctx, path, scans)
+	hasOCR, ocrFailed := x.OCR != nil, false
+	if len(scans) > 0 && hasOCR {
+		ocrFailed, err = recognizeScans(ctx, x.OCR, path, pages, scans)
 		switch {
-		case err != nil && ctx.Err() != nil:
-			return nil, "", ctx.Err()
+		case errors.Is(err, ErrOCRUnavailable):
+			hasOCR = false
 		case err != nil:
-			ocrFailed = true
+			return nil, "", err
+		}
+	}
+	return pageSections(pages), pdfStatus(pages, scans, hasOCR, ocrFailed), nil
+}
+
+// ocrBatchPages is how many scan pages one OCR call gets: each call has its
+// own helper timeout, so a large scan is never all-or-nothing under one
+// 60 s bound (MaxOCRPages / ocrBatchPages = at most 5 calls).
+const ocrBatchPages = 10
+
+// recognizeScans OCRs the scan pages in batches of ocrBatchPages and applies
+// what each batch recognized. A failed batch loses only its own pages
+// (failed reports that one did); ErrOCRUnavailable and a cancelled ctx stop
+// the remaining batches and are returned.
+func recognizeScans(ctx context.Context, ocr OCR, path string, pages []pdfPage, scans []int) (failed bool, err error) {
+	for start := 0; start < len(scans); start += ocrBatchPages {
+		got, err := ocr.Recognize(ctx, path, scans[start:min(start+ocrBatchPages, len(scans))])
+		switch {
+		case ctx.Err() != nil:
+			return false, ctx.Err()
+		case errors.Is(err, ErrOCRUnavailable):
+			return false, err
+		case err != nil:
+			failed = true
 		default:
 			applyOCR(pages, got)
 		}
 	}
-	return pageSections(pages), pdfStatus(pages, scans, x.OCR != nil, ocrFailed), nil
+	return failed, nil
 }
 
 // scanPages lists the 0-based indexes of the scan pages, at most
@@ -227,17 +252,19 @@ func countNonSpace(s string) int {
 	return n
 }
 
-// imageText OCRs an image: no OCR → StatusOCRUnavailable, an OCR error →
-// StatusOCRPending.
+// imageText OCRs an image: no OCR or a rejected helper →
+// StatusOCRUnavailable, an OCR error → StatusOCRPending.
 func (x *Extractor) imageText(ctx context.Context, path string) ([]extsync.Section, string, error) {
 	if x.OCR == nil {
 		return nil, StatusOCRUnavailable, nil
 	}
 	got, err := x.OCR.Recognize(ctx, path, nil)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, "", ctx.Err()
-		}
+	switch {
+	case ctx.Err() != nil:
+		return nil, "", ctx.Err()
+	case errors.Is(err, ErrOCRUnavailable):
+		return nil, StatusOCRUnavailable, nil
+	case err != nil:
 		return nil, StatusOCRPending, nil
 	}
 	return oneSection(strings.TrimSpace(got[0])), StatusOK, nil
