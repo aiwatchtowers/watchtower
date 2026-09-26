@@ -1,0 +1,519 @@
+// Package confluence converts Confluence storage-format XHTML (pages, blog
+// posts, comments) into the sectioned plain text internal/extsync stores
+// (spec docs/superpowers/specs/2026-09-26-confluence-knowledge-connector-design.md
+// §7). This file has no dependency on the Confluence REST client — it is a
+// pure text transform.
+package confluence
+
+import (
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
+
+	"watchtower/internal/extsync"
+	"watchtower/internal/jira"
+)
+
+// MentionPrefix is the fixed prefix of a user-mention token. The full token
+// is "@[~<accountId>]" (controller ruling R3) — never change this shape, the
+// KB matches it at index time with the regexp `@\[~([^\]]+)\]` to resolve
+// display names from ext_users.
+const MentionPrefix = "@[~"
+
+// truncatedMarker is the section appended when the body is cut at maxRunes.
+const truncatedMarker = "[truncated]"
+
+// wsRun matches a run of one or more whitespace characters (space, tab,
+// newline, ...), collapsed to a single separator by normalizeWS/HeadingAnchor.
+var wsRun = regexp.MustCompile(`\s+`)
+
+// StorageToSections converts Confluence storage-format XHTML into sections
+// split at h1-h3. User mentions become "@[~<accountId>]" tokens (resolved to
+// names at index time from ext_users); returned userIDs lists them. jiraKeys
+// lists issue keys from Jira macros and plain text (deduped, in order).
+func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string) {
+	nodes, err := parseFragment(xhtml)
+	if err != nil {
+		return nil, nil, nil
+	}
+	c := &converter{}
+	sections = capSections(c.splitSections(nodes), maxRunes)
+	return sections, c.userIDs, c.jiraKeys
+}
+
+// HeadingAnchor is Confluence Cloud's in-page anchor for a heading text: trim,
+// collapse internal whitespace to "-", keep letters/digits (Unicode, so
+// Cyrillic etc. survive) and -_. , drop every other character. This is an
+// approximation of Confluence's own slug rule, pinned by TestHeadingAnchor —
+// it is not guaranteed byte-identical to what Confluence itself generates.
+func HeadingAnchor(heading string) string {
+	dashed := wsRun.ReplaceAllString(strings.TrimSpace(heading), "-")
+	var b strings.Builder
+	for _, r := range dashed {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// parseFragment parses xhtml as a body fragment: the returned nodes are the
+// top-level siblings of the (virtual) body, in document order.
+func parseFragment(xhtml string) ([]*html.Node, error) {
+	return html.ParseFragment(strings.NewReader(xhtml), &html.Node{
+		Type:     html.ElementNode,
+		Data:     "body",
+		DataAtom: atom.Body,
+	})
+}
+
+// converter accumulates the side outputs (mentioned user ids, Jira issue
+// keys) discovered while rendering one document.
+type converter struct {
+	userIDs  []string
+	userSeen map[string]bool
+	jiraKeys []string
+	jiraSeen map[string]bool
+}
+
+func (c *converter) addUser(id string) {
+	if id == "" {
+		return
+	}
+	if c.userSeen == nil {
+		c.userSeen = make(map[string]bool)
+	}
+	if c.userSeen[id] {
+		return
+	}
+	c.userSeen[id] = true
+	c.userIDs = append(c.userIDs, id)
+}
+
+func (c *converter) addJiraKey(key string) {
+	if key == "" {
+		return
+	}
+	if c.jiraSeen == nil {
+		c.jiraSeen = make(map[string]bool)
+	}
+	if c.jiraSeen[key] {
+		return
+	}
+	c.jiraSeen[key] = true
+	c.jiraKeys = append(c.jiraKeys, key)
+}
+
+// scanJiraKeys records every plain-text Jira key found in text (reusing the
+// key detector's regexp with no known-project filtering — storage.go has no
+// DB access, so unlike jira.KeyDetector every syntactically valid key is
+// collected).
+func (c *converter) scanJiraKeys(text string) {
+	for _, m := range jira.KeyRegexp.FindAllString(text, -1) {
+		c.addJiraKey(m)
+	}
+}
+
+// isHeading reports whether tag is a section-splitting heading (h1-h3 only;
+// spec §7 — deeper headings render as ordinary block text).
+func isHeading(tag string) bool {
+	return tag == "h1" || tag == "h2" || tag == "h3"
+}
+
+// splitSections walks the top-level nodes once, starting a new section at
+// every h1-h3 and rendering everything else into the current section's body.
+func (c *converter) splitSections(nodes []*html.Node) []extsync.Section {
+	var out []extsync.Section
+	cur := extsync.Section{}
+	var body []string
+
+	flush := func() {
+		if cur.Heading == "" && len(body) == 0 {
+			return // an empty leading section (doc starts on a heading) is not emitted
+		}
+		cur.Text = strings.Join(append([]string{}, prependNonEmpty(cur.Heading, body)...), "\n")
+		out = append(out, cur)
+	}
+
+	for _, n := range nodes {
+		if n.Type != html.ElementNode {
+			continue
+		}
+		if isHeading(n.Data) {
+			flush()
+			heading := c.inlineText(n)
+			cur = extsync.Section{Heading: heading, Anchor: HeadingAnchor(heading)}
+			body = nil
+			continue
+		}
+		if text := c.renderBlock(n); text != "" {
+			body = append(body, text)
+		}
+	}
+	flush()
+	return out
+}
+
+// prependNonEmpty puts heading as the first line ahead of body when it is
+// non-empty ("heading text is the section's first line" — spec §7).
+func prependNonEmpty(heading string, body []string) []string {
+	if heading == "" {
+		return body
+	}
+	return append([]string{heading}, body...)
+}
+
+// renderBlock renders one top-level-shaped node into its section text (zero,
+// one or several lines). Dispatch table by tag, so each branch stays small.
+func (c *converter) renderBlock(n *html.Node) string {
+	switch n.Data {
+	case "p", "h4", "h5", "h6":
+		return c.inlineText(n)
+	case "table":
+		return c.renderTable(n)
+	case "ul", "ol":
+		return strings.Join(c.renderListItems(n, 0), "\n")
+	case "ac:structured-macro":
+		return c.renderMacro(n)
+	case "ac:image":
+		return "" // images are dropped (spec §7)
+	default:
+		return c.renderChildren(n)
+	}
+}
+
+// renderChildren treats an unrecognized element as a transparent container
+// and renders each child block in turn, joined by newlines.
+func (c *converter) renderChildren(n *html.Node) string {
+	var lines []string
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		switch ch.Type {
+		case html.TextNode:
+			if t := normalizeWS(ch.Data); t != "" {
+				c.scanJiraKeys(t)
+				lines = append(lines, t)
+			}
+		case html.ElementNode:
+			if t := c.renderBlock(ch); t != "" {
+				lines = append(lines, t)
+			}
+		default:
+			// Comments, doctypes, etc. carry no renderable text.
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// normalizeWS collapses any run of whitespace to a single space and trims
+// the ends (spec §7: "whitespace normalized").
+func normalizeWS(s string) string {
+	return strings.TrimSpace(wsRun.ReplaceAllString(s, " "))
+}
+
+// inlineText renders n's children as one normalized line of text, scanning
+// the result for plain-text Jira keys. Used for headings, paragraphs, table
+// cells, list items and macro parameters.
+func (c *converter) inlineText(n *html.Node) string {
+	text := normalizeWS(c.inlineChildren(n))
+	c.scanJiraKeys(text)
+	return text
+}
+
+// inlineChildren concatenates the rendered inline content of n's children
+// with no normalization (callers normalize once, at the top of the phrase).
+func (c *converter) inlineChildren(n *html.Node) string {
+	var b strings.Builder
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		switch ch.Type {
+		case html.TextNode:
+			b.WriteString(ch.Data)
+		case html.ElementNode:
+			b.WriteString(c.inlineElement(ch))
+		default:
+			// Comments, doctypes, etc. carry no renderable text.
+		}
+	}
+	return b.String()
+}
+
+// inlineElement dispatches the inline-context elements that need special
+// handling; anything else is a transparent formatting wrapper (strong, em,
+// a, span, code, ...) whose children are rendered as more inline content.
+func (c *converter) inlineElement(n *html.Node) string {
+	switch n.Data {
+	case "br":
+		return " "
+	case "ac:link":
+		return c.renderLink(n)
+	case "ac:structured-macro":
+		return c.renderMacro(n)
+	case "ac:image":
+		return ""
+	default:
+		return c.inlineChildren(n)
+	}
+}
+
+// renderLink renders an ac:link: a user mention (ri:user/ri:account-id) or a
+// page reference (ri:page/ri:content-title, or its link body when present).
+func (c *converter) renderLink(n *html.Node) string {
+	if user := firstChildByTag(n, "ri:user"); user != nil {
+		id := attrValue(user, "ri:account-id")
+		if id == "" {
+			return ""
+		}
+		c.addUser(id)
+		return MentionPrefix + id + "]"
+	}
+	if page := firstChildByTag(n, "ri:page"); page != nil {
+		if body := c.linkBodyText(n); body != "" {
+			return body
+		}
+		return attrValue(page, "ri:content-title")
+	}
+	return ""
+}
+
+// linkBodyText returns an ac:link's ac:plain-text-link-body/ac:link-body
+// content, or "" when neither is present.
+func (c *converter) linkBodyText(n *html.Node) string {
+	if b := firstChildByTag(n, "ac:plain-text-link-body"); b != nil {
+		return normalizeWS(cdataOrText(b))
+	}
+	if b := firstChildByTag(n, "ac:link-body"); b != nil {
+		return c.inlineText(b)
+	}
+	return ""
+}
+
+// renderTable renders every row (inside thead/tbody/tfoot or bare) as one
+// line, cells joined by " | " (spec §7: header row + rows kept).
+func (c *converter) renderTable(n *html.Node) string {
+	var rows []string
+	c.collectTableRows(n, &rows)
+	return strings.Join(rows, "\n")
+}
+
+func (c *converter) collectTableRows(n *html.Node, rows *[]string) {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type != html.ElementNode {
+			continue
+		}
+		switch ch.Data {
+		case "tr":
+			*rows = append(*rows, c.renderTableRow(ch))
+		case "thead", "tbody", "tfoot":
+			c.collectTableRows(ch, rows)
+		}
+	}
+}
+
+func (c *converter) renderTableRow(tr *html.Node) string {
+	var cells []string
+	for ch := tr.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && (ch.Data == "td" || ch.Data == "th") {
+			cells = append(cells, c.inlineText(ch))
+		}
+	}
+	return strings.Join(cells, " | ")
+}
+
+// renderListItems renders a ul/ol's own <li> children as "- " lines indented
+// two spaces per level; a nested ul/ol inside an <li> recurses at level+1.
+func (c *converter) renderListItems(list *html.Node, level int) []string {
+	var lines []string
+	indent := strings.Repeat("  ", level)
+	for li := list.FirstChild; li != nil; li = li.NextSibling {
+		if li.Type != html.ElementNode || li.Data != "li" {
+			continue
+		}
+		text, nested := c.splitListItem(li)
+		lines = append(lines, indent+"- "+text)
+		for _, n := range nested {
+			lines = append(lines, c.renderListItems(n, level+1)...)
+		}
+	}
+	return lines
+}
+
+// splitListItem separates an <li>'s own inline text from any nested ul/ol
+// (which the caller renders as separate, deeper lines).
+func (c *converter) splitListItem(li *html.Node) (text string, nested []*html.Node) {
+	var b strings.Builder
+	for ch := li.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && (ch.Data == "ul" || ch.Data == "ol") {
+			nested = append(nested, ch)
+			continue
+		}
+		switch ch.Type {
+		case html.TextNode:
+			b.WriteString(ch.Data)
+		case html.ElementNode:
+			b.WriteString(c.inlineElement(ch))
+		default:
+			// Comments, doctypes, etc. carry no renderable text.
+		}
+	}
+	text = normalizeWS(b.String())
+	c.scanJiraKeys(text)
+	return text, nested
+}
+
+// macroBodyNames render their ac:rich-text-body / ac:plain-text-body as
+// ordinary content: expand/panel/info/note/tip/warning/excerpt (spec §7).
+var macroBodyNames = map[string]bool{
+	"expand": true, "panel": true, "info": true, "note": true,
+	"tip": true, "warning": true, "excerpt": true,
+}
+
+// macroDroppedNames are structural macros with no useful body text.
+var macroDroppedNames = map[string]bool{
+	"toc": true, "children": true, "attachments": true, "gallery": true,
+}
+
+// renderMacro dispatches an ac:structured-macro by its ac:name attribute.
+func (c *converter) renderMacro(n *html.Node) string {
+	name := attrValue(n, "ac:name")
+	switch {
+	case name == "code" || name == "noformat":
+		return c.renderCodeMacro(n)
+	case name == "jira":
+		return c.renderJiraMacro(n)
+	case macroDroppedNames[name]:
+		return ""
+	case macroBodyNames[name]:
+		return c.renderMacroBody(n)
+	default:
+		// Unknown macro: default to rendering its body when it has one,
+		// since dropping unrecognized content silently would make search
+		// miss text the owner can see on the page.
+		return c.renderMacroBody(n)
+	}
+}
+
+// renderCodeMacro extracts a code/noformat macro's ac:plain-text-body
+// verbatim (only the outer whitespace is trimmed — internal line breaks and
+// indentation are the whole point of a code block, so they are kept, unlike
+// the blanket normalizeWS rule applied everywhere else).
+func (c *converter) renderCodeMacro(n *html.Node) string {
+	body := firstChildByTag(n, "ac:plain-text-body")
+	if body == nil {
+		return ""
+	}
+	text := strings.TrimSpace(cdataOrText(body))
+	c.scanJiraKeys(text)
+	return text
+}
+
+// renderJiraMacro reads the macro's ac:parameter[name=key] value, records it
+// as a Jira key and renders it as the macro's own text.
+func (c *converter) renderJiraMacro(n *html.Node) string {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && ch.Data == "ac:parameter" && attrValue(ch, "ac:name") == "key" {
+			key := normalizeWS(c.inlineChildren(ch))
+			c.addJiraKey(key)
+			return key
+		}
+	}
+	return ""
+}
+
+// renderMacroBody renders an ac:rich-text-body (as ordinary nested blocks)
+// or, failing that, an ac:plain-text-body (verbatim text) child.
+func (c *converter) renderMacroBody(n *html.Node) string {
+	if body := firstChildByTag(n, "ac:rich-text-body"); body != nil {
+		return c.renderChildren(body)
+	}
+	if body := firstChildByTag(n, "ac:plain-text-body"); body != nil {
+		return normalizeWS(cdataOrText(body))
+	}
+	return ""
+}
+
+// attrValue returns n's attribute value for key, or "" when absent. Element
+// and attribute names arrive lowercased from the html package; attribute
+// VALUES keep their original case.
+func attrValue(n *html.Node, key string) string {
+	for _, a := range n.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
+}
+
+// firstChildByTag returns n's first direct child element named tag, or nil.
+func firstChildByTag(n *html.Node, tag string) *html.Node {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && ch.Data == tag {
+			return ch
+		}
+	}
+	return nil
+}
+
+// cdataOrText concatenates n's text content: the html package parses a
+// CDATA section (as used by ac:plain-text-body/ac:plain-text-link-body) into
+// a CommentNode shaped "[CDATA[...]]", since HTML has no native CDATA
+// outside foreign (SVG/MathML) content — plain TextNode children are
+// supported too, for a body that (invalidly, but harmlessly) omits CDATA.
+func cdataOrText(n *html.Node) string {
+	var b strings.Builder
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		switch ch.Type {
+		case html.CommentNode:
+			if strings.HasPrefix(ch.Data, "[CDATA[") && strings.HasSuffix(ch.Data, "]]") {
+				b.WriteString(ch.Data[len("[CDATA[") : len(ch.Data)-2])
+			}
+		case html.TextNode:
+			b.WriteString(ch.Data)
+		default:
+			// Elements, doctypes, etc. carry no CDATA/plain text here.
+		}
+	}
+	return b.String()
+}
+
+// capSections enforces the maxRunes budget over the sections' Text fields
+// (spec §7: "body capped ... a truncation marker section is appended when
+// cut"). Whole sections are kept while they fit; the section that would
+// overflow is cut to the remaining budget (dropped outright if no budget is
+// left), then a trailing {Text: "[truncated]"} marker section is appended.
+func capSections(sections []extsync.Section, maxRunes int) []extsync.Section {
+	if maxRunes <= 0 {
+		return sections
+	}
+	total := 0
+	for i, s := range sections {
+		n := utf8.RuneCountInString(s.Text)
+		if total+n <= maxRunes {
+			total += n
+			continue
+		}
+		out := append([]extsync.Section{}, sections[:i]...)
+		if cut := truncateRunes(s.Text, maxRunes-total); cut != "" {
+			kept := s
+			kept.Text = cut
+			out = append(out, kept)
+		}
+		out = append(out, extsync.Section{Text: truncatedMarker})
+		return out
+	}
+	return sections
+}
+
+// truncateRunes returns s cut to at most n runes ("" when n <= 0).
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}

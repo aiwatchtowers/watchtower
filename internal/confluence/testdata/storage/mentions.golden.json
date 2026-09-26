@@ -1,0 +1,11 @@
+{
+  "sections": [
+    {
+      "heading": "Mentions",
+      "anchor": "Mentions",
+      "text": "Mentions\nAssigned to @[~abc123] per Release Plan.\nAlso see Custom Link Text here."
+    }
+  ],
+  "userIDs": ["abc123"],
+  "jiraKeys": null
+}

@@ -1,0 +1,11 @@
+{
+  "sections": [
+    {
+      "heading": "Macros",
+      "anchor": "Macros",
+      "text": "Macros\nfunc main() {\n    fmt.Println(\"hi\")\n}\nPanel body text.\nHidden details here.\nSee PROJ-42 for details."
+    }
+  ],
+  "userIDs": null,
+  "jiraKeys": ["PROJ-42"]
+}

@@ -1,0 +1,10 @@
+{
+  "sections": [
+    { "text": "This is the intro paragraph before any heading." },
+    { "heading": "Overview", "anchor": "Overview", "text": "Overview\nOverview body text." },
+    { "heading": "Details", "anchor": "Details", "text": "Details\nDetails body text." },
+    { "heading": "План релиза", "anchor": "План-релиза", "text": "План релиза\nТекст на русском." }
+  ],
+  "userIDs": null,
+  "jiraKeys": null
+}
