@@ -37,6 +37,31 @@ type fakeFetcher struct {
 	docs     map[ItemKind][]fakeDoc
 	pageSize int
 	fetches  map[string]int
+	calls    []changedCall // every Changed call, in order
+}
+
+// changedCall records one Changed call's since and page token.
+type changedCall struct {
+	since time.Time
+	page  string
+}
+
+// maxChangedCalls turns a runaway enumeration loop into an error instead of
+// a hung test.
+const maxChangedCalls = 100
+
+// resetCalls clears the recorded Changed calls.
+func (f *fakeFetcher) resetCalls() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = nil
+}
+
+// changedCalls returns a copy of the recorded Changed calls.
+func (f *fakeFetcher) changedCalls() []changedCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]changedCall(nil), f.calls...)
 }
 
 func newFake() *fakeFetcher {
@@ -128,6 +153,10 @@ func (f *fakeFetcher) Containers(context.Context) ([]Container, error) {
 func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, since time.Time, page string) ([]ItemRef, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, changedCall{since: since, page: page})
+	if len(f.calls) > maxChangedCalls {
+		return nil, "", fmt.Errorf("fake: runaway enumeration (%d Changed calls)", len(f.calls))
+	}
 	var refs []ItemRef
 	for _, k := range f.kinds(kind) {
 		for _, d := range f.docs[k] {
@@ -205,6 +234,16 @@ func newSourceDB(t *testing.T) (*db.DB, db.ExtSource) {
 		t.Fatalf("listing ext sources: %v (%d rows)", err, len(srcs))
 	}
 	return d, srcs[0]
+}
+
+// loadSource returns the (single) confluence source as stored now.
+func loadSource(t *testing.T, d *db.DB) db.ExtSource {
+	t.Helper()
+	srcs, err := d.ListExtSources("confluence")
+	if err != nil || len(srcs) != 1 {
+		t.Fatalf("listing ext sources: %v (%d rows)", err, len(srcs))
+	}
+	return srcs[0]
 }
 
 func countDocs(t *testing.T, d *db.DB, sourceID int64) int {

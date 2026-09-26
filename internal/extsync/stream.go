@@ -70,9 +70,8 @@ func decodeToken(token string) (anchor time.Time, page string, ok bool) {
 	return anchor, page, true
 }
 
-// sinceOf is the since of a fresh pass: cursor − overlap, zero for an empty
-// cursor (a full backfill).
-func sinceOf(cursor string) (time.Time, error) {
+// parseCursor parses a stored cursor; "" is the zero time (never synced).
+func parseCursor(cursor string) (time.Time, error) {
 	if cursor == "" {
 		return time.Time{}, nil
 	}
@@ -80,18 +79,31 @@ func sinceOf(cursor string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("extsync: bad cursor %q: %w", cursor, err)
 	}
+	return t, nil
+}
+
+// sinceOf is the since of a fresh pass: cursor − overlap, zero for an empty
+// cursor (a full backfill).
+func sinceOf(cursor string) (time.Time, error) {
+	t, err := parseCursor(cursor)
+	if err != nil || t.IsZero() {
+		return t, err
+	}
 	return t.Add(-cursorOverlap), nil
 }
 
 // advanceCursor returns max(cursor, max Modified of refs).
-func advanceCursor(cursor string, refs []ItemRef) string {
-	best, _ := time.Parse(isoLayout, cursor) // "" → zero time
+func advanceCursor(cursor string, refs []ItemRef) (string, error) {
+	best, err := parseCursor(cursor)
+	if err != nil {
+		return "", err
+	}
 	for _, r := range refs {
 		if r.Modified.After(best) {
 			best = r.Modified
 		}
 	}
-	return formatTime(best)
+	return formatTime(best), nil
 }
 
 // pass is the per-source context of one stream run.
@@ -111,43 +123,64 @@ type batch struct {
 	backfillDone bool   // this batch completes a pass from an empty cursor
 }
 
-// runStream drains one stream. A pass that resumes a saved token and then
-// completes is followed by a fresh pass from the cursor; a fresh pass that
-// completes ends the stream for this cycle. The budget is checked only
-// between batches: a started batch always commits.
+// runStream drains one stream for this cycle. Whether the stream entry
+// resumes a stored token is decided once, up front: a fresh pass that
+// completes ends the stream; a resumed pass that completes is followed by
+// at most one fresh pass from the advanced cursor, which then ends it. A
+// cycle therefore makes at most two passes, however many pages the overlap
+// window holds. The budget is checked only between batches: a started
+// batch always commits.
 func (e *Engine) runStream(ctx context.Context, p pass, b *budget) error {
 	cursor, token := streamState(p.src, p.spec.name)
+	anchor, page, resumed := decodeToken(token)
+	if !resumed {
+		if token != "" {
+			e.opts.Logger.Printf("source %d: dropping malformed %s token", p.src.ID, p.spec.name)
+		}
+		var err error
+		if anchor, err = sinceOf(cursor); err != nil {
+			return err
+		}
+	}
+	freshPassLeft := resumed
 	for {
-		anchor, page, resumed := decodeToken(token)
-		if !resumed {
-			if token != "" {
-				e.opts.Logger.Printf("source %d: dropping malformed %s token", p.src.ID, p.spec.name)
+		next, err := e.streamBatch(ctx, p, &cursor, anchor, page)
+		if err != nil {
+			return err
+		}
+		page = next
+		if next == "" {
+			if !freshPassLeft {
+				return nil
 			}
-			var err error
+			freshPassLeft = false
 			if anchor, err = sinceOf(cursor); err != nil {
 				return err
 			}
-		}
-		refs, next, err := p.f.Changed(ctx, p.c, p.spec.kind, anchor, page)
-		if err != nil {
-			return fmt.Errorf("extsync: listing %s changes: %w", p.spec.kind, err)
-		}
-		bt := batch{refs: refs, cursor: cursor, backfillDone: next == "" && anchor.IsZero()}
-		if next != "" {
-			bt.token = encodeToken(anchor, next)
-		}
-		if cursor, err = e.processBatch(ctx, p, bt); err != nil {
-			return err
-		}
-		token = bt.token
-		if next == "" && !resumed {
-			return nil
 		}
 		if b.over() {
 			p.st.Incomplete = true
 			return nil
 		}
 	}
+}
+
+// streamBatch lists one page of the pass anchored at anchor and applies it,
+// advancing *cursor. It returns the provider's next token ("" = the pass is
+// complete).
+func (e *Engine) streamBatch(ctx context.Context, p pass, cursor *string, anchor time.Time, page string) (string, error) {
+	refs, next, err := p.f.Changed(ctx, p.c, p.spec.kind, anchor, page)
+	if err != nil {
+		return "", fmt.Errorf("extsync: listing %s changes: %w", p.spec.kind, err)
+	}
+	bt := batch{refs: refs, cursor: *cursor, backfillDone: next == "" && anchor.IsZero()}
+	if next != "" {
+		bt.token = encodeToken(anchor, next)
+	}
+	if *cursor, err = e.processBatch(ctx, p, bt); err != nil {
+		return "", err
+	}
+	return next, nil
 }
 
 // processBatch applies one batch: the version gate, the fetches, then one
@@ -172,7 +205,10 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 	if err != nil {
 		return "", err
 	}
-	cursor := advanceCursor(bt.cursor, bt.refs)
+	cursor, err := advanceCursor(bt.cursor, bt.refs)
+	if err != nil {
+		return "", err
+	}
 	var st Stats
 	st.Unchanged = len(bt.refs) - len(stale)
 	err = e.withTx(ctx, func(q Queryer) error {
@@ -198,6 +234,9 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 // reported them gone.
 func writeItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, now time.Time, st *Stats) error {
 	for i, it := range items {
+		if it != nil && it.Ref.ExtID != refs[i].ExtID {
+			return fmt.Errorf("extsync: fetch of %s returned item %q", refs[i].ExtID, it.Ref.ExtID)
+		}
 		if it == nil {
 			if err := deleteDocument(ctx, q, sourceID, refs[i].ExtID); err != nil {
 				return err
