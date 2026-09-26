@@ -82,6 +82,16 @@ func TestBuildSystemPrompt_KnowledgeHitLinkRule(t *testing.T) {
 	assert.NotContains(t, prompt, "exactly as for list_messages", "the old rule built links from namespaced ids")
 }
 
+// Confluence is an indexed source: the tool line names it and the link rule
+// says how a Confluence hit links. Swift twins: the five chat prompt copies
+// and ChatViewModel.knowledgeLinkRule (dual path, same wording).
+func TestBuildSystemPrompt_NamesConfluenceSource(t *testing.T) {
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
+
+	assert.Contains(t, prompt, "relevance search across Slack, mail, Jira, Confluence, calendar, transcripts")
+	assert.Contains(t, prompt, `A Confluence hit links via its "link" (the page or attachment URL); when its chunk_anchor is a URL, that is a deep link to the matching heading or comment.`)
+}
+
 func TestBuildSystemPrompt_MustUseTools(t *testing.T) {
 	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 

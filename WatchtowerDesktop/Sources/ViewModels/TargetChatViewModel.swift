@@ -1102,7 +1102,7 @@ final class TargetChatViewModel {
             === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
             You have read-only tools over the user's OWN local Watchtower database. \
             Use them to look things up instead of asking the user:
-            - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, calendar, \
+            - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, Confluence, calendar, \
             transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref. Pass 2-5 queries: \
             key terms, synonyms, Russian and English variants, stems ending in * for Russian word forms.
             - list_messages — search/list the user's Slack messages by person, channel, and/or keyword, \

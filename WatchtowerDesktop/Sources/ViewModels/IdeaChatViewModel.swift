@@ -305,7 +305,7 @@ final class IdeaChatViewModel {
         You have read-only tools over the user's OWN local Watchtower database. \
         Use them to look things up instead of asking the user:
         - list_ideas / get_idea — the ideas/decisions/notes registry, including every mention across sources.
-        - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, calendar, \
+        - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, Confluence, calendar, \
         transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref. Pass 2-5 queries: \
         key terms, synonyms, Russian and English variants, stems ending in * for Russian word forms.
         - list_messages — search/list the user's Slack messages by person, channel, and/or keyword.

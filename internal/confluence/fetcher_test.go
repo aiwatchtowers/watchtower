@@ -798,7 +798,13 @@ func TestNextLinkWithoutCursorIsAnError(t *testing.T) {
 	assert.ErrorContains(t, err, "without a cursor")
 }
 
-func TestFetcherIssuesOnlyGET(t *testing.T) {
+// TestEXT01_FetcherReachesOnlyTheGETAPI — EXT-01 (read-only toward the
+// source), fetcher half: the fetcher's only network dependency is the API
+// seam, whose two methods are GETs on *jira.ConfluenceAPI (pinned by
+// internal/jira's TestEXT01_ConfluenceAPIIsGETOnly). Every exported Fetcher
+// method is exercised once and every path it requests is under /wiki/; the
+// Fetcher's method set is pinned, so a new method must join this guard.
+func TestEXT01_FetcherReachesOnlyTheGETAPI(t *testing.T) {
 	// The API seam has exactly the two GET methods of *jira.ConfluenceAPI
 	// the fetcher uses; nothing else is reachable from the fetcher.
 	apiType := reflect.TypeOf((*API)(nil)).Elem()
@@ -807,6 +813,13 @@ func TestFetcherIssuesOnlyGET(t *testing.T) {
 		names = append(names, apiType.Method(i).Name)
 	}
 	assert.Equal(t, []string{"Download", "GetJSON"}, names)
+	fetcherType := reflect.TypeOf(&Fetcher{})
+	var fetcherMethods []string
+	for i := 0; i < fetcherType.NumMethod(); i++ {
+		fetcherMethods = append(fetcherMethods, fetcherType.Method(i).Name)
+	}
+	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "Users"}, fetcherMethods,
+		"a new Fetcher method must be exercised by this guard")
 
 	api := newFakeAPI(t)
 	f := NewFetcher(api, testSite)

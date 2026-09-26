@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -73,4 +74,19 @@ func TestHeadingAnchor(t *testing.T) {
 	assert.Equal(t, "Release-plan", HeadingAnchor("Release plan"))
 	assert.Equal(t, "План-релиза", HeadingAnchor(" План  релиза "))
 	assert.Equal(t, "Q3-goals", HeadingAnchor("Q3: goals!"))
+}
+
+// A mention renders as the exact token internal/kb resolves at index time:
+// kb does not import this package (controller ruling R3), so it matches the
+// token with its own copy of this regexp (extMention in
+// internal/kb/source_ext.go) — keep the two identical.
+func TestMentionTokenMatchesKBPattern(t *testing.T) {
+	kbPattern := regexp.MustCompile(`^@\[~([^\]]+)\]$`)
+	sections, users, _ := StorageToSections(
+		`<p><ac:link><ri:user ri:account-id="5b10:abc-123" /></ac:link></p>`, 1000)
+	require.Len(t, sections, 1)
+	require.Equal(t, []string{"5b10:abc-123"}, users)
+	m := kbPattern.FindStringSubmatch(strings.TrimSpace(sections[0].Text))
+	require.NotNil(t, m, "token %q must match kb's mention pattern", sections[0].Text)
+	assert.Equal(t, "5b10:abc-123", m[1])
 }

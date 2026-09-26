@@ -26,6 +26,7 @@ func seedAll(t *testing.T, d *db.DB) {
 	seedDigestTopics(t, d)
 	seedStreamDigest(t, d)
 	seedIdea(t, d)
+	seedConfluence(t, d)
 	_, err := Run(context.Background(), d, Options{Now: testNow()})
 	require.NoError(t, err)
 }
@@ -449,7 +450,7 @@ func TestStatus(t *testing.T) {
 	assert.Equal(t, "6", slack.Cursor)
 	wantDocs := map[string]int{
 		"calendar": 2, "idea": 1, "digest": 2, "stream_digest": 2, "recap": 2,
-		"transcript": 1, "jira": 1, "imap": 1, "gmail": 2, "slack": 2,
+		"transcript": 1, "jira": 1, "imap": 1, "gmail": 2, "slack": 2, "confluence": 2,
 	}
 	for name, n := range wantDocs {
 		assert.Equal(t, n, byName[name].Docs, name)

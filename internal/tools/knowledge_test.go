@@ -103,3 +103,14 @@ func TestGetKnowledgeDocument_FromChunk(t *testing.T) {
 	require.ErrorAs(t, err, &verr, "an out-of-range chunk is the model's mistake, not a tool failure")
 	assert.Contains(t, verr.Msg, "from_chunk")
 }
+
+// The sources filter's schema text lists every kb source, so a new source
+// (Confluence) is discoverable by the model the day it is indexed.
+func TestSearchKnowledge_SchemaListsEverySource(t *testing.T) {
+	raw, err := json.Marshal(NewSearchKnowledge().InputSchema)
+	require.NoError(t, err)
+	for _, name := range kb.SourceNames() {
+		assert.Contains(t, string(raw), name)
+	}
+	assert.Contains(t, string(raw), "confluence")
+}
