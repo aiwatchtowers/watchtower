@@ -37,6 +37,24 @@ func TestStorageToSectionsGolden(t *testing.T) {
 	}
 }
 
+// TestStorageCDATANoLeak is an explicit, narrower belt-and-suspenders pin
+// alongside the golden exact-text check: no rendered section may ever
+// contain the CDATA close delimiter or an HTML comment close delimiter,
+// which is exactly what leaked into the output before escapeCDATASections
+// (a CDATA body containing '>' was misparsed as a "bogus comment" ending at
+// that '>', not at "]]>", so the literal "]]>" tail and stray "-->" markers
+// from the resulting tag soup used to survive into the section text).
+func TestStorageCDATANoLeak(t *testing.T) {
+	raw, err := os.ReadFile("testdata/storage/cdata.xhtml")
+	require.NoError(t, err)
+	secs, _, _ := StorageToSections(string(raw), 1_000_000)
+	require.NotEmpty(t, secs)
+	for _, s := range secs {
+		assert.NotContains(t, s.Text, "]]>")
+		assert.NotContains(t, s.Text, "-->")
+	}
+}
+
 func TestStorageCap(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < 3000; i++ {

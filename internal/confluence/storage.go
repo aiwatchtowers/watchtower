@@ -6,6 +6,7 @@
 package confluence
 
 import (
+	stdhtml "html" // EscapeString only; golang.org/x/net/html owns the "html" name below.
 	"regexp"
 	"strings"
 	"unicode"
@@ -67,13 +68,66 @@ func HeadingAnchor(heading string) string {
 }
 
 // parseFragment parses xhtml as a body fragment: the returned nodes are the
-// top-level siblings of the (virtual) body, in document order.
+// top-level siblings of the (virtual) body, in document order. CDATA
+// sections are neutralized before ANY tokenizer pass runs over the document
+// (normalizeSelfClosing included — it tokenizes too, and would hit the same
+// bogus-comment misparse escapeCDATASections exists to avoid).
 func parseFragment(xhtml string) ([]*html.Node, error) {
-	return html.ParseFragment(strings.NewReader(normalizeSelfClosing(xhtml)), &html.Node{
+	safe := normalizeSelfClosing(escapeCDATASections(xhtml))
+	return html.ParseFragment(strings.NewReader(safe), &html.Node{
 		Type:     html.ElementNode,
 		Data:     "body",
 		DataAtom: atom.Body,
 	})
+}
+
+// cdataStart/cdataEnd delimit a CDATA section (used by ac:plain-text-body/
+// ac:plain-text-link-body for code/noformat/link-body content). XHTML forbids
+// the literal sequence "]]>" inside CDATA content, so the first occurrence
+// of cdataEnd after cdataStart reliably terminates the section — a lone
+// "]]" not followed by '>' is ordinary content and is left alone.
+const (
+	cdataStart = "<![CDATA["
+	cdataEnd   = "]]>"
+)
+
+// escapeCDATASections rewrites every "<![CDATA[...]]>" span in xhtml into
+// its HTML-escaped text, in place of the CDATA syntax itself.
+//
+// HTML5 (which is what golang.org/x/net/html's tokenizer implements, not
+// XML) has no CDATA section outside foreign SVG/MathML content: it treats
+// "<![CDATA[" as the start of a "bogus comment" — and unlike a real
+// comment, a bogus comment ends at the first '>', not at "]]>". A CDATA
+// body containing '>' (any code sample using ->, >=, generics, HTML, shell
+// redirects, ...) would otherwise be truncated right there, with the
+// remainder — including the literal "]]>" — leaking into the document and
+// getting re-tokenized as tag soup (verified: a literal <div> inside an
+// unterminated code body was parsed as a real, nested <div> element).
+// Escaping first means the tokenizer only ever sees plain, safe character
+// data for that span; the parser unescapes it back to the exact original
+// bytes when building the resulting TextNode, so the code body's content —
+// including its internal whitespace — survives byte-for-byte.
+func escapeCDATASections(xhtml string) string {
+	var b strings.Builder
+	rest := xhtml
+	for {
+		i := strings.Index(rest, cdataStart)
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		b.WriteString(rest[:i])
+		body := rest[i+len(cdataStart):]
+		j := strings.Index(body, cdataEnd)
+		if j < 0 {
+			// Unterminated CDATA (malformed input): escape the remainder
+			// verbatim and stop, rather than looping forever.
+			b.WriteString(stdhtml.EscapeString(body))
+			return b.String()
+		}
+		b.WriteString(stdhtml.EscapeString(body[:j]))
+		rest = body[j+len(cdataEnd):]
+	}
 }
 
 // normalizeSelfClosing rewrites every self-closing tag whose name contains
@@ -251,6 +305,8 @@ func (c *converter) renderBlock(n *html.Node) string {
 		return c.renderTaskList(n)
 	case "ac:image":
 		return "" // images are dropped (spec §7)
+	case "script", "style":
+		return "" // never page content; not worth indexing even if present
 	default:
 		return c.renderChildren(n)
 	}
@@ -364,6 +420,8 @@ func (c *converter) inlineElement(n *html.Node) string {
 		return c.renderMacro(n)
 	case "ac:image":
 		return ""
+	case "script", "style":
+		return "" // never page content; not worth indexing even if present
 	default:
 		return c.inlineChildren(n)
 	}
@@ -395,7 +453,7 @@ func (c *converter) renderLink(n *html.Node) string {
 // content, or "" when neither is present.
 func (c *converter) linkBodyText(n *html.Node) string {
 	if b := firstChildByTag(n, "ac:plain-text-link-body"); b != nil {
-		return normalizeWS(cdataOrText(b))
+		return normalizeWS(plainText(b))
 	}
 	if b := firstChildByTag(n, "ac:link-body"); b != nil {
 		return c.inlineText(b)
@@ -517,7 +575,7 @@ func (c *converter) renderCodeMacro(n *html.Node) string {
 	if body == nil {
 		return ""
 	}
-	text := strings.TrimSpace(cdataOrText(body))
+	text := strings.TrimSpace(plainText(body))
 	c.scanJiraKeys(text)
 	return text
 }
@@ -542,7 +600,7 @@ func (c *converter) renderMacroBody(n *html.Node) string {
 		return c.renderChildren(body)
 	}
 	if body := firstChildByTag(n, "ac:plain-text-body"); body != nil {
-		return normalizeWS(cdataOrText(body))
+		return normalizeWS(plainText(body))
 	}
 	return ""
 }
@@ -569,23 +627,19 @@ func firstChildByTag(n *html.Node, tag string) *html.Node {
 	return nil
 }
 
-// cdataOrText concatenates n's text content: the html package parses a
-// CDATA section (as used by ac:plain-text-body/ac:plain-text-link-body) into
-// a CommentNode shaped "[CDATA[...]]", since HTML has no native CDATA
-// outside foreign (SVG/MathML) content — plain TextNode children are
-// supported too, for a body that (invalidly, but harmlessly) omits CDATA.
-func cdataOrText(n *html.Node) string {
+// plainText concatenates n's direct TextNode children's raw data. Used for
+// ac:plain-text-body/ac:plain-text-link-body, whose content is CDATA in a
+// real Confluence export: escapeCDATASections has already unwrapped that
+// CDATA into ordinary text before the document was ever parsed, so by the
+// time this runs it is indistinguishable from plain text, and no
+// CDATA-specific handling is needed here. A CommentNode child (a real HTML
+// comment the body happens to contain, not CDATA) is deliberately skipped —
+// a comment is not page content.
+func plainText(n *html.Node) string {
 	var b strings.Builder
 	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
-		switch ch.Type {
-		case html.CommentNode:
-			if strings.HasPrefix(ch.Data, "[CDATA[") && strings.HasSuffix(ch.Data, "]]") {
-				b.WriteString(ch.Data[len("[CDATA[") : len(ch.Data)-2])
-			}
-		case html.TextNode:
+		if ch.Type == html.TextNode {
 			b.WriteString(ch.Data)
-		default:
-			// Elements, doctypes, etc. carry no CDATA/plain text here.
 		}
 	}
 	return b.String()
