@@ -103,7 +103,7 @@ func TestGetTaskContext_OmitsEmptySections(t *testing.T) {
 	d := openDB(t)
 	seedJiraIssueOnly(t, d)
 	got := callReadString(t, taskContextRegistry(t, d), "get_task_context", `{"key":"PROJ-2"}`)
-	for _, absent := range []string{`"threads"`, `"meetings"`, `"decisions"`} {
+	for _, absent := range []string{`"threads"`, `"meetings"`, `"decisions"`, `"confluence"`} {
 		assert.NotContains(t, got, absent, "empty section must be omitted")
 	}
 }

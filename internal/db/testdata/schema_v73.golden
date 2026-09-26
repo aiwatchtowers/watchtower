@@ -136,6 +136,9 @@ CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, sco
 index	idx_jira_comments_issue
 CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
+index	idx_jira_comments_synced
+CREATE INDEX idx_jira_comments_synced ON jira_comments(synced_at)
+
 index	idx_jira_issues_assignee
 CREATE INDEX idx_jira_issues_assignee ON jira_issues(assignee_account_id)
 
@@ -165,6 +168,9 @@ CREATE INDEX idx_jira_issues_sprint ON jira_issues(sprint_id)
 
 index	idx_jira_issues_status_cat
 CREATE INDEX idx_jira_issues_status_cat ON jira_issues(status_category)
+
+index	idx_jira_issues_synced
+CREATE INDEX idx_jira_issues_synced ON jira_issues(synced_at)
 
 index	idx_jira_issues_updated
 CREATE INDEX idx_jira_issues_updated ON jira_issues(updated_at)

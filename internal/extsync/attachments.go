@@ -141,6 +141,9 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 		if err := writeExtractions(ctx, q, p, items, results); err != nil {
 			return err
 		}
+		if err := relinkDocs(ctx, q, p.src.ID, writtenIDs(items)); err != nil {
+			return err
+		}
 		return inTx(q, done)
 	})
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/doclinks"
 	"watchtower/internal/extsync"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
@@ -963,8 +964,36 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 		if st.Incomplete {
 			d.logger.Printf("external sync: cycle budget reached (%d fetched, %d deleted), continuing next cycle", st.Fetched, st.Deleted)
 		}
-		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments, err: reportErr}
+		linked, linkErr := d.scanDocLinks(ctx)
+		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments + linked, err: errors.Join(reportErr, linkErr)}
 	})
+}
+
+// docLinkScanBudget bounds one cycle's doc_links detection (Confluence page
+// URLs in Slack/mail/Jira). The first run backfills history over as many
+// cycles as it takes; cursors persist per batch.
+const docLinkScanBudget = 20 * time.Second
+
+// scanDocLinks runs doclinks.ScanSources after the engine (spec §10). It
+// runs only inside phaseExternalSync's gates (feature on, ≥1 space
+// selected) and ScanSources itself skips when no enabled source or no
+// connected site exists. A shutdown mid-scan is not an error: every
+// committed batch saved its cursor.
+func (d *Daemon) scanDocLinks(ctx context.Context) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, nil // shutting down: nothing started, nothing to report
+	default:
+	}
+	n, err := doclinks.ScanSources(ctx, d.db, docLinkScanBudget)
+	if err != nil {
+		if isBenignShutdownErr(ctx, err) {
+			return n, nil
+		}
+		d.logger.Printf("doc links: %v", err)
+		return n, fmt.Errorf("doc links: %w", err)
+	}
+	return n, nil
 }
 
 // isBenignShutdownErr reports whether err is fully explained by ctx being

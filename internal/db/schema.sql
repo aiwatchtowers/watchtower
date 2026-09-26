@@ -969,6 +969,7 @@ CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assign
 -- Bare-key lookups: the composite PK leads with account_id, so this index is
 -- what keeps `WHERE key = ?` off a full scan (see 00049)
 CREATE INDEX IF NOT EXISTS idx_jira_issues_key ON jira_issues(key);
+CREATE INDEX IF NOT EXISTS idx_jira_issues_synced ON jira_issues(synced_at);
 
 -- Jira sync state
 CREATE TABLE IF NOT EXISTS jira_sync_state (
@@ -1560,6 +1561,7 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_comments_synced ON jira_comments(synced_at);
 
 CREATE TABLE IF NOT EXISTS agent_actions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

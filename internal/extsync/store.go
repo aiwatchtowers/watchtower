@@ -130,13 +130,16 @@ func upsertDocument(ctx context.Context, q Queryer, sourceID int64, it *Item, no
 	return nil
 }
 
-// deleteDocument removes one document and its comments (a no-op when
-// absent). ext_comments has no FK to ext_documents, so the comments go
-// explicitly.
+// deleteDocument removes one document, its comments and its doc_links (a
+// no-op when absent). ext_comments and doc_links have no FK to
+// ext_documents, so they go explicitly.
 func deleteDocument(ctx context.Context, q Queryer, sourceID int64, extID string) error {
 	if _, err := q.ExecContext(ctx, `DELETE FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
 		sourceID, extID); err != nil {
 		return fmt.Errorf("extsync: deleting %s: %w", extID, err)
+	}
+	if err := unlinkDoc(ctx, q, sourceID, extID); err != nil {
+		return err
 	}
 	return deleteComments(ctx, q, sourceID, extID)
 }

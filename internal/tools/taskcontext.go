@@ -78,28 +78,29 @@ type taskDecision struct {
 // section with nothing in it is absent, never an empty array, so the agent can
 // tell "nothing found" from "not looked for".
 type taskContext struct {
-	Issue     taskIssue      `json:"issue"`
-	Comments  []taskComment  `json:"comments,omitempty"`
-	Threads   []taskThread   `json:"threads,omitempty"`
-	Meetings  []taskMeeting  `json:"meetings,omitempty"`
-	Decisions []taskDecision `json:"decisions,omitempty"`
-	People    []string       `json:"people,omitempty"`
-	Notes     []string       `json:"notes,omitempty"`
+	Issue      taskIssue            `json:"issue"`
+	Comments   []taskComment        `json:"comments,omitempty"`
+	Threads    []taskThread         `json:"threads,omitempty"`
+	Meetings   []taskMeeting        `json:"meetings,omitempty"`
+	Decisions  []taskDecision       `json:"decisions,omitempty"`
+	Confluence []taskConfluencePage `json:"confluence,omitempty"`
+	People     []string             `json:"people,omitempty"`
+	Notes      []string             `json:"notes,omitempty"`
 }
 
 // NewGetTaskContext assembles everything Watchtower knows about a Jira issue: the
 // ticket, its comments, the linked Slack threads, meetings that mentioned it,
-// recorded decisions, and the people involved.
+// recorded decisions, Confluence pages, and the people involved.
 func NewGetTaskContext() *Tool {
 	return &Tool{
 		Name: "get_task_context",
 		Description: "Assemble everything Watchtower knows about a Jira issue: the ticket and its " +
 			"comments, the Slack threads where it was discussed, meetings that mentioned it, " +
-			"recorded decisions, and the people involved. Use before starting work on a ticket — " +
+			"recorded decisions, the Confluence pages that mention it, and the people involved. Use before starting work on a ticket — " +
 			"it carries the context the ticket text does not.",
 		InputSchema: mustSchema[getTaskContextArgs]("get_task_context"),
 		Access:      AccessRead,
-		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var args getTaskContextArgs
 			if err := json.Unmarshal(call.Args, &args); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
@@ -131,6 +132,7 @@ func NewGetTaskContext() *Tool {
 			out.Threads, out.Notes = collectTaskThreads(d, key, people, out.Notes)
 			out.Meetings, out.Notes = collectTaskMeetings(d, key, out.Notes)
 			out.Decisions, out.Notes = collectTaskDecisions(d, key, out.Notes)
+			out.Confluence, out.Notes = collectTaskConfluence(ctx, d, key, out.Notes)
 			out.People = people.list()
 
 			return out, nil

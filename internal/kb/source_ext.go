@@ -122,7 +122,11 @@ func (s extSource) fillPage(ctx context.Context, doc *Doc, r *extRow, names *ext
 	if r.status == "archived" {
 		parts = append(parts, "archived")
 	}
-	doc.Meta = joinNonEmpty(parts)
+	inbound, err := discussedIn(ctx, names.q, r.sourceID, r.extID)
+	if err != nil {
+		return err
+	}
+	doc.Meta = joinNonEmpty(append(parts, inbound))
 	if doc.Sections, err = s.storedSections(ctx, r, names); err != nil {
 		return err
 	}
