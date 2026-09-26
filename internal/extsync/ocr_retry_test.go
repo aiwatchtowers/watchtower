@@ -2,6 +2,7 @@ package extsync
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"sync"
@@ -232,6 +233,78 @@ func TestTransientFailureOnNewVersionKeepsOldText(t *testing.T) {
 	assert.Equal(t, 2, row.version, "the retry fetched the new version")
 	assert.Equal(t, []Section{{Text: "text of one-v2.txt"}}, row.sections)
 	assert.Equal(t, 0, extractAttempts(t, d, src.ID, "a1"))
+}
+
+// TestDegradedNewVersionCappedAcrossRuns (fix round 1, finding 1): a new
+// version that keeps failing is re-listed by every pass's cursor overlap,
+// yet it gets exactly 3 tries — the stream does not re-process a row whose
+// pending version it already tried — and nothing is downloaded after the
+// third, however many runs follow. The old text stays throughout.
+func TestDegradedNewVersionCappedAcrossRuns(t *testing.T) {
+	x := newFakeExtractor()
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "one.txt", "text/plain", []byte("1"), -1)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, f.downloadCount("a1"))
+
+	f.mutate("a1", 2, t0.Add(time.Hour))
+	f.downloadErr["a1"] = errors.New("request timed out")
+	var attempts []int
+	for range 6 {
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+		attempts = append(attempts, extractAttempts(t, d, src.ID, "a1"))
+	}
+	assert.Equal(t, []int{1, 2, 3, 3, 3, 3}, attempts)
+	assert.Equal(t, 1+3, f.downloadCount("a1"), "no download after the third try")
+	row, _ := loadAttachment(t, d, src.ID, "a1")
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, 1, row.version)
+	assert.Equal(t, []Section{{Text: "text of one.txt"}}, row.sections)
+}
+
+// TestDegradedCappedRowTakesALaterVersion: after the cap, a newer version
+// is listed as changed and gets a fresh budget; its success replaces the
+// old text.
+func TestDegradedCappedRowTakesALaterVersion(t *testing.T) {
+	x := newFakeExtractor()
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "one.txt", "text/plain", []byte("1"), -1)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	f.mutate("a1", 2, t0.Add(time.Hour))
+	f.downloadErr["a1"] = errors.New("request timed out")
+	for range 4 {
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+	}
+	require.Equal(t, 3, extractAttempts(t, d, src.ID, "a1"))
+
+	f.mutate("a1", 3, t0.Add(2*time.Hour))
+	f.find("a1").item.Title = "one-v3.txt"
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, extractAttempts(t, d, src.ID, "a1"), "a new version starts a new budget")
+	delete(f.downloadErr, "a1")
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	row, _ := loadAttachment(t, d, src.ID, "a1")
+	assert.Equal(t, "ok", row.status)
+	assert.Equal(t, 3, row.version)
+	assert.Equal(t, []Section{{Text: "text of one-v3.txt"}}, row.sections)
+	assert.Equal(t, 0, extractAttempts(t, d, src.ID, "a1"))
+	assert.NotContains(t, loadMeta(t, d, src.ID, "a1"), "pending_version", "a success clears the pending marker")
+}
+
+func loadMeta(t *testing.T, d interface {
+	QueryRow(string, ...any) *sql.Row
+}, sourceID int64, id string) string {
+	t.Helper()
+	var meta string
+	require.NoError(t, d.QueryRow(`SELECT meta_json FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
+		sourceID, id).Scan(&meta))
+	return meta
 }
 
 // TestOCRPendingOnNewVersionKeepsOldText: OCR failing on a new version of

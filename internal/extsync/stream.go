@@ -134,6 +134,9 @@ type pass struct {
 	// retried holds the attachments that failed transiently in this pass:
 	// the revisit step leaves them to the next cycle.
 	retried map[string]bool
+	// revisit marks the attachment revisit step (a retry of a stored row)
+	// as opposed to the delta stream (a newly listed version).
+	revisit bool
 }
 
 // batch is one Changed page ready to be applied.

@@ -67,9 +67,11 @@ func (x extraction) degraded() bool {
 // prefix is committed: the cursor moves to the prefix's max modification
 // time and the stored token is cleared (a provider token cannot be pinned
 // to a partial page), so the next cycle re-lists from the cursor — the
-// version gate makes the already-written refs free.
+// version gate makes the already-written refs free. The gate also skips a
+// version already tried and pending (see staleAttachmentRefs): its retries
+// belong to revisitAttachments.
 func (e *Engine) processAttachmentBatch(ctx context.Context, p pass, bt batch) (string, error) {
-	stale, err := staleRefs(ctx, e.db, p.src.ID, bt.refs)
+	stale, err := staleAttachmentRefs(ctx, e.db, p.src.ID, bt.refs)
 	if err != nil {
 		return "", err
 	}
@@ -192,7 +194,7 @@ func writeExtractions(ctx context.Context, q Queryer, p pass, items []*Item, res
 		}
 		var err error
 		if r.degraded() {
-			err = recordAttempt(ctx, q, p.src.ID, id, status)
+			err = recordAttempt(ctx, q, p.src.ID, id, status, it.Ref.Version, !p.revisit)
 			p.retried[id] = true
 		} else {
 			err = setExtractStatus(ctx, q, p.src.ID, id, status)
@@ -318,17 +320,6 @@ func setExtractStatus(ctx context.Context, q Queryer, sourceID int64, extID, sta
 	return nil
 }
 
-// recordAttempt records a degraded outcome (failed or ocr_pending) and
-// counts the attempt; a row with 0 < attempts < maxExtractAttempts is
-// retried by revisitAttachments.
-func recordAttempt(ctx context.Context, q Queryer, sourceID int64, extID, status string) error {
-	if _, err := q.ExecContext(ctx, `UPDATE ext_documents SET extract_status = ?, extract_attempts = extract_attempts + 1
-		WHERE source_id = ? AND ext_id = ?`, status, sourceID, extID); err != nil {
-		return fmt.Errorf("extsync: recording %s extraction of %s: %w", status, extID, err)
-	}
-	return nil
-}
-
 // revisitAttachments re-fetches and re-extracts, after the streams, the
 // stored attachment rows the delta never re-lists (their version did not
 // change):
@@ -348,6 +339,7 @@ func (e *Engine) revisitAttachments(ctx context.Context, p pass, b *budget) erro
 	if e.opts.Extractor == nil {
 		return nil
 	}
+	p.revisit = true
 	refs, err := revisitRefs(ctx, e.db, p.src.ID, e.opts.Extractor, p.retried)
 	if err != nil {
 		return err
