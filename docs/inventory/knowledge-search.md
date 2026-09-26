@@ -51,10 +51,16 @@ source is one change-range, so the 60s cycle budget can be overshot by a
 whole source on its first backfill; and `Build` runs inside the batch's write
 transaction (the daemon's connection is held while a batch renders).
 For the `confluence` source, a renamed user (a refreshed `ext_users` row)
-re-renders the documents that user authored or commented on, capped at 5000
-(user, document) pairs per cycle (`extUserRerenderLimit`); a wider fan-out,
-a user who is only @mentioned, and an attachment's parent-page title refresh
-only on the document's own next change or a `kb reindex`.
+re-renders the documents that user authored or commented on — every one,
+paged 5000 (user, document) pairs per `Changed` call through a key-based
+continuation (`extUserPageSize`, `internal/kb/source_ext_changed.go`). Its
+cursor (docs marker + users continuation) compares strictly and lists only
+seconds that are already over, so an idle install re-renders nothing (a row
+written in the current second waits one cycle); the one writer this can miss
+is a `confluence sync --force` racing the daemon inside an already-indexed
+second, which `kb reindex` repairs. A user who is only @mentioned, and an
+attachment's parent-page title, refresh only on the document's own next
+change or a `kb reindex`.
 `kb reindex` refuses while the sync daemon is running (unless `--force`) —
 the daemon's knowledge-index phase would otherwise race the rebuild's cursor
 resets.
@@ -116,4 +122,4 @@ DEV-01.
 
 - 2026-09-26: initial contracts KB-01..03 (spec `docs/superpowers/specs/2026-09-26-knowledge-search-design.md`).
 - 2026-09-26 (final-review fixes): KB-01 extended — thread promotion re-renders the root's channel-day (guard mutation added), cursors compare with `>=` (the same-second-writer limit is gone), title-only documents are indexed (the "title-only docs dropped" limit is gone), non-Slack sources reconcile every run; new documented limits (non-Slack one-range backfill overshoot, `Build` inside the write tx) and the `kb reindex` daemon refusal. KB-03 extended — hits carry `chunk`/`chunk_anchor`, `get_knowledge_document` opens at `from_chunk` (guard extended), and the prompts' link rule no longer builds links from namespaced ids.
-- 2026-09-26 (Confluence connector): no contract changed and no guard relaxed — the new `confluence` source (`internal/kb/source_ext.go`, over `ext_*`) joins all three guards: `kbSourceTables` gains `ext_documents`/`ext_comments`/`ext_users` (KB-01's "never writes a source table"), KB-01's incremental-vs-rebuild pass now also renames a comment author, drops a comment and hard-deletes an attachment, and KB-03's fixture covers eleven sources. KB-01 gains the documented Confluence re-render limits (rename fan-out cap, mentions, attachment parent title). Contracts for the connector itself: `docs/inventory/external-sources.md` (EXT-01..03).
+- 2026-09-26 (Confluence connector): no contract changed and no guard relaxed — the new `confluence` source (`internal/kb/source_ext.go`, over `ext_*`) joins all three guards: `kbSourceTables` gains `ext_documents`/`ext_comments`/`ext_users` (KB-01's "never writes a source table"), KB-01's incremental-vs-rebuild pass now also renames a comment author, drops a comment and hard-deletes an attachment, and KB-03's fixture covers eleven sources. KB-01 gains the documented Confluence cursor rules (strict, complete-seconds-only, paged users continuation) and re-render limits (mentions, attachment parent title). Contracts for the connector itself: `docs/inventory/external-sources.md` (EXT-01..03).

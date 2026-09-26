@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // extSource renders one document per ext_documents row of one external
@@ -17,17 +16,14 @@ import (
 // attachments with their extracted text. Refs are
 // "<provider>:<ext_sources.id>:<ext_id>". The ext_* tables are source data
 // written by internal/extsync; this adapter only reads them (KB-01).
-type extSource struct{ provider string }
+// Changed lives in source_ext_changed.go.
+type extSource struct {
+	provider string
+	// userLimit caps one Changed call's users-arm page; 0 = extUserPageSize.
+	userLimit int
+}
 
 func (s extSource) Name() string { return s.provider }
-
-// extUserRerenderLimit bounds the "a user was renamed" arm of Changed: one
-// cycle re-renders at most this many (user, document) pairs. A rename (or a
-// users-cache refresh) that fans out wider refreshes only this many
-// documents; the rest pick the new name up on their own next change or a
-// `kb reindex` (accepted v1 limit, docs/inventory/knowledge-search.md). The
-// arm's markers still advance the shared cursor, so it never re-lists.
-const extUserRerenderLimit = 5000
 
 // extMention matches a user-mention token in stored section/comment text —
 // the "@[~<accountId>]" shape confluence.MentionPrefix produces. kb does not
@@ -35,35 +31,6 @@ const extUserRerenderLimit = 5000
 // matched here; internal/confluence's TestMentionTokenMatchesKBPattern pins
 // the rendered token against this same pattern.
 var extMention = regexp.MustCompile(`@\[~([^\]]+)\]`)
-
-// Changed lists documents whose row was synced or whose comments changed
-// since cursor, plus documents authored (or commented on) by a user whose
-// cached name was refreshed since cursor, so a rename re-renders them.
-func (s extSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
-	keys, next, err := changedByColumn(ctx, q, cursor,
-		`SELECT ? || ':' || d.source_id || ':' || d.ext_id, MAX(d.synced_at, d.children_changed_at)
-		 FROM ext_documents d JOIN ext_sources s ON s.id = d.source_id
-		 WHERE s.provider = ? AND (d.synced_at >= ? OR d.children_changed_at >= ?)
-		 UNION ALL
-		 SELECT k, m FROM (
-		   SELECT ? || ':' || d.source_id || ':' || d.ext_id AS k, u.fetched_at AS m
-		   FROM ext_users u
-		   JOIN ext_documents d ON d.author_id = u.ext_user_id
-		   JOIN ext_sources s ON s.id = d.source_id AND s.provider = u.provider
-		   WHERE u.provider = ? AND u.fetched_at >= ?
-		   UNION
-		   SELECT ? || ':' || d.source_id || ':' || d.ext_id, u.fetched_at
-		   FROM ext_users u
-		   JOIN ext_comments c ON c.author_id = u.ext_user_id
-		   JOIN ext_documents d ON d.source_id = c.source_id AND d.ext_id = c.page_ext_id
-		   JOIN ext_sources s ON s.id = d.source_id AND s.provider = u.provider
-		   WHERE u.provider = ? AND u.fetched_at >= ?
-		   LIMIT `+strconv.Itoa(extUserRerenderLimit)+`)`,
-		s.provider, s.provider, cursor, cursor,
-		s.provider, s.provider, cursor,
-		s.provider, s.provider, cursor)
-	return keys, next, true, err
-}
 
 // Keys lists every stored document of the provider (reconciled every run).
 func (s extSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
@@ -193,7 +160,12 @@ func (s extSource) fillAttachment(ctx context.Context, doc *Doc, r *extRow, name
 func (s extSource) storedSections(ctx context.Context, r *extRow, names *extNames) ([]Section, error) {
 	var stored []storedSection
 	if err := json.Unmarshal([]byte(r.sectionsJSON), &stored); err != nil {
-		return nil, nil //nolint:nilerr // unreadable sections render as none (title-only), never fail the batch
+		// Unreadable sections render as none (title-only) rather than fail
+		// the whole batch. Not logged: internal/kb has no logger (the
+		// indexer reports only through Stats and returned errors), and
+		// extsync always writes sections_json via json.Marshal, so this is
+		// reachable only through a hand-edited row.
+		return nil, nil //nolint:nilerr // see above
 	}
 	out := make([]Section, 0, len(stored))
 	for _, st := range stored {
@@ -225,13 +197,23 @@ func (s extSource) commentSections(ctx context.Context, r *extRow, names *extNam
 		if err != nil {
 			return nil, err
 		}
-		anchor := c.id
-		if r.url != "" {
-			anchor = r.url + "?focusedCommentId=" + c.id
-		}
-		out = append(out, Section{Text: text, Anchor: anchor})
+		out = append(out, Section{Text: text, Anchor: commentAnchor(r.url, c.id)})
 	}
 	return out, nil
+}
+
+// commentAnchor is the focused-comment deep link of comment id on a page at
+// pageURL (the comment id alone without a URL). A URL that already carries a
+// query (viewpage.action?pageId=…) gets the parameter appended with "&".
+func commentAnchor(pageURL, id string) string {
+	if pageURL == "" {
+		return id
+	}
+	sep := "?"
+	if strings.Contains(pageURL, "?") {
+		sep = "&"
+	}
+	return pageURL + sep + "focusedCommentId=" + id
 }
 
 // extComment is one ext_comments row.

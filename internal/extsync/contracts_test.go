@@ -22,7 +22,8 @@ func countRows(t *testing.T, d *db.DB, query string, args ...any) int {
 
 // TestEXT02_UnselectLeavesNoRowsAndNoIndex — EXT-02 (selection is honest):
 // a synced and indexed space, once unselected (DeleteExtSource, what
-// `confluence unselect` and account removal do), leaves no ext_documents /
+// `confluence unselect` does; `jira remove` is non-destructive and does not
+// call it — see docs/inventory/external-sources.md), leaves no ext_documents /
 // ext_comments / ext_sources row, the engine never calls the fetcher for it
 // again, and the next KB cycle leaves no kb_documents row with its prefix.
 func TestEXT02_UnselectLeavesNoRowsAndNoIndex(t *testing.T) {
@@ -40,7 +41,7 @@ func TestEXT02_UnselectLeavesNoRowsAndNoIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, countDocs(t, d, src.ID))
 	require.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM ext_comments WHERE source_id = ?`, src.ID))
-	_, err = kb.Run(ctx, d, kb.Options{Sources: []string{"confluence"}})
+	_, err = kb.Run(ctx, d, kb.Options{Sources: []string{"confluence"}, Now: nextCycle()})
 	require.NoError(t, err)
 	prefix := "confluence:" + strconv.FormatInt(src.ID, 10) + ":%"
 	require.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM kb_documents WHERE id LIKE ?`, prefix), "the space was indexed")
@@ -59,8 +60,13 @@ func TestEXT02_UnselectLeavesNoRowsAndNoIndex(t *testing.T) {
 	assert.Equal(t, callsBefore, f.netCalls, "an unselected space is never fetched")
 	f.mu.Unlock()
 
-	_, err = kb.Run(ctx, d, kb.Options{Sources: []string{"confluence"}})
+	_, err = kb.Run(ctx, d, kb.Options{Sources: []string{"confluence"}, Now: nextCycle()})
 	require.NoError(t, err)
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM kb_documents WHERE id LIKE ?`, prefix), "the next KB cycle drops the space")
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM kb_chunks WHERE doc_id LIKE ?`, prefix))
 }
+
+// nextCycle is a KB cycle clock safely after the sync's writes: the KB lists
+// only markers from seconds that are over, and the fake sync just stamped
+// the current one.
+func nextCycle() time.Time { return time.Now().Add(2 * time.Second) }

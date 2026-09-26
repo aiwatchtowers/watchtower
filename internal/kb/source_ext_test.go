@@ -2,8 +2,10 @@ package kb
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,9 +53,11 @@ func passCursorBeyondPage(t *testing.T, d *db.DB) {
 	exec(t, d, `UPDATE ext_documents SET synced_at = '2026-09-24T00:00:00Z' WHERE ext_id = 'att9'`)
 	_, err := Run(context.Background(), d, Options{Sources: []string{"confluence"}, Now: testNow()})
 	require.NoError(t, err)
-	var cursor string
-	require.NoError(t, d.QueryRow(`SELECT cursor FROM kb_sources WHERE source = 'confluence'`).Scan(&cursor))
-	require.Equal(t, "2026-09-24T00:00:00Z", cursor)
+	var raw string
+	require.NoError(t, d.QueryRow(`SELECT cursor FROM kb_sources WHERE source = 'confluence'`).Scan(&raw))
+	cursor, err := parseExtCursor(raw)
+	require.NoError(t, err)
+	require.Equal(t, "2026-09-24T00:00:00Z", cursor.Docs)
 }
 
 func TestConfluence_BuildPage(t *testing.T) {
@@ -145,7 +149,7 @@ func TestConfluence_RunRenameDeleteSearch(t *testing.T) {
 
 	// A long first section pushes the heading into its own chunk, whose
 	// anchor is the heading deep link.
-	exec(t, d, `UPDATE ext_documents SET sections_json = ?, synced_at = '2026-09-21T11:00:00Z' WHERE ext_id = '101'`,
+	exec(t, d, `UPDATE ext_documents SET sections_json = ?, synced_at = '2026-09-22T11:00:00Z' WHERE ext_id = '101'`,
 		`[{"text":"`+strings.Repeat("канарейка ", 198)+`"},{"heading":"Release plan","anchor":"Release-plan","text":"Release plan\nOwner @[~u1]"}]`)
 	_, err = Run(ctx, d, Options{Sources: []string{"confluence"}, Now: testNow()})
 	require.NoError(t, err)
@@ -195,9 +199,107 @@ func TestConfluence_ChangedSeesChildrenChangedAt(t *testing.T) {
 	d := db.OpenTestDB(t)
 	seedConfluence(t, d)
 	exec(t, d, `UPDATE ext_documents SET children_changed_at = '2026-09-23T09:00:00Z' WHERE ext_id = '101'`)
-	keys, next, done, err := extSource{provider: "confluence"}.Changed(ctx, d, "2026-09-22T00:00:00Z", testNow())
+	// The users arm is already past every user, so only the docs arm lists.
+	cur := extCursor{Docs: "2026-09-22T00:00:00Z", UserTS: "2026-09-25T00:00:00Z"}
+	keys, next, done, err := extSource{provider: "confluence"}.Changed(ctx, d, cur.String(), testNow())
 	require.NoError(t, err)
 	assert.True(t, done)
 	assert.Equal(t, []string{confluencePageRef}, keys)
-	assert.Equal(t, "2026-09-23T09:00:00Z", next)
+	cur.Docs = "2026-09-23T09:00:00Z"
+	assert.Equal(t, cur.String(), next)
+}
+
+// countingSource counts Build calls of the wrapped source.
+type countingSource struct {
+	Source
+	builds *int
+}
+
+func (c countingSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
+	*c.builds++
+	return c.Source.Build(ctx, q, key)
+}
+
+func countingRunner(src extSource, builds *int) runner {
+	return runner{sources: func() []Source { return []Source{countingSource{Source: src, builds: builds}} }, clock: time.Now}
+}
+
+// Fix round 1, finding 1: extsync stamps every user of a pass with the same
+// second, which is often the highest marker. On an idle install a later KB
+// cycle must re-list nothing — the old ">=" users arm re-built every
+// (user, document) pair at that second on every cycle.
+func TestConfluence_IdleCycleBuildsNothing(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedConfluence(t, d)
+	// The users' refresh is the newest write of the pass: its second is the
+	// highest marker, exactly where the cursor lands.
+	exec(t, d, `UPDATE ext_users SET fetched_at = '2026-09-22T11:00:00Z'`)
+	var builds int
+	r := countingRunner(extSource{provider: "confluence"}, &builds)
+	_, err := r.run(ctx, d, Options{Now: testNow()})
+	require.NoError(t, err)
+	require.Positive(t, builds)
+	builds = 0
+	_, err = r.run(ctx, d, Options{Now: testNow().Add(time.Hour)})
+	require.NoError(t, err)
+	assert.Zero(t, builds, "an idle cycle must build nothing")
+}
+
+// A marker from the second that is still running is listed only once that
+// second is over, so a write landing later in the same second is never
+// skipped by the strict comparison.
+func TestConfluence_CurrentSecondWaits(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedConfluence(t, d)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 500e6, time.UTC)
+	exec(t, d, `UPDATE ext_documents SET synced_at = '2026-09-26T12:00:00Z' WHERE ext_id = 'att9'`)
+	// Users arm already past every user: only the docs arm is under test.
+	cursor := extCursor{UserTS: "2026-09-25T00:00:00Z"}.String()
+	keys, _, _, err := extSource{provider: "confluence"}.Changed(ctx, d, cursor, now)
+	require.NoError(t, err)
+	assert.NotContains(t, keys, "confluence:1:att9", "the current second is not over yet")
+	keys, _, _, err = extSource{provider: "confluence"}.Changed(ctx, d, cursor, now.Add(time.Second))
+	require.NoError(t, err)
+	assert.Contains(t, keys, "confluence:1:att9")
+}
+
+// A rename fanning out wider than one users page drains fully through the
+// key-based continuation: every document re-renders, none twice, and the
+// next idle cycle builds nothing.
+func TestConfluence_UserRenameBeyondPageDrains(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedConfluence(t, d)
+	for i := 0; i < 5; i++ {
+		exec(t, d, `INSERT INTO ext_documents (source_id, ext_id, kind, title, url, author_id, modified_at, sections_json, synced_at)
+			VALUES (1, ?, 'page', 'Note', '', 'u9', '2026-09-10T10:00:00Z', '[{"text":"by @[~u9]"}]', '2026-09-10T11:00:00Z')`,
+			fmt.Sprintf("9%d", i))
+	}
+	exec(t, d, `INSERT INTO ext_users (provider, ext_user_id, display_name, fetched_at) VALUES ('confluence', 'u9', 'Zed', '2026-09-20T11:00:00Z')`)
+	var builds int
+	r := countingRunner(extSource{provider: "confluence", userLimit: 2}, &builds)
+	_, err := r.run(ctx, d, Options{Now: testNow()})
+	require.NoError(t, err)
+
+	exec(t, d, `UPDATE ext_users SET display_name = 'Zelda', fetched_at = '2026-09-25T11:00:00Z' WHERE ext_user_id = 'u9'`)
+	builds = 0
+	_, err = r.run(ctx, d, Options{Now: testNow()})
+	require.NoError(t, err)
+	assert.Equal(t, 5, builds, "each of the five documents re-renders exactly once")
+	for i := 0; i < 5; i++ {
+		assert.Contains(t, chunkBodies(t, d, fmt.Sprintf("confluence:1:9%d", i)), "@Zelda")
+	}
+	builds = 0
+	_, err = r.run(ctx, d, Options{Now: testNow()})
+	require.NoError(t, err)
+	assert.Zero(t, builds)
+}
+
+func TestConfluence_CommentAnchorKeepsQuery(t *testing.T) {
+	assert.Equal(t, "https://x/wiki/pages/1?focusedCommentId=5", commentAnchor("https://x/wiki/pages/1", "5"))
+	assert.Equal(t, "https://x/pages/viewpage.action?pageId=1&focusedCommentId=5",
+		commentAnchor("https://x/pages/viewpage.action?pageId=1", "5"))
+	assert.Equal(t, "5", commentAnchor("", "5"))
 }
