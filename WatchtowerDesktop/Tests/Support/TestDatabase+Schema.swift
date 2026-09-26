@@ -1069,5 +1069,59 @@ extension TestDatabase {
         done_at     TEXT    NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
+    -- ext_sources / ext_documents copied verbatim from internal/db/schema.sql (migration 00074)
+    CREATE TABLE IF NOT EXISTS ext_sources (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider         TEXT NOT NULL CHECK (provider IN ('confluence')),
+      jira_account_id  INTEGER REFERENCES jira_accounts(id) ON DELETE CASCADE,
+      connection_id    INTEGER REFERENCES external_connections(id) ON DELETE CASCADE,
+      container_key    TEXT NOT NULL,
+      container_ext_id TEXT NOT NULL DEFAULT '',
+      container_name   TEXT NOT NULL DEFAULT '',
+      enabled          INTEGER NOT NULL DEFAULT 1,
+      page_cursor       TEXT NOT NULL DEFAULT '',
+      comment_cursor    TEXT NOT NULL DEFAULT '',
+      attachment_cursor TEXT NOT NULL DEFAULT '',
+      page_token        TEXT NOT NULL DEFAULT '',
+      comment_token     TEXT NOT NULL DEFAULT '',
+      attachment_token  TEXT NOT NULL DEFAULT '',
+      backfill_done    INTEGER NOT NULL DEFAULT 0,
+      last_reconcile_at TEXT NOT NULL DEFAULT '',
+      last_synced_at   TEXT NOT NULL DEFAULT '',
+      status           TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error','needs_consent','revoked')),
+      error            TEXT NOT NULL DEFAULT '',
+      created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+      CHECK ((jira_account_id IS NULL) != (connection_id IS NULL))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_sources_jira ON ext_sources(provider, jira_account_id, container_key)
+      WHERE jira_account_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_sources_conn ON ext_sources(provider, connection_id, container_key)
+      WHERE connection_id IS NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS ext_documents (
+      source_id     INTEGER NOT NULL REFERENCES ext_sources(id) ON DELETE CASCADE,
+      ext_id        TEXT NOT NULL,
+      kind          TEXT NOT NULL CHECK (kind IN ('page','blogpost','attachment')),
+      parent_ext_id TEXT NOT NULL DEFAULT '',
+      title         TEXT NOT NULL DEFAULT '',
+      url           TEXT NOT NULL DEFAULT '',
+      version       INTEGER NOT NULL DEFAULT 0,
+      status        TEXT NOT NULL DEFAULT 'current',
+      author_id     TEXT NOT NULL DEFAULT '',
+      created_at    TEXT NOT NULL DEFAULT '',
+      modified_at   TEXT NOT NULL DEFAULT '',
+      sections_json TEXT NOT NULL DEFAULT '[]',
+      meta_json     TEXT NOT NULL DEFAULT '{}',
+      media_type    TEXT NOT NULL DEFAULT '',
+      size_bytes    INTEGER NOT NULL DEFAULT 0,
+      extract_status TEXT NOT NULL DEFAULT 'ok'
+          CHECK (extract_status IN ('ok','skipped_type','too_large','ocr_pending','ocr_unavailable','failed')),
+      extract_attempts INTEGER NOT NULL DEFAULT 0,
+      children_changed_at TEXT NOT NULL DEFAULT '',
+      synced_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+      PRIMARY KEY (source_id, ext_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ext_documents_synced ON ext_documents(synced_at);
+    CREATE INDEX IF NOT EXISTS idx_ext_documents_parent ON ext_documents(source_id, parent_ext_id);
     """
 }

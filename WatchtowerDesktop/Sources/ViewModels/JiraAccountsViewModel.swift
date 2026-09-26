@@ -84,9 +84,19 @@ final class JiraAccountsViewModel {
     // MARK: - Re-login
 
     /// Builds the `jira login` args for re-consenting an existing account.
-    /// Pure and side-effect-free.
+    /// Pure and side-effect-free. `withConfluence` adds `--with-confluence`
+    /// (the Confluence scopes, opt-in on the CLI side); the default Re-login
+    /// never asks for them.
+    static func loginArgs(accountID: Int, withConfluence: Bool = false) -> [String] {
+        var args = ["jira", "login", "--account", String(accountID), "--app-return"]
+        if withConfluence {
+            args.append("--with-confluence")
+        }
+        return args
+    }
+
     static func loginArgs(for account: JiraAccount) -> [String] {
-        ["jira", "login", "--account", String(account.id), "--app-return"]
+        loginArgs(accountID: account.id)
     }
 
     /// Re-consents `account` via `watchtower jira login --account <id>` — same
@@ -94,6 +104,16 @@ final class JiraAccountsViewModel {
     /// account's status is "error"/"revoked" and needs a fresh grant.
     func relogin(_ account: JiraAccount) async {
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed")
+    }
+
+    /// Settings → Jira → Confluence "Grant Confluence access": the same
+    /// re-consent flow with `--with-confluence`, so the new grant carries the
+    /// Confluence scopes.
+    func reloginWithConfluence(accountID: Int) async {
+        await runAuthFlow(
+            args: Self.loginArgs(accountID: accountID, withConfluence: true),
+            failurePrefix: "Granting Confluence access failed"
+        )
     }
 
     func cancelConnect() {

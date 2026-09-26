@@ -200,6 +200,11 @@ final class AppState {
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
 
+    /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
+    /// held here so a select/unselect or re-consent still running when the
+    /// Settings pane goes away finishes and is visible on return.
+    private(set) var confluenceSpacesViewModels: [Int64: ConfluenceSpacesViewModel] = [:]
+
     /// External Connections ("Quick Connections") ViewModel — persists across
     /// tab switches so an in-flight add/remove survives navigating away from
     /// the Settings window.
@@ -758,10 +763,31 @@ final class AppState {
         vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
         vm.refresh()
         jiraAccountsViewModel = vm
+        // Pickers built over a previous pool would read a stale database.
+        confluenceSpacesViewModels = [:]
         // Browse-URL resolution reads jira_accounts.site_url — wire the pool
         // here, the same point the sibling VM gets its pool, so per-issue
         // links resolve from the DB instead of the frozen config keys.
         JiraConfigHelper.configure(dbPool: dbPool)
+    }
+
+    /// The Confluence spaces picker for `accountID`, created on first use
+    /// (nil until the DB is open). `runner` only matters on that first call.
+    /// "Grant Confluence access" runs the Jira account's own login flow with
+    /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
+    /// and errors land where every other Jira re-login's do.
+    @discardableResult
+    func confluenceSpacesViewModel(
+        forJiraAccount accountID: Int64,
+        runner: CLIRunnerProtocol? = ProcessCLIRunner.makeDefault()
+    ) -> ConfluenceSpacesViewModel? {
+        if let existing = confluenceSpacesViewModels[accountID] { return existing }
+        guard let pool = databaseManager?.dbPool else { return nil }
+        let vm = ConfluenceSpacesViewModel(accountID: accountID, dbPool: pool, runner: runner) { [weak self] id in
+            await self?.jiraAccountsViewModel?.reloginWithConfluence(accountID: Int(id))
+        }
+        confluenceSpacesViewModels[accountID] = vm
+        return vm
     }
 
     func initExternalConnections(dbPool: DatabasePool) {
