@@ -49,11 +49,14 @@ func (e *Engine) reconcile(ctx context.Context, p pass) error {
 	deleted := 0
 	err := e.withTx(ctx, func(q Queryer) error {
 		for i, rs := range reconcileSets {
-			n, err := deleteAbsent(ctx, q, p.src.ID, rs.local, remote[i])
+			gone, err := deleteAbsent(ctx, q, p.src.ID, rs.local, remote[i])
 			if err != nil {
 				return err
 			}
-			deleted += n
+			if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, gone); err != nil {
+				return err
+			}
+			deleted += len(gone)
 		}
 		if _, err := q.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
 			formatTime(e.opts.Now()), p.src.ID); err != nil {
@@ -88,23 +91,23 @@ func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (m
 }
 
 // deleteAbsent deletes the local documents of kinds whose ext id is not in
-// remote, returning how many went.
-func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]bool) (int, error) {
+// remote, returning their ids.
+func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]bool) ([]string, error) {
 	local, err := localIDs(ctx, q, sourceID, kinds)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var gone []string
 	for _, id := range local {
 		if remote[id] {
 			continue
 		}
 		if err := deleteDocument(ctx, q, sourceID, id); err != nil {
-			return 0, err
+			return nil, err
 		}
-		n++
+		gone = append(gone, id)
 	}
-	return n, nil
+	return gone, nil
 }
 
 // localIDs lists the stored document ids of kinds. The rows are closed

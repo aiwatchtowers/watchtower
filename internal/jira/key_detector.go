@@ -4,19 +4,20 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/jirakey"
 )
 
 // KeyRegexp matches Jira issue keys like "PROJ-123". Exported so other
 // packages that need the same pattern without the known-project-key
 // filtering `KeyDetector` applies (e.g. internal/confluence's storage-format
-// converter) can reuse it directly instead of duplicating the regex.
-var KeyRegexp = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+-\d+)\b`)
+// converter) can reuse it directly instead of duplicating the regex. It is
+// the dependency-free internal/jirakey pattern, re-exported here.
+var KeyRegexp = jirakey.KeyRegexp
 
 // KeyDetector detects Jira issue keys in text and links them to Slack messages.
 type KeyDetector struct {

@@ -21,7 +21,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/doclinks"
+	"watchtower/internal/doclinks/linkscan"
 	"watchtower/internal/extsync"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
@@ -974,7 +974,7 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 // cycles as it takes; cursors persist per batch.
 const docLinkScanBudget = 20 * time.Second
 
-// scanDocLinks runs doclinks.ScanSources after the engine (spec §10). It
+// scanDocLinks runs linkscan.ScanSources after the engine (spec §10). It
 // runs only inside phaseExternalSync's gates (feature on, ≥1 space
 // selected) and ScanSources itself skips when no enabled source or no
 // connected site exists. A shutdown mid-scan is not an error: every
@@ -985,7 +985,7 @@ func (d *Daemon) scanDocLinks(ctx context.Context) (int, error) {
 		return 0, nil // shutting down: nothing started, nothing to report
 	default:
 	}
-	n, err := doclinks.ScanSources(ctx, d.db, docLinkScanBudget)
+	n, err := linkscan.ScanSources(ctx, d.db, docLinkScanBudget)
 	if err != nil {
 		if isBenignShutdownErr(ctx, err) {
 			return n, nil

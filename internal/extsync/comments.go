@@ -44,7 +44,7 @@ func (e *Engine) processCommentBatch(ctx context.Context, p pass, bt batch) (str
 			}
 			written += len(sets[i])
 		}
-		if err := relinkDocs(ctx, q, p.src.ID, parents); err != nil {
+		if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, parents); err != nil {
 			return err
 		}
 		return saveStream(ctx, q, p.src.ID, p.spec.name, cursor, bt.token)

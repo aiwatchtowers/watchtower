@@ -262,7 +262,7 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 			}
 			st.Comments += len(sets[i])
 		}
-		if err := relinkDocs(ctx, q, p.src.ID, writtenIDs(items)); err != nil {
+		if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, refIDs(stale)); err != nil {
 			return err
 		}
 		return saveBatchState(ctx, q, p, bt, cursor)

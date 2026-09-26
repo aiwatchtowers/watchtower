@@ -1,4 +1,4 @@
-package doclinks
+package linkscan
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/doclinks"
 	"watchtower/internal/kb"
 )
 
@@ -76,7 +77,7 @@ var wantRefs = []string{
 
 func inboundRefs(t *testing.T, d *db.DB) []string {
 	t.Helper()
-	links, err := d.DocLinksTo(ToConfluencePage, "c1:1001", 100)
+	links, err := d.DocLinksTo(doclinks.ToConfluencePage, "c1:1001", 100)
 	require.NoError(t, err)
 	var out []string
 	for _, l := range links {

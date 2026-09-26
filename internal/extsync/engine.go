@@ -95,6 +95,16 @@ func (e *Engine) Run(ctx context.Context) (Stats, error) {
 			break
 		}
 	}
+	if !st.Incomplete {
+		// With the budget left after the sources: the one-shot relink of
+		// documents stored before links existed (a single read once done).
+		if err := e.relinkBackfill(ctx, b); err != nil {
+			if ctx.Err() != nil {
+				return st, ctx.Err()
+			}
+			errs = append(errs, err)
+		}
+	}
 	return st, errors.Join(errs...)
 }
 

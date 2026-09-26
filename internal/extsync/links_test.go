@@ -11,7 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/doclinks"
 )
+
+// linkConfluence is the production linker cmd wires (a test-only import:
+// the engine itself never imports doclinks — TestEXT04_EngineImportsNoLinkOrAIPackages).
+func linkConfluence(ctx context.Context, q Queryer, ref string, texts ...string) error {
+	return doclinks.LinkConfluenceDoc(ctx, q, ref, texts...)
+}
 
 // setText gives document id new text, version and modification time.
 func (f *fakeFetcher) setText(id string, version int, modified time.Time, text string) {
@@ -51,7 +58,7 @@ func TestLinks_PageAndCommentsReplacedOnEveryWrite(t *testing.T) {
 	f.addComment("c1", "p1", 1, t0, "blocked by PROJ-2")
 	f.addPage("p2", 1, t0)
 	f.setText("p2", 1, t0, "Unrelated OTHER-9")
-	e := New(d, Options{})
+	e := New(d, Options{Relink: linkConfluence})
 	e.SetFetcher(src.JiraAccountID, f)
 
 	_, err := e.Run(ctx)
@@ -84,7 +91,7 @@ func TestLinks_ReconcileDeletionUnlinks(t *testing.T) {
 	f := newFake()
 	f.addPage("p1", 1, t0)
 	f.setText("p1", 1, t0, "PROJ-1")
-	e := New(d, Options{})
+	e := New(d, Options{Relink: linkConfluence})
 	e.SetFetcher(src.JiraAccountID, f)
 	_, err := e.Run(ctx)
 	require.NoError(t, err)
@@ -102,7 +109,11 @@ func TestLinks_ReconcileDeletionUnlinks(t *testing.T) {
 // An attachment's extracted text links as its own document.
 func TestLinks_AttachmentText(t *testing.T) {
 	ctx := context.Background()
-	d, src, f, e := newAttachmentEngine(t, newFakeExtractor())
+	d, src := newSourceDB(t)
+	f := newFake()
+	f.addPage("p1", 1, t0)
+	e := New(d, Options{Extractor: newFakeExtractor(), Relink: linkConfluence})
+	e.SetFetcher(src.JiraAccountID, f)
 	f.addAttachment("a1", "p1", 1, t0, "PROJ-7 spec.txt", "text/plain", []byte("hello"), -1)
 	_, err := e.Run(ctx)
 	require.NoError(t, err)

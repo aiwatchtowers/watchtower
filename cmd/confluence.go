@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/confluence"
 	"watchtower/internal/db"
+	"watchtower/internal/doclinks"
 	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
@@ -430,6 +432,11 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout, extract.WithLogger(logger)),
 		},
 		ScopesOK: func(id int64) bool { return confluenceScopesOK(wd, id) },
+		// Jira keys in stored Confluence text → doc_links (spec §10). Wired
+		// here so the engine stays free of link/Atlassian packages.
+		Relink: func(ctx context.Context, q extsync.Queryer, ref string, texts ...string) error {
+			return doclinks.LinkConfluenceDoc(ctx, q, ref, texts...)
+		},
 	}
 }
 

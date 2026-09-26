@@ -1,4 +1,9 @@
-package doclinks
+// Package linkscan detects Confluence page links in the other synced sources
+// (Slack, Gmail, IMAP, Jira) and records them in doc_links. It is split from
+// internal/doclinks because it imports internal/kb (for the Slack document
+// ref), which the transaction-side linker extsync is wired with must not
+// pull.
+package linkscan
 
 import (
 	"context"
@@ -10,6 +15,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/doclinks"
 	"watchtower/internal/kb"
 )
 
@@ -20,7 +26,7 @@ const scanBatchSize = 1000
 // likeConfluence is the SQL prefilter: only a row whose text contains a
 // Confluence wiki URL is returned with its text; every other row is read for
 // its cursor position alone.
-const likeConfluence = `'%` + confluenceURLMatch + `%'`
+const likeConfluence = `'%` + doclinks.URLPrefilter + `%'`
 
 // scanRow is one source row: the knowledge ref of the document it renders
 // into, its text ("" when it cannot hold a link) and its cursor position.
@@ -33,7 +39,7 @@ type scanRow struct {
 // cursor (and before horizon, for timestamp cursors) in cursor order.
 type scanKind struct {
 	key, fromKind string
-	read          func(ctx context.Context, q Queryer, cursor, horizon string, limit int) ([]scanRow, error)
+	read          func(ctx context.Context, q doclinks.Queryer, cursor, horizon string, limit int) ([]scanRow, error)
 }
 
 // scanKinds lists the sources in scan order. Slack walks messages by a
@@ -125,7 +131,7 @@ func scan(ctx context.Context, d *db.DB, opt scanOptions) (scanStats, error) {
 	if err != nil || !on {
 		return scanStats{}, err
 	}
-	hosts, err := SiteHosts(ctx, d)
+	hosts, err := doclinks.SiteHosts(ctx, d)
 	if err != nil || len(hosts) == 0 {
 		return scanStats{}, err
 	}
@@ -147,7 +153,7 @@ func scan(ctx context.Context, d *db.DB, opt scanOptions) (scanStats, error) {
 	return s.st, nil
 }
 
-func hasEnabledSource(ctx context.Context, q Queryer) (bool, error) {
+func hasEnabledSource(ctx context.Context, q doclinks.Queryer) (bool, error) {
 	var on bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ext_sources WHERE provider = 'confluence' AND enabled = 1)`).
 		Scan(&on); err != nil {
@@ -217,13 +223,13 @@ func (s *scanner) batch(ctx context.Context, k scanKind) (int, error) {
 
 // link inserts the page links of rows; a newly linked page is stamped so
 // the knowledge index re-renders its inbound counts.
-func (s *scanner) link(ctx context.Context, q Queryer, fromKind string, rows []scanRow) (int, error) {
+func (s *scanner) link(ctx context.Context, q doclinks.Queryer, fromKind string, rows []scanRow) (int, error) {
 	linked := 0
 	stamp := time.Now().UTC().Format(time.RFC3339)
 	for _, r := range rows {
-		for _, page := range ConfluencePageIDs(r.text, s.hosts) {
+		for _, page := range doclinks.ConfluencePageIDs(r.text, s.hosts) {
 			res, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO doc_links (from_kind, from_ref, to_kind, to_ref)
-				VALUES (?, ?, ?, ?)`, fromKind, r.ref, ToConfluencePage, page)
+				VALUES (?, ?, ?, ?)`, fromKind, r.ref, doclinks.ToConfluencePage, page)
 			if err != nil {
 				return 0, fmt.Errorf("doclinks: linking %s → %s: %w", r.ref, page, err)
 			}
@@ -242,7 +248,7 @@ func (s *scanner) link(ctx context.Context, q Queryer, fromKind string, rows []s
 // stampPage marks the synced copies of page ("<cloud_id>:<page_id>") for a
 // knowledge-index re-render (children_changed_at is the KB's re-render
 // marker). A page not synced here is a no-op.
-func stampPage(ctx context.Context, q Queryer, page, stamp string) error {
+func stampPage(ctx context.Context, q doclinks.Queryer, page, stamp string) error {
 	cloud, id, _ := strings.Cut(page, ":")
 	if _, err := q.ExecContext(ctx, `UPDATE ext_documents SET children_changed_at = ?
 		WHERE ext_id = ? AND source_id IN (
@@ -253,7 +259,7 @@ func stampPage(ctx context.Context, q Queryer, page, stamp string) error {
 	return nil
 }
 
-func loadCursor(ctx context.Context, q Queryer, key string) (string, error) {
+func loadCursor(ctx context.Context, q doclinks.Queryer, key string) (string, error) {
 	var c string
 	err := q.QueryRowContext(ctx, `SELECT cursor FROM ext_link_state WHERE from_kind = ?`, key).Scan(&c)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -265,7 +271,7 @@ func loadCursor(ctx context.Context, q Queryer, key string) (string, error) {
 	return c, nil
 }
 
-func saveCursor(ctx context.Context, q Queryer, key, cursor string) error {
+func saveCursor(ctx context.Context, q doclinks.Queryer, key, cursor string) error {
 	if _, err := q.ExecContext(ctx, `INSERT INTO ext_link_state (from_kind, cursor) VALUES (?, ?)
 		ON CONFLICT(from_kind) DO UPDATE SET cursor = excluded.cursor`, key, cursor); err != nil {
 		return fmt.Errorf("doclinks: saving %s cursor: %w", key, err)
@@ -276,7 +282,7 @@ func saveCursor(ctx context.Context, q Queryer, key, cursor string) error {
 // readSlack reads messages after the rowid cursor. A cursor past MAX(rowid)
 // (the table was wiped or restored from an older copy) restarts from the
 // top; INSERT OR IGNORE keeps the rescan idempotent.
-func readSlack(ctx context.Context, q Queryer, cursor, _ string, limit int) ([]scanRow, error) {
+func readSlack(ctx context.Context, q doclinks.Queryer, cursor, _ string, limit int) ([]scanRow, error) {
 	after, _ := strconv.ParseInt(cursor, 10, 64) // "" = 0, a backfill
 	var maxID int64
 	if err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM messages`).Scan(&maxID); err != nil {
@@ -308,8 +314,8 @@ func readSlack(ctx context.Context, q Queryer, cursor, _ string, limit int) ([]s
 // read: strictly after it, so a second shared by more rows than a batch is
 // walked through by rowid and never re-listed; and only seconds before
 // horizon, so a row written later in the current second is not skipped.
-func syncedReader(query string) func(ctx context.Context, q Queryer, cursor, horizon string, limit int) ([]scanRow, error) {
-	return func(ctx context.Context, q Queryer, cursor, horizon string, limit int) ([]scanRow, error) {
+func syncedReader(query string) func(ctx context.Context, q doclinks.Queryer, cursor, horizon string, limit int) ([]scanRow, error) {
+	return func(ctx context.Context, q doclinks.Queryer, cursor, horizon string, limit int) ([]scanRow, error) {
 		ts, rowidStr, _ := strings.Cut(cursor, "|")
 		rowid, _ := strconv.ParseInt(rowidStr, 10, 64) // "" = 0, a backfill
 		rows, err := q.QueryContext(ctx, query, ts, horizon, ts, rowid, limit)

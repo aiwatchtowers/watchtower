@@ -33,6 +33,9 @@ func TestConfluencePageIDs(t *testing.T) {
 			"https://acme.atlassian.net/wiki/spaces/ENG/pages/2 and https://acme.atlassian.net/wiki/spaces/OPS/pages/1/X " +
 				"and again https://acme.atlassian.net/wiki/spaces/ENG/pages/2/Y",
 			[]string{"c1:2", "c1:1"}},
+		{"blog post with title", "see https://acme.atlassian.net/wiki/spaces/ENG/blog/2026/09/20/4455/Release+notes",
+			[]string{"c1:4455"}},
+		{"blog list (no date + id) is not a post", "https://acme.atlassian.net/wiki/spaces/ENG/blog/2026/09/20", nil},
 		{"foreign host is not ours", "https://other.atlassian.net/wiki/spaces/ENG/pages/5", nil},
 		{"tiny link ignored in v1", "https://acme.atlassian.net/wiki/x/AbCdEf", nil},
 		{"space overview is not a page", "https://acme.atlassian.net/wiki/spaces/ENG/overview", nil},

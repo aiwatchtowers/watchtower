@@ -104,6 +104,25 @@ crash sweep by `TestSweepStaleRemovesCrashLeftovers`
 (`internal/extract/sweep_test.go`) and `TestEngineSweepsTempFilesEachRun`
 (`internal/extsync/ocr_retry_test.go`).
 
+## EXT-04 — the sync engine stays generic
+
+**Status:** Enforced
+
+**Observable:** `internal/extsync` depends on no Atlassian-, link- or
+AI-specific package: not `internal/jira`, `internal/confluence`,
+`internal/doclinks`, `internal/kb`, `internal/ai` or `internal/digest`,
+directly or transitively. Provider behavior comes in through interfaces
+(`Fetcher`, `Extractor`) and cross-source links through the injected
+`Options.Relink` (cmd wires `doclinks.LinkConfluenceDoc`; nil = no links).
+The Jira key pattern lives in the dependency-free `internal/jirakey`, which
+`internal/jira` re-exports, so the linker does not pull the AI stack either.
+
+**Guard:** `TestEXT04_EngineImportsNoLinkOrAIPackages`
+(`internal/extsync/links_backfill_test.go`) — runs `go list -deps
+watchtower/internal/extsync` and asserts none of the packages above (or
+their subpackages) appears; a scan floor requires `internal/db` in the list
+so an empty or failed listing cannot pass.
+
 ## Knowledge-search contracts
 
 KB-01..03 (`docs/inventory/knowledge-search.md`) extend to the `confluence`
@@ -112,6 +131,10 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-09-27: EXT-04 added — the engine's doc_links hook is injected
+  (`Options.Relink`), the Jira key pattern moved to `internal/jirakey`, and
+  the Slack/mail/Jira link scanner lives in `internal/doclinks/linkscan`.
 
 - 2026-09-26: EXT-03 extended to crash residue (stale temp files swept at
   the start of every engine run) and to the `watchtower-ocr` helper; both

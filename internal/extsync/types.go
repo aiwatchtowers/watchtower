@@ -123,6 +123,10 @@ type Options struct {
 	// sources need; false records needs_consent without any network call.
 	// nil = assume granted.
 	ScopesOK func(jiraAccountID int64) bool
+	// Relink records the cross-source links of every document the engine
+	// writes or deletes, inside the batch transaction (see RelinkFunc).
+	// nil = no links.
+	Relink RelinkFunc
 }
 
 // Stats summarizes one Run or RunSource.

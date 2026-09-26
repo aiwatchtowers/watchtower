@@ -357,6 +357,12 @@ func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 	assert.Equal(t, "extract-pdf-text", x.PDFHelper[1])
 	assert.Equal(t, extSyncCycleBudget, opts.Budget)
 	require.NotNil(t, opts.ScopesOK)
+	require.NotNil(t, opts.Relink, "the engine records Jira-key doc_links")
+	require.NoError(t, opts.Relink(context.Background(), env.db, "confluence:1:p1", "covers PROJ-9"))
+	links, err := env.db.DocLinksFrom("confluence", "confluence:1:p1")
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	assert.Equal(t, "PROJ-9", links[0].ToRef)
 }
 
 // TestExtSyncOptions_WiresTheOCRHelper: with a watchtower-ocr helper found

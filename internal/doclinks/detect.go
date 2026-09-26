@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"watchtower/internal/jira"
+	"watchtower/internal/jirakey"
 )
 
 // Queryer is the read/write surface shared by *db.DB and *sql.Tx (the
@@ -26,22 +26,23 @@ type Queryer interface {
 
 // Link kinds (doc_links.from_kind / to_kind).
 const (
-	KindConfluence     = "confluence"
-	ToJiraIssue        = "jira_issue"
-	ToConfluencePage   = "confluence_page"
-	confluenceURLMatch = "atlassian.net/wiki/" // the SQL LIKE prefilter of every scanned text
+	KindConfluence   = "confluence"
+	ToJiraIssue      = "jira_issue"
+	ToConfluencePage = "confluence_page"
+	URLPrefilter     = "atlassian.net/wiki/" // a substring every matched URL contains (linkscan's SQL LIKE prefilter)
 )
 
-// confluenceURL matches a page URL; the capture is the page id. Tiny links
+// confluenceURL matches a page or blog-post URL
+// (/pages/<id>, /blog/YYYY/MM/DD/<id>); the capture is the content id. Tiny links
 // (/wiki/x/<code>) are deliberately not matched in v1: resolving one needs a
 // lookup per link.
-var confluenceURL = regexp.MustCompile(`https://[a-z0-9-]+\.atlassian\.net/wiki/spaces/[^/\s]+/pages/(\d+)`)
+var confluenceURL = regexp.MustCompile(`https://[a-z0-9-]+\.atlassian\.net/wiki/spaces/[^/\s]+/(?:pages|blog/\d{4}/\d{2}/\d{2})/(\d+)`)
 
 // JiraKeys returns the distinct Jira keys in text, in first-seen order. It
-// is the bare key pattern (jira.KeyRegexp), not the known-project filter: a
+// is the bare key pattern (jirakey.KeyRegexp), not the known-project filter: a
 // link to a key nobody synced is never looked up, so it is harmless.
 func JiraKeys(text string) []string {
-	return distinct(jira.KeyRegexp.FindAllString(text, -1))
+	return distinct(jirakey.KeyRegexp.FindAllString(text, -1))
 }
 
 // ConfluencePageIDs returns "<cloud_id>:<page_id>" for every page URL in
@@ -79,6 +80,9 @@ func distinct(in []string) []string {
 
 // SiteHosts maps every connected Jira site's lowercased host to its
 // cloud_id (removed accounts and rows without a site or cloud id excluded).
+// A disabled account is deliberately included: disabling only pauses its
+// sync, and the Confluence pages already stored under it stay searchable
+// and openable, so a link to one of them is still worth recording.
 func SiteHosts(ctx context.Context, q Queryer) (map[string]string, error) {
 	rows, err := q.QueryContext(ctx, `SELECT site_url, cloud_id FROM jira_accounts
 		WHERE status != 'removed' AND cloud_id != '' AND site_url != ''`)

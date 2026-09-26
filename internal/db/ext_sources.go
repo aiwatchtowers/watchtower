@@ -150,18 +150,26 @@ func scanExtSources(rows *sql.Rows) ([]ExtSource, error) {
 // DeleteExtSource removes source id — ext_documents/ext_comments cascade via
 // their FK (ON DELETE CASCADE), the jira_accounts/external_connections
 // precedent. The doc_links its documents made go in the same transaction
-// (doc_links has no FK): their refs are "confluence:<id>:<ext_id>", matched
-// as a primary-key range (':' + 1 = ';') so "confluence:10:" is not hit by
-// id 1.
+// (doc_links has no FK): their refs are "<provider>:<id>:<ext_id>" under
+// from_kind <provider>, matched as a primary-key range (':' + 1 = ';') so
+// "confluence:10:" is not hit by id 1.
 func (db *DB) DeleteExtSource(id int64) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("deleting ext source %d: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
-	prefix := fmt.Sprintf("confluence:%d", id)
-	if _, err := tx.Exec(`DELETE FROM doc_links WHERE from_kind = 'confluence' AND from_ref >= ? AND from_ref < ?`,
-		prefix+":", prefix+";"); err != nil {
+	var provider string
+	err = tx.QueryRow(`SELECT provider FROM ext_sources WHERE id = ?`, id).Scan(&provider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already gone: nothing to delete
+	}
+	if err != nil {
+		return fmt.Errorf("deleting ext source %d: %w", id, err)
+	}
+	prefix := fmt.Sprintf("%s:%d", provider, id)
+	if _, err := tx.Exec(`DELETE FROM doc_links WHERE from_kind = ? AND from_ref >= ? AND from_ref < ?`,
+		provider, prefix+":", prefix+";"); err != nil {
 		return fmt.Errorf("deleting doc links of ext source %d: %w", id, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM ext_sources WHERE id = ?`, id); err != nil {
