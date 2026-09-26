@@ -131,7 +131,9 @@ CREATE TABLE ext_sources (
   page_cursor       TEXT NOT NULL DEFAULT '',  -- RFC3339 lastModified high-water
   comment_cursor    TEXT NOT NULL DEFAULT '',
   attachment_cursor TEXT NOT NULL DEFAULT '',
-  page_token        TEXT NOT NULL DEFAULT '',  -- in-flight pagination token (resume mid-backfill)
+  page_token        TEXT NOT NULL DEFAULT '',  -- in-flight pagination token per stream
+  comment_token     TEXT NOT NULL DEFAULT '',  --   (resume mid-backfill; cleared when
+  attachment_token  TEXT NOT NULL DEFAULT '',  --    the stream's enumeration completes)
   backfill_done    INTEGER NOT NULL DEFAULT 0,
   last_reconcile_at TEXT NOT NULL DEFAULT '',
   last_synced_at   TEXT NOT NULL DEFAULT '',
@@ -353,7 +355,7 @@ PDF ≤ 300 pages; OCR ≤ 50 pages per attachment.
 - No TCC: it reads only a file Watchtower itself wrote into
   `Config.WorkspaceDir()/tmp/extract/` (0600, deleted after), never a
   protected location; Vision on in-memory images needs no permission.
-- Bundled at `Watchtower.app/Contents/Helpers/watchtower-ocr`;
+- Bundled at `Watchtower.app/Contents/MacOS/watchtower-ocr` (next to the CLI);
   `CLIBinaryStore` copies it next to the stored CLI with the same
   size+SHA256 validation. The Go side resolves it as a sibling of
   `os.Executable()`, overridable by `WATCHTOWER_OCR_HELPER`.
