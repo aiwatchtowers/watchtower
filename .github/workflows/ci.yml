@@ -94,6 +94,24 @@ jobs:
           # A run on main itself (force-push, workflow_dispatch) can leave the
           # range empty; never report "clean" on nothing — scan the head commit.
           if [ "$(git rev-list --count "$range")" -eq 0 ]; then
+            if ! git rev-parse -q --verify "$GITHUB_SHA^1" >/dev/null; then
+              # A parentless commit is a repository (re-)import: every line is
+              # "added", so the generic layer would flag every test fixture.
+              # Hold the whole tree to the denylist instead — never skip it.
+              if [ ! -s "$WATCHTOWER_LEAK_DENYLIST" ]; then
+                echo "root commit and no LEAK_DENYLIST secret: cannot verify" >&2
+                exit 1
+              fi
+              grep -v -E '^[[:space:]]*(#|$)' "$WATCHTOWER_LEAK_DENYLIST" | tr -d '\r' > "$RUNNER_TEMP/deny.txt"
+              # git grep: 0 = hit, 1 = clean, anything else = error (fail).
+              rc=0
+              git grep -I -l -i -E -f "$RUNNER_TEMP/deny.txt" "$GITHUB_SHA" -- || rc=$?
+              case "$rc" in
+                1) echo "leak-check: root commit clean against the denylist"; exit 0 ;;
+                0) echo "root commit: denylisted identifier in the files above" >&2; exit 1 ;;
+                *) echo "root commit: denylist scan failed (git grep exit $rc)" >&2; exit 1 ;;
+              esac
+            fi
             range="$(git rev-parse "$GITHUB_SHA^1")..$GITHUB_SHA"
           fi
           bash scripts/leak-check.sh "$range"
