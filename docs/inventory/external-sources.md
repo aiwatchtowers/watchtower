@@ -77,17 +77,22 @@ fetcher calls on the next pass, `kb.Run` again, assert zero `kb_documents` /
 random access (OOXML, PDF, images for OCR) are spooled into a temp file
 under `Config.WorkspaceDir()/tmp/extract/` (dir 0700, file 0600) that is
 removed before `Extract` returns on every path — errors and parser panics
-included; plain text and HTML are read in memory. Only the extracted text
-is written, to `ext_documents.sections_json`; no `ext_*` column ever holds
-attachment bytes or a BLOB.
+included; plain text and HTML are read in memory. PDFs are parsed by a
+helper process (the hidden `watchtower extract-pdf-text`) that reads only
+that temp file and is killed after 60 s. Only the extracted text is
+written, to `ext_documents.sections_json` (and from there into the
+knowledge index); no `ext_*` column, `kb_chunks` or `kb_documents` row
+ever holds attachment bytes, their base64 form, or a BLOB.
 
 **Guard:** `TestEXT03_BinariesNeverPersisted`
 (`internal/extsync/ext03_contract_test.go`) — a full engine pass with the
 real `extract.Extractor` (fake OCR) over a PDF and a PNG attachment, then:
 (a) the extract temp dir holds no file, (b) no stored value contains the
-attachments' raw leading bytes (`%PDF-`, the PNG magic), (c) no column of
-any `ext_*` table holds a BLOB value. It also asserts both attachments were
-really extracted through files under the temp dir, so it cannot pass
+attachments' raw leading bytes (`%PDF-`, the PNG magic) or their base64
+forms (`JVBERi0`, `iVBORw0K`), (c) no column of any `ext_*` table, of
+`kb_chunks` or of `kb_documents` (after a `kb.Run` over the synced rows)
+holds a BLOB value. It also asserts both attachments were really extracted
+through files under the temp dir and reached `kb_chunks`, so it cannot pass
 vacuously. Per-format cleanup is additionally pinned by
 `TestTempDirEmptyAfterExtract` (`internal/extract/extract_test.go`).
 
@@ -100,6 +105,9 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-26: EXT-03 guard widened to base64 forms and the knowledge
+  index (`kb_chunks`, `kb_documents`); PDFs now parse in a helper process
+  (review fix round 1).
 - 2026-09-26: EXT-03 enforced — attachment text extraction
   (`internal/extract`) and the engine's attachments stream landed with
   `TestEXT03_BinariesNeverPersisted`.

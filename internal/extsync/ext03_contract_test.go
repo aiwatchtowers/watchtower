@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
+	"watchtower/internal/kb"
 )
 
 // ext03Fetcher serves one page with a PDF and a PNG attachment. It lives in
@@ -109,9 +110,9 @@ func (o *pathOCR) Recognize(_ context.Context, path string, pages []int) (map[in
 }
 
 // TestEXT03_BinariesNeverPersisted: after a full sync pass with a PDF and an
-// image attachment, (a) the extract temp dir is empty, (b) no stored
-// sections carry the attachments' raw leading bytes, and (c) no ext_*
-// column holds a BLOB value or those bytes anywhere.
+// image attachment, (a) the extract temp dir is empty, (b) no stored value
+// carries the attachments' raw leading bytes or their base64 forms, and (c)
+// no column of ext_*, kb_chunks or kb_documents holds a BLOB value.
 func TestEXT03_BinariesNeverPersisted(t *testing.T) {
 	d := db.OpenTestDB(t)
 	acct := db.SeedTestJiraAccount(t, d)
@@ -138,9 +139,21 @@ func TestEXT03_BinariesNeverPersisted(t *testing.T) {
 	// (a) nothing left in the temp dir.
 	assertNoFiles(t, tmp)
 
-	// (b) + (c) no raw bytes and no BLOB anywhere in ext_*.
-	for _, magic := range [][]byte{[]byte("%PDF-"), {0x89, 'P', 'N', 'G'}} {
-		assertNoBytesInExtTables(t, d, magic)
+	// The knowledge index is built from these rows; it must not carry the
+	// bytes either. (Its cycle clock sits past the sync's writes: the KB
+	// only lists markers from seconds that are over.)
+	_, err = kb.Run(context.Background(), d, kb.Options{Sources: []string{"confluence"}, Now: time.Now().Add(2 * time.Second)})
+	require.NoError(t, err)
+	var indexed int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM kb_chunks WHERE body LIKE '%recognized text%'`).Scan(&indexed))
+	require.Positive(t, indexed, "the attachments' text reached the index")
+
+	// (b) + (c) no raw bytes (nor their base64 forms) and no BLOB anywhere in
+	// ext_* or the knowledge index.
+	for _, magic := range [][]byte{[]byte("%PDF-"), {0x89, 'P', 'N', 'G'}, []byte("JVBERi0"), []byte("iVBORw0K")} {
+		assertNoBytesInTables(t, d, `ext\_%`, magic)
+		assertNoBytesInTables(t, d, `kb\_chunks`, magic)
+		assertNoBytesInTables(t, d, `kb\_documents`, magic)
 	}
 }
 
@@ -159,11 +172,11 @@ func assertNoFiles(t *testing.T, dir string) {
 	assert.Empty(t, left, "temp files left behind")
 }
 
-// assertNoBytesInExtTables scans every column of every ext_* table for a
-// BLOB value or a value containing magic.
-func assertNoBytesInExtTables(t *testing.T, d *db.DB, magic []byte) {
+// assertNoBytesInTables scans every column of every table matching the
+// LIKE pattern (escape '\') for a BLOB value or a value containing magic.
+func assertNoBytesInTables(t *testing.T, d *db.DB, pattern string, magic []byte) {
 	t.Helper()
-	tables := queryStrings(t, d, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ext\_%' ESCAPE '\'`)
+	tables := queryStrings(t, d, `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ? ESCAPE '\'`, pattern)
 	require.NotEmpty(t, tables)
 	for _, table := range tables {
 		for _, col := range queryStrings(t, d, `SELECT name FROM pragma_table_info(?)`, table) {
