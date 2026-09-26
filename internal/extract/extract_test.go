@@ -123,6 +123,15 @@ func TestHTML(t *testing.T) {
 	assert.Equal(t, []extsync.Section{{Text: "Release notes\nFirst paragraph with bold text.\none\ntwo\nTail&end"}}, secs)
 }
 
+func TestHTMLTableCells(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := `<table><tr><th>Name</th><th>Qty</th></tr><tr><td>apple</td><td>3</td></tr></table><p>after</p>`
+	secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "Name | Qty\napple | 3\nafter"}}, secs)
+}
+
 func TestDocx(t *testing.T) {
 	secs, status := run(t, newExtractor(t, nil), mtDocx, "sample.docx")
 	assert.Equal(t, StatusOK, status)

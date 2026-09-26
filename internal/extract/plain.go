@@ -73,49 +73,66 @@ var blockElements = map[string]bool{
 	"title": true, "body": true, "main": true, "nav": true, "aside": true, "figcaption": true,
 }
 
+// stripHTML renders an HTML document as text lines. The cells of one
+// table row are joined with " | "; a row is a line.
 func stripHTML(doc string) string {
 	z := html.NewTokenizer(strings.NewReader(doc))
-	var lines []string
-	var cur strings.Builder
-	flush := func() {
-		if line := strings.Join(strings.Fields(cur.String()), " "); line != "" {
-			lines = append(lines, line)
-		}
-		cur.Reset()
-	}
-	skip := 0
+	st := &htmlStripper{}
 	for {
 		switch z.Next() {
 		case html.ErrorToken:
-			flush()
-			return strings.Join(lines, "\n")
+			st.flush()
+			return strings.Join(st.lines, "\n")
 		case html.TextToken:
-			if skip == 0 {
-				cur.Write(z.Text())
+			if st.skip == 0 {
+				st.cur.Write(z.Text())
 			}
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
-			skip = htmlTag(z, skip, flush)
+			st.tag(z.Token())
 		case html.CommentToken, html.DoctypeToken:
 		}
 	}
 }
 
-// htmlTag handles one tag token: it tracks skipped-element depth and ends
-// the line at a block element, returning the new skip depth.
-func htmlTag(z *html.Tokenizer, skip int, flush func()) int {
-	tt := z.Token()
+// htmlStripper is stripHTML's state.
+type htmlStripper struct {
+	lines []string
+	cur   strings.Builder
+	skip  int // depth inside skipped elements
+	cells int // cells opened in the current table row
+}
+
+func (st *htmlStripper) flush() {
+	if line := strings.Join(strings.Fields(st.cur.String()), " "); line != "" {
+		st.lines = append(st.lines, line)
+	}
+	st.cur.Reset()
+}
+
+// tag handles one tag token: skipped-element depth, cell separators, and
+// line ends at block elements (tr among them).
+func (st *htmlStripper) tag(tt html.Token) {
 	name := tt.Data
 	if skippedElements[name] {
 		if tt.Type == html.StartTagToken {
-			return skip + 1
+			st.skip++
 		}
 		if tt.Type == html.EndTagToken {
-			return max(skip-1, 0)
+			st.skip = max(st.skip-1, 0)
 		}
-		return skip
+		return
+	}
+	if (name == "td" || name == "th") && tt.Type == html.StartTagToken {
+		if st.cells > 0 {
+			st.cur.WriteString(" | ")
+		}
+		st.cells++
+		return
+	}
+	if name == "tr" {
+		st.cells = 0
 	}
 	if blockElements[name] {
-		flush()
+		st.flush()
 	}
-	return skip
 }

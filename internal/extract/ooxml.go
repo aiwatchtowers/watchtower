@@ -147,6 +147,12 @@ func attr(e xml.StartElement, local string) string {
 
 // docxText reads word/document.xml: each w:p is a line (w:tab → tab,
 // w:br → newline); a paragraph styled Heading1..3 starts a new section.
+//
+// Accepted v1 limits: heading detection matches only the English built-in
+// style ids ("Heading1".."Heading3"); a document authored in a localized
+// Word whose heading styles carry other ids is one untitled section. And
+// mc:AlternateContent is not resolved — text present in both its Choice and
+// Fallback branches (e.g. a text box) is extracted twice.
 func docxText(p *ooxmlPackage) ([]extsync.Section, error) {
 	w := &docxWalker{}
 	if err := p.walk("word/document.xml", w.token); err != nil {

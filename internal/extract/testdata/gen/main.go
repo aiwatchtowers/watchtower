@@ -35,6 +35,60 @@ with <b>bold</b> text.</p><ul><li>one</li><li>two</li></ul><div>Tail&amp;end</di
 	write("scanned.pdf", pdf([]pdfPage{{image: true}}))
 	write("mixed.pdf", pdf([]pdfPage{{text: "Cover page with enough text to count"}, {image: true}}))
 	write("sample.png", pngBytes())
+	write("short.pdf", pdf([]pdfPage{{text: "A long enough page of real text here"}, {text: "Hi"}}))
+	write("blank.pdf", pdf([]pdfPage{{text: "A long enough page of real text here"}, {blank: true}}))
+	// Malformed: a page tree whose /Kids points back at itself (the
+	// library's Reader.Page spins on it forever).
+	write("kidsloop.pdf", rawPDF([]string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [2 0 R] /Count 1 >>",
+	}, false, 0))
+	// Malformed: the trailer's /Prev points at its own xref section (the
+	// library's NewReader loops on it forever).
+	write("prevloop.pdf", rawPDF([]string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [] /Count 0 >>",
+	}, true, 0))
+	// Page 2's /Resources points at object 8, whose xref entry lands on
+	// object 1: resolving it panics inside the library. Page 1 must survive.
+	good := "BT /F1 12 Tf 72 720 Td (The first page reads fine and keeps its text) Tj ET"
+	bad := "BT /F1 12 Tf 72 720 Td (x) Tj ET"
+	write("badpage.pdf", rawPDF([]string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+		"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>",
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(good), good),
+		"<< /Type /Page /Parent 2 0 R /Resources 8 0 R /Contents 6 0 R >>",
+		fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(bad), bad),
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+	}, false, 1))
+}
+
+// rawPDF writes objs as objects 1..n with a correct xref; selfPrev adds a
+// trailer /Prev pointing at that same xref section; bogus adds that many
+// extra object numbers whose xref entries point at object 1.
+func rawPDF(objs []string, selfPrev bool, bogus int) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objs))
+	for i, o := range objs {
+		offsets[i] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	xref := buf.Len()
+	for range bogus {
+		offsets = append(offsets, offsets[0])
+	}
+	fmt.Fprintf(&buf, "xref\n0 %d\n0000000000 65535 f \n", len(offsets)+1)
+	for _, off := range offsets {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", off)
+	}
+	prev := ""
+	if selfPrev {
+		prev = fmt.Sprintf(" /Prev %d", xref)
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d /Root 1 0 R%s >>\nstartxref\n%d\n%%%%EOF\n", len(offsets)+1, prev, xref)
+	return buf.Bytes()
 }
 
 func write(name string, b []byte) {
@@ -125,6 +179,7 @@ func pptx() []byte {
 type pdfPage struct {
 	text  string
 	image bool
+	blank bool // no content, no XObject resources
 }
 
 // pdf writes a minimal PDF: one Helvetica font, one 2x2 grayscale image
@@ -145,11 +200,15 @@ func pdf(pages []pdfPage) []byte {
 	)
 	for i, p := range pages {
 		content := "q 200 0 0 200 100 400 cm /Im0 Do Q"
-		if !p.image {
+		resources := "<< /Font << /F1 3 0 R >> /XObject << /Im0 4 0 R >> >>"
+		switch {
+		case p.blank:
+			content, resources = "", "<< >>"
+		case !p.image:
 			content = fmt.Sprintf("BT /F1 12 Tf 72 720 Td (%s) Tj ET", p.text)
 		}
 		objs = append(objs,
-			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 4 0 R >> >> /Contents %d 0 R >>", 6+2*i),
+			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources %s /Contents %d 0 R >>", resources, 6+2*i),
 			fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content),
 		)
 	}

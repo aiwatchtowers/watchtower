@@ -48,10 +48,14 @@ type OCR interface {
 
 // Extractor implements extsync.Extractor. TempDir holds the spooled files
 // (Config.WorkspaceDir()/tmp/extract in production); it is created 0700 on
-// first use.
+// first use. PDFHelper is the argv prefix of a helper process that parses
+// a PDF out of process (path appended; ServePDFHelper is its body) under a
+// hard timeout — the PDF library can loop forever on crafted input, which
+// only killing a process can stop. Empty parses in process (tests only).
 type Extractor struct {
-	TempDir string
-	OCR     OCR
+	TempDir   string
+	OCR       OCR
+	PDFHelper []string
 }
 
 var (

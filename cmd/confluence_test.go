@@ -352,6 +352,8 @@ func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 	require.True(t, ok, "the engine gets the attachment extractor")
 	assert.Equal(t, filepath.Join(env.cfg.WorkspaceDir(), "tmp", "extract"), x.TempDir)
 	assert.Nil(t, x.OCR, "OCR arrives with the helper (Task 10)")
+	require.Len(t, x.PDFHelper, 2, "PDFs are parsed out of process")
+	assert.Equal(t, "extract-pdf-text", x.PDFHelper[1])
 	assert.Equal(t, extSyncCycleBudget, opts.Budget)
 	require.NotNil(t, opts.ScopesOK)
 }
