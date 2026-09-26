@@ -243,17 +243,133 @@ func TestAttachmentGoneOnDownload(t *testing.T) {
 	assert.Equal(t, formatTime(t0.Add(time.Hour)), cur.AttachmentCursor, "the cursor moves past the gone attachment")
 }
 
-func TestAttachmentDownloadErrorFailsTheBatch(t *testing.T) {
+func extractAttempts(t *testing.T, d *db.DB, sourceID int64, id string) int {
+	t.Helper()
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT extract_attempts FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
+		sourceID, id).Scan(&n))
+	return n
+}
+
+// TestAttachmentPersistentFailureDoesNotBlock: one attachment whose download
+// always fails is recorded failed with attempts+1 while the rest of the
+// batch lands, the cursor advances and the daily reconcile still runs; the
+// row is retried once per later cycle until 3 attempts, then left alone.
+func TestAttachmentPersistentFailureDoesNotBlock(t *testing.T) {
 	x := newFakeExtractor()
 	d, src, f, e := newAttachmentEngine(t, x)
-	f.addAttachment("a1", "p1", 1, t0, "notes.txt", "text/plain", []byte("hello"), -1)
-	f.downloadErr["a1"] = errors.New("connection reset")
+	f.addAttachment("a1", "p1", 1, t0, "one.txt", "text/plain", []byte("1"), -1)
+	f.addAttachment("a2", "p1", 1, t0.Add(time.Minute), "two.txt", "text/plain", []byte("2"), -1)
+	f.addAttachment("a3", "p1", 1, t0.Add(2*time.Minute), "three.txt", "text/plain", []byte("3"), -1)
+	f.downloadErr["a2"] = errors.New("request timed out")
 
 	_, err := e.Run(context.Background())
-	require.Error(t, err)
+	require.NoError(t, err)
+	for _, id := range []string{"a1", "a3"} {
+		row, ok := loadAttachment(t, d, src.ID, id)
+		require.True(t, ok, id)
+		assert.Equal(t, "ok", row.status, id)
+	}
+	row, ok := loadAttachment(t, d, src.ID, "a2")
+	require.True(t, ok)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, 1, extractAttempts(t, d, src.ID, "a2"))
+	assert.Equal(t, 1, f.downloadCount("a2"), "a row that failed in this pass waits for the next cycle")
+	cur := loadSource(t, d)
+	assert.Equal(t, formatTime(t0.Add(2*time.Minute)), cur.AttachmentCursor, "the cursor moves past the failure")
+	assert.NotEmpty(t, cur.LastReconcileAt, "the reconcile still runs")
+	assert.Equal(t, "ok", cur.Status)
+
+	for want := 2; want <= 3; want++ {
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, want, f.downloadCount("a2"), "retried once per cycle")
+		assert.Equal(t, want, extractAttempts(t, d, src.ID, "a2"))
+	}
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, f.downloadCount("a2"), "no retry after 3 attempts")
+	assert.Equal(t, 1, f.downloadCount("a1"), "healthy rows are never revisited")
+}
+
+func TestAttachmentRetrySucceeds(t *testing.T) {
+	x := newFakeExtractor()
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "one.txt", "text/plain", []byte("1"), -1)
+	f.readErr["a1"] = errors.New("connection reset mid-body") // an extraction read error is per-attachment too
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	row, _ := loadAttachment(t, d, src.ID, "a1")
+	require.Equal(t, "failed", row.status)
+
+	delete(f.readErr, "a1")
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	row, _ = loadAttachment(t, d, src.ID, "a1")
+	assert.Equal(t, "ok", row.status)
+	assert.Equal(t, []Section{{Text: "text of one.txt"}}, row.sections)
+	assert.Equal(t, 0, extractAttempts(t, d, src.ID, "a1"))
+}
+
+// TestAttachmentAuthErrorStillAborts: an auth failure is not a per-
+// attachment failure — the batch aborts and the source records it.
+func TestAttachmentAuthErrorStillAborts(t *testing.T) {
+	x := newFakeExtractor()
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "one.txt", "text/plain", []byte("1"), -1)
+	f.downloadErr["a1"] = fmt.Errorf("download: %w", ErrAuthRevoked)
+
+	_, err := e.Run(context.Background())
+	require.NoError(t, err, "Run records revoked instead of returning it")
 	_, ok := loadAttachment(t, d, src.ID, "a1")
 	assert.False(t, ok)
-	assert.Empty(t, loadSource(t, d).AttachmentCursor, "a failed batch does not advance the cursor")
+	cur := loadSource(t, d)
+	assert.Equal(t, "revoked", cur.Status)
+	assert.Empty(t, cur.AttachmentCursor)
+}
+
+// TestAttachmentBudgetCommitsProcessedPrefix: when the budget runs out
+// mid-batch, no further download starts; the processed prefix is
+// committed with the cursor at its max and no token, and later cycles
+// finish the rest without downloading anything twice.
+func TestAttachmentBudgetCommitsProcessedPrefix(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	f.pageSize = 20
+	f.addPage("p1", 1, t0)
+	for i := range 8 {
+		f.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, t0.Add(time.Duration(i+1)*time.Minute),
+			fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
+	}
+	clock := &stepClock{t: t0, step: 10 * time.Second}
+	e := New(d, Options{Extractor: newFakeExtractor(), Budget: 70 * time.Second, Now: clock.Now})
+	e.SetFetcher(src.JiraAccountID, f)
+
+	st, err := e.Run(context.Background())
+	require.NoError(t, err)
+	require.True(t, st.Incomplete)
+	stored := countStatus(t, d, src.ID, "ok")
+	require.Greater(t, stored, 0)
+	require.Less(t, stored, 8, "the budget cut the batch")
+	for i := range stored {
+		_, ok := loadAttachment(t, d, src.ID, fmt.Sprintf("a%d", i))
+		assert.True(t, ok, "a prefix is committed: a%d", i)
+	}
+	cur := loadSource(t, d)
+	assert.Equal(t, formatTime(t0.Add(time.Duration(stored)*time.Minute)), cur.AttachmentCursor, "cursor = the prefix's max")
+	assert.Empty(t, cur.AttachmentToken, "a partial page stores no token")
+
+	for range 10 {
+		if countStatus(t, d, src.ID, "ok") == 8 {
+			break
+		}
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 8, countStatus(t, d, src.ID, "ok"))
+	for i := range 8 {
+		assert.Equal(t, 1, f.downloadCount(fmt.Sprintf("a%d", i)), "a%d downloaded once", i)
+	}
 }
 
 func TestAttachmentExtractorStatusStored(t *testing.T) {

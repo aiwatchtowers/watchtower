@@ -190,7 +190,7 @@ func (e *Engine) record(src db.ExtSource, o outcome) error {
 func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *budget) (Stats, error) {
 	var st Stats
 	p := pass{
-		src: src, f: f, st: &st, users: userSet{},
+		src: src, f: f, st: &st, users: userSet{}, budget: b, retried: map[string]bool{},
 		c: Container{Key: src.ContainerKey, Name: src.ContainerName, ExtID: src.ContainerExtID},
 	}
 	err := e.runStreams(ctx, p, b)
@@ -206,8 +206,8 @@ func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *
 }
 
 // runStreams runs each stream in order (pages, comments, attachments),
-// then the one-time re-extraction of attachments stored without an
-// extractor, stopping when the budget runs out.
+// then the attachment revisit (skipped rows an extractor now handles,
+// transient failures to retry), stopping when the budget runs out.
 func (e *Engine) runStreams(ctx context.Context, p pass, b *budget) error {
 	for _, spec := range []streamSpec{pagesStream, commentsStream, attachmentsStream} {
 		p.spec = spec
@@ -218,7 +218,7 @@ func (e *Engine) runStreams(ctx context.Context, p pass, b *budget) error {
 			return nil
 		}
 	}
-	return e.reextractSkipped(ctx, p, b)
+	return e.revisitAttachments(ctx, p, b)
 }
 
 // withTx runs fn in one transaction.

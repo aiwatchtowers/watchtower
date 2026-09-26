@@ -128,6 +128,12 @@ type pass struct {
 	spec  streamSpec
 	st    *Stats
 	users userSet // authors and mentions written this run
+	// budget is the cycle budget (the attachment fan-out stops launching
+	// downloads once it is spent).
+	budget *budget
+	// retried holds the attachments that failed transiently in this pass:
+	// the revisit step leaves them to the next cycle.
+	retried map[string]bool
 }
 
 // batch is one Changed page ready to be applied.
@@ -177,7 +183,9 @@ func (e *Engine) runStream(ctx context.Context, p pass, b *budget) error {
 				return err
 			}
 		}
-		if b.over() {
+		// A batch cut short by the budget (see processAttachmentBatch) set
+		// Incomplete itself and stored no token: the stream stops here.
+		if p.st.Incomplete || b.over() {
 			p.st.Incomplete = true
 			return nil
 		}
