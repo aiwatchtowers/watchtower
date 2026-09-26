@@ -140,6 +140,14 @@ func (e *Engine) sweepTemp() {
 	}
 }
 
+// HasRunnable reports whether Run would sync any of srcs: an enabled source
+// whose account has a fetcher. The daemon skips the phase (no pipeline_runs
+// row, no link scan) when none is — e.g. every selected space belongs to a
+// removed or disabled Jira account.
+func (e *Engine) HasRunnable(srcs []db.ExtSource) bool {
+	return len(e.runnable(srcs)) > 0
+}
+
 // runnable keeps the enabled sources whose account has a fetcher.
 func (e *Engine) runnable(srcs []db.ExtSource) []db.ExtSource {
 	var out []db.ExtSource

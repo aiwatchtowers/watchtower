@@ -22,6 +22,18 @@ type fakeExternalSync struct {
 	// cancel, when set, is called inside Run before returning err — the
 	// shutdown-mid-cycle shape.
 	cancel context.CancelFunc
+	// wired, when non-nil, lists the Jira accounts with a fetcher (the
+	// engine's runnable rule); nil = every account is wired.
+	wired map[int64]bool
+}
+
+func (f *fakeExternalSync) HasRunnable(srcs []db.ExtSource) bool {
+	for _, src := range srcs {
+		if src.Enabled && (f.wired == nil || f.wired[src.JiraAccountID]) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeExternalSync) Run(context.Context) (extsync.Stats, error) {
@@ -70,6 +82,34 @@ func TestPhaseExternalSync_NoSourcesWritesNothing(t *testing.T) {
 	d.phaseExternalSync(context.Background())
 
 	assert.Zero(t, fake.calls, "the feature is inert until a space is selected")
+	assert.Equal(t, 0, countPipelineRuns(t, database, "external-sync"))
+}
+
+// TestPhaseExternalSync_NoRunnableSourceWritesNothing: a selected space
+// whose Jira account is not wired (removed/disabled — no fetcher) must not
+// produce an empty pipeline_runs row every cycle.
+func TestPhaseExternalSync_NoRunnableSourceWritesNothing(t *testing.T) {
+	d, database, fake := newExternalSyncTestDaemon(t)
+	d.config.Knowledge.Connectors.Enabled = true
+	seedConfluenceSource(t, database)
+	fake.wired = map[int64]bool{} // account 1 has no fetcher
+
+	d.phaseExternalSync(context.Background())
+
+	assert.Zero(t, fake.calls)
+	assert.Equal(t, 0, countPipelineRuns(t, database, "external-sync"))
+}
+
+// TestPhaseExternalSync_RealEngineWithoutFetcherWritesNothing pins the same
+// rule through the real engine's HasRunnable.
+func TestPhaseExternalSync_RealEngineWithoutFetcherWritesNothing(t *testing.T) {
+	d, database, _ := newExternalSyncTestDaemon(t)
+	d.config.Knowledge.Connectors.Enabled = true
+	seedConfluenceSource(t, database)
+	d.SetExternalSync(extsync.New(database, extsync.Options{}))
+
+	d.phaseExternalSync(context.Background())
+
 	assert.Equal(t, 0, countPipelineRuns(t, database, "external-sync"))
 }
 

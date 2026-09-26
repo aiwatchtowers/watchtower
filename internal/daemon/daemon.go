@@ -269,6 +269,9 @@ func (d *Daemon) SetJiraSyncers(s []*jira.Syncer) {
 // engine keeps its source-rotation state in memory.
 type ExternalSyncRunner interface {
 	Run(ctx context.Context) (extsync.Stats, error)
+	// HasRunnable reports whether Run would sync any of srcs (an enabled
+	// source whose account is wired).
+	HasRunnable(srcs []db.ExtSource) bool
 }
 
 // SetExternalSync sets the external knowledge sync engine (Confluence
@@ -934,8 +937,11 @@ func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
 // phaseExternalSync pulls the selected external knowledge sources
 // (Confluence spaces) into ext_* for the knowledge index. Mechanical (no
 // AI); off = no sync, the synced ext_* rows and the index stay readable
-// (FEAT-01/02). With no source selected it writes nothing, not even a
-// pipeline_runs row — the feature is inert until a space is picked.
+// (FEAT-01/02). With no runnable source it writes nothing, not even a
+// pipeline_runs row — the feature is inert until a space is picked, and
+// goes inert again when every selected space belongs to a removed or
+// disabled Jira account (no fetcher wired), instead of logging an empty run
+// every cycle.
 func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
 		return
@@ -945,7 +951,7 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 		d.logger.Printf("external sync: listing sources: %v", err)
 		return
 	}
-	if len(srcs) == 0 {
+	if !d.externalSync.HasRunnable(srcs) {
 		return
 	}
 	d.trackedPipelineRun("external-sync", func() pipelineRunStats {

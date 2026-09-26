@@ -672,6 +672,7 @@ func runJiraLogout(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Jira Cloud disconnected. Token removed; synced data kept.")
+	printKeptConfluenceSpaces(cmd, database, accounts[0].ID)
 	return nil
 }
 
@@ -759,7 +760,29 @@ func runJiraRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Jira account %d removed. Token deleted; synced data kept.\n", id)
+	printKeptConfluenceSpaces(cmd, database, id)
 	return nil
+}
+
+// printKeptConfluenceSpaces tells the user how to drop the Confluence spaces
+// a removed account still owns: remove is non-destructive, the Desktop hides
+// removed accounts, and the spaces' documents stay searchable until they are
+// unselected. A listing failure only warns — the remove itself succeeded.
+func printKeptConfluenceSpaces(cmd *cobra.Command, database *db.DB, accountID int64) {
+	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: listing Confluence spaces: %v\n", err)
+		return
+	}
+	if len(srcs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(srcs))
+	for _, s := range srcs {
+		keys = append(keys, s.ContainerKey)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%d Confluence space(s) kept; run `watchtower confluence unselect --account %d %s` to remove them.\n",
+		len(srcs), accountID, strings.Join(keys, " "))
 }
 
 func runJiraStatus(cmd *cobra.Command, _ []string) error {

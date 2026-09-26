@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/db"
 )
 
 func TestPagesBackfillThenVersionGate(t *testing.T) {
@@ -300,4 +302,19 @@ func TestRunSkipsDisabledAndUnwiredSources(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, countDocs(t, d, src.ID))
 	assert.Empty(t, f.fetches)
+}
+
+// HasRunnable mirrors Run's rule: enabled AND wired.
+func TestHasRunnable(t *testing.T) {
+	d, src := newSourceDB(t)
+	e := New(d, Options{})
+	assert.False(t, e.HasRunnable(nil))
+	assert.False(t, e.HasRunnable([]db.ExtSource{src}), "no fetcher wired")
+
+	e.SetFetcher(src.JiraAccountID, newFake())
+	assert.True(t, e.HasRunnable([]db.ExtSource{src}))
+
+	disabled := src
+	disabled.Enabled = false
+	assert.False(t, e.HasRunnable([]db.ExtSource{disabled}))
 }

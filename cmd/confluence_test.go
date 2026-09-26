@@ -175,6 +175,75 @@ func TestConfluenceUnselect_RemovesSourceAndDocuments(t *testing.T) {
 	assert.Zero(t, n, "unselect must drop the space's synced documents")
 }
 
+// TestConfluenceUnselect_RemovedAccountStillUnselects: `jira remove` keeps
+// the account's selected spaces (non-destructive), and the Desktop hides a
+// removed account — so the CLI unselect is the only way to drop them. It is
+// a purely local delete, so a removed account (no token) must not be
+// refused when named explicitly.
+func TestConfluenceUnselect_RemovedAccountStillUnselects(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	id, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	_, err = env.db.Exec(`INSERT INTO ext_documents (source_id, ext_id, kind) VALUES (?, 'p1', 'page')`, id)
+	require.NoError(t, err)
+	require.NoError(t, env.db.SetJiraAccountRemoved(1))
+	require.NoError(t, jira.NewTokenStore(env.cfg.WorkspaceDir(), 1).Delete())
+
+	_, err = runConfluence(t, 0, "unselect", "--account", "1", "ENG")
+	require.NoError(t, err)
+
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+	var n int
+	require.NoError(t, env.db.QueryRow(`SELECT COUNT(*) FROM ext_documents`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+// TestConfluenceUnselect_RemovedAccountNeedsExplicitFlag: without --account
+// the default is still the single enabled account, never a removed one.
+func TestConfluenceUnselect_RemovedAccountNeedsExplicitFlag(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	require.NoError(t, env.db.SetJiraAccountRemoved(1))
+
+	_, err = runConfluence(t, 0, "unselect", "ENG")
+	require.Error(t, err)
+	assert.Equal(t, []string{"ENG"}, selectedSpaceKeys(t, env.db))
+}
+
+func runJiraRemoveCmd(t *testing.T, id string) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"jira", "remove", id})
+	err := rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	return out.String(), err
+}
+
+// TestJiraRemove_HintsKeptConfluenceSpaces: remove keeps the account's
+// selected spaces, so it must say how to drop them.
+func TestJiraRemove_HintsKeptConfluenceSpaces(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	_, err = env.db.CreateExtSource("confluence", 1, "OPS", "200", "Operations")
+	require.NoError(t, err)
+
+	out, err := runJiraRemoveCmd(t, "1")
+	require.NoError(t, err)
+	assert.Contains(t, out, "2 Confluence space(s) kept; run `watchtower confluence unselect --account 1 ENG OPS` to remove them.")
+}
+
+func TestJiraRemove_NoSpacesNoHint(t *testing.T) {
+	setupConfluenceEnv(t, jira.OAuthScopes)
+
+	out, err := runJiraRemoveCmd(t, "1")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "Confluence")
+}
+
 func TestConfluenceUnselect_UnknownKeyErrors(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
 	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")

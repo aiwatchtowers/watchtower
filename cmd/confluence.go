@@ -235,7 +235,7 @@ func runConfluenceUnselect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	account, err := resolveJiraAccount(database, confluenceFlagAccount)
+	account, err := resolveJiraAccountForLocalDelete(database, confluenceFlagAccount)
 	if err != nil {
 		return err
 	}
@@ -261,6 +261,19 @@ func runConfluenceUnselect(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "Unselected %s; its synced content is removed and leaves search on the next index cycle.\n", k)
 	}
 	return nil
+}
+
+// resolveJiraAccountForLocalDelete resolves --account for a purely local
+// delete (`confluence unselect`): unlike resolveJiraAccount, an explicit id
+// may name a removed account — its token is gone, but its selected spaces
+// and their synced documents are still in the DB and still searchable, and
+// unselecting them needs no token. Without the flag it still picks the
+// single enabled account, so a removed account must be named explicitly.
+func resolveJiraAccountForLocalDelete(database *db.DB, accountID int64) (db.JiraAccount, error) {
+	if accountID > 0 {
+		return database.GetJiraAccount(accountID)
+	}
+	return resolveJiraAccount(database, 0)
 }
 
 // confluenceStatusRow is one `confluence status --json` row.
