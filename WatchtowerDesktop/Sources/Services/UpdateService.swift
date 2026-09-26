@@ -1,0 +1,640 @@
+import Foundation
+import AppKit
+import CryptoKit
+import WatchtowerCore
+
+/// Handles checking for updates via GitHub Releases API, downloading, and installing.
+@MainActor
+@Observable
+final class UpdateService {
+    enum UpdateState: Equatable {
+        case idle
+        case checking
+        case available(version: String, notes: String, downloadURL: URL)
+        case downloading(progress: Double)
+        case readyToInstall(appPath: URL)
+        case installing
+        case error(String)
+    }
+
+    /// Which feed this build updates from. Resolved from the build flavor and
+    /// the channel keys stamped into Info.plist by build-app.sh. `disabled`
+    /// covers dev builds and flavored builds whose profile carried no channel
+    /// keys — those must fail closed, never fall back to the public feed.
+    enum UpdateChannel: Equatable {
+        case publicGitHub
+        case gated(feedURL: URL, clientID: String, clientSecret: String)
+        case disabled
+    }
+
+    var state: UpdateState = .idle
+
+    var isUpdateAvailable: Bool {
+        if case .available = state { return true }
+        if case .readyToInstall = state { return true }
+        return false
+    }
+
+    // MARK: - Channel Routing & Helpers
+
+    nonisolated static func resolveChannel(
+        flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
+    ) -> UpdateChannel {
+        if flavor.isEmpty { return .publicGitHub }
+        if flavor == "dev" { return .disabled }
+        guard let feedURL, let url = URL(string: feedURL), url.scheme == "https",
+              let clientID, !clientID.isEmpty,
+              let clientSecret, !clientSecret.isEmpty else { return .disabled }
+        return .gated(feedURL: url, clientID: clientID, clientSecret: clientSecret)
+    }
+
+    /// Release assets are produced by build-app.sh as
+    /// "Watchtower-<version>-arm64.zip"; match exactly, never "first .zip".
+    nonisolated static func expectedPublicAssetName(forTag tag: String) -> String {
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        return "Watchtower-\(version)-arm64.zip"
+    }
+
+    /// A manifest for the wrong flavor must never cross over — the zip key
+    /// carries the flavor as a "-<flavor>-" token (build-app.sh naming).
+    nonisolated static func zipKeyMatchesFlavor(_ zipKey: String, flavor: String) -> Bool {
+        zipKey.contains("-\(flavor)-")
+    }
+
+    /// Cloudflare Access answers a rejected service token with a redirect to
+    /// the login page (or 401/403) — surface that as an auth error so a
+    /// revoked token never masquerades as "no updates available".
+    nonisolated static func classifyGatedStatus(_ status: Int) -> GatedChannelError? {
+        if status == 200 { return nil }
+        if (300...399).contains(status) || status == 401 || status == 403 { return .authRejected }
+        return .httpError(status)
+    }
+
+    nonisolated static func sha256Hex(ofFileAt url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static let repo = "aiwatchtowers/watchtower"
+    private static let lastCheckKey = "lastUpdateCheckDate"
+
+    /// Build flavor stamped into Info.plist by build-app.sh (WTBuildFlavor;
+    /// absent on default builds). A flavored build carries a different baked-in
+    /// credential set and is distributed out-of-band, so it must never update
+    /// from the public release feed — every public release would silently
+    /// replace it with the default-credential build (same signer, so the
+    /// Team-ID pin would pass). Gated-channel keys route flavored builds to
+    /// their own update feed instead of disabling updates outright.
+    /// Instance property so tests can inject a flavor.
+    var buildFlavor: String =
+        (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
+
+    /// Gated-channel keys stamped into Info.plist by build-app.sh (absent on
+    /// default and dev builds). Instance properties so tests can inject them.
+    var updateFeedURL: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateFeedURL") as? String
+    var updateClientID: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientID") as? String
+    var updateClientSecret: String? =
+        Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientSecret") as? String
+
+    var channel: UpdateChannel {
+        Self.resolveChannel(flavor: buildFlavor, feedURL: updateFeedURL,
+                            clientID: updateClientID, clientSecret: updateClientSecret)
+    }
+
+    /// False when this build has no update channel at all (dev, or a flavored
+    /// build whose profile carried no channel keys). Settings uses this to
+    /// swap the check button for an "out of band" note.
+    var updatesSupported: Bool { channel != .disabled }
+
+    /// Set when the current `.available` state came from the gated channel;
+    /// carries what the download step needs (headers + expected checksum).
+    private struct GatedDownloadContext {
+        let sha256: String
+        let clientID: String
+        let clientSecret: String
+    }
+    private var gatedDownload: GatedDownloadContext?
+
+    private static let cacheDir: URL = {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return FileManager.default.temporaryDirectory.appendingPathComponent("com.watchtower.desktop/updates", isDirectory: true)
+        }
+        return caches.appendingPathComponent("com.watchtower.desktop/updates", isDirectory: true)
+    }()
+
+    // MARK: - Check for Updates
+
+    func checkForUpdates() async {
+        gatedDownload = nil
+        switch channel {
+        case .disabled:
+            state = .idle
+        case .publicGitHub:
+            await checkPublic()
+        case let .gated(feedURL, clientID, clientSecret):
+            await checkGated(feedURL: feedURL, clientID: clientID, clientSecret: clientSecret)
+        }
+    }
+
+    private func checkPublic() async {
+        state = .checking
+        do {
+            let release = try await fetchLatestRelease()
+            let current = Constants.appVersion
+            guard Self.isNewer(release.tagName, than: current) else {
+                state = .idle
+                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+                return
+            }
+
+            let expected = Self.expectedPublicAssetName(forTag: release.tagName)
+            guard let asset = release.assets.first(where: { $0.name == expected }) else {
+                state = .error("No asset named \(expected) in release \(release.tagName)")
+                return
+            }
+
+            guard let url = URL(string: asset.browserDownloadURL) else {
+                state = .error("Invalid download URL")
+                return
+            }
+
+            state = .available(
+                version: release.tagName,
+                notes: release.body ?? "",
+                downloadURL: url
+            )
+            UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    private func checkGated(feedURL: URL, clientID: String, clientSecret: String) async {
+        state = .checking
+        do {
+            let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
+            let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
+            guard let manifest = try? JSONDecoder().decode(GatedManifest.self, from: data) else {
+                state = .error("Update manifest is malformed")
+                return
+            }
+
+            guard Self.zipKeyMatchesFlavor(manifest.zipKey, flavor: buildFlavor) else {
+                state = .error("Update manifest points at a different build flavor (\(manifest.zipKey))")
+                return
+            }
+
+            guard Self.isNewer(manifest.version, than: Constants.appVersion) else {
+                state = .idle
+                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+                return
+            }
+
+            let downloadURL = feedURL.appendingPathComponent("dl/\(manifest.zipKey)")
+            gatedDownload = GatedDownloadContext(
+                sha256: manifest.sha256, clientID: clientID, clientSecret: clientSecret
+            )
+            state = .available(
+                version: manifest.version,
+                notes: manifest.notes ?? "",
+                downloadURL: downloadURL
+            )
+            UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+        } catch {
+            state = .error(error.localizedDescription)
+        }
+    }
+
+    /// GET on the gated channel. Redirects are never followed — Cloudflare
+    /// Access answers a bad/revoked service token with a 302 to its login
+    /// page, and following it would hand back HTML that only fails later as
+    /// a confusing decode error.
+    private func gatedGET(_ url: URL, clientID: String, clientSecret: String) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue(clientID, forHTTPHeaderField: "CF-Access-Client-Id")
+        request.setValue(clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request, delegate: RedirectBlocker())
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let err = Self.classifyGatedStatus(status) { throw err }
+        return data
+    }
+
+    /// Check if 24 hours have passed since last check, and if so, check for updates.
+    func checkIfNeeded() async {
+        if let last = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date,
+           Date().timeIntervalSince(last) < 86400 {
+            return
+        }
+        await checkForUpdates()
+    }
+
+    // MARK: - Download
+
+    func downloadUpdate() async {
+        guard case .available(_, _, let downloadURL) = state else { return }
+
+        state = .downloading(progress: 0)
+
+        do {
+            let fm = FileManager.default
+            try fm.createDirectory(at: Self.cacheDir, withIntermediateDirectories: true)
+
+            // Clean previous downloads
+            let zipPath = Self.cacheDir.appendingPathComponent("update.zip")
+            let extractDir = Self.cacheDir.appendingPathComponent("extracted")
+            try? fm.removeItem(at: zipPath)
+            try? fm.removeItem(at: extractDir)
+
+            // Download with progress
+            let (localURL, _) = try await downloadWithProgress(from: downloadURL)
+
+            try fm.moveItem(at: localURL, to: zipPath)
+
+            if let ctx = gatedDownload {
+                let actual = try Self.sha256Hex(ofFileAt: zipPath)
+                guard actual.caseInsensitiveCompare(ctx.sha256) == .orderedSame else {
+                    try? fm.removeItem(at: zipPath)
+                    state = .error(GatedChannelError.checksumMismatch.localizedDescription)
+                    return
+                }
+            }
+
+            state = .downloading(progress: 0.9)
+
+            // Extract using ditto (handles macOS resource forks correctly)
+            try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
+            let exitCode = try await runProcess(
+                path: "/usr/bin/ditto",
+                arguments: ["-xk", zipPath.path, extractDir.path]
+            )
+            guard exitCode == 0 else {
+                state = .error("Failed to extract update (exit \(exitCode))")
+                return
+            }
+
+            // Find the .app inside extracted directory
+            guard let appName = try fm.contentsOfDirectory(atPath: extractDir.path)
+                .first(where: { $0.hasSuffix(".app") }) else {
+                state = .error("No .app found in downloaded archive")
+                return
+            }
+
+            let appPath = extractDir.appendingPathComponent(appName)
+            state = .readyToInstall(appPath: appPath)
+        } catch {
+            state = .error("Download failed: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Install
+
+    func install(daemonManager: DaemonManager) async {
+        guard case .readyToInstall(let newAppPath) = state else { return }
+
+        // Pin the replacement build's signature check to the Team ID of the
+        // app that's currently running. Without this, the helper script's
+        // `codesign --verify` only checks that *some* signature is valid —
+        // an ad-hoc or third-party signed .app (e.g. a compromised download)
+        // would pass just as well. Fail closed: if we can't determine our
+        // own Team ID (ad-hoc-signed build), refuse to install rather than
+        // falling back to a signature check with no identity pinning.
+        guard let teamID = Self.currentTeamIdentifier() else {
+            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc-signed build). "
+                + "Refusing to install an update that can't be verified against a known signer.")
+            return
+        }
+
+        state = .installing
+
+        // 1. Stop daemon
+        await daemonManager.stopDaemon()
+
+        // 2. Determine current app location
+        guard let currentAppPath = Self.currentAppBundlePath() else {
+            state = .error("Cannot determine current app location")
+            return
+        }
+
+        // 3. Generate and run helper script
+        let script = Self.generateHelperScript(
+            currentAppPath: currentAppPath,
+            newAppPath: newAppPath.path,
+            pid: ProcessInfo.processInfo.processIdentifier,
+            teamID: teamID
+        )
+
+        let scriptPath = Self.cacheDir.appendingPathComponent("update.sh")
+        do {
+            try script.write(to: scriptPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptPath.path
+            )
+        } catch {
+            state = .error("Failed to write update script: \(error.localizedDescription)")
+            return
+        }
+
+        // 4. Launch helper script and exit
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [scriptPath.path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        // Detach from parent process group so it survives our exit
+        process.qualityOfService = .userInitiated
+        do {
+            try process.run()
+        } catch {
+            state = .error("Failed to launch updater: \(error.localizedDescription)")
+            return
+        }
+
+        // 5. Quit the app — the helper script takes over
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    // MARK: - Helper Script
+
+    /// Escape a string for safe use inside double-quoted shell strings.
+    /// Only the four characters special inside double quotes need escaping: " \ ` $
+    private static func shellEscape(_ s: String) -> String {
+        var result = ""
+        for ch in s {
+            switch ch {
+            case "\"", "\\", "`", "$":
+                result.append("\\")
+                result.append(ch)
+            default:
+                result.append(ch)
+            }
+        }
+        return result
+    }
+
+    private static func generateHelperScript(currentAppPath: String, newAppPath: String, pid: pid_t, teamID: String) -> String {
+        // C1 fix: escape paths for safe shell interpolation
+        let escapedCurrent = shellEscape(currentAppPath)
+        let escapedNew = shellEscape(newAppPath)
+        let escapedCache = shellEscape(Self.cacheDir.path)
+        // Team ID is validated by parseTeamIdentifier (10 alphanumeric chars),
+        // so it's safe to embed directly without shellEscape.
+        let requirement = designatedRequirement(forTeamID: teamID)
+        return """
+        #!/bin/sh
+        # Watchtower auto-update helper script
+        # Wait for the app to exit
+        while kill -0 \(pid) 2>/dev/null; do
+            sleep 0.5
+        done
+
+        # Small extra delay to ensure file handles are released
+        sleep 1
+
+        # Verify codesign on the new app before replacing: signature must be
+        # valid AND signed by the same Team ID as the currently running app.
+        # A valid-but-unrelated (e.g. ad-hoc) signature is rejected.
+        if ! /usr/bin/codesign --verify --deep --strict -R='\(requirement)' "\(escapedNew)" 2>/dev/null; then
+            echo "ERROR: Code signature verification failed (invalid signature or Team ID mismatch). Aborting update." >&2
+            exit 1
+        fi
+
+        # Remove old app
+        rm -rf "\(escapedCurrent)"
+
+        # Move new app into place
+        mv "\(escapedNew)" "\(escapedCurrent)"
+
+        # Clear quarantine attribute (downloaded file)
+        xattr -dr com.apple.quarantine "\(escapedCurrent)" 2>/dev/null
+
+        # Relaunch
+        open "\(escapedCurrent)"
+
+        # Cleanup
+        rm -rf "\(escapedCache)"
+        """
+    }
+
+    // MARK: - Helpers
+
+    private static func currentAppBundlePath() -> String? {
+        // Bundle.main.bundleURL points to Watchtower.app/
+        let bundleURL = Bundle.main.bundleURL
+        guard bundleURL.pathExtension == "app" else { return nil }
+        return bundleURL.path
+    }
+
+    /// Extract the Team Identifier from `codesign -dv --verbose=4` output
+    /// (that command writes its report to stderr). Returns nil if there is
+    /// no team identifier — ad-hoc signed or unsigned builds report
+    /// `TeamIdentifier=not set`, and we treat that the same as absent.
+    nonisolated static func parseTeamIdentifier(from codesignOutput: String) -> String? {
+        for line in codesignOutput.split(whereSeparator: \.isNewline) {
+            guard line.hasPrefix("TeamIdentifier=") else { continue }
+            let value = line.dropFirst("TeamIdentifier=".count).trimmingCharacters(in: .whitespaces)
+            // Apple Team IDs are exactly 10 alphanumeric characters. Reject
+            // anything else (including "not set") so we never embed
+            // unexpected characters into a shell command downstream.
+            guard value.range(of: "^[A-Za-z0-9]{10}$", options: .regularExpression) != nil else { return nil }
+            return value
+        }
+        return nil
+    }
+
+    /// Build a codesign designated-requirement string pinning verification
+    /// to a specific Team ID.
+    nonisolated static func designatedRequirement(forTeamID teamID: String) -> String {
+        "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    }
+
+    /// Team ID of the currently running app bundle, read from its own code
+    /// signature. Nil for ad-hoc-signed builds with no Team ID.
+    private static func currentTeamIdentifier() -> String? {
+        guard let bundlePath = currentAppBundlePath() else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["-dv", "--verbose=4", bundlePath]
+        let stderrPipe = Pipe()
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return parseTeamIdentifier(from: output)
+    }
+
+    private func fetchLatestRelease() async throws -> GitHubRelease {
+        let urlString = "https://api.github.com/repos/\(Self.repo)/releases/latest"
+        guard let url = URL(string: urlString) else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw UpdateError.httpError(code)
+        }
+
+        return try JSONDecoder().decode(GitHubRelease.self, from: data)
+    }
+
+    private func downloadWithProgress(from url: URL) async throws -> (URL, URLResponse) {
+        var request = URLRequest(url: url)
+        request.setValue("Watchtower/\(Constants.appVersion)", forHTTPHeaderField: "User-Agent")
+        var delegate: URLSessionTaskDelegate?
+        if let ctx = gatedDownload {
+            request.setValue(ctx.clientID, forHTTPHeaderField: "CF-Access-Client-Id")
+            request.setValue(ctx.clientSecret, forHTTPHeaderField: "CF-Access-Client-Secret")
+            delegate = RedirectBlocker()
+        }
+        let (localURL, response) = try await URLSession.shared.download(for: request, delegate: delegate)
+        if gatedDownload != nil {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if let err = Self.classifyGatedStatus(status) {
+                try? FileManager.default.removeItem(at: localURL)
+                throw err
+            }
+        }
+        await MainActor.run { state = .downloading(progress: 0.8) }
+        return (localURL, response)
+    }
+
+    nonisolated private func runProcess(path: String, arguments: [String]) async throws -> Int32 {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        }.value
+    }
+
+    /// Compare semantic versions. Returns true if `new` is strictly greater than `current`.
+    nonisolated static func isNewer(_ new: String, than current: String) -> Bool {
+        let parse: (String) -> [Int] = { version in
+            let cleaned = version.hasPrefix("v") ? String(version.dropFirst()) : version
+            return cleaned.split(separator: ".").compactMap { Int($0) }
+        }
+        let newParts = parse(new)
+        let currentParts = parse(current)
+
+        for i in 0..<max(newParts.count, currentParts.count) {
+            let nv = i < newParts.count ? newParts[i] : 0
+            let cv = i < currentParts.count ? currentParts[i] : 0
+            if nv > cv { return true }
+            if nv < cv { return false }
+        }
+        return false
+    }
+}
+
+// MARK: - Models
+
+struct GitHubRelease: Decodable {
+    let tagName: String
+    let name: String?
+    let body: String?
+    let assets: [GitHubAsset]
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case name, body, assets
+    }
+}
+
+struct GitHubAsset: Decodable {
+    let name: String
+    let browserDownloadURL: String
+    let size: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+        case size
+    }
+}
+
+enum UpdateError: LocalizedError {
+    case httpError(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .httpError(let code):
+            "GitHub API returned status \(code)"
+        }
+    }
+}
+
+struct GatedManifest: Decodable {
+    let version: String
+    let zipKey: String
+    let sha256: String
+    let size: Int?
+    let publishedAt: String?
+    let notes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case version, sha256, size, notes
+        case zipKey = "zip_key"
+        case publishedAt = "published_at"
+    }
+}
+
+enum GatedChannelError: LocalizedError, Equatable {
+    case authRejected
+    case httpError(Int)
+    case checksumMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .authRejected:
+            "Update channel rejected this build's access credentials — the update token may have been revoked."
+        case .httpError(let code):
+            "Update channel returned status \(code)"
+        case .checksumMismatch:
+            "Downloaded update failed checksum verification"
+        }
+    }
+}
+
+// MARK: - Redirect Blocker
+
+/// Refuses HTTP redirects so a Cloudflare Access login bounce surfaces as its
+/// 3xx status instead of the login page's HTML.
+private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? { nil }
+}

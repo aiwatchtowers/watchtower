@@ -1,0 +1,454 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"testing"
+
+	"watchtower/internal/db"
+	"watchtower/internal/jira"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// newJiraTestDaemon builds a Daemon with a test DB, suitable for calling
+// phaseJiraSync directly (the newCleanupTestDaemon shape).
+func newJiraTestDaemon(t *testing.T) (*Daemon, *db.DB, string) {
+	t.Helper()
+	orch, cfg, wsDir := testDaemonWithTempHome(t)
+
+	database := db.OpenTestDB(t)
+
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-jira-fanout] ", 0))
+	d.SetDB(database)
+	return d, database, wsDir
+}
+
+// jiraSyncerFor builds a per-account syncer the way wireJiraSyncers does, minus
+// the board analyzer. With no token file on disk the client cannot mint an
+// access token, so a syncer that reaches the API fails locally — no network
+// involved.
+func jiraSyncerFor(t *testing.T, database *db.DB, wsDir string, accountID int64) *jira.Syncer {
+	t.Helper()
+	store := jira.NewTokenStore(wsDir, accountID)
+	client := jira.NewClient(fmt.Sprintf("cloud-%d", accountID), jira.JiraOAuthConfig{}, store)
+	syncer := jira.NewSyncer(client, database, jira.NewUserMapper(client, database), nil, accountID)
+	syncer.SetLogger(log.New(os.Stderr, "[test-jira-syncer] ", 0))
+	return syncer
+}
+
+// seedJiraAccountWithBoard mints an account with one selected board, so its
+// syncer actually reaches the (unreachable) API during a phase pass.
+func seedJiraAccountWithBoard(t *testing.T, database *db.DB, cloudID, projectKey string) int64 {
+	t.Helper()
+	id, err := database.CreateJiraAccount(db.JiraAccount{CloudID: cloudID})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertJiraBoard(db.JiraBoard{
+		AccountID: id, ID: 7, Name: "Board", ProjectKey: projectKey, IsSelected: true, SyncedAt: "now",
+	}))
+	return id
+}
+
+// TestPhaseJiraSyncFanOutRunsEveryAccount is the Jira analog of
+// TestPhaseSlackSyncAggregatesAcrossAccounts: one phase pass runs EVERY
+// connected account's syncer, and each account's sync state lands on its own
+// rows. Both accounts here use the same project key, so the per-account
+// jira_sync_state rows also pin the composite-PK scoping (migration 00049) —
+// pre-00049 the second account's watermark row would have clobbered the first.
+func TestPhaseJiraSyncFanOutRunsEveryAccount(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	acct1 := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	acct2 := seedJiraAccountWithBoard(t, database, "c2", "OPS")
+
+	d.SetJiraSyncers([]*jira.Syncer{
+		jiraSyncerFor(t, database, wsDir, acct1),
+		jiraSyncerFor(t, database, wsDir, acct2),
+	})
+
+	d.phaseJiraSync(context.Background())
+
+	// Each account attempted its own project — proving the loop covered both
+	// and that their state is kept apart.
+	for _, acct := range []int64{acct1, acct2} {
+		state, err := database.GetJiraSyncState(acct, "OPS")
+		require.NoError(t, err)
+		require.NotNil(t, state, "account %d never attempted its project", acct)
+		assert.Equal(t, acct, state.AccountID)
+	}
+}
+
+// TestPhaseJiraSyncNeverPaintsAccountGreen is the false-green guard: Sync()
+// keeps going across projects and returns nil even when every project failed,
+// so a pass must never write "ok" back over an account already flagged
+// error/revoked — that would hide the Re-login button in Settings while the
+// account syncs nothing.
+func TestPhaseJiraSyncNeverPaintsAccountGreen(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	// No selected boards → Sync() is a clean no-op returning nil.
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "revoked", "token revoked"))
+
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+	d.phaseJiraSync(context.Background())
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", got.Status, "a nil Sync() error must not clear a recorded auth failure")
+	assert.Equal(t, "token revoked", got.Error)
+}
+
+// TestPhaseJiraSyncEmptySlice is the degenerate case: no connected accounts →
+// phaseJiraSync returns immediately, matching the retired d.jiraSyncer == nil
+// early-return (the TestPhaseSlackSyncEmptySlice precedent).
+func TestPhaseJiraSyncEmptySlice(t *testing.T) {
+	d := newQuietDaemon(t)
+	d.SetJiraSyncers(nil)
+	d.phaseJiraSync(context.Background())
+	assert.True(t, d.lastJira.IsZero(), "an empty fan-out must not stamp the interval clock")
+}
+
+// TestPhaseJiraSyncRespectsInterval pins the throttle: a pass that just ran
+// does not re-run before jira.sync_interval_mins elapses.
+func TestPhaseJiraSyncRespectsInterval(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+	d.config.Jira.SyncIntervalMins = 60
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	d.phaseJiraSync(context.Background())
+	require.False(t, d.lastJira.IsZero(), "the first pass must stamp the interval clock")
+
+	// Wipe the evidence of the first pass; a throttled second pass must not
+	// recreate it.
+	_, err := database.Exec(`DELETE FROM jira_sync_state`)
+	require.NoError(t, err)
+
+	d.phaseJiraSync(context.Background())
+
+	state, err := database.GetJiraSyncState(acct, "OPS")
+	require.NoError(t, err)
+	assert.Nil(t, state, "a throttled pass must not run the syncers again")
+}
+
+// TestPhaseJiraSyncCancelledContextLeavesAuthStateUntouched pins the shutdown
+// guard: a cancelled context means the daemon is stopping, not that the grant
+// went bad. Persisting "context canceled" as the account's auth error would
+// strand a red badge in Settings that nothing but a re-login could clear.
+//
+// Fails on the pre-fix code: without the ctx.Err() branch the account is
+// stamped status='error' with a context-cancellation message.
+func TestPhaseJiraSyncCancelledContextLeavesAuthStateUntouched(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	// Shutdown shape: the context is cancelled AND Sync fails, because the DB
+	// is going away underneath it. Sync swallows per-project API errors, so a
+	// failing boards read is what actually reaches the error branch — and
+	// "sql: no such table" is exactly the kind of shutdown noise that must not
+	// be persisted as this account's auth error.
+	_, err := database.Exec(`DROP TABLE jira_boards`)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "a daemon shutdown must not be recorded as an auth failure")
+	assert.Empty(t, got.Error, "no cancellation message may leak into the account's auth error")
+}
+
+// TestPhaseJiraSyncGenericFailureLeavesAuthStateUntouched pins the other half
+// of the auth-state rule: only a revoked grant is an auth problem. A broken
+// local read, a rate limit or a dropped connection says nothing about the
+// account's grant, and stamping it would strand a red badge in Settings that
+// only a re-login could clear — the sticky-error ratchet, since nothing in a
+// daemon pass ever writes "ok" back.
+//
+// The failure is forced by dropping jira_boards, which makes Sync's
+// GetJiraSelectedBoards read fail — a deterministic, offline way to get a
+// non-nil, non-revoked error out of the real Syncer.
+//
+// Fails on the pre-fix code: it stamped status='error' for EVERY sync error.
+func TestPhaseJiraSyncGenericFailureLeavesAuthStateUntouched(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	_, err := database.Exec(`DROP TABLE jira_boards`)
+	require.NoError(t, err)
+
+	d.phaseJiraSync(context.Background())
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "a non-auth sync failure must not be recorded as an auth failure")
+	assert.Empty(t, got.Error, "no transient sync error may leak into the account's auth error")
+}
+
+// stubJiraSyncer is a phaseJiraSync-shaped syncer with a scripted outcome. The
+// real *jira.Syncer only produces jira.ErrAuthRevoked after a live 401 from
+// Atlassian, so the branch that matters most here is unreachable offline
+// without it.
+type stubJiraSyncer struct {
+	accountID    int64
+	issues       int
+	err          error
+	inTok        int
+	outTok       int
+	apiTok       int
+	resolveCalls int
+}
+
+func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
+func (s *stubJiraSyncer) ResolveUsers(context.Context, map[string]string) error {
+	s.resolveCalls++
+	return nil
+}
+func (s *stubJiraSyncer) AccountID() int64 { return s.accountID }
+func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
+	return s.inTok, s.outTok, s.apiTok
+}
+
+// revokedErr is shaped like the error client.do returns for a 401 that survives
+// a token refresh.
+func revokedErr() error {
+	return fmt.Errorf("%w: GET /rest/api/3/search/jql returned 401 after token refresh", jira.ErrAuthRevoked)
+}
+
+// TestPhaseJiraSyncRecordsRevokedGrant is the converse of the two "leave it
+// alone" guards: the one failure that IS the account's problem must reach its
+// row, otherwise Settings shows a green account that syncs nothing and never
+// offers Re-login.
+//
+// Fails on the pre-fix code: it stamped status='error', not 'revoked', so the
+// Swift Re-login affordance (keyed on 'revoked') never appeared.
+func TestPhaseJiraSyncRecordsRevokedGrant(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+
+	d.jiraSyncers = []jiraAccountSyncer{&stubJiraSyncer{accountID: acct, err: revokedErr()}}
+
+	d.phaseJiraSync(context.Background())
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", got.Status, "a revoked grant must reach the account row")
+	assert.Contains(t, got.Error, "401", "the recorded error must describe the revoked grant")
+}
+
+// A cancelled context wins over the revoked branch: during shutdown an
+// in-flight request can fail any way at all, and a re-login prompt raised by a
+// daemon stop is a lie the owner cannot clear except by re-consenting.
+func TestPhaseJiraSyncCancelledRevokedGrantLeavesAuthStateUntouched(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	require.NoError(t, database.SetJiraAccountAuthState(acct, "ok", ""))
+
+	d.jiraSyncers = []jiraAccountSyncer{&stubJiraSyncer{accountID: acct, err: revokedErr()}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+
+	got, err := database.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "shutdown must not be recorded as a revoked grant")
+	assert.Empty(t, got.Error)
+}
+
+// A failure that never touches the account row must still reach the run
+// telemetry — dropping the auth-state stamp must not make failed passes look
+// clean in pipeline_runs.
+func TestPhaseJiraSyncGenericFailureStillRecordsTelemetry(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: acct, err: errors.New("jira api 503"), inTok: 100, outTok: 20, apiTok: 120},
+	}
+
+	d.phaseJiraSync(context.Background())
+
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(
+		`SELECT status, error_msg FROM pipeline_runs WHERE pipeline = 'jira-boards' ORDER BY id DESC LIMIT 1`,
+	).Scan(&status, &errMsg))
+	assert.Equal(t, "error", status)
+	assert.Contains(t, errMsg, "jira api 503", "the pass's first error must still land in pipeline_runs")
+}
+
+// TestPhaseJiraSyncTargetStatusesSurviveOneAccountFailure is the fan-out
+// isolation guard for the target-status reflection: one broken account must not
+// freeze every other account's targets in a stale status. The healthy account
+// synced fine, so its done issue must still flip its target.
+//
+// Fails on the pre-fix code: the reflection was gated on firstErr == nil, so
+// the failing account suppressed it and the target stayed "todo" forever.
+func TestPhaseJiraSyncTargetStatusesSurviveOneAccountFailure(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	broken, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	healthy, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	// A done issue on the HEALTHY account only — a key present on both sites is
+	// ambiguous and deliberately left alone by SyncJiraTargetStatuses.
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: healthy,
+		Key:       "OPS-1", ProjectKey: "OPS", Summary: "Shipped",
+		Status: "Done", StatusCategory: "done",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+	target, err := database.CreateTargetFromJiraIssue(db.JiraIssue{AccountID: healthy, Key: "OPS-1", Summary: "Shipped"})
+	require.NoError(t, err)
+	require.Equal(t, "todo", target.Status)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: broken, err: errors.New("jira api 503")},
+		&stubJiraSyncer{accountID: healthy, issues: 1},
+	}
+
+	d.phaseJiraSync(context.Background())
+
+	got, err := database.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", got.Status, "a healthy account's targets must reflect Jira even when another account failed")
+}
+
+// TestPhaseJiraSyncResolvesUsersAfterCleanPass closes the gap that made the
+// jira_issues Slack-id columns empty on every daemon-driven install:
+// UserMapper.ResolveAll and BackfillJiraSlackIDs had exactly two callers, both
+// CLI, so a Jira user first seen by the daemon kept the shell jira_user_map row
+// the syncer creates — empty slack_user_id forever, and with it an empty
+// assignee_slack_id on every one of their issues.
+//
+// Both halves are asserted: the mapping AND the denormalized copy on the issue.
+// Resolving without backfilling leaves every already-synced issue exactly as
+// broken as before, which is the shape of the half-fix this pass exists to
+// prevent.
+func TestPhaseJiraSyncResolvesUsersAfterCleanPass(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+
+	// No selected boards → the real Syncer is a clean offline no-op, which is
+	// the branch the resolve step hangs off.
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+
+	require.NoError(t, database.UpsertUser(db.User{ID: "1:UALICE", Name: "alice", Email: "alice@example.com"}))
+	require.NoError(t, database.UpsertJiraUserMap(db.JiraUserMap{
+		JiraAccountID: "jira-alice", Email: "alice@example.com", DisplayName: "Alice",
+	}))
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: acct, Key: "OPS-1", ProjectKey: "OPS", Summary: "Work",
+		AssigneeAccountID: "jira-alice", ReporterAccountID: "jira-alice",
+		Labels: `[]`, Components: `[]`, CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
+	}))
+
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+	d.phaseJiraSync(context.Background())
+
+	mapping, err := database.GetJiraUserMapByAccountID("jira-alice")
+	require.NoError(t, err)
+	require.NotNil(t, mapping)
+	assert.Equal(t, "1:UALICE", mapping.SlackUserID, "a daemon pass must resolve newly-seen Jira users")
+
+	var assignee, reporter string
+	require.NoError(t, database.QueryRow(
+		`SELECT assignee_slack_id, reporter_slack_id FROM jira_issues WHERE account_id = ? AND key = 'OPS-1'`, acct,
+	).Scan(&assignee, &reporter))
+	assert.Equal(t, "1:UALICE", assignee, "a daemon pass must push the resolved id onto existing issues")
+	assert.Equal(t, "1:UALICE", reporter)
+}
+
+// A failed pass says nothing new about identities and may have left the
+// account half-synced, so the resolve step belongs to the clean branch only —
+// and a broken sibling must not suppress a healthy account's resolve, the same
+// fan-out isolation the auth-state write and the target-status reflection
+// already follow.
+func TestPhaseJiraSyncSkipsUserResolveOnFailure(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	brokenAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	healthyAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	broken := &stubJiraSyncer{accountID: brokenAcct, err: errors.New("jira api 503")}
+	healthy := &stubJiraSyncer{accountID: healthyAcct}
+	d.jiraSyncers = []jiraAccountSyncer{broken, healthy}
+
+	d.phaseJiraSync(context.Background())
+
+	assert.Zero(t, broken.resolveCalls, "a failed pass must not run the resolve step")
+	assert.Equal(t, 1, healthy.resolveCalls, "a broken sibling must not suppress a healthy account's resolve")
+}
+
+// TestPhaseJiraSyncResolvesUsersForEveryCleanAccount is the multi-account axis
+// of "once per account", and it needs TWO clean accounts to exist: with a
+// single one in the fixture, a regression to "resolve the first clean syncer
+// and then stop" is invisible, and so is one that resolves only the last.
+//
+// Failure it pins: two connected sites both syncing cleanly, but only site 1's
+// newly-seen Jira users ever resolve — so every issue on site 2 keeps an empty
+// assignee_slack_id forever. That is the §A6 bug, half-fixed, and per-account
+// fan-out isolation is the premise of the whole Jira multi-account sub-project.
+func TestPhaseJiraSyncResolvesUsersForEveryCleanAccount(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	firstAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	secondAcct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+
+	first := &stubJiraSyncer{accountID: firstAcct}
+	second := &stubJiraSyncer{accountID: secondAcct}
+	d.jiraSyncers = []jiraAccountSyncer{first, second}
+
+	d.phaseJiraSync(context.Background())
+
+	assert.Equal(t, 1, first.resolveCalls, "the first clean account must resolve exactly once")
+	assert.Equal(t, 1, second.resolveCalls, "every clean account must resolve, not just the first")
+}
+
+// A cancelled context is daemon shutdown: the resolve step writes to the
+// database the shutdown is tearing down, and skipping it is the same rule the
+// auth-state write follows.
+func TestPhaseJiraSyncSkipsUserResolveOnCancelledContext(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+
+	stub := &stubJiraSyncer{accountID: acct}
+	d.jiraSyncers = []jiraAccountSyncer{stub}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+
+	assert.Zero(t, stub.resolveCalls, "a shutdown must not start identity resolution")
+}

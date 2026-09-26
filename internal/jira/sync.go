@@ -1,0 +1,988 @@
+package jira
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"watchtower/internal/db"
+)
+
+// validProjectKeyRe validates Jira project keys to prevent JQL injection.
+var validProjectKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
+
+// SyncProgress reports the current state of a Jira sync operation.
+type SyncProgress struct {
+	Done  int    // issues synced so far
+	Total int    // total issues to sync (from API)
+	Phase string // "issues", "sprints", "releases", "done"
+}
+
+// Syncer performs incremental and full syncs of one Jira account's issues
+// into the local database. Every row it writes carries its accountID.
+type Syncer struct {
+	client           *Client
+	db               *db.DB
+	mapper           *UserMapper
+	logger           *log.Logger
+	boardIDs         []int
+	accountID        int64
+	boardAnalyzer    *BoardAnalyzer                 // optional, for config change detection
+	autoRefresh      bool                           // when true, auto re-analyze boards with changed config
+	fieldMapCache    map[int][]db.JiraBoardFieldMap // boardID -> field mappings
+	commentSyncLimit int                            // max changed issues fetched for comments per project sync pass (0 = disabled)
+	OnProgress       func(SyncProgress)             // optional progress callback
+}
+
+// NewSyncer creates a Syncer for one Jira account.
+func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []int, accountID int64) *Syncer {
+	return &Syncer{
+		client:    client,
+		db:        database,
+		mapper:    mapper,
+		logger:    log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
+		boardIDs:  boardIDs,
+		accountID: accountID,
+	}
+}
+
+// AccountID returns the Jira account this syncer writes for.
+func (s *Syncer) AccountID() int64 {
+	return s.accountID
+}
+
+// SetLogger replaces the syncer's logger.
+func (s *Syncer) SetLogger(l *log.Logger) {
+	s.logger = l
+}
+
+// SetBoardAnalyzer sets an optional board analyzer for config change detection during sync.
+func (s *Syncer) SetBoardAnalyzer(analyzer *BoardAnalyzer) {
+	s.boardAnalyzer = analyzer
+}
+
+// BoardAnalyzerUsage returns accumulated LLM usage from the board analyzer, if any.
+func (s *Syncer) BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int) {
+	if s.boardAnalyzer == nil {
+		return 0, 0, 0
+	}
+	return s.boardAnalyzer.AccumulatedUsage()
+}
+
+// SetAutoRefresh enables automatic re-analysis of boards with changed config after sync.
+func (s *Syncer) SetAutoRefresh(auto bool) {
+	s.autoRefresh = auto
+}
+
+// SetCommentSyncLimit bounds how many of a project's changed issues get a
+// comment fetch per sync pass (0 disables comment sync entirely — the
+// default until Ideas registry wiring turns it on).
+func (s *Syncer) SetCommentSyncLimit(n int) {
+	s.commentSyncLimit = n
+}
+
+// Sync performs an incremental sync: fetches issues updated since last sync minus 2 minutes overlap.
+func (s *Syncer) Sync(ctx context.Context) (int, error) {
+	total := 0
+
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
+	if err != nil {
+		return 0, fmt.Errorf("getting selected boards: %w", err)
+	}
+
+	if len(boards) == 0 {
+		s.logger.Println("no boards selected, skipping sync")
+		return 0, nil
+	}
+
+	for _, board := range boards {
+		projectKey := board.ProjectKey
+		if projectKey == "" {
+			continue
+		}
+
+		if !validProjectKeyRe.MatchString(projectKey) {
+			s.logger.Printf("skipping board %d: invalid project key %q", board.ID, projectKey)
+			continue
+		}
+
+		syncState, _ := s.db.GetJiraSyncState(s.accountID, projectKey)
+		lastSyncedAt := ""
+		if syncState != nil {
+			lastSyncedAt = syncState.LastSyncedAt
+		}
+		jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
+
+		n, changedKeys, err := s.syncWithJQL(ctx, jql, board.ID)
+		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				// The account's grant is gone — every remaining project would
+				// fail the same way. Abort so the caller records it on the
+				// account row rather than swallowing it per project (the
+				// gmail/calendar precedent).
+				s.logger.Printf("auth revoked, aborting sync: %v", err)
+				return total, err
+			}
+			// Sync keeps going across projects and returns nil, so the daemon
+			// log is the ONLY place this failure would otherwise land. Record
+			// it on the project's own row, which `jira status` renders and the
+			// next successful pass clears.
+			s.logger.Printf("sync error for project %s: %v", projectKey, err)
+			if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+				s.logger.Printf("recording sync error for project %s: %v", projectKey, rerr)
+			}
+			continue
+		}
+
+		total += n
+		now := time.Now().UTC().Format(time.RFC3339)
+		issuesSynced := n
+		if syncState != nil {
+			issuesSynced += syncState.IssuesSynced
+		}
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, board.ID)
+
+		if err := s.syncComments(ctx, changedKeys); err != nil {
+			// syncComments only ever returns a non-nil error for a revoked
+			// grant (everything else is logged internally and swallowed) —
+			// every remaining project would fail the same way, so it travels
+			// up like the issue/sprint/release paths above.
+			s.logger.Printf("auth revoked during comment sync, aborting sync: %v", err)
+			return total, err
+		}
+	}
+
+	// Sync sprints for selected boards. A revoked grant is not a sprint problem:
+	// it is the account's problem, and only the caller can record it — so it
+	// travels up instead of being logged like an ordinary sprint failure. Same
+	// for releases below. (A board whose project key is empty or invalid is
+	// skipped by the loop above, so these two calls are the only place a
+	// revoked grant surfaces for such an account.)
+	if err := s.SyncSprints(ctx); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during sprint sync, aborting sync: %v", err)
+			return total, err
+		}
+		s.logger.Printf("sprint sync error: %v", err)
+	}
+
+	// Sync releases (fix versions) for selected boards.
+	if err := s.syncReleases(ctx, boards); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during releases sync, aborting sync: %v", err)
+			return total, err
+		}
+		s.logger.Printf("releases sync error: %v", err)
+	}
+
+	// Check if board configs changed since last analysis and optionally auto-refresh.
+	if s.boardAnalyzer != nil {
+		results, err := s.boardAnalyzer.CheckAndRefreshProfiles(ctx, s.autoRefresh)
+		if err != nil {
+			s.logger.Printf("board config refresh check error: %v", err)
+		} else {
+			for _, r := range results {
+				if r.Error != nil {
+					s.logger.Printf("board %d (%s): refresh failed: %v", r.BoardID, r.BoardName, r.Error)
+				} else if r.Refreshed {
+					s.logger.Printf("board %d (%s): auto-refreshed profile", r.BoardID, r.BoardName)
+				}
+			}
+		}
+	}
+
+	return total, nil
+}
+
+// ResolveUsers maps newly-seen Jira users onto Slack users and re-derives the
+// denormalized Slack id columns on jira_issues.
+//
+// Sync itself only ever creates a SHELL jira_user_map row (Jira account id,
+// email, display name) and then reads the mapping back read-only, so without
+// this step every Jira user first seen by a daemon-driven install keeps an
+// empty slack_user_id forever — and with it an empty assignee_slack_id on
+// every one of their issues, which every reader comparing against an external
+// identity reads as "this person has no work". Until 2026-09-13 the step ran
+// only from `jira users resolve` and the tail of a manual `jira sync`, which
+// is to say: not at all on an install driven by the daemon.
+//
+// A pass that rewrote nothing says nothing, so only a non-zero repair is
+// logged: on a healthy install the counts fall to zero and stay there, and a
+// line that keeps reappearing means something is still re-introducing stale
+// ids. The syncer's logger is the daemon's (wireJiraSyncers replaces it), so
+// this lands in watchtower.log with the rest of the pass.
+func (s *Syncer) ResolveUsers(ctx context.Context, manualMap map[string]string) error {
+	if s.mapper == nil {
+		return nil
+	}
+	if err := s.mapper.ResolveAll(ctx, manualMap); err != nil {
+		return err
+	}
+	assignees, reporters, err := s.db.BackfillJiraSlackIDs()
+	if err != nil {
+		return err
+	}
+	if assignees > 0 || reporters > 0 {
+		s.logger.Printf("re-derived slack ids on %d assignee and %d reporter rows", assignees, reporters)
+	}
+	return nil
+}
+
+// buildIncrementalJQL builds the JQL for an incremental project sync.
+//
+// The window is expressed as a relative "-Nm" (minutes ago) clause rather than
+// an absolute datetime literal. Jira interprets an absolute JQL datetime in the
+// caller's *profile* timezone, so a UTC watermark formatted as "2006-01-02 15:04"
+// silently skips issues for any profile west of UTC (their local wall clock is
+// behind UTC, so the effective window starts hours late). A relative "-Nm" clause
+// is evaluated against Jira's own clock identically in every timezone.
+func buildIncrementalJQL(projectKey, lastSyncedAt string, now time.Time) string {
+	if lastSyncedAt == "" {
+		return fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+	}
+	t, err := time.Parse(time.RFC3339, lastSyncedAt)
+	if err != nil {
+		return fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+	}
+	// Minutes since the watermark, plus a 2-minute overlap for indexing lag.
+	minutes := int(now.Sub(t).Minutes()) + 2
+	if minutes < 0 {
+		minutes = 0
+	}
+	return fmt.Sprintf("project = %s AND updated >= -%dm ORDER BY updated ASC", projectKey, minutes)
+}
+
+// SyncBoard syncs a single board by ID.
+// Only syncs non-terminal (active) issues for fast initial load.
+//
+// It deliberately does NOT record a sync watermark. The daemon's first regular
+// Sync() for this project therefore finds no state and does a full project scan,
+// backfilling the historical terminal/closed issues that this fast path skipped.
+// Writing a watermark here would pin every later Sync() to an incremental window
+// that never reaches those closed issues, so they would never be loaded.
+func (s *Syncer) SyncBoard(ctx context.Context, boardID int) (int, error) {
+	board, err := s.db.GetJiraBoardProfile(s.accountID, boardID)
+	if err != nil {
+		return 0, fmt.Errorf("getting board %d: %w", boardID, err)
+	}
+	if board.ProjectKey == "" {
+		return 0, fmt.Errorf("board %d has no project key", boardID)
+	}
+	if !validProjectKeyRe.MatchString(board.ProjectKey) {
+		return 0, fmt.Errorf("board %d: invalid project key %q", boardID, board.ProjectKey)
+	}
+
+	// Build JQL: exclude done issues for fast initial load.
+	// statusCategory != Done covers all terminal statuses regardless of name.
+	jql := fmt.Sprintf("project = %s AND statusCategory != Done ORDER BY updated ASC", board.ProjectKey)
+	// Comments are not backfilled on this fast path — see the doc comment
+	// above on why no watermark is recorded either.
+	n, _, err := s.syncWithJQL(ctx, jql, boardID)
+	if err != nil {
+		return n, fmt.Errorf("syncing active issues for %s: %w", board.ProjectKey, err)
+	}
+
+	// Intentionally no UpdateJiraSyncState here — see the doc comment above:
+	// leaving the watermark unset lets the daemon's first Sync() backfill closed issues.
+	_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
+
+	if s.OnProgress != nil {
+		s.OnProgress(SyncProgress{Done: n, Total: n, Phase: "done"})
+	}
+
+	return n, nil
+}
+
+// parseTerminalStatuses extracts terminal status names from a board's LLM profile JSON,
+// applying user overrides from user_overrides_json (terminal_stages map).
+func parseTerminalStatuses(llmProfileJSON, userOverridesJSON string) []string {
+	if llmProfileJSON == "" {
+		return nil
+	}
+	var profile struct {
+		WorkflowStages []struct {
+			Name             string   `json:"name"`
+			IsTerminal       bool     `json:"is_terminal"`
+			OriginalStatuses []string `json:"original_statuses"`
+		} `json:"workflow_stages"`
+	}
+	if err := json.Unmarshal([]byte(llmProfileJSON), &profile); err != nil {
+		return nil
+	}
+
+	// Load user overrides for terminal stages.
+	var overrides UserOverrides
+	if userOverridesJSON != "" {
+		_ = json.Unmarshal([]byte(userOverridesJSON), &overrides)
+	}
+
+	var statuses []string
+	for _, stage := range profile.WorkflowStages {
+		for _, status := range stage.OriginalStatuses {
+			isTerminal := stage.IsTerminal
+			if override, ok := overrides.TerminalStages[status]; ok {
+				isTerminal = override
+			}
+			if isTerminal {
+				statuses = append(statuses, status)
+			}
+		}
+	}
+	return statuses
+}
+
+// buildStatusNotIn builds a JQL "NOT IN" value list: "\"Done\",\"Closed\"".
+func buildStatusNotIn(statuses []string) string {
+	quoted := make([]string, len(statuses))
+	for i, s := range statuses {
+		quoted[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(quoted, ",")
+}
+
+// InitialLoad performs a full backlog sync without the updated filter.
+func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
+	total := 0
+
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
+	if err != nil {
+		return 0, fmt.Errorf("getting selected boards: %w", err)
+	}
+
+	for _, board := range boards {
+		projectKey := board.ProjectKey
+		if projectKey == "" {
+			continue
+		}
+
+		if !validProjectKeyRe.MatchString(projectKey) {
+			s.logger.Printf("skipping board %d: invalid project key %q", board.ID, projectKey)
+			continue
+		}
+
+		jql := fmt.Sprintf("project = %s ORDER BY updated ASC", projectKey)
+		// Comments are not backfilled during the initial load — only the
+		// daemon's regular incremental Sync fetches comments, keeping the
+		// backlog import from blowing the per-issue API budget.
+		n, _, err := s.syncWithJQL(ctx, jql, board.ID)
+		if err != nil {
+			s.logger.Printf("initial load error for project %s: %v", projectKey, err)
+			continue
+		}
+		total += n
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, n)
+	}
+
+	if err := s.SyncSprints(ctx); err != nil {
+		s.logger.Printf("sprint sync error: %v", err)
+	}
+
+	return total, nil
+}
+
+// fetchedPage holds a raw API page for the writer to process.
+type fetchedPage struct {
+	issues []Issue
+	isLast bool
+}
+
+// syncWithJQL fetches issues matching the JQL and upserts them into the database.
+// Uses a pipeline: reader goroutine fetches pages from Jira API and buffers them,
+// writer loop converts and writes batches to DB. DB access stays on the writer side
+// to avoid deadlock with MaxOpenConns=1.
+//
+// It also returns the keys of every issue it upserted, in the JQL's
+// `ORDER BY updated ASC` order (oldest first) — the caller's comment sync
+// takes the tail of this slice to fetch the newest issues first.
+func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int, []string, error) {
+	maxResults := 100
+	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
+	fetchErr := make(chan error, 1)
+
+	// Reader: fetch pages from Jira API using cursor-based pagination (no DB access).
+	go func() {
+		defer close(pageCh)
+		nextToken := ""
+		for {
+			result, err := s.client.SearchIssues(ctx, jql, maxResults, nextToken)
+			if err != nil {
+				fetchErr <- fmt.Errorf("searching issues: %w", err)
+				return
+			}
+
+			if len(result.Issues) > 0 {
+				pageCh <- fetchedPage{issues: result.Issues, isLast: result.IsLast}
+			}
+
+			if result.IsLast || len(result.Issues) == 0 || result.NextPageToken == "" {
+				return
+			}
+			nextToken = result.NextPageToken
+		}
+	}()
+
+	// Writer: convert and write batches to DB.
+	written := 0
+	var changedKeys []string
+	for page := range pageCh {
+		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID)
+
+		if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
+			s.logger.Printf("batch upsert error: %v", err)
+		}
+		for i := range dbIssues {
+			changedKeys = append(changedKeys, dbIssues[i].Key)
+		}
+		written += len(dbIssues)
+		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
+
+		if s.OnProgress != nil {
+			s.OnProgress(SyncProgress{Done: written, Total: 0, Phase: "issues"})
+		}
+	}
+
+	// Check if reader exited with error.
+	select {
+	case err := <-fetchErr:
+		return written, changedKeys, err
+	default:
+		return written, changedKeys, nil
+	}
+}
+
+// syncComments fetches and stores comments for at most commentSyncLimit of
+// the given changed issue keys — the newest ones, since changedKeys arrives
+// oldest-first per syncWithJQL's `ORDER BY updated ASC`. A limit of 0 (the
+// default) disables comment sync entirely. A per-issue fetch error is logged
+// and skipped, except a revoked grant: every remaining key in this project
+// would fail identically, so it is returned for the caller to abort on (the
+// issue/sprint/release precedent). All DB writes happen after each issue's
+// page loop, one UpsertJiraComments call per issue.
+func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
+	if s.commentSyncLimit <= 0 || len(changedKeys) == 0 {
+		return nil
+	}
+
+	keys := changedKeys
+	if len(keys) > s.commentSyncLimit {
+		dropped := len(keys) - s.commentSyncLimit
+		keys = keys[len(keys)-s.commentSyncLimit:]
+		s.logger.Printf("comment sync: capped to %d of %d changed issues, dropped %d oldest", s.commentSyncLimit, len(changedKeys), dropped)
+	}
+
+	for _, key := range keys {
+		comments, err := s.client.GetIssueComments(ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				return err
+			}
+			s.logger.Printf("comment sync: fetching comments for %s: %v", key, err)
+			continue
+		}
+		if len(comments) == 0 {
+			continue
+		}
+
+		dbComments := make([]db.JiraComment, 0, len(comments))
+		for _, c := range comments {
+			dbComments = append(dbComments, db.JiraComment{
+				AccountID:       s.accountID,
+				IssueKey:        key,
+				ID:              c.ID,
+				Author:          c.Author.DisplayName,
+				AuthorAccountID: c.Author.AccountID,
+				BodyText:        extractDescriptionText(c.Body),
+				CreatedAt:       c.Created,
+				UpdatedAt:       c.Updated,
+			})
+		}
+		if err := s.db.UpsertJiraComments(dbComments); err != nil {
+			s.logger.Printf("comment sync: storing comments for %s: %v", key, err)
+		}
+	}
+	return nil
+}
+
+// prepareIssueBatch converts API issues to DB records without writing to the database.
+func (s *Syncer) prepareIssueBatch(ctx context.Context, issues []Issue, boardID int) ([]db.JiraIssue, []db.JiraIssueLink) {
+	dbIssues := make([]db.JiraIssue, 0, len(issues))
+	var dbLinks []db.JiraIssueLink
+
+	for _, issue := range issues {
+		dbIssue, links := s.convertIssue(ctx, issue, boardID)
+		dbIssues = append(dbIssues, dbIssue)
+		dbLinks = append(dbLinks, links...)
+	}
+	return dbIssues, dbLinks
+}
+
+// convertIssue converts a Jira API issue to DB records without writing to the database.
+func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db.JiraIssue, []db.JiraIssueLink) {
+	f := issue.Fields
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Resolve assignee.
+	assigneeAccountID, assigneeEmail, assigneeDisplayName, assigneeSlackID := "", "", "", ""
+	if f.Assignee != nil {
+		assigneeAccountID = f.Assignee.AccountID
+		assigneeEmail = f.Assignee.EmailAddress
+		assigneeDisplayName = f.Assignee.DisplayName
+		s.ensureUserMap(f.Assignee)
+		if m, _ := s.mapper.ResolveOne(ctx, f.Assignee.AccountID); m != nil {
+			assigneeSlackID = m.SlackUserID
+		}
+	}
+
+	// Resolve reporter.
+	reporterAccountID, reporterEmail, reporterDisplayName, reporterSlackID := "", "", "", ""
+	if f.Reporter != nil {
+		reporterAccountID = f.Reporter.AccountID
+		reporterEmail = f.Reporter.EmailAddress
+		reporterDisplayName = f.Reporter.DisplayName
+		s.ensureUserMap(f.Reporter)
+		if m, _ := s.mapper.ResolveOne(ctx, f.Reporter.AccountID); m != nil {
+			reporterSlackID = m.SlackUserID
+		}
+	}
+
+	priority := ""
+	if f.Priority != nil {
+		priority = f.Priority.Name
+	}
+
+	dueDate := ""
+	if f.DueDate != nil {
+		dueDate = *f.DueDate
+	}
+
+	sprintID := 0
+	sprintName := ""
+	if f.Sprint != nil {
+		sprintID = f.Sprint.ID
+		sprintName = f.Sprint.Name
+	}
+
+	epicKey := ""
+	if f.Epic != nil {
+		epicKey = f.Epic.Key
+	}
+	if f.Parent != nil && epicKey == "" {
+		epicKey = f.Parent.Key
+	}
+
+	labelsJSON, _ := json.Marshal(f.Labels)
+	if f.Labels == nil {
+		labelsJSON = []byte("[]")
+	}
+
+	componentNames := make([]string, 0, len(f.Components))
+	for _, c := range f.Components {
+		componentNames = append(componentNames, c.Name)
+	}
+	componentsJSON, _ := json.Marshal(componentNames)
+
+	fixVersionNames := make([]string, 0, len(f.FixVersions))
+	for _, fv := range f.FixVersions {
+		fixVersionNames = append(fixVersionNames, fv.Name)
+	}
+	fixVersionsJSON, _ := json.Marshal(fixVersionNames)
+
+	// Compute project key from issue key.
+	projectKey := ""
+	if idx := strings.LastIndex(issue.Key, "-"); idx > 0 {
+		projectKey = issue.Key[:idx]
+	}
+
+	// Extract description text (ADF or plain).
+	descText := extractDescriptionText(f.Description)
+
+	resolvedAt := ""
+	if f.Resolved != nil {
+		resolvedAt = *f.Resolved
+	}
+
+	rawJSON, _ := json.Marshal(issue)
+
+	// Extract custom field values from raw JSON.
+	var storyPoints *float64
+	customFieldsMap := make(map[string]interface{})
+
+	fieldMappings := s.getFieldMap(boardID)
+	if len(fieldMappings) > 0 {
+		// Parse raw issue JSON to access custom fields.
+		var rawIssue struct {
+			Fields map[string]json.RawMessage `json:"fields"`
+		}
+		if err := json.Unmarshal(rawJSON, &rawIssue); err == nil {
+			for _, fm := range fieldMappings {
+				rawVal, ok := rawIssue.Fields[fm.FieldID]
+				if !ok || string(rawVal) == "null" {
+					continue
+				}
+
+				switch fm.Role {
+				case "story_points":
+					var sp float64
+					if err := json.Unmarshal(rawVal, &sp); err == nil {
+						storyPoints = &sp
+					}
+				case "planned_end":
+					// Use as due date if standard dueDate is empty.
+					if dueDate == "" {
+						var val interface{}
+						if err := json.Unmarshal(rawVal, &val); err == nil {
+							if dateStr := extractDisplayValue(val); dateStr != "" {
+								dueDate = dateStr
+							}
+						}
+					}
+				default:
+					// For other roles, extract a display value.
+					var val interface{}
+					if err := json.Unmarshal(rawVal, &val); err == nil {
+						displayVal := extractDisplayValue(val)
+						if displayVal != "" {
+							customFieldsMap[fm.Role] = displayVal
+						}
+					}
+				}
+			}
+		}
+	}
+
+	var customFieldsJSON string
+	if len(customFieldsMap) > 0 {
+		if b, err := json.Marshal(customFieldsMap); err == nil {
+			customFieldsJSON = string(b)
+		}
+	}
+
+	statusCatChanged := "" // Jira API doesn't expose this directly in basic search
+
+	dbIssue := db.JiraIssue{
+		AccountID:               s.accountID,
+		Key:                     issue.Key,
+		ID:                      issue.ID,
+		ProjectKey:              projectKey,
+		BoardID:                 boardID,
+		Summary:                 f.Summary,
+		DescriptionText:         descText,
+		IssueType:               f.IssueType.Name,
+		IssueTypeCategory:       normalizeIssueTypeCategory(f.IssueType.HierarchyLevel),
+		IsBug:                   isBug(f.IssueType.Name),
+		Status:                  f.Status.Name,
+		StatusCategory:          normalizeStatusCategory(f.Status.StatusCategory.Key),
+		StatusCategoryChangedAt: statusCatChanged,
+		AssigneeAccountID:       assigneeAccountID,
+		AssigneeEmail:           assigneeEmail,
+		AssigneeDisplayName:     assigneeDisplayName,
+		AssigneeSlackID:         assigneeSlackID,
+		ReporterAccountID:       reporterAccountID,
+		ReporterEmail:           reporterEmail,
+		ReporterDisplayName:     reporterDisplayName,
+		ReporterSlackID:         reporterSlackID,
+		Priority:                priority,
+		StoryPoints:             storyPoints,
+		DueDate:                 dueDate,
+		SprintID:                sprintID,
+		SprintName:              sprintName,
+		EpicKey:                 epicKey,
+		Labels:                  string(labelsJSON),
+		Components:              string(componentsJSON),
+		FixVersions:             string(fixVersionsJSON),
+		CreatedAt:               f.Created,
+		UpdatedAt:               f.Updated,
+		ResolvedAt:              resolvedAt,
+		RawJSON:                 string(rawJSON),
+		CustomFieldsJSON:        customFieldsJSON,
+		SyncedAt:                now,
+	}
+
+	// Collect issue links.
+	var links []db.JiraIssueLink
+	for _, link := range f.IssueLinks {
+		sourceKey := issue.Key
+		targetKey := ""
+		linkType := link.Type.Name
+		if link.OutwardIssue != nil {
+			targetKey = link.OutwardIssue.Key
+		} else if link.InwardIssue != nil {
+			targetKey = link.InwardIssue.Key
+		}
+		if targetKey != "" {
+			links = append(links, db.JiraIssueLink{
+				AccountID: s.accountID,
+				ID:        link.ID,
+				SourceKey: sourceKey,
+				TargetKey: targetKey,
+				LinkType:  linkType,
+				SyncedAt:  now,
+			})
+		}
+	}
+
+	return dbIssue, links
+}
+
+// ensureUserMap creates a user map entry if it doesn't exist.
+func (s *Syncer) ensureUserMap(u *User) {
+	if u == nil || u.AccountID == "" {
+		return
+	}
+	existing, _ := s.db.GetJiraUserMapByAccountID(u.AccountID)
+	if existing != nil {
+		return
+	}
+	_ = s.db.UpsertJiraUserMap(db.JiraUserMap{
+		JiraAccountID: u.AccountID,
+		Email:         u.EmailAddress,
+		DisplayName:   u.DisplayName,
+	})
+}
+
+// SyncSprints syncs active and recent closed sprints for all selected boards.
+// A per-board fetch failure is logged and skipped, except a revoked grant:
+// every remaining board would fail the same way, so it is returned for the
+// caller to record on the account row.
+func (s *Syncer) SyncSprints(ctx context.Context) error {
+	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
+	if err != nil {
+		return err
+	}
+
+	for _, board := range boards {
+		for _, state := range []string{"active", "closed"} {
+			params := url.Values{
+				"state":      {state},
+				"maxResults": {"50"},
+			}
+			path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", board.ID)
+			var resp SprintList
+			if err := s.client.getWithQuery(ctx, path, params, &resp); err != nil {
+				if errors.Is(err, ErrAuthRevoked) {
+					return err
+				}
+				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
+				continue
+			}
+
+			now := time.Now().UTC().Format(time.RFC3339)
+			for _, sprint := range resp.Values {
+				dbSprint := db.JiraSprint{
+					AccountID:    s.accountID,
+					ID:           sprint.ID,
+					BoardID:      board.ID,
+					Name:         sprint.Name,
+					State:        sprint.State,
+					Goal:         sprint.Goal,
+					StartDate:    sprint.StartDate,
+					EndDate:      sprint.EndDate,
+					CompleteDate: sprint.CompleteDate,
+					SyncedAt:     now,
+				}
+				if err := s.db.UpsertJiraSprint(dbSprint); err != nil {
+					s.logger.Printf("failed to upsert sprint %d: %v", sprint.ID, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// syncReleases fetches fix versions for each unique project key and upserts them.
+// Errors are logged and do not block the main sync, except a revoked grant:
+// every remaining project would fail the same way, so it is returned for the
+// caller to record on the account row.
+func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error {
+	// Collect unique project keys.
+	seen := make(map[string]bool)
+	var projectKeys []string
+	for _, board := range boards {
+		if board.ProjectKey == "" || seen[board.ProjectKey] {
+			continue
+		}
+		if !validProjectKeyRe.MatchString(board.ProjectKey) {
+			continue
+		}
+		seen[board.ProjectKey] = true
+		projectKeys = append(projectKeys, board.ProjectKey)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, projectKey := range projectKeys {
+		versions, err := s.client.GetProjectVersions(ctx, projectKey)
+		if err != nil {
+			if errors.Is(err, ErrAuthRevoked) {
+				return err
+			}
+			s.logger.Printf("failed to fetch versions for project %s: %v", projectKey, err)
+			continue
+		}
+
+		for _, v := range versions {
+			if v.ID == "" {
+				s.logger.Printf("skipping version %q with empty ID", v.Name)
+				continue
+			}
+			id, err := strconv.Atoi(v.ID)
+			if err != nil {
+				s.logger.Printf("skipping version %q: invalid ID %q", v.Name, v.ID)
+				continue
+			}
+			release := db.JiraRelease{
+				AccountID:   s.accountID,
+				ID:          id,
+				ProjectKey:  projectKey,
+				Name:        v.Name,
+				Description: v.Description,
+				ReleaseDate: v.ReleaseDate,
+				Released:    v.Released,
+				Archived:    v.Archived,
+				SyncedAt:    now,
+			}
+			if err := s.db.UpsertJiraRelease(release); err != nil {
+				s.logger.Printf("failed to upsert release %q for project %s: %v", v.Name, projectKey, err)
+			}
+		}
+
+		s.logger.Printf("synced %d releases for project %s", len(versions), projectKey)
+	}
+
+	// Individual version errors are logged but non-blocking by design; only a
+	// revoked grant (returned above) reaches the caller.
+	return nil
+}
+
+// getFieldMap returns the custom field mappings for a board, using a cache.
+func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
+	if s.fieldMapCache == nil {
+		s.fieldMapCache = make(map[int][]db.JiraBoardFieldMap)
+	}
+	if cached, ok := s.fieldMapCache[boardID]; ok {
+		return cached
+	}
+	mappings, err := s.db.GetJiraBoardFieldMap(s.accountID, boardID)
+	if err != nil {
+		return nil
+	}
+	s.fieldMapCache[boardID] = mappings
+	return mappings
+}
+
+// extractDisplayValue gets a human-readable value from a Jira field value.
+// Jira fields can be strings, numbers, objects with "name" or "displayName", or arrays thereof.
+func extractDisplayValue(val interface{}) string {
+	switch v := val.(type) {
+	case string:
+		return v
+	case float64:
+		if v == float64(int(v)) {
+			return strconv.Itoa(int(v))
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	case map[string]interface{}:
+		// Jira objects often have "name", "displayName", or "value"
+		if name, ok := v["name"].(string); ok && name != "" {
+			return name
+		}
+		if name, ok := v["displayName"].(string); ok && name != "" {
+			return name
+		}
+		if val, ok := v["value"].(string); ok && val != "" {
+			return val
+		}
+		return ""
+	case []interface{}:
+		var parts []string
+		for _, item := range v {
+			if s := extractDisplayValue(item); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return ""
+	}
+}
+
+// normalizeStatusCategory maps Jira status category keys to normalized values.
+func normalizeStatusCategory(jiraKey string) string {
+	switch strings.ToLower(jiraKey) {
+	case "new":
+		return "todo"
+	case "indeterminate":
+		return "in_progress"
+	case "done":
+		return "done"
+	default:
+		return strings.ToLower(jiraKey)
+	}
+}
+
+// normalizeIssueTypeCategory maps Jira hierarchy levels to categories.
+func normalizeIssueTypeCategory(hierarchyLevel int) string {
+	switch hierarchyLevel {
+	case 1:
+		return "epic"
+	case -1:
+		return "subtask"
+	default:
+		return "standard"
+	}
+}
+
+// isBug returns true if the issue type name contains "bug" (case-insensitive).
+func isBug(issueTypeName string) bool {
+	return strings.Contains(strings.ToLower(issueTypeName), "bug")
+}
+
+// extractDescriptionText extracts plain text from ADF or returns plain string.
+func extractDescriptionText(desc interface{}) string {
+	if desc == nil {
+		return ""
+	}
+	switch v := desc.(type) {
+	case string:
+		return v
+	case map[string]interface{}:
+		// Atlassian Document Format — extract text nodes recursively.
+		return extractADFText(v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func extractADFText(node map[string]interface{}) string {
+	var parts []string
+
+	if text, ok := node["text"].(string); ok {
+		parts = append(parts, text)
+	}
+
+	if content, ok := node["content"].([]interface{}); ok {
+		for _, child := range content {
+			if childMap, ok := child.(map[string]interface{}); ok {
+				parts = append(parts, extractADFText(childMap))
+			}
+		}
+	}
+
+	return strings.Join(parts, " ")
+}

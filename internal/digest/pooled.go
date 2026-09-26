@@ -1,0 +1,96 @@
+package digest
+
+import (
+	"context"
+	"time"
+
+	"watchtower/internal/sessions"
+)
+
+// PooledGenerator wraps a Generator with a SessionPool to limit concurrency.
+// Each call acquires a worker slot, calls the inner generator (which creates
+// a fresh one-shot session), and releases the slot back to the pool.
+type PooledGenerator struct {
+	inner      Generator
+	pool       *sessions.SessionPool
+	sessionLog *sessions.SessionLog
+}
+
+// NewPooledGenerator creates a generator that limits concurrency via the pool.
+func NewPooledGenerator(inner Generator, pool *sessions.SessionPool) *PooledGenerator {
+	return &PooledGenerator{inner: inner, pool: pool}
+}
+
+// SetSessionLog enables structured logging of generation events.
+func (pg *PooledGenerator) SetSessionLog(sl *sessions.SessionLog) {
+	pg.sessionLog = sl
+}
+
+// Pool returns the underlying session pool.
+func (pg *PooledGenerator) Pool() *sessions.SessionPool {
+	return pg.pool
+}
+
+// Generate acquires a worker slot from the pool, calls the inner generator,
+// and releases the slot. Each call is independent — no session reuse.
+func (pg *PooledGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *Usage, string, error) {
+	worker, err := pg.pool.Acquire(ctx)
+	if err != nil {
+		return "", nil, "", err
+	}
+	defer pg.pool.Release(worker)
+
+	start := time.Now()
+
+	result, usage, sessionID, err := pg.inner.Generate(ctx, systemPrompt, userMessage, "")
+	if err != nil {
+		return "", usage, "", err
+	}
+
+	// Log generation event.
+	if pg.sessionLog != nil && sessionID != "" {
+		source := "unknown"
+		if s, ok := SourceFromContext(ctx); ok {
+			source = s
+		}
+		pg.sessionLog.Log(sessions.SessionEvent{
+			Timestamp:  time.Now().UTC().Format(time.RFC3339),
+			SessionID:  sessionID,
+			Action:     "created",
+			Source:     source,
+			DurationMS: time.Since(start).Milliseconds(),
+		})
+	}
+
+	return result, usage, sessionID, nil
+}
+
+// sessionSourceKey is the context key for the caller source label.
+type sessionSourceKey struct{}
+
+// WithSource returns a context that carries a source label for session logging.
+func WithSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(ctx, sessionSourceKey{}, source)
+}
+
+// SourceFromContext returns the source label attached by WithSource.
+// Generator implementations in other packages must use this helper rather
+// than declaring their own key type: context keys are compared by concrete
+// type, so a locally-declared copy of sessionSourceKey never matches.
+func SourceFromContext(ctx context.Context) (string, bool) {
+	source, ok := ctx.Value(sessionSourceKey{}).(string)
+	return source, ok && source != ""
+}
+
+// Source tags passed via WithSource select the model tier a Generator should
+// use for the call. Any harness implementing digest.Generator MUST honor the
+// tier sources below by mapping them to an appropriate model in its backend:
+//
+//	SourceLight → lightweight/fast model (e.g. Haiku, gpt-5.4-mini, ...)
+//
+// Per-pipeline source names (e.g. "digest.channel", "digest.period") remain
+// valid and are classified by the shared TierForSource table. An unknown or
+// empty source falls back to the harness's strong-tier model.
+const (
+	SourceLight = "light"
+)

@@ -1,0 +1,63 @@
+# Behavior Inventory — Owner identity
+
+> Each item below is a **behavioral contract** that must be preserved.
+> Modifying or weakening the protecting test requires explicit approval
+> from @Vadym.
+>
+> AI assistant: when working in `internal/db/owner.go`,
+> `internal/db/profile.go`, `internal/daemon/owner.go`,
+> `internal/inbox/pipeline.go`, `internal/inbox/jira_detector.go`,
+> `internal/inbox/style_sample.go`, `internal/jira/client.go`
+> (`GetMyself`), `cmd/jira_owner.go`, or any of the former
+> `db.GetCurrentUserID()` call sites (`cmd/day_plan.go`,
+> `cmd/briefing.go`, `cmd/tracks.go`, `cmd/profile.go`,
+> `internal/briefing/`, `internal/dayplan/`, `internal/tracks/`,
+> `internal/meeting/`, `internal/guide/`, `internal/digest/`,
+> `internal/tools/digests.go`) or its Swift twin
+> (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/OwnerQueries.swift`
+> and its six call sites), read this file first. Any proposed change
+> that would break a guard test or remove a contract must be raised as
+> a question before touching code.
+
+**Module:** `internal/db/owner.go` (resolver + `Owner`/`ErrNoOwner`), `internal/db/profile.go` (profile singleton), `internal/daemon/owner.go` (benign no-owner skip + once-per-day log), `internal/inbox/`, `internal/jira/client.go` (`GetMyself`) + `cmd/jira_owner.go` (`/myself` at connect + lazy daemon fill), every former `db.GetCurrentUserID()` call site, `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/OwnerQueries.swift` + its six call sites, `WatchtowerDesktop/Sources/Views/Components/NoOwnerEmptyState.swift`
+**Last full audit:** 2026-09-25
+
+## OWNER-01 — One owner, one ladder
+
+**Status:** Enforced
+
+**Observable:** Every owner-identity read in Go and Swift goes through `ResolveOwner` / `OwnerQueries.resolve`; the ladder is Slack #1 → Google #1 → Jira #1; an existing Slack install's owner id never changes.
+
+**Mechanism:** `(*db.DB) ResolveOwner() (Owner, error)` (`internal/db/owner.go`) is the single source of the owner identity, replacing the old `db.GetCurrentUserID()` (`SELECT current_user_id FROM slack_accounts WHERE id = 1`), which is deleted. First rung to match wins: `slack_accounts` row `id = 1` with a non-empty `current_user_id` and `status != 'removed'` (`Owner.ID` = that value unchanged, `Source = "slack"`) → the first `google_accounts` row by id with a non-empty email (`ID = "google:" + lower(email)`, `Source = "google"`) → the first **enabled** `jira_accounts` row by id with a non-empty `owner_account_id` and `status != 'removed'` (`ID = "jira:" + owner_account_id`, `Source = "jira"`) → `Owner{}` (`Known() == false`). Every enrichment field (`SlackUserID`, `Email`, `JiraAccountID`, `DisplayName`) is filled independently of which rung produced `ID`, from whichever connected source has it — a Slack-rung owner still gets a `JiraAccountID` when the account has one (via `jira_accounts.owner_account_id` or the `jira_user_map` bridge). A second Slack account (`id = 2`) never becomes the owner even if account #1 is removed; the ladder falls through to Google/Jira instead. `user_profile` stays a singleton keyed by `Owner.ID` (of whatever shape): `GetOwnerProfile(owner)` reads the exact-key row, else the most recently updated row in the table; `UpsertOwnerProfile(owner, p)` re-keys that fallback row to `owner.ID` inside the same write, so an owner switching rungs (e.g. Google connected first, Slack connected later) keeps exactly one profile row with its old content — it is never orphaned or duplicated. The Swift twin, `OwnerQueries.resolve(_:)`, copies the same SQL and enrichment order and names `internal/db/owner.go` in its doc comment (the `SlackAccountID.swift` ↔ `internal/slack/namespace.go` dual-path precedent); `ProfileQueries.fetchOwnerProfile`/`upsertOwnerProfile` mirror the singleton re-key. A pre-owner Desktop write (onboarding, before any account is connected) parks under the reserved key `"pending:owner"` (`ProfileQueries.pendingOwnerKey`) instead of blocking — a controller ruling under the onboarding-unstick house rule — and is silently adopted by the first rung that resolves, on either side, since the fallback keys on "most recently updated row," not the literal key.
+
+**Why locked:** A second notion of the owner — a raw `current_user_id FROM slack_accounts` query, a re-implemented ladder, or an enrichment field read only from the winning rung — reintroduces exactly the bug this feature fixes: a Google-only or Jira-only install silently loses day plans, briefings, inbox detection and Jira context again, or a rung switch silently forks the owner's profile into two rows.
+
+**Test guards:**
+- `internal/db/owner_scan_test.go`: `TestOwner01_NoOwnerReadsOutsideResolver` — a `go/parser` property scan over every non-test `.go` file under `internal/` and `cmd/` (floor ≥ 300 files), skipping `internal/db/owner.go`, that fails on the `GetCurrentUserID` identifier, on any string literal matching `(?i)current_user_id\s+FROM\s+slack_accounts\b`, and — outside `internal/db/` — on a production `GetUserProfile` call (an exact-key profile read that skips `GetOwnerProfile`'s fallback). `WatchtowerDesktop/Tests/Core/OwnerQueriesTests.swift`: `testOwner01NoRawOwnerQueriesOutsideResolver` — the Swift-side text-scan equivalent over `WatchtowerDesktop/Sources` (floor ≥ 200 files), skipping `OwnerQueries.swift`.
+- `internal/db/owner_test.go`: `TestOwner01_ResolveOwnerLadder` (the full ladder fixture table — Slack-only, Google-only, Jira-only, Google+Jira, none, removed-Slack, disabled-Jira, a second non-owning Slack account, and a removed #1 falling past a still-active #2 — every `Owner` field asserted by value), `TestOwner01_SlackInstallIDUnchanged` (a Slack+Google+Jira install asserts the whole `Owner`, not only `ID`, is unchanged), `TestOwner01_ProfileSurvivesRungSwitch`, `TestOwner01_OwnerKeyedProfileBeatsStaleRow`, `TestOwner01_UnknownOwnerProfileIsNil`, `TestOwner01_UnknownOwnerUpsertIsErrNoOwner`. `WatchtowerDesktop/Tests/Core/OwnerQueriesTests.swift` mirrors the same fixture and profile cases: `testOwner01ResolveOwnerLadder`, `testOwner01SlackInstallIDUnchanged`, `testOwner01ProfileSurvivesRungSwitch`, `testOwner01OwnerKeyedProfileBeatsStaleRow`, `testOwner01UnknownOwnerProfileIsNil`, `testOwner01UnknownOwnerUpsertThrowsNoOwner`.
+- Site-level ladder coverage: `internal/inbox/owner_test.go` (`TestOwner01_InboxRunsForGoogleOnlyOwner`, `TestOwner01_InboxJiraMentionFromOwnerJiraAccountID`, `TestOwner01_InboxSkipsWithoutOwner`, `TestOwner01_AutoResolveJiraKeepsEveryMappedID`, `TestOwner01_JiraMentionOfAnyMappedIDDetected`), `internal/daemon/owner_test.go` (`TestOwner01_DaemonInboxUsesResolvedOwnerEmail`). `WatchtowerDesktop/Tests/`: `testOwner01FetchCurrentUserIDGoogleOnlyIsNil` (`ChannelStatsTests.swift`), `testOwner01GoogleOnlyInstallCountsTracks` (`SidebarCountsViewModelTests.swift`), and (`OnboardingChatViewModelOwnerTests.swift`) `testOwner01SaveProfileWithContextGoogleOnly`, `testOwner01SaveProfileWithContextNoOwnerParksUnderPendingKey`, `testOwner01PendingProfileAdoptedByLaterOwner`, `testOwner01MarkOnboardingDoneNoOwnerFlagsPendingRow`, `testOwner01SaveProfileWithContextNoOwnerReusesExistingRow`, `testOwner01MarkOnboardingDoneGoogleOnlyWritesFlag`; (`Tests/Core/OwnerQueriesTests.swift`) `testOwner01FetchCurrentProfileGoogleOnly`, `testOwner01ProfileSaveGoogleOnlyWritesOneGoogleKeyedRow`; (`PeopleViewModelOwnerTests.swift`) `testOwner01GoogleOwnerHasNoSlackGraph`, `testOwner01GraphUsesOwnerSlackIDNotProfileKey`, `testOwner01SlackOwnerProfileWritesReKeyParkedRow`, `testOwner01GoogleOwnerProfileWritesPersist`, `testOwner01NoOwnerProfileWritesParkOnPendingKey`; (`DigestStarredChannelOwnerTests.swift`) `testOwner01ChannelStarPersistsForParkedSlackOwnerProfile`, `testOwner01ChannelStarPersistsForGoogleOnlyOwner`. Go site: `internal/tracks/pipeline_test.go`'s `TestLoadWindowContext_UsesProfileParkedUnderAnotherKey`.
+
+**Locked since:** 2026-09-25
+
+## OWNER-02 — No silent skip
+
+**Status:** Enforced
+
+**Observable:** A user-triggered command that needs the owner and has none exits non-zero with `ErrNoOwner`; the daemon's skip is benign and logged once per day.
+
+**Mechanism:** `db.ErrNoOwner` (`"no owner identity: connect Slack, Google or Jira first"`) is the one shared error. `(*db.DB) RequireOwner()` is `ResolveOwner` plus this check, used at every user-triggered command that needs the owner: `day-plan generate|show|list|reset|check-conflicts`, `briefing generate|show|list`, `tracks create`, `profile`, and the MCP `get_today_briefing` tool — each of these used to print "No current user set" (or similar) to stdout and **exit 0**, so a Desktop Generate button reported success on an install with no owner. `briefing.RunForDate` returns `ErrNoOwner` instead of `(0, nil)`, so "no owner" is no longer conflated with "nothing to summarize" for that same run. On the daemon side, `logNoOwnerOnce(now, phase)` (`internal/daemon/owner.go`) memoizes an in-memory `map[phase]utcDay` so a no-owner install prints one line per phase per UTC calendar day, not every ~15-minute cycle, and the skip charges no attempt budget (the wave-4 `…BenignNoUserSkipDoesNotConsumeBudget` tests keep their meaning against the new error) and writes no `pipeline_runs` row. The inbox pipeline gates on `Owner.Known()` (not the Slack id specifically), so a Google-only install now runs Calendar/Gmail detection that used to no-op with the whole pipeline; Jira mention detection and its INBOX-02 auto-resolve key off `Owner.JiraAccountID` (falling back to the Slack-id bridge), matching every Atlassian id the owner maps to, not just the first. Desktop: Day Plan and Briefings render an explicit `NoOwnerEmptyState` ("Connect Slack, Google or Jira so Watchtower knows who you are", **Open Connections** → `AppState.settingsTab = .connections`) and hide Generate/Regenerate/Reset whenever `AppState.owner` — refreshed on DB open, on every Slack/Google/Jira account-list reload, and on appear of those two screens — is unknown; the Briefing Generate path stops discarding the CLI's stderr on a non-zero exit (Day Plan's `generationError` already surfaced it).
+
+**Why locked:** Before this contract, a no-owner install's Generate buttons lied — they returned success, reloaded, found nothing, and showed a bare empty state with no explanation. Reverting any command to a swallowed error, or reverting the daemon's memo so it spams the log every cycle, reintroduces exactly that silent-failure class the 2026-09-13 audit (finding H27, decision 15) flagged.
+
+**Test guards:**
+- `internal/db/owner_test.go`: `TestOwner02_RequireOwnerUnknownIsErrNoOwner`.
+- `cmd/owner02_test.go`: `TestOwner02_UserTriggeredCommandsFailWithoutOwner` — one table test driving the real cobra command for every command in the list above, asserting a non-zero exit wrapping `db.ErrNoOwner`.
+- `internal/tools/digests_test.go`: `TestOwner02_GetTodayBriefingToolErrorsWithoutOwner`.
+- `internal/daemon/owner_test.go`: `TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay` (three cycles across both day-plan phases on one UTC day → one line; the next day → a second line), `TestOwner02_DaemonBriefingNoOwnerIsBenignAndLoggedOnce`, `TestOwner02_DaemonInboxNoOwnerLoggedOncePerUTCDay`.
+- `WatchtowerDesktop/Tests/`: `BriefingViewModelTests.swift`'s `testOwner02GenerateSurfacesCLIStderr`, `DayPlanViewModelTests.swift`'s `testOwner02RegenerateSurfacesNoOwnerError`, and `NoOwnerEmptyStateViewTests.swift`'s `testOwner02EmptyStateTextAndOpenConnections`, `testOwner02BriefingsUnknownOwnerShowsEmptyStateAndNoGenerate`, `testOwner02DayPlanUnknownOwnerOffersNoGenerate`, `testOwner02DayPlanShowsEmptyStateOnlyWithoutOwnerAndPlan`; `AppStateTests.swift`'s `testOwner02RefreshOwnerResolvesFromDB`, `testOwner02AccountReloadRefreshesOwner`, `testOwner02GoogleAccountReloadRefreshesOwner`, `testOwner02JiraAccountReloadRefreshesOwner`; `DayPlanConflictBannerViewTests.swift`'s `testOwner02UnknownOwnerOffersNoActions`.
+
+**Locked since:** 2026-09-25
+
+## Changelog
+
+- 2026-09-25: feature shipped (owner decision 15 of the 2026-09-13 feature audit, finding H27). `db.GetCurrentUserID()` removed; all Go and Swift owner reads move to the resolver (OWNER-01); every user-triggered command and the daemon's benign skip get the visible-or-logged-once behavior (OWNER-02). Migration 00071 adds `jira_accounts.owner_account_id`/`owner_email`/`owner_display_name`, filled via `jira.Client.GetMyself` (`GET /rest/api/3/myself`) at connect (best-effort) and lazily once per daemon start for an enabled account still missing them. Design: `docs/superpowers/specs/2026-09-25-no-slack-owner-identity-design.md`.

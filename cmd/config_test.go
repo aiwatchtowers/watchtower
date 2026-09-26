@@ -1,0 +1,427 @@
+package cmd
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
+)
+
+func TestConfigSubcommands(t *testing.T) {
+	assert.NotNil(t, configCmd)
+	names := make([]string, 0)
+	for _, sub := range configCmd.Commands() {
+		names = append(names, sub.Name())
+	}
+	assert.Contains(t, names, "init")
+	assert.Contains(t, names, "set")
+	assert.Contains(t, names, "show")
+}
+
+func TestConfigInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	// Simulate user input: choose manual auth (2), then workspace name + slack token
+	input := "2\ntest-workspace\nxoxp-test-token\n"
+
+	buf := new(bytes.Buffer)
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	configInitCmd.SetOut(buf)
+	configInitCmd.SetIn(strings.NewReader(input))
+
+	err := configInitCmd.RunE(configInitCmd, nil)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "Config written to:")
+	assert.Contains(t, output, "Database directory:")
+
+	// Verify config file was created
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, "test-workspace")
+	assert.Contains(t, content, "xoxp-test-token")
+}
+
+func TestConfigSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	// Create an initial config file
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"ai.model", "claude-opus-4-6"})
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "Set ai.model = claude-opus-4-6")
+
+	// Verify the value was written
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "claude-opus-4-6")
+}
+
+func TestConfigSet_MemorySourcesGmail_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.sources.gmail", "true"})
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "Set memory.sources.gmail = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "gmail: true")
+}
+
+func TestConfigSet_MemorySourcesCalendarAndChats_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.sources.calendar", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.sources.calendar = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	buf.Reset()
+	errBuf.Reset()
+	err = configSetCmd.RunE(configSetCmd, []string{"memory.sources.chats", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.sources.chats = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "calendar: true")
+	assert.Contains(t, string(data), "chats: true")
+}
+
+func TestConfigSet_MemorySlice4Gates_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	keys := []string{
+		"memory.sources.operational",
+		"memory.surfaces.day_plan",
+		"memory.surfaces.meeting_prep",
+		"memory.semantic.preferences",
+	}
+	for _, key := range keys {
+		buf.Reset()
+		errBuf.Reset()
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Set "+key+" = true")
+		assert.NotContains(t, errBuf.String(), "not a recognized config key")
+	}
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "operational: true")
+	assert.Contains(t, string(data), "day_plan: true")
+	assert.Contains(t, string(data), "meeting_prep: true")
+	assert.Contains(t, string(data), "preferences: true")
+}
+
+func TestConfigSet_MemoryRendersDigestCompare_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	errBuf := new(bytes.Buffer)
+	configSetCmd.SetOut(buf)
+	configSetCmd.SetErr(errBuf)
+
+	err := configSetCmd.RunE(configSetCmd, []string{"memory.renders.digest_compare", "true"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Set memory.renders.digest_compare = true")
+	assert.NotContains(t, errBuf.String(), "not a recognized config key")
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "digest_compare: true")
+}
+
+func TestConfigShow(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	yaml := `active_workspace: demo
+workspaces:
+  demo:
+    slack_token: "xoxp-secret-token-here"
+ai:
+  model: "claude-sonnet-4-6"
+`
+	require.NoError(t, os.WriteFile(configPath, []byte(yaml), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	configShowCmd.SetOut(buf)
+
+	err := configShowCmd.RunE(configShowCmd, nil)
+	require.NoError(t, err)
+
+	output := buf.String()
+	// Tokens should be masked
+	assert.NotContains(t, output, "xoxp-secret-token-here")
+	assert.Contains(t, output, "****")
+	// Non-sensitive values should appear
+	assert.Contains(t, output, "claude-sonnet-4-6")
+	assert.Contains(t, output, "demo")
+	// Defaults should be shown
+	assert.Contains(t, output, "sync.workers:")
+	assert.Contains(t, output, "sync.poll_interval:")
+}
+
+func TestConfigShow_NoFile(t *testing.T) {
+	oldFlagConfig := flagConfig
+	flagConfig = "/nonexistent/path/config.yaml"
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	configShowCmd.SetOut(buf)
+
+	err := configShowCmd.RunE(configShowCmd, nil)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "No config file found")
+}
+
+func TestMaskValue(t *testing.T) {
+	assert.Equal(t, "****", maskValue("short"))
+	assert.Equal(t, "twelv****", maskValue("twelve-char"))
+	assert.Equal(t, "xoxp-****", maskValue("xoxp-secret-token-here"))
+}
+
+func TestConfigSet_FeatureGateKeys_NoUnknownWarning(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	// All feature-gate keys that should be recognized
+	keys := []string{
+		"tracks.enabled",
+		"people.enabled",
+		"targets.next_step.enabled",
+		"inbox.enabled",
+		"ideas.enabled",
+		"ideas.mine_interval_hours",
+		"streams.enabled",
+		"streams.interval_hours",
+		"briefing.enabled",
+		"briefing.hour",
+		"day_plan.enabled",
+		"calendar.enabled",
+		"gmail.enabled",
+		"jira.enabled",
+		"transcripts.audio_retention_days",
+		"features.migrated",
+	}
+
+	for _, key := range keys {
+		buf := new(bytes.Buffer)
+		errBuf := new(bytes.Buffer)
+		configSetCmd.SetOut(buf)
+		configSetCmd.SetErr(errBuf)
+
+		err := configSetCmd.RunE(configSetCmd, []string{key, "true"})
+		require.NoError(t, err, "failed to set %q", key)
+		assert.NotContains(t, errBuf.String(), "not a recognized config key", "key %q was flagged as unrecognized", key)
+	}
+}
+
+// TestConfigSet_StampsMigrationMarkerBeforeWrite pins that `config set` can
+// never produce the legacy signature (digest.enabled=false with no
+// features.migrated marker) that config.MigrateFeatureGates uses to detect a
+// pre-feature-manager install. Before configCmd grew its own
+// PersistentPreRunE, `config set digest.enabled false` on a config that had
+// never been touched by a `features` subcommand or a daemon start wrote
+// digest.enabled=false without ever stamping the marker; the next
+// MigrateFeatureGates call (the next daemon start, or any `features`
+// subcommand) then read that file as a genuine legacy install and cascaded
+// all nine legacyDigestOffFeatureKeys off, even though the owner only meant
+// to disable Slack digests via the modern per-feature key.
+//
+// Driven through rootCmd.Execute() (not configSetCmd.RunE directly) because
+// PersistentPreRunE only fires via cobra's own command dispatch — exercising
+// it directly would prove nothing about whether the hook is actually wired
+// into the command the owner runs.
+func TestConfigSet_StampsMigrationMarkerBeforeWrite(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	initial := "active_workspace: test\ndigest:\n  enabled: true\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"config", "set", "digest.enabled", "false"})
+	require.NoError(t, rootCmd.Execute())
+
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	require.NoError(t, v.ReadInConfig())
+
+	assert.True(t, v.IsSet("features.migrated"), "the marker must be stamped before config set can write the legacy signature")
+	assert.False(t, v.GetBool("digest.enabled"), "the requested write must still go through")
+
+	legacyKeys := []string{
+		"inbox.enabled",
+		"streams.enabled",
+		"tracks.enabled",
+		"people.enabled",
+		"ideas.enabled",
+		"memory.enabled",
+		"briefing.enabled",
+		"day_plan.enabled",
+		"targets.next_step.enabled",
+	}
+	for _, key := range legacyKeys {
+		assert.False(t, v.IsSet(key), "cascade key %q must stay untouched — this config is marked, not legacy", key)
+	}
+
+	legacyDetected, err := config.MigrateFeatureGates(configPath)
+	require.NoError(t, err)
+	assert.False(t, legacyDetected, "a second MigrateFeatureGates call must not re-detect the marked file as legacy")
+}
+
+// runConfigSetCapture runs `config set <key> <value>` against a fresh config
+// file and returns stdout, stderr and the written file.
+func runConfigSetCapture(t *testing.T, key, value string) (stdout, stderr, written string) {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: zenith\n"), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	out, errBuf := new(bytes.Buffer), new(bytes.Buffer)
+	configSetCmd.SetOut(out)
+	configSetCmd.SetErr(errBuf)
+	defer func() {
+		configSetCmd.SetOut(nil)
+		configSetCmd.SetErr(nil)
+	}()
+
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{key, value}),
+		"a missing database warns, never refuses")
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	return out.String(), errBuf.String(), string(data)
+}
+
+func seedCmdWorkspace(t *testing.T, name string) {
+	t.Helper()
+	root, err := config.DataRoot()
+	require.NoError(t, err)
+	dir := filepath.Join(root, name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "watchtower.db"), nil, 0o600))
+}
+
+func TestConfigSet_ActiveWorkspaceTypoWarnsWithCandidates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedCmdWorkspace(t, "zenith")
+
+	stdout, stderr, written := runConfigSetCapture(t, "active_workspace", "zentih")
+	assert.Contains(t, written, "active_workspace: zentih", "the value is written either way")
+	assert.Contains(t, stdout, "Set active_workspace = zentih")
+	assert.Contains(t, stderr, "Warning: ")
+	assert.Contains(t, stderr, "zenith")
+	assert.NotContains(t, stdout, "Warning")
+}
+
+func TestConfigSet_ActiveWorkspaceWithDatabaseIsSilent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seedCmdWorkspace(t, "zenith")
+
+	_, stderr, _ := runConfigSetCapture(t, "active_workspace", "zenith")
+	assert.Empty(t, stderr)
+}
+
+func TestConfigSet_OtherKeysNeverCheckWorkspaces(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	_, stderr, _ := runConfigSetCapture(t, "ai.model", "sonnet")
+	assert.Empty(t, stderr)
+}

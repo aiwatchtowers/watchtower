@@ -1,0 +1,226 @@
+package db
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSlackAccountCreateListGetRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{
+		TeamID: "T1", TeamName: "Acme", TeamDomain: "acme", Label: "Work",
+		CurrentUserID: "1:U0123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), id)
+
+	id2, err := d.CreateSlackAccount(SlackAccount{TeamID: "T2", TeamName: "Beta", Label: "Personal"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), id2)
+
+	accounts, err := d.ListSlackAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 2)
+	// ORDER BY id ASC
+	assert.Equal(t, id, accounts[0].ID)
+	assert.Equal(t, "T1", accounts[0].TeamID)
+	assert.Equal(t, "Acme", accounts[0].TeamName)
+	assert.Equal(t, "acme", accounts[0].TeamDomain)
+	assert.Equal(t, "Work", accounts[0].Label)
+	assert.Equal(t, "1:U0123", accounts[0].CurrentUserID)
+	assert.Equal(t, "ok", accounts[0].Status)
+	assert.True(t, accounts[0].Enabled)
+	assert.NotEmpty(t, accounts[0].CreatedAt)
+	assert.Equal(t, id2, accounts[1].ID)
+	assert.Equal(t, "T2", accounts[1].TeamID)
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "T1", got.TeamID)
+	assert.Equal(t, "Work", got.Label)
+
+	_, err = d.GetSlackAccount(999)
+	assert.Error(t, err)
+}
+
+func TestSlackAccount_UpdateConnection(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "New"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.UpdateSlackAccountConnection(id, "T9", "Resolved", "resolved", "1:U9"))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "T9", got.TeamID)
+	assert.Equal(t, "Resolved", got.TeamName)
+	assert.Equal(t, "resolved", got.TeamDomain)
+	assert.Equal(t, "1:U9", got.CurrentUserID)
+}
+
+func TestSlackAccount_SetEnabled(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetSlackAccountEnabled(id, false))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.False(t, got.Enabled)
+}
+
+// TestSlackAccount_SetAuthState_MissingRow mirrors SetEmailAccountAuthState's
+// RowsAffected()==0 error shape (email_accounts.go:195) for a missing row.
+func TestSlackAccount_SetAuthState_MissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.SetSlackAccountAuthState(999, "error", "boom")
+	require.Error(t, err)
+}
+
+func TestSlackAccount_SetAuthState_RoundTrip(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetSlackAccountAuthState(id, "revoked", "token expired"))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", got.Status)
+	assert.Equal(t, "token expired", got.Error)
+}
+
+func TestSlackAccount_SetError_MissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.SetSlackAccountError(999, "boom")
+	require.Error(t, err)
+}
+
+// TestSlackAccount_SetError_LeavesStatusUnchanged pins the narrow contract:
+// unlike SetSlackAccountAuthState, SetSlackAccountError writes only the
+// error column — a data gap (e.g. a clamped search-sync catch-up window) is
+// not an auth failure and must not perturb status.
+func TestSlackAccount_SetError_LeavesStatusUnchanged(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetSlackAccountAuthState(id, "ok", ""))
+
+	require.NoError(t, d.SetSlackAccountError(id, "gap of 47 days exceeds the 30-day catch-up cap"))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status, "SetSlackAccountError must not touch status")
+	assert.Equal(t, "gap of 47 days exceeds the 30-day catch-up cap", got.Error)
+}
+
+// TestSlackAccount_SetRemoved_NonDestructive verifies removal marks the row
+// removed/disabled without deleting it — GetSlackAccount/ListSlackAccounts
+// still return it, but ListEnabledSlackAccounts excludes it.
+func TestSlackAccount_SetRemoved_NonDestructive(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetSlackAccountRemoved(id))
+
+	got, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", got.Status)
+	assert.False(t, got.Enabled)
+
+	accounts, err := d.ListSlackAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+
+	enabled, err := d.ListEnabledSlackAccounts()
+	require.NoError(t, err)
+	assert.Empty(t, enabled)
+}
+
+func TestSlackAccount_SearchWatermark_FreshAccountReturnsEmpty(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+
+	date, err := d.GetSlackAccountSearchWatermark(id)
+	require.NoError(t, err)
+	assert.Equal(t, "", date)
+}
+
+func TestSlackAccount_SearchWatermark_RoundTrip(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetSlackAccountSearchWatermark(id, "2026-07-30"))
+
+	date, err := d.GetSlackAccountSearchWatermark(id)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-07-30", date)
+}
+
+func TestFormatConnectedWorkspaces(t *testing.T) {
+	// Empty slice -> "".
+	assert.Equal(t, "", FormatConnectedWorkspaces(nil))
+	assert.Equal(t, "", FormatConnectedWorkspaces([]SlackAccount{}))
+
+	// One account: label present + domain.
+	one := []SlackAccount{
+		{TeamName: "Acme Inc", TeamDomain: "acme", Label: "Work"},
+	}
+	assert.Equal(t, "Work (acme)", FormatConnectedWorkspaces(one))
+
+	// Two accounts: label falls back to team name when empty; a missing
+	// domain drops the parenthetical entirely.
+	two := []SlackAccount{
+		{TeamName: "Acme Inc", TeamDomain: "acme", Label: "Work"},
+		{TeamName: "Beta LLC", TeamDomain: "", Label: ""},
+	}
+	assert.Equal(t, "Work (acme), Beta LLC", FormatConnectedWorkspaces(two))
+}
+
+// TestSlackAccount_ReactionCommandsSeededMarker pins the per-account "reaction
+// history seeded" stamp the reaction-commands poll keys its first-poll seed on:
+// unset on a fresh row, set once marked, and "not seeded" (never an error) for
+// an account row that does not exist — the poll must seed, not replay, when in
+// doubt.
+func TestSlackAccount_ReactionCommandsSeededMarker(t *testing.T) {
+	d := openTestDB(t)
+
+	id, err := d.CreateSlackAccount(SlackAccount{Label: "A"})
+	require.NoError(t, err)
+
+	seeded, err := d.ReactionCommandsSeeded(id)
+	require.NoError(t, err)
+	assert.False(t, seeded, "a fresh account has no seed stamp")
+
+	require.NoError(t, d.MarkReactionCommandsSeeded(id))
+
+	seeded, err = d.ReactionCommandsSeeded(id)
+	require.NoError(t, err)
+	assert.True(t, seeded)
+
+	seeded, err = d.ReactionCommandsSeeded(999)
+	require.NoError(t, err)
+	assert.False(t, seeded, "a missing row reads as not seeded")
+}
+
+func TestSlackAccount_MarkReactionCommandsSeeded_MissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	require.Error(t, d.MarkReactionCommandsSeeded(999))
+}

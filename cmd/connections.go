@@ -1,0 +1,505 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/externalmcp"
+	"watchtower/internal/mcpoauth"
+)
+
+// connectionNamePattern constrains --name to characters that are safe to
+// comma-join into --allowedTools as mcp__<Name> (see buildArgs in
+// internal/ai/client.go): an unconstrained name could inject an extra
+// allowlist token (e.g. a comma) or otherwise break the server-key↔token
+// match used to gate which external tools the model may call.
+var connectionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// connectionsCmd is the parent for the "Quick Connections" external MCP
+// server family: add/list/enable/disable/remove, the slack.go account
+// subcommand shape.
+var connectionsCmd = &cobra.Command{
+	Use:   "connections",
+	Short: "Manage external MCP connections (Quick Connections)",
+	Long: "Owner-managed external MCP servers whose read-only tools can be surfaced\n" +
+		"in the assistant chat on demand. A connection is created disabled — the\n" +
+		"owner enables it explicitly (per-connection consent).",
+}
+
+var connectionsAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Add a new external MCP connection (created disabled)",
+	Long: "Inserts a new external_connections row, always disabled — the owner enables\n" +
+		"it explicitly with 'connections enable'. With --secret-stdin, reads a JSON\n" +
+		"object {\"env\":{...},\"headers\":{...}} from stdin and stores it via the\n" +
+		"connection's SecretStore; the secret is never a flag/argv value.",
+	RunE: runConnectionsAdd,
+}
+
+var connectionsListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List external MCP connections",
+	RunE:  runConnectionsList,
+}
+
+var connectionsEnableCmd = &cobra.Command{
+	Use:   "enable <id>",
+	Short: "Enable an external MCP connection",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConnectionsEnable,
+}
+
+var connectionsDisableCmd = &cobra.Command{
+	Use:   "disable <id>",
+	Short: "Disable an external MCP connection",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConnectionsDisable,
+}
+
+var connectionsRemoveCmd = &cobra.Command{
+	Use:   "remove <id>",
+	Short: "Remove an external MCP connection and its stored secret",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConnectionsRemove,
+}
+
+var connectionsOAuthCmd = &cobra.Command{
+	Use:   "oauth <id>",
+	Short: "Sign in to an http Quick Connection via OAuth",
+	Long: "Runs an OAuth 2.1 + PKCE loopback sign-in against an http connection's\n" +
+		"server (discovery, dynamic client registration or a BYO client id,\n" +
+		"authorization, code exchange), persists the resulting grant to the\n" +
+		"connection's secret store, and enables the connection.",
+	Args: cobra.ExactArgs(1),
+	RunE: runConnectionsOAuth,
+}
+
+var (
+	connectionsFlagJSON bool
+
+	// connectionsAddCmd's flags are bound to package vars (the imapAddFlag*
+	// precedent) rather than read via cmd.Flags().GetX — a *cobra.Command is
+	// a package-level singleton reused by every test in this binary, and a
+	// pflag StringArray in particular APPENDS on Set rather than replacing,
+	// so tests must be able to reset these vars directly between runs.
+	connectionsAddFlagName        string
+	connectionsAddFlagKind        string
+	connectionsAddFlagCommand     string
+	connectionsAddFlagArgs        []string
+	connectionsAddFlagURL         string
+	connectionsAddFlagSecretStdin bool
+
+	connectionsOAuthFlagAppReturn         bool
+	connectionsOAuthFlagNoOpen            bool
+	connectionsOAuthFlagClientID          string
+	connectionsOAuthFlagClientSecretStdin bool
+	connectionsOAuthFlagScope             string
+)
+
+func init() {
+	connectionsAddCmd.Flags().StringVar(&connectionsAddFlagName, "name", "", "connection name (required)")
+	connectionsAddCmd.Flags().StringVar(&connectionsAddFlagKind, "kind", "", `connection kind: "stdio" or "http" (required)`)
+	connectionsAddCmd.Flags().StringVar(&connectionsAddFlagCommand, "command", "", "command to run (required for --kind stdio)")
+	connectionsAddCmd.Flags().StringArrayVar(&connectionsAddFlagArgs, "arg", nil, "argument for the command (repeatable, stdio kind)")
+	connectionsAddCmd.Flags().StringVar(&connectionsAddFlagURL, "url", "", "server URL (required for --kind http)")
+	connectionsAddCmd.Flags().BoolVar(&connectionsAddFlagSecretStdin, "secret-stdin", false,
+		`read a {"env":{...},"headers":{...}} JSON object from stdin and store it as this connection's secret`)
+
+	connectionsListCmd.Flags().BoolVar(&connectionsFlagJSON, "json", false, "output JSON")
+
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagAppReturn, "app-return", false,
+		"success page redirects to the Desktop app (watchtower-auth://connected)")
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagNoOpen, "no-open", false,
+		"don't open the browser automatically (print the authorize URL instead)")
+	connectionsOAuthCmd.Flags().StringVar(&connectionsOAuthFlagClientID, "client-id", "",
+		"BYO OAuth client id (required when the server publishes no registration_endpoint)")
+	connectionsOAuthCmd.Flags().BoolVar(&connectionsOAuthFlagClientSecretStdin, "client-secret-stdin", false,
+		"read the BYO OAuth client secret from stdin")
+	connectionsOAuthCmd.Flags().StringVar(&connectionsOAuthFlagScope, "scope", "",
+		"space-separated OAuth scope(s) to request (e.g. an offline_access scope some servers require to issue a refresh token); omit to request none")
+
+	connectionsCmd.AddCommand(connectionsAddCmd)
+	connectionsCmd.AddCommand(connectionsListCmd)
+	connectionsCmd.AddCommand(connectionsEnableCmd)
+	connectionsCmd.AddCommand(connectionsDisableCmd)
+	connectionsCmd.AddCommand(connectionsRemoveCmd)
+	connectionsCmd.AddCommand(connectionsOAuthCmd)
+	rootCmd.AddCommand(connectionsCmd)
+}
+
+// openConnectionsCmdDB is the shared preamble for the connections
+// subcommands — the openSlackCmdDB/openJiraCmdDB precedent: loads config,
+// applies the --workspace override, validates the workspace, and opens the
+// database. The caller is responsible for closing the returned DB.
+func openConnectionsCmdDB(_ *cobra.Command) (*config.Config, *db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
+}
+
+// connectionJSON is the wire shape of one row for `connections list --json`.
+type connectionJSON struct {
+	ID        int64    `json:"id"`
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Enabled   bool     `json:"enabled"`
+	Status    string   `json:"status"`
+	Error     string   `json:"error,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	Auth      string   `json:"auth"`
+}
+
+func toConnectionJSON(c db.ExternalConnection, auth string) connectionJSON {
+	return connectionJSON{ID: c.ID, Name: c.Name, Kind: c.Kind, Command: c.Command,
+		Args: c.Args, URL: c.URL, Enabled: c.Enabled, Status: c.Status, Error: c.Error,
+		CreatedAt: c.CreatedAt, Auth: auth}
+}
+
+// connectionAuthState reports how id authenticates, for `connections list`:
+// "oauth" when an OAuth grant is on file, "static" when the secret carries
+// plain env/headers, "none" when there is no secret at all. A secret-load
+// error (corrupt file, permissions) renders "?" in the column so the whole
+// listing doesn't fail, but the reason is still surfaced once on errW as a
+// "warning:" line — never the secret content, just the load error — so the
+// owner isn't left guessing why a connection shows "?".
+func connectionAuthState(cfg *config.Config, id int64, errW io.Writer) string {
+	secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Load()
+	if err != nil {
+		fmt.Fprintf(errW, "warning: connection %d: loading secret: %v\n", id, err)
+		return "?"
+	}
+	if secret == nil {
+		return "none"
+	}
+	if secret.OAuth != nil {
+		return "oauth"
+	}
+	if len(secret.Env) > 0 || len(secret.Headers) > 0 {
+		return "static"
+	}
+	return "none"
+}
+
+// warnIfProviderIgnoresConnections tells the owner that Quick Connections are
+// wired only for the claude provider, so an enabled connection is inert under
+// codex/ollama. Non-fatal: the enable/add still succeeds.
+func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name string) {
+	if p := cfg.AI.ConfiguredProviderID(); p != "claude" {
+		fmt.Fprintf(w, "warning: Quick Connections work only with the claude AI provider; connection %q will be inert under provider %q\n", name, p)
+	}
+}
+
+func runConnectionsAdd(cmd *cobra.Command, _ []string) error {
+	name := connectionsAddFlagName
+	kind := connectionsAddFlagKind
+	command := connectionsAddFlagCommand
+	args := connectionsAddFlagArgs
+	url := connectionsAddFlagURL
+	secretStdin := connectionsAddFlagSecretStdin
+
+	if name == "" {
+		return fmt.Errorf("--name is required")
+	}
+	if !connectionNamePattern.MatchString(name) {
+		return fmt.Errorf("--name %q is invalid: must match %s (letters, digits, underscore, hyphen only)",
+			name, connectionNamePattern.String())
+	}
+	if strings.EqualFold(name, "watchtower") {
+		return fmt.Errorf(`--name "watchtower" is reserved (the built-in MCP server); choose another name`)
+	}
+	switch kind {
+	case "stdio":
+		if command == "" {
+			return fmt.Errorf(`--command is required for --kind "stdio"`)
+		}
+	case "http":
+		if url == "" {
+			return fmt.Errorf(`--url is required for --kind "http"`)
+		}
+	default:
+		return fmt.Errorf(`--kind must be "stdio" or "http" (got %q)`, kind)
+	}
+
+	// Parse the secret before touching the database, so a malformed
+	// --secret-stdin payload never leaves behind a disabled row with no
+	// secret to show for it.
+	var secret *externalmcp.Secret
+	if secretStdin {
+		data, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return fmt.Errorf("reading secret from stdin: %w", err)
+		}
+		var sec externalmcp.Secret
+		if err := json.Unmarshal(data, &sec); err != nil {
+			return fmt.Errorf("parsing secret JSON from stdin: %w", err)
+		}
+		secret = &sec
+	}
+
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: name, Kind: kind, Command: command, Args: args, URL: url, Enabled: false,
+	})
+	if err != nil {
+		return fmt.Errorf("creating connection: %w", err)
+	}
+
+	if secret != nil {
+		if err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id).Save(secret); err != nil {
+			return fmt.Errorf("saving secret: %w", err)
+		}
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Added connection #%d %q (%s), disabled.\n", id, name, kind)
+	fmt.Fprintf(out, "Run 'watchtower connections enable %d' to enable it.\n", id)
+	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, name)
+	return nil
+}
+
+func runConnectionsList(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	conns, err := database.ListExternalConnections()
+	if err != nil {
+		return fmt.Errorf("listing connections: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	errOut := cmd.ErrOrStderr()
+	if connectionsFlagJSON {
+		wire := make([]connectionJSON, 0, len(conns))
+		for _, c := range conns {
+			wire = append(wire, toConnectionJSON(c, connectionAuthState(cfg, c.ID, errOut)))
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(wire)
+	}
+
+	if len(conns) == 0 {
+		fmt.Fprintln(out, "No external connections configured.")
+		fmt.Fprintln(out, "Run 'watchtower connections add' to add one.")
+		return nil
+	}
+	for _, c := range conns {
+		state := "enabled"
+		if !c.Enabled {
+			state = "disabled"
+		}
+		target := c.Command
+		if c.Kind == "http" {
+			target = c.URL
+		}
+		fmt.Fprintf(out, "#%d %s [%s] %s (%s) [%s] auth=%s\n",
+			c.ID, c.Name, c.Kind, target, c.Status, state, connectionAuthState(cfg, c.ID, errOut))
+	}
+	return nil
+}
+
+func parseConnectionID(arg string) (int64, error) {
+	id, err := strconv.ParseInt(arg, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid connection id %q: %w", arg, err)
+	}
+	return id, nil
+}
+
+func runConnectionsEnable(cmd *cobra.Command, args []string) error {
+	return setConnectionEnabled(cmd, args[0], true)
+}
+
+func runConnectionsDisable(cmd *cobra.Command, args []string) error {
+	return setConnectionEnabled(cmd, args[0], false)
+}
+
+func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error {
+	id, err := parseConnectionID(idArg)
+	if err != nil {
+		return err
+	}
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	if err := database.SetExternalConnectionEnabled(id, enabled); err != nil {
+		return fmt.Errorf("updating connection: %w", err)
+	}
+	out := cmd.OutOrStdout()
+	if enabled {
+		fmt.Fprintf(out, "Connection %d enabled.\n", id)
+		// Best-effort name lookup for the warning only: the enable already
+		// succeeded, so a failed read must not hide the provider warning -
+		// fall back to the id rather than swallow it.
+		label := strconv.FormatInt(id, 10)
+		if conn, err := database.GetExternalConnection(id); err == nil {
+			label = conn.Name
+		}
+		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
+	} else {
+		fmt.Fprintf(out, "Connection %d disabled.\n", id)
+	}
+	return nil
+}
+
+func runConnectionsRemove(cmd *cobra.Command, args []string) error {
+	id, err := parseConnectionID(args[0])
+	if err != nil {
+		return err
+	}
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
+	// Best-effort revocation, before the secret (and the refresh token it
+	// carries) is deleted: a failure here must never block the removal —
+	// the connection is going away either way.
+	if secret, loadErr := store.Load(); loadErr == nil && secret != nil &&
+		secret.OAuth != nil && secret.OAuth.RevocationEndpoint != "" {
+		if err := mcpoauth.Revoke(cmd.Context(), secret.OAuth.RevocationEndpoint,
+			secret.OAuth.ClientID, secret.OAuth.ClientSecret, secret.OAuth.RefreshToken); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: token revocation failed: %v\n", err)
+		}
+	}
+
+	if err := database.RemoveExternalConnection(id); err != nil {
+		return fmt.Errorf("removing connection: %w", err)
+	}
+	if err := store.Delete(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to delete secret file for connection %d: %v\n", id, err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed connection %d.\n", id)
+	return nil
+}
+
+// runConnectionsOAuth signs in to an http Quick Connection's server: OAuth
+// 2.1 + PKCE discovery/registration/authorization/exchange via
+// mcpoauth.Login, then persists the resulting grant and enables the
+// connection. The client secret (BYO registration only) travels via stdin,
+// never a flag, so it can never land on argv or in a process listing.
+func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
+	id, err := parseConnectionID(args[0])
+	if err != nil {
+		return err
+	}
+
+	clientSecret, err := readOAuthClientSecret(cmd)
+	if err != nil {
+		return err
+	}
+
+	cfg, database, err := openConnectionsCmdDB(cmd)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+
+	conn, err := database.GetExternalConnection(id)
+	if err != nil {
+		return fmt.Errorf("getting connection: %w", err)
+	}
+	if conn.Kind != "http" {
+		return fmt.Errorf("connection %d is %q; OAuth sign-in applies to http servers only", id, conn.Kind)
+	}
+
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
+	secret, err := loadOrInitSecret(store)
+	if err != nil {
+		return err
+	}
+
+	grant, err := mcpoauth.Login(cmd.Context(), mcpoauth.LoginConfig{
+		ServerURL:    conn.URL,
+		ClientID:     connectionsOAuthFlagClientID,
+		ClientSecret: clientSecret,
+		Scope:        connectionsOAuthFlagScope,
+	}, cmd.OutOrStdout(), mcpoauth.LoginOptions{
+		SkipBrowserOpen: connectionsOAuthFlagNoOpen,
+		AppReturn:       connectionsOAuthFlagAppReturn,
+	})
+	if err != nil {
+		return fmt.Errorf("oauth sign-in: %w", err)
+	}
+
+	secret.OAuth = grant
+	if err := store.Save(secret); err != nil {
+		return fmt.Errorf("saving secret: %w", err)
+	}
+	if err := database.SetExternalConnectionEnabled(id, true); err != nil {
+		return fmt.Errorf("enabling connection: %w", err)
+	}
+	if err := database.SetExternalConnectionStatus(id, "ok", ""); err != nil {
+		return fmt.Errorf("updating connection status: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
+	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
+	return nil
+}
+
+// readOAuthClientSecret reads the BYO client secret from stdin when
+// --client-secret-stdin was passed. The secret only ever travels this way, so
+// it can never appear in argv where any local process could read it (QC-03).
+func readOAuthClientSecret(cmd *cobra.Command) (string, error) {
+	if !connectionsOAuthFlagClientSecretStdin {
+		return "", nil
+	}
+	data, err := io.ReadAll(cmd.InOrStdin())
+	if err != nil {
+		return "", fmt.Errorf("reading client secret from stdin: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// loadOrInitSecret returns the connection's existing secret, or an empty one
+// when the connection has none yet. Loading rather than starting fresh is what
+// keeps a manually-entered header or env var alive across an OAuth sign-in.
+func loadOrInitSecret(store *externalmcp.SecretStore) (*externalmcp.Secret, error) {
+	secret, err := store.Load()
+	if err != nil {
+		return nil, fmt.Errorf("loading existing secret: %w", err)
+	}
+	if secret == nil {
+		return &externalmcp.Secret{}, nil
+	}
+	return secret, nil
+}

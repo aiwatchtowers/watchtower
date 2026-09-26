@@ -1,0 +1,802 @@
+// Package config manages watchtower configuration loading and management.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+type WorkspaceConfig struct {
+	SlackToken string `mapstructure:"slack_token"`
+}
+
+// AIModels holds the per-tier model overrides. Empty values fall back to the
+// provider registry defaults (internal/providers).
+type AIModels struct {
+	Light  string `mapstructure:"light"`
+	Strong string `mapstructure:"strong"`
+}
+
+type AIConfig struct {
+	// Model is the legacy single-model key. When Models.Strong is unset it is
+	// read as the strong-tier override, except when it equals the retired
+	// DefaultAIModel constant (setup used to seed that literal into config.yaml,
+	// so it means "never chose a model", not a pin).
+	Model  string   `mapstructure:"model"`
+	Models AIModels `mapstructure:"models"`
+	// ConfiguredProvider is the provider as read from config.yaml, captured at
+	// Load time and NEVER mutated by the --provider flag (which rewrites
+	// Provider via applyProviderOverride). Model resolution keys off this
+	// field, so a per-command provider override cannot inherit the yaml
+	// provider's configured models. Empty (a hand-built Config in tests)
+	// falls back to Provider — see ConfiguredProviderID.
+	ConfiguredProvider string `mapstructure:"-"`
+	OllamaURL          string `mapstructure:"ollama_url"` // OpenAI-compatible server base URL
+	ContextBudget      int    `mapstructure:"context_budget"`
+	Workers            int    `mapstructure:"workers"`  // max parallel LLM calls across all pipelines
+	Provider           string `mapstructure:"provider"` // "claude" (default) | "codex" | "ollama"
+}
+
+// ConfiguredProviderID returns the provider the config file (not a
+// per-command override) selects: ConfiguredProvider when Load captured it,
+// else Provider (hand-built configs).
+func (a AIConfig) ConfiguredProviderID() string {
+	if a.ConfiguredProvider != "" {
+		return a.ConfiguredProvider
+	}
+	return a.Provider
+}
+
+type SyncConfig struct {
+	Workers            int           `mapstructure:"workers"`
+	InitialHistoryDays int           `mapstructure:"initial_history_days"`
+	PollInterval       time.Duration `mapstructure:"poll_interval"`
+	SyncThreads        bool          `mapstructure:"sync_threads"`
+	SyncOnWake         bool          `mapstructure:"sync_on_wake"`
+}
+
+type DigestConfig struct {
+	Enabled          bool          `mapstructure:"enabled"`
+	MinMessages      int           `mapstructure:"min_messages"`
+	Language         string        `mapstructure:"language"`
+	Workers          int           `mapstructure:"workers"`
+	TracksInterval   time.Duration `mapstructure:"action_items_interval"` // YAML key kept for backward compat
+	BatchMaxChannels int           `mapstructure:"batch_max_channels"`
+	BatchMaxMessages int           `mapstructure:"batch_max_messages"`
+}
+
+// BriefingConfig holds settings for the daily briefing pipeline.
+type BriefingConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable daily briefings (default: true)
+	Hour    int  `mapstructure:"hour"`    // hour of day to generate (0-23, default: 8)
+}
+
+// InboxConfig holds settings for the inbox detection pipeline.
+type InboxConfig struct {
+	Enabled             bool `mapstructure:"enabled"`               // enable inbox detection (default: true)
+	MaxItemsPerRun      int  `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
+	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
+}
+
+// KnowledgeConfig gates the knowledge-search index (spec 2026-09-26).
+// Mechanical: no AI cost.
+type KnowledgeConfig struct {
+	Enabled bool `mapstructure:"enabled"` // index sources into kb_* for search_knowledge (default: true)
+}
+
+// IdeasConfig holds settings for the ideas & decisions registry pipeline
+// (internal/ideas) — stage-1 substrate prep (Gmail/Jira digests) plus the
+// stage-2 consolidator (InboxConfig shape precedent).
+type IdeasConfig struct {
+	Enabled                 bool `mapstructure:"enabled"`                     // enable the ideas registry pipeline (default: true — headline feature, not a dark experiment)
+	MineIntervalHours       int  `mapstructure:"mine_interval_hours"`         // throttle between consolidator runs (default: 6, the phasePeopleCards throttle precedent)
+	MaxCommentIssuesPerSync int  `mapstructure:"max_comment_issues_per_sync"` // max Jira issues fetched for new comments per sync pass (default: 50)
+	MaxPromptChars          int  `mapstructure:"max_prompt_chars"`            // truncate stage-1/consolidator input assembly beyond this (default: 60000)
+}
+
+// StreamsConfig controls the stage-1 Gmail/Jira stream pre-digests
+// (generation only; the Ideas consolidator is gated by ideas.enabled).
+type StreamsConfig struct {
+	Enabled       bool `mapstructure:"enabled"`        // enable the streams pipeline (default: true)
+	IntervalHours int  `mapstructure:"interval_hours"` // throttle between stream digest runs (default: 6)
+}
+
+// ReactionCommandsConfig controls the reaction-commands pipeline (the owner
+// drives Watchtower by reacting in Slack). On by default since 2026-09-26.
+type ReactionCommandsConfig struct {
+	Enabled       bool `mapstructure:"enabled"`        // enable reaction-command detection (default: true)
+	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls; <= 0 = every daemon cycle (default: 0)
+}
+
+// CatchupConfig controls the on-demand absence recap.
+type CatchupConfig struct {
+	Caps           CatchupCaps `mapstructure:"caps"`
+	MaxPromptChars int         `mapstructure:"max_prompt_chars"` // whole compose user message budget (default: 120000)
+}
+
+// CatchupCaps bounds how many window items per area feed the compose call.
+type CatchupCaps struct {
+	Digests   int `mapstructure:"digests"`
+	Streams   int `mapstructure:"streams"`
+	Meetings  int `mapstructure:"meetings"`
+	Decisions int `mapstructure:"decisions"`
+	Inbox     int `mapstructure:"inbox"`
+	Tracks    int `mapstructure:"tracks"`
+	Targets   int `mapstructure:"targets"`
+}
+
+// TracksConfig holds settings for the tracks extraction pipeline.
+type TracksConfig struct {
+	Enabled     bool `mapstructure:"enabled"`      // enable tracks extraction (default: true)
+	MinMessages int  `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+}
+
+// PeopleConfig holds settings for the people-cards pipeline.
+type PeopleConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable people-cards extraction (default: true)
+}
+
+// CalendarConfig holds Google Calendar integration settings.
+type CalendarConfig struct {
+	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: false)
+	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
+	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
+	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
+}
+
+// EffectiveHistoryDays returns the configured past-events sync window in
+// days, floored at 1 so the window never collapses (spec: default 14,
+// floor 1 — the same clamp CalendarViewModel applies on the Swift side; an
+// absent config key gets the 14-day default from viper's SetDefault). Both
+// the Google and CalDAV syncers derive timeMin from this, and the
+// per-calendar stale-delete then naturally retains the same window — so
+// widening it here is the single knob for browsable history.
+func (c CalendarConfig) EffectiveHistoryDays() int {
+	if c.HistoryDays < 1 {
+		return 1
+	}
+	return c.HistoryDays
+}
+
+// GmailConfig holds Gmail integration settings.
+type GmailConfig struct {
+	Enabled            bool `mapstructure:"enabled"`               // enable gmail sync (default: false)
+	InitialHistoryDays int  `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync
+	MaxMessagesPerSync int  `mapstructure:"max_messages_per_sync"` // per-cycle cap
+	MaxBodyBytes       int  `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+}
+
+// ImapConfig holds settings shared by every connected IMAP/Outlook mailbox
+// (individual accounts themselves live in the email_accounts table, not
+// here — this only tunes how each one syncs).
+type ImapConfig struct {
+	InitialHistoryDays int `mapstructure:"initial_history_days"`  // days of inbox to backfill on first sync per account
+	MaxMessagesPerSync int `mapstructure:"max_messages_per_sync"` // per-cycle, per-account cap
+	MaxBodyBytes       int `mapstructure:"max_body_bytes"`        // truncate body_text beyond this
+}
+
+// JiraFeatureToggles controls which Jira features are enabled for the user.
+type JiraFeatureToggles struct {
+	MyIssuesInBriefing   bool `mapstructure:"my_issues_in_briefing" json:"my_issues_in_briefing"`
+	AwaitingMyInput      bool `mapstructure:"awaiting_my_input" json:"awaiting_my_input"`
+	TrackJiraLinking     bool `mapstructure:"track_jira_linking" json:"track_jira_linking"`
+	TeamWorkload         bool `mapstructure:"team_workload" json:"team_workload"`
+	BlockerMap           bool `mapstructure:"blocker_map" json:"blocker_map"`
+	IterationProgress    bool `mapstructure:"iteration_progress" json:"iteration_progress"`
+	EpicProgress         bool `mapstructure:"epic_progress" json:"epic_progress"`
+	ReleaseDashboard     bool `mapstructure:"release_dashboard" json:"release_dashboard"`
+	WithoutJiraDetection bool `mapstructure:"without_jira_detection" json:"without_jira_detection"`
+}
+
+// JiraConfig holds Jira Cloud integration settings.
+type JiraConfig struct {
+	Enabled          bool               `mapstructure:"enabled"`
+	CloudID          string             `mapstructure:"cloud_id"`
+	SiteURL          string             `mapstructure:"site_url"`
+	UserDisplayName  string             `mapstructure:"user_display_name"`
+	SelectedBoards   []int              `mapstructure:"selected_boards"`
+	SyncIntervalMins int                `mapstructure:"sync_interval_mins"`
+	UserMap          map[string]string  `mapstructure:"user_map"`
+	Features         JiraFeatureToggles `mapstructure:"features"`
+}
+
+// AnalysisConfig holds settings for the people analysis pipeline.
+type AnalysisConfig struct {
+	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
+}
+
+// TargetsExtractConfig holds settings for the targets extraction phase.
+type TargetsExtractConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	MaxPerCall     int    `mapstructure:"max_per_call"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	Model          string `mapstructure:"model"`
+}
+
+// TargetsResolverConfig holds settings for the targets resolver phase.
+type TargetsResolverConfig struct {
+	SlackEnabled        bool `mapstructure:"slack_enabled"`
+	JiraEnabled         bool `mapstructure:"jira_enabled"`
+	MCPTimeoutSeconds   int  `mapstructure:"mcp_timeout_seconds"`
+	ActiveSnapshotLimit int  `mapstructure:"active_snapshot_limit"`
+}
+
+// TargetsNextStepConfig holds settings for the targets next step feature.
+type TargetsNextStepConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable next step feature (default: true)
+}
+
+// TargetsConfig holds settings for the targets extraction and resolution pipeline.
+type TargetsConfig struct {
+	Extract  TargetsExtractConfig  `mapstructure:"extract"`
+	Resolver TargetsResolverConfig `mapstructure:"resolver"`
+	NextStep TargetsNextStepConfig `mapstructure:"next_step"`
+}
+
+// TranscriptsConfig holds settings for meeting transcript storage.
+type TranscriptsConfig struct {
+	AudioRetentionDays int    `mapstructure:"audio_retention_days"` // delete recording audio after N days (default 30); transcript text is kept forever
+	RecordingsDir      string `mapstructure:"recordings_dir"`       // directory the Desktop recorder writes rec_* files into; empty → the default computed by Config.RecordingsDir
+}
+
+// DayPlanConfig holds settings for the daily plan generation pipeline.
+type DayPlanConfig struct {
+	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
+	Hour              int    `yaml:"hour" mapstructure:"hour"`
+	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
+	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
+	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
+	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
+	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
+}
+
+// MemoryConfig holds settings for the secretary memory consolidation
+// pipeline (internal/memory).
+type MemoryConfig struct {
+	Enabled              bool                 `mapstructure:"enabled"`                 // enable memory consolidation (default: false — off until the feature settles)
+	MaxChunkMessages     int                  `mapstructure:"max_chunk_messages"`      // max raw messages consumed per consolidation run (default: 2000)
+	SeedMinMessages      int                  `mapstructure:"seed_min_messages"`       // messages in the last 30 days before a person is seeded as an entity (default: 20)
+	MaxEpisodesPerWindow int                  `mapstructure:"max_episodes_per_window"` // episode cap per channel window in the extractor (default: 5)
+	MaxWindowMessages    int                  `mapstructure:"max_window_messages"`     // max messages per extraction window; a busier channel forms multiple sequential windows (default: 200)
+	BatchMaxChannels     int                  `mapstructure:"batch_max_channels"`      // max channel windows grouped into one extraction call (default: 20, digest-pipeline precedent)
+	BatchMaxMessages     int                  `mapstructure:"batch_max_messages"`      // max total messages grouped into one extraction call (default: 1500)
+	Semantic             MemorySemanticConfig `mapstructure:"semantic"`                // Phase-3 semantic tier (belief/rewrite/dedupe/evict/concept steps), dark by default
+	Surfaces             MemorySurfacesConfig `mapstructure:"surfaces"`                // Phase-4 surfaces (chat/briefing/reflection), each dark by default
+	Sources              MemorySourcesConfig  `mapstructure:"sources"`                 // memory sources (gmail/calendar/chats/operational/jira), each dark by default
+	Renders              MemoryRendersConfig  `mapstructure:"renders"`                 // Phase-5 slice-3 renders (digest_compare), dark by default
+	Retrieve             MemoryRetrieveConfig `mapstructure:"retrieve"`                // Phase-5 Slice B dark retrieval-compare (recall/briefing/meeting_prep), each dark by default
+	Focus                MemoryFocusConfig    `mapstructure:"focus"`                   // focus-salience Run step (fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep), dark by default
+}
+
+// MemorySemanticConfig gates and bounds the Phase-3 semantic tier: the
+// strong-tier entity rewrites, belief revision, and strong world-map render,
+// plus the mechanical dedupe/concept-promotion/eviction steps. Every step is a
+// no-op unless Enabled is true, so phases 0–2 keep running alone by default.
+// All caps are per consolidation run.
+type MemorySemanticConfig struct {
+	Enabled            bool `mapstructure:"enabled"`              // enable the semantic tier (default: false)
+	RewriteMaxEntities int  `mapstructure:"rewrite_max_entities"` // max entity pages rewritten per run (default: 10)
+	BeliefsMax         int  `mapstructure:"beliefs_max"`          // max belief ops applied per run (default: 20)
+	DedupeMaxMerges    int  `mapstructure:"dedupe_max_merges"`    // max episode merges per run (default: 20)
+	AgeAfterDays       int  `mapstructure:"age_after_days"`       // active short non-situation episodes whose newest event is older than this age to closed+long (default: 14)
+	EvictAfterDays     int  `mapstructure:"evict_after_days"`     // closed long episodes older than this are eviction candidates (default: 45)
+	EvictMax           int  `mapstructure:"evict_max"`            // max episodes evicted per run (default: 50)
+	ConceptMinEpisodes int  `mapstructure:"concept_min_episodes"` // distinct-episode recurrence before a hint is promoted (default: 5)
+	ConceptMaxCreate   int  `mapstructure:"concept_max_create"`   // max concept entities created per run (default: 10)
+	OutputBudget       int  `mapstructure:"output_budget"`        // stop launching further strong-tier AI steps once the run's output tokens exceed this (default: 200000)
+	Preferences        bool `mapstructure:"preferences"`          // Phase-5 slice-4: gate the OWNER ACTIONS block in the belief pass, forming preference beliefs from staged owner-action evidence (default: false)
+}
+
+// MemorySurfacesConfig gates the memory surfaces independently — each is a
+// no-op when its flag is off, so each has an independent blast radius. All
+// default false (dark by default).
+type MemorySurfacesConfig struct {
+	Chat        bool `mapstructure:"chat"`         // Discuss chat MEMORY block + ingestChatStatements owner-evidence minting (default: false)
+	Briefing    bool `mapstructure:"briefing"`     // daily briefing "Memory revisions" journal block (default: false)
+	Reflection  bool `mapstructure:"reflection"`   // weekly strong-tier reflection pass over vault git history (default: false)
+	DayPlan     bool `mapstructure:"day_plan"`     // Phase-5 slice-4: day plan reads open loops from memory entity mirrors (default: false)
+	MeetingPrep bool `mapstructure:"meeting_prep"` // Phase-5 slice-4: meeting prep reads attendee entity pages + beliefs from memory (default: false)
+}
+
+// MemorySourcesConfig gates the Phase-5 memory sources independently — each
+// gated path is a byte-identical no-op when its flag is off, and every flag
+// has an independent blast radius from the others AND from
+// Semantic.Enabled/Surfaces.*. This independence is literal: Gmail gates BOTH the
+// thread->episode extractor AND sender->person seeding. All default false
+// (dark by default).
+type MemorySourcesConfig struct {
+	Gmail       bool `mapstructure:"gmail"`       // Gmail thread->episode extractor + sender->person seeding (default: false)
+	Calendar    bool `mapstructure:"calendar"`    // Phase-5 slice-2: mechanical past-event->episode builder + recurring-series seeding (default: false)
+	Chats       bool `mapstructure:"chats"`       // Phase-5 slice-2: generalizes internal-dialogs ingest to target/track Discuss chats + the "remember this" command (default: false)
+	Operational bool `mapstructure:"operational"` // Phase-5 slice-4: mechanical target/track entity mirrors in the vault (target:<id>/track:<id>), its own Run step (default: false)
+	Jira        bool `mapstructure:"jira"`        // mechanical jira issue->episode builder + jira: provenance scheme, its own Run step (default: false)
+}
+
+// MemoryRendersConfig gates the Phase-5 slice-3 render-inversion steps
+// independently. Each is a no-op when its flag is off. All default false
+// (dark by default).
+type MemoryRendersConfig struct {
+	DigestCompare bool `mapstructure:"digest_compare"` // dark compare-mode: render channel digests from memory episodes and diff against the legacy digest pipeline (default: false)
+}
+
+// MemoryRetrieveConfig gates the Phase-5 Slice-B dark retrieval-compare mode
+// independently per surface — each is a no-op when its flag is off, mirroring
+// Renders.DigestCompare's precedent. All default false (dark by default).
+// Unlike Renders.DigestCompare (one daemon-tail batch job), these three run
+// inline at each surface's own live call site (memory_recall's MCP handler,
+// briefing's gatherMemoryRevisions, meeting-prep's gatherMemoryContext) —
+// there is no cost concern requiring a daemon-cycle gate, since none of the
+// three retrieval functions makes an AI call.
+type MemoryRetrieveConfig struct {
+	RecallCompare      bool `mapstructure:"recall_compare"`       // memory_recall MCP tool also runs RetrieveByQuery and shadow-diffs against the legacy FTS ranking (default: false)
+	BriefingCompare    bool `mapstructure:"briefing_compare"`     // briefing's Memory revisions journal also runs RetrieveRevisions and shadow-diffs against the legacy notable-revision order (default: false)
+	MeetingPrepCompare bool `mapstructure:"meeting_prep_compare"` // meeting-prep's attendee memory context also runs RetrieveBySubject and shadow-diffs against the legacy confidence-ordered belief selection (default: false)
+}
+
+// MemoryFocusConfig gates the focus-salience Run step independently. When
+// Enabled is false, focus.md (internal/memory/focus.go) is never parsed —
+// but the gate-off path still runs runFocusDisable, which neutralizes any
+// residual memory_focus_matches rows / boosted importance_scores left over
+// from a prior enabled run whenever the stored fingerprint is non-empty; it
+// is a fast no-op (no DB write at all) only once that fingerprint is already
+// empty, i.e. a workspace that never had focus enabled, or one already
+// neutralized by an earlier disabled run. Default false (dark by default).
+type MemoryFocusConfig struct {
+	Enabled bool `mapstructure:"enabled"` // enable the focus-salience Run step: fingerprint-gated memory_focus_matches rewrite + whole-vault importance sweep (default: false)
+}
+
+type Config struct {
+	ActiveWorkspace  string                      `mapstructure:"active_workspace"`
+	Workspaces       map[string]*WorkspaceConfig `mapstructure:"workspaces"`
+	AI               AIConfig                    `mapstructure:"ai"`
+	Sync             SyncConfig                  `mapstructure:"sync"`
+	Digest           DigestConfig                `mapstructure:"digest"`
+	Briefing         BriefingConfig              `mapstructure:"briefing"`
+	Inbox            InboxConfig                 `mapstructure:"inbox"`
+	Knowledge        KnowledgeConfig             `mapstructure:"knowledge"`
+	Ideas            IdeasConfig                 `mapstructure:"ideas"`
+	Streams          StreamsConfig               `mapstructure:"streams"`
+	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
+	Tracks           TracksConfig                `mapstructure:"tracks"`
+	People           PeopleConfig                `mapstructure:"people"`
+	Calendar         CalendarConfig              `mapstructure:"calendar"`
+	Gmail            GmailConfig                 `mapstructure:"gmail"`
+	Imap             ImapConfig                  `mapstructure:"imap"`
+	Jira             JiraConfig                  `mapstructure:"jira"`
+	Analysis         AnalysisConfig              `mapstructure:"analysis"`
+	DayPlan          DayPlanConfig               `mapstructure:"day_plan"`
+	Memory           MemoryConfig                `mapstructure:"memory"`
+	Targets          TargetsConfig               `mapstructure:"targets"`
+	Transcripts      TranscriptsConfig           `mapstructure:"transcripts"`
+	Catchup          CatchupConfig               `mapstructure:"catchup"`
+	DB               DBConfig                    `mapstructure:"db"`
+	ClaudePath       string                      `mapstructure:"claude_path"`
+	CodexPath        string                      `mapstructure:"codex_path"`
+
+	// workspaceCandidates is set by resolveActiveWorkspace when several
+	// workspaces hold a database and ActiveWorkspace stays empty, so
+	// ValidateWorkspace can name them instead of reporting a bare "required".
+	workspaceCandidates []string
+	// workspaceLookupErr is set when resolveActiveWorkspace could not scan the
+	// data directory at all, so ValidateWorkspace reports that instead of
+	// mistaking an unreadable directory for a fresh install.
+	workspaceLookupErr error
+}
+
+// DBConfig captures database-runtime state that the binary tracks across
+// installs. Currently only schema_format, bumped when the migration engine
+// is replaced (legacy PRAGMA → goose). The runtime triggers a one-shot
+// upgrade when the on-disk value is below db.CurrentSchemaFormat.
+type DBConfig struct {
+	SchemaFormat int `mapstructure:"schema_format"`
+}
+
+// Load reads config from the given path, binds env vars, and returns the config.
+func Load(configPath string) (*Config, error) {
+	v := viper.New()
+
+	// Defaults
+	v.SetDefault("active_workspace", DefaultActiveWorkspace)
+	v.SetDefault("ai.provider", DefaultAIProvider)
+	v.SetDefault("ai.model", "")
+	v.SetDefault("ai.models.light", "")
+	v.SetDefault("ai.models.strong", "")
+	v.SetDefault("ai.ollama_url", DefaultOllamaURL)
+	v.SetDefault("ai.context_budget", DefaultAIContextBudget)
+	v.SetDefault("ai.workers", DefaultAIWorkers)
+	v.SetDefault("sync.workers", DefaultSyncWorkers)
+	v.SetDefault("sync.initial_history_days", DefaultInitialHistDays)
+	v.SetDefault("sync.poll_interval", DefaultPollInterval)
+	v.SetDefault("sync.sync_threads", DefaultSyncThreads)
+	v.SetDefault("sync.sync_on_wake", DefaultSyncOnWake)
+	v.SetDefault("digest.enabled", DefaultDigestEnabled)
+	v.SetDefault("digest.min_messages", DefaultDigestMinMsgs)
+	v.SetDefault("digest.language", DefaultDigestLang)
+	v.SetDefault("digest.workers", DefaultDigestWorkers)
+	v.SetDefault("digest.action_items_interval", DefaultTracksInterval)
+	v.SetDefault("digest.batch_max_channels", DefaultBatchMaxChannels)
+	v.SetDefault("digest.batch_max_messages", DefaultBatchMaxMessages)
+	v.RegisterAlias("digest.tracks_interval", "digest.action_items_interval")
+	v.SetDefault("briefing.enabled", DefaultBriefingEnabled)
+	v.SetDefault("briefing.hour", DefaultBriefingHour)
+	v.SetDefault("inbox.enabled", DefaultInboxEnabled)
+	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
+	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
+	v.SetDefault("knowledge.enabled", DefaultKnowledgeEnabled)
+	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
+	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
+	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)
+	v.SetDefault("ideas.max_prompt_chars", DefaultIdeasMaxPromptChars)
+	v.SetDefault("streams.enabled", DefaultStreamsEnabled)
+	v.SetDefault("streams.interval_hours", DefaultStreamsIntervalHours)
+	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
+	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
+	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
+	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
+	v.SetDefault("people.enabled", DefaultPeopleEnabled)
+	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
+	v.SetDefault("catchup.caps.digests", 150)
+	v.SetDefault("catchup.caps.streams", 40)
+	v.SetDefault("catchup.caps.meetings", 20)
+	v.SetDefault("catchup.caps.decisions", 40)
+	v.SetDefault("catchup.caps.inbox", 120)
+	v.SetDefault("catchup.caps.tracks", 80)
+	v.SetDefault("catchup.caps.targets", 40)
+	v.SetDefault("catchup.max_prompt_chars", 120000)
+	v.SetDefault("calendar.enabled", DefaultCalendarEnabled)
+	v.SetDefault("calendar.sync_days_ahead", DefaultCalendarSyncDaysAhead)
+	v.SetDefault("calendar.history_days", DefaultCalendarHistoryDays)
+	v.SetDefault("gmail.enabled", DefaultGmailEnabled)
+	v.SetDefault("gmail.initial_history_days", DefaultGmailInitialHistoryDays)
+	v.SetDefault("gmail.max_messages_per_sync", DefaultGmailMaxMessagesPerSync)
+	v.SetDefault("gmail.max_body_bytes", DefaultGmailMaxBodyBytes)
+	v.SetDefault("imap.initial_history_days", DefaultImapInitialHistoryDays)
+	v.SetDefault("imap.max_messages_per_sync", DefaultImapMaxMessagesPerSync)
+	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
+	v.SetDefault("jira.enabled", DefaultJiraEnabled)
+	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
+	setJiraFeatureDefaults(v)
+	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
+	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
+	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
+	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
+	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
+	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
+	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
+	v.SetDefault("memory.enabled", false) // off by default until the feature settles
+	v.SetDefault("memory.max_chunk_messages", 2000)
+	v.SetDefault("memory.seed_min_messages", 20)
+	v.SetDefault("memory.max_episodes_per_window", 5)
+	v.SetDefault("memory.max_window_messages", 200)
+	v.SetDefault("memory.batch_max_channels", DefaultBatchMaxChannels)
+	v.SetDefault("memory.batch_max_messages", DefaultBatchMaxMessages)
+	v.SetDefault("memory.semantic.enabled", false) // semantic tier dark by default
+	v.SetDefault("memory.semantic.rewrite_max_entities", 10)
+	v.SetDefault("memory.semantic.beliefs_max", 20)
+	v.SetDefault("memory.semantic.dedupe_max_merges", 20)
+	v.SetDefault("memory.semantic.age_after_days", 14)
+	v.SetDefault("memory.semantic.evict_after_days", 45)
+	v.SetDefault("memory.semantic.evict_max", 50)
+	v.SetDefault("memory.semantic.concept_min_episodes", 5)
+	v.SetDefault("memory.semantic.concept_max_create", 10)
+	v.SetDefault("memory.semantic.output_budget", 200000)
+	v.SetDefault("memory.surfaces.chat", false) // Phase-4 surfaces dark by default
+	v.SetDefault("memory.surfaces.briefing", false)
+	v.SetDefault("memory.surfaces.reflection", false)
+	v.SetDefault("memory.sources.gmail", false)    // Gmail source dark by default
+	v.SetDefault("memory.sources.calendar", false) // Phase-5 slice-2 sources dark by default
+	v.SetDefault("memory.sources.chats", false)
+	v.SetDefault("memory.renders.digest_compare", false) // Phase-5 slice-3 renders dark by default
+	v.SetDefault("memory.sources.operational", false)    // Phase-5 slice-4 gates dark by default
+	v.SetDefault("memory.surfaces.day_plan", false)
+	v.SetDefault("memory.surfaces.meeting_prep", false)
+	v.SetDefault("memory.semantic.preferences", false)
+	v.SetDefault("memory.retrieve.recall_compare", false) // Slice B dark retrieval-compare, dark by default
+	v.SetDefault("memory.retrieve.briefing_compare", false)
+	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
+	v.SetDefault("memory.focus.enabled", false) // focus-salience Run step dark by default
+	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
+	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
+	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
+	v.SetDefault("targets.extract.model", DefaultTargetsExtractModel)
+	v.SetDefault("targets.resolver.slack_enabled", DefaultTargetsResolverSlackEnabled)
+	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
+	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
+	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
+	v.SetDefault("transcripts.audio_retention_days", DefaultTranscriptAudioRetentionDays)
+	// db.schema_format defaults to 1 (legacy PRAGMA-based) so that any
+	// existing install triggers the one-shot upgrade on first run of the
+	// goose-based binary. cmd/root.go bumps it to db.CurrentSchemaFormat
+	// after RunSchemaUpgrade succeeds.
+	v.SetDefault("db.schema_format", 1)
+	// Config file
+	v.SetConfigFile(configPath)
+
+	if err := v.ReadInConfig(); err != nil {
+		// Missing config file is OK — use defaults
+		var configNotFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &configNotFound) && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("reading config: %w", err)
+		}
+	}
+
+	// Env var bindings
+	v.SetEnvPrefix("WATCHTOWER")
+	v.AutomaticEnv()
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	// Explicit bindings for key env vars
+	_ = v.BindEnv("ai.model", "WATCHTOWER_AI_MODEL")
+	_ = v.BindEnv("ai.workers", "WATCHTOWER_AI_WORKERS")
+	_ = v.BindEnv("sync.workers", "WATCHTOWER_SYNC_WORKERS")
+
+	cfg := &Config{}
+	if err := v.Unmarshal(cfg); err != nil {
+		return nil, fmt.Errorf("unmarshaling config: %w", err)
+	}
+	// Snapshot the yaml provider before any --provider flag mutation.
+	cfg.AI.ConfiguredProvider = cfg.AI.Provider
+
+	// Backward compat: migrate digest.workers → ai.workers.
+	// If user has digest.workers in config but hasn't set ai.workers explicitly,
+	// use digest.workers as the pool size.
+	if cfg.Digest.Workers > 0 && !v.InConfig("ai.workers") && os.Getenv("WATCHTOWER_AI_WORKERS") == "" {
+		cfg.AI.Workers = cfg.Digest.Workers
+	}
+
+	// Resolve the workspace before the env-token binding below: that binding
+	// keys on cfg.ActiveWorkspace, so a workspace recovered from disk must be
+	// known by then or WATCHTOWER_SLACK_TOKEN would be silently dropped.
+	resolveActiveWorkspace(cfg)
+
+	// Bind workspace-level slack token from env
+	if token := os.Getenv("WATCHTOWER_SLACK_TOKEN"); token != "" && cfg.ActiveWorkspace != "" {
+		if cfg.Workspaces == nil {
+			cfg.Workspaces = make(map[string]*WorkspaceConfig)
+		}
+		ws, ok := cfg.Workspaces[cfg.ActiveWorkspace]
+		if !ok {
+			ws = &WorkspaceConfig{}
+			cfg.Workspaces[cfg.ActiveWorkspace] = ws
+		}
+		if ws.SlackToken == "" {
+			ws.SlackToken = token
+		}
+	}
+
+	return cfg, nil
+}
+
+// resolveActiveWorkspace fills an empty ActiveWorkspace from the data
+// directory when exactly one workspace holds a database. The Desktop used to
+// fall back to the first workspace directory with a watchtower.db
+// (DatabaseManager.resolveDBPath), so a config that lost its active_workspace
+// kept the app working while every CLI command and the daemon failed with
+// "active_workspace is required" — the two halves disagreed on the same
+// file. Resolving here, in the one place config is loaded, makes them agree;
+// resolveDBPath now applies the same rule. Several candidates are left
+// unresolved on purpose on both sides: guessing could point the daemon's
+// writes at a database other than the one on screen, so that case stays an
+// explicit `config set active_workspace <name>`.
+func resolveActiveWorkspace(cfg *Config) {
+	if cfg.ActiveWorkspace != "" {
+		return
+	}
+	root, err := DataRoot()
+	if err != nil {
+		cfg.workspaceLookupErr = err
+		return
+	}
+	candidates, err := workspaceDirsWithDatabase(root)
+	if err != nil {
+		cfg.workspaceLookupErr = err
+		return
+	}
+	switch len(candidates) {
+	case 1:
+		cfg.ActiveWorkspace = candidates[0]
+	case 0:
+	default:
+		cfg.workspaceCandidates = candidates
+	}
+}
+
+// workspaceDirsWithDatabase lists the workspace names under root that hold a
+// watchtower.db, sorted — the same candidate set the Desktop's
+// Constants.workspacesWithDatabase builds (same name pattern) for
+// DatabaseManager.resolveDBPath and Constants.activeWorkspaceDir.
+// The entry's own type is deliberately not checked: stat-ing the database
+// path follows a symlinked workspace directory the way the Swift side's
+// FileManager.fileExists does, while a plain file or a dangling symlink
+// simply has no database under it. A missing root is a fresh install (no
+// candidates, no error); any other read failure is returned.
+func workspaceDirsWithDatabase(root string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading workspace directory: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !ValidWorkspaceRe.MatchString(e.Name()) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, e.Name(), "watchtower.db")); err == nil {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// WorkspaceDatabaseWarning returns a warning for `config set active_workspace
+// <name>` when name has no watchtower.db under the data root, "" when it has
+// one. A typo there makes the next daemon start create an empty workspace
+// under the misspelled name (and the Desktop, which follows the configured
+// name, then shows that empty workspace), so the warning lists the workspaces
+// that do hold one. It never blocks the write: a brand-new workspace
+// legitimately has no database until its first sync. An empty name gets no
+// warning.
+func WorkspaceDatabaseWarning(name string) string {
+	if name == "" {
+		// Empty is a supported state: Load resolves it from the data directory.
+		return ""
+	}
+	if !ValidWorkspaceRe.MatchString(name) {
+		return fmt.Sprintf("%q is not a valid workspace name (letters, digits, '.', '_', '-'; must start with a letter or digit)", name)
+	}
+	root, err := DataRoot()
+	if err != nil {
+		return fmt.Sprintf("could not check workspace %q for a database: %v", name, err)
+	}
+	dbPath := filepath.Join(root, name, "watchtower.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		return ""
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Sprintf("could not check workspace %q for a database: %v", name, err)
+	}
+	candidates, err := workspaceDirsWithDatabase(root)
+	if err != nil {
+		return fmt.Sprintf("workspace %q has no database (%s), and existing workspaces could not be listed: %v", name, dbPath, err)
+	}
+	if len(candidates) == 0 {
+		return fmt.Sprintf("workspace %q has no database yet (%s); no workspace holds a database yet, so the next sync creates it", name, dbPath)
+	}
+	return fmt.Sprintf("workspace %q has no database (%s); workspaces with one: %s — check the name for a typo, or ignore this for a brand-new workspace", name, dbPath, strings.Join(candidates, ", "))
+}
+
+// ValidWorkspaceRe matches valid workspace names: alphanumeric start, followed by
+// alphanumerics, hyphens, dots, or underscores.
+var ValidWorkspaceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// ValidateWorkspace checks that a workspace name is set and safe for use in
+// file paths. It does NOT require a Slack token or workspace config entry,
+// making it suitable for commands that only need database access.
+func (c *Config) ValidateWorkspace() error {
+	if c.ActiveWorkspace == "" {
+		if len(c.workspaceCandidates) > 1 {
+			return fmt.Errorf("active_workspace is required; several workspaces hold a database (%s) — pick one with 'watchtower config set active_workspace <name>'", strings.Join(c.workspaceCandidates, ", "))
+		}
+		if c.workspaceLookupErr != nil {
+			return fmt.Errorf("active_workspace is required and no existing workspace could be looked up (%w); set it with 'watchtower config set active_workspace <name>'", c.workspaceLookupErr)
+		}
+		// Zero candidates: usually a fresh install, with no workspace folder to
+		// name yet. 'config init' is deliberately not suggested: it rewrites
+		// config.yaml from scratch, and this error means one was already read.
+		return fmt.Errorf("active_workspace is required and no workspace with a database was found; connect Slack with 'watchtower auth login', or name a new workspace with 'watchtower config set active_workspace <name>' to start with Google or Jira")
+	}
+	if !ValidWorkspaceRe.MatchString(c.ActiveWorkspace) {
+		return fmt.Errorf("invalid workspace name %q: must contain only alphanumeric characters, hyphens, dots, and underscores", c.ActiveWorkspace)
+	}
+	return nil
+}
+
+// Validate checks that required fields are present, including Slack token.
+// Use ValidateWorkspace for commands that only need database access.
+func (c *Config) Validate() error {
+	if err := c.ValidateWorkspace(); err != nil {
+		return err
+	}
+	ws, err := c.GetActiveWorkspace()
+	if err != nil {
+		return err
+	}
+	if ws.SlackToken == "" {
+		return fmt.Errorf("slack_token is required for workspace %q", c.ActiveWorkspace)
+	}
+	if !isValidSlackToken(ws.SlackToken) {
+		return fmt.Errorf("slack_token for workspace %q has invalid format (expected xoxp-*, xoxb-*, xoxa-*, or xoxe.*)", c.ActiveWorkspace)
+	}
+	return nil
+}
+
+// isValidSlackToken checks that the token has a recognized Slack token prefix.
+func isValidSlackToken(token string) bool {
+	validPrefixes := []string{"xoxp-", "xoxb-", "xoxa-", "xoxe.xoxp-", "xoxe."}
+	for _, p := range validPrefixes {
+		if strings.HasPrefix(token, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetActiveWorkspace returns the config for the active workspace.
+//
+// The lookup tries the exact ActiveWorkspace casing first, then falls back
+// to its lowercased form: viper's Unmarshal always lowercases nested map
+// keys on read (insensitiviseMap), so a `workspaces.<Team>` block with any
+// uppercase letter in its key only ever lands in c.Workspaces under its
+// lowercased form, even though ActiveWorkspace itself preserves whatever
+// casing was written to active_workspace (a plain string value, not a
+// map key). Without this fallback a mixed-case workspace name never
+// resolves — see TestGetActiveWorkspace_CaseInsensitiveLookup. Only the
+// lookup is normalized; ActiveWorkspace's own casing is never touched here
+// (WorkspaceDir keys the on-disk data directory off it — lowercasing it
+// would repoint an existing install's data).
+func (c *Config) GetActiveWorkspace() (*WorkspaceConfig, error) {
+	if c.ActiveWorkspace == "" {
+		return nil, fmt.Errorf("no active workspace set")
+	}
+	if ws, ok := c.Workspaces[c.ActiveWorkspace]; ok {
+		return ws, nil
+	}
+	if ws, ok := c.Workspaces[strings.ToLower(c.ActiveWorkspace)]; ok {
+		return ws, nil
+	}
+	return nil, fmt.Errorf("workspace %q not found in config", c.ActiveWorkspace)
+}
+
+// WorkspaceDir returns the data directory for the active workspace
+// (~/.local/share/watchtower/{workspace}/).
+func (c *Config) WorkspaceDir() string {
+	root, err := DataRoot()
+	if err != nil {
+		// Fatal: storing sensitive data in a temp dir is unsafe.
+		log.Fatalf("%v", err)
+	}
+	return filepath.Join(root, c.ActiveWorkspace)
+}
+
+// DataRoot returns the directory holding every workspace's data
+// (~/.local/share/watchtower).
+func DataRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "watchtower"), nil
+}
+
+// DBPath returns the path to the SQLite database for the active workspace.
+func (c *Config) DBPath() string {
+	return filepath.Join(c.WorkspaceDir(), "watchtower.db")
+}
+
+// RecordingsDir returns the meeting-recording directory scanned by the daemon
+// orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
+// recorder's default location ($HOME/Library/Application Support/Watchtower/
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
+// the home directory cannot be determined.
+func (c *Config) RecordingsDir() string {
+	if c.Transcripts.RecordingsDir != "" {
+		return c.Transcripts.RecordingsDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
+}

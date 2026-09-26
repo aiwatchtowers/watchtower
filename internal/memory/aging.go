@@ -1,0 +1,106 @@
+package memory
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"watchtower/internal/db"
+)
+
+// AgeEpisodes is the mechanical episode-aging pass (spec §Retention). Raw
+// extracted episodes are minted active + short and nothing else in this
+// package ever closes them. The situations ingest used to mint some episodes
+// straight to closed + long, but that source dried up on 2026-09-06 and was
+// removed — any situation-aliased episode still in the vault is a pre-existing
+// one from before the retirement, not a live writer this pass needs to defer
+// to.
+// Without this pass a non-situation episode would stay active/short forever and
+// never become an eviction candidate. AgeEpisodes transitions an active
+// short-tier NON-situation episode (no situation:<id> alias — i.e. not one of
+// those pre-existing episodes) whose newest provenance event is older than
+// ageAfterDays to closed + long, in one "memory(age)" commit mirrored into the
+// index. Only the aged episodes are touched: situation-aliased episodes and
+// episodes whose newest event is still recent are left byte-identical. Returns
+// the count aged.
+//
+// A per-node read failure is skipped-and-logged (the package quarantine
+// convention) so one corrupted candidate never stops the pass. ageAfterDays
+// <= 0 is treated as unbounded here (the pipeline floor-guards it to the
+// default before calling); a run then ages every non-situation short episode.
+//
+// ctx is checked before each candidate; the aged set is built in memory and
+// written once after the loop, so a cancelled pass returns (0, ctx.Err())
+// having written nothing.
+func AgeEpisodes(ctx context.Context, v *Vault, database *db.DB, ageAfterDays int, now time.Time, logf func(string, ...any)) (aged int, err error) {
+	rows, err := database.ListMemoryNodes()
+	if err != nil {
+		return 0, err
+	}
+
+	var (
+		nodes []Node
+		ids   []string
+	)
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if row.Type != "episode" || row.Tier != "short" || row.Status != "active" {
+			continue
+		}
+		n, ok := ageCandidate(v, row.ID, ageAfterDays, now, logf)
+		if !ok {
+			continue
+		}
+		n.Status = "closed"
+		n.Tier = "long"
+		nodes = append(nodes, n)
+		ids = append(ids, n.ID)
+		aged++
+	}
+
+	if aged == 0 {
+		return 0, nil
+	}
+	msg := CommitMsg{
+		Op:      "age",
+		Summary: fmt.Sprintf("%d episodes to closed+long", aged),
+		Cause:   "age",
+		NodeIDs: ids,
+	}
+	if _, err := v.WriteNodes(nodes, msg); err != nil {
+		return 0, err
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	mem := newOwnerEditedMemo(v)
+	for _, n := range nodes {
+		if err := upsertIndexNode(database, mem.lookup, n, nowStr); err != nil {
+			return aged, err
+		}
+	}
+	return aged, nil
+}
+
+// ageCandidate reads one active short episode and reports whether it is due to
+// age: not a situation episode, and its newest provenance event is at least
+// ageAfterDays old. A read failure is skipped-and-logged.
+func ageCandidate(v *Vault, id string, ageAfterDays int, now time.Time, logf func(string, ...any)) (Node, bool) {
+	n, err := v.ReadNode(id)
+	if err != nil {
+		logf("memory: age: read %s: %v (skipped)", id, err)
+		return Node{}, false
+	}
+	if hasSituationAlias(n.Aliases) {
+		return Node{}, false // pre-existing situation episode (retired ingest); never one of ours to age
+	}
+	lastTS, ok := lastEventTS(parseProvenance(n.Body))
+	if !ok {
+		return Node{}, false // no parseable event ts → cannot age
+	}
+	ageDays := now.Sub(time.Unix(int64(lastTS), 0)).Hours() / 24
+	if ageDays < float64(ageAfterDays) {
+		return Node{}, false // still recent
+	}
+	return n, true
+}

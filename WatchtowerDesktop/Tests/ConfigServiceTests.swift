@@ -1,0 +1,465 @@
+import Foundation
+import Testing
+import Yams
+@testable import WatchtowerDesktop
+
+@MainActor
+@Suite("ConfigService")
+struct ConfigServiceTests {
+    private func makeTempConfig(_ yaml: String) -> String {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("watchtower-config-tests-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("config.yaml").path
+        try? yaml.write(toFile: path, atomically: true, encoding: .utf8)
+        return path
+    }
+
+    @Test("Load parses scalar fields")
+    func loadScalars() {
+        let path = makeTempConfig("""
+        active_workspace: dev
+        claude_path: /opt/claude
+        codex_path: /opt/codex
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == "dev")
+        #expect(svc.claudePath == "/opt/claude")
+        #expect(svc.codexPath == "/opt/codex")
+        #expect(svc.parseError == nil)
+    }
+
+    /// The service can load before `auth login` writes active_workspace
+    /// (Settings opened first, or the Slack step skipped). Save must then
+    /// leave the key the CLI wrote in the meantime alone — assigning a nil
+    /// to the YAML dictionary deletes it, and a config without
+    /// active_workspace cannot start the daemon.
+    @Test("Save keeps an active_workspace written after load")
+    func saveKeepsWorkspaceWrittenAfterLoad() throws {
+        let path = makeTempConfig("""
+        sync:
+          workers: 2
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == nil)
+
+        try """
+        active_workspace: zenith
+        sync:
+          workers: 2
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["active_workspace"] as? String == "zenith")
+    }
+
+    /// The CLI owns `active_workspace`; the Desktop only displays it. A value
+    /// the CLI changed after this service loaded must survive Save — the
+    /// in-memory snapshot is stale, not authoritative.
+    @Test("Save never overwrites an active_workspace the CLI changed after load")
+    func saveKeepsWorkspaceChangedAfterLoad() throws {
+        let path = makeTempConfig("""
+        active_workspace: zenith
+        sync:
+          workers: 2
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.activeWorkspace == "zenith")
+
+        try """
+        active_workspace: acme
+        sync:
+          workers: 2
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        try svc.save()
+
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["active_workspace"] as? String == "acme")
+    }
+
+    @Test("Load parses sync section")
+    func loadSync() {
+        let path = makeTempConfig("""
+        sync:
+          poll_interval: 5m
+          workers: 4
+          sync_threads: false
+          initial_history_days: 14
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.syncInterval == "5m")
+        #expect(svc.syncWorkers == 4)
+        #expect(svc.syncThreads == false)
+        #expect(svc.initialHistoryDays == 14)
+    }
+
+    @Test("Load parses calendar history days with a 14-day fallback")
+    func loadCalendarHistoryDays() {
+        let path = makeTempConfig("""
+        calendar:
+          enabled: true
+          sync_days_ahead: 7
+          history_days: 30
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.calendarHistoryDays == 30)
+
+        let fallbackPath = makeTempConfig("""
+        calendar:
+          enabled: true
+        """)
+        let fallback = ConfigService(configPath: fallbackPath)
+        #expect(fallback.calendarHistoryDays == 14)
+    }
+
+    @Test("Load applies defaults for missing day_plan keys")
+    func loadDayPlanDefaults() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.dayPlanEnabled == true)
+        #expect(svc.dayPlanHour == 8)
+        #expect(svc.workingHoursStart == "09:00")
+        #expect(svc.workingHoursEnd == "19:00")
+        #expect(svc.maxTimeblocks == 3)
+        #expect(svc.minBacklog == 3)
+        #expect(svc.maxBacklog == 8)
+    }
+
+    @Test("Load applies defaults for missing ideas keys")
+    func loadIdeasDefaults() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == true)
+        #expect(svc.ideasMineIntervalHours == 6)
+    }
+
+    @Test("Load parses ideas section")
+    func loadIdeas() {
+        let path = makeTempConfig("""
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == false)
+        #expect(svc.ideasMineIntervalHours == 12)
+    }
+
+    @Test("AI tier models and ollama URL round-trip")
+    func aiModelsRoundTrip() throws {
+        let path = makeTempConfig("""
+        ai:
+          provider: ollama
+          model: legacy-model
+          ollama_url: http://box:11434
+          models:
+            light: qwen3:8b
+            strong: llama4:70b
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.aiProvider == "ollama")
+        #expect(svc.aiModel == "legacy-model")
+        #expect(svc.aiOllamaURL == "http://box:11434")
+        #expect(svc.aiModelLight == "qwen3:8b")
+        #expect(svc.aiModelStrong == "llama4:70b")
+
+        svc.aiModelLight = "gemma4:31b"
+        svc.aiModelStrong = nil
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.aiModelLight == "gemma4:31b")
+        #expect(svc2.aiModelStrong == nil, "cleared tier override must be removed from yaml")
+        #expect(svc2.aiOllamaURL == "http://box:11434", "untouched keys survive the save merge")
+        #expect(svc2.aiModel == "legacy-model", "legacy ai.model is preserved, not rewritten")
+    }
+
+    @Test("Save does not invent ai.models on a config that has none")
+    func saveNoEmptyAIModels() throws {
+        let path = makeTempConfig("""
+        ai:
+          provider: claude
+        """)
+        let svc = ConfigService(configPath: path)
+        try svc.save()
+
+        let yaml = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        let ai = yaml?["ai"] as? [String: Any]
+        #expect(ai?["models"] == nil, "no empty models: block may appear")
+        #expect(ai?["ollama_url"] == nil)
+    }
+
+    @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
+    func saveIdeasRoundTrip() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.ideasEnabled == false)
+        #expect(svc.ideasMineIntervalHours == 12)
+
+        // The on/off property is display-only: flipping it and saving must
+        // not write it back — the Feature Manager CLI owns that key.
+        svc.ideasEnabled = true
+        svc.ideasMineIntervalHours = 24
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.ideasMineIntervalHours == 24, "tuning keys still round-trip")
+        #expect(svc2.ideasEnabled == false, "on-disk ideas.enabled must survive a save that changed another field")
+        #expect(svc2.activeWorkspace == "keep-me", "unrelated keys must survive the save merge")
+    }
+
+    /// The three feature on/off keys have exactly one writer — the
+    /// `watchtower features enable|disable` CLI. `ConfigService.save()`
+    /// parses them (other views read the properties) but must never write
+    /// them back, or an ordinary Settings Save races the CLI and silently
+    /// reverts whatever the Feature Manager just applied.
+    @Test("Save leaves the three Feature Manager on/off keys exactly as the CLI wrote them")
+    func saveNeverWritesFeatureOnOffKeys() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        digest:
+          enabled: false
+          language: English
+        ideas:
+          enabled: false
+          mine_interval_hours: 12
+        day_plan:
+          enabled: false
+          hour: 7
+        """)
+        let svc = ConfigService(configPath: path)
+
+        // Flip all three display-only properties AND change one real tuning
+        // field, so the save definitely rewrites every section involved.
+        svc.digestEnabled = true
+        svc.ideasEnabled = true
+        svc.dayPlanEnabled = true
+        svc.briefingHour = 11
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        let digest = yaml?["digest"] as? [String: Any]
+        let ideas = yaml?["ideas"] as? [String: Any]
+        let dayPlan = yaml?["day_plan"] as? [String: Any]
+
+        #expect(digest?["enabled"] as? Bool == false, "digest.enabled must pass through untouched; got: \(raw)")
+        #expect(ideas?["enabled"] as? Bool == false, "ideas.enabled must pass through untouched; got: \(raw)")
+        #expect(dayPlan?["enabled"] as? Bool == false, "day_plan.enabled must pass through untouched; got: \(raw)")
+
+        // Tuning keys in the same sections still save normally.
+        #expect(digest?["language"] as? String == "English")
+        #expect(dayPlan?["hour"] as? Int == 7)
+        #expect(ideas?["mine_interval_hours"] as? Int == 12)
+    }
+
+    /// `digestEnabled` defaults to `false` when the config has no digest
+    /// section, so writing it unconditionally used to make a plain Save on a
+    /// fresh install materialize `digest.enabled: false` — precisely the
+    /// legacy "all AI off" signature the Go migration looks for.
+    @Test("Save does not invent a digest section on a config that has none")
+    func saveDoesNotInventDigestSection() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.briefingHour = 9
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        #expect(yaml?.keys.contains("digest") == false, "an absent digest section must stay absent; got: \(raw)")
+        #expect(
+            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") == false,
+            "ideas.enabled must not be created by a save; got: \(raw)"
+        )
+        #expect(
+            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") == false,
+            "day_plan.enabled must not be created by a save; got: \(raw)"
+        )
+    }
+
+    @Test("Load parses ai and digest sections")
+    func loadAIDigest() {
+        let path = makeTempConfig("""
+        ai:
+          model: claude-opus
+          provider: claude
+          workers: 2
+        digest:
+          enabled: true
+          model: haiku
+          min_messages: 3
+          language: English
+        briefing:
+          hour: 9
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.aiModel == "claude-opus")
+        #expect(svc.aiProvider == "claude")
+        #expect(svc.aiWorkers == 2)
+        #expect(svc.digestEnabled == true)
+        #expect(svc.digestMinMessages == 3)
+        #expect(svc.digestLanguage == "English")
+        #expect(svc.briefingHour == 9)
+    }
+
+    @Test("Load parses calendar settings")
+    func loadCalendar() {
+        let path = makeTempConfig("""
+        calendar:
+          enabled: true
+          sync_days_ahead: 5
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.calendarEnabled == true)
+        #expect(svc.calendarSyncDaysAhead == 5)
+    }
+
+    @Test("Load parses jira features")
+    func loadJiraFeatures() {
+        let path = makeTempConfig("""
+        jira:
+          features:
+            briefings: true
+            recommendations: false
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.jiraFeatures["briefings"] == true)
+        #expect(svc.jiraFeatures["recommendations"] == false)
+    }
+
+    @Test("Load applies default transcript audio retention when section missing")
+    func loadTranscriptRetentionDefault() {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 30)
+    }
+
+    @Test("Load parses transcripts section")
+    func loadTranscripts() {
+        let path = makeTempConfig("""
+        transcripts:
+          audio_retention_days: 7
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.transcriptAudioRetentionDays == 7)
+    }
+
+    @Test("Save round-trips transcript audio retention")
+    func saveTranscriptRetention() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.transcriptAudioRetentionDays = 14
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.transcriptAudioRetentionDays == 14)
+    }
+
+    @Test("Save round-trips dirty values")
+    func saveRoundTrip() throws {
+        let path = makeTempConfig("active_workspace: old\n")
+        let svc = ConfigService(configPath: path)
+        svc.activeWorkspace = "new-ws"
+        svc.aiProvider = "codex"
+        svc.calendarEnabled = true
+        svc.calendarSyncDaysAhead = 7
+        svc.briefingHour = 11
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        // active_workspace is CLI-owned: even a dirty in-memory value is not written.
+        #expect(svc2.activeWorkspace == "old")
+        #expect(svc2.aiProvider == "codex")
+        #expect(svc2.calendarEnabled == true)
+        #expect(svc2.calendarSyncDaysAhead == 7)
+        #expect(svc2.briefingHour == 11)
+    }
+
+    @Test("Save sets file permissions to 0600")
+    func savePermissions() throws {
+        let path = makeTempConfig("active_workspace: x\n")
+        let svc = ConfigService(configPath: path)
+        svc.activeWorkspace = "y"
+        try svc.save()
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: path)
+        let perm = attrs[.posixPermissions] as? NSNumber
+        #expect(perm?.intValue == 0o600, "expected owner-only permissions, got \(String(describing: perm))")
+    }
+
+    @Test("Save removes empty optional strings")
+    func saveRemovesEmptyValues() throws {
+        let path = makeTempConfig("""
+        ai:
+          model: keepme
+          provider: claude
+        """)
+        let svc = ConfigService(configPath: path)
+        svc.aiModel = ""
+        svc.aiProvider = nil
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!raw.contains("model:"), "empty model should be removed; got: \(raw)")
+        #expect(!raw.contains("provider:"), "nil provider should be removed; got: \(raw)")
+    }
+
+    @Test("Reload on bad YAML records parseError but doesn't crash")
+    func reloadBadYAML() {
+        let path = makeTempConfig("not: a: valid: yaml: at: all\n  - mismatch")
+        let svc = ConfigService(configPath: path)
+        // parseError is set when YAML can't be parsed.
+        // (In some cases bad YAML still parses to a non-dictionary, leaving parseError nil.)
+        _ = svc.parseError
+    }
+
+    @Test("Reload on missing file leaves defaults untouched")
+    func reloadMissingFile() {
+        let svc = ConfigService(configPath: "/nonexistent/path/to/config.yaml")
+        #expect(svc.activeWorkspace == nil)
+        #expect(svc.briefingHour == 8) // default
+        #expect(svc.dayPlanEnabled == true) // default
+        #expect(svc.ideasEnabled == true) // default
+    }
+
+    @Test("Save merges onto sections written concurrently by a CLI login, not the stale in-memory snapshot")
+    func saveDoesNotClobberConcurrentCLIWrites() throws {
+        let path = makeTempConfig("""
+        jira:
+          project_key: X
+        ai:
+          provider: claude
+        """)
+        let svc = ConfigService(configPath: path)
+
+        // Simulate a CLI flow (e.g. `watchtower jira login`) writing new
+        // fields to disk *after* ConfigService loaded its in-memory snapshot.
+        try """
+        jira:
+          project_key: X
+          api_token: secret-from-cli-login
+        ai:
+          provider: claude
+        """.write(toFile: path, atomically: true, encoding: .utf8)
+
+        svc.aiProvider = "codex"
+        try svc.save()
+
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let yaml = try Yams.load(yaml: raw) as? [String: Any]
+        let jira = yaml?["jira"] as? [String: Any]
+        #expect(jira?["project_key"] as? String == "X", "section Desktop doesn't own must survive; got: \(raw)")
+        #expect(jira?["api_token"] as? String == "secret-from-cli-login", "concurrent CLI write must survive; got: \(raw)")
+
+        let ai = yaml?["ai"] as? [String: Any]
+        #expect(ai?["provider"] as? String == "codex", "Desktop-owned field must still be updated; got: \(raw)")
+    }
+}

@@ -1,0 +1,449 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/features"
+	"watchtower/internal/reactioncmd"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+)
+
+var (
+	featuresListFlagJSON              bool
+	featuresDisableFlagDryRun         bool
+	featuresDisableFlagWithDependents bool
+	featuresDisableFlagJSON           bool
+)
+
+var featuresCmd = &cobra.Command{
+	Use:   "features",
+	Short: "Manage Watchtower's product-pillar feature toggles",
+	// PersistentPreRunE runs the one-time legacy digest-gate migration before
+	// any features subcommand. Log-only on error (the daemon's own call site
+	// does the same) so a migration hiccup never blocks list/enable/disable.
+	//
+	// It calls rootCmd's hook itself because cobra runs only the CLOSEST
+	// PersistentPreRunE in the command chain (EnableTraverseRunHooks is
+	// unset): declaring one here REPLACES the root's rather than adding to
+	// it, so without this line every `features` subcommand would silently
+	// skip ensureSchemaFormat.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := ensureSchemaFormat(cmd, args); err != nil {
+			return err
+		}
+		if _, err := config.MigrateFeatureGates(flagConfig); err != nil {
+			log.Printf("warning: legacy feature-gate migration failed: %v", err)
+		}
+		return nil
+	},
+}
+
+var featuresListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List every feature and its current state",
+	RunE:  runFeaturesList,
+}
+
+var featuresEnableCmd = &cobra.Command{
+	Use:   "enable <id>",
+	Short: "Enable a feature and fast-forward its watermarks to now",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runFeaturesEnable,
+}
+
+var featuresDisableCmd = &cobra.Command{
+	Use:   "disable <id>",
+	Short: "Disable a feature, optionally cascading to its dependents",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runFeaturesDisable,
+}
+
+func init() {
+	rootCmd.AddCommand(featuresCmd)
+	featuresCmd.AddCommand(featuresListCmd)
+	featuresCmd.AddCommand(featuresEnableCmd)
+	featuresCmd.AddCommand(featuresDisableCmd)
+
+	featuresListCmd.Flags().BoolVar(&featuresListFlagJSON, "json", false, "output as JSON (the Desktop Feature Manager contract)")
+	featuresDisableCmd.Flags().BoolVar(&featuresDisableFlagDryRun, "dry-run", false, "preview the currently-enabled dependents without writing anything")
+	featuresDisableCmd.Flags().BoolVar(&featuresDisableFlagWithDependents, "with-dependents", false, "also disable every currently-enabled dependent")
+	featuresDisableCmd.Flags().BoolVar(&featuresDisableFlagJSON, "json", false, "output as JSON")
+}
+
+// featureJSON is the Desktop Feature Manager wire contract ("features list
+// --json") — field names are load-bearing, Desktop decodes them verbatim.
+type featureJSON struct {
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Tagline     string          `json:"tagline"`
+	Benefits    []string        `json:"benefits"`
+	Icon        string          `json:"icon"`
+	State       string          `json:"state"` // enabled | disabled | core
+	Core        bool            `json:"core"`
+	Parent      string          `json:"parent"`
+	ConfigKey   string          `json:"config_key"`
+	Cost        string          `json:"cost"`
+	FeedsInto   []string        `json:"feeds_into"`
+	SubToggles  []subToggleJSON `json:"sub_toggles"`
+}
+
+type subToggleJSON struct {
+	Key         string `json:"key"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type featuresListJSON struct {
+	Features []featureJSON `json:"features"`
+}
+
+// featureRefJSON is the minimal id+title a cascade dialog needs to render a
+// dependent's name.
+type featureRefJSON struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// disableResultJSON is `disable`'s JSON output. For --dry-run, Dependents is
+// every currently-enabled dependent (informational, nothing written yet —
+// the input for the Desktop cascade dialog). For a real run, Dependents is
+// whatever was actually disabled alongside Feature: empty unless
+// --with-dependents was also passed (FEAT-04).
+type disableResultJSON struct {
+	Feature    string           `json:"feature"`
+	Dependents []featureRefJSON `json:"dependents"`
+}
+
+func runFeaturesList(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	all := features.All()
+	out := cmd.OutOrStdout()
+
+	if featuresListFlagJSON {
+		list := make([]featureJSON, 0, len(all))
+		for _, f := range all {
+			list = append(list, toFeatureJSON(f, cfg))
+		}
+		data, err := json.Marshal(featuresListJSON{Features: list})
+		if err != nil {
+			return fmt.Errorf("encoding json: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	fmt.Fprintf(out, "%-20s %-28s %-10s %-8s %-28s\n", "ID", "TITLE", "STATE", "COST", "CONFIG KEY")
+	for _, f := range all {
+		fmt.Fprintf(out, "%-20s %-28s %-10s %-8s %-28s\n", f.ID, f.Title, featureState(f, cfg), string(f.Cost), f.ConfigKey)
+		for _, st := range f.SubToggles {
+			state := "disabled"
+			if subToggleEnabled(cfg, st.Key) {
+				state = "enabled"
+			}
+			fmt.Fprintf(out, "    - %-40s %-10s %s\n", st.Title, state, st.Key)
+		}
+	}
+	return nil
+}
+
+func runFeaturesEnable(cmd *cobra.Command, args []string) error {
+	id := args[0]
+	f, err := validateToggleableFeature(id)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	// An already-enabled feature has nothing to fast-forward: running its hook
+	// anyway would skip whatever the daemon has not processed yet — for
+	// reaction-commands, re-seed the ledger against an account the daemon is
+	// actively polling and record every not-yet-dispatched reaction as
+	// permanent `skipped`. Load-bearing now that the feature is on by default,
+	// so "enable" on a fresh install is the common case. Mirrors the Desktop's
+	// `FeatureManagerService.enableNow` guard.
+	if f.Enabled(cfg) {
+		fmt.Fprintf(cmd.OutOrStdout(), "%q is already enabled (%s = true); nothing to do.\n", id, f.ConfigKey)
+		return nil
+	}
+
+	// Fast-forward BEFORE writing the config key (FEAT-03): if opening the DB
+	// or fast-forwarding fails, the feature must stay off rather than end up
+	// enabled with stale watermarks — that would let the next daemon cycle
+	// process the entire historical backlog it accumulated while off. A
+	// failed fast-forward is safe to retry: the feature is simply still off,
+	// exactly as it was before this call.
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("%q was not enabled: opening database: %w", id, err)
+	}
+	defer database.Close()
+
+	deps, seededCount := featureFastForwardDeps(cmd, cfg)
+	if err := features.FastForward(id, database, time.Now(), deps); err != nil {
+		return fmt.Errorf("%q was not enabled: fast-forwarding: %w", id, err)
+	}
+
+	if err := setConfigKey(flagConfig, f.ConfigKey, true); err != nil {
+		return fmt.Errorf("enabling %q: %w", id, err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Enabled %q (%s = true).\n", id, f.ConfigKey)
+	// Reaction commands has no watermark to fast-forward (fastforward.go's
+	// doc comment): its hook seeds the reaction ledger instead, so it earns
+	// its own line naming what actually happened, not the watermark claim.
+	if id == "reaction-commands" {
+		fmt.Fprintf(out, "Seeded %d pre-existing reaction(s) into the ledger (they will never dispatch).\n", *seededCount)
+	} else {
+		fmt.Fprintln(out, "Fast-forwarded any backlog watermarks to now, so it resumes from now instead of catching up on history.")
+	}
+	return nil
+}
+
+// seedReactionLedgerFn seeds the reaction-commands ledger via a live Slack
+// read (reactions.list under each connected account's own token, through the
+// same resolver the daemon poll uses). A package var — the
+// newDayPlanPipelineFactory house pattern — so a test can substitute a stub
+// without a real Slack account.
+var seedReactionLedgerFn = func(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) (int, error) {
+	return reactioncmd.SeedLedger(ctx, database, reactionCommandsAccountsFn(database, cfg, logger))
+}
+
+// featureFastForwardDeps wires the capabilities a fast-forward hook needs but
+// internal/features cannot build: today the reaction-commands ledger seed.
+// The command's context is captured here so a cancelled enable cancels the
+// Slack reads with it.
+//
+// It also returns a pointer that runFeaturesEnable reads AFTER FastForward
+// returns, so the seeded count survives past the Deps.SeedReactions closure
+// instead of being discarded — FastForward's own signature (error only)
+// never had anywhere to carry it back.
+func featureFastForwardDeps(cmd *cobra.Command, cfg *config.Config) (features.Deps, *int) {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	logger := log.New(cmd.ErrOrStderr(), "[features] ", log.LstdFlags)
+	seeded := new(int)
+	return features.Deps{
+		SeedReactions: func(database *db.DB) error {
+			n, err := seedReactionLedgerFn(ctx, database, cfg, logger)
+			*seeded = n
+			return err
+		},
+	}, seeded
+}
+
+func runFeaturesDisable(cmd *cobra.Command, args []string) error {
+	id := args[0]
+	f, err := validateToggleableFeature(id)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	dependents := features.Dependents(id, cfg)
+	out := cmd.OutOrStdout()
+
+	if featuresDisableFlagDryRun {
+		return printDisableResult(out, id, dependents, featuresDisableFlagJSON, true)
+	}
+
+	if err := setConfigKey(flagConfig, f.ConfigKey, false); err != nil {
+		return fmt.Errorf("disabling %q: %w", id, err)
+	}
+
+	var disabled []features.Feature
+	if featuresDisableFlagWithDependents {
+		for _, dep := range dependents {
+			if err := setConfigKey(flagConfig, dep.ConfigKey, false); err != nil {
+				return fmt.Errorf("disabling dependent %q: %w", dep.ID, err)
+			}
+		}
+		disabled = dependents
+	}
+
+	return printDisableResult(out, id, disabled, featuresDisableFlagJSON, false)
+}
+
+// printDisableResult renders `disable`'s outcome — see disableResultJSON for
+// how dry-run vs. a real run assign different meaning to "deps".
+func printDisableResult(out io.Writer, id string, deps []features.Feature, asJSON, dryRun bool) error {
+	if asJSON {
+		refs := make([]featureRefJSON, 0, len(deps))
+		for _, d := range deps {
+			refs = append(refs, featureRefJSON{ID: d.ID, Title: d.Title})
+		}
+		data, err := json.Marshal(disableResultJSON{Feature: id, Dependents: refs})
+		if err != nil {
+			return fmt.Errorf("encoding json: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	verb := "Disabled"
+	if dryRun {
+		verb = "Would disable"
+	}
+	if len(deps) == 0 {
+		fmt.Fprintf(out, "%s %q.\n", verb, id)
+		return nil
+	}
+	fmt.Fprintf(out, "%s %q. Also affects:\n", verb, id)
+	for _, d := range deps {
+		fmt.Fprintf(out, "  - %s (%s)\n", d.Title, d.ID)
+	}
+	return nil
+}
+
+func toFeatureJSON(f features.Feature, cfg *config.Config) featureJSON {
+	subToggles := make([]subToggleJSON, 0, len(f.SubToggles))
+	for _, st := range f.SubToggles {
+		subToggles = append(subToggles, subToggleJSON{
+			Key:         st.Key,
+			Title:       st.Title,
+			Description: st.Description,
+			Enabled:     subToggleEnabled(cfg, st.Key),
+		})
+	}
+	return featureJSON{
+		ID:          f.ID,
+		Title:       f.Title,
+		Description: f.Description,
+		Tagline:     f.Tagline,
+		Benefits:    append([]string{}, f.Benefits...),
+		Icon:        f.Icon,
+		State:       featureState(f, cfg),
+		Core:        f.Core,
+		Parent:      f.Parent,
+		ConfigKey:   f.ConfigKey,
+		Cost:        string(f.Cost),
+		FeedsInto:   append([]string{}, f.FeedsInto...),
+		SubToggles:  subToggles,
+	}
+}
+
+func featureState(f features.Feature, cfg *config.Config) string {
+	if f.Core {
+		return "core"
+	}
+	if f.Enabled != nil && f.Enabled(cfg) {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+// subToggleEnabled maps a sub-toggle's config key to its live value on a
+// loaded config. Memory's 11 keys (internal/features/registry.go's
+// memorySubToggles) are the only sub-toggles any registry entry declares
+// today.
+func subToggleEnabled(cfg *config.Config, key string) bool {
+	switch key {
+	case "memory.semantic.enabled":
+		return cfg.Memory.Semantic.Enabled
+	case "memory.sources.gmail":
+		return cfg.Memory.Sources.Gmail
+	case "memory.sources.calendar":
+		return cfg.Memory.Sources.Calendar
+	case "memory.sources.chats":
+		return cfg.Memory.Sources.Chats
+	case "memory.sources.operational":
+		return cfg.Memory.Sources.Operational
+	case "memory.sources.jira":
+		return cfg.Memory.Sources.Jira
+	case "memory.surfaces.chat":
+		return cfg.Memory.Surfaces.Chat
+	case "memory.surfaces.briefing":
+		return cfg.Memory.Surfaces.Briefing
+	case "memory.surfaces.reflection":
+		return cfg.Memory.Surfaces.Reflection
+	case "memory.surfaces.day_plan":
+		return cfg.Memory.Surfaces.DayPlan
+	case "memory.surfaces.meeting_prep":
+		return cfg.Memory.Surfaces.MeetingPrep
+	default:
+		return false
+	}
+}
+
+// validateToggleableFeature resolves id to a non-core registry entry, or
+// returns an error listing every toggleable id — core features (targets,
+// chat) have no CLI toggle by design.
+func validateToggleableFeature(id string) (features.Feature, error) {
+	f, ok := features.ByID(id)
+	if !ok {
+		return features.Feature{}, fmt.Errorf("unknown feature %q; valid ids: %s", id, strings.Join(toggleableFeatureIDs(), ", "))
+	}
+	if f.Core {
+		return features.Feature{}, fmt.Errorf("%q is a core feature and cannot be toggled; valid ids: %s", id, strings.Join(toggleableFeatureIDs(), ", "))
+	}
+	return f, nil
+}
+
+func toggleableFeatureIDs() []string {
+	all := features.All()
+	ids := make([]string, 0, len(all))
+	for _, f := range all {
+		if !f.Core {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids
+}
+
+// setConfigKey is the typed-write core shared by `config set` and the
+// features CLI: read the existing yaml, set one key, write it back
+// atomically. Requires configPath to already exist (config init / an OAuth
+// login flow creates it) — the same constraint runConfigSet has always had.
+func setConfigKey(configPath, key string, value any) error {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+	// A Desktop-only install (no Slack OAuth flow yet) has no config.yaml, so
+	// the very first `features enable/disable` — including the onboarding
+	// feature splash's apply() — would fail here with nothing to write against.
+	// Tolerate a missing file: skip the read and create it (dir included) so a
+	// feature toggle is never blocked on the config not existing yet.
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("reading config: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("checking config: %w", statErr)
+	} else if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+	v.Set(key, value)
+	return writeConfigAtomic(v, configPath)
+}

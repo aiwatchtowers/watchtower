@@ -1,0 +1,223 @@
+package prompts
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestDefaultFor_KnownKey(t *testing.T) {
+	got := DefaultFor(DigestChannel)
+	assert.NotEmpty(t, got, "known prompt key should return a non-empty default")
+}
+
+func TestDefaultFor_UnknownKey(t *testing.T) {
+	got := DefaultFor("nonexistent.prompt.key")
+	assert.Empty(t, got)
+}
+
+func TestDefaultFor_AllKnownKeysHaveDefaults(t *testing.T) {
+	// Every key listed in CurrentVersions must have a non-empty default.
+	for key := range DefaultVersions {
+		assert.NotEmpty(t, DefaultFor(key), "missing default for known key %q", key)
+	}
+}
+
+// TestPersonaMergeVersionFloors pins the floors set by the 2026-08-19 persona
+// merge: every prompt whose default text was reworded (secretary → assistant)
+// carries at least the bumped version, so Seed's auto-upgrade
+// (existing.Version < defaultVer) reaches installed non-customized rows.
+// Silently reverting a bump would leave installs on the pre-merge wording and
+// fail here; a later intentional bump only raises a version and still passes.
+func TestPersonaMergeVersionFloors(t *testing.T) {
+	floors := map[string]int{
+		BriefingDaily:              7,
+		MeetingPrep:                5,
+		DayPlanGenerate:            4,
+		MemoryExtractEpisodes:      2,
+		MemoryExtractEpisodesBatch: 3,
+		MemoryExtractEmailEpisodes: 2,
+		MemoryEntityRewrite:        2,
+		MemoryReviseBeliefs:        2,
+		MemoryRenderMap:            2,
+		MemoryReflect:              2,
+		MemoryRenderChannelDigest:  2,
+		IdeasDigestEmail:           2,
+		IdeasDigestJira:            2,
+		IdeasConsolidate:           4,
+	}
+	for id, floor := range floors {
+		assert.GreaterOrEqual(t, DefaultVersions[id], floor,
+			"%q was reworded by the persona merge and must stay at v%d or later", id, floor)
+	}
+}
+
+// TestMeetingPromptsSpeakerAttribution pins the 2026-09-13 fix (owner
+// decision 13): meeting.recap and meeting.notes stopped claiming transcripts
+// are never speaker-labeled, even though diarized transcripts carry "[Я]" /
+// "[Speaker N]" / person-name line prefixes (RenderTranscriptSegments,
+// internal/meeting/segments.go). The guidance must stay conditional — the
+// paste flow (meeting.recap only) and a transcript with diarization off both
+// deliver unlabeled text — so the template must describe BOTH the labeled
+// and the unlabeled case, not replace one claim with its opposite.
+func TestMeetingPromptsSpeakerAttribution(t *testing.T) {
+	floors := map[string]int{
+		MeetingRecap: 3,
+		MeetingNotes: 2,
+	}
+	for id, floor := range floors {
+		t.Run(id, func(t *testing.T) {
+			// 1. Version floor: a reworded-but-unbumped template must fail
+			// here even though the text assertions below would pass it.
+			assert.GreaterOrEqual(t, DefaultVersions[id], floor,
+				"%q must carry the speaker-attribution wording at v%d or later", id, floor)
+
+			tmpl := Defaults[id]
+			require.NotEmpty(t, tmpl, "missing default for %q", id)
+
+			// 2. The stale, factually-wrong claim must be gone.
+			assert.NotContains(t, tmpl, "speakers are not labeled",
+				"%q must not claim transcripts are never speaker-labeled", id)
+
+			// 3. Both the labeled and the unlabeled case must be described.
+			// A one-sided rewrite (unconditionally "labeled" or silently
+			// dropping the guidance) passes assertion 2 but fails here.
+			// "do not invent a speaker" is asserted rather than the bare word
+			// "unlabeled" because that word also appears in the Rules bullet
+			// ("on unlabeled text, describe…") — a bare-word assertion stays
+			// green even if the main conditional sentence naming the
+			// unlabeled case is deleted from both templates entirely. The
+			// phrase below occurs only in that main sentence.
+			assert.Contains(t, tmpl, "[label]",
+				"%q must describe the labeled case (a \"[label]\" line prefix)", id)
+			assert.Contains(t, tmpl, "do not invent a speaker",
+				"%q must describe the unlabeled case (no invented speaker)", id)
+		})
+	}
+}
+
+// TestTargetsExtractVersionFloor pins the 2026-09-23 drift reconciliation:
+// internal/targets/prompts.go's compiled ExtractPromptTemplate carried a
+// GROUPING/sub_items/LANGUAGE-preservation block (fix b7640c0b) that the
+// registered defaultTargetsExtract lacked entirely. Reconciling the two
+// copies (see TestExtractPromptTemplate_MatchesRegistryDefault in
+// internal/targets/prompt_store_test.go) only reaches an existing install's
+// seeded-and-never-edited targets.extract row through Store.Seed's
+// version-upgrade path, which requires the registry version to have moved.
+// Silently reverting DefaultVersions[TargetsExtract] to v1 would leave those
+// installs on the pre-reconciliation template even though the compiled
+// const and the registry default stay byte-identical — a regression the
+// drift guard alone cannot catch.
+func TestTargetsExtractVersionFloor(t *testing.T) {
+	assert.GreaterOrEqual(t, DefaultVersions[TargetsExtract], 2,
+		"%q was reconciled with the compiled const on 2026-09-23 and must stay at v2 or later so Seed upgrades existing installs", TargetsExtract)
+}
+
+// TestMemorySemanticPromptsRegistered pins the Phase-3 semantic-tier prompts
+// (plus the Phase-4 reflection prompt) into every registration surface:
+// constant → Defaults template, AllIDs display order, DefaultVersions,
+// and Descriptions. Each template must open with the language Directive
+// placeholder and must never begin with a dash (the claude-CLI argv gotcha
+// guarded for the extract builders).
+func TestMemorySemanticPromptsRegistered(t *testing.T) {
+	ids := []string{MemoryEntityRewrite, MemoryReviseBeliefs, MemoryRenderMap, MemoryReflect}
+
+	allIDs := make(map[string]bool, len(AllIDs))
+	for _, id := range AllIDs {
+		allIDs[id] = true
+	}
+
+	for _, id := range ids {
+		t.Run(id, func(t *testing.T) {
+			tmpl, ok := Defaults[id]
+			assert.True(t, ok, "Defaults must contain %q", id)
+			assert.NotEmpty(t, tmpl, "template for %q must be non-empty", id)
+			assert.True(t, allIDs[id], "AllIDs must contain %q", id)
+			assert.GreaterOrEqual(t, DefaultVersions[id], 1, "%q must be registered in DefaultVersions", id)
+			assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
+
+			// Language directive slot: the template's first verb is filled by
+			// prompts.Directive, so rendering it must produce a directive.
+			rendered := DefaultFor(id)
+			assert.True(t, HasDirective(fmt.Sprintf(rendered, Directive(""))),
+				"%q must carry the language directive placeholder", id)
+			assert.False(t, strings.HasPrefix(rendered, "-"),
+				"%q template must not begin with a dash", id)
+		})
+	}
+}
+
+// TestMemoryRenderPromptRegistered pins the Phase-5 slice-3 channel-digest
+// render prompt into all four registration surfaces (Defaults, AllIDs,
+// DefaultVersions, Descriptions), carrying the language directive and never
+// beginning with a dash.
+func TestMemoryRenderPromptRegistered(t *testing.T) {
+	id := MemoryRenderChannelDigest
+
+	allIDs := make(map[string]bool, len(AllIDs))
+	for _, x := range AllIDs {
+		allIDs[x] = true
+	}
+
+	tmpl, ok := Defaults[id]
+	assert.True(t, ok, "Defaults must contain %q", id)
+	assert.NotEmpty(t, tmpl)
+	assert.True(t, allIDs[id], "AllIDs must contain %q", id)
+	assert.GreaterOrEqual(t, DefaultVersions[id], 1, "%q must be registered in DefaultVersions", id)
+	assert.NotEmpty(t, Descriptions[id], "Descriptions must contain %q", id)
+
+	rendered := DefaultFor(id)
+	assert.True(t, HasDirective(fmt.Sprintf(rendered, Directive(""))),
+		"%q must carry the language directive placeholder", id)
+	assert.False(t, strings.HasPrefix(rendered, "-"), "%q must not begin with a dash", id)
+}
+
+// TestDictationCleanPromptRegistered pins the dictation.clean light-tier prompt
+// into all four registration surfaces (Defaults, AllIDs, DefaultVersions v1,
+// Descriptions), carrying mode instructions and language directive placeholders
+// and never beginning with a dash.
+func TestDictationCleanPromptRegistered(t *testing.T) {
+	id := DictationClean
+	tmpl, ok := Defaults[id]
+	if !ok {
+		t.Fatalf("Defaults is missing %q", id)
+	}
+	if !contains(AllIDs, id) {
+		t.Fatalf("AllIDs is missing %q", id)
+	}
+	if DefaultVersions[id] != 1 {
+		t.Fatalf("DefaultVersions[%q] = %d, want 1", id, DefaultVersions[id])
+	}
+	if _, ok := Descriptions[id]; !ok {
+		t.Fatalf("Descriptions is missing %q", id)
+	}
+	rendered := fmt.Sprintf(tmpl, "MODE INSTRUCTIONS", Directive("Russian"))
+	if !HasDirective(rendered) {
+		t.Fatalf("rendered template must carry the language directive")
+	}
+	if strings.HasPrefix(rendered, "-") {
+		t.Fatalf("template must not begin with '-' (claude CLI argv gotcha)")
+	}
+}
+
+func TestCatchupComposePromptRegistered(t *testing.T) {
+	tmpl, ok := Defaults[CatchupCompose]
+	require.True(t, ok)
+	assert.Contains(t, tmpl, `"needs_you"`)
+	assert.Contains(t, AllIDs, CatchupCompose)
+	assert.Equal(t, 1, DefaultVersions[CatchupCompose])
+	assert.Equal(t, 1, strings.Count(tmpl, "%s"), "one placeholder: the language directive")
+}
+
+// contains checks if a slice contains a string value.
+func contains(slice []string, val string) bool {
+	for _, v := range slice {
+		if v == val {
+			return true
+		}
+	}
+	return false
+}

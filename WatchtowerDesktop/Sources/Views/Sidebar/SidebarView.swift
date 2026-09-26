@@ -1,0 +1,377 @@
+import SwiftUI
+import GRDB
+import WatchtowerCore
+
+struct SidebarView: View {
+    @Binding var selection: SidebarDestination
+    @Environment(AppState.self) private var appState
+
+    /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
+    /// seeded from UserDefaults (persisted across launches) on first appearance.
+    @State private var collapsedSections: [String: Bool] = Self.loadCollapsedSections()
+
+    /// Destination ids the user has hidden into their section's "Hidden" sub-list.
+    /// Held in @State so hide/show re-renders; persisted to UserDefaults.
+    @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
+
+    /// DB-derived connection check for the "connect" badge on the Calendar
+    /// item — reuses `GoogleConnectFlow.shared.calendar` (wired to a dbPool
+    /// by `AppState.initGoogleAccounts`) rather than a locally-constructed
+    /// `GoogleAuthService()`, which would have no DB access. Re-checked on
+    /// every selection change so the badge clears right after the user
+    /// connects from any screen.
+    private let googleAuth = GoogleConnectFlow.shared.calendar
+
+    private static func storageKey(_ section: SidebarSection) -> String {
+        "sidebar.section.\(section.id).collapsed"
+    }
+
+    private static func loadCollapsedSections() -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for section in SidebarSection.ordered {
+            result[section.id] = UserDefaults.standard.object(forKey: storageKey(section)) as? Bool
+                ?? section.collapsedByDefault
+        }
+        return result
+    }
+
+    private static let hiddenItemsKey = "sidebar.hiddenItems"
+
+    private static func loadHiddenItems() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: hiddenItemsKey) ?? [])
+    }
+
+    private func setHidden(_ item: SidebarDestination, _ hidden: Bool) {
+        if hidden { hiddenItems.insert(item.id) } else { hiddenItems.remove(item.id) }
+        UserDefaults.standard.set(Array(hiddenItems), forKey: Self.hiddenItemsKey)
+    }
+
+    /// Feature ids currently disabled — read fresh on every render so a live
+    /// Feature Manager change (or the initial load) hides/reveals tabs
+    /// without a separate observation wire-up.
+    private var disabledFeatures: Set<String> { appState.featureVisibility.disabledFeatureIDs }
+
+    private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
+    private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
+    private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
+    /// The Digests badge: Slack + stream + decision unread, matching the
+    /// Digests tab header (see `SidebarCountsViewModel.digestsBadgeCount`).
+    private var digestsBadgeCount: Int { counts?.digestsBadgeCount ?? 0 }
+    private var unreadBriefingCount: Int { counts?.unreadBriefingCount ?? 0 }
+    private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
+    private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
+    private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
+    private var inboxStripCount: Int { counts?.inboxStripCount ?? 0 }
+    private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
+    private var ideasCount: Int { counts?.ideasCount ?? 0 }
+    private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                sidebarButton(item)
+            }
+
+            ForEach(SidebarSection.ordered) { section in
+                sectionView(section)
+            }
+
+            ForEach(SidebarDestination.mainTrailingItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                sidebarButton(item)
+            }
+
+            Spacer()
+
+            // Background tasks progress
+            SidebarProgressView()
+
+            // Tools section
+            VStack(alignment: .leading, spacing: 2) {
+                Text("TOOLS")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 2)
+
+                ForEach(SidebarDestination.toolItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                    sidebarButton(item)
+                }
+            }
+
+            // Next calendar event
+            if let calVM = appState.calendarViewModel, let nextEvt = calVM.nextEvent {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(nextEvt.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Text(nextEvt.startDate, style: .relative)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if nextEvt.conferenceLink != nil {
+                        Spacer(minLength: 4)
+                        JoinButton(event: nextEvt, center: appState.meetingRecorderCenter)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+
+            // Jira connection indicator
+            if JiraQueries.isConnected() {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.horizontal.circle.fill")
+                        .foregroundStyle(.blue)
+                        .frame(width: 16)
+                    Text("Jira connected")
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+
+            // Update available indicator
+            if appState.updateService.isUpdateAvailable {
+                Button {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(.blue)
+                        Text("Update Available")
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { googleAuth.checkStatus() }
+        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
+    }
+
+    // MARK: - Main Sidebar Button
+
+    private func sidebarButton(_ item: SidebarDestination) -> some View {
+        let isSelected = selection == item
+        return Button {
+            selection = item
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: item.icon)
+                    .frame(width: 20)
+                    .foregroundStyle(isSelected ? .white : .secondary)
+                Text(item.title)
+                    .foregroundStyle(isSelected ? .white : .primary)
+                Spacer()
+                badgeCount(for: item)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                isSelected
+                    ? Color.accentColor
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func badgeCount(for item: SidebarDestination) -> some View {
+        if item == .dayPlan {
+            if appState.dayPlanViewModel?.hasConflicts == true {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 6, height: 6)
+            }
+        } else if item == .calendar {
+            if !googleAuth.isConnected {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help("Google is not connected — open Calendar to connect it")
+            }
+        } else {
+            let count = self.count(for: item)
+            if count > 0 {
+                capsuleBadge(count, color: item == .tracks ? .orange
+                    : item == .memory ? .orange
+                    : item == .ideas ? .orange
+                    : item == .inbox ? .blue
+                    : item == .targets && overdueTaskCount > 0 ? .red
+                    : item == .targets ? .blue
+                    : .red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func capsuleBadge(_ count: Int, color: Color) -> some View {
+        Text("\(count)")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(color, in: Capsule())
+    }
+
+    /// The numeric badge value for a single destination (0 = no badge).
+    /// Shared by the per-item badge and the collapsed-section aggregate badge.
+    private func count(for item: SidebarDestination) -> Int {
+        switch item {
+        case .catchUp: catchUpTotalCount
+        case .briefings: unreadBriefingCount
+        case .inbox: inboxStripCount
+        case .ideas: ideasCount
+        case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
+        case .tracks: updatedTrackCount
+        case .digests: digestsBadgeCount
+        case .memory: memoryDisputedCount
+        case .statistics: recommendationCount
+        default: 0
+        }
+    }
+
+    /// A section's items after BOTH filters: the user's own hide choices and
+    /// feature-gated visibility. Static and pure — the badge math below is
+    /// otherwise only reachable through an `@Environment`-backed view
+    /// instance, which a test cannot construct (see SidebarSectionTests).
+    static func visibleItems(
+        in section: SidebarSection,
+        hidden: Set<String>,
+        disabledFeatures: Set<String>
+    ) -> [SidebarDestination] {
+        section.partition(hidden: hidden).visible
+            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+    }
+
+    /// Sum of badge counts for a section's VISIBLE items (drives the collapsed-header
+    /// badge). Hidden items are excluded — hiding an item also silences its noise —
+    /// and so are feature-disabled ones, for the same reason: a collapsed section
+    /// must not promise a count the expanded list won't actually show.
+    static func sectionBadgeCount(
+        in section: SidebarSection,
+        hidden: Set<String>,
+        disabledFeatures: Set<String>,
+        count: (SidebarDestination) -> Int
+    ) -> Int {
+        visibleItems(in: section, hidden: hidden, disabledFeatures: disabledFeatures)
+            .reduce(0) { $0 + count($1) }
+    }
+
+    private func sectionBadgeCount(_ section: SidebarSection) -> Int {
+        Self.sectionBadgeCount(
+            in: section,
+            hidden: hiddenItems,
+            disabledFeatures: disabledFeatures,
+            count: count(for:)
+        )
+    }
+
+    /// Color of the collapsed-header badge: red if any visible child is a red source
+    /// (digests/briefings/statistics/catch-up), otherwise blue. The Inbox is not
+    /// one: its badge counts the action strip, and the high-priority inbox_items
+    /// that used to turn it red are no longer shown on that tab.
+    private func sectionBadgeColor(_ section: SidebarSection) -> Color {
+        let visible = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
+        if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
+        if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
+        if visible.contains(.statistics), recommendationCount > 0 { return .red }
+        if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
+        return .blue
+    }
+
+    private func isCollapsed(_ section: SidebarSection) -> Bool {
+        collapsedSections[section.id] ?? section.collapsedByDefault
+    }
+
+    private func toggleSection(_ section: SidebarSection) {
+        let newValue = !isCollapsed(section)
+        collapsedSections[section.id] = newValue
+        UserDefaults.standard.set(newValue, forKey: Self.storageKey(section))
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: SidebarSection) -> some View {
+        let collapsed = isCollapsed(section)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    toggleSection(section)
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 12)
+                    Text(section.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    let badge = sectionBadgeCount(section)
+                    if collapsed, badge > 0 {
+                        capsuleBadge(badge, color: sectionBadgeColor(section))
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !collapsed {
+                let parts = section.partition(hidden: hiddenItems)
+                // Feature-gated visibility is filtered on top of the user's
+                // own show/hide choice, on BOTH halves — a feature-disabled
+                // item disappears from the section entirely rather than
+                // resurfacing in the "Hidden" sub-list.
+                let visibleItems = parts.visible.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+                let userHiddenItems = parts.hidden.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+                ForEach(visibleItems) { item in
+                    sidebarButton(item)
+                        .contextMenu {
+                            Button("Hide") {
+                                withAnimation(.easeInOut(duration: 0.15)) { setHidden(item, true) }
+                            }
+                        }
+                }
+
+                if !userHiddenItems.isEmpty {
+                    Text("HIDDEN")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.quaternary)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
+                    ForEach(userHiddenItems) { item in
+                        sidebarButton(item)
+                            .opacity(0.5)
+                            .contextMenu {
+                                Button("Show") {
+                                    withAnimation(.easeInOut(duration: 0.15)) { setHidden(item, false) }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+}

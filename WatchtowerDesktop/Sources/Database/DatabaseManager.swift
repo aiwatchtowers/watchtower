@@ -1,0 +1,310 @@
+import Foundation
+import GRDB
+import Yams
+import WatchtowerCore
+
+final class DatabaseManager: Sendable {
+    let dbPool: DatabasePool
+
+    /// Internal init for testing — accepts a pre-configured pool, skips validation.
+    init(pool: DatabasePool) {
+        self.dbPool = pool
+    }
+
+    init(path: String) throws {
+        var config = Configuration()
+        config.label = "watchtower"
+        config.prepareDatabase { db in
+            // M15: match Go CLI pragmas
+            try db.execute(sql: "PRAGMA journal_mode = WAL")
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
+            try db.execute(sql: "PRAGMA busy_timeout = 5000")
+            try db.execute(sql: "PRAGMA foreign_keys = ON")
+        }
+        dbPool = try DatabasePool(path: path, configuration: config)
+
+        // H6 + M16: validate schema version and required tables
+        try dbPool.read { db in
+            let version = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
+            guard version >= 3 else {
+                throw WatchtowerDatabaseError.schemaVersionTooOld(version)
+            }
+            let tables = try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
+            for required in ["workspace", "channels", "messages", "users"] {
+                guard tables.contains(required) else {
+                    throw WatchtowerDatabaseError.missingTable(required)
+                }
+            }
+        }
+
+        // Desktop-only tables (not managed by Go CLI schema versioning)
+        try dbPool.write { db in
+            try ChatConversationQueries.ensureTable(db)
+            try ChatConversationQueries.ensureContextColumns(db)
+            try ChatMessageQueries.ensureTable(db)
+            try ChatMessageQueries.ensureTurnIDColumn(db)
+        }
+    }
+
+    /// Resolve the watchtower DB path the same way the CLI resolves its
+    /// workspace (`config.resolveActiveWorkspace`): `active_workspace` from
+    /// config.yaml when set — its database or nothing, never another
+    /// workspace's — else the single workspace directory holding a
+    /// `watchtower.db`. Several candidates throw `ambiguousWorkspace` instead
+    /// of guessing: the daemon refuses to start on that config, so any pick
+    /// here could show a database it never writes to.
+    static func resolveDBPath(
+        configPath: String = Constants.configPath,
+        basePath: String = Constants.databasePath
+    ) throws -> String {
+        // M1: use Yams for proper YAML parsing
+        if let configData = FileManager.default.contents(atPath: configPath),
+           let configStr = String(data: configData, encoding: .utf8),
+           let yaml = try? Yams.load(yaml: configStr) as? [String: Any],
+           let workspace = yaml["active_workspace"] as? String,
+           !workspace.isEmpty {
+            // C2: validate workspace name to prevent path traversal — with
+            // the Go rule, so a name the CLI rejects never opens here.
+            guard Constants.isWorkspaceName(workspace) else {
+                throw WatchtowerDatabaseError.invalidWorkspaceName(workspace)
+            }
+            let dbPath = "\(basePath)/\(workspace)/watchtower.db"
+            guard FileManager.default.fileExists(atPath: dbPath) else {
+                throw WatchtowerDatabaseError.databaseNotFound
+            }
+            return dbPath
+        }
+
+        let candidates = Constants.workspacesWithDatabase(under: basePath)
+        switch candidates.count {
+        case 0:
+            throw WatchtowerDatabaseError.databaseNotFound
+        case 1:
+            return "\(basePath)/\(candidates[0])/watchtower.db"
+        default:
+            throw WatchtowerDatabaseError.ambiguousWorkspace(candidates)
+        }
+    }
+
+    /// M17: DB file size including WAL and SHM
+    var fileSize: Int64 {
+        let path = dbPool.path
+        let fm = FileManager.default
+        var total: Int64 = 0
+        for suffix in ["", "-wal", "-shm"] {
+            let attrs = try? fm.attributesOfItem(atPath: path + suffix)
+            total += (attrs?[.size] as? Int64) ?? 0
+        }
+        return total
+    }
+
+    // MARK: - Wipe LLM Data
+
+    /// Delete all AI-generated data from the database, preserving raw Slack data, config, and user profile.
+    func wipeLLMData() throws {
+        try dbPool.write { db in
+            // AI-generated content tables
+            try db.execute(sql: "DELETE FROM digests")
+            try db.execute(sql: "DELETE FROM user_analyses")
+            try db.execute(sql: "DELETE FROM period_summaries")
+            try db.execute(sql: "DELETE FROM tracks")
+            try db.execute(sql: "DELETE FROM people_cards")
+
+            // AI-generated summary tables
+            try db.execute(sql: "DELETE FROM people_card_summaries")
+
+            // Briefings
+            try db.execute(sql: "DELETE FROM briefings")
+
+            // Targets: only AI-sourced ones — user-created (manual/jira/slack/promoted_subitem) are preserved
+            try db.execute(sql: """
+                DELETE FROM targets
+                WHERE source_type IN ('extract','track','digest','briefing','chat','inbox')
+                """)
+            try db.execute(sql: "DELETE FROM inbox_items")
+            try db.execute(sql: "UPDATE workspace SET inbox_last_processed_ts = 0")
+
+            // Pipeline run history
+            try db.execute(sql: "DELETE FROM pipeline_steps")
+            try db.execute(sql: "DELETE FROM pipeline_runs")
+
+            // Feedback & training signal (tied to wiped content)
+            try db.execute(sql: "DELETE FROM feedback")
+            try db.execute(sql: "DELETE FROM decision_reads")
+            try db.execute(sql: "DELETE FROM user_interactions")
+        }
+    }
+
+    // MARK: - CLI Migrations
+
+    /// Run the bundled Go CLI to apply all pending DB migrations before opening the pool.
+    /// The CLI owns all schema migrations — desktop app never writes migrations itself.
+    static func runCLIMigrations() {
+        guard let cliPath = Constants.findCLIPath() else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = ["db", "migrate"]
+        process.environment = Constants.resolvedEnvironment()
+        process.standardOutput = nil
+        process.standardError = Pipe() // capture for debugging
+        guard (try? process.run()) != nil else { return }
+        // C2: timeout to prevent indefinite hang on DB lock or broken CLI
+        let timer = DispatchSource.makeTimerSource()
+        timer.schedule(deadline: .now() + 30)
+        timer.setEventHandler { process.terminate() }
+        timer.resume()
+        process.waitUntilExit()
+        timer.cancel()
+        if process.terminationStatus != 0 {
+            NSLog("[Watchtower] CLI migration failed with exit code \(process.terminationStatus)")
+        }
+    }
+
+    /// C2: only allow safe workspace names (alphanumeric, hyphens, underscores, dots)
+    static func isValidWorkspaceName(_ name: String) -> Bool {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        return !name.isEmpty
+            && name.unicodeScalars.allSatisfy { allowed.contains($0) }
+            && !name.hasPrefix(".")
+    }
+
+    // MARK: - Starred Items Management
+
+    /// Add a channel to the owner's starred channels list
+    /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
+    func addStarredChannel(_ channelID: String) throws {
+        try dbPool.write { db in
+            let userID = try ProfileQueries.ownerProfileWriteKey(db)
+            let sql = "SELECT starred_channels FROM user_profile WHERE slack_user_id = ?"
+            let result: String? = try String.fetchOne(db, sql: sql, arguments: [userID])
+
+            var channels: [String] = []
+            if let json = result, !json.isEmpty {
+                if let data = json.data(using: .utf8) {
+                    channels = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+                }
+            }
+
+            if !channels.contains(channelID) {
+                channels.append(channelID)
+            }
+
+            let json = try JSONEncoder().encode(channels)
+            let jsonStr = String(data: json, encoding: .utf8) ?? "[]"
+
+            try db.execute(
+                sql: "UPDATE user_profile SET starred_channels = ?, updated_at = ? WHERE slack_user_id = ?",
+                arguments: [jsonStr, ISO8601DateFormatter().string(from: Date()), userID]
+            )
+        }
+    }
+
+    /// Remove a channel from the owner's starred channels list
+    /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
+    func removeStarredChannel(_ channelID: String) throws {
+        try dbPool.write { db in
+            let userID = try ProfileQueries.ownerProfileWriteKey(db)
+            let sql = "SELECT starred_channels FROM user_profile WHERE slack_user_id = ?"
+            let result: String? = try String.fetchOne(db, sql: sql, arguments: [userID])
+
+            var channels: [String] = []
+            if let json = result, !json.isEmpty {
+                if let data = json.data(using: .utf8) {
+                    channels = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+                }
+            }
+
+            channels.removeAll { $0 == channelID }
+
+            let json = try JSONEncoder().encode(channels)
+            let jsonStr = String(data: json, encoding: .utf8) ?? "[]"
+
+            try db.execute(
+                sql: "UPDATE user_profile SET starred_channels = ?, updated_at = ? WHERE slack_user_id = ?",
+                arguments: [jsonStr, ISO8601DateFormatter().string(from: Date()), userID]
+            )
+        }
+    }
+
+    /// Add a person to the owner's starred people list
+    /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
+    func addStarredPerson(_ personUserID: String) throws {
+        try dbPool.write { db in
+            let userID = try ProfileQueries.ownerProfileWriteKey(db)
+            let result: String? = try String.fetchOne(db, sql: "SELECT starred_people FROM user_profile WHERE slack_user_id = ?", arguments: [userID])
+
+            var people: [String] = []
+            if let json = result, !json.isEmpty {
+                if let data = json.data(using: .utf8) {
+                    people = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+                }
+            }
+
+            if !people.contains(personUserID) {
+                people.append(personUserID)
+            }
+
+            let json = try JSONEncoder().encode(people)
+            let jsonStr = String(data: json, encoding: .utf8) ?? "[]"
+
+            try db.execute(
+                sql: "UPDATE user_profile SET starred_people = ?, updated_at = ? WHERE slack_user_id = ?",
+                arguments: [jsonStr, ISO8601DateFormatter().string(from: Date()), userID]
+            )
+        }
+    }
+
+    /// Remove a person from the owner's starred people list
+    /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
+    func removeStarredPerson(_ personUserID: String) throws {
+        try dbPool.write { db in
+            let userID = try ProfileQueries.ownerProfileWriteKey(db)
+            let result: String? = try String.fetchOne(db, sql: "SELECT starred_people FROM user_profile WHERE slack_user_id = ?", arguments: [userID])
+
+            var people: [String] = []
+            if let json = result, !json.isEmpty {
+                if let data = json.data(using: .utf8) {
+                    people = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+                }
+            }
+
+            people.removeAll { $0 == personUserID }
+
+            let json = try JSONEncoder().encode(people)
+            let jsonStr = String(data: json, encoding: .utf8) ?? "[]"
+
+            try db.execute(
+                sql: "UPDATE user_profile SET starred_people = ?, updated_at = ? WHERE slack_user_id = ?",
+                arguments: [jsonStr, ISO8601DateFormatter().string(from: Date()), userID]
+            )
+        }
+    }
+}
+
+enum WatchtowerDatabaseError: LocalizedError {
+    case databaseNotFound
+    case invalidWorkspaceName(String)
+    /// No `active_workspace` and several workspaces hold a database; carries
+    /// their sorted names.
+    case ambiguousWorkspace([String])
+    case schemaVersionTooOld(Int)
+    case missingTable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .databaseNotFound:
+            "Watchtower database not found. Run 'watchtower auth login && watchtower sync' first."
+        case .invalidWorkspaceName(let name):
+            "Invalid workspace name: '\(name)'"
+        case .ambiguousWorkspace(let names):
+            // Go's ValidateWorkspace message for this config shape, minus
+            // its "active_workspace is required; " lead-in.
+            "Several workspaces hold a database (\(names.joined(separator: ", "))) — "
+                + "pick one with 'watchtower config set active_workspace <name>'"
+        case .schemaVersionTooOld(let ver):
+            "Database schema version \(ver) is too old. Run 'watchtower sync' to upgrade."
+        case .missingTable(let name):
+            "Database is missing required table: \(name)"
+        }
+    }
+}

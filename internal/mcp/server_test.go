@@ -1,0 +1,271 @@
+package mcp
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"watchtower/internal/db"
+	"watchtower/internal/kb"
+)
+
+// seedDB opens a fresh test database. Per-test seeding is layered on top.
+func seedDB(t *testing.T) *db.DB {
+	t.Helper()
+	return db.OpenTestDB(t)
+}
+
+// newTestSession wires an in-memory MCP client to a server over our database.
+// Mirrors production wiring (cmd/mcp.go): the connection is flipped to
+// query_only before serving, so every tool test runs under the same
+// connection-level read-only enforcement as the real server.
+func newTestSession(t *testing.T, database *db.DB) *mcpsdk.ClientSession {
+	t.Helper()
+	if err := database.SetReadOnly(); err != nil {
+		t.Fatalf("setting read-only: %v", err)
+	}
+	ctx := context.Background()
+	srv := NewServer(database)
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "v0"}, nil)
+	st, ct := mcpsdk.NewInMemoryTransports()
+	if _, err := srv.s.Connect(ctx, st, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+// textContent extracts the first text content block from a tool result.
+func textContent(t *testing.T, res *mcpsdk.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) == 0 {
+		t.Fatalf("result has no content")
+	}
+	tc, ok := res.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("first content is not text: %T", res.Content[0])
+	}
+	return tc.Text
+}
+
+func TestToolsList(t *testing.T) {
+	cs := newTestSession(t, seedDB(t))
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	want := []string{
+		"list_targets", "get_target",
+		"get_today_briefing", "list_digests", "get_digest",
+		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
+		"list_jira_issues", "get_jira_issue", "list_jira_projects",
+		"list_messages",
+		"list_transcripts", "get_transcript",
+		"list_ideas", "get_idea",
+		"get_task_context",
+		"find_experts",
+		"search_knowledge", "get_knowledge_document",
+		"memory_map", "memory_open", "memory_recall",
+		"load_skill",
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("missing tool %q", name)
+		}
+	}
+	if len(res.Tools) != len(want) {
+		t.Errorf("expected exactly %d tools, got %d", len(want), len(res.Tools))
+	}
+}
+
+func TestAllToolsAreReadOnly(t *testing.T) {
+	// Guard the read-only invariant: every exposed tool name must be a known
+	// read verb. A new write tool would have to be added here deliberately —
+	// which is the point: it forces a conscious change to this guard.
+	cs := newTestSession(t, seedDB(t))
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	// The memory_ tools are read surfaces over the vault + index; memory_open
+	// additionally bumps memory_node_stats — best-effort usage telemetry, not
+	// domain data — the one deliberate exception to "no writes". find_experts
+	// is a pure read (mechanical SQL + arithmetic over existing tables) that
+	// just doesn't fit the list_/get_ naming, and load_skill is a plain file
+	// read of one markdown file in the workspace skills directory.
+	readVerbs := map[string]bool{
+		"memory_map": true, "memory_open": true, "memory_recall": true,
+		"find_experts": true, "load_skill": true,
+		// search_knowledge is a pure FTS read over the derived kb index.
+		"search_knowledge": true,
+	}
+	for _, tool := range res.Tools {
+		if !strings.HasPrefix(tool.Name, "list_") &&
+			!strings.HasPrefix(tool.Name, "get_") &&
+			!readVerbs[tool.Name] {
+			t.Errorf("tool %q is not a known read-only verb (list_/get_/memory_)", tool.Name)
+		}
+	}
+}
+
+// guardTables is every table TestNoToolMutatesDatabase seeds and then checks
+// for an unchanged row count across the read-only tool calls.
+var guardTables = []string{
+	"targets", "digests", "tracks", "jira_issues", "calendar_events", "people_cards", "briefings", "workspace",
+	"inbox_items", "channels", "users", "messages", "kb_documents", "kb_chunks",
+}
+
+// seedGuardFixture seeds everything TestNoToolMutatesDatabase's calls need to
+// reach their substantive read path, not just return cleanly on an empty
+// database. A tool that degenerates into a permanent soft error (or a
+// happy-path branch that a missing row lets it skip entirely, e.g.
+// find_experts' accumulator never touching GetUserByID/GetLatestPeopleCard)
+// would still pass a guard that only checks row counts.
+func seedGuardFixture(t *testing.T, database *db.DB) {
+	t.Helper()
+	if _, err := database.CreateTarget(db.Target{
+		Text: "guard", Intent: "x", Level: "week", Status: "todo",
+		Priority: "high", Ownership: "mine", SourceType: "manual",
+	}); err != nil {
+		t.Fatalf("seeding target: %v", err)
+	}
+	if _, err := database.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "s", PeriodFrom: 1, PeriodTo: 2}); err != nil {
+		t.Fatalf("seeding digest: %v", err)
+	}
+	if _, err := database.UpsertTrack(db.Track{Text: "guard track", Ownership: "mine", Priority: "low"}); err != nil {
+		t.Fatalf("seeding track: %v", err)
+	}
+	if _, err := database.UpsertPeopleCard(db.PeopleCard{
+		UserID: "U1", Summary: "guard person card", Status: "active", PeriodFrom: 1, PeriodTo: 2,
+	}); err != nil {
+		t.Fatalf("seeding people card: %v", err)
+	}
+	// An owner (OWNER-02): owner-scoped read tools such as get_today_briefing
+	// return ErrNoOwner without one, which would stop the call before it
+	// reaches the code this guard watches for writes.
+	if _, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T1", TeamName: "guard", CurrentUserID: "1:U1"}); err != nil {
+		t.Fatalf("seeding slack account: %v", err)
+	}
+	db.SeedTestJiraAccount(t, database)
+	if err := database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: 1,
+		Key:       "ABC-1", ID: "ABC-1", ProjectKey: "ABC", Summary: "s", DescriptionText: "guard issue description",
+		Status: "To Do", StatusCategory: "To Do",
+		AssigneeSlackID: "1:U1",
+		CreatedAt:       "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z", SyncedAt: "2026-06-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("seeding jira issue: %v", err)
+	}
+	seedGuardExpertsFixture(t, database)
+	// Index the fixture so search_knowledge/get_knowledge_document have a real
+	// ref to read (get_knowledge_document's guard call below targets
+	// "jira:1:ABC-1", the account/issue seeded above).
+	if _, err := kb.Run(context.Background(), database, kb.Options{}); err != nil {
+		t.Fatalf("seeding knowledge index: %v", err)
+	}
+}
+
+// seedGuardExpertsFixture gives find_experts' topic path a channel, a user
+// and a message that "guard" (the topic argument in the calls list) actually
+// matches, so SearchMessages returns a hit and the accumulator's rank()
+// reaches GetUserByID/GetLatestPeopleCard for that user (experts_test.go's
+// seedExpertsFixture shape).
+func seedGuardExpertsFixture(t *testing.T, database *db.DB) {
+	t.Helper()
+	if err := database.UpsertChannel(db.Channel{ID: "1:C1", Name: "guard-channel", Type: "public"}); err != nil {
+		t.Fatalf("seeding channel: %v", err)
+	}
+	if err := database.UpsertUser(db.User{ID: "1:U1", Name: "guardian", Email: "guardian@example.com"}); err != nil {
+		t.Fatalf("seeding user: %v", err)
+	}
+	if err := database.UpsertMessage(db.Message{
+		ChannelID: "1:C1", TS: "1700000001.000001", UserID: "1:U1", Text: "the guard clause needs review", RawJSON: "{}",
+	}); err != nil {
+		t.Fatalf("seeding message: %v", err)
+	}
+}
+
+// countRows snapshots the row count of every table in tables, keyed by name.
+func countRows(t *testing.T, database *db.DB, tables []string) map[string]int {
+	t.Helper()
+	m := map[string]int{}
+	for _, tbl := range tables {
+		var n int
+		if err := database.QueryRow("SELECT count(*) FROM " + tbl).Scan(&n); err != nil {
+			t.Fatalf("counting %s: %v", tbl, err)
+		}
+		m[tbl] = n
+	}
+	return m
+}
+
+// readOnlyGuardCalls is the read-tool call list both read-only guards run:
+// TestNoToolMutatesDatabase over the dev (query_only) session and
+// TestAgent06_ChatModeReadToolsDoNotWrite over the WRITABLE chat session. One
+// list so a tool added to one guard can never be missing from the other.
+// It expects seedGuardFixture's rows.
+func readOnlyGuardCalls() []mcpsdk.CallToolParams {
+	return []mcpsdk.CallToolParams{
+		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
+		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
+		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"query": "U1"}},
+		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
+		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
+		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "list_jira_projects"},
+		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
+		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
+		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},
+		{Name: "search_knowledge", Arguments: map[string]any{"queries": []any{"guard"}}},
+		{Name: "get_knowledge_document", Arguments: map[string]any{"ref": "jira:1:ABC-1"}},
+	}
+}
+
+// TestNoToolMutatesDatabase is the behavioural read-only guard. Two layers:
+// the session runs over a query_only connection (any write inside a handler
+// errors at the SQLite level), and row counts are compared before/after as a
+// belt-and-braces check. Note the count check alone would not catch an UPDATE;
+// the query_only pragma is the real guarantee.
+func TestNoToolMutatesDatabase(t *testing.T) {
+	database := seedDB(t)
+	seedGuardFixture(t, database)
+
+	before := countRows(t, database, guardTables)
+	cs := newTestSession(t, database)
+	// The session connection must reject direct writes — proves query_only is on.
+	if _, err := database.Exec(`INSERT INTO users (id, name, is_stub) VALUES ('WGUARD', 'w', 1)`); err == nil {
+		t.Fatalf("expected direct write to fail on the read-only MCP connection")
+	}
+	ctx := context.Background()
+	for _, c := range readOnlyGuardCalls() {
+		res, err := cs.CallTool(ctx, &c)
+		if err != nil {
+			t.Fatalf("call %s: %v", c.Name, err)
+		}
+		// A tool that degenerated into a permanent soft error would still
+		// leave row counts untouched — this is the check that actually
+		// proves each tool's read path still works, not just that it
+		// doesn't write.
+		if res.IsError {
+			t.Errorf("call %s returned an error result: %s", c.Name, textContent(t, res))
+		}
+	}
+	after := countRows(t, database, guardTables)
+
+	for _, tbl := range guardTables {
+		if before[tbl] != after[tbl] {
+			t.Errorf("table %s row count changed %d -> %d after read tools ran", tbl, before[tbl], after[tbl])
+		}
+	}
+}

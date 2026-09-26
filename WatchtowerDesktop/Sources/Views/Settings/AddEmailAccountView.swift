@@ -1,0 +1,366 @@
+import SwiftUI
+
+/// Sheet for connecting a new email source, presented from the Settings →
+/// Email Accounts section. Three provider cards:
+///  - Gmail: redirects to the multi-account `AddGoogleAccountView` sheet
+///    (Settings → Google Accounts) — this view adds no Gmail logic of its own.
+///  - Outlook: OAuth via `EmailAccountsViewModel.connectOutlook`, same loopback-
+///    browser flow shape as Gmail but multi-account.
+///  - IMAP: a host/port/credentials form; the password is written to the
+///    `imap add` subprocess's stdin, never passed as a flag.
+struct AddEmailAccountView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+
+    private var vm: EmailAccountsViewModel? { appState.emailAccountsViewModel }
+
+    @State private var showAddGoogleAccountSheet = false
+
+    // MARK: - IMAP form state
+
+    @State private var host = ""
+    @State private var portText = "993"
+    @State private var security: IMAPSecurity = .ssl
+    @State private var username = ""
+    @State private var password = ""
+    @State private var folder = "INBOX"
+    @State private var label = ""
+    @State private var isConnectingIMAP = false
+    @State private var imapError: String?
+
+    // MARK: - Setup assistant state
+
+    @State private var showAssistant = false
+    @State private var setupChatVM: EmailSetupChatViewModel?
+    @State private var showAssistantFilledNote = false
+    @State private var assistantFilledNoteToken = 0
+
+    // MARK: - Outlook form state
+
+    @State private var outlookLabel = ""
+
+    enum IMAPSecurity: String, CaseIterable, Identifiable {
+        case ssl, starttls, none
+
+        var id: String { rawValue }
+
+        var displayLabel: String {
+            switch self {
+            case .ssl: return "SSL"
+            case .starttls: return "STARTTLS"
+            case .none: return "None"
+            }
+        }
+    }
+
+    private var port: Int? { Int(portText) }
+
+    private var canConnectIMAP: Bool {
+        !host.trimmingCharacters(in: .whitespaces).isEmpty
+            && !username.trimmingCharacters(in: .whitespaces).isEmpty
+            && !password.isEmpty
+            && port != nil
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text("Add Email Account")
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                        .buttonStyle(.plain)
+                }
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        gmailCard
+                        outlookCard
+                        imapCard
+                    }
+                    .padding(.bottom, 8)
+                }
+            }
+            .frame(width: 440)
+
+            if showAssistant, let chatVM = setupChatVM {
+                Divider()
+                    .padding(.leading, 16)
+                EmailSetupAssistantPanel(
+                    chatVM: chatVM,
+                    makeSnapshot: { formSnapshot() },
+                    onClose: { withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false } }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(20)
+        .frame(width: showAssistant ? 860 : 480, height: 640)
+    }
+
+    // MARK: - Gmail card
+
+    private var gmailCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "envelope.fill")
+                    Text("Gmail")
+                        .font(.headline)
+                    Spacer()
+                }
+                Text("Google's OAuth flow — supports multiple Google accounts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button("Connect Gmail") {
+                    showAddGoogleAccountSheet = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+        .sheet(isPresented: $showAddGoogleAccountSheet) {
+            AddGoogleAccountView()
+                .environment(appState)
+        }
+    }
+
+    // MARK: - Outlook card
+
+    private var outlookCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "envelope.badge.fill")
+                    Text("Outlook")
+                        .font(.headline)
+                    Spacer()
+                }
+                Text("Microsoft OAuth — supports multiple Outlook accounts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("Label (optional)", text: $outlookLabel)
+                    .textFieldStyle(.roundedBorder)
+
+                if vm?.isRunning == true {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting...")
+                        Spacer()
+                        Button("Cancel") { vm?.cancelConnect() }
+                    }
+                } else {
+                    Button("Connect Outlook") {
+                        vm?.connectOutlook(label: outlookLabel)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                if let err = vm?.error {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+    }
+
+    // MARK: - IMAP card
+
+    private var imapCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "server.rack")
+                    Text("IMAP")
+                        .font(.headline)
+                    Spacer()
+                    Button {
+                        toggleAssistant()
+                    } label: {
+                        Label("Help me set this up", systemImage: "sparkles")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Chat with an assistant that fills in these settings for you")
+                }
+                Text("Any IMAP mailbox — host, port, and folder configured manually.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("Host", text: $host, prompt: Text("imap.example.com"))
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    TextField("Port", text: $portText, prompt: Text("993"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+
+                    Picker("", selection: $security) {
+                        ForEach(IMAPSecurity.allCases) { option in
+                            Text(option.displayLabel).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+
+                TextField("Username", text: $username, prompt: Text("you@example.com"))
+                    .textFieldStyle(.roundedBorder)
+
+                SecureField("Password", text: $password)
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Folder", text: $folder, prompt: Text("INBOX"))
+                    .textFieldStyle(.roundedBorder)
+
+                TextField("Label (optional)", text: $label)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    if isConnectingIMAP {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Test and Connect") {
+                        connectIMAP()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canConnectIMAP || isConnectingIMAP)
+                }
+
+                if showAssistantFilledNote {
+                    Label("Assistant filled in the settings", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(Color.accentColor)
+                        .transition(.opacity)
+                }
+
+                if let err = imapError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    if !showAssistant {
+                        Button {
+                            askAssistantAboutError(err)
+                        } label: {
+                            Label("Ask the assistant about this error", systemImage: "sparkles")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+    }
+
+    // MARK: - Setup assistant wiring
+
+    /// What the assistant is allowed to see. PRIVACY: `ImapFormSnapshot` has
+    /// no password slot — only `hasPassword` — so the SecureField's value can
+    /// never reach a prompt from here.
+    private func formSnapshot() -> ImapFormSnapshot {
+        ImapFormSnapshot(
+            host: host,
+            portText: portText,
+            security: security.rawValue,
+            username: username,
+            folder: folder,
+            label: label,
+            hasPassword: !password.isEmpty,
+            lastConnectionError: imapError
+        )
+    }
+
+    private func toggleAssistant() {
+        if showAssistant {
+            withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false }
+        } else {
+            openAssistant()
+        }
+    }
+
+    private func openAssistant() {
+        if setupChatVM == nil {
+            let vm = EmailSetupChatViewModel()
+            vm.onApplySettings = { patch in applyAssistantSettings(patch) }
+            setupChatVM = vm
+        }
+        setupChatVM?.seedGreetingIfNeeded()
+        withAnimation(.easeInOut(duration: 0.2)) { showAssistant = true }
+    }
+
+    /// Writes an assistant patch into the form fields. The patch type has no
+    /// password field, so the SecureField stays 100% manual.
+    private func applyAssistantSettings(_ patch: ImapSettingsPatch) {
+        if let value = patch.host { host = value }
+        if let value = patch.port { portText = String(value) }
+        if let value = patch.security, let parsed = IMAPSecurity(rawValue: value) { security = parsed }
+        if let value = patch.username { username = value }
+        if let value = patch.folder { folder = value }
+        if let value = patch.label { label = value }
+
+        assistantFilledNoteToken += 1
+        let token = assistantFilledNoteToken
+        withAnimation { showAssistantFilledNote = true }
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if token == assistantFilledNoteToken {
+                withAnimation { showAssistantFilledNote = false }
+            }
+        }
+    }
+
+    private func askAssistantAboutError(_ error: String) {
+        openAssistant()
+        setupChatVM?.sendConnectionError(error, snapshot: formSnapshot())
+    }
+
+    private func connectIMAP() {
+        guard let port, let vm else { return }
+        isConnectingIMAP = true
+        imapError = nil
+        let hostValue = host.trimmingCharacters(in: .whitespaces)
+        let usernameValue = username.trimmingCharacters(in: .whitespaces)
+        let folderValue = folder.trimmingCharacters(in: .whitespaces)
+        let labelValue = label.trimmingCharacters(in: .whitespaces)
+        let passwordValue = password
+        Task {
+            let success = await vm.addImapAccount(
+                host: hostValue,
+                port: port,
+                username: usernameValue,
+                password: passwordValue,
+                folder: folderValue.isEmpty ? "INBOX" : folderValue,
+                security: security.rawValue,
+                label: labelValue
+            )
+            isConnectingIMAP = false
+            if success {
+                dismiss()
+            } else {
+                imapError = vm.error
+                // With the assistant open, hand it the failure right away so
+                // it can explain the error in plain words (snapshot only —
+                // never the password value).
+                if showAssistant, let err = imapError, let chatVM = setupChatVM {
+                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                }
+            }
+        }
+    }
+}

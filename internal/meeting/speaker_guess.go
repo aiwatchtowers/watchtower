@@ -1,0 +1,210 @@
+package meeting
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
+)
+
+// SpeakerGuess is one LLM content-hint for an unnamed speaker cluster:
+// "Speaker N looks like <candidate>". Suggestions are ephemeral — they are
+// rendered as confirm chips in the Desktop transcript view and NEVER
+// auto-applied; confirming one runs the manual-rename mechanics.
+type SpeakerGuess struct {
+	Speaker    string  `json:"speaker"`
+	Candidate  string  `json:"candidate"`
+	Confidence float64 `json:"confidence"`
+	Evidence   string  `json:"evidence"`
+}
+
+// speakerNumberRe matches the default label of a cluster no voice print
+// claimed — "Speaker 1", "Speaker 2", … Named clusters (voice-matched or
+// manually renamed) never match, so only truly unnamed speakers are guessed.
+// Dual-path with Swift `SpeakerNaming.isUnnamed` (VoicePrint.swift) — the two
+// regexes MUST stay identical (transcriber dual-path convention).
+var speakerNumberRe = regexp.MustCompile(`^Speaker \d+$`)
+
+// reservedSpeakerLabel reports whether a candidate name collides with the
+// reserved labels: the owner's «Я» (any case) or the unnamed "Speaker N"
+// pattern. A rename/suggestion to a reserved label would merge a stranger's
+// cluster into the owner's identity (and mint a voice print whose embedding
+// voice-matches that stranger to «Я» in every future recording) or fake an
+// unnamed cluster — both are rejected at validation, mirroring the Swift
+// guard in SpeakerNaming.isReserved (VoicePrint.swift).
+func reservedSpeakerLabel(name string) bool {
+	return strings.EqualFold(name, "Я") || speakerNumberRe.MatchString(name)
+}
+
+// Caps keeping the cheap-tier call bounded on hour-long meetings.
+const (
+	speakerGuessExcerptMaxChars   = 12000 // transcript excerpt in the user message
+	speakerGuessSamplesPerSpeaker = 8     // utterance samples per unnamed speaker
+	speakerGuessSampleMaxChars    = 240   // per-sample truncation
+)
+
+// GenerateSpeakerGuesses proposes names for the transcript's unnamed
+// ("Speaker N") clusters from content clues (people addressing each other by
+// name, self-references, role knowledge). eventID may be "" for ad-hoc
+// recordings — the attendee list is then empty and the model leans on the
+// transcript alone. Returns an error when every cluster is already named.
+// The pipeline does NOT persist — suggestions ride the CLI envelope only.
+func (p *Pipeline) GenerateSpeakerGuesses(ctx context.Context, eventID string, utterances []TranscriptUtterance) ([]SpeakerGuess, *digest.Usage, error) {
+	unnamed := unnamedSpeakers(utterances)
+	if len(unnamed) == 0 {
+		return nil, nil, fmt.Errorf("no unnamed speakers to guess")
+	}
+
+	title, startTime, endTime, attendees := p.speakerGuessEventContext(eventID)
+
+	lang := ""
+	if p.cfg != nil {
+		lang = p.cfg.Digest.Language
+	}
+
+	tmpl := p.loadSpeakerGuessPrompt()
+	systemPrompt := fmt.Sprintf(tmpl, title, startTime, endTime, attendees, prompts.Directive(lang))
+	userMessage := speakerGuessUserMessage(utterances, unnamed)
+
+	aiResponse, usage, _, err := p.generator.Generate(
+		digest.WithSource(ctx, "meeting.speaker_guess"), systemPrompt, userMessage, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("AI generation: %w", err)
+	}
+
+	var raw []SpeakerGuess
+	if err := json.Unmarshal([]byte(cleanJSON(aiResponse)), &raw); err != nil {
+		return nil, nil, fmt.Errorf("parsing AI response: %w (raw: %.300s)", err, aiResponse)
+	}
+	return validateSpeakerGuesses(raw, unnamed), usage, nil
+}
+
+// speakerGuessEventContext resolves the event fields injected into the
+// speaker-guess system prompt, degrading to ad-hoc placeholders when the
+// recording has no event. Degrading is fine (the model leans on the
+// transcript alone), but a DB error must not be silently identical to a
+// legitimately-missing event.
+func (p *Pipeline) speakerGuessEventContext(eventID string) (title, startTime, endTime, attendees string) {
+	title, startTime, endTime, attendees = "(ad-hoc recording)", "", "", "[]"
+	if eventID == "" || p.db == nil {
+		return title, startTime, endTime, attendees
+	}
+	ev, err := p.db.GetCalendarEventByID(eventID)
+	switch {
+	case err != nil:
+		p.logf("meeting: loading calendar event %s for speaker guess: %v (using ad-hoc context)", eventID, err)
+	case ev == nil:
+		p.logf("meeting: calendar event %s not found for speaker guess (using ad-hoc context)", eventID)
+	default:
+		title, startTime, endTime = ev.Title, ev.StartTime, ev.EndTime
+		if strings.TrimSpace(ev.Attendees) != "" {
+			attendees = ev.Attendees
+		}
+	}
+	return title, startTime, endTime, attendees
+}
+
+// validateSpeakerGuesses filters the model's raw suggestions: an unknown
+// speaker label (not in the unnamed set), an empty candidate, or a candidate
+// colliding with a reserved label («Я» / "Speaker N" — see
+// reservedSpeakerLabel) is dropped, never a crash; confidence is clamped to
+// [0,1]. At most one suggestion per speaker — the first wins.
+func validateSpeakerGuesses(raw []SpeakerGuess, unnamed []string) []SpeakerGuess {
+	known := make(map[string]bool, len(unnamed))
+	for _, s := range unnamed {
+		known[s] = true
+	}
+	seen := make(map[string]bool, len(raw))
+	out := make([]SpeakerGuess, 0, len(raw))
+	for _, g := range raw {
+		g.Speaker = strings.TrimSpace(g.Speaker)
+		g.Candidate = strings.TrimSpace(g.Candidate)
+		g.Evidence = strings.TrimSpace(g.Evidence)
+		if !known[g.Speaker] || g.Candidate == "" || seen[g.Speaker] || reservedSpeakerLabel(g.Candidate) {
+			continue
+		}
+		g.Confidence = min(max(g.Confidence, 0), 1)
+		seen[g.Speaker] = true
+		out = append(out, g)
+	}
+	return out
+}
+
+// logf logs via the pipeline logger; nil-safe for tests that build the
+// Pipeline as a literal (meeting.New always normalizes the logger).
+func (p *Pipeline) logf(format string, args ...any) {
+	if p.logger != nil {
+		p.logger.Printf(format, args...)
+	}
+}
+
+// unnamedSpeakers returns the distinct "Speaker N" labels among non-deleted
+// utterances, in first-appearance order.
+func unnamedSpeakers(utterances []TranscriptUtterance) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, u := range utterances {
+		if u.Deleted || seen[u.Speaker] || !speakerNumberRe.MatchString(u.Speaker) {
+			continue
+		}
+		seen[u.Speaker] = true
+		out = append(out, u.Speaker)
+	}
+	return out
+}
+
+// speakerGuessUserMessage assembles the transcript excerpt + per-speaker
+// utterance samples. It travels in the USER message so the generators' stdin
+// path keeps long transcripts clear of ARG_MAX (the recap/notes precedent).
+func speakerGuessUserMessage(utterances []TranscriptUtterance, unnamed []string) string {
+	var b strings.Builder
+	b.WriteString("=== UNNAMED SPEAKERS ===\n")
+	b.WriteString(strings.Join(unnamed, ", "))
+	b.WriteString("\n\n=== UTTERANCE SAMPLES PER UNNAMED SPEAKER ===\n")
+	for _, speaker := range unnamed {
+		count := 0
+		for _, u := range utterances {
+			if u.Deleted || u.Speaker != speaker {
+				continue
+			}
+			text := truncateRunes(u.Text, speakerGuessSampleMaxChars)
+			fmt.Fprintf(&b, "[%s] %s\n", speaker, text)
+			count++
+			if count >= speakerGuessSamplesPerSpeaker {
+				break
+			}
+		}
+	}
+	b.WriteString("\n=== TRANSCRIPT EXCERPT ===\n")
+	b.WriteString(truncateRunes(RenderTranscriptSegments(utterances), speakerGuessExcerptMaxChars))
+	return b.String()
+}
+
+// truncateRunes caps s at limit runes (never splitting a UTF-8 sequence —
+// transcripts are mostly ru/uk) and marks the cut with an ellipsis.
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
+}
+
+func (p *Pipeline) loadSpeakerGuessPrompt() string {
+	if p.promptStore != nil {
+		if tmpl, _, err := p.promptStore.Get(prompts.MeetingSpeakerGuess); err == nil && tmpl != "" {
+			return tmpl
+		}
+	}
+	if tmpl, ok := prompts.Defaults[prompts.MeetingSpeakerGuess]; ok && tmpl != "" {
+		return tmpl
+	}
+	return defaultSpeakerGuessPromptFallback
+}
+
+const defaultSpeakerGuessPromptFallback = `Identify unnamed speakers in a meeting transcript by content clues. Event: %s (%s-%s, attendees: %s). %s
+Return ONLY a JSON array of {"speaker","candidate","confidence","evidence"}.`

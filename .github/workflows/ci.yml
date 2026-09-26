@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/*]
+  pull_request:
+  # Manual escape hatch: lets a maintainer force a real run (bypassing the
+  # `gate` job's push-vs-pull_request dedupe below, since its event_name
+  # isn't "push") when a PR's pull_request-triggered run never materializes.
+  workflow_dispatch:
+
+# One live run per branch and event: rapid successive pushes (or PR syncs)
+# cancel their stale predecessors. Cross-event dedupe (push vs pull_request
+# firing together on a PR branch) is handled by the `gate` job below —
+# skipping shows neutral in the PR, unlike a cancelled run's red X.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  # Skips the push-triggered run when the branch has an open PR — the
+  # pull_request-triggered run of the same commit does the work instead.
+  gate:
+    name: Dedupe gate
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
+            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REF_NAME}" --state open --json number --jq length)
+            if [ "$open_prs" -gt 0 ]; then
+              echo "branch has an open PR — the pull_request run covers this commit"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+  go-lint:
+    name: Go Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: "v2.11.4"
+          args: --timeout=5m
+
+  # Blocks live-install data (real Slack/Google/Jira ids, corp domains,
+  # personal emails) in the lines this change adds. The private denylist
+  # layer runs only when the LEAK_DENYLIST secret is set (never on fork PRs);
+  # the generic patterns always run.
+  leak-check:
+    name: Leak Check
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan added lines
+        env:
+          LEAK_DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          export WATCHTOWER_LEAK_DENYLIST="$RUNNER_TEMP/leak-denylist"
+          if [ -n "$LEAK_DENYLIST" ]; then
+            printf '%s\n' "$LEAK_DENYLIST" > "$WATCHTOWER_LEAK_DENYLIST"
+          fi
+          if [ -n "$PR_BASE" ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$PUSH_BEFORE" ] && ! printf '%s' "$PUSH_BEFORE" | grep -q '^0*$' \
+              && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            range="$PUSH_BEFORE..$GITHUB_SHA"
+          else
+            range="$(git merge-base origin/main "$GITHUB_SHA")..$GITHUB_SHA"
+          fi
+          # A run on main itself (force-push, workflow_dispatch) can leave the
+          # range empty; never report "clean" on nothing — scan the head commit.
+          if [ "$(git rev-list --count "$range")" -eq 0 ]; then
+            range="$(git rev-parse "$GITHUB_SHA^1")..$GITHUB_SHA"
+          fi
+          bash scripts/leak-check.sh "$range"
+
+  go-test:
+    name: Go Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        run: go build ./...
+
+      # The shell suite over scripts/build-app.sh — it stubs `ps` and never
+      # builds, so it rides this Linux job rather than paying for a macOS one.
+      # Seconds long, so it runs before the coverage gate: earlier signal, no cost.
+      - name: Test (shell scripts)
+        run: make test-scripts
+
+      # Runs the full suite with -cover and enforces coverage.thresholds —
+      # this IS the test run on feature branches and PRs.
+      - name: Test + coverage gate
+        run: make test-cover
+
+      - name: Test (race, library packages)
+        # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass
+        # runs only on pushes to main (i.e. per merged PR — a one-PR bisect
+        # window), on a manual workflow_dispatch (so a branch can prove it
+        # before merging), and in the release workflow, keeping
+        # feature-branch CI fast. -timeout is per package: a package whose
+        # tests open in-memory DBs must install db.InitTestTemplate (pinned by
+        # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh
+        # goose migration costs seconds per test under -race. cmd stays out:
+        # it is CLI glue over file-backed SQLite fixtures whose concurrency
+        # all lives in internal/*, which is race-covered here.
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
+
+  swift-lint:
+    name: Swift Lint
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: WatchtowerDesktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: SwiftLint
+        run: swiftlint lint --strict --baseline .swiftlint-baseline.json
+
+  swift-test:
+    name: Swift Test
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: WatchtowerDesktop
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
+      # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
+      # AnalyzerInput (AppleProvider.swift) fails to compile with "cannot find type
+      # in scope" rather than an availability diagnostic. Xcode 26.3 is installed on
+      # this image (non-default) and ships the macOS 26 SDK those declarations live
+      # in; selecting it lets the file weak-link as designed without needing a
+      # macOS-26 runner to execute the guarded code.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.3"
+
+      # GRDB alone is minutes of compile on a cold runner; reuse build
+      # products across runs until dependencies change.
+      - name: Cache SPM build
+        uses: actions/cache@v4
+        with:
+          path: WatchtowerDesktop/.build
+          key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  sentrux-quality:
+    name: Sentrux Quality Gate
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # The job only reads the checked-out tree and downloads a public release
+    # asset (no token needed), so the job token gets nothing beyond checkout.
+    permissions:
+      contents: read
+    env:
+      # Pinned to the exact release the upstream install.sh resolved to when
+      # this was written, plus the digest of that artifact. Bump both together:
+      #   curl -fsSL https://github.com/sentrux/sentrux/releases/download/<tag>/sentrux-linux-x86_64 | sha256sum
+      SENTRUX_VERSION: v0.5.7
+      SENTRUX_SHA256: 3237f80fe20d54aad4deefa8a143f0d60543bb5d2d6ad891eb42432f155725a6
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately NOT `curl .../main/install.sh | sh`: that pipes a script
+      # from a moving branch of a third-party repo straight into a shell, and
+      # that script then resolves `releases/latest` and installs the binary
+      # unverified — so neither the script nor the binary was pinned. Upstream
+      # publishes no signature or checksum file, so we fetch the one pinned
+      # artifact and refuse to run it unless its digest matches SENTRUX_SHA256.
+      - name: Install sentrux
+        run: |
+          url="https://github.com/sentrux/sentrux/releases/download/${SENTRUX_VERSION}/sentrux-linux-x86_64"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/sentrux.bin" "$url"
+          echo "${SENTRUX_SHA256}  ${RUNNER_TEMP}/sentrux.bin" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/bin"
+          install -m 0755 "${RUNNER_TEMP}/sentrux.bin" "${RUNNER_TEMP}/bin/sentrux"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+
+      # check enforces .sentrux/rules.toml (max_cc, max_fn_lines, no_god_files).
+      - name: Architectural rules
+        run: sentrux check .
+
+      # gate blocks any structural regression vs .sentrux/baseline.json.
+      - name: Structural regression gate
+        run: sentrux gate .
+
+      # baseline.json holds ONE god-file count, so a source file crossing the
+      # threshold is indistinguishable from a test file that grew with new
+      # coverage — and re-snapshotting for the latter is accepted practice.
+      # This holds the SOURCE half to an explicit roster instead, at a fan-out
+      # the codebase actually treats as a hub (see the script's header).
+      - name: Non-test hub-file gate
+        run: scripts/god-files.sh

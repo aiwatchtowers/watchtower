@@ -1,0 +1,841 @@
+// Package inbox detects messages awaiting the owner's response and resolves
+// them by rule. It makes no AI calls: the inbox is a mechanical feeder for
+// Catch-Up, the daily briefing and meeting prep.
+package inbox
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html"
+	"log"
+	"regexp"
+	"strings"
+	"time"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	watchtowerslack "watchtower/internal/slack"
+)
+
+var (
+	slackLinkRe     = regexp.MustCompile(`<(https?://[^|>]+)\|([^>]+)>`)
+	slackURLRe      = regexp.MustCompile(`<(https?://[^>]+)>`)
+	slackUserRe     = regexp.MustCompile(`<@([A-Z0-9]+)(?:\|([^>]+))?>`)
+	slackChannelRe  = regexp.MustCompile(`<#[A-Z0-9]+\|([^>]+)>`)
+	slackGroupRe    = regexp.MustCompile(`<!subteam\^[A-Z0-9]+(?:\|([^>]+))?>`)
+	slackSpecialRe  = regexp.MustCompile(`<!([a-z_]+)(?:\|([^>]+))?>`)
+	slackEmojiRe    = regexp.MustCompile(`:[a-z0-9_+-]+:`)
+	slackMarkdownRe = regexp.MustCompile("(?s)```[^`]*```")
+
+	// closingSignals is a set of short acknowledgment/closing phrases that don't need a reply.
+	closingSignals = map[string]bool{
+		// EN
+		"thanks": true, "thank you": true, "thx": true, "ty": true,
+		"got it": true, "ok": true, "okay": true, "cool": true,
+		"great": true, "perfect": true, "awesome": true,
+		"np": true, "no problem": true, "will do": true,
+		"sounds good": true, "noted": true, "ack": true,
+		// RU
+		"спасибо": true, "спс": true, "ок": true,
+		"понял": true, "понятно": true, "принял": true,
+		"ясно": true, "хорошо": true, "отлично": true,
+		"ладно": true, "круто": true, "пон": true,
+		// Emoji-only
+		"👍": true, "🙏": true, "🙌": true, "👌": true, "✅": true,
+	}
+
+	trailingPunctRe = regexp.MustCompile(`[.!?,;:…]+$`)
+)
+
+// isClosingSignal returns true if the message text is a short closing/acknowledgment phrase.
+func isClosingSignal(text string) bool {
+	s := strings.TrimSpace(text)
+	if s == "" || len(s) > 80 {
+		return false
+	}
+	// Strip trailing punctuation.
+	s = trailingPunctRe.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	s = strings.ToLower(s)
+	return closingSignals[s]
+}
+
+// truncateRunes truncates s to at most max runes, appending "..." — a
+// rune-safe alternative to byte-slicing (s[:n]), which can split a multibyte
+// UTF-8 rune in half and write an invalid string. A no-op when s already fits.
+func truncateRunes(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+// toWaitingJSON converts a list of user IDs to a JSON array string.
+func toWaitingJSON(userIDs []string) string {
+	if len(userIDs) == 0 {
+		return ""
+	}
+	data, _ := json.Marshal(userIDs)
+	return string(data)
+}
+
+// enrichSnippet strips Slack markup and resolves user mentions to real names.
+func enrichSnippet(text string, database *db.DB) string {
+	s := text
+	s = slackMarkdownRe.ReplaceAllString(s, "")
+	s = slackLinkRe.ReplaceAllString(s, "$2")
+	s = slackURLRe.ReplaceAllString(s, "$1")
+	// Resolve <@U123|Name> and <@U123> user mentions
+	s = slackUserRe.ReplaceAllStringFunc(s, func(match string) string {
+		groups := slackUserRe.FindStringSubmatch(match)
+		// groups[1] = raw user ID as it appears in message text (never
+		// namespaced — Slack writes it exactly as sent), groups[2] = display
+		// name (may be empty)
+		if groups[2] != "" {
+			return "@" + groups[2]
+		}
+		if database != nil {
+			if name, err := database.UserNameByRawID(groups[1]); err == nil && name != "" {
+				return "@" + name
+			}
+		}
+		// Unresolved (or no DB): keep the raw id rather than dropping the
+		// mention — a reader of the snippet still needs to know someone was
+		// addressed even when the name is unknown.
+		return "@" + groups[1]
+	})
+	// Resolve <#C123|channel-name> channel refs
+	s = slackChannelRe.ReplaceAllString(s, "#$1")
+	// Resolve <!subteam^S123|@team-name> group mentions
+	s = slackGroupRe.ReplaceAllStringFunc(s, func(match string) string {
+		groups := slackGroupRe.FindStringSubmatch(match)
+		if groups[1] != "" {
+			return groups[1]
+		}
+		return ""
+	})
+	// Resolve <!here|here>, <!channel|channel>, <!everyone|everyone>
+	s = slackSpecialRe.ReplaceAllStringFunc(s, func(match string) string {
+		groups := slackSpecialRe.FindStringSubmatch(match)
+		if groups[2] != "" {
+			return "@" + groups[2]
+		}
+		return "@" + groups[1]
+	})
+	s = slackEmojiRe.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.TrimSpace(s)
+}
+
+// DefaultLookbackDays is the default lookback for first-time inbox detection.
+const DefaultLookbackDays = 7
+
+// ProgressFunc is called during pipeline execution to report progress.
+type ProgressFunc func(done, total int, status string)
+
+// Pipeline detects inbox items from Slack and the external sources, and
+// auto-resolves them by rule. It makes no AI calls; the generator is carried
+// only for the style-profile sampler (style_sample.go).
+type Pipeline struct {
+	db         *db.DB
+	cfg        *config.Config
+	generator  digest.Generator
+	logger     *log.Logger
+	OnProgress ProgressFunc
+
+	// owner is the install's owner identity, set by SetOwner; Run resolves it
+	// from the DB (db.ResolveOwner) when it is not set.
+	owner db.Owner
+
+	// Step metrics (set before each OnProgress call).
+	LastStepDurationSeconds float64
+}
+
+// New creates a new inbox pipeline.
+func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.Logger) *Pipeline {
+	return &Pipeline{
+		db:        database,
+		cfg:       cfg,
+		generator: gen,
+		logger:    logger,
+	}
+}
+
+// SetOwner sets the owner identity the per-source detectors (Jira, Calendar)
+// and their auto-resolve rules match against. Slack detection does not use
+// it: each Slack account is matched against its own current_user_id.
+func (p *Pipeline) SetOwner(o db.Owner) {
+	p.owner = o
+}
+
+// AccumulatedUsage reports the pipeline's token usage. Run makes no AI calls,
+// so it is always zero; the method is kept because the daemon and the CLI
+// report usage uniformly across pipelines.
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	return 0, 0, 0, 0
+}
+
+// resolveOwner returns the owner set by SetOwner, else the one the DB
+// resolves (Slack #1 → Google #1 → Jira #1, db.ResolveOwner).
+func (p *Pipeline) resolveOwner() (db.Owner, error) {
+	if p.owner.Known() {
+		return p.owner, nil
+	}
+	return p.db.ResolveOwner()
+}
+
+// resolveWatermarkWindow returns the last processed timestamp (falling back
+// to now-lookbackDays for a fresh install) and the equivalent time.Time.
+// logPrefix prefixes the log lines it emits.
+func (p *Pipeline) resolveWatermarkWindow(logPrefix string) (float64, time.Time) {
+	lastTS, err := p.db.GetInboxLastProcessedTS()
+	if err != nil {
+		p.logger.Printf("%s: error getting last processed ts, using default: %v", logPrefix, err)
+		lastTS = 0
+	}
+	lookbackDays := DefaultLookbackDays
+	if p.cfg != nil && p.cfg.Inbox.InitialLookbackDays > 0 {
+		lookbackDays = p.cfg.Inbox.InitialLookbackDays
+	}
+	if lastTS == 0 {
+		lastTS = float64(time.Now().AddDate(0, 0, -lookbackDays).Unix())
+	}
+	return lastTS, time.Unix(int64(lastTS), 0)
+}
+
+// dedupThreadItems merges duplicate pending thread inbox items (cleanup from
+// before thread-grouping). logPrefix prefixes the log lines it emits.
+func (p *Pipeline) dedupThreadItems(logPrefix string) {
+	if deduped, err := p.db.DeduplicateThreadInboxItems(); err != nil {
+		p.logger.Printf("%s: dedup error: %v", logPrefix, err)
+	} else if deduped > 0 {
+		p.logger.Printf("%s: merged %d duplicate thread items", logPrefix, deduped)
+	}
+}
+
+// runArchiveAndUnsnooze auto-archives expired ambient / stale actionable
+// items and unsnoozes anything whose snooze has expired. Returns the total
+// number of inbox items archived.
+func (p *Pipeline) runArchiveAndUnsnooze() int {
+	var archived int
+	if n, err := p.db.ArchiveExpiredAmbient(7 * 24 * time.Hour); err != nil {
+		p.logger.Printf("inbox: archive ambient error: %v", err)
+	} else {
+		archived += n
+	}
+	if n, err := p.db.ArchiveStaleActionable(14 * 24 * time.Hour); err != nil {
+		p.logger.Printf("inbox: archive stale error: %v", err)
+	} else {
+		archived += n
+	}
+	if _, err := p.db.UnsnoozeExpiredInboxItems(); err != nil {
+		p.logger.Printf("inbox: unsnooze error: %v", err)
+	}
+	return archived
+}
+
+// decideWatermark computes the new watermark timestamp per INBOX-09 (see
+// docs/inventory/inbox-pulse.md): a detector error freezes the watermark so
+// the failed source's window is re-scanned next cycle; a clean pass advances
+// it. ok is false when the watermark must stay frozen.
+func decideWatermark(detectErr error) (ts float64, ok bool) {
+	if detectErr != nil {
+		return 0, false
+	}
+	// Use a 30-minute buffer instead of wall-clock time to account for
+	// Slack search API indexing delays — messages may arrive in the DB
+	// with ts_unix values behind wall-clock time.
+	return float64(time.Now().Add(-30 * time.Minute).Unix()), true
+}
+
+// Run executes the inbox pipeline: dedup, detect new items, auto-resolve,
+// auto-archive, unsnooze, then advance the watermark. It makes no AI calls —
+// the inbox is a mechanical feeder for Catch-Up, the briefing and meeting
+// prep (docs/superpowers/specs/2026-09-14-inbox-demolition-design.md).
+// Returns (created count, resolved count, error). A detector error is
+// logged, freezes the watermark (INBOX-09) and is returned to the caller.
+func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	if p.cfg != nil && !p.cfg.Inbox.Enabled {
+		return 0, 0, nil
+	}
+
+	owner, err := p.resolveOwner()
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolving owner: %w", err)
+	}
+	if !owner.Known() {
+		p.logger.Println("inbox: no owner identity, skipping")
+		return 0, 0, nil
+	}
+
+	lastTS, sinceTime := p.resolveWatermarkWindow("inbox")
+
+	const totalSteps = 4
+
+	// Phase 0: Deduplicate existing thread inbox items (cleanup from before thread-grouping).
+	p.dedupThreadItems("inbox")
+
+	// Phase 1: Detection — Slack + external sources (individually non-fatal, but a
+	// failure freezes the watermark below so no window is skipped).
+	p.progress(1, totalSteps, "detecting")
+	stepStart := time.Now()
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, lastTS, sinceTime)
+	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
+	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+
+	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
+	p.progress(2, totalSteps, "auto-resolving")
+	stepStart = time.Now()
+	resolved := p.autoResolveByRules(ctx, owner)
+	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
+
+	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
+	p.progress(3, totalSteps, "archiving")
+	archived := p.runArchiveAndUnsnooze()
+
+	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09.
+	if ts, ok := decideWatermark(detectErr); ok {
+		p.advanceWatermark(ts, lastTS)
+	} else {
+		p.logger.Printf("inbox: detector error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
+	}
+
+	p.progress(totalSteps, totalSteps, "done")
+
+	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d T%d), %d auto-resolved, %d auto-archived",
+		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower,
+		resolved, archived)
+
+	return created, resolved, detectErr
+}
+
+// advanceWatermark sets the inbox watermark to ts, clamped so it never moves
+// backwards past lastTS.
+func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
+	if ts < lastTS {
+		ts = lastTS
+	}
+	if err := p.db.SetInboxLastProcessedTS(ts); err != nil {
+		p.logger.Printf("inbox: error updating last processed ts: %v", err)
+	}
+}
+
+// detectAll runs the per-source detectors and returns counts.
+// The returned error is non-nil if any detector failed; callers use it to gate
+// the watermark advance so a failed pass does not skip its message window.
+func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
+	var errs []error
+	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
+		p.logger.Printf("inbox: slack detect error: %v", e)
+		errs = append(errs, fmt.Errorf("slack: %w", e))
+	} else {
+		slack = n
+	}
+	if n, e := DetectJira(ctx, p.db, owner, sinceTime); e != nil {
+		p.logger.Printf("inbox: jira detect error: %v", e)
+		errs = append(errs, fmt.Errorf("jira: %w", e))
+	} else {
+		jira = n
+	}
+	if n, e := DetectCalendar(ctx, p.db, owner.Email, sinceTime); e != nil {
+		p.logger.Printf("inbox: calendar detect error: %v", e)
+		errs = append(errs, fmt.Errorf("calendar: %w", e))
+	} else {
+		cal = n
+	}
+	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: gmail detect error: %v", e)
+		errs = append(errs, fmt.Errorf("gmail: %w", e))
+	} else {
+		gmail = n
+	}
+	if n, e := DetectImapAccounts(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: imap detect error: %v", e)
+		errs = append(errs, fmt.Errorf("imap: %w", e))
+	} else {
+		imapCount = n
+	}
+	if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
+		p.logger.Printf("inbox: watchtower detect error: %v", e)
+		errs = append(errs, fmt.Errorf("watchtower: %w", e))
+	} else {
+		wt = n
+	}
+	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
+}
+
+// detectSlackAccounts runs detectSlackTriggers once per enabled, connected
+// Slack account (see docs/inventory/inbox-pulse.md INBOX-09's multi-account
+// extension), summing created counts and joining every account's error so
+// one account's failure never stops a sibling account's detection within the
+// same cycle — mirroring detectAll's per-source isolation below, applied one
+// level down. A per-account error is never swallowed into a reported partial
+// success: it is always joined into the returned error so the caller's
+// watermark gate sees it.
+//
+// An enabled account whose current_user_id is empty is skipped, not treated
+// as an error: connectSlackAccount (cmd/slack.go) writes current_user_id
+// before it saves the token, and wireSlackSyncers refuses to build a syncer
+// without a token, so this account has no synced messages to lose by
+// skipping it — with one narrow exception: ensureLegacySlackAccount
+// (cmd/slack_legacy.go) saves the token unconditionally before checking
+// whether identity resolution succeeded, so a legacy-migration install whose
+// auth.test call fails can leave a saved token with current_user_id still
+// empty. That state self-heals within one sync cycle (Orchestrator.run
+// retries syncCurrentUser whenever current_user_id is empty,
+// internal/sync/orchestrator.go), so the residual exposure is at most the
+// messages synced during that single cycle, not an unbounded window.
+func (p *Pipeline) detectSlackAccounts(ctx context.Context, lastTS float64) (int, error) {
+	accounts, err := p.db.ListEnabledSlackAccounts()
+	if err != nil {
+		return 0, fmt.Errorf("listing enabled slack accounts: %w", err)
+	}
+
+	var created int
+	var errs []error
+	for _, acct := range accounts {
+		if acct.CurrentUserID == "" {
+			p.logger.Printf("inbox: slack account %d: current_user_id not yet resolved, skipping", acct.ID)
+			continue
+		}
+		n, e := p.detectSlackTriggers(ctx, acct.ID, acct.CurrentUserID, lastTS)
+		created += n
+		if e != nil {
+			errs = append(errs, fmt.Errorf("account %d: %w", acct.ID, e))
+		}
+	}
+	return created, errors.Join(errs...)
+}
+
+// detectSlackTriggers detects @mentions, DMs, thread replies and reactions
+// from Slack messages for one connected account. Returns the count of newly
+// created inbox items.
+func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, currentUserID string, lastTS float64) (int, error) {
+	mentions, err := p.db.FindPendingMentions(accountID, currentUserID, lastTS)
+	if err != nil {
+		return 0, fmt.Errorf("finding mentions: %w", err)
+	}
+
+	dms, err := p.db.FindPendingDMs(accountID, currentUserID, lastTS)
+	if err != nil {
+		return 0, fmt.Errorf("finding DMs: %w", err)
+	}
+
+	threadReplies, err := p.db.FindThreadRepliesToUser(accountID, currentUserID, lastTS)
+	if err != nil {
+		p.logger.Printf("inbox: error finding thread replies: %v", err)
+	}
+
+	reactions, err := p.db.FindReactionRequests(accountID, currentUserID, lastTS)
+	if err != nil {
+		p.logger.Printf("inbox: error finding reaction requests: %v", err)
+	}
+
+	candidates := append(mentions, dms...)
+	candidates = append(candidates, threadReplies...)
+	candidates = append(candidates, reactions...)
+
+	created := p.createItemsFromCandidates(candidates, currentUserID, false)
+
+	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
+		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
+	return created, nil
+}
+
+// createItemsFromCandidates groups candidates by (channel, thread) — keeping
+// the latest message per group and collecting all unique senders — then
+// creates one inbox item per group, folding into an existing pending thread
+// item instead when one already covers the same thread. Non-threaded
+// messages (ThreadTS="") are grouped by channel using key (channelID, "").
+//
+// This is detectSlackTriggers' own creation path for its per-cycle window
+// (minutes, not weeks). BackfillMentions deliberately does NOT call this —
+// see backfill.go's backfillAccountMentions — because grouping to one item
+// per thread and folding into whatever pending item already sits on a
+// thread are both live-cycle assumptions (the existing item is always about
+// the same conversation) that stop holding over a multi-week historical
+// window, where a shared thread can just as easily belong to an unrelated,
+// currently-live conversation; the backfill runs its own create-only loop
+// instead. Known pre-existing limitation only detectSlackTriggers still
+// carries: the closing-signal check below runs only against a group's
+// latest message, so an acknowledgment reply suppresses the whole group,
+// including a substantive message it followed (see
+// TestPipeline_ClosingSignalSkipped).
+//
+// currentUserID is used only for the closing-signal reply check
+// (CheckUserRepliedBefore). dryRun has no live caller today — detectSlackTriggers,
+// the only remaining call site, always passes false — but is left in place
+// rather than stripped: removing a parameter that exists solely for a
+// caller this branch deleted would mean touching this detector path for
+// that reason alone, and this is not the moment to churn the live detector
+// right before a production run. When dryRun is true every read still runs,
+// so the returned count matches exactly what a real run would create, but
+// both writes that mutate inbox_items (the existing-thread fold, and
+// CreateInboxItem for a new item) are skipped.
+func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
+	type threadKey struct{ channelID, threadTS string }
+	type threadGroup struct {
+		latest  db.InboxCandidate
+		senders map[string]bool
+	}
+	threadGroups := make(map[threadKey]*threadGroup)
+	for _, c := range candidates {
+		key := threadKey{c.ChannelID, c.ThreadTS}
+		grp, ok := threadGroups[key]
+		if !ok {
+			grp = &threadGroup{latest: c, senders: map[string]bool{c.SenderUserID: true}}
+			threadGroups[key] = grp
+		} else {
+			grp.senders[c.SenderUserID] = true
+			if c.TSUnix > grp.latest.TSUnix {
+				grp.latest = c
+			}
+		}
+	}
+
+	created := 0
+	for _, grp := range threadGroups {
+		c := grp.latest
+		snippet := enrichSnippet(c.Text, p.db)
+		if snippet == "" {
+			continue
+		}
+
+		// Pre-filter: skip closing signals ("thanks", "ok", etc.) when user already replied before.
+		if isClosingSignal(c.Text) {
+			repliedBefore, _ := p.db.CheckUserRepliedBefore(currentUserID, c.ChannelID, c.MessageTS, c.ThreadTS)
+			if repliedBefore {
+				continue
+			}
+		}
+
+		snippet = truncateRunes(snippet, 500)
+		itemCtx := p.loadContext(c.ChannelID, c.MessageTS, c.ThreadTS)
+
+		var senderList []string
+		for uid := range grp.senders {
+			senderList = append(senderList, uid)
+		}
+		waitingJSON := toWaitingJSON(senderList)
+
+		existingID, _ := p.db.FindPendingInboxByThread(c.ChannelID, c.ThreadTS)
+		if existingID > 0 {
+			if dryRun {
+				continue
+			}
+			if err := p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink); err != nil {
+				p.logger.Printf("inbox: error updating thread item %d: %v", existingID, err)
+			}
+			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
+				p.logger.Printf("inbox: error merging waiting users for item %d: %v", existingID, err)
+			}
+			continue
+		}
+
+		if dryRun {
+			created++
+			continue
+		}
+
+		_, err := p.db.CreateInboxItem(db.InboxItem{
+			ChannelID:      c.ChannelID,
+			MessageTS:      c.MessageTS,
+			ThreadTS:       c.ThreadTS,
+			SenderUserID:   c.SenderUserID,
+			TriggerType:    c.TriggerType,
+			Snippet:        snippet,
+			Context:        itemCtx,
+			RawText:        c.Text,
+			Permalink:      c.Permalink,
+			WaitingUserIDs: waitingJSON,
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				continue
+			}
+			p.logger.Printf("inbox: error creating item: %v", err)
+			continue
+		}
+		created++
+	}
+	return created
+}
+
+// loadContext loads thread or channel context for an inbox item.
+func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
+	var msgs []struct {
+		UserID string
+		Text   string
+	}
+	var err error
+
+	if threadTS != "" {
+		msgs, err = p.db.GetThreadContext(channelID, threadTS, 10)
+	} else {
+		msgs, err = p.db.GetChannelContextBefore(channelID, messageTS, 5)
+	}
+	if err != nil || len(msgs) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	for _, m := range msgs {
+		name, _ := p.db.UserNameByID(m.UserID)
+		if name == "" {
+			name = m.UserID
+		}
+		line := enrichSnippet(m.Text, p.db)
+		if line == "" {
+			continue
+		}
+		if len(line) > 200 {
+			line = line[:200] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("[%s] %s\n", name, line))
+	}
+	result := strings.TrimSpace(sb.String())
+	if len(result) > 2000 {
+		result = result[:2000] + "..."
+	}
+	return result
+}
+
+// progress is a helper that calls OnProgress if set.
+func (p *Pipeline) progress(done, total int, status string) {
+	if p.OnProgress != nil {
+		p.OnProgress(done, total, status)
+	}
+}
+
+// autoResolveByRules runs all rule-based auto-resolve checks across Slack,
+// Jira, and Calendar sources. Returns the total number of items resolved.
+func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner) int {
+	resolved := 0
+	resolved += p.autoResolveSlack(ctx)
+	resolved += p.autoResolveJira(ctx, owner)
+	resolved += p.autoResolveCalendar(ctx, owner.Email)
+	return resolved
+}
+
+// autoResolveSlack resolves pending Slack inbox items where the item's OWN
+// connected account's owner has already replied. Each item's account is
+// derived from its own channel_id prefix (the same namespacing detection
+// already relies on) and checked against that account's own current_user_id
+// — never a single pinned identity — so a reply by account 2's owner
+// resolves an account-2 item even though the install's single owner (used
+// for Jira/Calendar, db.ResolveOwner) is at most account #1's user.
+// ListSlackAccounts (not just enabled accounts) is used for the lookup: a
+// later-disabled or removed account's existing pending items should still
+// resolve correctly against the identity that created them (slack disable/
+// remove are both non-destructive to already-synced data).
+func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
+	items, err := p.db.GetInboxItems(db.InboxFilter{Status: "pending"})
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveSlack: loading items: %v", err)
+		return 0
+	}
+
+	accounts, err := p.db.ListSlackAccounts()
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveSlack: listing accounts: %v", err)
+		return 0
+	}
+	ownerIDByAccount := make(map[int64]string, len(accounts))
+	for _, acct := range accounts {
+		if acct.CurrentUserID != "" {
+			ownerIDByAccount[acct.ID] = acct.CurrentUserID
+		}
+	}
+
+	resolved := 0
+	for _, item := range items {
+		// Only Slack-sourced items: trigger types that come from Slack messages.
+		switch item.TriggerType {
+		case "mention", "dm", "thread_reply", "reaction_request":
+		default:
+			continue
+		}
+		accountID, _, ok := watchtowerslack.SplitAccountID(item.ChannelID)
+		if !ok {
+			p.logger.Printf("inbox: autoResolveSlack: item %d channel_id %q has no account prefix, skipping", item.ID, item.ChannelID)
+			continue
+		}
+		ownerID, ok := ownerIDByAccount[accountID]
+		if !ok {
+			p.logger.Printf("inbox: autoResolveSlack: item %d: no resolved identity for account %d, skipping", item.ID, accountID)
+			continue
+		}
+		replied, err := p.db.CheckUserReplied(ownerID, item.ChannelID, item.MessageTS, item.ThreadTS)
+		if err != nil {
+			p.logger.Printf("inbox: error checking reply for item %d: %v", item.ID, err)
+			continue
+		}
+		if replied {
+			if err := p.db.ResolveInboxItem(item.ID, "User replied"); err != nil {
+				p.logger.Printf("inbox: error resolving item %d: %v", item.ID, err)
+				continue
+			}
+			resolved++
+		}
+	}
+	return resolved
+}
+
+// autoResolveJira resolves pending jira_comment_mention and jira_assigned items
+// when the owner has authored a comment on the issue after the item was created.
+// If the jira_comments table does not exist, or the owner has no known
+// Atlassian account id (ownerAtlassianIDs), this method is a no-op.
+func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
+	if !jiraCommentsTableExists(p.db) {
+		return 0
+	}
+	atlassianIDs := ownerAtlassianIDs(p.db, owner)
+	if len(atlassianIDs) == 0 {
+		return 0
+	}
+
+	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
+	rows, err := p.db.Query(`SELECT id, channel_id, created_at FROM inbox_items
+		WHERE trigger_type IN ('jira_comment_mention','jira_assigned') AND status='pending'`)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: query: %v", err)
+		return 0
+	}
+	defer rows.Close()
+	type candidate struct {
+		id        int64
+		issueKey  string
+		createdAt string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.issueKey, &c.createdAt); err != nil {
+			p.logger.Printf("inbox: autoResolveJira: scan: %v", err)
+			return 0
+		}
+		candidates = append(candidates, c)
+	}
+
+	// The two timestamps being compared come from different writers in
+	// different formats: jira_comments.created_at is Jira Cloud's own dotted
+	// -millisecond shape ("...T10:00:00.000+0000"), inbox_items.created_at is
+	// RFC3339 ("...T10:00:00Z"). A SQL string compare between them is
+	// meaningless — '.' (0x2E) sorts below 'Z' (0x5A), so a comment would
+	// have to be a whole second newer to register at all, and one in the same
+	// second never would. Both sides are parsed in Go instead
+	// (db.ParseJiraTime accepts either format).
+	latestByIssue := p.latestOwnJiraCommentPerIssue(atlassianIDs)
+
+	resolved := 0
+	for _, c := range candidates {
+		itemTS, ok := db.ParseJiraTime(c.createdAt)
+		if !ok {
+			continue
+		}
+		if commentTS, found := latestByIssue[c.issueKey]; !found || commentTS < itemTS {
+			continue
+		}
+		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
+			time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+			p.logger.Printf("inbox: autoResolveJira: update item %d: %v", c.id, err)
+			continue
+		}
+		resolved++
+	}
+	return resolved
+}
+
+// latestOwnJiraCommentPerIssue returns, per issue key, the unix time of the
+// newest comment authored by any of the given Atlassian account ids. One
+// fully-drained query up front, so the caller's loop issues no reads at all
+// (the MaxOpenConns(1) SQLite deadlock rule). An unparseable timestamp is
+// skipped, matching ParseJiraTime's defensive-skip contract.
+func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
+	placeholders := make([]string, len(atlassianIDs))
+	args := make([]any, len(atlassianIDs))
+	for i, id := range atlassianIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := p.db.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
+		WHERE author_account_id IN (%s)`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: comment query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	latest := map[string]int64{}
+	for rows.Next() {
+		var issueKey, createdAt string
+		if err := rows.Scan(&issueKey, &createdAt); err != nil {
+			p.logger.Printf("inbox: autoResolveJira: comment scan: %v", err)
+			return latest
+		}
+		ts, ok := db.ParseJiraTime(createdAt)
+		if !ok {
+			continue
+		}
+		if cur, seen := latest[issueKey]; !seen || ts > cur {
+			latest[issueKey] = ts
+		}
+	}
+	return latest
+}
+
+// autoResolveCalendar resolves pending calendar_invite and calendar_time_change
+// items when the owner's RSVP status is no longer 'needsAction'.
+func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int {
+	if ownerEmail == "" {
+		return 0
+	}
+
+	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
+	rows, err := p.db.Query(`SELECT id, channel_id FROM inbox_items
+		WHERE trigger_type IN ('calendar_invite','calendar_time_change') AND status='pending'`)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
+		return 0
+	}
+	defer rows.Close()
+	type candidate struct {
+		id      int64
+		eventID string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.eventID); err != nil {
+			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
+			return 0
+		}
+		candidates = append(candidates, c)
+	}
+
+	resolved := 0
+	for _, c := range candidates {
+		var att string
+		p.db.QueryRow(`SELECT attendees FROM calendar_events WHERE id=?`, c.eventID).Scan(&att) //nolint:errcheck
+		var list []calAttendee
+		_ = json.Unmarshal([]byte(att), &list)
+		for _, a := range list {
+			if a.Email == ownerEmail && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
+				if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User responded to invite', updated_at=? WHERE id=?`,
+					time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+					p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
+				} else {
+					resolved++
+				}
+				break
+			}
+		}
+	}
+	return resolved
+}

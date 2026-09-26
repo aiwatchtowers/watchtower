@@ -1,0 +1,492 @@
+package db
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUpsertDigest(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := Digest{
+		ChannelID:    "C123",
+		Type:         "channel",
+		PeriodFrom:   1000000.0,
+		PeriodTo:     2000000.0,
+		Summary:      "Team discussed deployment plans",
+		Topics:       `["deployment","testing"]`,
+		Decisions:    `[{"text":"deploy Friday","by":"@alice"}]`,
+		ActionItems:  `[{"text":"write tests","assignee":"@bob"}]`,
+		MessageCount: 42,
+		Model:        "haiku",
+	}
+
+	id, err := db.UpsertDigest(d)
+	require.NoError(t, err)
+	assert.Greater(t, id, int64(0))
+
+	// Verify stored
+	got, err := db.GetDigestByID(int(id))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "C123", got.ChannelID)
+	assert.Equal(t, "channel", got.Type)
+	assert.Equal(t, 1000000.0, got.PeriodFrom)
+	assert.Equal(t, 2000000.0, got.PeriodTo)
+	assert.Equal(t, "Team discussed deployment plans", got.Summary)
+	assert.Equal(t, `["deployment","testing"]`, got.Topics)
+	assert.Equal(t, 42, got.MessageCount)
+	assert.Equal(t, "haiku", got.Model)
+}
+
+// TestMarkDigestRead_CascadeDecisions locks the invariant that marking a digest
+// read also marks every decision in it read (a decision_reads row per index), so
+// the Decisions feed — which counts unread as total − COUNT(decision_reads) —
+// does not strand decisions of a digest that was read via catch-up.
+func TestMarkDigestRead_CascadeDecisions(t *testing.T) {
+	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	id, err := db.UpsertDigest(Digest{
+		ChannelID:  "C1",
+		Type:       "channel",
+		PeriodFrom: 1000.0,
+		PeriodTo:   2000.0,
+		Summary:    "s",
+		Decisions:  `[{"text":"a"},{"text":"b"},{"text":"c"}]`,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.MarkDigestRead(int(id)))
+
+	var read int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 3, read, "all three decisions must be marked read")
+
+	// Idempotent: re-marking does not duplicate decision_reads rows.
+	require.NoError(t, db.MarkDigestRead(int(id)))
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 3, read, "re-marking read must not duplicate rows")
+}
+
+// TestMarkDigestRead_NoDecisionsIsNoop ensures a digest with an empty decisions
+// array creates no decision_reads rows (and does not error).
+func TestMarkDigestRead_NoDecisionsIsNoop(t *testing.T) {
+	// BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	id, err := db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel", PeriodFrom: 1, PeriodTo: 2,
+		Summary: "s", Decisions: `[]`,
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.MarkDigestRead(int(id)))
+
+	var read int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM decision_reads WHERE digest_id = ?`, id).Scan(&read))
+	assert.Equal(t, 0, read)
+}
+
+func TestUpsertDigestReplacesExisting(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	d := Digest{
+		ChannelID:  "C123",
+		Type:       "channel",
+		PeriodFrom: 1000000.0,
+		PeriodTo:   2000000.0,
+		Summary:    "v1",
+		Model:      "haiku",
+	}
+	_, err = db.UpsertDigest(d)
+	require.NoError(t, err)
+
+	d.Summary = "v2"
+	d.MessageCount = 10
+	_, err = db.UpsertDigest(d)
+	require.NoError(t, err)
+
+	// Should only be one digest
+	digests, err := db.GetDigests(DigestFilter{ChannelID: "C123"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "v2", digests[0].Summary)
+	assert.Equal(t, 10, digests[0].MessageCount)
+}
+
+func TestGetDigestsFilter(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Insert channel digests
+	for _, ch := range []string{"C1", "C2"} {
+		_, err := db.UpsertDigest(Digest{
+			ChannelID:  ch,
+			Type:       "channel",
+			PeriodFrom: 1000000.0,
+			PeriodTo:   2000000.0,
+			Summary:    "channel digest " + ch,
+			Model:      "haiku",
+		})
+		require.NoError(t, err)
+	}
+
+	// Insert daily digest
+	_, err = db.UpsertDigest(Digest{
+		ChannelID:  "",
+		Type:       "daily",
+		PeriodFrom: 1000000.0,
+		PeriodTo:   2000000.0,
+		Summary:    "daily digest",
+		Model:      "haiku",
+	})
+	require.NoError(t, err)
+
+	// Filter by channel
+	digests, err := db.GetDigests(DigestFilter{ChannelID: "C1"})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "C1", digests[0].ChannelID)
+
+	// Filter by type
+	digests, err = db.GetDigests(DigestFilter{Type: "channel"})
+	require.NoError(t, err)
+	assert.Len(t, digests, 2)
+
+	digests, err = db.GetDigests(DigestFilter{Type: "daily"})
+	require.NoError(t, err)
+	assert.Len(t, digests, 1)
+
+	// All digests
+	digests, err = db.GetDigests(DigestFilter{})
+	require.NoError(t, err)
+	assert.Len(t, digests, 3)
+
+	// With limit
+	digests, err = db.GetDigests(DigestFilter{Limit: 2})
+	require.NoError(t, err)
+	assert.Len(t, digests, 2)
+}
+
+func TestGetDigestsTimeFilter(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 1000000.0, PeriodTo: 2000000.0,
+		Summary: "early", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 3000000.0, PeriodTo: 4000000.0,
+		Summary: "late", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	// Filter from >= 2500000
+	digests, err := db.GetDigests(DigestFilter{FromUnix: 2500000.0})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "late", digests[0].Summary)
+
+	// Filter to <= 3000000
+	digests, err = db.GetDigests(DigestFilter{ToUnix: 3000000.0})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "early", digests[0].Summary)
+}
+
+func TestGetLatestDigest(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// No digests yet
+	d, err := db.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	assert.Nil(t, d)
+
+	// Insert two digests for same channel
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 1000000.0, PeriodTo: 2000000.0,
+		Summary: "older", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 3000000.0, PeriodTo: 4000000.0,
+		Summary: "newer", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	d, err = db.GetLatestDigest("C1", "channel")
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	assert.Equal(t, "newer", d.Summary)
+	assert.Equal(t, 4000000.0, d.PeriodTo)
+}
+
+func TestDeleteDigestsOlderThan(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 1000000.0, PeriodTo: 2000000.0,
+		Summary: "old", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: 5000000.0, PeriodTo: 6000000.0,
+		Summary: "new", Model: "haiku",
+	})
+	require.NoError(t, err)
+
+	deleted, err := db.DeleteDigestsOlderThan(3000000.0)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted)
+
+	digests, err := db.GetDigests(DigestFilter{})
+	require.NoError(t, err)
+	require.Len(t, digests, 1)
+	assert.Equal(t, "new", digests[0].Summary)
+}
+
+func TestChannelsWithNewMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Insert messages in two channels
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000000.000001', 'U1', 'old')")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'new')")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C2', '3000000.000001', 'U1', 'newest')")
+	require.NoError(t, err)
+
+	// Since 1500000 -> C1 (has msg at 2000000) and C2 (has msg at 3000000)
+	channels, err := db.ChannelsWithNewMessages(1500000.0)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"C1", "C2"}, channels)
+
+	// Since 2500000 -> only C2
+	channels, err = db.ChannelsWithNewMessages(2500000.0)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"C2"}, channels)
+
+	// Since 4000000 -> none
+	channels, err = db.ChannelsWithNewMessages(4000000.0)
+	require.NoError(t, err)
+	assert.Nil(t, channels)
+}
+
+// farFuture is an upper bound past every fixture timestamp, for the cases that
+// are not about the bound itself.
+const farFuture = 9_999_999_999.0
+
+func TestChannelsWithUndigestedMessages(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// C1 is digested up to 2000000, C2 up to 3500000, C3 never digested.
+	for _, m := range []struct{ ch, ts string }{
+		{"C1", "1000000.000001"}, {"C1", "2500000.000001"},
+		{"C2", "3000000.000001"},
+		{"C3", "1200000.000001"},
+	} {
+		_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', 'msg')", m.ch, m.ts)
+		require.NoError(t, err)
+	}
+	for _, d := range []struct {
+		ch string
+		to float64
+	}{{"C1", 2000000}, {"C2", 3500000}} {
+		_, err = db.UpsertDigest(Digest{
+			ChannelID: d.ch, Type: "channel",
+			PeriodFrom: d.to - 1000, PeriodTo: d.to,
+			Summary: "s", MessageCount: 1, Model: "haiku",
+		})
+		require.NoError(t, err)
+	}
+
+	// C1 has a message past its own watermark; C2 does not; C3 has never been
+	// digested and its message is newer than the never-digested floor.
+	candidates, err := db.ChannelsWithUndigestedMessages(1100000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+	assert.Equal(t, 2500000.0, candidates[0].NewestMessageTS)
+	assert.Equal(t, 2000000.0, candidates[0].LastDigestTo)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+	assert.Equal(t, 0.0, candidates[1].LastDigestTo, "a never-digested channel reports no watermark")
+
+	// Raising the never-digested floor past C3's message drops only C3 —
+	// C1 is still selected against its own watermark, not the floor.
+	candidates, err = db.ChannelsWithUndigestedMessages(3000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "C1", candidates[0].ChannelID)
+
+	// A daily rollup never counts as a channel's watermark.
+	_, err = db.UpsertDigest(Digest{
+		ChannelID: "C3", Type: "daily",
+		PeriodFrom: 1000000, PeriodTo: 9000000,
+		Summary: "rollup", MessageCount: 1, Model: "haiku",
+	})
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1100000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "C3", candidates[1].ChannelID)
+}
+
+// TestChannelsWithUndigestedMessages_UpperBoundMatchesTheLoader pins that
+// discovery is bounded above by the same `to` the caller loads with. A message
+// past that bound — a Slack-assigned ts ahead of the local clock, through skew
+// or a sync race — must not make a channel a candidate the load cannot serve:
+// the window would load empty, or reload the same second and write a zero-width
+// digest row, every cycle.
+func TestChannelsWithUndigestedMessages_UpperBoundMatchesTheLoader(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "skewed", Type: "public"}))
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'loadable')")
+	require.NoError(t, err)
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '5000000.000001', 'U1', 'past the bound')")
+	require.NoError(t, err)
+
+	// The bound hides the later message entirely — including from MAX().
+	candidates, err := db.ChannelsWithUndigestedMessages(1000000, 3000000)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 2000000.0, candidates[0].NewestMessageTS,
+		"the newest message reported must be one the same bound can load")
+
+	// Considered through everything the bound can serve → not a candidate, even
+	// though a later message exists above it.
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000000))
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, 3000000)
+	require.NoError(t, err)
+	assert.Empty(t, candidates, "a message the load cannot serve must not keep the channel a candidate")
+
+	// Raise the bound past it and the channel comes back.
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 5000000.0, candidates[0].NewestMessageTS)
+}
+
+// TestChannelsWithUndigestedMessages_ConsideredMark pins that the
+// considered-through mark takes a channel out of the candidate set exactly like
+// a digest would. A channel the model declines writes no digests row, so
+// without this it would be re-offered forever.
+func TestChannelsWithUndigestedMessages_ConsideredMark(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "declined", Type: "public"}))
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '2000000.000001', 'U1', 'msg')")
+	require.NoError(t, err)
+
+	candidates, err := db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 0.0, candidates[0].ConsideredTS, "never considered")
+
+	// Considered through the message → no longer a candidate, with no digest row.
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000000))
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	assert.Empty(t, candidates)
+
+	// New traffic past the mark brings it back, carrying the mark.
+	_, err = db.Exec("INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '3000000.000001', 'U1', 'newer')")
+	require.NoError(t, err)
+	candidates, err = db.ChannelsWithUndigestedMessages(1000000, farFuture)
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, 2000000.0, candidates[0].ConsideredTS)
+	assert.Equal(t, 0.0, candidates[0].LastDigestTo, "declined channels never get a digest row")
+}
+
+func TestSetChannelDigestConsideredTS_MonotoneAndSyncSafe(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general", Type: "public"}))
+
+	consideredTS := func() any {
+		t.Helper()
+		var ts any
+		require.NoError(t, db.QueryRow(`SELECT digest_considered_ts FROM channels WHERE id = 'C1'`).Scan(&ts))
+		return ts
+	}
+	assert.Nil(t, consideredTS(), "never considered stays NULL")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 2000))
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 1000))
+	assert.Equal(t, int64(2000), consideredTS(), "a lower stamp must not move the mark backwards")
+
+	require.NoError(t, db.SetChannelDigestConsideredTS("C1", 3000))
+	assert.Equal(t, int64(3000), consideredTS())
+
+	// A later Slack sync must not clear the mark.
+	require.NoError(t, db.UpsertChannel(Channel{ID: "C1", Name: "general-renamed", Type: "public", Topic: "t"}))
+	assert.Equal(t, int64(3000), consideredTS(), "UpsertChannel must not clear the digest considered mark")
+
+	// A channel with no row would swallow the write and stall forever, so the
+	// no-op must be reported rather than pass for a successful stamp.
+	err = db.SetChannelDigestConsideredTS("C_MISSING", 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "C_MISSING")
+}
+
+func TestDigestTypeConstraint(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Valid types
+	for _, typ := range []string{"channel", "daily", "weekly"} {
+		_, err := db.UpsertDigest(Digest{
+			ChannelID: "C_" + typ, Type: typ,
+			PeriodFrom: 1000000.0, PeriodTo: 2000000.0,
+			Summary: "test", Model: "haiku",
+		})
+		require.NoError(t, err, "type %q should be valid", typ)
+	}
+
+	// Invalid type
+	_, err = db.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary)
+		VALUES ('C1', 'invalid', 1000000.0, 2000000.0, 'test')`)
+	assert.Error(t, err)
+}

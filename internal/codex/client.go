@@ -1,0 +1,267 @@
+package codex
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"watchtower/internal/ai"
+	"watchtower/internal/digest"
+)
+
+// Client wraps the Codex CLI for AI queries (ask/chat).
+type Client struct {
+	model    string
+	dbPath   string // path to SQLite database for MCP server
+	codexCmd string // path to codex binary
+	// mcpArgs are appended to `watchtower mcp --db-path <db>` — the chat
+	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
+	// passes through `ai query --tools chat`. Empty = the read-only dev server.
+	mcpArgs []string
+}
+
+// SetMCPArgs appends extra flags to the MCP server command (chat mode).
+func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
+
+// NewClient creates a new AI client that invokes the Codex CLI.
+// dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
+// server is configured via .codex/config.toml.
+// codexPath is an optional explicit path to the codex binary; pass "" for default lookup.
+func NewClient(model, dbPath, codexPath string) *Client {
+	return &Client{
+		model:    model,
+		dbPath:   dbPath,
+		codexCmd: FindBinary(codexPath),
+	}
+}
+
+// promptPositionalOrStdin builds the trailing positional prompt argument for
+// `codex exec`, plus the same message again as stdin content when it must
+// travel that way instead: either it exceeds digest.StdinThreshold (ARG_MAX
+// safety — the package-level buildArgs precedent in generator.go, hour-long
+// meeting transcripts run to hundreds of KB) or it begins with '-', which a
+// bare positional would otherwise be parsed as a codex flag rather than the
+// prompt text. codex reads the prompt from stdin when the positional is "-".
+func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
+	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
+		return "-", userMessage
+	}
+	return userMessage, ""
+}
+
+// buildArgs constructs the CLI arguments for a codex exec call, plus stdin
+// content when userMessage must travel that way instead of inline (see
+// promptPositionalOrStdin). workDir is an optional working directory to pass
+// via --cd.
+func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
+	args := []string{
+		"exec",
+		"--model", c.model,
+		"--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"-c", "approval_policy=never",
+		"-c", "sandbox_mode=read-only",
+	}
+	if workDir != "" {
+		args = append(args, "--cd", workDir)
+	}
+	if systemPrompt != "" {
+		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
+	}
+	positional, stdin := promptPositionalOrStdin(userMessage)
+	args = append(args, positional)
+	return args, stdin
+}
+
+// Query sends a streaming request via the Codex CLI and returns channels
+// for text chunks, errors, and the session ID (always empty for Codex).
+func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	textCh := make(chan ai.StreamChunk, 64)
+	errCh := make(chan error, 1)
+	sidCh := make(chan string, 1)
+
+	go func() {
+		defer close(textCh)
+		defer close(errCh)
+		defer close(sidCh)
+
+		// Set up MCP config if database path is provided.
+		var workDir string
+		if c.dbPath != "" {
+			tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
+			if mcpErr != nil {
+				errCh <- mcpErr
+				return
+			}
+			defer func() { _ = os.RemoveAll(tmpDir) }()
+			workDir = tmpDir
+		}
+
+		args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+
+		cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+		if promptStdin != "" {
+			cmd.Stdin = strings.NewReader(promptStdin)
+		}
+		cmd.Cancel = func() error {
+			return cmd.Process.Signal(os.Interrupt)
+		}
+		cmd.WaitDelay = 5 * time.Second
+		// Pin CWD to a TCC-neutral directory so the Node-based Codex CLI never
+		// inherits a parent CWD inside ~/Documents or ~/Desktop, which would
+		// trigger macOS Files & Folders prompts attributed to Watchtower.
+		cmd.Dir = os.TempDir()
+
+		// Build clean environment with enriched PATH.
+		var env []string
+		for _, e := range os.Environ() {
+			if strings.HasPrefix(e, "PATH=") {
+				continue
+			}
+			env = append(env, e)
+		}
+		cmd.Env = append(env, "PATH="+RichPATH())
+
+		var stderrBuf strings.Builder
+		cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			errCh <- fmt.Errorf("creating stdout pipe: %w", err)
+			return
+		}
+
+		if err := cmd.Start(); err != nil {
+			errCh <- classifyError(err, "", c.codexCmd)
+			return
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			var event CodexEvent
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				continue
+			}
+
+			if event.Error != nil {
+				_ = cmd.Wait()
+				errCh <- fmt.Errorf("codex error: %s", event.Error.Message)
+				return
+			}
+
+			// A tool call interrupts the turn: signal a boundary so the consumer
+			// drops the pre-tool preamble and starts the answer fresh from what
+			// follows the tool (the ai.Client tool_use precedent). Codex wraps one
+			// item across item.started/updated/completed, so a single tool call
+			// fires a boundary per stage — deliberately unfiltered by stage, since
+			// it is idempotent: each extra boundary just re-clears an
+			// already-empty accumulator on the consumer side.
+			if event.Item != nil && (event.Item.Type == "mcp_tool_call" || event.Item.Type == "command_execution") {
+				select {
+				case textCh <- ai.StreamChunk{ToolBoundary: true}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+
+			// Stream agent_message content as it arrives.
+			if event.Item != nil && event.Item.Type == "agent_message" && event.Item.MessageText() != "" {
+				select {
+				case textCh <- ai.StreamChunk{Text: event.Item.MessageText()}:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					errCh <- ctx.Err()
+					return
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			_ = cmd.Wait()
+			errCh <- fmt.Errorf("reading codex output: %w", err)
+			return
+		}
+
+		if err := cmd.Wait(); err != nil {
+			errCh <- classifyError(err, stderrBuf.String(), c.codexCmd)
+		}
+
+		// Codex doesn't support session resumption — emit empty session ID.
+		sidCh <- ""
+	}()
+
+	return textCh, errCh, sidCh
+}
+
+// QuerySync sends a non-streaming request via the Codex CLI and returns
+// the full response text and token usage.
+func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
+	// Set up MCP config if database path is provided.
+	var workDir string
+	if c.dbPath != "" {
+		tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
+		if mcpErr != nil {
+			return "", nil, mcpErr
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+		workDir = tmpDir
+	}
+
+	args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
+
+	cmd := exec.CommandContext(ctx, c.codexCmd, args...)
+	if promptStdin != "" {
+		cmd.Stdin = strings.NewReader(promptStdin)
+	}
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(os.Interrupt)
+	}
+	cmd.WaitDelay = 5 * time.Second
+	// See Query() for rationale on cmd.Dir.
+	cmd.Dir = os.TempDir()
+
+	// Build clean environment with enriched PATH.
+	var env []string
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = append(env, "PATH="+RichPATH())
+
+	var stderrBuf strings.Builder
+	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", nil, classifyError(err, stderrBuf.String(), c.codexCmd)
+	}
+
+	result, codexUsage, parseErr := parseJSONLOutput(output)
+	if parseErr != nil {
+		return "", nil, parseErr
+	}
+
+	usage := &ai.Usage{
+		InputTokens:  codexUsage.InputTokens,
+		OutputTokens: codexUsage.OutputTokens,
+	}
+
+	return result, usage, nil
+}

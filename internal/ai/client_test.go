@@ -1,0 +1,769 @@
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/digest"
+)
+
+// writeMockClaude creates a shell script that mimics the claude CLI for testing.
+func writeMockClaude(t *testing.T, script string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o755)
+	require.NoError(t, err)
+	return path
+}
+
+func TestNewClient_DefaultClaudeCmd(t *testing.T) {
+	c := NewClient("model", "", "")
+	assert.Contains(t, c.claudeCmd, "claude")
+	assert.Equal(t, "model", c.model)
+}
+
+func TestBuildArgs(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+	args, stdin := c.buildArgs("system prompt", "user message", "text", "")
+	assert.Empty(t, stdin)
+
+	assert.Contains(t, args, "-p")
+	assert.Contains(t, args, "user message")
+	assert.Contains(t, args, "--system-prompt")
+	assert.Contains(t, args, "system prompt")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "text")
+	assert.Contains(t, args, "--model")
+	assert.Contains(t, args, "claude-sonnet-4-6")
+	// Read-only tool allowlist: only the watchtower MCP server, which is
+	// read-only by construction (its stdio connection runs query_only, see
+	// cmd/mcp.go). Prompt-injection from synced Slack/Jira content must not
+	// reach a shell, so the allowlist must NOT grant Bash access.
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower")
+	allowed := allowedToolsValue(t, args)
+	assert.NotContains(t, allowed, "Bash(")
+	assert.Equal(t, "mcp__watchtower", allowed)
+	// Built-ins are hidden outright (not merely denied) so the model never
+	// wastes a turn calling them and asking the user for approvals: file
+	// editing and Claude Code task tooling, shell and web (live sources +
+	// exfiltration channel), and filesystem reads (TCC prompt risk).
+	assertFlagValue(t, args, "--disallowedTools",
+		"Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,"+
+			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS,"+
+			"ExitPlanMode,SlashCommand,Skill")
+	// TCC isolation: every spawn must skip user-level ~/.claude/settings.json
+	// via --setting-sources project,local. Dropping this re-opens the P0 where
+	// plugin/hook auto-discovery probes ~/Desktop and triggers a Watchtower.app
+	// TCC prompt. Assert the flag AND its value adjacency so a refactor can't
+	// silently drop or split the pair.
+	assertFlagValue(t, args, "--setting-sources", "project,local")
+	assert.NotContains(t, args, "--resume")
+}
+
+// allowedToolsValue returns the value passed to --allowedTools, failing if absent.
+func allowedToolsValue(t *testing.T, args []string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == "--allowedTools" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	t.Fatal("--allowedTools not found in args")
+	return ""
+}
+
+// assertFlagValue verifies flag is present in args and immediately followed by value.
+func assertFlagValue(t *testing.T, args []string, flag, value string) {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			if assert.Less(t, i+1, len(args), "%s has no value", flag) {
+				assert.Equal(t, value, args[i+1], "%s value", flag)
+			}
+			return
+		}
+	}
+	t.Errorf("flag %s not found in args %v", flag, args)
+}
+
+// flagValue returns the token immediately following flag in args, failing
+// the test if the flag is absent or has no following value.
+func flagValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == flag {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			t.Fatalf("flag %s has no value", flag)
+		}
+	}
+	t.Fatalf("flag %s not found in args %v", flag, args)
+	return ""
+}
+
+func TestBuildArgs_WithDBPath(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
+	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+
+	assert.Contains(t, args, "--mcp-config")
+	// The MCP server is the watchtower binary itself running `mcp --db-path`,
+	// NOT a third-party npx package. Verify the config points at our binary and
+	// the given DB path.
+	found := false
+	for i, a := range args {
+		if a == "--mcp-config" && i+1 < len(args) {
+			found = true
+			cfg := args[i+1]
+			assert.Contains(t, cfg, "/tmp/test.db")
+			assert.Contains(t, cfg, "mcpServers")
+			assert.Contains(t, cfg, "watchtower")
+			assert.Contains(t, cfg, "\"mcp\"")
+			assert.Contains(t, cfg, "--db-path")
+			assert.NotContains(t, cfg, "npx")
+			assert.NotContains(t, cfg, "mcp-server-sqlite")
+		}
+	}
+	assert.True(t, found, "--mcp-config must be present with a db path")
+}
+
+func TestBuildArgs_WithoutDBPath(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+
+	assert.NotContains(t, args, "--mcp-config")
+}
+
+func TestBuildArgs_WithSessionID(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+	args, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
+
+	assert.Contains(t, args, "--resume")
+	assert.Contains(t, args, "session-123")
+	assert.NotContains(t, args, "--system-prompt")
+}
+
+// TestBuildArgs_LeadingDashPromptGoesToStdin pins the leading-dash guard on
+// promptFlagAndStdin: a chat message beginning with '-' must never sit
+// inline after "-p" (claude's --print takes an OPTIONAL value, so a
+// following dash-led token would be parsed as a new flag instead of being
+// consumed as -p's value) even though it is far below StdinThreshold.
+func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+	msg := "-v looks wrong"
+	args, stdin := c.buildArgs("sys", msg, "text", "")
+	if stdin != msg {
+		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
+	}
+	pIdx := -1
+	for i, a := range args {
+		if a == "-p" {
+			pIdx = i
+			break
+		}
+	}
+	if pIdx == -1 {
+		t.Fatal("args has no -p flag")
+	}
+	if pIdx+1 >= len(args) || !strings.HasPrefix(args[pIdx+1], "--") {
+		t.Errorf("token after -p = %q, want a flag (message must not be inline)", args[pIdx+1])
+	}
+	for _, a := range args {
+		if a == msg {
+			t.Error("args contains the leading-dash message; it must travel via stdin only")
+		}
+	}
+}
+
+// TestBuildArgs_StdinThresholdBoundary pins the exact-threshold boundary so
+// the inline and stdin routes never both fire: a message of exactly
+// StdinThreshold bytes stays inline, one byte over routes to stdin.
+func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
+	c := NewClient("claude-sonnet-4-6", "", "")
+
+	exact := strings.Repeat("x", digest.StdinThreshold)
+	args, stdin := c.buildArgs("sys", exact, "text", "")
+	if stdin != "" {
+		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
+	}
+	assertFlagValue(t, args, "-p", exact)
+
+	over := exact + "x"
+	args2, stdin2 := c.buildArgs("sys", over, "text", "")
+	if stdin2 != over {
+		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
+	}
+	for _, a := range args2 {
+		if a == over {
+			t.Error("over-threshold message must not appear inline in args")
+		}
+	}
+	// "-p" must be bare on the stdin route: the next token must be a flag,
+	// never a value (an implementation that swaps the message for "" and
+	// still passes it inline, e.g. "-p" ""), would pass the two checks
+	// above while still being wrong.
+	pIdx := -1
+	for i, a := range args2 {
+		if a == "-p" {
+			pIdx = i
+			break
+		}
+	}
+	if pIdx == -1 {
+		t.Fatal("args2 has no -p flag")
+	}
+	if pIdx+1 >= len(args2) || !strings.HasPrefix(args2[pIdx+1], "--") {
+		t.Errorf("token after -p = %q, want a flag (message must not be inline, even as an empty value)", args2[pIdx+1])
+	}
+}
+
+// TestQuerySync_LeadingDashMessageReachesStdin proves the leading-dash route
+// wires all the way to the subprocess for QuerySync: a fake claude binary
+// reads its stdin and echoes a marker back only when it finds it there.
+func TestQuerySync_LeadingDashMessageReachesStdin(t *testing.T) {
+	const marker = "STDIN-MARKER-ai-client-sync-01"
+	mockPath := writeMockClaude(t, `input=$(cat)
+case "$input" in
+*`+marker+`*) printf '{"type":"result","result":"got:`+marker+`"}' ;;
+*) printf '{"type":"result","result":"marker-missing"}' ;;
+esac
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	msg := "-v " + marker
+	result, _, err := c.QuerySync(context.Background(), "system", msg, "")
+	require.NoError(t, err)
+	assert.Equal(t, "got:"+marker, result, "the leading-dash message did not reach the subprocess via stdin")
+}
+
+// TestQuery_LeadingDashMessageReachesStdin is QuerySync's streaming sibling:
+// the leading-dash route must also be wired on the Query call site.
+func TestQuery_LeadingDashMessageReachesStdin(t *testing.T) {
+	const marker = "STDIN-MARKER-ai-client-stream-02"
+	script := `input=$(cat)
+case "$input" in
+*` + marker + `*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"got:` + marker + `"}]}}\n' ;;
+*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"marker-missing"}]}}\n' ;;
+esac
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	msg := "-v " + marker
+	textCh, errCh, _ := c.Query(context.Background(), "system", msg, "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+	require.NoError(t, <-errCh)
+	assert.Equal(t, "got:"+marker, result.String(), "the leading-dash message did not reach the subprocess via stdin")
+}
+
+func TestQuerySync_Success(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","result":"Hello from Claude","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.001}'`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	result, usage, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.NoError(t, err)
+	assert.Equal(t, "Hello from Claude", result)
+	require.NotNil(t, usage)
+	assert.Equal(t, 10, usage.InputTokens)
+	assert.Equal(t, 5, usage.OutputTokens)
+}
+
+func TestQuerySync_TrimsTrailingNewlines(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","result":"response\\n\\n","usage":{"input_tokens":1,"output_tokens":1}}'`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	result, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.NoError(t, err)
+	assert.Equal(t, "response", result)
+}
+
+func TestQuerySync_ExitError(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "something went wrong" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "something went wrong")
+}
+
+func TestQuerySync_ContextCancellation(t *testing.T) {
+	mockPath := writeMockClaude(t, `sleep 10; echo "too late"`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, _, err := c.QuerySync(ctx, "system", "hello", "")
+	require.Error(t, err)
+}
+
+func TestQuery_StreamingSuccess(t *testing.T) {
+	// Mock script outputs stream-json events
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Hello "}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"world!"}]}}\n'
+printf '{"type":"result","subtype":"success","result":"Hello world!","session_id":"sess-abc"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+
+	err := <-errCh
+	require.NoError(t, err)
+	assert.Equal(t, "Hello world!", result.String())
+
+	sid := <-sidCh
+	assert.Equal(t, "sess-abc", sid)
+}
+
+// A tool call mid-turn must surface as a boundary chunk, and the "let me check
+// first" preamble streamed before it must not glue onto the post-tool answer —
+// the desktop bug where "I need to check…first.Да, могу…" rendered as one line.
+func TestQuery_ToolUseSignalsBoundaryAndDropsPreamble(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"I need to check the projects first."}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"list_jira_projects","input":{}}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"Here is the answer."}]}}\n'
+printf '{"type":"result","subtype":"success","result":"Here is the answer.","session_id":"sess-1"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hi", "")
+
+	var chunks []StreamChunk
+	// Replay the consumer's reset-on-boundary contract (cmd/ai.go → desktop).
+	var visible strings.Builder
+	sawBoundary := false
+	for chunk := range textCh {
+		chunks = append(chunks, chunk)
+		if chunk.ToolBoundary {
+			sawBoundary = true
+			visible.Reset()
+			continue
+		}
+		visible.WriteString(chunk.Text)
+	}
+
+	require.NoError(t, <-errCh)
+	assert.True(t, sawBoundary, "a tool_use event must emit a boundary chunk")
+	assert.Equal(t, "Here is the answer.", visible.String(),
+		"the pre-tool preamble must be dropped, not glued to the answer")
+	// The preamble did reach the stream (so live UI can show it), but as its own
+	// chunk before the boundary — never concatenated with the answer.
+	require.GreaterOrEqual(t, len(chunks), 3)
+	assert.Equal(t, "I need to check the projects first.", chunks[0].Text)
+	assert.True(t, chunks[1].ToolBoundary)
+}
+
+func TestQuery_StreamingIgnoresNonTextEvents(t *testing.T) {
+	script := `
+printf '{"type":"system","subtype":"init","session_id":"test"}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"response"}]}}\n'
+printf '{"type":"result","subtype":"success","result":"response","session_id":"sess-xyz"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+
+	err := <-errCh
+	require.NoError(t, err)
+	assert.Equal(t, "response", result.String())
+}
+
+func TestQuery_StreamingError(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "error occurred" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+}
+
+func TestQuery_ContextCancellation(t *testing.T) {
+	mockPath := writeMockClaude(t, `sleep 10`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	textCh, errCh, _ := c.Query(ctx, "system", "hello", "")
+
+	for range textCh {
+	}
+
+	err := <-errCh
+	if err != nil {
+		// Either context error, kill error, or pipe read error is acceptable
+		msg := err.Error()
+		assert.True(t, strings.Contains(msg, "context") ||
+			strings.Contains(msg, "signal") ||
+			strings.Contains(msg, "killed") ||
+			strings.Contains(msg, "claude CLI") ||
+			strings.Contains(msg, "reading claude output"),
+			"unexpected error: %s", msg)
+	}
+}
+
+func TestQuery_SessionIDFromResultEvent(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'
+printf '{"type":"result","subtype":"success","result":"hi","session_id":"new-session-42"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
+
+	for range textCh {
+	}
+	require.NoError(t, <-errCh)
+
+	sid := <-sidCh
+	assert.Equal(t, "new-session-42", sid)
+}
+
+func TestQuery_NoSessionIDWhenMissing(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n'
+printf '{"type":"result","subtype":"success","result":"hi"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, sidCh := c.Query(context.Background(), "system", "hello", "")
+
+	for range textCh {
+	}
+	require.NoError(t, <-errCh)
+
+	// Channel should be closed with no value
+	sid, ok := <-sidCh
+	assert.False(t, ok)
+	assert.Empty(t, sid)
+}
+
+func TestClassifyError_NotFound(t *testing.T) {
+	err := classifyError(&exec.Error{Name: "claude", Err: exec.ErrNotFound}, "")
+	assert.Contains(t, err.Error(), "claude CLI not found")
+}
+
+func TestClassifyError_ExitError(t *testing.T) {
+	err := classifyError(&exec.ExitError{}, "auth failed")
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "auth failed")
+}
+
+func TestStreamEvent_ExtractText(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    streamEvent
+		expected string
+	}{
+		{"assistant message", streamEvent{Type: "assistant", Message: &streamMessage{Content: []streamContent{{Type: "text", Text: "hello"}}}}, "hello"},
+		{"result event", streamEvent{Type: "result", Subtype: "success", Result: "full"}, ""},
+		{"system event", streamEvent{Type: "system", Subtype: "init"}, ""},
+		{"assistant no message", streamEvent{Type: "assistant"}, ""},
+		{"assistant empty content", streamEvent{Type: "assistant", Message: &streamMessage{}}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.event.extractText())
+		})
+	}
+}
+
+func TestQuery_IgnoresMalformedJSON(t *testing.T) {
+	script := `
+printf 'not json\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"valid"}]}}\n'
+printf '{broken json\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+
+	err := <-errCh
+	require.NoError(t, err)
+	assert.Equal(t, "valid", result.String())
+}
+
+func TestQuery_SkipsEmptyLines(t *testing.T) {
+	script := `
+printf '\n'
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"data"}]}}\n'
+printf '\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+
+	var result strings.Builder
+	for chunk := range textCh {
+		result.WriteString(chunk.Text)
+	}
+
+	err := <-errCh
+	require.NoError(t, err)
+	assert.Equal(t, "data", result.String())
+}
+
+// TestParseCLIOutput_UnparsableOutputIsNotEchoed pins that the parse error
+// describes the CLI output instead of quoting it. The output is model text
+// built from private Slack/mail/calendar content, and this error is wrapped
+// with %w into the daemon log, pipeline_runs.error_msg, and the Desktop UI.
+func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
+	secret := "Northwind acquisition closes Friday, legal still reviewing the terms"
+
+	_, err := parseCLIOutput([]byte(secret))
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), secret)
+	assert.NotContains(t, err.Error(), "Northwind")
+	// Still diagnostic: shape, size, and a correlatable fingerprint.
+	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
+	assert.Contains(t, err.Error(), "looks like plain text")
+	assert.Contains(t, err.Error(), "sha256:")
+}
+
+func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetMCPArgs([]string{"--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"})
+	cfg := c.buildMCPConfig()
+	var parsed struct {
+		Servers map[string]struct {
+			Args []string `json:"args"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(cfg), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	got := parsed.Servers["watchtower"].Args
+	want := []string{"mcp", "--db-path", "/tmp/w.db", "--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestBuildMCPConfig_MergesExternalServers(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Args: []string{"-y", "trello-mcp"},
+		Env: map[string]string{"K": "v"},
+	}})
+	var parsed struct {
+		Servers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+			URL     string            `json:"url"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed.Servers["watchtower"]; !ok {
+		t.Fatal("watchtower server missing")
+	}
+	tr, ok := parsed.Servers["trello"]
+	if !ok || tr.Command != "npx" || tr.Env["K"] != "v" {
+		t.Fatalf("trello = %+v", tr)
+	}
+}
+
+// TestBuildMCPConfig_HTTPServerShape is a characterization guard: it pins the
+// http-transport entry shape externalServerConfig already emits
+// ({"type":"http","url":...,"headers":...}), asserting no stdio keys
+// (command/args/env) leak into it and that the allowlist still gains the
+// mcp__<name> token like the stdio path.
+func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "acme", Kind: "http", URL: "https://acme.example/mcp",
+		Headers: map[string]string{"Authorization": "Bearer tok"},
+	}})
+	var parsed struct {
+		Servers map[string]struct {
+			Type    string            `json:"type"`
+			URL     string            `json:"url"`
+			Headers map[string]string `json:"headers"`
+			Command *string           `json:"command"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	acme, ok := parsed.Servers["acme"]
+	if !ok {
+		t.Fatal("acme server missing")
+	}
+	if acme.Type != "http" {
+		t.Fatalf("type = %q, want http", acme.Type)
+	}
+	if acme.URL != "https://acme.example/mcp" {
+		t.Fatalf("url = %q", acme.URL)
+	}
+	if !reflect.DeepEqual(acme.Headers, map[string]string{"Authorization": "Bearer tok"}) {
+		t.Fatalf("headers = %v", acme.Headers)
+	}
+	if acme.Command != nil {
+		t.Fatalf("command = %v, want nil (no stdio keys on an http entry)", acme.Command)
+	}
+
+	args, _ := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
+}
+
+// TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders pins that an http server with
+// no headers emits exactly {type, url}: no "headers" key (rather than an empty
+// object) and no stdio keys (command/args/env) leaking into an http entry.
+func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "acme", Kind: "http", URL: "https://acme.example/mcp",
+	}})
+	var parsed struct {
+		Servers map[string]map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(c.buildMCPConfig()), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	acme, ok := parsed.Servers["acme"]
+	if !ok {
+		t.Fatal("acme server missing")
+	}
+	if len(acme) != 2 {
+		t.Fatalf("http entry must carry exactly type+url, got %d keys: %v", len(acme), acme)
+	}
+	for _, key := range []string{"type", "url"} {
+		if _, ok := acme[key]; !ok {
+			t.Fatalf("http entry missing %q key: %v", key, acme)
+		}
+	}
+}
+
+func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
+	args, _ := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
+}
+
+func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	// no SetExternalMCPServers call
+	got := c.buildMCPConfig()
+	if strings.Contains(got, "trello") || strings.Count(got, "\"command\"") != 1 {
+		t.Fatalf("expected single watchtower server, got %s", got)
+	}
+}
+
+func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args, _ := c.buildArgs("sys", "hi", "stream-json", "")
+	for _, a := range args {
+		if a == "--allowed-tools" {
+			t.Fatalf("legacy flag leaked into claude args")
+		}
+	}
+}
+
+func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
+	}})
+	args, _ := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
+	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
+	if strings.Contains(strings.Join(args, " "), "secret123") {
+		t.Fatal("secret leaked into argv")
+	}
+	// when a secret is present the value is a path to an existing 0600 file
+	fi, err := os.Stat(val)
+	if err != nil {
+		t.Fatalf("mcp-config not a file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", fi.Mode().Perm())
+	}
+}
+
+func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	args, _ := c.buildArgs("sys", "hi", "json", "")
+	val := flagValue(t, args, "--mcp-config")
+	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
+		t.Fatalf("expected inline JSON, got %q", val)
+	}
+}

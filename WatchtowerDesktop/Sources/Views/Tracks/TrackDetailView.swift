@@ -1,0 +1,1227 @@
+import SwiftUI
+import WatchtowerCore
+
+struct TrackDetailView: View {
+    let track: Track
+    let viewModel: TracksViewModel
+    var onClose: (() -> Void)?
+    @Environment(AppState.self) private var appState
+    @State private var chatVM: TrackChatViewModel?
+    @State private var showCreateTarget = false
+    @State private var targetPrefill: TargetPrefill?
+    @State private var targetPrefillError: String?
+    @State private var isBuildingPrefill = false
+    @State private var linkedTargets: [Target] = []
+    @State private var jiraIssues: [JiraIssue] = []
+    @State private var trackStates: [TrackState] = []
+    @State private var expandedTrackStateIDs: Set<Int> = []
+    @State private var timelineVM: CustomTrackTimelineViewModel?
+    // Custom-track manage state (local so edits reflect before a snapshot reload).
+    @State private var displayedInstruction = ""
+    @State private var collecting = true
+    @State private var isEditingInstruction = false
+    @State private var draftInstruction = ""
+    @State private var showDeleteConfirm = false
+
+    var body: some View {
+        VSplitView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    headerSection
+                    textSection
+                    requesterSection
+                    contextSection
+                    customActivitySection
+                    blockingSection
+                    subItemsSection
+                    decisionSection
+                    decisionOptionsSection
+                    participantsSection
+                    historySection
+                    sourceRefsSection
+                    relatedDigestsSection
+                    linkedTasksSection
+                    jiraIssuesSection
+                    dueDateSection
+                    tagsSection
+                    actionsSection
+                }
+                .padding()
+            }
+            .frame(minHeight: 200)
+
+            // Bottom: embedded chat
+            if let chatVM {
+                Divider()
+                TrackChatSection(chatVM: chatVM)
+                    .frame(minHeight: 200, idealHeight: 300)
+            }
+        }
+        .onAppear {
+            if let db = appState.databaseManager {
+                chatVM = TrackChatViewModel(
+                    track: track, viewModel: viewModel, dbManager: db
+                )
+                loadLinkedTargets(db: db)
+                loadJiraIssues(db: db)
+                loadTrackStates(db: db)
+                startTimelineIfCustom(db: db)
+                displayedInstruction = track.instruction
+                collecting = track.enabled
+            }
+        }
+        .onChange(of: track.id) {
+            timelineVM?.stop()
+            timelineVM = nil
+            isEditingInstruction = false
+            displayedInstruction = track.instruction
+            collecting = track.enabled
+            if let db = appState.databaseManager {
+                startTimelineIfCustom(db: db)
+            }
+        }
+        .onDisappear {
+            timelineVM?.stop()
+            timelineVM = nil
+        }
+        .onChange(of: showCreateTarget) { _, isShowing in
+            if !isShowing, let db = appState.databaseManager {
+                loadLinkedTargets(db: db)
+            }
+        }
+    }
+
+    // MARK: - Custom-track Activity
+
+    /// Timeline of scan-produced events for a custom track. Standalone tracks
+    /// (no linked target) still see the timeline; only the per-event "Apply"
+    /// affordance is gated on the track being linked (see the VM's
+    /// `canApplyActions`).
+    @ViewBuilder
+    private var customActivitySection: some View {
+        if track.isCustom {
+            VStack(alignment: .leading, spacing: 12) {
+                // Manage row: collecting toggle + edit affordance.
+                HStack {
+                    Toggle(isOn: Binding(
+                        get: { collecting },
+                        set: { setCollecting($0) }
+                    )) {
+                        Text(collecting ? "Collecting" : "Paused")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help(collecting
+                          ? "The daemon scans this watch each cycle. Turn off to pause."
+                          : "Paused — the daemon skips this watch until re-enabled.")
+                    Spacer()
+                    if !isEditingInstruction {
+                        Button {
+                            draftInstruction = displayedInstruction
+                            isEditingInstruction = true
+                        } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Watch instruction").font(.headline)
+                    if isEditingInstruction {
+                        TextField("What to watch for…", text: $draftInstruction, axis: .vertical)
+                            .lineLimit(3...10)
+                            .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Spacer()
+                            Button("Cancel") { isEditingInstruction = false }
+                            Button("Save") { saveInstruction() }
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    } else if !displayedInstruction.isEmpty {
+                        Text(displayedInstruction)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                if let vm = timelineVM {
+                    CustomTrackTimelineView(viewModel: vm)
+                }
+            }
+        }
+    }
+
+    /// Persists an edited watch instruction and reflects it immediately.
+    private func saveInstruction() {
+        let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+        }
+        displayedInstruction = text
+        isEditingInstruction = false
+    }
+
+    /// Toggles whether the daemon collects for this watch.
+    private func setCollecting(_ on: Bool) {
+        guard let db = appState.databaseManager else { return }
+        try? db.dbPool.write { database in
+            try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+        }
+        collecting = on
+    }
+
+    /// Permanently deletes a custom track (and its events) and closes the pane;
+    /// the list's tracks-count observation drops it automatically.
+    private func deleteTrack() {
+        guard let db = appState.databaseManager else { return }
+        onClose?()
+        try? db.dbPool.write { database in
+            try TrackQueries.delete(database, id: track.id)
+        }
+    }
+
+    /// Builds and starts the custom-track timeline VM. When the track is linked
+    /// to a target, a TargetsViewModel is supplied so a confirmed proposed
+    /// action can mutate that target; standalone tracks pass nil.
+    private func startTimelineIfCustom(db: DatabaseManager) {
+        guard track.isCustom, timelineVM == nil,
+              let runner = ProcessCLIRunner.makeDefault() else { return }
+        let targetsVM: TargetsViewModel? = track.linkedTargetID != nil
+            ? TargetsViewModel(dbManager: db)
+            : nil
+        let vm = CustomTrackTimelineViewModel(
+            track: track,
+            dbManager: db,
+            scanService: TrackScanService(runner: runner),
+            targetsViewModel: targetsVM,
+            scanCenter: appState.trackScanCenter
+        )
+        vm.start()
+        timelineVM = vm
+    }
+
+    // MARK: - Header
+
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                priorityBadge
+                ownershipBadge
+                categoryBadge
+
+                if track.hasUpdates {
+                    Label("Updated", systemImage: "bell.badge.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.orange.opacity(0.12), in: Capsule())
+                }
+
+                Spacer()
+
+                Text(track.updatedAgo)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let onClose {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            // Main track text as title
+            Text(viewModel.resolveUserIDs(track.text))
+                .font(.title3)
+                .fontWeight(.semibold)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Text (main body)
+
+    @ViewBuilder
+    private var textSection: some View {
+        // Channels
+        let channels = track.decodedChannelIDs
+        if !channels.isEmpty {
+            FlowLayout(spacing: 6) {
+                ForEach(channels, id: \.self) { chID in
+                    let name = viewModel.channelName(for: chID) ?? chID
+                    if let url = viewModel.slackChannelURL(channelID: chID) {
+                        Link(destination: url) {
+                            Text("#\(name)")
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.quaternary)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.borderless)
+                    } else {
+                        Text("#\(name)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(.quaternary)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Requester
+
+    @ViewBuilder
+    private var requesterSection: some View {
+        if !track.requesterName.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "person.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Requested by: \(viewModel.resolveUserIDs(track.requesterName))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Context
+
+    @ViewBuilder
+    private var contextSection: some View {
+        if !track.context.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Context")
+                    .font(.headline)
+                Text(viewModel.resolveUserIDs(track.context))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    // MARK: - Blocking
+
+    @ViewBuilder
+    private var blockingSection: some View {
+        if !track.blocking.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Blocking")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.red)
+                Text(viewModel.resolveUserIDs(track.blocking))
+                    .font(.subheadline)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // MARK: - Sub-items
+
+    @ViewBuilder
+    private var subItemsSection: some View {
+        let items = track.decodedSubItems
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                let progress = track.subItemsProgress
+                HStack {
+                    Text("Sub-items")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(progress.done)/\(progress.total)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Progress bar
+                if progress.total > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(.quaternary)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(.green)
+                                .frame(
+                                    width: geo.size.width
+                                        * CGFloat(progress.done)
+                                        / CGFloat(progress.total)
+                                )
+                        }
+                    }
+                    .frame(height: 6)
+                }
+
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    Button {
+                        viewModel.toggleSubItem(track, at: index)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(
+                                systemName: item.isDone
+                                    ? "checkmark.circle.fill"
+                                    : "circle"
+                            )
+                            .foregroundStyle(item.isDone ? .green : .secondary)
+                            .font(.subheadline)
+
+                            Text(item.text)
+                                .font(.subheadline)
+                                .strikethrough(item.isDone)
+                                .foregroundStyle(item.isDone ? .secondary : .primary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Decision summary
+
+    @ViewBuilder
+    private var decisionSection: some View {
+        if !track.decisionSummary.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Decision")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Text(viewModel.resolveUserIDs(track.decisionSummary))
+                    .font(.subheadline)
+                    .textSelection(.enabled)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // MARK: - Decision options
+
+    @ViewBuilder
+    private var decisionOptionsSection: some View {
+        let options = track.decodedDecisionOptions
+        if !options.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Options")
+                    .font(.headline)
+
+                ForEach(options) { opt in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(opt.option)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+
+                        if !opt.supporters.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "hand.thumbsup.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.green)
+                                Text(opt.supporters.joined(separator: ", "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !opt.pros.isEmpty {
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("+")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                                    .frame(width: 12)
+                                Text(opt.pros)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !opt.cons.isEmpty {
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("-")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                    .frame(width: 12)
+                                Text(opt.cons)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                }
+            }
+        }
+    }
+
+    // MARK: - Participants
+
+    @ViewBuilder
+    private var participantsSection: some View {
+        let people = track.decodedParticipants
+        if !people.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Participants")
+                    .font(.headline)
+
+                ForEach(people) { person in
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.circle.fill")
+                            .foregroundStyle(stanceColor(person.stance))
+                            .font(.subheadline)
+                            .frame(width: 20)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(person.name)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            if let stance = person.stance, !stance.isEmpty {
+                                Text(stance)
+                                    .font(.caption)
+                                    .foregroundStyle(stanceColor(stance))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Source refs (key messages)
+
+    @ViewBuilder
+    private var sourceRefsSection: some View {
+        let refs = track.decodedSourceRefs
+        if !refs.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Key Messages")
+                    .font(.headline)
+
+                ForEach(refs) { ref in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "quote.opening")
+                            .foregroundStyle(.tertiary)
+                            .font(.caption)
+                            .frame(width: 16)
+                            .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(viewModel.resolveUserIDs(ref.author))
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.secondary)
+                            Text(ref.text)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+
+                        Spacer()
+
+                        // Slack link for the message — prefer channel_id from ref, fall back to track's first channel
+                        let refChannelID = ref.channelID ?? track.decodedChannelIDs.first
+                        if let chID = refChannelID, !ref.ts.isEmpty {
+                            if let url = viewModel.slackMessageURL(
+                                channelID: chID, messageTS: ref.ts, threadTS: ref.threadTS
+                            ) {
+                                Link(destination: url) {
+                                    Image(systemName: "arrow.up.right.square")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Open in Slack")
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    // MARK: - Related Digests (expandable)
+
+    @ViewBuilder
+    private var relatedDigestsSection: some View {
+        let digestIDs = track.decodedRelatedDigestIDs
+        if !digestIDs.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Related Digests")
+                    .font(.headline)
+
+                ForEach(digestIDs, id: \.self) { digestID in
+                    LinkedDigestRow(
+                        digestID: digestID,
+                        viewModel: viewModel,
+                        appState: appState
+                    )
+                }
+            }
+        }
+    }
+
+    // MARK: - Due date
+
+    @ViewBuilder
+    private var dueDateSection: some View {
+        if let formatted = track.dueDateFormatted {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(track.isOverdue ? .red : .secondary)
+                Text("Due: \(formatted)")
+                    .font(.caption)
+                    .foregroundStyle(track.isOverdue ? .red : .secondary)
+                if track.isOverdue {
+                    Text("OVERDUE")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.red, in: Capsule())
+                }
+            }
+        }
+    }
+
+    // MARK: - Tags
+
+    @ViewBuilder
+    private var tagsSection: some View {
+        let trackTags = track.decodedTags
+        if !trackTags.isEmpty {
+            HStack(spacing: 4) {
+                ForEach(trackTags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private var actionsSection: some View {
+        HStack(spacing: 8) {
+            if let slackURL {
+                Button {
+                    NSWorkspace.shared.open(slackURL)
+                } label: {
+                    Label("Open in Slack", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if let msg = targetPrefillError {
+                Text(msg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            // A custom track is a watch, not extracted work — "Create Target"
+            // makes no sense for it. When it's linked to a target, offer a jump
+            // to that target instead; standalone custom tracks show neither.
+            if track.isCustom {
+                if let linkedID = track.linkedTargetID {
+                    Button {
+                        appState.navigateToTarget(linkedID)
+                    } label: {
+                        Label("Go to Target", systemImage: "scope")
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else {
+                Button {
+                    openCreateTarget()
+                } label: {
+                    Label("Create Target", systemImage: "scope")
+                }
+                .buttonStyle(.bordered)
+                .disabled(isBuildingPrefill)
+                .sheet(isPresented: $showCreateTarget) {
+                    CreateTargetSheet(prefill: targetPrefill)
+                }
+            }
+
+            if track.isCustom {
+                // A watch is user-created and one-off — offer a real delete
+                // (cascades its events) rather than the soft dismiss used for
+                // auto-extracted tracks.
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .confirmationDialog(
+                    "Delete this watch?",
+                    isPresented: $showDeleteConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete", role: .destructive) { deleteTrack() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The watch and its collected activity are removed. This can't be undone.")
+                }
+            } else if track.isDismissed {
+                Button {
+                    viewModel.restoreTrack(track)
+                } label: {
+                    Label("Restore", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button {
+                    onClose?()
+                    viewModel.dismissTrack(track)
+                } label: {
+                    Label("Dismiss", systemImage: "archivebox")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            Spacer()
+            if let dbManager = appState.databaseManager {
+                FeedbackButtons(
+                    entityType: "track",
+                    entityID: String(track.id),
+                    dbManager: dbManager
+                )
+            }
+        }
+    }
+
+    private var slackURL: URL? {
+        let refs = track.decodedSourceRefs
+        if let first = refs.first, !first.ts.isEmpty {
+            let chID = first.channelID ?? track.decodedChannelIDs.first
+            if let chID, !chID.isEmpty {
+                return viewModel.slackMessageURL(
+                    channelID: chID,
+                    messageTS: first.ts,
+                    threadTS: first.threadTS
+                )
+            }
+        }
+        if let chID = track.decodedChannelIDs.first, !chID.isEmpty {
+            return viewModel.slackChannelURL(channelID: chID)
+        }
+        return nil
+    }
+
+    // MARK: - Jira Issues
+
+    @ViewBuilder
+    private var jiraIssuesSection: some View {
+        if !jiraIssues.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Linked Jira Issues")
+                    .font(.headline)
+
+                ForEach(jiraIssues, id: \.key) { issue in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 10) {
+                            JiraBadgeView(
+                                issue: issue,
+                                siteURL: viewModel.jiraSiteURL,
+                                isExpanded: true
+                            )
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(issue.summary)
+                                    .font(.subheadline)
+                                    .lineLimit(2)
+
+                                HStack(spacing: 8) {
+                                    if !issue.sprintName.isEmpty {
+                                        Label(issue.sprintName, systemImage: "arrow.triangle.2.circlepath")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    if let dueText = jiraIssueDueText(issue) {
+                                        Label(dueText, systemImage: "calendar")
+                                            .font(.caption2)
+                                            .foregroundStyle(
+                                                isJiraIssueOverdue(issue) ? .red : .secondary
+                                            )
+                                    }
+                                }
+                            }
+
+                            Spacer()
+                        }
+
+                        // Linked issues (blocks/blocked by/relates to)
+                        JiraLinkedIssuesView(
+                            issueKey: issue.key,
+                            siteURL: viewModel.jiraSiteURL
+                        )
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.indigo.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+
+    private func loadJiraIssues(db: DatabaseManager) {
+        jiraIssues = (try? db.dbPool.read { database in
+            try JiraQueries.fetchIssuesForTrack(database, trackID: track.id)
+        }) ?? []
+    }
+
+    private func jiraIssueDueText(_ issue: JiraIssue) -> String? {
+        guard !issue.dueDate.isEmpty else { return nil }
+        // dueDate is typically "YYYY-MM-DD" or ISO8601
+        let dateStr = String(issue.dueDate.prefix(10))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dateStr) else { return dateStr }
+        let relative = DateFormatter()
+        relative.dateStyle = .medium
+        relative.timeStyle = .none
+        return relative.string(from: date)
+    }
+
+    private func isJiraIssueOverdue(_ issue: JiraIssue) -> Bool {
+        guard !issue.dueDate.isEmpty,
+              issue.statusCategory != "done" else { return false }
+        let dateStr = String(issue.dueDate.prefix(10))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dateStr) else { return false }
+        return date < Date()
+    }
+
+    // MARK: - Linked Targets
+
+    @ViewBuilder
+    private var linkedTasksSection: some View {
+        if !linkedTargets.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Targets")
+                    .font(.headline)
+
+                ForEach(linkedTargets) { target in
+                    Button {
+                        appState.navigateToTarget(target.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: target.statusIcon)
+                                .foregroundStyle(taskStatusColor(target.status))
+                                .font(.subheadline)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(target.text)
+                                    .font(.subheadline)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.primary)
+
+                                HStack(spacing: 6) {
+                                    Text(target.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(
+                                            taskStatusColor(target.status).opacity(0.15),
+                                            in: Capsule()
+                                        )
+
+                                    if let due = target.dueDateFormatted {
+                                        Label(due, systemImage: "calendar")
+                                            .font(.caption2)
+                                            .foregroundStyle(target.isOverdue ? .red : .secondary)
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.green.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func loadLinkedTargets(db: DatabaseManager) {
+        linkedTargets = (try? db.dbPool.read { database in
+            try TargetQueries.fetchBySourceRef(database, sourceType: "track", sourceID: String(track.id))
+        }) ?? []
+    }
+
+    /// Loads the narrative-state history for this track. See TRACKS-06.
+    private func loadTrackStates(db: DatabaseManager) {
+        trackStates = (try? db.dbPool.read { database in
+            try TrackStateQueries.fetchByTrackID(database, trackID: track.id)
+        }) ?? []
+    }
+
+    // MARK: - History (TRACKS-06)
+
+    private var historySection: some View {
+        Group {
+            if !trackStates.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("History")
+                            .font(.headline)
+                        Text("(\(trackStates.count))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(trackStates) { state in
+                        trackStateRow(state)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func trackStateRow(_ state: TrackState) -> some View {
+        let isExpanded = expandedTrackStateIDs.contains(state.id)
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if isExpanded {
+                    expandedTrackStateIDs.remove(state.id)
+                } else {
+                    expandedTrackStateIDs.insert(state.id)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(state.createdAgo)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(state.sourceLabel)
+                        .font(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(state.isManual ? Color.blue.opacity(0.15) : Color.purple.opacity(0.15))
+                        .foregroundStyle(state.isManual ? .blue : .purple)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !state.text.isEmpty {
+                        Text(state.text)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
+                    if !state.context.isEmpty {
+                        Text(state.context)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    HStack(spacing: 12) {
+                        Label(state.priority, systemImage: "flag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.ownership, systemImage: "person")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Label(state.category, systemImage: "tag")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 18)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func taskStatusColor(_ status: String) -> Color {
+        switch status {
+        case "todo": .secondary
+        case "in_progress": .blue
+        case "blocked": .red
+        case "done": .green
+        case "dismissed": .gray
+        case "snoozed": .purple
+        default: .secondary
+        }
+    }
+
+    // MARK: - Badges
+
+    private var priorityBadge: some View {
+        Menu {
+            ForEach(["high", "medium", "low"], id: \.self) { priority in
+                Button {
+                    viewModel.updatePriority(track, to: priority)
+                } label: {
+                    if priority == track.priority {
+                        Label(priority.capitalized, systemImage: "checkmark")
+                    } else {
+                        Text(priority.capitalized)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(priorityColor)
+                    .frame(width: 8, height: 8)
+                Text(track.priority.capitalized)
+                    .font(.caption)
+                    .foregroundStyle(priorityColor)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(priorityColor.opacity(0.1), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var ownershipBadge: some View {
+        Menu {
+            ForEach(["mine", "delegated", "watching"], id: \.self) { own in
+                Button {
+                    viewModel.updateOwnership(track, to: own)
+                } label: {
+                    if own == track.ownership {
+                        Label(ownershipLabel(own), systemImage: "checkmark")
+                    } else {
+                        Text(ownershipLabel(own))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: ownershipIcon)
+                    .font(.system(size: 9))
+                Text(track.ownershipLabel)
+                    .font(.caption)
+            }
+            .foregroundStyle(ownershipColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(ownershipColor.opacity(0.1), in: Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var categoryBadge: some View {
+        Text(track.categoryLabel)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.secondary.opacity(0.1), in: Capsule())
+    }
+
+    // MARK: - Helpers
+
+    private var priorityColor: Color {
+        switch track.priority {
+        case "high": .red
+        case "low": .blue
+        default: .orange
+        }
+    }
+
+    private var ownershipColor: Color {
+        switch track.ownership {
+        case "mine": .green
+        case "delegated": .purple
+        case "watching": .secondary
+        default: .secondary
+        }
+    }
+
+    private var ownershipIcon: String {
+        switch track.ownership {
+        case "mine": "person.fill"
+        case "delegated": "arrow.right.circle.fill"
+        case "watching": "eye.fill"
+        default: "circle"
+        }
+    }
+
+    private func ownershipLabel(_ value: String) -> String {
+        switch value {
+        case "mine": return "Mine"
+        case "delegated": return "Delegated"
+        case "watching": return "Watching"
+        default: return value.capitalized
+        }
+    }
+
+    private func stanceColor(_ stance: String?) -> Color {
+        switch stance {
+        case "driver": .green
+        case "supporter": .blue
+        case "blocker": .red
+        case "reviewer": .purple
+        case "neutral": .secondary
+        default: .secondary
+        }
+    }
+
+    private func openCreateTarget() {
+        guard let db = appState.databaseManager else {
+            targetPrefillError = "Database not available"
+            return
+        }
+        Task { @MainActor in
+            isBuildingPrefill = true
+            defer { isBuildingPrefill = false }
+            do {
+                let pf = try await TargetPrefillBuilder.fromTrack(track, db: db)
+                targetPrefill = pf
+                targetPrefillError = nil
+                showCreateTarget = true
+            } catch {
+                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+// MARK: - Linked Digest Row (expandable)
+
+private struct LinkedDigestRow: View {
+    let digestID: Int
+    let viewModel: TracksViewModel
+    let appState: AppState
+    @State private var isExpanded = false
+    @State private var digest: Digest?
+    @State private var channelName: String?
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            if let digest {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !digest.summary.isEmpty {
+                        Text(digest.summary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(6)
+                    }
+
+                    let decisions = digest.parsedDecisions
+                    if !decisions.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Decisions")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            ForEach(decisions) { decision in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .frame(width: 12)
+                                        .padding(.top, 2)
+                                    Text(decision.text)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
+                    if let dbManager = appState.databaseManager {
+                        FeedbackButtons(
+                            entityType: "digest",
+                            entityID: String(digestID),
+                            dbManager: dbManager
+                        )
+                    }
+                }
+                .padding(.leading, 4)
+            } else {
+                Text("Loading...")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                if let channelName {
+                    Text("#\(channelName)")
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                }
+                Text("Digest #\(digestID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let digest {
+                    Text(digest.isRead ? "read" : "unread")
+                        .font(.caption2)
+                        .foregroundStyle(digest.isRead ? .green : .orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            (digest.isRead ? Color.green : Color.orange).opacity(0.1),
+                            in: Capsule()
+                        )
+                }
+                Spacer()
+            }
+        }
+        .onAppear { loadDigest() }
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded { loadDigest() }
+        }
+    }
+
+    private func loadDigest() {
+        guard digest == nil else { return }
+        digest = viewModel.fetchDigest(id: digestID)
+        if let loaded = digest {
+            channelName = viewModel.channelName(for: loaded.channelID)
+        }
+    }
+}
