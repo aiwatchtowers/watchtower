@@ -265,7 +265,7 @@ func (x *Extractor) imageText(ctx context.Context, path string) ([]extsync.Secti
 	case errors.Is(err, ErrOCRUnavailable):
 		return nil, StatusOCRUnavailable, nil
 	case err != nil:
-		return nil, StatusOCRPending, nil
+		return nil, StatusOCRPending, nil //nolint:nilerr // an OCR failure is a status (retried later), not an extraction error
 	}
 	return oneSection(strings.TrimSpace(got[0])), StatusOK, nil
 }
