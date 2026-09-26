@@ -110,6 +110,22 @@ var registry = []Feature{
 		Enabled:   func(cfg *config.Config) bool { return cfg.Knowledge.Enabled },
 	},
 	{
+		ID:          "knowledge-connectors",
+		Title:       "Confluence in search",
+		Description: "Syncs the Confluence spaces you pick — pages, blog posts, comments and attachment text — through your connected Atlassian site, so knowledge search and the chat find them alongside Slack and Jira. Read-only toward Confluence, no AI, and nothing happens until you select a space.",
+		Tagline:     "Your wiki, searchable next to your chats",
+		Benefits: []string{
+			"The chat finds the right Confluence page by topic",
+			"Pages, comments and attachments stay in sync in the background",
+			"Read-only toward Confluence, no AI cost",
+		},
+		Icon:      "doc.text.magnifyingglass",
+		ConfigKey: "knowledge.connectors.enabled",
+		Cost:      CostNone,
+		FeedsInto: []string{"knowledge-search"},
+		Enabled:   func(cfg *config.Config) bool { return cfg.Knowledge.Connectors.Enabled },
+	},
+	{
 		ID:          "slack-digests",
 		Title:       "Slack Digests",
 		Description: "Summarizes Slack channel activity into per-channel digests — topics, decisions, and proposed ideas. Heavy AI use each cycle; it is the substrate several other pipelines mine, including Tracks, People Cards, Ideas, and the daily Briefing.",

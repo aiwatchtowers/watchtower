@@ -92,6 +92,15 @@ type InboxConfig struct {
 // Mechanical: no AI cost.
 type KnowledgeConfig struct {
 	Enabled bool `mapstructure:"enabled"` // index sources into kb_* for search_knowledge (default: true)
+	// Connectors gates the external-sync phase (Confluence spaces pulled
+	// into ext_* for the index). Mechanical, no AI; does nothing until a
+	// space is selected.
+	Connectors KnowledgeConnectorsConfig `mapstructure:"connectors"`
+}
+
+// KnowledgeConnectorsConfig holds the knowledge-connectors feature switch.
+type KnowledgeConnectorsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // sync selected Confluence spaces (default: true)
 }
 
 // IdeasConfig holds settings for the ideas & decisions registry pipeline
@@ -433,6 +442,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("knowledge.enabled", DefaultKnowledgeEnabled)
+	v.SetDefault("knowledge.connectors.enabled", DefaultKnowledgeConnectorsEnabled)
 	v.SetDefault("ideas.enabled", DefaultIdeasEnabled)
 	v.SetDefault("ideas.mine_interval_hours", DefaultIdeasMineIntervalHours)
 	v.SetDefault("ideas.max_comment_issues_per_sync", DefaultIdeasMaxCommentIssuesPerSync)

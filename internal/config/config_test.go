@@ -114,6 +114,21 @@ func TestLoad_StreamsDefaults(t *testing.T) {
 	assert.Equal(t, DefaultStreamsIntervalHours, cfg.Streams.IntervalHours)
 }
 
+// TestLoad_KnowledgeConnectorsDefaults pins knowledge.connectors.enabled:
+// on by default (mechanical, inert until a space is selected), and an
+// explicit false is honored.
+func TestLoad_KnowledgeConnectorsDefaults(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, DefaultKnowledgeConnectorsEnabled)
+	assert.Equal(t, DefaultKnowledgeConnectorsEnabled, cfg.Knowledge.Connectors.Enabled)
+
+	off, err := Load(writeTestConfig(t, "knowledge:\n  connectors:\n    enabled: false\n"))
+	require.NoError(t, err)
+	assert.False(t, off.Knowledge.Connectors.Enabled)
+	assert.True(t, off.Knowledge.Enabled, "the connectors switch leaves knowledge.enabled alone")
+}
+
 // TestLoad_ReactionCommandsDefaults pins the owner's 2026-09-26 call through
 // the real load path: a config with no reaction_commands block enables the
 // feature and polls every cycle (interval 0 = no throttle).

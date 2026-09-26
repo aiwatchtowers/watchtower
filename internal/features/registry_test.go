@@ -96,16 +96,17 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 
 	defaults := defaultConfig(t)
 	wantEnabled := map[string]bool{
-		"secretary-inbox": true,
-		"slack-digests":   true,
-		"stream-digests":  true,
-		"tracks":          true,
-		"people-cards":    true,
-		"ideas":           true,
-		"memory":          false, // spec default: off until the feature settles
-		"briefing":        true,
-		"day-plan":        true,
-		"next-step":       true,
+		"secretary-inbox":      true,
+		"slack-digests":        true,
+		"stream-digests":       true,
+		"tracks":               true,
+		"people-cards":         true,
+		"ideas":                true,
+		"memory":               false, // spec default: off until the feature settles
+		"briefing":             true,
+		"day-plan":             true,
+		"next-step":            true,
+		"knowledge-connectors": true,
 	}
 	for id, want := range wantEnabled {
 		feat, ok := ByID(id)
@@ -166,4 +167,25 @@ func TestRegistry_DependentsTransitive(t *testing.T) {
 		"briefing now feeds day-plan directly")
 	assert.True(t, idSet(Dependents("people-cards", defaults))["day-plan"],
 		"people-cards now feeds day-plan directly")
+}
+
+// TestRegistry_KnowledgeConnectors pins the Confluence connector entry and
+// its only cascade edge: disabling it lists knowledge-search (which keeps
+// running without Confluence content), and nothing else; disabling
+// knowledge-search never sweeps the connector along.
+func TestRegistry_KnowledgeConnectors(t *testing.T) {
+	f, ok := ByID("knowledge-connectors")
+	require.True(t, ok)
+	assert.Equal(t, "Confluence in search", f.Title)
+	assert.Equal(t, "knowledge.connectors.enabled", f.ConfigKey)
+	assert.Equal(t, CostNone, f.Cost)
+	assert.Equal(t, []string{"knowledge-search"}, f.FeedsInto)
+	assert.False(t, f.Core)
+
+	defaults := defaultConfig(t)
+	assert.Equal(t, map[string]bool{"knowledge-search": true}, idSet(Dependents("knowledge-connectors", defaults)))
+	assert.False(t, idSet(Dependents("knowledge-search", defaults))["knowledge-connectors"])
+
+	off := loadConfig(t, "knowledge:\n  connectors:\n    enabled: false\n")
+	assert.False(t, f.Enabled(off))
 }

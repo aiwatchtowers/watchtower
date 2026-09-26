@@ -1,0 +1,310 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
+	"watchtower/internal/daemon"
+	"watchtower/internal/db"
+	"watchtower/internal/extsync"
+	"watchtower/internal/jira"
+)
+
+// fakeConfluenceFetcher serves a fixed space list; everything else is empty.
+type fakeConfluenceFetcher struct {
+	containers []extsync.Container
+	err        error
+}
+
+func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
+	return f.containers, f.err
+}
+func (f *fakeConfluenceFetcher) Changed(context.Context, extsync.Container, extsync.ItemKind, time.Time, string) ([]extsync.ItemRef, string, error) {
+	return nil, "", nil
+}
+func (f *fakeConfluenceFetcher) All(context.Context, extsync.Container, extsync.ItemKind, string) ([]extsync.ItemRef, string, error) {
+	return nil, "", nil
+}
+func (f *fakeConfluenceFetcher) Fetch(context.Context, extsync.Container, extsync.ItemRef) (*extsync.Item, error) {
+	return nil, nil
+}
+func (f *fakeConfluenceFetcher) Comments(context.Context, extsync.Container, string) ([]extsync.Item, error) {
+	return nil, nil
+}
+func (f *fakeConfluenceFetcher) Download(context.Context, *extsync.Item, int64) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (f *fakeConfluenceFetcher) Users(context.Context, []string) (map[string]extsync.User, error) {
+	return nil, nil
+}
+
+// confluenceEnv is one test's config + DB + Jira account 1.
+type confluenceEnv struct {
+	cfg     *config.Config
+	db      *db.DB
+	fetcher *fakeConfluenceFetcher
+}
+
+// setupConfluenceEnv writes a temp config/workspace (the writeKBConfig
+// shape), creates Jira account 1 with a token file whose scope is `scope`,
+// and injects a fake fetcher.
+func setupConfluenceEnv(t *testing.T, scope string) *confluenceEnv {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	origConfig := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = origConfig })
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	id, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1", SiteURL: "https://acme.atlassian.net", Enabled: true, Status: "ok"})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), id)
+	require.NoError(t, jira.NewTokenStore(cfg.WorkspaceDir(), 1).Save(&jira.OAuthToken{AccessToken: "a", RefreshToken: "r", Scope: scope}))
+
+	fake := &fakeConfluenceFetcher{containers: []extsync.Container{
+		{Key: "ENG", Name: "Engineering", ExtID: "100"},
+		{Key: "OPS", Name: "Operations", ExtID: "200"},
+	}}
+	orig := newConfluenceFetcher
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return fake }
+	t.Cleanup(func() { newConfluenceFetcher = orig })
+	return &confluenceEnv{cfg: cfg, db: database, fetcher: fake}
+}
+
+func runConfluence(t *testing.T, daemonPID int, args ...string) (string, error) {
+	t.Helper()
+	origPID := kbDaemonPID
+	kbDaemonPID = func() (int, error) { return daemonPID, nil }
+	defer func() { kbDaemonPID = origPID }()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs(append([]string{"confluence"}, args...))
+	err := rootCmd.Execute()
+	rootCmd.SetArgs(nil)
+	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce = 0, false, false, false
+	confluenceCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	for _, c := range confluenceCmd.Commands() {
+		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	}
+	return out.String(), err
+}
+
+func selectedSpaceKeys(t *testing.T, database *db.DB) []string {
+	t.Helper()
+	srcs, err := database.ListExtSources("confluence")
+	require.NoError(t, err)
+	keys := []string{}
+	for _, s := range srcs {
+		keys = append(keys, s.ContainerKey)
+	}
+	return keys
+}
+
+const consentHint = "Confluence access not granted — run: watchtower jira login --account 1 --with-confluence"
+
+func TestConfluenceSelect_WritesSource(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	_, err := runConfluence(t, 0, "select", "ENG")
+	require.NoError(t, err)
+
+	srcs, err := env.db.ListExtSources("confluence")
+	require.NoError(t, err)
+	require.Len(t, srcs, 1)
+	assert.Equal(t, "ENG", srcs[0].ContainerKey)
+	assert.Equal(t, "100", srcs[0].ContainerExtID)
+	assert.Equal(t, "Engineering", srcs[0].ContainerName)
+	assert.Equal(t, int64(1), srcs[0].JiraAccountID)
+}
+
+func TestConfluenceSelect_UnknownKeyWritesNothing(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	_, err := runConfluence(t, 0, "select", "ENG", "NOPE")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "NOPE")
+	assert.Empty(t, selectedSpaceKeys(t, env.db), "a partly-unknown selection must write nothing")
+}
+
+func TestConfluenceUnselect_RemovesSourceAndDocuments(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	id, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	_, err = env.db.Exec(`INSERT INTO ext_documents (source_id, ext_id, kind) VALUES (?, 'p1', 'page')`, id)
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 0, "unselect", "ENG")
+	require.NoError(t, err)
+
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+	var n int
+	require.NoError(t, env.db.QueryRow(`SELECT COUNT(*) FROM ext_documents`).Scan(&n))
+	assert.Zero(t, n, "unselect must drop the space's synced documents")
+}
+
+func TestConfluenceUnselect_UnknownKeyErrors(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 0, "unselect", "ENG", "OPS")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OPS")
+	assert.Equal(t, []string{"ENG"}, selectedSpaceKeys(t, env.db), "nothing is removed when any key is unknown")
+}
+
+func TestConfluenceSpaces_JSONMarksSelected(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	out, err := runConfluence(t, 0, "spaces", "--json")
+	require.NoError(t, err)
+
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &rows))
+	require.Len(t, rows, 2)
+	assert.Equal(t, map[string]any{"key": "ENG", "name": "Engineering", "id": "100", "selected": true}, rows[0])
+	assert.Equal(t, map[string]any{"key": "OPS", "name": "Operations", "id": "200", "selected": false}, rows[1])
+}
+
+func TestConfluenceSpaces_EmptyJSONIsArray(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	env.fetcher.containers = nil
+
+	out, err := runConfluence(t, 0, "spaces", "--json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `[]`, out)
+}
+
+func TestConfluence_TokenWithoutScopesShowsReloginHint(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.JiraScopes)
+
+	for _, args := range [][]string{{"spaces"}, {"select", "ENG"}} {
+		_, err := runConfluence(t, 0, args...)
+		require.Error(t, err, "%v", args)
+		assert.Equal(t, consentHint, err.Error(), "%v", args)
+	}
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+}
+
+func TestConfluence_NeedsConsentFromAPIShowsReloginHint(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	env.fetcher.err = extsync.ErrNeedsConsent
+
+	_, err := runConfluence(t, 0, "spaces")
+	require.Error(t, err)
+	assert.Equal(t, consentHint, err.Error())
+}
+
+func TestConfluenceStatus_JSONShowsBackfillAndCounts(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	id, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	_, err = env.db.Exec(`INSERT INTO ext_documents (source_id, ext_id, kind) VALUES (?, 'p1', 'page')`, id)
+	require.NoError(t, err)
+
+	out, err := runConfluence(t, 0, "status", "--json")
+	require.NoError(t, err)
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ENG", rows[0]["key"])
+	assert.Equal(t, false, rows[0]["backfill_done"])
+	assert.Contains(t, rows[0], "last_synced_at")
+	assert.EqualValues(t, 1, rows[0]["pages"])
+
+	text, err := runConfluence(t, 0, "status")
+	require.NoError(t, err)
+	assert.Contains(t, text, "in progress", "a partial backfill must not read as done")
+}
+
+func TestConfluenceSync_RefusesWhileDaemonRuns(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 4242, "sync")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "4242")
+
+	out, err := runConfluence(t, 4242, "sync", "--force")
+	require.NoError(t, err)
+	assert.Contains(t, out, "ENG:")
+}
+
+func TestConfluenceSync_ReportsConsentHint(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.JiraScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 0, "sync")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), consentHint)
+}
+
+// TestExternalSyncWiring_SharesTheJiraClient pins the refresh-safety rule:
+// the Confluence fetcher is built over the very *jira.Client instance
+// buildAtlassianClients hands the Jira syncer, never a second client.
+func TestExternalSyncWiring_SharesTheJiraClient(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	// Account 2 has no token file: no client, and it is flagged "error".
+	_, err := env.db.CreateJiraAccount(db.JiraAccount{CloudID: "c2", SiteURL: "https://b.atlassian.net", Enabled: true, Status: "ok"})
+	require.NoError(t, err)
+
+	var got []*jira.Client
+	var sites []string
+	newConfluenceFetcher = func(c *jira.Client, site string) extsync.Fetcher {
+		got = append(got, c)
+		sites = append(sites, site)
+		return env.fetcher
+	}
+	logger := log.New(io.Discard, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	require.Len(t, accounts, 2)
+	require.Len(t, clients, 1)
+	d := daemon.New(env.cfg)
+	wireExternalSync(d, env.cfg, env.db, accounts, clients, logger)
+
+	require.Len(t, got, 1)
+	assert.Same(t, clients[1], got[0], "the fetcher must ride the Jira syncer's client instance")
+	assert.Equal(t, []string{"https://acme.atlassian.net"}, sites)
+
+	acct2, err := env.db.GetJiraAccount(2)
+	require.NoError(t, err)
+	assert.Equal(t, "error", acct2.Status)
+}
+
+func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	called := false
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { called = true; return env.fetcher }
+	env.cfg.Knowledge.Connectors.Enabled = false
+	logger := log.New(io.Discard, "", 0)
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(daemon.New(env.cfg), env.cfg, env.db, accounts, clients, logger)
+	assert.False(t, called)
+}
