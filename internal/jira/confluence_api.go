@@ -17,14 +17,14 @@ var ErrTooLarge = errors.New("atlassian: response exceeds size cap")
 
 // maxErrorBodyBytes caps how much of a non-2xx response body GetJSON/Download
 // read into HTTPStatusError.Body — enough to see an error message (including
-// the "scope" wording a 403 needs-consent response carries) without an
+// the "scope" wording a 401/403 needs-consent response carries) without an
 // unbounded read of a pathological response.
 const maxErrorBodyBytes = 4096
 
 // HTTPStatusError is returned for a non-2xx response from GetJSON/Download.
 // Kept a plain, unwrapped struct (not composed with ErrAuthRevoked or a
 // sentinel of its own): a later generic sync engine maps Status/Body to its
-// own sentinels — a 403 whose Body mentions "scope" becomes that engine's
+// own sentinels — a 401 or 403 whose Body mentions "scope" becomes that engine's
 // needs_consent — without importing internal/jira, so these two exported
 // fields are load-bearing across that package boundary.
 type HTTPStatusError struct {
@@ -90,14 +90,14 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 }
 
 // Download performs an authenticated GET against path (relative to base())
-// and returns the response body as a ReadCloser capped at max bytes. A
-// response whose Content-Length already declares more than max fails fast
+// and returns the response body as a ReadCloser capped at limit bytes. A
+// response whose Content-Length already declares more than limit fails fast
 // with ErrTooLarge before any body is read; otherwise the body is wrapped in
-// a reader budgeted at max+1 bytes so a response with no (or an understated)
-// Content-Length is still caught — the read that would return the (max+1)-th
+// a reader budgeted at limit+1 bytes so a response with no (or an understated)
+// Content-Length is still caught — the read that would return the (limit+1)-th
 // byte returns ErrTooLarge instead. The caller must Close the returned
 // ReadCloser (on both the success and the io.EOF-terminated read paths).
-func (a *ConfluenceAPI) Download(ctx context.Context, path string, max int64) (io.ReadCloser, error) {
+func (a *ConfluenceAPI) Download(ctx context.Context, path string, limit int64) (io.ReadCloser, error) {
 	// No Accept header: an attachment binary is not JSON, and asking
 	// Confluence's download endpoint to expect one is wrong for this request.
 	resp, err := a.c.doURL(ctx, http.MethodGet, a.base()+path, nil, "")
@@ -110,12 +110,12 @@ func (a *ConfluenceAPI) Download(ctx context.Context, path string, max int64) (i
 		return nil, newHTTPStatusError(resp)
 	}
 
-	if resp.ContentLength > max {
+	if resp.ContentLength > limit {
 		resp.Body.Close()
 		return nil, ErrTooLarge
 	}
 
-	return newCappedBody(resp.Body, max), nil
+	return newCappedBody(resp.Body, limit), nil
 }
 
 // GrantedScopes returns the scope field of the stored OAuth token — the
@@ -146,8 +146,8 @@ type cappedBody struct {
 	max, read int64
 }
 
-func newCappedBody(rc io.ReadCloser, max int64) *cappedBody {
-	return &cappedBody{limited: io.LimitReader(rc, max+1), rc: rc, max: max}
+func newCappedBody(rc io.ReadCloser, limit int64) *cappedBody {
+	return &cappedBody{limited: io.LimitReader(rc, limit+1), rc: rc, max: limit}
 }
 
 func (b *cappedBody) Read(p []byte) (int, error) {

@@ -458,6 +458,60 @@ func TestChangedCommentsAgreeWithComments(t *testing.T) {
 		"the parent kind was learned from the listing, no lookup call")
 }
 
+func footerComment(id string) map[string]any {
+	return map[string]any{"id": id, "status": "current",
+		"version": map[string]any{"number": 1, "createdAt": "2026-09-01T16:00:00.000Z", "authorId": "acc-2"},
+		"body":    map[string]any{"storage": map[string]string{"value": "<p>r</p>"}}}
+}
+
+func childrenOf(ids ...string) func(url.Values) any {
+	return func(url.Values) any {
+		results := []any{}
+		for _, id := range ids {
+			results = append(results, footerComment(id))
+		}
+		return map[string]any{"results": results}
+	}
+}
+
+// A reply listing that names a comment already walked (here: a comment
+// listed as its own child) is an error, never a further recursion.
+func TestCommentsSelfReferencingReplyIsAnError(t *testing.T) {
+	api := newFakeAPI(t)
+	api.prepend(route{path: "/wiki/api/v2/footer-comments/100/children", match: anyQuery, gen: childrenOf("100")})
+	items, err := NewFetcher(api, testSite).Comments(context.Background(), engSpace, "1")
+	assert.ErrorContains(t, err, "listed twice")
+	assert.Nil(t, items)
+	assert.Len(t, api.requestsTo("/wiki/api/v2/footer-comments/100/children"), 1, "the cycle is not followed")
+}
+
+// A reply chain deeper than maxReplyDepth is an error; a chain exactly at the
+// cap is walked in full.
+func TestCommentsReplyDepthIsCapped(t *testing.T) {
+	chain := func(levels int) *fakeAPI {
+		api := newFakeAPI(t)
+		prev := "100"
+		for i := 1; i <= levels; i++ {
+			id := fmt.Sprintf("c%d", i)
+			api.prepend(route{path: "/wiki/api/v2/footer-comments/" + prev + "/children", match: anyQuery, gen: childrenOf(id)})
+			prev = id
+		}
+		api.prepend(route{path: "/wiki/api/v2/footer-comments/" + prev + "/children", match: anyQuery, fixture: "comments_empty.json"})
+		return api
+	}
+
+	items, err := NewFetcher(chain(maxReplyDepth), testSite).Comments(context.Background(), engSpace, "1")
+	require.NoError(t, err)
+	assert.Len(t, items, maxReplyDepth+2, "root + the whole chain + the inline comment")
+
+	api := chain(maxReplyDepth + 1)
+	items, err = NewFetcher(api, testSite).Comments(context.Background(), engSpace, "1")
+	assert.ErrorContains(t, err, "nested deeper than 50")
+	assert.Nil(t, items)
+	deepest := fmt.Sprintf("/wiki/api/v2/footer-comments/c%d/children", maxReplyDepth+1)
+	assert.Empty(t, api.requestsTo(deepest), "no listing past the cap")
+}
+
 func TestCommentsResolvesUnknownParentKind(t *testing.T) {
 	api := newFakeAPI(t)
 	f := NewFetcher(api, testSite)
@@ -626,6 +680,8 @@ func TestUsersBatchesBy100(t *testing.T) {
 func TestMapErr(t *testing.T) {
 	scope403 := &jira.HTTPStatusError{Status: 403, Body: `{"message":"Unauthorized; SCOPE does not match"}`}
 	plain403 := &jira.HTTPStatusError{Status: 403, Body: `{"message":"forbidden"}`}
+	scope401 := &jira.HTTPStatusError{Status: 401, Body: `{"code":401,"message":"Unauthorized; scope does not match"}`}
+	plain401 := &jira.HTTPStatusError{Status: 401, Body: `{"message":"Unauthorized"}`}
 	nf := &jira.HTTPStatusError{Status: 404, Body: "not found"}
 	other := errors.New("boom")
 	cases := []struct {
@@ -635,6 +691,8 @@ func TestMapErr(t *testing.T) {
 	}{
 		{"revoked", fmt.Errorf("refresh: %w", jira.ErrAuthRevoked), true, false, false},
 		{"403 naming a scope", scope403, false, true, false},
+		{"401 naming a scope", scope401, false, true, false},
+		{"plain 401", plain401, false, false, false},
 		{"plain 403", plain403, false, false, false},
 		{"404", nf, false, false, true},
 		{"other", other, false, false, false},
@@ -677,6 +735,10 @@ func TestFetcherMapsErrors(t *testing.T) {
 			_, err := f.Comments(ctx, engSpace, "1")
 			return err
 		}, extsync.ErrAuthRevoked},
+		{"401 missing scope on Changed", &jira.HTTPStatusError{Status: 401, Body: "Unauthorized; scope does not match"}, func(f *Fetcher) error {
+			_, _, err := f.Changed(ctx, engSpace, extsync.KindComment, time.Time{}, "")
+			return err
+		}, extsync.ErrNeedsConsent},
 		{"missing scope on Containers", &jira.HTTPStatusError{Status: 403, Body: "scope"}, func(f *Fetcher) error {
 			_, err := f.Containers(ctx)
 			return err

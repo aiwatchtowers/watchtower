@@ -143,14 +143,10 @@ func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte,
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized {
-			resp.Body.Close()
 			if attempt == 3 {
-				// Still unauthorized after a successful refresh — the grant
-				// itself is gone, not a stale access token. Surfacing this
-				// distinctly is what lets Sync abort and the daemon mark the
-				// account for re-login instead of silently syncing nothing.
-				return nil, fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, fullURL)
+				return nil, persistentUnauthorized(resp, method, fullURL)
 			}
+			resp.Body.Close()
 			if refreshErr := c.refreshIfCurrent(ctx, token); refreshErr != nil {
 				return nil, fmt.Errorf("refreshing token after 401: %w", refreshErr)
 			}
@@ -173,6 +169,23 @@ func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte,
 	}
 
 	return nil, fmt.Errorf("max retries exceeded for %s %s", method, fullURL)
+}
+
+// persistentUnauthorized classifies a 401 that survived a successful token
+// refresh and closes its body. Normally the grant itself is gone, not a
+// stale access token: surfacing ErrAuthRevoked is what lets Sync abort and
+// the daemon mark the account for re-login instead of silently syncing
+// nothing. But Atlassian also answers a request the grant lacks a scope for
+// with 401 "Unauthorized; scope does not match" — that grant is alive and
+// only needs re-consent, so a body naming a scope is returned as a plain
+// *HTTPStatusError (Confluence maps it to needs-consent) instead.
+func persistentUnauthorized(resp *http.Response, method, fullURL string) error {
+	defer resp.Body.Close()
+	herr := newHTTPStatusError(resp)
+	if strings.Contains(strings.ToLower(herr.Body), "scope") {
+		return herr
+	}
+	return fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, fullURL)
 }
 
 // getAccessToken loads the current token, refreshing if expired.

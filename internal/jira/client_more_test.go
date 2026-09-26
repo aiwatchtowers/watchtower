@@ -159,6 +159,34 @@ func TestClient_PersistentUnauthorizedIsAuthRevoked(t *testing.T) {
 	assert.Equal(t, int32(4), calls.Load(), "the client must retry through its refresh budget before giving up")
 }
 
+// TestClient_PersistentUnauthorizedScopeIsNotRevoked: Atlassian answers a
+// request the grant lacks a scope for with 401 "Unauthorized; scope does
+// not match". That grant is alive and needs re-consent, so the surviving 401
+// comes back as *HTTPStatusError carrying the body, never as ErrAuthRevoked.
+func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":401,"message":"Unauthorized; SCOPE DOES NOT MATCH"}`))
+	}))
+	defer srv.Close()
+
+	stubTokenEndpoint(t)
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	err := c.get(context.Background(), "/x", &got)
+
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrAuthRevoked), "a missing scope is not a revoked grant")
+	var he *HTTPStatusError
+	require.True(t, errors.As(err, &he), "got %v", err)
+	assert.Equal(t, http.StatusUnauthorized, he.Status)
+	assert.Contains(t, he.Body, "SCOPE DOES NOT MATCH")
+	assert.Equal(t, int32(4), calls.Load(), "the refresh budget is still spent first")
+}
+
 func TestClient_SearchIssues(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/rest/api/3/search/jql")

@@ -16,6 +16,10 @@ const (
 	locationInline = "inline"
 )
 
+// maxReplyDepth bounds the reply walk: a thread nested deeper is an error,
+// never an unbounded recursion.
+const maxReplyDepth = 50
+
 // inlineResolutionStatuses is every inline-comment resolution state; asked
 // for explicitly so a resolved thread is never filtered out by a default.
 var inlineResolutionStatuses = []string{"open", "reopened", "resolved", "dangling"}
@@ -39,6 +43,7 @@ func (f *Fetcher) Comments(ctx context.Context, _ extsync.Container, pageID stri
 	}
 	base := v2Root + collection + url.PathEscape(pageID)
 	var out []extsync.Item
+	seen := map[string]bool{}
 	for _, loc := range []string{locationFooter, locationInline} {
 		q := url.Values{}
 		if loc == locationInline {
@@ -52,7 +57,7 @@ func (f *Fetcher) Comments(ctx context.Context, _ extsync.Container, pageID stri
 			return nil, err
 		}
 		for i := range roots {
-			thread, err := f.commentThread(ctx, loc, pageID, &roots[i], nil)
+			thread, err := f.commentThread(ctx, seen, loc, pageID, &roots[i], nil, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -81,8 +86,18 @@ func (f *Fetcher) parentKind(ctx context.Context, id string) (extsync.ItemKind, 
 	return kind, nil
 }
 
-// commentThread maps c and, depth-first, every reply under it.
-func (f *Fetcher) commentThread(ctx context.Context, loc, pageID string, c *v2Comment, parent *extsync.Item) ([]extsync.Item, error) {
+// commentThread maps c and, depth-first, every reply under it. depth is
+// c's reply depth (0 = top-level); seen holds every comment id already
+// walked on this page. A repeated id (a cycle, or a comment listed twice) or
+// a thread deeper than maxReplyDepth is an error, never a further recursion.
+func (f *Fetcher) commentThread(ctx context.Context, seen map[string]bool, loc, pageID string, c *v2Comment, parent *extsync.Item, depth int) ([]extsync.Item, error) {
+	if depth > maxReplyDepth {
+		return nil, fmt.Errorf("confluence: comment %s on %s is nested deeper than %d replies", c.ID, pageID, maxReplyDepth)
+	}
+	if seen[c.ID] {
+		return nil, fmt.Errorf("confluence: comment %s on %s listed twice (reply cycle?)", c.ID, pageID)
+	}
+	seen[c.ID] = true
 	it, err := commentItem(loc, pageID, c, parent)
 	if err != nil {
 		return nil, err
@@ -97,7 +112,7 @@ func (f *Fetcher) commentThread(ctx context.Context, loc, pageID string, c *v2Co
 		return nil, err
 	}
 	for i := range replies {
-		sub, err := f.commentThread(ctx, loc, pageID, &replies[i], &it)
+		sub, err := f.commentThread(ctx, seen, loc, pageID, &replies[i], &it, depth+1)
 		if err != nil {
 			return nil, err
 		}

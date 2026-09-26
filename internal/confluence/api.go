@@ -30,9 +30,12 @@ var _ API = (*jira.ConfluenceAPI)(nil)
 var errNotFound = errors.New("confluence: not found")
 
 // mapErr maps a Confluence API error onto the extsync sentinels (controller
-// ruling R1): a revoked grant becomes extsync.ErrAuthRevoked, a 403 naming a
-// missing scope becomes extsync.ErrNeedsConsent. The original error stays in
-// the chain, so isNotFound and errors.As keep working on the result.
+// ruling R1): a revoked grant becomes extsync.ErrAuthRevoked, a 401 or 403
+// naming a missing scope becomes extsync.ErrNeedsConsent (Atlassian answers
+// a scope the grant lacks with 401 "Unauthorized; scope does not match";
+// jira.Client returns that as *HTTPStatusError rather than ErrAuthRevoked).
+// The original error stays in the chain, so isNotFound and errors.As keep
+// working on the result.
 func mapErr(err error) error {
 	if err == nil {
 		return nil
@@ -41,7 +44,7 @@ func mapErr(err error) error {
 		return fmt.Errorf("%w: %w", extsync.ErrAuthRevoked, err)
 	}
 	var he *jira.HTTPStatusError
-	if errors.As(err, &he) && he.Status == 403 && strings.Contains(strings.ToLower(he.Body), "scope") {
+	if errors.As(err, &he) && (he.Status == 401 || he.Status == 403) && strings.Contains(strings.ToLower(he.Body), "scope") {
 		return fmt.Errorf("%w: %w", extsync.ErrNeedsConsent, err)
 	}
 	return err

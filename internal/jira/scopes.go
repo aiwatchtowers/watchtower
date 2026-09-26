@@ -26,9 +26,11 @@ const JiraScopes = "read:jira-work write:jira-work read:jira-user read:board-sco
 // Deliberately mixes granular (read:*:confluence) and classic
 // (search:confluence, readonly:content.attachment:confluence) scopes:
 // Atlassian's v2 endpoints only ever issue granular scopes, while some v1
-// operations (CQL search, attachment download) are documented under their
-// classic scope names with no granular equivalent.
-const ConfluenceScopes = "read:space:confluence read:page:confluence read:blogpost:confluence read:comment:confluence read:attachment:confluence read:user:confluence read:content-details:confluence search:confluence readonly:content.attachment:confluence"
+// operations (CQL search, attachment download, users bulk) are documented
+// under their classic scope names — users bulk (GET /wiki/rest/api/user/bulk)
+// documents classic read:confluence-user, its granular equivalent only in
+// Beta (ruling R11).
+const ConfluenceScopes = "read:space:confluence read:page:confluence read:blogpost:confluence read:comment:confluence read:attachment:confluence read:user:confluence read:content-details:confluence search:confluence readonly:content.attachment:confluence read:confluence-user"
 
 // OAuthScopes is the full scope string requested by the Jira/Confluence OAuth
 // 2.0 (3LO) app — one Atlassian grant covers both products.

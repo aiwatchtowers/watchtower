@@ -49,3 +49,9 @@ func TestAuthURLScopes_WithConfluenceIncludesAll(t *testing.T) {
 		assert.Contains(t, got, s)
 	}
 }
+
+// TestConfluenceScopes_IncludesUsersBulkClassicScope pins ruling R11: the
+// users bulk endpoint documents the classic read:confluence-user scope.
+func TestConfluenceScopes_IncludesUsersBulkClassicScope(t *testing.T) {
+	assert.Contains(t, strings.Fields(ConfluenceScopes), "read:confluence-user")
+}
