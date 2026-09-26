@@ -36,11 +36,16 @@ var wsRun = regexp.MustCompile(`\s+`)
 // names at index time from ext_users); returned userIDs lists them. jiraKeys
 // lists issue keys from Jira macros and plain text (deduped, in order).
 func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string) {
+	// ParseFragment's HTML5 algorithm tolerates arbitrarily malformed input
+	// (there is no equivalent of an XML well-formedness error), so in
+	// practice this never returns a non-nil error; a nil result on error is
+	// an acceptable, harmless fallback rather than a real failure mode.
 	nodes, err := parseFragment(xhtml)
 	if err != nil {
 		return nil, nil, nil
 	}
 	c := &converter{}
+	nodes = flattenTransparent(nodes)
 	sections = capSections(c.splitSections(nodes), maxRunes)
 	return sections, c.userIDs, c.jiraKeys
 }
@@ -64,11 +69,74 @@ func HeadingAnchor(heading string) string {
 // parseFragment parses xhtml as a body fragment: the returned nodes are the
 // top-level siblings of the (virtual) body, in document order.
 func parseFragment(xhtml string) ([]*html.Node, error) {
-	return html.ParseFragment(strings.NewReader(xhtml), &html.Node{
+	return html.ParseFragment(strings.NewReader(normalizeSelfClosing(xhtml)), &html.Node{
 		Type:     html.ElementNode,
 		Data:     "body",
 		DataAtom: atom.Body,
 	})
+}
+
+// normalizeSelfClosing rewrites every self-closing tag whose name contains
+// ':' (ac:*/ri:* — real Confluence storage format self-closes these
+// everywhere: <ri:user .../>, <ac:structured-macro ac:name="toc" .../>, ...)
+// into an explicit start+end tag pair before handing the document to
+// html.ParseFragment.
+//
+// The HTML5 parsing algorithm ParseFragment implements has no concept of
+// XML-style self-closing on a non-void custom element: a trailing "/>" on
+// e.g. <ri:user .../> is silently ignored and the element is left OPEN, so
+// every sibling that follows in the source (a heading, a paragraph, ...)
+// becomes a descendant of that "self-closed" element instead of a sibling —
+// for a macro that is dropped outright (like toc), this silently swallows
+// the rest of the document. Rewriting at the tokenizer level, before the
+// tree builder ever runs, sidesteps that HTML5 rule entirely rather than
+// working around its effects after the fact (e.g. with a regex, which
+// cannot reliably tell a real tag from one that only looks like one inside
+// a CDATA/comment/attribute value).
+func normalizeSelfClosing(xhtml string) string {
+	z := html.NewTokenizer(strings.NewReader(xhtml))
+	var b strings.Builder
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break // io.EOF (the normal end) or a tokenizer error; either way, stop.
+		}
+		tok := z.Token()
+		if tt == html.SelfClosingTagToken && strings.Contains(tok.Data, ":") {
+			start := tok
+			start.Type = html.StartTagToken
+			b.WriteString(start.String())
+			b.WriteString(html.Token{Type: html.EndTagToken, Data: tok.Data}.String())
+			continue
+		}
+		b.WriteString(tok.String())
+	}
+	return b.String()
+}
+
+// transparentContainers are Confluence Cloud layout wrappers with no text of
+// their own: their content should be treated as if it sat directly at the
+// level their parent occupies, so a heading inside a layout cell still
+// starts a section. flattenTransparent recurses into them (arbitrarily
+// nested layouts included) before splitSections ever looks for a heading.
+var transparentContainers = map[string]bool{
+	"ac:layout": true, "ac:layout-section": true, "ac:layout-cell": true,
+}
+
+func flattenTransparent(nodes []*html.Node) []*html.Node {
+	var out []*html.Node
+	for _, n := range nodes {
+		if n.Type == html.ElementNode && transparentContainers[n.Data] {
+			var children []*html.Node
+			for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+				children = append(children, ch)
+			}
+			out = append(out, flattenTransparent(children)...)
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // converter accumulates the side outputs (mentioned user ids, Jira issue
@@ -179,11 +247,47 @@ func (c *converter) renderBlock(n *html.Node) string {
 		return strings.Join(c.renderListItems(n, 0), "\n")
 	case "ac:structured-macro":
 		return c.renderMacro(n)
+	case "ac:task-list":
+		return c.renderTaskList(n)
 	case "ac:image":
 		return "" // images are dropped (spec §7)
 	default:
 		return c.renderChildren(n)
 	}
+}
+
+// renderTaskList renders an ac:task-list's ac:task children as "- " lines,
+// each carrying only its ac:task-body text — the ac:task-id/ac:task-uuid/
+// ac:task-status identifiers are Confluence bookkeeping, not page content,
+// so they are read (task-status, to prefix a completed task) but never
+// rendered verbatim.
+func (c *converter) renderTaskList(n *html.Node) string {
+	var lines []string
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && ch.Data == "ac:task" {
+			lines = append(lines, c.renderTask(ch))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (c *converter) renderTask(task *html.Node) string {
+	status, body := "", ""
+	for ch := task.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type != html.ElementNode {
+			continue
+		}
+		switch ch.Data {
+		case "ac:task-status":
+			status = normalizeWS(c.inlineChildren(ch))
+		case "ac:task-body":
+			body = c.inlineText(ch)
+		}
+	}
+	if status == "complete" {
+		return "- [x] " + body
+	}
+	return "- " + body
 }
 
 // renderChildren treats an unrecognized element as a transparent container
@@ -247,6 +351,13 @@ func (c *converter) inlineElement(n *html.Node) string {
 	switch n.Data {
 	case "br":
 		return " "
+	case "p", "li", "div":
+		// A block-level element appearing in an inline context (a table
+		// cell wrapping its text in <p>, a list nested for cell content,
+		// ...) needs an explicit separator around it, or two adjacent ones
+		// (<p>A</p><p>B</p>, or two <li> siblings) fuse into "AB" with no
+		// space at all; normalizeWS collapses the extra spacing back down.
+		return " " + c.inlineChildren(n) + " "
 	case "ac:link":
 		return c.renderLink(n)
 	case "ac:structured-macro":
@@ -258,21 +369,23 @@ func (c *converter) inlineElement(n *html.Node) string {
 	}
 }
 
-// renderLink renders an ac:link: a user mention (ri:user/ri:account-id) or a
-// page reference (ri:page/ri:content-title, or its link body when present).
+// renderLink renders an ac:link: a user mention (ri:user/ri:account-id) wins
+// unconditionally (a mention chip never carries a link body in practice);
+// otherwise an explicit link body (ac:plain-text-link-body/ac:link-body) —
+// what the page actually shows as the link's visible text, for a page link,
+// a URL link (ri:url), or anything else — wins over a page's bare
+// ri:content-title, which is only a fallback for a page link with no body.
 func (c *converter) renderLink(n *html.Node) string {
 	if user := firstChildByTag(n, "ri:user"); user != nil {
-		id := attrValue(user, "ri:account-id")
-		if id == "" {
-			return ""
+		if id := attrValue(user, "ri:account-id"); id != "" {
+			c.addUser(id)
+			return MentionPrefix + id + "]"
 		}
-		c.addUser(id)
-		return MentionPrefix + id + "]"
+	}
+	if body := c.linkBodyText(n); body != "" {
+		return body
 	}
 	if page := firstChildByTag(n, "ri:page"); page != nil {
-		if body := c.linkBodyText(n); body != "" {
-			return body
-		}
 		return attrValue(page, "ri:content-title")
 	}
 	return ""
