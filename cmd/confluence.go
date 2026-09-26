@@ -413,9 +413,11 @@ func runConfluenceSync(cmd *cobra.Command, _ []string) error {
 // extSyncOptions is the engine configuration shared by the daemon phase and
 // `confluence sync` (budget 0 = unbounded): the scopes check and the
 // attachment extractor, whose temp files live under
-// <workspace>/tmp/extract (EXT-03) and whose PDFs are parsed by the hidden
-// extract-pdf-text helper process. OCR is not wired yet (nil =
-// ocr_unavailable).
+// <workspace>/tmp/extract (EXT-03), whose PDFs are parsed by the hidden
+// extract-pdf-text helper process, and whose scans and images are
+// recognized by the watchtower-ocr helper shipped next to the CLI (none
+// found = OCR unavailable, rows stored ocr_unavailable and recognized once
+// the helper appears).
 func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration) extsync.Options {
 	wd := cfg.WorkspaceDir()
 	return extsync.Options{
@@ -424,6 +426,7 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 		Extractor: &extract.Extractor{
 			TempDir:   filepath.Join(wd, "tmp", "extract"),
 			PDFHelper: pdfHelperArgv(),
+			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout),
 		},
 		ScopesOK: func(id int64) bool { return confluenceScopesOK(wd, id) },
 	}

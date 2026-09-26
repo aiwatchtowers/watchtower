@@ -201,6 +201,83 @@ final class CLIBinaryStoreTests: XCTestCase {
         XCTAssertNil(CLIBinaryStore.installedPath(storeBinary: store, bundleBinary: nil))
     }
 
+    // MARK: OCR helper (watchtower-ocr, copied next to the stored CLI)
+
+    private func storeHelperPath(forCLI store: String) -> String {
+        ((store as NSString).deletingLastPathComponent as NSString).appendingPathComponent("watchtower-ocr")
+    }
+
+    func testOCRHelperPathSitsNextToTheStoredCLI() {
+        XCTAssertEqual(
+            (CLIBinaryStore.storeOCRHelperPath as NSString).deletingLastPathComponent,
+            (CLIBinaryStore.storeBinaryPath as NSString).deletingLastPathComponent)
+        XCTAssertEqual((CLIBinaryStore.storeOCRHelperPath as NSString).lastPathComponent, "watchtower-ocr")
+    }
+
+    func testOCRHelperCopiedThenUpToDate() throws {
+        let bundleHelper = try write("bundle-ocr", "ocr-v1")
+        let helper = storeHelperPath(forCLI: storePath())
+        XCTAssertEqual(CLIBinaryStore.syncOCRHelper(bundleHelper: bundleHelper, storeHelper: helper), .installed)
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: helper))
+        XCTAssertEqual(try String(contentsOfFile: helper, encoding: .utf8), "ocr-v1")
+        XCTAssertEqual(CLIBinaryStore.syncOCRHelper(bundleHelper: bundleHelper, storeHelper: helper), .upToDate)
+        XCTAssertEqual(CLIBinaryStore.installedPath(storeBinary: helper, bundleBinary: bundleHelper), helper)
+    }
+
+    /// Same size, different bytes: caught by the hash and replaced.
+    func testOCRHelperMismatchIsReplaced() throws {
+        let bundleHelper = try write("bundle-ocr", "ocr-v2")
+        let helper = storeHelperPath(forCLI: storePath())
+        try makeStoreDir(for: helper)
+        try Data("ocr-XX".utf8).write(to: URL(fileURLWithPath: helper))
+        XCTAssertEqual(CLIBinaryStore.syncOCRHelper(bundleHelper: bundleHelper, storeHelper: helper), .replaced)
+        XCTAssertEqual(try String(contentsOfFile: helper, encoding: .utf8), "ocr-v2")
+    }
+
+    /// No helper in the bundle (an older build): a store copy can no longer be
+    /// validated, so it is removed — the CLI then reports OCR unavailable
+    /// rather than running a helper nothing vouches for.
+    func testOCRHelperMissingFromBundleRemovesStoreCopy() throws {
+        let helper = storeHelperPath(forCLI: storePath())
+        try makeStoreDir(for: helper)
+        try Data("stale".utf8).write(to: URL(fileURLWithPath: helper))
+        let outcome = CLIBinaryStore.syncOCRHelper(bundleHelper: nil, storeHelper: helper)
+        guard case .failed = outcome else { return XCTFail("expected .failed, got \(outcome)") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: helper))
+    }
+
+    /// A helper that cannot be synced leaves no mismatched copy behind.
+    func testOCRHelperCopyFailureRemovesMismatchedCopy() throws {
+        let bundleHelper = try write("bundle-ocr", "ocr-v2")
+        let helper = storeHelperPath(forCLI: storePath())
+        try makeStoreDir(for: helper)
+        try Data("ocr-v1-old".utf8).write(to: URL(fileURLWithPath: helper))
+        let storeDir = (helper as NSString).deletingLastPathComponent
+        // A read-only store dir: the temp copy cannot be created.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: storeDir)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: storeDir) }
+        let outcome = CLIBinaryStore.syncOCRHelper(bundleHelper: bundleHelper, storeHelper: helper)
+        guard case .failed = outcome else { return XCTFail("expected .failed, got \(outcome)") }
+        XCTAssertNil(CLIBinaryStore.installedPath(storeBinary: helper, bundleBinary: bundleHelper),
+                     "whatever is left is not a validated helper")
+    }
+
+    /// The CLI and the helper are validated independently: a helper that is
+    /// missing, mismatched or failed to sync never blocks CLI resolution.
+    func testOCRHelperMismatchLeavesCLIResolutionIntact() async throws {
+        let bundle = try write("bundle-cli", "v1")
+        let store = storePath()
+        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store) {}
+        let helper = storeHelperPath(forCLI: store)
+        try Data("tampered".utf8).write(to: URL(fileURLWithPath: helper))
+        XCTAssertEqual(CLIBinaryStore.installedPath(storeBinary: store, bundleBinary: bundle), store)
+
+        let outcome = CLIBinaryStore.syncOCRHelper(bundleHelper: nil, storeHelper: helper)
+        guard case .failed = outcome else { return XCTFail("expected .failed, got \(outcome)") }
+        XCTAssertEqual(CLIBinaryStore.installedPath(storeBinary: store, bundleBinary: bundle), store)
+        XCTAssertEqual(try String(contentsOfFile: store, encoding: .utf8), "v1", "the CLI copy is untouched")
+    }
+
     // MARK: signature gate (resolvedInstalledPath's TOCTOU guard)
 
     /// No running Team ID (ad-hoc/unsigned build) → refuse to validate,

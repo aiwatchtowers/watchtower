@@ -38,6 +38,19 @@ let package = Package(
             ],
             path: "Sources/WatchtowerCore"
         ),
+        // The OCR recognizer behind the `watchtower-ocr` helper the Go CLI
+        // runs on scanned attachment pages. Vision + CoreGraphics + ImageIO
+        // only: no GRDB, no ML stack, so the helper stays small and touches
+        // nothing but the file it is handed.
+        .target(
+            name: "OCRKit",
+            path: "Sources/OCRKit"
+        ),
+        .executableTarget(
+            name: "watchtower-ocr",
+            dependencies: ["OCRKit"],
+            path: "Sources/OCRHelper"
+        ),
         .executableTarget(
             name: "WatchtowerDesktop",
             dependencies: [
@@ -49,7 +62,7 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
             ],
             path: "Sources",
-            exclude: ["WatchtowerCore"],
+            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper"],
             resources: [
                 .process("Resources"),
             ]
@@ -72,6 +85,11 @@ let package = Package(
             path: "Tests/Core"
         ),
         .testTarget(
+            name: "OCRKitTests",
+            dependencies: ["OCRKit"],
+            path: "Tests/OCRHelperTests"
+        ),
+        .testTarget(
             name: "WatchtowerDesktopTests",
             dependencies: [
                 "WatchtowerDesktop",
@@ -81,7 +99,7 @@ let package = Package(
                 .product(name: "ViewInspector", package: "ViewInspector"),
             ],
             path: "Tests",
-            exclude: ["Core", "Support"]
+            exclude: ["Core", "Support", "OCRHelperTests"]
         ),
     ]
 )

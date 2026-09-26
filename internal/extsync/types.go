@@ -97,6 +97,13 @@ type Extractor interface {
 // skipped when it is not.
 type OCRCapable interface{ HasOCR() bool }
 
+// TempSweeper is optionally implemented by an Extractor: SweepStale removes
+// the temp files a process killed mid-extraction left behind (EXT-03), and
+// reports how many. The engine calls it at the start of every run.
+type TempSweeper interface {
+	SweepStale(now time.Time) (int, error)
+}
+
 // TypeSupporter is optionally implemented by an Extractor: Supports reports
 // whether Extract handles a media type / file name, i.e. would never answer
 // skipped_type for it. With it, the engine re-extracts once the attachments

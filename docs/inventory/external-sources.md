@@ -77,9 +77,14 @@ fetcher calls on the next pass, `kb.Run` again, assert zero `kb_documents` /
 random access (OOXML, PDF, images for OCR) are spooled into a temp file
 under `Config.WorkspaceDir()/tmp/extract/` (dir 0700, file 0600) that is
 removed before `Extract` returns on every path — errors and parser panics
-included; plain text and HTML are read in memory. PDFs are parsed by a
-helper process (the hidden `watchtower extract-pdf-text`) that reads only
-that temp file and is killed after 60 s. Only the extracted text is
+included; plain text and HTML are read in memory. A file a crash left
+behind (a process killed mid-extraction runs no cleanup) is swept at the
+start of the next engine run: every `att-*` file there older than 10
+minutes is removed (`Extractor.SweepStale`). PDFs are parsed by a helper
+process (the hidden `watchtower extract-pdf-text`), and scans and images
+are recognized by the `watchtower-ocr` helper (Vision, on device); each
+reads only that temp file, is killed after 60 s, and exits on its own 10 s
+later should its parent have been SIGKILLed. Only the extracted text is
 written, to `ext_documents.sections_json` (and from there into the
 knowledge index); no `ext_*` column, `kb_chunks` or `kb_documents` row
 ever holds attachment bytes, their base64 form, or a BLOB.
@@ -94,7 +99,10 @@ forms (`JVBERi0`, `iVBORw0K`), (c) no column of any `ext_*` table, of
 holds a BLOB value. It also asserts both attachments were really extracted
 through files under the temp dir and reached `kb_chunks`, so it cannot pass
 vacuously. Per-format cleanup is additionally pinned by
-`TestTempDirEmptyAfterExtract` (`internal/extract/extract_test.go`).
+`TestTempDirEmptyAfterExtract` (`internal/extract/extract_test.go`), the
+crash sweep by `TestSweepStaleRemovesCrashLeftovers`
+(`internal/extract/sweep_test.go`) and `TestEngineSweepsTempFilesEachRun`
+(`internal/extsync/ocr_retry_test.go`).
 
 ## Knowledge-search contracts
 
@@ -104,6 +112,10 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-09-26: EXT-03 extended to crash residue (stale temp files swept at
+  the start of every engine run) and to the `watchtower-ocr` helper; both
+  helpers now exit on their own after their parent's timeout + 10 s.
 
 - 2026-09-26: EXT-03 guard widened to base64 forms and the knowledge
   index (`kb_chunks`, `kb_documents`); PDFs now parse in a helper process

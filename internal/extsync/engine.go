@@ -63,6 +63,7 @@ func (b *budget) over() bool {
 // stop its siblings; errors are joined, except the expected
 // needs_consent/revoked states, which are only recorded on the source.
 func (e *Engine) Run(ctx context.Context) (Stats, error) {
+	e.sweepTemp()
 	var st Stats
 	srcs, err := e.db.ListExtSources(providerConfluence)
 	if err != nil {
@@ -104,11 +105,29 @@ func (e *Engine) RunSource(ctx context.Context, src db.ExtSource) (Stats, error)
 	if e.fetchers[src.JiraAccountID] == nil {
 		return Stats{}, fmt.Errorf("extsync: no fetcher for source %d", src.ID)
 	}
+	e.sweepTemp()
 	st, runErr, recErr := e.syncSource(ctx, src, e.newBudget(), map[int64]outcome{})
 	if ctx.Err() != nil {
 		return st, ctx.Err()
 	}
 	return st, errors.Join(runErr, recErr)
+}
+
+// sweepTemp removes the extractor's crash leftovers before a run spools
+// anything new. A failure is logged, never fatal: the leftovers only cost
+// disk, and the next run tries again.
+func (e *Engine) sweepTemp() {
+	s, ok := e.opts.Extractor.(TempSweeper)
+	if !ok {
+		return
+	}
+	n, err := s.SweepStale(e.opts.Now())
+	if n > 0 {
+		e.opts.Logger.Printf("removed %d stale attachment temp file(s)", n)
+	}
+	if err != nil {
+		e.opts.Logger.Printf("sweeping attachment temp files: %v", err)
+	}
 }
 
 // runnable keeps the enabled sources whose account has a fetcher.

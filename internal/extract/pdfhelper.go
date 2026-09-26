@@ -14,6 +14,11 @@ import (
 // on a crafted file — is killed and the attachment recorded failed.
 var pdfHelperTimeout = 60 * time.Second
 
+// PDFHelperDeadline is how long a helper process may live before it exits
+// on its own: the parent's timeout plus a 10 s margin, so the parent's kill
+// always comes first and only an orphan (its parent SIGKILLed) ever hits it.
+func PDFHelperDeadline() time.Duration { return pdfHelperTimeout + 10*time.Second }
+
 // maxPDFHelperOutput caps the helper's stdout: MaxPDFPages pages of text
 // fit comfortably; more means a misbehaving helper.
 const maxPDFHelperOutput = 32 << 20

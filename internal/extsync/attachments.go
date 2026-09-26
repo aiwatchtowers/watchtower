@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -13,8 +14,9 @@ import (
 // mirrors extract.MaxDownload, which extsync cannot import.
 const maxDownload = 25 << 20
 
-// maxExtractAttempts bounds the retries of an attachment whose download or
-// extraction failed transiently (the OCR retry uses the same limit).
+// maxExtractAttempts bounds the tries of an attachment whose download or
+// extraction failed transiently, or whose OCR could not run: the first
+// failure is attempt 1 and both kinds share the budget.
 const maxExtractAttempts = 3
 
 // Extraction statuses (the ext_documents.extract_status CHECK). The engine
@@ -24,11 +26,13 @@ const (
 	extractSkippedType = "skipped_type"
 	extractTooLarge    = "too_large"
 	extractFailed      = "failed"
+	extractOCRPending  = "ocr_pending"
+	extractOCRMissing  = "ocr_unavailable"
 )
 
 var validExtractStatus = map[string]bool{
 	"ok": true, extractSkippedType: true, extractTooLarge: true,
-	"ocr_pending": true, "ocr_unavailable": true, extractFailed: true,
+	extractOCRPending: true, extractOCRMissing: true, extractFailed: true,
 }
 
 // reextractBatchSize is how many rows one revisit chunk handles between
@@ -49,6 +53,13 @@ type extraction struct {
 	// transient: the download or extraction failed for this attachment
 	// only; stored failed with extract_attempts+1 and retried later.
 	transient bool
+}
+
+// degraded reports an outcome that is retried later and must not replace
+// the text a stored row already has: a transient failure, or OCR that
+// could not run (ocr_pending).
+func (x extraction) degraded() bool {
+	return x.transient || x.status == extractOCRPending
 }
 
 // processAttachmentBatch applies one attachments batch and returns the new
@@ -122,7 +133,7 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 	}
 	st := Stats{}
 	err = e.withTx(ctx, func(q Queryer) error {
-		if err := writeItems(ctx, q, p.src.ID, refs, items, e.opts.Now(), &st); err != nil {
+		if err := writeAttachmentItems(ctx, q, p.src.ID, refs, items, results, e.opts.Now(), &st); err != nil {
 			return err
 		}
 		if err := writeExtractions(ctx, q, p, items, results); err != nil {
@@ -138,18 +149,53 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 	return done, nil
 }
 
-// writeExtractions records each written attachment's extraction status.
+// writeAttachmentItems writes the fetched attachments, except that a
+// degraded outcome for a row already stored leaves that row's content
+// alone — its text, and the version that text belongs to — so search keeps
+// the last good text while the retry is pending. The revisit re-fetches
+// such a row by id, so it still gets the new version.
+func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, results []extraction, now time.Time, st *Stats) error {
+	var ids []string
+	for i, it := range items {
+		if it != nil && results[i].degraded() {
+			ids = append(ids, it.Ref.ExtID)
+		}
+	}
+	stored, err := localVersions(ctx, q, sourceID, ids)
+	if err != nil {
+		return err
+	}
+	var wrefs []ItemRef
+	var witems []*Item
+	for i, it := range items {
+		if it != nil && results[i].degraded() {
+			if _, ok := stored[it.Ref.ExtID]; ok {
+				continue
+			}
+		}
+		wrefs, witems = append(wrefs, refs[i]), append(witems, it)
+	}
+	return writeItems(ctx, q, sourceID, wrefs, witems, now, st)
+}
+
+// writeExtractions records each written attachment's extraction status. A
+// degraded outcome counts an attempt and waits for a later cycle.
 func writeExtractions(ctx context.Context, q Queryer, p pass, items []*Item, results []extraction) error {
 	for i, it := range items {
 		if it == nil {
 			continue
 		}
+		r, id := results[i], it.Ref.ExtID
+		status := r.status
+		if r.transient {
+			status = extractFailed
+		}
 		var err error
-		if results[i].transient {
-			err = recordTransientFailure(ctx, q, p.src.ID, it.Ref.ExtID)
-			p.retried[it.Ref.ExtID] = true
+		if r.degraded() {
+			err = recordAttempt(ctx, q, p.src.ID, id, status)
+			p.retried[id] = true
 		} else {
-			err = setExtractStatus(ctx, q, p.src.ID, it.Ref.ExtID, results[i].status)
+			err = setExtractStatus(ctx, q, p.src.ID, id, status)
 		}
 		if err != nil {
 			return err
@@ -247,6 +293,13 @@ func downloadOutcome(err error) (extraction, bool) {
 	return extraction{}, false
 }
 
+// hasOCR asks the extractor whether OCR is available; one that cannot say
+// has none (controller ruling R2).
+func hasOCR(x Extractor) bool {
+	c, ok := x.(OCRCapable)
+	return ok && c.HasOCR()
+}
+
 // supports asks the extractor whether it handles it's type; an extractor
 // that cannot say is assumed to handle everything.
 func supports(x Extractor, it *Item) bool {
@@ -265,24 +318,29 @@ func setExtractStatus(ctx context.Context, q Queryer, sourceID int64, extID, sta
 	return nil
 }
 
-// recordTransientFailure marks extID failed and counts the attempt; a row
-// with 0 < attempts < maxExtractAttempts is retried by revisitAttachments.
-func recordTransientFailure(ctx context.Context, q Queryer, sourceID int64, extID string) error {
+// recordAttempt records a degraded outcome (failed or ocr_pending) and
+// counts the attempt; a row with 0 < attempts < maxExtractAttempts is
+// retried by revisitAttachments.
+func recordAttempt(ctx context.Context, q Queryer, sourceID int64, extID, status string) error {
 	if _, err := q.ExecContext(ctx, `UPDATE ext_documents SET extract_status = ?, extract_attempts = extract_attempts + 1
-		WHERE source_id = ? AND ext_id = ?`, extractFailed, sourceID, extID); err != nil {
-		return fmt.Errorf("extsync: recording failed extraction of %s: %w", extID, err)
+		WHERE source_id = ? AND ext_id = ?`, status, sourceID, extID); err != nil {
+		return fmt.Errorf("extsync: recording %s extraction of %s: %w", status, extID, err)
 	}
 	return nil
 }
 
-// revisitAttachments re-fetches and re-extracts, after the streams, two
-// kinds of stored attachment rows the delta never re-lists (their version
-// did not change):
+// revisitAttachments re-fetches and re-extracts, after the streams, the
+// stored attachment rows the delta never re-lists (their version did not
+// change):
 //   - skipped_type rows whose type the extractor now supports — written
 //     while no Extractor was wired; each is handled once, since Supports ⇔
 //     Extract never answers skipped_type;
-//   - transient failures (failed, 0 < extract_attempts < 3) from an earlier
-//     cycle — rows that failed in this pass wait for the next one.
+//   - degraded rows (failed or ocr_pending, 0 < extract_attempts < 3) from
+//     an earlier cycle — rows that degraded in this pass wait for the next
+//     one, so each gets at most one try per cycle and 3 in all;
+//   - ocr_unavailable rows, only while the extractor reports HasOCR — never
+//     downloaded otherwise; each is handled once, since an extractor with
+//     OCR never answers ocr_unavailable.
 //
 // Chunks of reextractBatchSize, the budget checked before each; a chunk
 // the budget cuts commits its processed prefix.
@@ -317,8 +375,11 @@ func (e *Engine) revisitAttachments(ctx context.Context, p pass, b *budget) erro
 func revisitRefs(ctx context.Context, q Queryer, sourceID int64, x Extractor, exclude map[string]bool) ([]ItemRef, error) {
 	rows, err := q.QueryContext(ctx, `SELECT ext_id, version, modified_at, parent_ext_id, media_type, title, extract_status
 		FROM ext_documents WHERE source_id = ? AND kind = 'attachment'
-		  AND (extract_status = ? OR (extract_status = ? AND extract_attempts > 0 AND extract_attempts < ?))
-		ORDER BY ext_id`, sourceID, extractSkippedType, extractFailed, maxExtractAttempts)
+		  AND (extract_status = ?
+		    OR (extract_status IN (?, ?) AND extract_attempts > 0 AND extract_attempts < ?)
+		    OR (extract_status = ? AND ? AND extract_attempts < ?))
+		ORDER BY ext_id`, sourceID, extractSkippedType, extractFailed, extractOCRPending, maxExtractAttempts,
+		extractOCRMissing, hasOCR(x), maxExtractAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: listing attachments to revisit: %w", err)
 	}

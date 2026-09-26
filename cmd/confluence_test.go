@@ -351,9 +351,23 @@ func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 	x, ok := opts.Extractor.(*extract.Extractor)
 	require.True(t, ok, "the engine gets the attachment extractor")
 	assert.Equal(t, filepath.Join(env.cfg.WorkspaceDir(), "tmp", "extract"), x.TempDir)
-	assert.Nil(t, x.OCR, "OCR arrives with the helper (Task 10)")
+	assert.Nil(t, x.OCR, "no watchtower-ocr next to the test binary: OCR unavailable")
+	assert.False(t, x.HasOCR())
 	require.Len(t, x.PDFHelper, 2, "PDFs are parsed out of process")
 	assert.Equal(t, "extract-pdf-text", x.PDFHelper[1])
 	assert.Equal(t, extSyncCycleBudget, opts.Budget)
 	require.NotNil(t, opts.ScopesOK)
+}
+
+// TestExtSyncOptions_WiresTheOCRHelper: with a watchtower-ocr helper found
+// (here through its env override), the extractor gets OCR.
+func TestExtSyncOptions_WiresTheOCRHelper(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	helper := filepath.Join(t.TempDir(), "watchtower-ocr")
+	require.NoError(t, os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // a test helper must be executable
+	t.Setenv("WATCHTOWER_OCR_HELPER", helper)
+	x, ok := extSyncOptions(env.cfg, log.New(io.Discard, "", 0), 0).Extractor.(*extract.Extractor)
+	require.True(t, ok)
+	assert.NotNil(t, x.OCR)
+	assert.True(t, x.HasOCR())
 }

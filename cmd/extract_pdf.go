@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -20,8 +21,18 @@ var extractPDFTextCmd = &cobra.Command{
 	// No schema/config work: this runs once per PDF attachment.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer armPDFHelperDeadline(extract.PDFHelperDeadline())()
 		return extract.ServePDFHelper(cmd.OutOrStdout(), args[0])
 	},
+}
+
+// armPDFHelperDeadline makes the helper exit on its own after d: the parent
+// kills it at its 60 s timeout, but a parent that was itself SIGKILLed
+// leaves the helper orphaned, and a crafted PDF can keep the parse looping
+// forever. It returns the timer's Stop, so running the command in process
+// (tests) leaves no timer behind. A variable so tests can observe it.
+var armPDFHelperDeadline = func(d time.Duration) func() bool {
+	return time.AfterFunc(d, func() { os.Exit(2) }).Stop
 }
 
 func init() {

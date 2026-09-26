@@ -565,6 +565,13 @@ final class AppState {
             // for this launch — including the daemon.
             NSLog("CLIBinaryStore: sync failed (%@); the CLI runs from the app bundle this launch", reason)
         }
+        // The OCR helper travels next to the CLI copy, validated on its own:
+        // a failure here only means attachment OCR is unavailable to the
+        // store CLI, never that the CLI itself is unusable — so it is logged,
+        // not surfaced as cliStoreError.
+        if case .failed(let reason) = CLIBinaryStore.syncOCRHelper(bundleHelper: Constants.bundledOCRHelperPath()) {
+            NSLog("CLIBinaryStore: OCR helper sync failed (%@); attachment OCR is unavailable to the store CLI", reason)
+        }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).

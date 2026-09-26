@@ -62,6 +62,7 @@ var (
 	_ extsync.Extractor     = (*Extractor)(nil)
 	_ extsync.OCRCapable    = (*Extractor)(nil)
 	_ extsync.TypeSupporter = (*Extractor)(nil)
+	_ extsync.TempSweeper   = (*Extractor)(nil)
 )
 
 // HasOCR reports whether an OCR is wired (controller ruling R2).
@@ -158,7 +159,7 @@ func (x *Extractor) spool(ctx context.Context, name string, r io.Reader) (string
 	if err := os.MkdirAll(x.TempDir, 0o700); err != nil {
 		return "", noop, fmt.Errorf("extract: creating temp dir: %w", err)
 	}
-	f, err := os.CreateTemp(x.TempDir, "att-*"+safeExt(name))
+	f, err := os.CreateTemp(x.TempDir, spoolPrefix+"*"+safeExt(name))
 	if err != nil {
 		return "", noop, fmt.Errorf("extract: creating temp file: %w", err)
 	}
