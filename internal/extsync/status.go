@@ -15,6 +15,12 @@ var (
 	ErrAuthRevoked = errors.New("extsync: authorization revoked")
 	// ErrNeedsConsent: the grant lacks the scopes this source needs.
 	ErrNeedsConsent = errors.New("extsync: consent required")
+	// ErrTooLarge: Fetcher.Download (or a read of the body it returned)
+	// hit the size limit; the attachment is stored as too_large.
+	ErrTooLarge = errors.New("extsync: download exceeds the size limit")
+	// ErrGone: Fetcher.Download found the attachment gone (deleted between
+	// Fetch and Download); its row is deleted like a Fetch that returns nil.
+	ErrGone = errors.New("extsync: item gone")
 )
 
 // Source statuses (the ext_sources.status CHECK).

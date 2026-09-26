@@ -2,6 +2,7 @@ package confluence
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/extsync"
+	"watchtower/internal/jira"
 )
 
 // Fetcher implements extsync.Fetcher over the Confluence Cloud REST API
@@ -134,17 +136,46 @@ func (f *Fetcher) Fetch(ctx context.Context, c extsync.Container, ref extsync.It
 	return nil, fmt.Errorf("confluence: fetch of unsupported kind %q", ref.Kind)
 }
 
-// Download opens an attachment's bytes, capped at limit.
+// Download opens an attachment's bytes, capped at limit. Errors follow the
+// extsync.Fetcher contract: a 404 (the attachment was deleted since Fetch)
+// is extsync.ErrGone, and jira.ErrTooLarge — upfront, or from a Read of the
+// returned body — also matches extsync.ErrTooLarge.
 func (f *Fetcher) Download(ctx context.Context, it *extsync.Item, limit int64) (io.ReadCloser, error) {
 	if it.Download == "" {
 		return nil, fmt.Errorf("confluence: item %s has no download path", it.Ref.ExtID)
 	}
 	rc, err := f.api.Download(ctx, it.Download, limit)
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, mapDownloadErr(err)
 	}
-	return rc, nil
+	return &downloadBody{rc: rc}, nil
 }
+
+// mapDownloadErr is mapErr plus the download outcomes: 404 → gone, the
+// size cap → too large. The original error stays in the chain.
+func mapDownloadErr(err error) error {
+	switch {
+	case isNotFound(err):
+		return fmt.Errorf("%w: %w", extsync.ErrGone, err)
+	case errors.Is(err, jira.ErrTooLarge):
+		return fmt.Errorf("%w: %w", extsync.ErrTooLarge, err)
+	}
+	return mapErr(err)
+}
+
+// downloadBody maps a read-time jira.ErrTooLarge onto extsync.ErrTooLarge;
+// io.EOF and other errors pass through unchanged.
+type downloadBody struct{ rc io.ReadCloser }
+
+func (b *downloadBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if err != nil && errors.Is(err, jira.ErrTooLarge) {
+		err = fmt.Errorf("%w: %w", extsync.ErrTooLarge, err)
+	}
+	return n, err
+}
+
+func (b *downloadBody) Close() error { return b.rc.Close() }
 
 // Users resolves account ids in batches of usersPerCall. An id Confluence
 // does not return is absent from the map.

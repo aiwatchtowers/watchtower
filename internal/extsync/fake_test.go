@@ -1,6 +1,7 @@
 package extsync
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -45,6 +46,11 @@ type fakeFetcher struct {
 	netCalls     int             // every Fetcher call
 	failNext     error           // the next Fetcher call fails with it
 	failAll      map[ItemKind]error
+	attachCalls  []changedCall     // every Changed(KindAttachment) call, in order
+	blobs        map[string][]byte // attachment bytes by id
+	downloadErr  map[string]error  // Download fails with it
+	readErr      map[string]error  // a Read of the body fails with it after the bytes
+	downloads    map[string]int    // Download calls by id
 }
 
 // hit counts one Fetcher call and returns the injected failure, if any.
@@ -120,6 +126,7 @@ func (f *fakeFetcher) resetCalls() {
 	defer f.mu.Unlock()
 	f.calls = nil
 	f.commentCalls = nil
+	f.attachCalls = nil
 }
 
 // changedCalls returns a copy of the recorded Changed calls.
@@ -131,7 +138,8 @@ func (f *fakeFetcher) changedCalls() []changedCall {
 
 func newFake() *fakeFetcher {
 	return &fakeFetcher{docs: map[ItemKind][]fakeDoc{}, pageSize: 2, fetches: map[string]int{},
-		allCalls: map[ItemKind]int{}, hidden: map[string]bool{}}
+		allCalls: map[ItemKind]int{}, hidden: map[string]bool{}, blobs: map[string][]byte{},
+		downloadErr: map[string]error{}, readErr: map[string]error{}, downloads: map[string]int{}}
 }
 
 func (f *fakeFetcher) add(kind ItemKind, id string, version int, modified time.Time) {
@@ -228,12 +236,15 @@ func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, sin
 		return nil, "", err
 	}
 	call := changedCall{since: since, page: page}
-	if kind == KindComment {
+	switch kind {
+	case KindComment:
 		f.commentCalls = append(f.commentCalls, call)
-	} else {
+	case KindAttachment:
+		f.attachCalls = append(f.attachCalls, call)
+	default:
 		f.calls = append(f.calls, call)
 	}
-	if n := len(f.calls) + len(f.commentCalls); n > maxChangedCalls {
+	if n := len(f.calls) + len(f.commentCalls) + len(f.attachCalls); n > maxChangedCalls {
 		return nil, "", fmt.Errorf("fake: runaway enumeration (%d Changed calls)", n)
 	}
 	var refs []ItemRef
@@ -299,13 +310,71 @@ func (f *fakeFetcher) Comments(_ context.Context, _ Container, pageID string) ([
 	return out, nil
 }
 
-func (f *fakeFetcher) Download(context.Context, *Item, int64) (io.ReadCloser, error) {
+func (f *fakeFetcher) Download(_ context.Context, it *Item, limit int64) (io.ReadCloser, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.hit(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("fake: no downloads")
+	id := it.Ref.ExtID
+	f.downloads[id]++
+	if err := f.downloadErr[id]; err != nil {
+		return nil, err
+	}
+	b, ok := f.blobs[id]
+	if !ok {
+		return nil, fmt.Errorf("fake: no bytes for %s", id)
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("fake: %w", ErrTooLarge)
+	}
+	var r io.Reader = bytes.NewReader(b)
+	if err := f.readErr[id]; err != nil {
+		r = io.MultiReader(r, errReader{err})
+	}
+	return io.NopCloser(r), nil
+}
+
+// errReader fails every Read with err.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// addAttachment adds an attachment of parent with its bytes; Size is
+// len(data) unless size >= 0 overrides it.
+func (f *fakeFetcher) addAttachment(id, parent string, version int, modified time.Time, name, mediaType string, data []byte, size int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if size < 0 {
+		size = int64(len(data))
+	}
+	ref := ItemRef{Kind: KindAttachment, ExtID: id, Version: version, Modified: modified, ParentID: parent}
+	f.docs[KindAttachment] = append(f.docs[KindAttachment], fakeDoc{ref: ref, item: &Item{
+		Ref:       ref,
+		Title:     name,
+		URL:       "https://example.test/att/" + id,
+		Status:    "current",
+		AuthorID:  "uploader-" + id,
+		Meta:      map[string]string{"space": "ENG"},
+		Download:  "/download/" + id,
+		MediaType: mediaType,
+		Size:      size,
+	}})
+	f.blobs[id] = data
+}
+
+// downloadCount returns how often id was downloaded.
+func (f *fakeFetcher) downloadCount(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.downloads[id]
+}
+
+// fetchCount returns how often id was fetched.
+func (f *fakeFetcher) fetchCount(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetches[id]
 }
 
 func (f *fakeFetcher) Users(_ context.Context, ids []string) (map[string]User, error) {

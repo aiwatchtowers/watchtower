@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
+	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
 )
@@ -26,25 +27,37 @@ import (
 type fakeConfluenceFetcher struct {
 	containers []extsync.Container
 	err        error
+	attachment *extsync.Item // listed by Changed/All(KindAttachment) when set
+	blob       []byte        // its bytes
 }
 
 func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
 	return f.containers, f.err
 }
-func (f *fakeConfluenceFetcher) Changed(context.Context, extsync.Container, extsync.ItemKind, time.Time, string) ([]extsync.ItemRef, string, error) {
-	return nil, "", nil
+func (f *fakeConfluenceFetcher) Changed(_ context.Context, _ extsync.Container, kind extsync.ItemKind, _ time.Time, _ string) ([]extsync.ItemRef, string, error) {
+	return f.refs(kind), "", nil
 }
-func (f *fakeConfluenceFetcher) All(context.Context, extsync.Container, extsync.ItemKind, string) ([]extsync.ItemRef, string, error) {
-	return nil, "", nil
+func (f *fakeConfluenceFetcher) All(_ context.Context, _ extsync.Container, kind extsync.ItemKind, _ string) ([]extsync.ItemRef, string, error) {
+	return f.refs(kind), "", nil
 }
-func (f *fakeConfluenceFetcher) Fetch(context.Context, extsync.Container, extsync.ItemRef) (*extsync.Item, error) {
+func (f *fakeConfluenceFetcher) refs(kind extsync.ItemKind) []extsync.ItemRef {
+	if f.attachment == nil || kind != extsync.KindAttachment {
+		return nil
+	}
+	return []extsync.ItemRef{f.attachment.Ref}
+}
+func (f *fakeConfluenceFetcher) Fetch(_ context.Context, _ extsync.Container, ref extsync.ItemRef) (*extsync.Item, error) {
+	if f.attachment != nil && ref.ExtID == f.attachment.Ref.ExtID {
+		it := *f.attachment
+		return &it, nil
+	}
 	return nil, nil
 }
 func (f *fakeConfluenceFetcher) Comments(context.Context, extsync.Container, string) ([]extsync.Item, error) {
 	return nil, nil
 }
 func (f *fakeConfluenceFetcher) Download(context.Context, *extsync.Item, int64) (io.ReadCloser, error) {
-	return nil, nil
+	return io.NopCloser(bytes.NewReader(f.blob)), nil
 }
 func (f *fakeConfluenceFetcher) Users(context.Context, []string) (map[string]extsync.User, error) {
 	return nil, nil
@@ -307,4 +320,38 @@ func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {
 	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
 	wireExternalSync(daemon.New(env.cfg), env.cfg, env.db, accounts, clients, logger)
 	assert.False(t, called)
+}
+
+// TestConfluenceSync_ExtractsAttachments: `confluence sync` wires the
+// attachment extractor — an attachment's text lands in ext_documents and
+// nothing is left under <workspace>/tmp/extract.
+func TestConfluenceSync_ExtractsAttachments(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	mod := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	env.fetcher.attachment = &extsync.Item{
+		Ref:   extsync.ItemRef{Kind: extsync.KindAttachment, ExtID: "a1", Version: 1, Modified: mod, ParentID: "p1"},
+		Title: "notes.txt", MediaType: "text/plain", Size: 11, Download: "/dl/a1",
+	}
+	env.fetcher.blob = []byte("hello world")
+
+	_, err = runConfluence(t, 0, "sync")
+	require.NoError(t, err)
+	var status, sections string
+	require.NoError(t, env.db.QueryRow(`SELECT extract_status, sections_json FROM ext_documents WHERE ext_id = 'a1'`).
+		Scan(&status, &sections))
+	assert.Equal(t, "ok", status)
+	assert.Contains(t, sections, "hello world")
+}
+
+func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	opts := extSyncOptions(env.cfg, log.New(io.Discard, "", 0), extSyncCycleBudget)
+	x, ok := opts.Extractor.(*extract.Extractor)
+	require.True(t, ok, "the engine gets the attachment extractor")
+	assert.Equal(t, filepath.Join(env.cfg.WorkspaceDir(), "tmp", "extract"), x.TempDir)
+	assert.Nil(t, x.OCR, "OCR arrives with the helper (Task 10)")
+	assert.Equal(t, extSyncCycleBudget, opts.Budget)
+	require.NotNil(t, opts.ScopesOK)
 }

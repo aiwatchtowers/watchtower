@@ -184,7 +184,7 @@ func (e *Engine) record(src db.ExtSource, o outcome) error {
 	return e.db.SetExtSourceStatus(src.ID, statusOK, "")
 }
 
-// runSource runs src's streams in order (pages, then comments), then the
+// runSource runs src's streams in order (see runStreams), then the
 // daily reconcile when due and budget remains, then resolves the users
 // written this run.
 func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *budget) (Stats, error) {
@@ -205,9 +205,11 @@ func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *
 	return st, err
 }
 
-// runStreams runs each stream in order, stopping when the budget runs out.
+// runStreams runs each stream in order (pages, comments, attachments),
+// then the one-time re-extraction of attachments stored without an
+// extractor, stopping when the budget runs out.
 func (e *Engine) runStreams(ctx context.Context, p pass, b *budget) error {
-	for _, spec := range []streamSpec{pagesStream, commentsStream} {
+	for _, spec := range []streamSpec{pagesStream, commentsStream, attachmentsStream} {
 		p.spec = spec
 		if err := e.runStream(ctx, p, b); err != nil {
 			return err
@@ -216,7 +218,7 @@ func (e *Engine) runStreams(ctx context.Context, p pass, b *budget) error {
 			return nil
 		}
 	}
-	return nil
+	return e.reextractSkipped(ctx, p, b)
 }
 
 // withTx runs fn in one transaction.

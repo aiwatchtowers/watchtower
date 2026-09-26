@@ -14,7 +14,7 @@ they are searchable through `search_knowledge`. Mechanical: no AI call
 anywhere. Design:
 `docs/superpowers/specs/2026-09-26-confluence-knowledge-connector-design.md`.
 
-**Module:** `internal/extsync/`, `internal/confluence/`,
+**Module:** `internal/extsync/`, `internal/extract/`, `internal/confluence/`,
 `internal/jira/confluence_api.go`, `internal/db/ext_sources.go`,
 `internal/kb/source_ext.go`, `internal/daemon/daemon.go`
 (`phaseExternalSync`), `cmd/confluence.go`
@@ -70,16 +70,26 @@ fetcher calls on the next pass, `kb.Run` again, assert zero `kb_documents` /
 
 ## EXT-03 — binaries are never persisted
 
-**Status:** Planned — the guard lands with attachment text extraction
-(`internal/extract`).
+**Status:** Enforced
 
-**Observable:** Attachment bytes are streamed into a temp file under
-`Config.WorkspaceDir()/tmp/extract/` (mode 0600) only for text extraction
-and removed afterwards; no table holds attachment bytes — only extracted
-text in `ext_documents.sections_json`.
+**Observable:** The engine's attachments stream downloads an attachment
+(≤ 25 MiB) only to hand the body to `extract.Extractor`. Formats that need
+random access (OOXML, PDF, images for OCR) are spooled into a temp file
+under `Config.WorkspaceDir()/tmp/extract/` (dir 0700, file 0600) that is
+removed before `Extract` returns on every path — errors and parser panics
+included; plain text and HTML are read in memory. Only the extracted text
+is written, to `ext_documents.sections_json`; no `ext_*` column ever holds
+attachment bytes or a BLOB.
 
-**Guard:** added with attachment extraction (after a sync pass with
-attachments, the extract temp dir is empty and no table holds the bytes).
+**Guard:** `TestEXT03_BinariesNeverPersisted`
+(`internal/extsync/ext03_contract_test.go`) — a full engine pass with the
+real `extract.Extractor` (fake OCR) over a PDF and a PNG attachment, then:
+(a) the extract temp dir holds no file, (b) no stored value contains the
+attachments' raw leading bytes (`%PDF-`, the PNG magic), (c) no column of
+any `ext_*` table holds a BLOB value. It also asserts both attachments were
+really extracted through files under the temp dir, so it cannot pass
+vacuously. Per-format cleanup is additionally pinned by
+`TestTempDirEmptyAfterExtract` (`internal/extract/extract_test.go`).
 
 ## Knowledge-search contracts
 
@@ -90,6 +100,9 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-26: EXT-03 enforced — attachment text extraction
+  (`internal/extract`) and the engine's attachments stream landed with
+  `TestEXT03_BinariesNeverPersisted`.
 - 2026-09-26: initial contracts EXT-01..03 (EXT-03 guard pending); EXT-01's
   guard is two-part (controller ruling R4) instead of one end-to-end
   engine test, since the client's base-URL seam is unexported.

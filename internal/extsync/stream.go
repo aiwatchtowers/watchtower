@@ -51,6 +51,8 @@ func streamState(src db.ExtSource, stream streamName) (string, string) {
 		return src.PageCursor, src.PageToken
 	case streamComments:
 		return src.CommentCursor, src.CommentToken
+	case streamAttachments:
+		return src.AttachmentCursor, src.AttachmentToken
 	}
 	return "", ""
 }

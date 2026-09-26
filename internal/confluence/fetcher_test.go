@@ -46,6 +46,8 @@ type fakeAPI struct {
 	mu     sync.Mutex
 	routes []route
 	reqs   []request
+	// download answers Download when set (default: the body "bytes").
+	download func(path string) (io.ReadCloser, error)
 }
 
 func anyQuery(url.Values) bool { return true }
@@ -143,6 +145,9 @@ func (a *fakeAPI) Download(_ context.Context, path string, _ int64) (io.ReadClos
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.reqs = append(a.reqs, request{method: "Download", path: path})
+	if a.download != nil {
+		return a.download(path)
+	}
 	return io.NopCloser(strings.NewReader("bytes")), nil
 }
 

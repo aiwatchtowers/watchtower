@@ -78,6 +78,10 @@ type Fetcher interface {
 	All(ctx context.Context, c Container, kind ItemKind, page string) (refs []ItemRef, next string, err error)
 	Fetch(ctx context.Context, c Container, ref ItemRef) (*Item, error) // nil,nil = gone
 	Comments(ctx context.Context, c Container, pageID string) ([]Item, error)
+	// Download opens an attachment's bytes, at most limit of them. A body
+	// above limit fails with ErrTooLarge (upfront, or from a Read of the
+	// returned body); an attachment deleted since Fetch fails with ErrGone.
+	// Both must match with errors.Is.
 	Download(ctx context.Context, it *Item, limit int64) (io.ReadCloser, error)
 	Users(ctx context.Context, ids []string) (map[string]User, error)
 }
@@ -92,6 +96,15 @@ type Extractor interface {
 // whether OCR is available, so a retry of OCR-pending attachments can be
 // skipped when it is not.
 type OCRCapable interface{ HasOCR() bool }
+
+// TypeSupporter is optionally implemented by an Extractor: Supports reports
+// whether Extract handles a media type / file name, i.e. would never answer
+// skipped_type for it. With it, the engine re-extracts once the attachments
+// stored as skipped_type while no Extractor was wired (see
+// reextractSkipped).
+type TypeSupporter interface {
+	Supports(mediaType, name string) bool
+}
 
 // Options configures an Engine.
 type Options struct {

@@ -4,15 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/config"
 	"watchtower/internal/confluence"
 	"watchtower/internal/db"
+	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
 )
@@ -401,13 +405,24 @@ func runConfluenceSync(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "No spaces selected for this account. See 'watchtower confluence select'.")
 		return nil
 	}
-	wd := s.cfg.WorkspaceDir()
-	engine := extsync.New(s.db, extsync.Options{
-		Logger:   jiraCmdLogger(cmd),
-		ScopesOK: func(id int64) bool { return confluenceScopesOK(wd, id) },
-	})
+	engine := extsync.New(s.db, extSyncOptions(s.cfg, jiraCmdLogger(cmd), 0))
 	engine.SetFetcher(s.account.ID, s.fetcher)
 	return syncConfluenceSources(cmd, engine, srcs)
+}
+
+// extSyncOptions is the engine configuration shared by the daemon phase and
+// `confluence sync` (budget 0 = unbounded): the scopes check and the
+// attachment extractor, whose temp files live under
+// <workspace>/tmp/extract (EXT-03). OCR is not wired yet (nil =
+// ocr_unavailable).
+func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration) extsync.Options {
+	wd := cfg.WorkspaceDir()
+	return extsync.Options{
+		Budget:    budget,
+		Logger:    logger,
+		Extractor: &extract.Extractor{TempDir: filepath.Join(wd, "tmp", "extract")},
+		ScopesOK:  func(id int64) bool { return confluenceScopesOK(wd, id) },
+	}
 }
 
 // syncConfluenceSources runs each source in turn and stops at the first

@@ -25,15 +25,17 @@ const isoLayout = time.RFC3339
 type streamName string
 
 const (
-	streamPages    streamName = "page"
-	streamComments streamName = "comment"
+	streamPages       streamName = "page"
+	streamComments    streamName = "comment"
+	streamAttachments streamName = "attachment"
 )
 
 // streamColumns maps a stream to its (cursor, token) columns. Column names
 // never come from input, only from this table.
 var streamColumns = map[streamName][2]string{
-	streamPages:    {"page_cursor", "page_token"},
-	streamComments: {"comment_cursor", "comment_token"},
+	streamPages:       {"page_cursor", "page_token"},
+	streamComments:    {"comment_cursor", "comment_token"},
+	streamAttachments: {"attachment_cursor", "attachment_token"},
 }
 
 func formatTime(t time.Time) string {
