@@ -35,6 +35,14 @@ var validExtractStatus = map[string]bool{
 	extractOCRPending: true, extractOCRMissing: true, extractFailed: true,
 }
 
+// attachmentDeadline bounds one attachment's download + extraction as a
+// whole (a variable so tests can shrink it). The cycle budget only stops
+// new launches, and the per-step timeouts (HTTP, PDF helper, each OCR
+// batch) add up to many minutes for one pathological file; past this
+// deadline the attachment is a transient failure (attempts++) and the
+// batch moves on.
+var attachmentDeadline = 3 * time.Minute
+
 // reextractBatchSize is how many rows one revisit chunk handles between
 // budget checks (a variable so tests can shrink it).
 var reextractBatchSize = 20
@@ -245,6 +253,11 @@ func (e *Engine) extractAll(ctx context.Context, p pass, items []*Item) ([]extra
 // error, a temp-file error) is a transient failure recorded on its row,
 // never a batch error: only an auth/consent failure or a cancelled ctx
 // aborts the batch.
+//
+// The download and extraction run under attachmentDeadline; hitting it is
+// this attachment's transient failure, while a cancellation of ctx itself
+// still aborts the batch (attachmentFailure checks the caller's ctx, not
+// the deadline's).
 func (e *Engine) extractOne(ctx context.Context, f Fetcher, it *Item) (extraction, error) {
 	x := e.opts.Extractor
 	if x == nil || !supports(x, it) {
@@ -253,7 +266,15 @@ func (e *Engine) extractOne(ctx context.Context, f Fetcher, it *Item) (extractio
 	if it.Size > maxDownload {
 		return extraction{status: extractTooLarge}, nil
 	}
-	rc, err := f.Download(ctx, it, maxDownload)
+	actx, cancel := context.WithTimeout(ctx, attachmentDeadline)
+	defer cancel()
+	return e.downloadAndExtract(ctx, actx, f, x, it)
+}
+
+// downloadAndExtract is extractOne's I/O half: the calls run under actx
+// (the per-attachment deadline), failures are classified against ctx.
+func (e *Engine) downloadAndExtract(ctx, actx context.Context, f Fetcher, x Extractor, it *Item) (extraction, error) {
+	rc, err := f.Download(actx, it, maxDownload)
 	if r, done := downloadOutcome(err); done {
 		return r, nil
 	}
@@ -261,7 +282,7 @@ func (e *Engine) extractOne(ctx context.Context, f Fetcher, it *Item) (extractio
 		return e.attachmentFailure(ctx, it, "downloading", err)
 	}
 	defer rc.Close()
-	secs, status, err := x.Extract(ctx, it.MediaType, it.Title, rc)
+	secs, status, err := x.Extract(actx, it.MediaType, it.Title, rc)
 	if errors.Is(err, ErrTooLarge) {
 		return extraction{status: extractTooLarge}, nil
 	}

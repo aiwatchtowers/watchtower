@@ -461,3 +461,53 @@ func countStatus(t *testing.T, d *db.DB, sourceID int64, status string) int {
 		sourceID, status).Scan(&n))
 	return n
 }
+
+// blockingExtractor never finishes extracting the attachment named block
+// until its ctx ends — a stuck parser or helper.
+type blockingExtractor struct {
+	*fakeExtractor
+	block string
+}
+
+func (x blockingExtractor) Extract(ctx context.Context, mediaType, name string, r io.Reader) ([]Section, string, error) {
+	if name == x.block {
+		<-ctx.Done()
+		return nil, "", ctx.Err()
+	}
+	return x.fakeExtractor.Extract(ctx, mediaType, name, r)
+}
+
+// TestAttachmentDeadlineIsTransientFailure: one attachment that takes past
+// attachmentDeadline is cut off and recorded as a transient failure
+// (attempts+1) — never a batch error — and its siblings still land.
+func TestAttachmentDeadlineIsTransientFailure(t *testing.T) {
+	old := attachmentDeadline
+	attachmentDeadline = 50 * time.Millisecond
+	t.Cleanup(func() { attachmentDeadline = old })
+
+	x := blockingExtractor{fakeExtractor: newFakeExtractor(), block: "stuck.pdf"}
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "stuck.pdf", "application/pdf", []byte("1"), -1)
+	f.addAttachment("a2", "p1", 1, t0.Add(time.Minute), "two.txt", "text/plain", []byte("2"), -1)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Run(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stuck attachment was never cut off")
+	}
+
+	row, ok := loadAttachment(t, d, src.ID, "a1")
+	require.True(t, ok)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, 1, extractAttempts(t, d, src.ID, "a1"))
+	row, ok = loadAttachment(t, d, src.ID, "a2")
+	require.True(t, ok)
+	assert.Equal(t, "ok", row.status)
+	assert.Equal(t, "ok", loadSource(t, d).Status)
+}
