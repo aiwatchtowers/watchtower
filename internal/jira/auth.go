@@ -168,7 +168,7 @@ func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state string) string {
 	params := url.Values{
 		"audience":      {"api.atlassian.com"},
 		"client_id":     {cfg.ClientID},
-		"scope":         {"read:jira-work write:jira-work read:jira-user read:board-scope:jira-software read:sprint:jira-software read:issue:jira-software read:project:jira offline_access"},
+		"scope":         {OAuthScopes},
 		"redirect_uri":  {redirectURI},
 		"state":         {state},
 		"response_type": {"code"},
@@ -230,8 +230,17 @@ func Complete(ctx context.Context, cfg JiraOAuthConfig, code, redirectURI string
 	return exchangeCode(ctx, cfg, code, redirectURI)
 }
 
-// RefreshToken refreshes an expired access token using a refresh token.
+// RefreshToken refreshes an expired access token using a refresh token,
+// against the package's jiraTokenEndpoint. Client's own refresh paths call
+// refreshTokenAt directly with c.tokenEndpoint() instead, so a test can
+// redirect one Client's refreshes to a private httptest.Server without
+// mutating jiraTokenEndpoint — package state a concurrent test could race.
 func RefreshToken(ctx context.Context, cfg JiraOAuthConfig, refreshToken string) (*OAuthToken, error) {
+	return refreshTokenAt(ctx, cfg, refreshToken, jiraTokenEndpoint)
+}
+
+// refreshTokenAt is RefreshToken with the token endpoint as a parameter.
+func refreshTokenAt(ctx context.Context, cfg JiraOAuthConfig, refreshToken, tokenURL string) (*OAuthToken, error) {
 	payload := map[string]string{
 		"grant_type":    "refresh_token",
 		"client_id":     cfg.ClientID,
@@ -243,7 +252,7 @@ func RefreshToken(ctx context.Context, cfg JiraOAuthConfig, refreshToken string)
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, jiraTokenEndpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}

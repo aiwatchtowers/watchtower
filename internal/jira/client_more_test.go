@@ -47,7 +47,7 @@ func TestNewClient_Initialization(t *testing.T) {
 	store := NewTokenStore(t.TempDir(), 1)
 	c := NewClient("c1", JiraOAuthConfig{}, store)
 	assert.Equal(t, "c1", c.cloudID)
-	assert.Contains(t, c.baseURL, "/ex/jira/c1")
+	assert.Contains(t, c.jiraBase(), "/ex/jira/c1")
 	assert.NotNil(t, c.httpClient)
 	assert.NotNil(t, c.rateLimiter)
 	assert.NotNil(t, c.logger)
