@@ -24,12 +24,16 @@ const isoLayout = time.RFC3339
 // pair on ext_sources.
 type streamName string
 
-const streamPages streamName = "page"
+const (
+	streamPages    streamName = "page"
+	streamComments streamName = "comment"
+)
 
 // streamColumns maps a stream to its (cursor, token) columns. Column names
 // never come from input, only from this table.
 var streamColumns = map[streamName][2]string{
-	streamPages: {"page_cursor", "page_token"},
+	streamPages:    {"page_cursor", "page_token"},
+	streamComments: {"comment_cursor", "comment_token"},
 }
 
 func formatTime(t time.Time) string {
@@ -39,9 +43,21 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(isoLayout)
 }
 
-// localVersions returns ext_id → version for the ids already stored under
-// sourceID, in one query.
+// localVersions returns ext_id → version for the documents already stored
+// under sourceID, in one query.
 func localVersions(ctx context.Context, q Queryer, sourceID int64, ids []string) (map[string]int, error) {
+	return readVersions(ctx, q, `SELECT ext_id, version FROM ext_documents WHERE source_id = ? AND ext_id IN `, sourceID, ids)
+}
+
+// localCommentVersions returns ext_id → version for the comments already
+// stored under sourceID.
+func localCommentVersions(ctx context.Context, q Queryer, sourceID int64, ids []string) (map[string]int, error) {
+	return readVersions(ctx, q, `SELECT ext_id, version FROM ext_comments WHERE source_id = ? AND ext_id IN `, sourceID, ids)
+}
+
+// readVersions runs a constant (ext_id, version) query whose last clause
+// is `ext_id IN ` over ids.
+func readVersions(ctx context.Context, q Queryer, query string, sourceID int64, ids []string) (map[string]int, error) {
 	out := make(map[string]int, len(ids))
 	if len(ids) == 0 {
 		return out, nil
@@ -52,8 +68,7 @@ func localVersions(ctx context.Context, q Queryer, sourceID int64, ids []string)
 		args = append(args, id)
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	rows, err := q.QueryContext(ctx, `SELECT ext_id, version FROM ext_documents
-		WHERE source_id = ? AND ext_id IN (`+placeholders+`)`, args...)
+	rows, err := q.QueryContext(ctx, query+`(`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: reading local versions: %w", err)
 	}
@@ -113,13 +128,15 @@ func upsertDocument(ctx context.Context, q Queryer, sourceID int64, it *Item, no
 	return nil
 }
 
-// deleteDocument removes one document (a no-op when absent).
+// deleteDocument removes one document and its comments (a no-op when
+// absent). ext_comments has no FK to ext_documents, so the comments go
+// explicitly.
 func deleteDocument(ctx context.Context, q Queryer, sourceID int64, extID string) error {
 	if _, err := q.ExecContext(ctx, `DELETE FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
 		sourceID, extID); err != nil {
 		return fmt.Errorf("extsync: deleting %s: %w", extID, err)
 	}
-	return nil
+	return deleteComments(ctx, q, sourceID, extID)
 }
 
 // saveStream persists a stream's cursor and in-flight token.

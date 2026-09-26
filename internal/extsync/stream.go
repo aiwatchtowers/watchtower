@@ -2,6 +2,7 @@ package extsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,22 +24,33 @@ const fetchConcurrency = 4
 // a stored token. An RFC3339 time never contains it.
 const tokenSep = "|"
 
-// streamSpec describes one delta stream: which state columns it owns and
-// which kind it enumerates.
+// batchApplier applies one listed batch of a stream and returns the new
+// cursor; it commits the batch's rows and the stream state in one
+// transaction.
+type batchApplier func(e *Engine, ctx context.Context, p pass, bt batch) (string, error)
+
+// streamSpec describes one delta stream: which state columns it owns, which
+// kind it enumerates and how a batch is applied.
 type streamSpec struct {
-	name streamName
-	kind ItemKind
+	name  streamName
+	kind  ItemKind
+	apply batchApplier
+	// marksBackfill: completing a pass from an empty cursor sets
+	// ext_sources.backfill_done.
+	marksBackfill bool
 }
 
 // pagesStream enumerates pages and blog posts in one pass (the provider's
 // Changed(KindPage) covers both), sharing page_cursor/page_token.
-var pagesStream = streamSpec{name: streamPages, kind: KindPage}
+var pagesStream = streamSpec{name: streamPages, kind: KindPage, apply: (*Engine).processBatch, marksBackfill: true}
 
 // streamState returns the stored (cursor, token) of stream on src.
 func streamState(src db.ExtSource, stream streamName) (string, string) {
 	switch stream {
 	case streamPages:
 		return src.PageCursor, src.PageToken
+	case streamComments:
+		return src.CommentCursor, src.CommentToken
 	}
 	return "", ""
 }
@@ -108,11 +120,12 @@ func advanceCursor(cursor string, refs []ItemRef) (string, error) {
 
 // pass is the per-source context of one stream run.
 type pass struct {
-	src  db.ExtSource
-	f    Fetcher
-	c    Container
-	spec streamSpec
-	st   *Stats
+	src   db.ExtSource
+	f     Fetcher
+	c     Container
+	spec  streamSpec
+	st    *Stats
+	users userSet // authors and mentions written this run
 }
 
 // batch is one Changed page ready to be applied.
@@ -129,9 +142,13 @@ type batch struct {
 // at most one fresh pass from the advanced cursor, which then ends it. A
 // cycle therefore makes at most two passes, however many pages the overlap
 // window holds. The budget is checked only between batches: a started
-// batch always commits.
+// batch always commits. A malformed cursor fails the stream before any
+// network call.
 func (e *Engine) runStream(ctx context.Context, p pass, b *budget) error {
 	cursor, token := streamState(p.src, p.spec.name)
+	if _, err := parseCursor(cursor); err != nil {
+		return err
+	}
 	anchor, page, resumed := decodeToken(token)
 	if !resumed {
 		if token != "" {
@@ -171,37 +188,49 @@ func (e *Engine) runStream(ctx context.Context, p pass, b *budget) error {
 func (e *Engine) streamBatch(ctx context.Context, p pass, cursor *string, anchor time.Time, page string) (string, error) {
 	refs, next, err := p.f.Changed(ctx, p.c, p.spec.kind, anchor, page)
 	if err != nil {
-		return "", fmt.Errorf("extsync: listing %s changes: %w", p.spec.kind, err)
+		err = fmt.Errorf("extsync: listing %s changes: %w", p.spec.kind, err)
+		return "", e.dropTokenOnFailure(ctx, p, *cursor, page, err)
 	}
-	bt := batch{refs: refs, cursor: *cursor, backfillDone: next == "" && anchor.IsZero()}
+	bt := batch{refs: refs, cursor: *cursor, backfillDone: p.spec.marksBackfill && next == "" && anchor.IsZero()}
 	if next != "" {
 		bt.token = encodeToken(anchor, next)
 	}
-	if *cursor, err = e.processBatch(ctx, p, bt); err != nil {
+	if *cursor, err = p.spec.apply(e, ctx, p, bt); err != nil {
 		return "", err
 	}
 	return next, nil
 }
 
-// processBatch applies one batch: the version gate, the fetches, then one
-// transaction writing the rows and the stream state. It returns the new
-// cursor.
-func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, error) {
-	ids := make([]string, len(bt.refs))
-	for i, r := range bt.refs {
-		ids[i] = r.ExtID
+// dropTokenOnFailure clears the stream's stored token after a Changed call
+// that carried one failed: a provider may expire or reject a pagination
+// token, and a kept token would wedge the stream on it forever. The next
+// cycle starts a fresh pass from the cursor, which is lossless because
+// every committed batch already advanced it. A cancelled ctx (shutdown)
+// keeps the token. It returns err, joined with a failure to clear.
+func (e *Engine) dropTokenOnFailure(ctx context.Context, p pass, cursor, page string, err error) error {
+	if page == "" || ctx.Err() != nil {
+		return err
 	}
-	local, err := localVersions(ctx, e.db, p.src.ID, ids)
+	if serr := saveStream(ctx, e.db, p.src.ID, p.spec.name, cursor, ""); serr != nil {
+		return errors.Join(err, serr)
+	}
+	return err
+}
+
+// processBatch applies one batch: the version gate, the fetches (each
+// re-fetched page with its full comment set), then one transaction writing
+// the rows and the stream state. It returns the new cursor.
+func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, error) {
+	stale, err := staleRefs(ctx, e.db, p.src.ID, bt.refs)
 	if err != nil {
 		return "", err
 	}
-	var stale []ItemRef
-	for _, r := range bt.refs {
-		if v, ok := local[r.ExtID]; !ok || v != r.Version {
-			stale = append(stale, r)
-		}
-	}
 	items, err := fetchAll(ctx, p.f, p.c, stale)
+	if err != nil {
+		return "", err
+	}
+	parents := commentParents(items)
+	sets, err := fetchCommentSets(ctx, p.f, p.c, parents)
 	if err != nil {
 		return "", err
 	}
@@ -209,25 +238,83 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 	if err != nil {
 		return "", err
 	}
-	var st Stats
-	st.Unchanged = len(bt.refs) - len(stale)
+	st := Stats{Unchanged: len(bt.refs) - len(stale)}
 	err = e.withTx(ctx, func(q Queryer) error {
 		if err := writeItems(ctx, q, p.src.ID, stale, items, e.opts.Now(), &st); err != nil {
 			return err
 		}
-		if err := saveStream(ctx, q, p.src.ID, p.spec.name, cursor, bt.token); err != nil {
-			return err
+		for i, parent := range parents {
+			if err := replaceComments(ctx, q, p.src.ID, parent, sets[i]); err != nil {
+				return err
+			}
+			st.Comments += len(sets[i])
 		}
-		if bt.backfillDone {
-			return markBackfillDone(ctx, q, p.src.ID)
-		}
-		return nil
+		return saveBatchState(ctx, q, p, bt, cursor)
 	})
 	if err != nil {
 		return "", err
 	}
 	p.st.add(st)
+	collectUsers(p.users, items, sets)
 	return cursor, nil
+}
+
+// staleRefs returns the refs whose version differs from the stored one (or
+// that are not stored at all): the only ones worth fetching.
+func staleRefs(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef) ([]ItemRef, error) {
+	ids := make([]string, len(refs))
+	for i, r := range refs {
+		ids[i] = r.ExtID
+	}
+	local, err := localVersions(ctx, q, sourceID, ids)
+	if err != nil {
+		return nil, err
+	}
+	var stale []ItemRef
+	for _, r := range refs {
+		if v, ok := local[r.ExtID]; !ok || v != r.Version {
+			stale = append(stale, r)
+		}
+	}
+	return stale, nil
+}
+
+// saveBatchState persists the stream state a committed batch reached.
+func saveBatchState(ctx context.Context, q Queryer, p pass, bt batch, cursor string) error {
+	if err := saveStream(ctx, q, p.src.ID, p.spec.name, cursor, bt.token); err != nil {
+		return err
+	}
+	if bt.backfillDone {
+		return markBackfillDone(ctx, q, p.src.ID)
+	}
+	return nil
+}
+
+// commentParents returns the ids of the fetched items that carry comments;
+// a re-fetched page reloads its whole comment set in the same batch.
+func commentParents(items []*Item) []string {
+	var out []string
+	for _, it := range items {
+		if it != nil && isCommentParent(it.Ref.Kind) {
+			out = append(out, it.Ref.ExtID)
+		}
+	}
+	return out
+}
+
+// collectUsers records the authors and mentions of written items and
+// comments.
+func collectUsers(u userSet, items []*Item, sets [][]Item) {
+	for _, it := range items {
+		if it != nil {
+			u.addItem(it)
+		}
+	}
+	for _, set := range sets {
+		for i := range set {
+			u.addItem(&set[i])
+		}
+	}
 }
 
 // writeItems upserts fetched items and deletes the refs whose Fetch

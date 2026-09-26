@@ -33,11 +33,75 @@ type fakeDoc struct {
 // fakeFetcher is an in-memory Fetcher. Changed(KindPage) enumerates pages and
 // blogposts together, like the Confluence CQL does.
 type fakeFetcher struct {
-	mu       sync.Mutex
-	docs     map[ItemKind][]fakeDoc
-	pageSize int
-	fetches  map[string]int
-	calls    []changedCall // every Changed call, in order
+	mu           sync.Mutex
+	docs         map[ItemKind][]fakeDoc // comments live under KindComment, ref.ParentID = page
+	pageSize     int
+	fetches      map[string]int
+	calls        []changedCall // every non-comment Changed call, in order
+	commentCalls []changedCall // every Changed(KindComment) call, in order
+	allCalls     map[ItemKind]int
+	userCalls    [][]string
+	hidden       map[string]bool // absent from All (moved/restricted), still Fetchable
+	netCalls     int             // every Fetcher call
+	failNext     error           // the next Fetcher call fails with it
+	failAll      map[ItemKind]error
+}
+
+// hit counts one Fetcher call and returns the injected failure, if any.
+// Callers hold f.mu.
+func (f *fakeFetcher) hit() error {
+	f.netCalls++
+	err := f.failNext
+	f.failNext = nil
+	return err
+}
+
+// failWith makes the next Fetcher call fail with err.
+func (f *fakeFetcher) failWith(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failNext = err
+}
+
+// removeFromAll hides id from All (moved to another space, or restricted):
+// Changed never lists it again either, since it did not change.
+func (f *fakeFetcher) removeFromAll(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hidden[id] = true
+}
+
+// addComment adds a footer comment on pageID; Changed(KindComment) lists it
+// and Comments(pageID) returns it.
+func (f *fakeFetcher) addComment(id, pageID string, version int, modified time.Time, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ref := ItemRef{Kind: KindComment, ExtID: id, Version: version, Modified: modified, ParentID: pageID}
+	f.docs[KindComment] = append(f.docs[KindComment], fakeDoc{ref: ref, item: &Item{
+		Ref:         ref,
+		AuthorID:    "author-" + id,
+		Created:     modified,
+		CommentKind: "footer",
+		Sections:    []Section{{Text: text}},
+	}})
+}
+
+// setAuthor sets the author of document id.
+func (f *fakeFetcher) setAuthor(id, author string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.find(id).item.AuthorID = author
+}
+
+// counts returns copies of the recorded All and Users calls.
+func (f *fakeFetcher) counts() (map[ItemKind]int, [][]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	all := map[ItemKind]int{}
+	for k, n := range f.allCalls {
+		all[k] = n
+	}
+	return all, append([][]string(nil), f.userCalls...)
 }
 
 // changedCall records one Changed call's since and page token.
@@ -55,6 +119,7 @@ func (f *fakeFetcher) resetCalls() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = nil
+	f.commentCalls = nil
 }
 
 // changedCalls returns a copy of the recorded Changed calls.
@@ -65,7 +130,8 @@ func (f *fakeFetcher) changedCalls() []changedCall {
 }
 
 func newFake() *fakeFetcher {
-	return &fakeFetcher{docs: map[ItemKind][]fakeDoc{}, pageSize: 2, fetches: map[string]int{}}
+	return &fakeFetcher{docs: map[ItemKind][]fakeDoc{}, pageSize: 2, fetches: map[string]int{},
+		allCalls: map[ItemKind]int{}, hidden: map[string]bool{}}
 }
 
 func (f *fakeFetcher) add(kind ItemKind, id string, version int, modified time.Time) {
@@ -147,20 +213,33 @@ func (f *fakeFetcher) paginate(refs []ItemRef, page string) ([]ItemRef, string, 
 }
 
 func (f *fakeFetcher) Containers(context.Context) ([]Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, err
+	}
 	return []Container{{Key: "ENG", Name: "Engineering", ExtID: "1"}}, nil
 }
 
 func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, since time.Time, page string) ([]ItemRef, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, changedCall{since: since, page: page})
-	if len(f.calls) > maxChangedCalls {
-		return nil, "", fmt.Errorf("fake: runaway enumeration (%d Changed calls)", len(f.calls))
+	if err := f.hit(); err != nil {
+		return nil, "", err
+	}
+	call := changedCall{since: since, page: page}
+	if kind == KindComment {
+		f.commentCalls = append(f.commentCalls, call)
+	} else {
+		f.calls = append(f.calls, call)
+	}
+	if n := len(f.calls) + len(f.commentCalls); n > maxChangedCalls {
+		return nil, "", fmt.Errorf("fake: runaway enumeration (%d Changed calls)", n)
 	}
 	var refs []ItemRef
 	for _, k := range f.kinds(kind) {
 		for _, d := range f.docs[k] {
-			if !d.ref.Modified.Before(since) {
+			if !d.ref.Modified.Before(since) && !f.hidden[d.ref.ExtID] {
 				refs = append(refs, d.ref)
 			}
 		}
@@ -172,10 +251,19 @@ func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, sin
 func (f *fakeFetcher) All(_ context.Context, _ Container, kind ItemKind, page string) ([]ItemRef, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, "", err
+	}
+	f.allCalls[kind]++
+	if err := f.failAll[kind]; err != nil {
+		return nil, "", err
+	}
 	var refs []ItemRef
 	for _, k := range f.kinds(kind) {
 		for _, d := range f.docs[k] {
-			refs = append(refs, d.ref)
+			if !f.hidden[d.ref.ExtID] {
+				refs = append(refs, d.ref)
+			}
 		}
 	}
 	return f.paginate(refs, page)
@@ -184,6 +272,9 @@ func (f *fakeFetcher) All(_ context.Context, _ Container, kind ItemKind, page st
 func (f *fakeFetcher) Fetch(_ context.Context, _ Container, ref ItemRef) (*Item, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, err
+	}
 	f.fetches[ref.ExtID]++
 	d := f.find(ref.ExtID)
 	if d == nil || d.item == nil {
@@ -193,16 +284,42 @@ func (f *fakeFetcher) Fetch(_ context.Context, _ Container, ref ItemRef) (*Item,
 	return &it, nil
 }
 
-func (f *fakeFetcher) Comments(context.Context, Container, string) ([]Item, error) {
-	return nil, nil
+func (f *fakeFetcher) Comments(_ context.Context, _ Container, pageID string) ([]Item, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, err
+	}
+	var out []Item
+	for _, d := range f.docs[KindComment] {
+		if d.ref.ParentID == pageID && d.item != nil {
+			out = append(out, *d.item)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeFetcher) Download(context.Context, *Item, int64) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, err
+	}
 	return nil, fmt.Errorf("fake: no downloads")
 }
 
-func (f *fakeFetcher) Users(context.Context, []string) (map[string]User, error) {
-	return map[string]User{}, nil
+func (f *fakeFetcher) Users(_ context.Context, ids []string) (map[string]User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.hit(); err != nil {
+		return nil, err
+	}
+	f.userCalls = append(f.userCalls, append([]string(nil), ids...))
+	out := make(map[string]User, len(ids))
+	for _, id := range ids {
+		out[id] = User{ID: id, DisplayName: "Name " + id, Email: id + "@example.test"}
+	}
+	return out, nil
 }
 
 // stepClock returns its time and then advances it by step on every Now call.

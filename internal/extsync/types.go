@@ -99,6 +99,10 @@ type Options struct {
 	Now       func() time.Time // default time.Now; the engine reads the clock only through it
 	Logger    *log.Logger      // default: discard
 	Extractor Extractor        // nil → attachments stored as skipped_type
+	// ScopesOK reports whether an account's grant carries the scopes the
+	// sources need; false records needs_consent without any network call.
+	// nil = assume granted.
+	ScopesOK func(jiraAccountID int64) bool
 }
 
 // Stats summarizes one Run or RunSource.
