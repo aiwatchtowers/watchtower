@@ -111,6 +111,12 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 // this same loop against a different Atlassian product base (see
 // confluence_api.go).
 func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte, accept string) (*http.Response, error) {
+	return c.doURLWith(ctx, c.httpClient, method, fullURL, body, accept)
+}
+
+// doURLWith is doURL over a caller-chosen *http.Client (Download uses one
+// with a longer whole-request timeout; see downloadHTTPClient).
+func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL string, body []byte, accept string) (*http.Response, error) {
 	for attempt := 0; attempt <= 3; attempt++ {
 		if err := c.rateLimiter.Wait(ctx); err != nil {
 			return nil, err
@@ -137,7 +143,7 @@ func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte,
 			req.Header.Set("Content-Type", "application/json")
 		}
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := hc.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("request %s %s: %w", method, fullURL, err)
 		}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // ErrTooLarge is returned by ConfluenceAPI.Download when the response body
@@ -100,7 +101,7 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 func (a *ConfluenceAPI) Download(ctx context.Context, path string, limit int64) (io.ReadCloser, error) {
 	// No Accept header: an attachment binary is not JSON, and asking
 	// Confluence's download endpoint to expect one is wrong for this request.
-	resp, err := a.c.doURL(ctx, http.MethodGet, a.base()+path, nil, "")
+	resp, err := a.c.doURLWith(ctx, a.c.downloadHTTPClient(), http.MethodGet, a.base()+path, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +117,21 @@ func (a *ConfluenceAPI) Download(ctx context.Context, path string, limit int64) 
 	}
 
 	return newCappedBody(resp.Body, limit), nil
+}
+
+// downloadTimeout bounds one attachment download end to end, body included.
+// The client's 30 s whole-request timeout would fail a 20 MiB attachment on
+// a slow link deterministically, every cycle.
+var downloadTimeout = 5 * time.Minute
+
+// downloadHTTPClient is the client's *http.Client with the whole-request
+// timeout raised to downloadTimeout. It shares the transport (connection
+// pool, TLS config) and the redirect/cookie policy; the token path and the
+// rate limiter are doURLWith's, unchanged.
+func (c *Client) downloadHTTPClient() *http.Client {
+	hc := *c.httpClient
+	hc.Timeout = downloadTimeout
+	return &hc
 }
 
 // GrantedScopes returns the scope field of the stored OAuth token — the
