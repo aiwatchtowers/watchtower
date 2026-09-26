@@ -59,6 +59,26 @@ CREATE INDEX idx_digests_period ON digests(period_from, period_to)
 index	idx_digests_type
 CREATE INDEX idx_digests_type ON digests(type)
 
+index	idx_doc_links_to
+CREATE INDEX idx_doc_links_to ON doc_links(to_kind, to_ref)
+
+index	idx_ext_comments_page
+CREATE INDEX idx_ext_comments_page ON ext_comments(source_id, page_ext_id)
+
+index	idx_ext_documents_parent
+CREATE INDEX idx_ext_documents_parent ON ext_documents(source_id, parent_ext_id)
+
+index	idx_ext_documents_synced
+CREATE INDEX idx_ext_documents_synced ON ext_documents(synced_at)
+
+index	idx_ext_sources_conn
+CREATE UNIQUE INDEX idx_ext_sources_conn ON ext_sources(provider, connection_id, container_key)
+WHERE connection_id IS NOT NULL
+
+index	idx_ext_sources_jira
+CREATE UNIQUE INDEX idx_ext_sources_jira ON ext_sources(provider, jira_account_id, container_key)
+WHERE jira_account_id IS NOT NULL
+
 index	idx_feedback_entity
 CREATE INDEX idx_feedback_entity ON feedback(entity_type, entity_id)
 
@@ -583,6 +603,16 @@ running_summary TEXT NOT NULL DEFAULT '', -- JSON running context for next diges
 UNIQUE(channel_id, type, period_from, period_to)
 )
 
+table	doc_links
+CREATE TABLE doc_links (
+from_kind TEXT NOT NULL, -- 'confluence' | 'slack' | 'gmail' | 'jira'
+from_ref TEXT NOT NULL, -- kb-style ref of the mentioning document
+to_kind TEXT NOT NULL, -- 'jira_issue' | 'confluence_page'
+to_ref TEXT NOT NULL, -- 'PROJ-123' | '<cloud_id>:<page_id>'
+detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (from_kind, from_ref, to_kind, to_ref)
+)
+
 table	email_accounts
 CREATE TABLE email_accounts (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -599,6 +629,87 @@ last_uid INTEGER NOT NULL DEFAULT 0, -- sync watermark: highest IMAP UID synced
 uidvalidity INTEGER NOT NULL DEFAULT 0, -- IMAP UIDVALIDITY; a change means last_uid must reset
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
+table	ext_comments
+CREATE TABLE ext_comments (
+source_id INTEGER NOT NULL REFERENCES ext_sources(id) ON DELETE CASCADE,
+ext_id TEXT NOT NULL,
+page_ext_id TEXT NOT NULL,
+kind TEXT NOT NULL CHECK (kind IN ('footer','inline')),
+author_id TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT '',
+version INTEGER NOT NULL DEFAULT 0,
+body_text TEXT NOT NULL DEFAULT '',
+anchor_text TEXT NOT NULL DEFAULT '',
+resolved INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (source_id, ext_id)
+)
+
+table	ext_documents
+CREATE TABLE ext_documents (
+source_id INTEGER NOT NULL REFERENCES ext_sources(id) ON DELETE CASCADE,
+ext_id TEXT NOT NULL,
+kind TEXT NOT NULL CHECK (kind IN ('page','blogpost','attachment')),
+parent_ext_id TEXT NOT NULL DEFAULT '',
+title TEXT NOT NULL DEFAULT '',
+url TEXT NOT NULL DEFAULT '',
+version INTEGER NOT NULL DEFAULT 0,
+status TEXT NOT NULL DEFAULT 'current',
+author_id TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT '',
+modified_at TEXT NOT NULL DEFAULT '',
+sections_json TEXT NOT NULL DEFAULT '[]', -- [{"heading":..,"anchor":..,"text":..}]
+meta_json TEXT NOT NULL DEFAULT '{}',
+media_type TEXT NOT NULL DEFAULT '',
+size_bytes INTEGER NOT NULL DEFAULT 0,
+extract_status TEXT NOT NULL DEFAULT 'ok'
+CHECK (extract_status IN ('ok','skipped_type','too_large','ocr_pending','ocr_unavailable','failed')),
+extract_attempts INTEGER NOT NULL DEFAULT 0,
+children_changed_at TEXT NOT NULL DEFAULT '', -- a comment moved: re-render the page
+synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (source_id, ext_id)
+)
+
+table	ext_link_state
+CREATE TABLE ext_link_state ( -- doc_links detection watermark per scanned kind
+from_kind TEXT PRIMARY KEY, -- 'slack' | 'gmail' | 'imap' | 'jira'
+cursor TEXT NOT NULL DEFAULT '' -- rowid / synced_at high-water, per kind
+)
+
+table	ext_sources
+CREATE TABLE ext_sources (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+provider TEXT NOT NULL CHECK (provider IN ('confluence')),
+jira_account_id INTEGER REFERENCES jira_accounts(id) ON DELETE CASCADE,
+connection_id INTEGER REFERENCES external_connections(id) ON DELETE CASCADE,
+container_key TEXT NOT NULL, -- space key
+container_ext_id TEXT NOT NULL DEFAULT '',-- space id (REST v2)
+container_name TEXT NOT NULL DEFAULT '',
+enabled INTEGER NOT NULL DEFAULT 1,
+page_cursor TEXT NOT NULL DEFAULT '', -- RFC3339 lastModified high-water
+comment_cursor TEXT NOT NULL DEFAULT '',
+attachment_cursor TEXT NOT NULL DEFAULT '',
+page_token TEXT NOT NULL DEFAULT '', -- in-flight pagination token per stream
+comment_token TEXT NOT NULL DEFAULT '', -- (resume mid-backfill; cleared when
+attachment_token TEXT NOT NULL DEFAULT '', -- the stream's enumeration completes)
+backfill_done INTEGER NOT NULL DEFAULT 0,
+last_reconcile_at TEXT NOT NULL DEFAULT '',
+last_synced_at TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error','needs_consent','revoked')),
+error TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+CHECK ((jira_account_id IS NULL) != (connection_id IS NULL))
+)
+
+table	ext_users
+CREATE TABLE ext_users (
+provider TEXT NOT NULL,
+ext_user_id TEXT NOT NULL, -- Atlassian accountId for Confluence
+display_name TEXT NOT NULL DEFAULT '',
+email TEXT NOT NULL DEFAULT '',
+fetched_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (provider, ext_user_id)
 )
 
 table	external_connections
@@ -2018,6 +2129,13 @@ END
 18	situations	TEXT	notnull=1	dflt='[]'	pk=0
 19	running_summary	TEXT	notnull=1	dflt=''	pk=0
 
+## doc_links
+0	from_kind	TEXT	notnull=1	dflt=NULL	pk=1
+1	from_ref	TEXT	notnull=1	dflt=NULL	pk=2
+2	to_kind	TEXT	notnull=1	dflt=NULL	pk=3
+3	to_ref	TEXT	notnull=1	dflt=NULL	pk=4
+4	detected_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## email_accounts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	provider	TEXT	notnull=1	dflt=NULL	pk=0
@@ -2033,6 +2151,72 @@ END
 11	uidvalidity	INTEGER	notnull=1	dflt=0	pk=0
 12	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 13	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## ext_comments
+0	source_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	ext_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	page_ext_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	kind	TEXT	notnull=1	dflt=NULL	pk=0
+4	author_id	TEXT	notnull=1	dflt=''	pk=0
+5	created_at	TEXT	notnull=1	dflt=''	pk=0
+6	version	INTEGER	notnull=1	dflt=0	pk=0
+7	body_text	TEXT	notnull=1	dflt=''	pk=0
+8	anchor_text	TEXT	notnull=1	dflt=''	pk=0
+9	resolved	INTEGER	notnull=1	dflt=0	pk=0
+
+## ext_documents
+0	source_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	ext_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	parent_ext_id	TEXT	notnull=1	dflt=''	pk=0
+4	title	TEXT	notnull=1	dflt=''	pk=0
+5	url	TEXT	notnull=1	dflt=''	pk=0
+6	version	INTEGER	notnull=1	dflt=0	pk=0
+7	status	TEXT	notnull=1	dflt='current'	pk=0
+8	author_id	TEXT	notnull=1	dflt=''	pk=0
+9	created_at	TEXT	notnull=1	dflt=''	pk=0
+10	modified_at	TEXT	notnull=1	dflt=''	pk=0
+11	sections_json	TEXT	notnull=1	dflt='[]'	pk=0
+12	meta_json	TEXT	notnull=1	dflt='{}'	pk=0
+13	media_type	TEXT	notnull=1	dflt=''	pk=0
+14	size_bytes	INTEGER	notnull=1	dflt=0	pk=0
+15	extract_status	TEXT	notnull=1	dflt='ok'	pk=0
+16	extract_attempts	INTEGER	notnull=1	dflt=0	pk=0
+17	children_changed_at	TEXT	notnull=1	dflt=''	pk=0
+18	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## ext_link_state
+0	from_kind	TEXT	notnull=0	dflt=NULL	pk=1
+1	cursor	TEXT	notnull=1	dflt=''	pk=0
+
+## ext_sources
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	provider	TEXT	notnull=1	dflt=NULL	pk=0
+2	jira_account_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	connection_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	container_key	TEXT	notnull=1	dflt=NULL	pk=0
+5	container_ext_id	TEXT	notnull=1	dflt=''	pk=0
+6	container_name	TEXT	notnull=1	dflt=''	pk=0
+7	enabled	INTEGER	notnull=1	dflt=1	pk=0
+8	page_cursor	TEXT	notnull=1	dflt=''	pk=0
+9	comment_cursor	TEXT	notnull=1	dflt=''	pk=0
+10	attachment_cursor	TEXT	notnull=1	dflt=''	pk=0
+11	page_token	TEXT	notnull=1	dflt=''	pk=0
+12	comment_token	TEXT	notnull=1	dflt=''	pk=0
+13	attachment_token	TEXT	notnull=1	dflt=''	pk=0
+14	backfill_done	INTEGER	notnull=1	dflt=0	pk=0
+15	last_reconcile_at	TEXT	notnull=1	dflt=''	pk=0
+16	last_synced_at	TEXT	notnull=1	dflt=''	pk=0
+17	status	TEXT	notnull=1	dflt='ok'	pk=0
+18	error	TEXT	notnull=1	dflt=''	pk=0
+19	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## ext_users
+0	provider	TEXT	notnull=1	dflt=NULL	pk=1
+1	ext_user_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	display_name	TEXT	notnull=1	dflt=''	pk=0
+3	email	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## external_connections
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
