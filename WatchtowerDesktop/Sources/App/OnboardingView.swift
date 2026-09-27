@@ -1468,118 +1468,22 @@ struct OnboardingView: View {
         }
     }
 
-    private struct CLIResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
-    }
-
-    /// Thread-safe line buffer that splits streamed data on newlines.
-    private final class LineBuffer: @unchecked Sendable {
-        private let onLine: (String) -> Void
-        private var buffer = Data()
-        private let lock = NSLock()
-        private var _allText = ""
-
-        var allText: String {
-            lock.lock()
-            defer { lock.unlock() }
-            return _allText
-        }
-
-        init(onLine: @escaping (String) -> Void) {
-            self.onLine = onLine
-        }
-
-        func append(_ data: Data) {
-            lock.lock()
-            buffer.append(data)
-            // Extract complete lines
-            var lines: [String] = []
-            let newline = UInt8(0x0A)
-            while let idx = buffer.firstIndex(of: newline) {
-                let lineData = buffer[buffer.startIndex..<idx]
-                buffer = buffer[(idx + 1)...]
-                if let line = String(data: lineData, encoding: .utf8) {
-                    _allText += line + "\n"
-                    lines.append(line)
-                }
-            }
-            lock.unlock()
-            for line in lines {
-                onLine(line)
-            }
-        }
-
-        func flush() {
-            lock.lock()
-            let remaining = buffer
-            buffer = Data()
-            lock.unlock()
-            if !remaining.isEmpty, let line = String(data: remaining, encoding: .utf8), !line.isEmpty {
-                lock.lock()
-                _allText += line
-                lock.unlock()
-                onLine(line)
-            }
-        }
-    }
-
-    private static func runCLI(
-        path: String,
-        arguments: [String],
-        onOutputLine: (@Sendable (String) -> Void)? = nil
-    ) async -> CLIResult {
+    /// Runs the CLI and collects its output.
+    ///
+    /// `nonisolated` on purpose (the `SystemSettings.runCLIProbe` precedent): a
+    /// `View` is `@MainActor`, so a plain static here was main-actor-isolated
+    /// and every `await Self.runCLI(...)` from a `Task.detached` hopped back
+    /// onto the main actor, where the old synchronous `waitUntilExit()` froze
+    /// the whole app for the child's lifetime — for `auth login`, the user's
+    /// entire browser OAuth round-trip, up to its 5-minute timeout.
+    /// `ProcessPipes.run` waits off-actor and drains stdout and stderr
+    /// concurrently (SB3).
+    nonisolated private static func runCLI(path: String, arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return CLIResult(exitCode: -1, stdout: "", stderr: error.localizedDescription)
-        }
-
-        var stdoutText = ""
-
-        if let onLine = onOutputLine {
-            // Use readabilityHandler for real-time line streaming
-            let lineBuffer = LineBuffer(onLine: onLine)
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    // EOF
-                    handle.readabilityHandler = nil
-                    return
-                }
-                lineBuffer.append(data)
-            }
-
-            process.waitUntilExit()
-            // Ensure we read any remaining data after process exits
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            let remaining = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            if !remaining.isEmpty {
-                lineBuffer.append(remaining)
-            }
-            lineBuffer.flush()
-            stdoutText = lineBuffer.allText
-        } else {
-            process.waitUntilExit()
-            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            stdoutText = String(data: data, encoding: .utf8) ?? ""
-        }
-
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-
-        return CLIResult(exitCode: process.terminationStatus, stdout: stdoutText, stderr: stderrText)
+        return await ProcessPipes.run(process)
     }
 }
 
