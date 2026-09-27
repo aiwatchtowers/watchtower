@@ -31,23 +31,38 @@ package final class SlackAuthService {
     /// marks account #1 removed/disabled so syncing stops. Non-destructive —
     /// already-synced Slack data and the AI products built on it are KEPT
     /// (mirrors the `slack remove` / `removeSlackAccount` semantics).
-    package func disconnect() async {
+    /// Returns whether the logout itself succeeded — the CLI result, never the
+    /// combined `error`, which also carries status-read failures.
+    @discardableResult
+    package func disconnect() async -> Bool {
         guard let cliPath = Constants.findCLIPath() else {
             disconnectError = "Watchtower CLI not found"
-            return
+            return false
         }
-
         let result = await Self.runCLI(path: cliPath, arguments: ["auth", "logout"])
-        if result.exitCode == 0 {
-            disconnectError = nil
-            // `auth logout` removes account #1 only; any other connected
-            // account keeps Slack connected.
-            await refreshStatus()
-        } else {
-            disconnectError = result.stderr.isEmpty
-                ? "Disconnect failed (exit \(result.exitCode))"
-                : String(result.stderr.prefix(200))
+        return await applyDisconnectResult(exitCode: result.exitCode, stderr: result.stderr)
+    }
+
+    /// Records a finished `auth logout`; split out of `disconnect()` so the
+    /// bookkeeping is testable without a CLI.
+    package func applyDisconnectResult(exitCode: Int32, stderr: String) async -> Bool {
+        guard exitCode == 0 else {
+            disconnectError = stderr.isEmpty
+                ? "Disconnect failed (exit \(exitCode))"
+                : String(stderr.prefix(200))
+            return false
         }
+        disconnectError = nil
+        // `auth logout` removes account #1 only; any other connected
+        // account keeps Slack connected.
+        await refreshStatus()
+        return true
+    }
+
+    /// Drops a stale disconnect failure — called after a successful
+    /// reconnect/login, which supersedes it.
+    package func clearDisconnectError() {
+        disconnectError = nil
     }
 
     // MARK: - Status
@@ -66,8 +81,15 @@ package final class SlackAuthService {
             let (connected, rows) = try await dbPool.read { db in
                 (try SlackAccountQueries.hasConnectedAccount(db), try SlackAccountQueries.fetchAll(db))
             }
+            let target = Self.logoutTarget(in: rows)
+            // A disconnect failure is about the account it targeted; once
+            // that target is gone or replaced, the error has nothing left to
+            // describe (and the button that retries it may be hidden).
+            if target?.id != disconnectTarget?.id {
+                disconnectError = nil
+            }
             isConnected = connected
-            disconnectTarget = Self.logoutTarget(in: rows)
+            disconnectTarget = target
             statusError = nil
         } catch {
             isConnected = false

@@ -113,6 +113,56 @@ final class SlackAuthServiceTests: XCTestCase {
         XCTAssertTrue(service.isConnected)
     }
 
+    /// A failed Disconnect's error belongs to the account it targeted: once
+    /// that target is gone (removed from the Workspaces list, or the button
+    /// is hidden), the red "Disconnect failed" must not linger beside a green
+    /// "Slack connected". A reconnect clears it too.
+    func testDisconnectErrorClearsWhenTheTargetGoesAwayOrOnReconnect() async throws {
+        let pool = try makePool()
+        let (first, _) = try await pool.write { db -> (Int64, Int64) in
+            (try TestDatabase.insertSlackAccount(db, teamName: "First"),
+             try TestDatabase.insertSlackAccount(db, teamName: "Second"))
+        }
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        await service.refreshStatus()
+
+        let succeeded = await service.applyDisconnectResult(exitCode: 1, stderr: "boom")
+        XCTAssertFalse(succeeded)
+        XCTAssertEqual(service.error, "boom")
+
+        // Same target on the next read: the failure stays visible.
+        await service.refreshStatus()
+        XCTAssertEqual(service.error, "boom")
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'removed', enabled = 0 WHERE id = ?", arguments: [first])
+        }
+        await service.refreshStatus()
+        XCTAssertNil(service.disconnectTarget)
+        XCTAssertNil(service.error)
+
+        _ = await service.applyDisconnectResult(exitCode: 2, stderr: "")
+        XCTAssertEqual(service.error, "Disconnect failed (exit 2)")
+        service.clearDisconnectError()
+        XCTAssertNil(service.error)
+    }
+
+    /// Success is reported from the CLI result, not from `error` — a status
+    /// read failing right after a good logout must not read as a failed logout.
+    func testDisconnectSuccessIsTheCLIResultNotTheCombinedError() async throws {
+        let pool = try makePool()
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db) }
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE slack_accounts RENAME TO slack_accounts_away") }
+
+        let succeeded = await service.applyDisconnectResult(exitCode: 0, stderr: "")
+
+        XCTAssertTrue(succeeded)
+        XCTAssertNotNil(service.error, "the post-logout status read failed")
+    }
+
     func testNotConnectedWithoutADatabase() async {
         let service = SlackAuthService()
         await service.refreshStatus()

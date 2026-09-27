@@ -57,6 +57,11 @@ struct SlackConnectionDetail: View {
         .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
             Task { await slackAuth.refreshStatus() }
         }
+        // A refresh can take the disconnect target away while the confirm
+        // dialog is open; there is then nothing left to confirm.
+        .onChange(of: slackAuth.disconnectTarget?.id) { _, newID in
+            if newID == nil { showSlackDisconnectConfirm = false }
+        }
     }
 
     private var workspaceSection: some View {
@@ -128,7 +133,11 @@ struct SlackConnectionDetail: View {
             titleVisibility: .visible
         ) {
             Button("Disconnect \(disconnectName)", role: .destructive) {
-                disconnectSlack()
+                // Re-checked at confirm time: `auth logout` must never run
+                // once the target it would remove has gone away.
+                if slackAuth.disconnectTarget != nil {
+                    disconnectSlack()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -154,8 +163,7 @@ struct SlackConnectionDetail: View {
             // phase. Synced data is kept (non-destructive, matches `slack
             // remove` / `auth logout` semantics).
             await flow.daemonManager.stopDaemon()
-            await slackAuth.disconnect()
-            if slackAuth.error == nil {
+            if await slackAuth.disconnect() {
                 config.reload()
                 flow.reconnectResult = nil
                 // `auth logout` removed a row: reload the Workspaces list too.
@@ -407,7 +415,10 @@ struct SlackConnectionDetail: View {
                     flow.reconnectSuccess = true
                     flow.reconnectResult = "Connected"
                     config.reload()
-                    Task { await slackAuth.refreshStatus() }
+                    Task {
+                        slackAuth.clearDisconnectError()
+                        await slackAuth.refreshStatus()
+                    }
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
                     flow.reconnectResult = nil
