@@ -158,7 +158,7 @@ func TestSyncCapProcessesOldestFirst(t *testing.T) {
           "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Old"}]}}`, oldUnix)
 	})
 	mux.HandleFunc("/users/me/messages/mNew", func(w http.ResponseWriter, r *http.Request) {
-		newFetched = true
+		newFetched = newFetched || r.URL.Query().Get("format") == "full" // a minimal date lookup is not a fetch
 		fmt.Fprintf(w, `{"id":"mNew","threadId":"t2","labelIds":["INBOX"],"snippet":"new",
           "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"New"}]}}`, newUnix)
 	})
@@ -262,7 +262,7 @@ func TestSyncNoLossWhenBacklogExceedsCap(t *testing.T) {
           "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"M2"}]}}`, t2Unix)
 	})
 	mux.HandleFunc("/users/me/messages/m3", func(w http.ResponseWriter, r *http.Request) {
-		m3Fetched = true
+		m3Fetched = m3Fetched || r.URL.Query().Get("format") == "full" // a minimal date lookup is not a fetch
 		fmt.Fprintf(w, `{"id":"m3","threadId":"t3","labelIds":["INBOX"],"snippet":"m3",
           "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"M3"}]}}`, t3Unix)
 	})
@@ -959,4 +959,97 @@ func TestSyncNoiseSkipAdvancesWatermark(t *testing.T) {
 			t.Errorf("watermark = %v, want %v — must stop before the lost message", watermark, realUnix)
 		}
 	})
+}
+
+// capTieMux serves a mailbox whose list honours after:<unix> (strictly newer)
+// and answers newest-first; msgs is oldest-first. failMinimal makes the
+// format=minimal GET the syncer uses for the cut-off message fail.
+func capTieMux(t *testing.T, msgs []capTieMsg, failMinimal bool) *http.ServeMux {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		var after int64 = -1
+		if q := r.URL.Query().Get("q"); strings.Contains(q, "after:") {
+			_, err := fmt.Sscanf(q[strings.Index(q, "after:"):], "after:%d", &after)
+			if err != nil {
+				t.Errorf("parsing query %q: %v", q, err)
+			}
+		}
+		var ids []string
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].unix > after {
+				ids = append(ids, fmt.Sprintf(`{"id":%q}`, msgs[i].id))
+			}
+		}
+		fmt.Fprintf(w, `{"messages":[%s]}`, strings.Join(ids, ","))
+	})
+	for _, m := range msgs {
+		mux.HandleFunc("/users/me/messages/"+m.id, func(w http.ResponseWriter, r *http.Request) {
+			if failMinimal && r.URL.Query().Get("format") == "minimal" {
+				http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+				return
+			}
+			labels := `"INBOX"`
+			if m.noise {
+				labels += `,"CATEGORY_PROMOTIONS"`
+			}
+			fmt.Fprintf(w, `{"id":%q,"threadId":"t-%s","labelIds":[%s],"snippet":"s",
+              "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":%q}]}}`, m.id, m.id, labels, m.unix, m.id)
+		})
+	}
+	return mux
+}
+
+type capTieMsg struct {
+	id    string
+	unix  int64
+	noise bool
+}
+
+// TestSyncCapTieDoesNotLoseSameSecondMessage: when the processing cap cuts
+// the oldest-first list between two messages sharing one second, the
+// watermark must stay strictly below that second — otherwise the next
+// cycle's after:<watermark> query and the already-seen filter both exclude
+// the cut-off message forever. Both a processed noise message and a stored
+// real one sit at the tied second. If the cut-off message's date cannot be
+// read, the watermark stays one second below the last processed one.
+func TestSyncCapTieDoesNotLoseSameSecondMessage(t *testing.T) {
+	const early, tie = 1700000000, 1700003600
+	msgs := []capTieMsg{
+		{id: "m1", unix: early},
+		{id: "mPromo", unix: tie, noise: true},
+		{id: "m3", unix: tie},
+		{id: "mCut", unix: tie}, // first message past the cap
+	}
+	for _, failMinimal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cutoff lookup fails=%v", failMinimal), func(t *testing.T) {
+			s, database, accountID := newTestSyncerForMux(t, capTieMux(t, msgs, failMinimal))
+			s.cfg.Gmail.MaxMessagesPerSync = 3
+
+			if _, err := s.Sync(context.Background()); err != nil {
+				t.Fatalf("first Sync: %v", err)
+			}
+			watermark, err := database.GetGmailAccountWatermark(accountID)
+			if err != nil {
+				t.Fatalf("watermark: %v", err)
+			}
+			if watermark != float64(tie-1) {
+				t.Fatalf("watermark = %v, want %v — must stay below the second the cap cut", watermark, tie-1)
+			}
+			if _, err := s.Sync(context.Background()); err != nil {
+				t.Fatalf("second Sync: %v", err)
+			}
+			rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
+			if err != nil {
+				t.Fatalf("query: %v", err)
+			}
+			stored := map[string]bool{}
+			for _, r := range rows {
+				stored[r.ID] = true
+			}
+			if !stored["mCut"] || !stored["m3"] || !stored["m1"] || stored["mPromo"] {
+				t.Fatalf("stored = %v, want m1, m3 and the cut-off mCut, never the promo", stored)
+			}
+		})
+	}
 }

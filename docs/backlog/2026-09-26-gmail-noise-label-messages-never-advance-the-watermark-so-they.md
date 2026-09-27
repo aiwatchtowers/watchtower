@@ -19,4 +19,4 @@ These messages are skipped on purpose, not lost, so it is safe to move the water
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-sync-watermarks: a noise-label skip now advances maxSeen (unless the pass already stalled), without storing the message.
+Fixed in fix/backlog-sync-watermarks: a noise-label skip now advances maxSeen (unless the pass already stalled), without storing the message; a capped pass keeps the watermark strictly below the second of the first cut-off message (one format=minimal GET; if that fails, one second below the last processed message), so a same-second message past the cap is never excluded.

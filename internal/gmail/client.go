@@ -237,6 +237,26 @@ type apiMessage struct {
 	Payload      apiPart  `json:"payload"`
 }
 
+// GetMessageUnix fetches only a message's internalDate (format=minimal),
+// in whole unix seconds — the same truncation Sync's watermark uses.
+func (c *Client) GetMessageUnix(ctx context.Context, id string) (int64, error) {
+	body, err := c.doGet(ctx, "/users/me/messages/"+id, url.Values{"format": {"minimal"}})
+	if err != nil {
+		return 0, err
+	}
+	var raw struct {
+		InternalDate string `json:"internalDate"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return 0, fmt.Errorf("decoding message %s: %w", id, err)
+	}
+	ms, err := strconv.ParseInt(raw.InternalDate, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parsing internalDate of message %s: %w", id, err)
+	}
+	return time.UnixMilli(ms).Unix(), nil
+}
+
 // GetMessage fetches and parses a single message in full format.
 func (c *Client) GetMessage(ctx context.Context, id string) (*Message, error) {
 	body, err := c.doGet(ctx, "/users/me/messages/"+id, url.Values{"format": {"full"}})
