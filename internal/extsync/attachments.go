@@ -39,12 +39,15 @@ var validExtractStatus = map[string]bool{
 // extractDeadline bounds one attachment's extraction step as a whole (a
 // variable so tests can shrink it). The cycle budget only stops new
 // launches, and the extractor's per-step timeouts stack: the PDF helper
-// (60s) plus up to 5 OCR batches (60s each, MaxOCRPages/10). 7 minutes
-// covers that worst case of a large but healthy scan with margin; past it
-// the attachment is a transient failure (attempts++) and the batch moves
-// on. The download is not under it — the HTTP client's own timeout bounds
-// that (ruling R14).
-var extractDeadline = 7 * time.Minute
+// (60s), a cold OCR-helper signature check (2 codesign calls, 20s each),
+// then up to 5 OCR batches (60s each, MaxOCRPages/10), each helper run
+// with a 5s kill grace — 7m10s. 8 minutes covers that worst case of a
+// large but healthy scan with margin; past it the attachment is a
+// transient failure (attempts++) and the batch moves on. The download is
+// not under it — the HTTP client's own timeout bounds that (ruling R14).
+// TestExtractDeadlineCoversTheOCRWorstCase derives the bound from the
+// extractor's constants.
+var extractDeadline = 8 * time.Minute
 
 // reextractBatchSize is how many rows one revisit chunk handles between
 // budget checks (a variable so tests can shrink it).

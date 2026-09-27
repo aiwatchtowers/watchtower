@@ -36,8 +36,9 @@ func runCodesign(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "/usr/bin/codesign", args...).CombinedOutput()
 }
 
-// codesignTimeout bounds one codesign call.
-const codesignTimeout = 20 * time.Second
+// CodesignTimeout bounds one codesign call. A cold verification makes two
+// (our own signature, then the helper's), before the first OCR run.
+const CodesignTimeout = 20 * time.Second
 
 var (
 	teamIDLine   = regexp.MustCompile(`(?m)^TeamIdentifier=(.+)$`)
@@ -125,9 +126,9 @@ func (v *helperVerifier) allowed(ctx context.Context, path string) bool {
 }
 
 // verify runs the Team-ID requirement check on path under ctx (bounded by
-// codesignTimeout). A cancelled ctx is not a failed check and is not logged.
+// CodesignTimeout). A cancelled ctx is not a failed check and is not logged.
 func (v *helperVerifier) verify(ctx context.Context, path string) bool {
-	cctx, cancel := context.WithTimeout(ctx, codesignTimeout)
+	cctx, cancel := context.WithTimeout(ctx, CodesignTimeout)
 	defer cancel()
 	req := fmt.Sprintf(`-R=anchor apple generic and certificate leaf[subject.OU] = "%s"`, v.team)
 	out, err := v.run(cctx, "--verify", "--strict", req, path)
@@ -155,7 +156,7 @@ func (v *helperVerifier) ensureSelf(ctx context.Context) {
 }
 
 // readSelf reads our own signature class under ctx (bounded by
-// codesignTimeout). A cancelled ctx leaves every field untouched.
+// CodesignTimeout). A cancelled ctx leaves every field untouched.
 func (v *helperVerifier) readSelf(ctx context.Context) {
 	if v.goos != "darwin" {
 		v.skip = true
@@ -166,7 +167,7 @@ func (v *helperVerifier) readSelf(ctx context.Context) {
 		v.fail(fmt.Errorf("locating own executable: %w", err))
 		return
 	}
-	cctx, cancel := context.WithTimeout(ctx, codesignTimeout)
+	cctx, cancel := context.WithTimeout(ctx, CodesignTimeout)
 	defer cancel()
 	out, err := v.run(cctx, "-dv", "--verbose=2", exe)
 	if ctx.Err() != nil {
