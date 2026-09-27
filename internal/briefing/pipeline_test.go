@@ -541,3 +541,50 @@ func TestPipelineRunForDate_UsesCustomizedPromptAndRecordsVersion(t *testing.T) 
 	assert.Equal(t, storedVersion, stored.PromptVersion,
 		"the stored briefing must record the prompt store's version, not getPrompt's hardcoded 0")
 }
+
+// nilUsageGenerator mimics an OpenAI-compatible server that omits the
+// `usage` block: the ollama generator returns (text, nil, "", nil) then.
+type nilUsageGenerator struct{ response string }
+
+func (g *nilUsageGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	return g.response, nil, "", nil
+}
+
+func TestPipelineRunForDate_NilUsageDoesNotPanic(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, acctErr)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+
+	now := time.Now()
+	_, err := database.UpsertDigest(db.Digest{
+		ChannelID:    "C1",
+		Type:         "channel",
+		PeriodFrom:   float64(time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, now.Location()).Unix()),
+		PeriodTo:     float64(time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location()).Unix()),
+		Summary:      "Discussion about new feature release",
+		Topics:       `["release"]`,
+		Decisions:    `[]`,
+		ActionItems:  `[]`,
+		MessageCount: 3,
+	})
+	require.NoError(t, err)
+
+	gen := &nilUsageGenerator{response: `{"attention":[],"your_day":[],"what_happened":[],"team_pulse":[],"coaching":[]}`}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+
+	today := time.Now().Format("2006-01-02")
+	var id int
+	require.NotPanics(t, func() {
+		var err error
+		id, err = pipe.RunForDate(context.Background(), today)
+		require.NoError(t, err)
+	})
+	assert.Greater(t, id, 0)
+
+	b, err := database.GetBriefing("U001", today)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, 0, b.InputTokens)
+}
