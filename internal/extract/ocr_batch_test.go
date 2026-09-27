@@ -39,7 +39,7 @@ func TestOCRRunsInPageBatches(t *testing.T) {
 	assert.False(t, failed)
 	require.Len(t, calls, 5, "50 pages = 5 calls of 10")
 	for _, c := range calls {
-		assert.LessOrEqual(t, len(c), ocrBatchPages)
+		assert.LessOrEqual(t, len(c), OCRBatchPages)
 	}
 	assert.Equal(t, "page 49 text", pages[49].Text)
 	assert.Equal(t, StatusOK, pdfStatus(pages, scans, true, failed))

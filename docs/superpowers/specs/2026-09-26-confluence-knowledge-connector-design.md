@@ -422,7 +422,7 @@ indexed blank.
   Timeout 60 s per invocation; failure → `ocr_pending` with attempts++.
 - **Implementation deviation (Task 10 review):** a single 60 s call covering
   all 50 pages of a large scan always timed out in practice, so recognition
-  runs in batches of 10 pages per helper invocation (`ocrBatchPages`, at
+  runs in batches of 10 pages per helper invocation (`OCRBatchPages`, at
   most 5 calls for the 50-page cap); a failed batch loses only its own
   pages, the rest are still applied. The helper's code signature
   (Developer-ID, our own Team ID) is verified before every exec — the same

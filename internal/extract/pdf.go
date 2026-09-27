@@ -56,18 +56,18 @@ func (x *Extractor) pdfText(ctx context.Context, path string) ([]extsync.Section
 	return pageSections(pages), pdfStatus(pages, scans, hasOCR, ocrFailed), nil
 }
 
-// ocrBatchPages is how many scan pages one OCR call gets: each call has its
+// OCRBatchPages is how many scan pages one OCR call gets: each call has its
 // own helper timeout, so a large scan is never all-or-nothing under one
-// 60 s bound (MaxOCRPages / ocrBatchPages = at most 5 calls).
-const ocrBatchPages = 10
+// 60 s bound (MaxOCRPages / OCRBatchPages = at most 5 calls).
+const OCRBatchPages = 10
 
-// recognizeScans OCRs the scan pages in batches of ocrBatchPages and applies
+// recognizeScans OCRs the scan pages in batches of OCRBatchPages and applies
 // what each batch recognized. A failed batch loses only its own pages
 // (failed reports that one did; its error is logged); ErrOCRUnavailable and
 // a cancelled ctx stop the remaining batches and are returned.
 func recognizeScans(ctx context.Context, ocr OCR, path string, pages []pdfPage, scans []int, logf logFunc) (failed bool, err error) {
-	for start := 0; start < len(scans); start += ocrBatchPages {
-		batch := scans[start:min(start+ocrBatchPages, len(scans))]
+	for start := 0; start < len(scans); start += OCRBatchPages {
+		batch := scans[start:min(start+OCRBatchPages, len(scans))]
 		got, err := ocr.Recognize(ctx, path, batch)
 		switch {
 		case ctx.Err() != nil:
