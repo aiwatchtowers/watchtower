@@ -366,12 +366,12 @@ struct JiraBoardsSettingsView: View {
         let dbPool = db.dbPool
 
         Task.detached {
-            let enabled: [JiraAccount]
+            let calls: [(account: JiraAccount, arguments: [String])]
             do {
                 let all = try await dbPool.read { db in
                     try JiraAccountQueries.fetchAll(db)
                 }
-                enabled = all.filter(\.enabled)
+                calls = JiraAccountFanOut.invocations(for: all, subcommand: ["boards"])
             } catch {
                 await MainActor.run {
                     isFetching = false
@@ -380,7 +380,7 @@ struct JiraBoardsSettingsView: View {
                 return
             }
 
-            guard !enabled.isEmpty else {
+            guard !calls.isEmpty else {
                 await MainActor.run {
                     isFetching = false
                     toggleError = "No connected Jira sites"
@@ -389,22 +389,18 @@ struct JiraBoardsSettingsView: View {
             }
 
             var failures: [String] = []
-            for account in enabled {
+            for call in calls {
                 let failure = JiraBoardsCLI.run(
                     cliPath: cliPath,
-                    arguments: [
-                        "jira", "--account", String(account.id), "boards"
-                    ],
+                    arguments: call.arguments,
                     fallbackMessage: "failed to fetch boards"
                 )
                 if let failure {
-                    failures.append("\(account.displayName): \(failure)")
+                    failures.append("\(call.account.displayName): \(failure)")
                 }
             }
 
-            let message = failures.isEmpty
-                ? nil
-                : String(failures.joined(separator: "; ").prefix(200))
+            let message = JiraAccountFanOut.failureMessage(failures)
             await MainActor.run {
                 isFetching = false
                 toggleError = message

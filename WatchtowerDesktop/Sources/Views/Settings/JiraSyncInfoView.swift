@@ -75,53 +75,59 @@ struct JiraSyncInfoView: View {
         return relative.localizedString(for: date, relativeTo: Date())
     }
 
+    /// `jira sync` is account-scoped — a bare call fails with "multiple Jira
+    /// sites connected — pass --account <id>" once a second site is enabled —
+    /// so this syncs each enabled account in turn (the boards-refresh shape)
+    /// and reports whichever sites failed.
     private func runSync() {
         guard let cliPath = Constants.findCLIPath() else {
             syncError = "Watchtower CLI not found"
             return
         }
+        guard let db = appState.databaseManager else {
+            syncError = "Database not available"
+            return
+        }
 
         isSyncing = true
         syncError = nil
+        let dbPool = db.dbPool
 
         Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.arguments = ["jira", "sync"]
-            process.environment = Constants.resolvedEnvironment()
-            process.currentDirectoryURL =
-                Constants.processWorkingDirectory()
-
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
+            let calls: [(account: JiraAccount, arguments: [String])]
             do {
-                try process.run()
+                let all = try await dbPool.read { db in try JiraAccountQueries.fetchAll(db) }
+                calls = JiraAccountFanOut.invocations(for: all, subcommand: ["sync"])
             } catch {
                 await MainActor.run {
                     isSyncing = false
-                    syncError = "Failed to launch CLI"
+                    syncError = "Failed to load Jira accounts: \(error.localizedDescription)"
+                }
+                return
+            }
+            guard !calls.isEmpty else {
+                await MainActor.run {
+                    isSyncing = false
+                    syncError = "No connected Jira sites"
                 }
                 return
             }
 
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            var failures: [String] = []
+            for call in calls {
+                if let failure = JiraBoardsCLI.run(
+                    cliPath: cliPath,
+                    arguments: call.arguments,
+                    fallbackMessage: "sync failed"
+                ) {
+                    failures.append("\(call.account.displayName): \(failure)")
+                }
+            }
 
+            let message = JiraAccountFanOut.failureMessage(failures)
             await MainActor.run {
                 isSyncing = false
-                if process.terminationStatus != 0 {
-                    let stderr = String(
-                        data: stderrData, encoding: .utf8
-                    )?.trimmingCharacters(
-                        in: .whitespacesAndNewlines
-                    ) ?? ""
-                    syncError = stderr.isEmpty
-                        ? "Sync failed (exit \(process.terminationStatus))"
-                        : String(stderr.prefix(200))
-                }
+                syncError = message
             }
         }
     }
