@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"testing"
@@ -215,4 +216,43 @@ func TestSyncViaSearch_InvalidWatermarkLogsWarning(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, logBuf.String(), `invalid search_last_date "not-a-date", treating as first run`)
+}
+
+// TestRun_ClampedGapNoteSurvivesTheRunsOKWrite drives the real call path
+// (Orchestrator.Run, not syncViaSearch directly): recordSearchGap writes the
+// gap note to slack_accounts.error mid-run, and the same run's successful end
+// calls recordAuthResult(nil). That "ok" write used to blank the error column
+// seconds after the note landed, so the only record of a permanent data gap
+// never survived the run. A later clean run (no gap) clears it as usual.
+func TestRun_ClampedGapNoteSurvivesTheRunsOKWrite(t *testing.T) {
+	mux := baseMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		jsonOK(w, map[string]any{"ok": true, "user_id": "U001", "user": "alice", "team_id": "T024BE7LD"})
+	})
+	mux.HandleFunc("/conversations.history", func(w http.ResponseWriter, _ *http.Request) {
+		jsonOK(w, map[string]any{
+			"ok": true, "messages": []any{}, "has_more": false,
+			"response_metadata": map[string]any{"next_cursor": ""},
+		})
+	})
+	ts := newTestSetup(t, mux) // baseMux serves search.messages
+	ts.orch.logger = log.New(io.Discard, "", 0)
+
+	staleDate := time.Now().AddDate(0, 0, -45).Format(searchDateFormat)
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, staleDate))
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	got, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status)
+	assert.Contains(t, got.Error, "catch-up cap",
+		"the gap note must survive the same run's successful auth-state write")
+
+	// The watermark is now today, so the next run has no gap and clears it.
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	got, err = ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got.Status)
+	assert.Empty(t, got.Error, "a later gap-free successful run clears the note")
 }

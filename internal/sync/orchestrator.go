@@ -56,6 +56,12 @@ type Orchestrator struct {
 	readStateSyncedAt time.Time
 	rosterSyncedAt    time.Time
 
+	// searchGapNote is the clamped-catch-up warning recordSearchGap wrote
+	// during the current Run ("" when the run had no gap). Run resets it;
+	// recordAuthResult's "ok" write carries it instead of blanking the error
+	// column, so the only record of a permanent data gap outlives its run.
+	searchGapNote string
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -145,22 +151,24 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // after an earlier phase already succeeded may still record "ok" until a
 // later cycle's failure surfaces at the top level.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+	o.searchGapNote = ""
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
 }
 
 // recordAuthResult persists the account's sync auth state. Pass err=nil to
-// mark it healthy. Errors writing to the DB are logged but not returned —
-// auth state is best-effort telemetry. A cancelled ctx means daemon shutdown,
-// not an auth problem, so the state is left untouched (calendar.Syncer's
-// recordAuthResult precedent).
+// mark it healthy; a healthy run keeps this run's search-gap note (if any) in
+// the error column rather than clearing it. Errors writing to the DB are
+// logged but not returned — auth state is best-effort telemetry. A cancelled
+// ctx means daemon shutdown, not an auth problem, so the state is left
+// untouched (calendar.Syncer's recordAuthResult precedent).
 func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 	if o.db == nil {
 		return
 	}
 	if err == nil {
-		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", ""); dbErr != nil {
+		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", o.searchGapNote); dbErr != nil {
 			o.logger.Printf("slack: failed to clear auth state: %v", dbErr)
 		}
 		return
