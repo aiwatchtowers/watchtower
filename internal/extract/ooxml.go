@@ -29,9 +29,10 @@ var errMissingPart = errors.New("extract: missing OOXML part")
 
 // ooxmlText extracts a docx/xlsx/pptx spooled at path. A corrupt archive
 // is StatusFailed; one that exceeds the zip budget is StatusTooLarge.
-func ooxmlText(k kind, path string) ([]extsync.Section, string, error) {
+func ooxmlText(k kind, path string, logf logFunc) ([]extsync.Section, string, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
+		logf("extract: opening the OOXML archive: %v; recording it failed", err)
 		return nil, StatusFailed, nil
 	}
 	defer func() { _ = zr.Close() }()
@@ -50,8 +51,10 @@ func ooxmlText(k kind, path string) ([]extsync.Section, string, error) {
 	}
 	switch {
 	case errors.Is(err, errZipBudget):
+		logf("extract: OOXML archive over the extraction budget: %v", err)
 		return nil, StatusTooLarge, nil
 	case err != nil:
+		logf("extract: reading the OOXML archive: %v; recording it failed", err)
 		return nil, StatusFailed, nil
 	}
 	return secs, StatusOK, nil

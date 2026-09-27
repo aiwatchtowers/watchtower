@@ -392,7 +392,15 @@ therefore runs inside a killable helper subprocess (the hidden `watchtower
 extract-pdf-text`, `internal/extract/pdfhelper.go`): the parent kills it on
 timeout, and the child self-exits 10 s after its own deadline should its
 parent be the one that dies (an orphan left by a SIGKILLed daemon cannot
-spin forever either).
+spin forever either). A helper that times out, crashes or exits non-zero
+is a **transient** failure carrying its (capped) stderr — the attachment is
+`failed` with `extract_attempts++` and retried under the usual cap of 3
+(R17); output the helper did produce that is oversized or not its JSON is
+a final `failed` (attempts 0). Recovered parser panics, corrupt OOXML
+archives and a failed OCR batch are logged through the engine's logger
+(`extract.Extractor.Logger`) before becoming their status. A page whose
+text layer cannot be read is sent to OCR like a scan page rather than
+indexed blank.
 
 ### 8.1 OCR helper
 
@@ -628,3 +636,8 @@ to know; this list is the traceability index, not a duplicate explanation.
   relinking their parents; the enumeration is drained with the others
   before any delete, on the same once-a-day schedule and failure backoff
   (§6 step 5).
+- **R17** — a PDF helper timeout, crash or non-zero exit is a transient
+  extraction error (retried, attempts++), not a final `failed`; malformed
+  or oversized helper output stays final. Extraction diagnostics are logged
+  (`Extractor.Logger`), and a page whose text layer fails to read goes to
+  OCR (§8).

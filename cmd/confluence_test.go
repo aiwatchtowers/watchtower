@@ -416,9 +416,11 @@ func TestConfluenceSync_ExtractsAttachments(t *testing.T) {
 
 func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
-	opts := extSyncOptions(env.cfg, log.New(io.Discard, "", 0), extSyncCycleBudget)
+	logger := log.New(io.Discard, "", 0)
+	opts := extSyncOptions(env.cfg, logger, extSyncCycleBudget)
 	x, ok := opts.Extractor.(*extract.Extractor)
 	require.True(t, ok, "the engine gets the attachment extractor")
+	assert.Same(t, logger, x.Logger, "extraction diagnostics go to the extsync logger")
 	assert.Equal(t, filepath.Join(env.cfg.WorkspaceDir(), "tmp", "extract"), x.TempDir)
 	assert.Nil(t, x.OCR, "no watchtower-ocr next to the test binary: OCR unavailable")
 	assert.False(t, x.HasOCR(context.Background()))

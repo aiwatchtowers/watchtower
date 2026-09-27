@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -52,10 +53,23 @@ type OCR interface {
 // a PDF out of process (path appended; ServePDFHelper is its body) under a
 // hard timeout — the PDF library can loop forever on crafted input, which
 // only killing a process can stop. Empty parses in process (tests only).
+// Logger receives the diagnostics of failures that become a status
+// (recovered panics, corrupt archives, a failed OCR batch); nil discards.
 type Extractor struct {
 	TempDir   string
 	OCR       OCR
 	PDFHelper []string
+	Logger    *log.Logger
+}
+
+// logFunc is a Printf-shaped diagnostics sink.
+type logFunc func(format string, args ...any)
+
+// logf writes a diagnostic to Logger, if one is set.
+func (x *Extractor) logf(format string, args ...any) {
+	if x.Logger != nil {
+		x.Logger.Printf(format, args...)
+	}
 }
 
 var (
@@ -98,6 +112,7 @@ func (x *Extractor) Supports(mediaType, name string) bool {
 func (x *Extractor) Extract(ctx context.Context, mediaType, name string, r io.Reader) (secs []extsync.Section, status string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
+			x.logf("extract: recovered panic extracting %q: %v", name, p)
 			secs, status, err = nil, StatusFailed, nil
 		}
 	}()
@@ -116,7 +131,7 @@ func (x *Extractor) dispatch(ctx context.Context, k kind, name string, r io.Read
 		return htmlText(r)
 	case kindDocx, kindXlsx, kindPptx:
 		return x.spooled(ctx, name, r, func(path string) ([]extsync.Section, string, error) {
-			return ooxmlText(k, path)
+			return ooxmlText(k, path, x.logf)
 		})
 	case kindPDF:
 		return x.spooled(ctx, name, r, func(path string) ([]extsync.Section, string, error) {

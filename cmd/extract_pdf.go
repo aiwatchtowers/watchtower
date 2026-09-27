@@ -22,7 +22,7 @@ var extractPDFTextCmd = &cobra.Command{
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer armPDFHelperDeadline(extract.PDFHelperDeadline())()
-		return extract.ServePDFHelper(cmd.OutOrStdout(), args[0])
+		return extract.ServePDFHelper(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0])
 	},
 }
 

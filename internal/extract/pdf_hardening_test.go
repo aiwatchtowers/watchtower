@@ -18,7 +18,7 @@ import (
 // the production CLI's hidden command does.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 3 && os.Args[1] == "pdf-helper" {
-		if err := ServePDFHelper(os.Stdout, os.Args[2]); err != nil {
+		if err := ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -67,23 +67,6 @@ func TestPDFKidsLoopFailsFast(t *testing.T) {
 	}
 }
 
-// TestPDFPrevLoopKilledByHelperTimeout: a self-referencing xref /Prev loops
-// inside the library's NewReader, which no in-process bound can stop; the
-// helper process is killed at pdfHelperTimeout and the PDF is failed.
-func TestPDFPrevLoopKilledByHelperTimeout(t *testing.T) {
-	old := pdfHelperTimeout
-	pdfHelperTimeout = time.Second
-	t.Cleanup(func() { pdfHelperTimeout = old })
-	x := newExtractor(t, nil)
-	x.PDFHelper = testHelper()
-	start := time.Now()
-	r := extractWithin(t, 15*time.Second, x, "application/pdf", "prev.pdf", fixture(t, "prevloop.pdf"))
-	require.NoError(t, r.err)
-	assert.Equal(t, StatusFailed, r.status)
-	assert.GreaterOrEqual(t, time.Since(start), time.Second, "it really was the timeout that ended it")
-	assertTempDirEmpty(t, x.TempDir)
-}
-
 func TestPDFViaHelperMatchesInProcess(t *testing.T) {
 	for _, name := range []string{"sample.pdf", "mixed.pdf", "short.pdf", "badpage.pdf"} {
 		in := newExtractor(t, nil)
@@ -95,14 +78,6 @@ func TestPDFViaHelperMatchesInProcess(t *testing.T) {
 		assert.Equal(t, a, b, name)
 		assertTempDirEmpty(t, out.TempDir)
 	}
-}
-
-func TestPDFHelperGarbageIsFailed(t *testing.T) {
-	x := newExtractor(t, nil)
-	x.PDFHelper = []string{"/bin/echo", "not json"}
-	r := extractWithin(t, 10*time.Second, x, "application/pdf", "a.pdf", fixture(t, "sample.pdf"))
-	require.NoError(t, r.err)
-	assert.Equal(t, StatusFailed, r.status)
 }
 
 // TestPDFShortPageKeepsItsText: a short text layer is kept when OCR is

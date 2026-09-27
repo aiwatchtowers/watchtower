@@ -45,7 +45,7 @@ func (x *Extractor) pdfText(ctx context.Context, path string) ([]extsync.Section
 	scans := scanPages(pages)
 	hasOCR, ocrFailed := x.OCR != nil, false
 	if len(scans) > 0 && hasOCR {
-		ocrFailed, err = recognizeScans(ctx, x.OCR, path, pages, scans)
+		ocrFailed, err = recognizeScans(ctx, x.OCR, path, pages, scans, x.logf)
 		switch {
 		case errors.Is(err, ErrOCRUnavailable):
 			hasOCR = false
@@ -63,17 +63,19 @@ const ocrBatchPages = 10
 
 // recognizeScans OCRs the scan pages in batches of ocrBatchPages and applies
 // what each batch recognized. A failed batch loses only its own pages
-// (failed reports that one did); ErrOCRUnavailable and a cancelled ctx stop
-// the remaining batches and are returned.
-func recognizeScans(ctx context.Context, ocr OCR, path string, pages []pdfPage, scans []int) (failed bool, err error) {
+// (failed reports that one did; its error is logged); ErrOCRUnavailable and
+// a cancelled ctx stop the remaining batches and are returned.
+func recognizeScans(ctx context.Context, ocr OCR, path string, pages []pdfPage, scans []int, logf logFunc) (failed bool, err error) {
 	for start := 0; start < len(scans); start += ocrBatchPages {
-		got, err := ocr.Recognize(ctx, path, scans[start:min(start+ocrBatchPages, len(scans))])
+		batch := scans[start:min(start+ocrBatchPages, len(scans))]
+		got, err := ocr.Recognize(ctx, path, batch)
 		switch {
 		case ctx.Err() != nil:
 			return false, ctx.Err()
 		case errors.Is(err, ErrOCRUnavailable):
 			return false, err
 		case err != nil:
+			logf("extract: OCR of PDF pages %v failed (kept for retry): %v", batch, err)
 			failed = true
 		default:
 			applyOCR(pages, got)
@@ -142,9 +144,10 @@ func pageSections(pages []pdfPage) []extsync.Section {
 // (a self-referencing /Prev) or object stream (/Extends cycle), which no
 // caller-side bound can stop — production therefore runs this in a helper
 // process under a hard timeout (see Extractor.PDFHelper).
-func parsePDFFile(path string) (pages []pdfPage, ok bool) {
+func parsePDFFile(path string, logf logFunc) (pages []pdfPage, ok bool) {
 	defer func() {
-		if recover() != nil {
+		if p := recover(); p != nil {
+			logf("extract: recovered panic parsing a PDF: %v", p)
 			pages, ok = nil, false
 		}
 	}()
@@ -159,7 +162,7 @@ func parsePDFFile(path string) (pages []pdfPage, ok bool) {
 	}
 	pages = make([]pdfPage, len(nodes))
 	for i, v := range nodes {
-		pages[i] = readPage(i, v)
+		pages[i] = readPage(i, v, logf)
 	}
 	return pages, true
 }
@@ -194,21 +197,25 @@ func (w *treeWalk) visit(v pdf.Value, depth int) {
 	}
 }
 
-// readPage reads one page; a panic in it loses only this page.
-func readPage(i int, v pdf.Value) pdfPage {
+// readPage reads one page; a panic in it loses only this page. A page whose
+// text layer cannot be read is a scan candidate — OCR gets a chance at it —
+// rather than blank.
+func readPage(i int, v pdf.Value, logf logFunc) pdfPage {
 	p := pdfPage{Index: i}
-	res, hasImages := pageResources(v)
-	p.Text = pageText(v, res)
-	p.Scan = hasImages && countNonSpace(p.Text) < minTextRunes
+	res, hasImages := pageResources(v, logf)
+	text, ok := pageText(v, res, logf)
+	p.Text = text
+	p.Scan = !ok || (hasImages && countNonSpace(p.Text) < minTextRunes)
 	return p
 }
 
 // pageResources returns the page's (inherited) resources and whether they
 // carry any XObject. Parent links are followed at most maxPDFTreeDepth
 // times — the library's own lookup has no bound.
-func pageResources(v pdf.Value) (res pdf.Value, hasImages bool) {
+func pageResources(v pdf.Value, logf logFunc) (res pdf.Value, hasImages bool) {
 	defer func() {
-		if recover() != nil {
+		if p := recover(); p != nil {
+			logf("extract: recovered panic reading PDF page resources: %v", p)
 			res, hasImages = pdf.Value{}, false
 		}
 	}()
@@ -221,13 +228,15 @@ func pageResources(v pdf.Value) (res pdf.Value, hasImages bool) {
 	return pdf.Value{}, false
 }
 
-// pageText is the page's trimmed text layer ("" when it has none or fails).
+// pageText is the page's trimmed text layer ("" when it has none); ok is
+// false when reading it failed (an error or a recovered panic, logged).
 // Fonts are resolved from res here, so the library never walks the
 // unbounded parent chain itself.
-func pageText(v pdf.Value, res pdf.Value) (text string) {
+func pageText(v pdf.Value, res pdf.Value, logf logFunc) (text string, ok bool) {
 	defer func() {
-		if recover() != nil {
-			text = ""
+		if p := recover(); p != nil {
+			logf("extract: recovered panic reading a PDF page's text: %v", p)
+			text, ok = "", false
 		}
 	}()
 	fontDict := res.Key("Font")
@@ -237,9 +246,10 @@ func pageText(v pdf.Value, res pdf.Value) (text string) {
 	}
 	t, err := pdf.Page{V: v}.GetPlainText(fonts)
 	if err != nil {
-		return ""
+		logf("extract: reading a PDF page's text: %v; sending it to OCR", err)
+		return "", false
 	}
-	return strings.TrimSpace(t)
+	return strings.TrimSpace(t), true
 }
 
 func countNonSpace(s string) int {

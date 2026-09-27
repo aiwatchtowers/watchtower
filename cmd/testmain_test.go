@@ -43,7 +43,7 @@ import (
 // again — so a cmd test that syncs a PDF must be served the parse here.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
-		if err := extract.ServePDFHelper(os.Stdout, os.Args[2]); err != nil {
+		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
 		}
 		os.Exit(0)

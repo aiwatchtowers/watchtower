@@ -465,6 +465,7 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 		Extractor: &extract.Extractor{
 			TempDir:   filepath.Join(wd, "tmp", "extract"),
 			PDFHelper: pdfHelperArgv(),
+			Logger:    logger,
 			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout, extract.WithLogger(logger)),
 		},
 		ScopesOK: func(id int64) (bool, error) { return confluenceScopesOK(wd, id) },

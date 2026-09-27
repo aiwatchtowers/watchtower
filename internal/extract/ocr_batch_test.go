@@ -34,7 +34,7 @@ func TestOCRRunsInPageBatches(t *testing.T) {
 		return got, nil
 	})
 	pages, scans := scanPagesN(MaxOCRPages)
-	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans)
+	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans, discardLog)
 	require.NoError(t, err)
 	assert.False(t, failed)
 	require.Len(t, calls, 5, "50 pages = 5 calls of 10")
@@ -60,7 +60,7 @@ func TestOCRBatchTimeoutKeepsTheOtherBatches(t *testing.T) {
 		return got, nil
 	})
 	pages, scans := scanPagesN(25)
-	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans)
+	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans, discardLog)
 	require.NoError(t, err)
 	assert.True(t, failed)
 	for i, p := range pages {
@@ -84,7 +84,7 @@ func TestOCRBatchFailureWithTextLayerIsOK(t *testing.T) {
 	for i := range pages {
 		pages[i].Text = "short"
 	}
-	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans)
+	failed, err := recognizeScans(context.Background(), ocr, "/tmp/x.pdf", pages, scans, discardLog)
 	require.NoError(t, err)
 	assert.True(t, failed)
 	assert.Equal(t, StatusOK, pdfStatus(pages, scans, true, failed))
@@ -101,7 +101,7 @@ func TestOCRBatchesStopOnCancel(t *testing.T) {
 		return nil, context.Canceled
 	})
 	pages, scans := scanPagesN(30)
-	_, err := recognizeScans(ctx, ocr, "/tmp/x.pdf", pages, scans)
+	_, err := recognizeScans(ctx, ocr, "/tmp/x.pdf", pages, scans, discardLog)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, calls)
 }
