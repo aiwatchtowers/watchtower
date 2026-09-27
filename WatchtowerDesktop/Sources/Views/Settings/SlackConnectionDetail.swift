@@ -370,38 +370,23 @@ struct SlackConnectionDetail: View {
             process.arguments = ["auth", "login"]
             process.environment = Constants.resolvedEnvironment()
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    flow.reconnecting = false
-                    flow.reconnectResult = "Failed to launch: \(error.localizedDescription)"
-                }
-                return
-            }
-
+            // Published before launch so Cancel can reach it; cancelling
+            // checks `isRunning`, so an unlaunched process is left alone.
             await MainActor.run {
                 flow.authProcess = process
             }
 
-            process.waitUntilExit()
-
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            _ = String(data: stdoutData, encoding: .utf8) // consume stdout
+            let output = await ProcessPipes.run(process)
+            let stderr = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
 
             await MainActor.run {
                 flow.authProcess = nil
                 flow.reconnecting = false
 
-                let exitCode = process.terminationStatus
-                if exitCode == 0 {
+                let exitCode = output.exitCode
+                if exitCode == -1 {
+                    flow.reconnectResult = "Failed to launch: \(stderr)"
+                } else if exitCode == 0 {
                     flow.reconnectSuccess = true
                     flow.reconnectResult = "Connected"
                     config.reload()
@@ -427,30 +412,17 @@ struct SlackConnectionDetail: View {
         flow.reconnectResult = nil
     }
 
-    private static func runCLIProcess(path: String, arguments: [String]) async -> (exitCode: Int32, stdout: String, stderr: String) {
+    /// `nonisolated`: a `View` is `@MainActor`, and a main-actor static here
+    /// would run its wait on the main thread even when awaited from a
+    /// detached task (the onboarding "Connect Slack" freeze).
+    nonisolated private static func runCLIProcess(
+        path: String,
+        arguments: [String]
+    ) async -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-
-        process.waitUntilExit()
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        return (process.terminationStatus, stdout, stderr)
+        return await ProcessPipes.run(process).trimmed
     }
 }
