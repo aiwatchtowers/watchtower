@@ -8,7 +8,12 @@ package final class SlackAuthService {
     /// The workspace a Workspace-level Disconnect would remove, nil when that
     /// action must not be offered — see `logoutTarget(in:)`.
     package private(set) var disconnectTarget: SlackAccount?
-    package var error: String?
+    /// The error to show: a failed disconnect first, else a failed status
+    /// read. Kept as two sources so a successful read clears only its own
+    /// error, never a disconnect failure.
+    package var error: String? { disconnectError ?? statusError }
+    private var disconnectError: String?
+    private var statusError: String?
 
     private var dbPool: DatabasePool?
 
@@ -28,18 +33,18 @@ package final class SlackAuthService {
     /// (mirrors the `slack remove` / `removeSlackAccount` semantics).
     package func disconnect() async {
         guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
+            disconnectError = "Watchtower CLI not found"
             return
         }
 
         let result = await Self.runCLI(path: cliPath, arguments: ["auth", "logout"])
         if result.exitCode == 0 {
-            error = nil
+            disconnectError = nil
             // `auth logout` removes account #1 only; any other connected
             // account keeps Slack connected.
             await refreshStatus()
         } else {
-            error = result.stderr.isEmpty
+            disconnectError = result.stderr.isEmpty
                 ? "Disconnect failed (exit \(result.exitCode))"
                 : String(result.stderr.prefix(200))
         }
@@ -63,10 +68,11 @@ package final class SlackAuthService {
             }
             isConnected = connected
             disconnectTarget = Self.logoutTarget(in: rows)
+            statusError = nil
         } catch {
             isConnected = false
             disconnectTarget = nil
-            self.error = "Couldn't read Slack accounts: \(error.localizedDescription)"
+            statusError = "Couldn't read Slack accounts: \(error.localizedDescription)"
         }
     }
 

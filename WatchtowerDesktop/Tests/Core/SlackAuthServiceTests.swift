@@ -94,6 +94,24 @@ final class SlackAuthServiceTests: XCTestCase {
         XCTAssertNil(SlackAuthService.logoutTarget(in: []))
     }
 
+    /// A failed read shows its error; the next successful read must clear it
+    /// rather than leave a stale "Couldn't read Slack accounts" on screen.
+    func testSuccessfulRefreshClearsAnEarlierReadError() async throws {
+        let pool = try makePool()
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db) }
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE slack_accounts RENAME TO slack_accounts_away") }
+        await service.refreshStatus()
+        XCTAssertNotNil(service.error)
+
+        try await pool.write { db in try db.execute(sql: "ALTER TABLE slack_accounts_away RENAME TO slack_accounts") }
+        await service.refreshStatus()
+        XCTAssertNil(service.error)
+        XCTAssertTrue(service.isConnected)
+    }
+
     func testNotConnectedWithoutADatabase() async {
         let service = SlackAuthService()
         await service.refreshStatus()
