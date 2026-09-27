@@ -621,8 +621,9 @@ func TestClient_FetchEvents_Pagination(t *testing.T) {
 
 	c := &Client{hc: apiSrv.Client(), accessToken: "at"}
 	timeMin, timeMax := mustTime("2026-04-02T00:00:00Z"), mustTime("2026-04-03T00:00:00Z")
-	events, err := c.FetchEvents(context.Background(), []string{"primary"}, timeMin, timeMax)
+	events, gone, err := c.FetchEvents(context.Background(), []string{"primary"}, timeMin, timeMax)
 	require.NoError(t, err)
+	assert.Empty(t, gone)
 
 	// Cancelled event must be filtered out, leaving 2.
 	require.Len(t, events, 2)
@@ -643,7 +644,7 @@ func TestClient_FetchEvents_DefaultsToPrimary(t *testing.T) {
 	defer func() { calendarAPIBase = prev }()
 
 	c := &Client{hc: apiSrv.Client(), accessToken: "at"}
-	_, err := c.FetchEvents(context.Background(), nil, mustTime("2026-04-02T00:00:00Z"), mustTime("2026-04-03T00:00:00Z"))
+	_, _, err := c.FetchEvents(context.Background(), nil, mustTime("2026-04-02T00:00:00Z"), mustTime("2026-04-03T00:00:00Z"))
 	require.NoError(t, err)
 	assert.Contains(t, capturedPath, "/primary/events")
 }

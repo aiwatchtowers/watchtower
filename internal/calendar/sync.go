@@ -82,6 +82,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				s.logger.Printf("calendar: failed to upsert calendar %s: %v", ci.ID, err)
 			}
 		}
+		s.deselectUnlistedCalendars(calInfos)
 	}
 
 	// Determine which calendars to sync. CalDAV/ICS accounts (internal/caldav)
@@ -126,10 +127,17 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 
-	events, err := s.client.FetchEvents(ctx, calendarIDs, timeMin, timeMax)
+	events, gone, err := s.client.FetchEvents(ctx, calendarIDs, timeMin, timeMax)
 	if err != nil {
 		s.recordAuthResult(ctx, err)
 		return 0, fmt.Errorf("fetching calendar events: %w", err)
+	}
+	for _, calID := range gone {
+		// Nothing was fetched for it, so a stale-delete would wipe every one
+		// of its events; leave them alone. A calendar that has also dropped
+		// out of the calendar list is deselected on the next list fetch.
+		s.logger.Printf("calendar: calendar %s is no longer accessible (404/410), skipping it this cycle", calID)
+		skipStaleDelete[calID] = true
 	}
 
 	// Successful fetch — clear any previously recorded auth failure.
@@ -192,6 +200,31 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 
 	return count, nil
+}
+
+// deselectUnlistedCalendars deselects this account's calendars that are
+// missing from a successfully fetched calendar list (unsubscribed, unshared,
+// deleted), so GetSelectedCalendarIDs stops returning a dead id that would
+// 404 on every cycle. Rows and events are kept (a deselect is not a delete;
+// events can be referenced by recordings). An empty list is ignored: every
+// Google account has a primary calendar, so an empty answer is not evidence
+// that everything is gone. Best-effort: a failure is logged.
+func (s *Syncer) deselectUnlistedCalendars(calInfos []CalendarInfo) {
+	if len(calInfos) == 0 {
+		return
+	}
+	listed := make([]string, 0, len(calInfos))
+	for _, ci := range calInfos {
+		listed = append(listed, ci.ID)
+	}
+	n, err := s.db.DeselectUnlistedCalendars(s.accountID, listed)
+	if err != nil {
+		s.logger.Printf("calendar: failed to deselect unlisted calendars: %v", err)
+		return
+	}
+	if n > 0 {
+		s.logger.Printf("calendar: deselected %d calendar(s) no longer in the calendar list", n)
+	}
 }
 
 // dropNonGoogleCalendarIDs filters out calendar ids owned by the CalDAV/ICS
