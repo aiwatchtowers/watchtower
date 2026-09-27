@@ -21,9 +21,10 @@ var (
 	maxZipEntries       = 1000
 )
 
-// XML structure guards for every OOXML part walked. encoding/xml keeps one
-// stack entry per open element and builds a start tag's whole attribute
-// slice inside a single Token call, with no limit on either — so a part a
+// XML structure guards for every OOXML part walked. encoding/xml's Token
+// keeps one stack entry (plus every xmlns:* declaration) per open element
+// and builds a start tag's whole attribute slice inside a single call, with
+// no limit on either — so a part a
 // few KiB compressed, far under the byte budget, could still drive the
 // daemon to gigabytes of heap (20M nested elements: ~2 GB). maxXMLDepth
 // bounds the element stack (real Office parts nest about 10 deep);
@@ -98,7 +99,9 @@ type ooxmlPackage struct {
 
 // walk streams the XML tokens of part name to fn, charging the budget.
 // A missing part is errMissingPart; a part nested deeper than maxXMLDepth
-// is errXMLDepth, one with a token over maxXMLTokenBytes errXMLToken.
+// is errXMLDepth, one with a token over maxXMLTokenBytes errXMLToken. fn
+// sees raw tokens: names keep their prefix in Name.Space, so a walker
+// matches on Name.Local only.
 func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 	f, ok := p.files[name]
 	if !ok {
@@ -117,8 +120,18 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 	depth := 0
 	for {
 		br.tokenLeft = maxXMLTokenBytes
-		tok, err := d.Token()
+		// RawToken, not Token: Token keeps every open element's xmlns:*
+		// declarations on a namespace stack until the element closes, so
+		// maxXMLDepth tags each just under maxXMLTokenBytes of declarations
+		// held hundreds of MiB live. RawToken keeps no per-element state;
+		// the price is that names stay prefixed (every walker matches on
+		// Name.Local only) and start/end tags are not matched — depth is
+		// clamped at zero so stray end tags cannot buy extra nesting.
+		tok, err := d.RawToken()
 		if errors.Is(err, io.EOF) {
+			if depth > 0 {
+				return fmt.Errorf("extract: parsing %s: unexpected EOF inside %d open elements", name, depth)
+			}
 			return nil
 		}
 		if err != nil {
@@ -130,7 +143,7 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 				return fmt.Errorf("%w: %s nests deeper than %d elements", errXMLDepth, name, maxXMLDepth)
 			}
 		case xml.EndElement:
-			depth--
+			depth = max(depth-1, 0)
 		}
 		fn(tok)
 	}

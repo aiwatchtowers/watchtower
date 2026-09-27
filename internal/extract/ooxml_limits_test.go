@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -172,4 +174,87 @@ func TestOOXMLLongTextRunExtracts(t *testing.T) {
 	require.Equal(t, StatusOK, status)
 	require.Len(t, secs, 1)
 	assert.Equal(t, strings.TrimSpace(text), secs[0].Text)
+}
+
+// nsHeavy writes head, n × an <a> start tag carrying decls xmlns:* prefix
+// declarations each, text, n × "</a>", tail. Every tag stays under the
+// per-token cap and n under the depth cap, so neither guard fires.
+func nsHeavy(head, tail string, n, decls int) func(io.Writer) error {
+	return func(w io.Writer) error {
+		var b strings.Builder
+		b.WriteString(head)
+		for d := 0; d < n; d++ {
+			b.WriteString("<a")
+			for k := 0; k < decls; k++ {
+				fmt.Fprintf(&b, ` xmlns:p%d_%d="u"`, d, k)
+			}
+			b.WriteString(">")
+		}
+		b.WriteString("deep")
+		b.WriteString(strings.Repeat("</a>", n))
+		b.WriteString(tail)
+		_, err := io.WriteString(w, b.String())
+		return err
+	}
+}
+
+// encoding/xml's Token keeps every open element's xmlns:* declarations on
+// its namespace stack until the element closes. A part nesting just under
+// maxXMLDepth elements, each declaring ~85 KiB of prefixes (under
+// maxXMLTokenBytes), passed both caps yet held ~200 MB of heap live at its
+// deepest point. The walk must not retain declarations of open elements:
+// its live heap stays near one tag's worth.
+func TestOOXMLNamespaceDeclarationsAreNotRetained(t *testing.T) {
+	const levels, decls = 240, 4500
+	data := zipOf(t, map[string]func(io.Writer) error{
+		"word/document.xml": nsHeavy(docxOpen, docxClose, levels, decls),
+	})
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+	p := &ooxmlPackage{files: map[string]*zip.File{}, bytesLeft: maxZipBytes, entriesLeft: maxZipEntries}
+	for _, f := range zr.File {
+		p.files[f.Name] = f
+	}
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+	var peak uint64
+	tokens := 0
+	w := &docxWalker{}
+	err = p.walk("word/document.xml", func(tok xml.Token) {
+		w.token(tok)
+		if tokens++; tokens%16 == 0 {
+			runtime.GC()
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			peak = max(peak, m.HeapAlloc)
+		}
+	})
+	require.NoError(t, err)
+	secs := w.done()
+	require.Len(t, secs, 1)
+	assert.Equal(t, "deep", secs[0].Text)
+	live := peak - min(peak, base.HeapAlloc)
+	assert.Less(t, live, uint64(allocCeiling), "held %d MiB live mid-walk", live>>20)
+}
+
+// RawToken does not match start and end tags, so walk does its own
+// accounting: a part cut off inside open elements is still failed, and
+// stray end tags ahead of the nesting cannot drive the depth negative to
+// buy extra levels past maxXMLDepth.
+func TestOOXMLRawTokenDepthAccounting(t *testing.T) {
+	x := newExtractor(t, nil)
+	truncated := zipOf(t, map[string]func(io.Writer) error{
+		"word/document.xml": literal(docxOpen + "cut"),
+	})
+	_, status, err := x.Extract(context.Background(), mtDocx, "cut.docx", bytes.NewReader(truncated))
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, status, "a truncated part")
+
+	stray := zipOf(t, map[string]func(io.Writer) error{
+		"word/document.xml": nested(strings.Repeat("</x>", 1000)+docxOpen, docxClose, maxXMLDepth-4),
+	})
+	_, status, err = x.Extract(context.Background(), mtDocx, "stray.docx", bytes.NewReader(stray))
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, status, "stray end tags must not lift the depth cap")
 }
