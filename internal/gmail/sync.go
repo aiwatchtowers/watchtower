@@ -113,11 +113,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				break
 			}
 		}
+		msgUnix := isoToUnix(m.InternalDate)
 		if skip {
+			// A noise skip is deliberate non-storage, not a loss: move the
+			// watermark past it (unless an earlier message was lost), or every
+			// promo/social message newer than the last stored one is re-fetched
+			// each cycle — and a capped window of pure noise never advances.
+			if !stalled && msgUnix > maxSeen {
+				maxSeen = msgUnix
+			}
 			continue
 		}
 		// Watermark filter: skip already-seen messages (internalDate <= watermark).
-		msgUnix := isoToUnix(m.InternalDate)
 		if watermark > 0 && msgUnix <= watermark {
 			continue
 		}

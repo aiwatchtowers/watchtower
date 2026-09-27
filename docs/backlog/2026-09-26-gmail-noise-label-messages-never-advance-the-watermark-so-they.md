@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Gmail noise-label messages never advance the watermark, so they are re-fetched every cycle and can stall sync"
-status: open
+status: done
 priority: med
 tags: [gmail, watermark, api-cost, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track bugs (Go sync/daemon/integrations)
@@ -18,3 +18,5 @@ Messages labelled `CATEGORY_PROMOTIONS`/`CATEGORY_SOCIAL` hit `continue` before 
 These messages are skipped on purpose, not lost, so it is safe to move the watermark past them (the non-stalled branch). Fix: update `maxSeen` for a noise skip when `!stalled`.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+Fixed in fix/backlog-sync-watermarks: a noise-label skip now advances maxSeen (unless the pass already stalled), without storing the message.

@@ -881,3 +881,82 @@ func TestSyncDeliberateSkipsDoNotStallWatermark(t *testing.T) {
 		}
 	})
 }
+
+// TestSyncNoiseSkipAdvancesWatermark pins that a noise-labelled message the
+// syncer deliberately drops still moves the watermark past itself: otherwise
+// every promo/social message newer than the last stored one is listed and
+// re-fetched (format=full) on every cycle, and a window whose oldest
+// MaxMessagesPerSync ids are all noise never advances at all. The message is
+// still not stored. A noise message AFTER a lost one must not advance past the
+// gap (the stalled rule applies to every advance, not only stored messages).
+func TestSyncNoiseSkipAdvancesWatermark(t *testing.T) {
+	const realUnix = 1700000000  // stored
+	const promoUnix = 1700003600 // noise, newest
+
+	realMsg := func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"id":"mReal","threadId":"t1","labelIds":["INBOX"],"snippet":"real",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Real"}]}}`, realUnix)
+	}
+	promo := func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"id":"mPromo","threadId":"t2","labelIds":["INBOX","CATEGORY_SOCIAL"],
+          "snippet":"promo","internalDate":"%d000","payload":{"headers":[]}}`, promoUnix)
+	}
+
+	t.Run("noise newest advances", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"messages":[{"id":"mPromo"},{"id":"mReal"}]}`) // newest-first
+		})
+		mux.HandleFunc("/users/me/messages/mReal", realMsg)
+		mux.HandleFunc("/users/me/messages/mPromo", promo)
+		s, database, accountID := newTestSyncerForMux(t, mux)
+
+		n, err := s.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("want 1 stored (the social message is filtered), got %d", n)
+		}
+		watermark, err := database.GetGmailAccountWatermark(accountID)
+		if err != nil {
+			t.Fatalf("watermark: %v", err)
+		}
+		if watermark != float64(promoUnix) {
+			t.Errorf("watermark = %v, want %v — a skipped noise message must still move the watermark past itself", watermark, promoUnix)
+		}
+		rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
+		if err != nil {
+			t.Fatalf("query gmail_messages: %v", err)
+		}
+		for _, r := range rows {
+			if r.ID == "mPromo" {
+				t.Error("noise message must not be stored")
+			}
+		}
+	})
+
+	t.Run("noise after a loss does not advance past the gap", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"messages":[{"id":"mPromo"},{"id":"mFail"},{"id":"mReal"}]}`)
+		})
+		mux.HandleFunc("/users/me/messages/mReal", realMsg)
+		mux.HandleFunc("/users/me/messages/mFail", func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+		})
+		mux.HandleFunc("/users/me/messages/mPromo", promo)
+		s, database, accountID := newTestSyncerForMux(t, mux)
+
+		if _, err := s.Sync(context.Background()); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		watermark, err := database.GetGmailAccountWatermark(accountID)
+		if err != nil {
+			t.Fatalf("watermark: %v", err)
+		}
+		if watermark != float64(realUnix) {
+			t.Errorf("watermark = %v, want %v — must stop before the lost message", watermark, realUnix)
+		}
+	})
+}
