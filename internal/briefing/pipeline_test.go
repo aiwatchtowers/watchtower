@@ -587,4 +587,5 @@ func TestPipelineRunForDate_NilUsageDoesNotPanic(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, b)
 	assert.Equal(t, 0, b.InputTokens)
+	assert.Empty(t, b.Model, "no usage block means no model name, like the digest and day-plan siblings")
 }

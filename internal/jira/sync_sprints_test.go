@@ -116,3 +116,35 @@ func TestSyncSprints_StopsAtPageCap(t *testing.T) {
 	assert.Equal(t, int32(maxSprintPages), closedCalls.Load())
 	assert.Equal(t, "closed", sprintState(t, database, maxSprintPages), "pages fetched before the cap are still stored")
 }
+
+// A non-auth failure on a later page is logged and skipped, but the sprints
+// already read for that board and state are still stored.
+func TestSyncSprints_MidPaginationFailureKeepsEarlierPages(t *testing.T) {
+	database := revokedSyncerDB(t)
+	seedSprintBoard(t, database)
+	require.NoError(t, database.UpsertJiraSprint(db.JiraSprint{
+		AccountID: 1, ID: 1, BoardID: 1, Name: "Sprint 1", State: "active", SyncedAt: "then",
+	}))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board/1/sprint", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "closed" {
+			_ = json.NewEncoder(w).Encode(SprintList{IsLast: true})
+			return
+		}
+		if startAt, _ := strconv.Atoi(r.URL.Query().Get("startAt")); startAt > 0 {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(SprintList{MaxResults: 2, Values: []Sprint{
+			{ID: 1, Name: "Sprint 1", State: "closed"},
+			{ID: 2, Name: "Sprint 2", State: "closed"},
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	require.NoError(t, quietSyncer(t, database, srv.URL).SyncSprints(context.Background()))
+	assert.Equal(t, "closed", sprintState(t, database, 1), "page 1 is stored despite the page-2 failure")
+	assert.Equal(t, "closed", sprintState(t, database, 2))
+}

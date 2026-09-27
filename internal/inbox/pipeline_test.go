@@ -636,6 +636,26 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	}
 }
 
+func TestAutoResolveCalendar_OwnerEmailCaseInsensitive(t *testing.T) {
+	d := newTestDB(t)
+	seedCalendarEvent(t, d, "evt-1", "Sync",
+		`[{"email":"alice@x.com","response_status":"needsAction"}]`,
+		"confirmed",
+		time.Now().Add(-30*time.Minute), time.Now().Add(-30*time.Minute))
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	// The syncer can store the attendee's address in a different case.
+	_, err = d.Exec(`UPDATE calendar_events SET attendees=? WHERE id='evt-1'`,
+		`[{"email":"Alice@X.com","response_status":"accepted"}]`)
+	require.NoError(t, err)
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='calendar_invite'`).Scan(&status))
+	assert.Equal(t, "resolved", status)
+}
+
 // TestRunPicksUpGmail: a Gmail message addressed to the current user's email
 // should surface as an email_received inbox item, same as Slack/Jira/Calendar
 // sources.

@@ -143,7 +143,7 @@ func TestGetPerson_RawAndNamespacedID(t *testing.T) {
 	assert.Contains(t, callReadString(t, reg, "get_person", `{"query":"`+slack.Namespace(acct, rawAlice)+`"}`), "drives launches")
 }
 
-// get_person returns one card, so a raw id carded in two accounts is an
+// get_person returns one card, so a raw id with a people card in two accounts is an
 // ambiguity error naming each namespaced id (the same shape as an ambiguous
 // name), while a namespaced id picks one account's card.
 func TestGetPerson_RawIDAcrossTwoAccountsIsAmbiguous(t *testing.T) {
@@ -159,4 +159,19 @@ func TestGetPerson_RawIDAcrossTwoAccountsIsAmbiguous(t *testing.T) {
 	assert.Contains(t, err.Error(), slack.Namespace(accts[1], rawAlice))
 
 	assert.Contains(t, callReadString(t, reg, "get_person", `{"query":"`+slack.Namespace(accts[1], rawAlice)+`"}`), "second card")
+}
+
+// A disabled or removed Slack account keeps its synced data queryable, so a
+// raw id must still resolve to that account's rows.
+func TestListMessages_RawIDResolvesDisabledAndRemovedAccounts(t *testing.T) {
+	d := openDB(t)
+	accts := seedSlackAccounts(t, d, 2)
+	seedAccountSlack(t, d, accts[0], "in-disabled")
+	seedAccountSlack(t, d, accts[1], "in-removed")
+	require.NoError(t, d.SetSlackAccountEnabled(accts[0], false))
+	require.NoError(t, d.SetSlackAccountRemoved(accts[1]))
+
+	got := callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"`+rawAlice+`"}`)
+	assert.Contains(t, got, "alice says in-disabled")
+	assert.Contains(t, got, "alice says in-removed")
 }
