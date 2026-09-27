@@ -22,3 +22,5 @@ Two failure modes follow:
 `os.WriteFile` also does not tighten the mode of an existing file. Fix: temp+rename (the SecretStore helper) for all stores, plus a flock around load→refresh→save.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+Update 2026-09-27: PR #3 made the Jira token save atomic (7385d372), so only the IMAP/Outlook/CalDAV half of the non-atomic write remains. The cross-process refresh race is now hit more often: each visible Confluence section in Settings spawns `confluence spaces` with its own jira.Client, once per enabled account.
