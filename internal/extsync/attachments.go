@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -35,13 +36,15 @@ var validExtractStatus = map[string]bool{
 	extractOCRPending: true, extractOCRMissing: true, extractFailed: true,
 }
 
-// attachmentDeadline bounds one attachment's download + extraction as a
-// whole (a variable so tests can shrink it). The cycle budget only stops
-// new launches, and the per-step timeouts (HTTP, PDF helper, each OCR
-// batch) add up to many minutes for one pathological file; past this
-// deadline the attachment is a transient failure (attempts++) and the
-// batch moves on.
-var attachmentDeadline = 3 * time.Minute
+// extractDeadline bounds one attachment's extraction step as a whole (a
+// variable so tests can shrink it). The cycle budget only stops new
+// launches, and the extractor's per-step timeouts stack: the PDF helper
+// (60s) plus up to 5 OCR batches (60s each, MaxOCRPages/10). 7 minutes
+// covers that worst case of a large but healthy scan with margin; past it
+// the attachment is a transient failure (attempts++) and the batch moves
+// on. The download is not under it — the HTTP client's own timeout bounds
+// that (ruling R14).
+var extractDeadline = 7 * time.Minute
 
 // reextractBatchSize is how many rows one revisit chunk handles between
 // budget checks (a variable so tests can shrink it).
@@ -254,10 +257,10 @@ func (e *Engine) extractAll(ctx context.Context, p pass, items []*Item) ([]extra
 // never a batch error: only an auth/consent failure or a cancelled ctx
 // aborts the batch.
 //
-// The download and extraction run under attachmentDeadline; hitting it is
-// this attachment's transient failure, while a cancellation of ctx itself
-// still aborts the batch (attachmentFailure checks the caller's ctx, not
-// the deadline's).
+// The extraction step runs under extractDeadline; hitting it is this
+// attachment's transient failure, while a cancellation of ctx itself still
+// aborts the batch (attachmentFailure checks the caller's ctx, not the
+// deadline's).
 func (e *Engine) extractOne(ctx context.Context, f Fetcher, it *Item) (extraction, error) {
 	x := e.opts.Extractor
 	if x == nil || !supports(x, it) {
@@ -266,15 +269,7 @@ func (e *Engine) extractOne(ctx context.Context, f Fetcher, it *Item) (extractio
 	if it.Size > maxDownload {
 		return extraction{status: extractTooLarge}, nil
 	}
-	actx, cancel := context.WithTimeout(ctx, attachmentDeadline)
-	defer cancel()
-	return e.downloadAndExtract(ctx, actx, f, x, it)
-}
-
-// downloadAndExtract is extractOne's I/O half: the calls run under actx
-// (the per-attachment deadline), failures are classified against ctx.
-func (e *Engine) downloadAndExtract(ctx, actx context.Context, f Fetcher, x Extractor, it *Item) (extraction, error) {
-	rc, err := f.Download(actx, it, maxDownload)
+	rc, err := f.Download(ctx, it, maxDownload)
 	if r, done := downloadOutcome(err); done {
 		return r, nil
 	}
@@ -282,7 +277,15 @@ func (e *Engine) downloadAndExtract(ctx, actx context.Context, f Fetcher, x Extr
 		return e.attachmentFailure(ctx, it, "downloading", err)
 	}
 	defer rc.Close()
-	secs, status, err := x.Extract(actx, it.MediaType, it.Title, rc)
+	return e.extractBody(ctx, x, it, rc)
+}
+
+// extractBody runs the extractor on a downloaded body under
+// extractDeadline; failures are classified against the caller's ctx.
+func (e *Engine) extractBody(ctx context.Context, x Extractor, it *Item, body io.Reader) (extraction, error) {
+	actx, cancel := context.WithTimeout(ctx, extractDeadline)
+	defer cancel()
+	secs, status, err := x.Extract(actx, it.MediaType, it.Title, body)
 	if errors.Is(err, ErrTooLarge) {
 		return extraction{status: extractTooLarge}, nil
 	}

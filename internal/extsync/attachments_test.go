@@ -477,13 +477,21 @@ func (x blockingExtractor) Extract(ctx context.Context, mediaType, name string, 
 	return x.fakeExtractor.Extract(ctx, mediaType, name, r)
 }
 
-// TestAttachmentDeadlineIsTransientFailure: one attachment that takes past
-// attachmentDeadline is cut off and recorded as a transient failure
-// (attempts+1) — never a batch error — and its siblings still land.
+// TestExtractDeadlineCoversTheOCRWorstCase: PDF helper 60s + 5 OCR batches
+// of 60s = 6 min; the deadline must not cut a large but healthy scan
+// (ruling R14).
+func TestExtractDeadlineCoversTheOCRWorstCase(t *testing.T) {
+	assert.GreaterOrEqual(t, extractDeadline, 6*time.Minute+30*time.Second)
+}
+
+// TestAttachmentDeadlineIsTransientFailure: one attachment whose
+// extraction takes past extractDeadline is cut off and recorded as a
+// transient failure (attempts+1) — never a batch error — and its siblings
+// still land.
 func TestAttachmentDeadlineIsTransientFailure(t *testing.T) {
-	old := attachmentDeadline
-	attachmentDeadline = 50 * time.Millisecond
-	t.Cleanup(func() { attachmentDeadline = old })
+	old := extractDeadline
+	extractDeadline = 50 * time.Millisecond
+	t.Cleanup(func() { extractDeadline = old })
 
 	x := blockingExtractor{fakeExtractor: newFakeExtractor(), block: "stuck.pdf"}
 	d, src, f, e := newAttachmentEngine(t, x)
