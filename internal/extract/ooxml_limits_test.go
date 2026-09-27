@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,10 +118,17 @@ func TestOOXMLDeepNestingIsBoundedFailure(t *testing.T) {
 	}
 }
 
+// tagAllocCeiling bounds rejecting one oversized start tag. Unlike deep
+// nesting, a tag is parsed in full up to maxXMLTokenBytes before the cap
+// fires, and its attribute slice costs ~50× its input bytes in transient
+// allocations (~42 MiB at the 4 × MaxTextRunes cap) — the uncapped
+// 15 MB tag below allocated ~790 MiB.
+const tagAllocCeiling = 64 << 20
+
 // One start tag carrying millions of attributes makes encoding/xml build
-// the whole attribute slice inside a single Token call (~12× the input
-// bytes) before any depth check could see it; the per-token byte cap stops
-// the read instead, recording the file too_large.
+// the whole attribute slice inside a single Token call before any depth
+// check could see it; the per-token byte cap stops the read instead,
+// recording the file too_large.
 func TestOOXMLHugeTagIsBounded(t *testing.T) {
 	attrs := func(w io.Writer) error {
 		if _, err := io.WriteString(w, `<w:document xmlns:w="w"><w:body a=""`); err != nil {
@@ -135,7 +143,7 @@ func TestOOXMLHugeTagIsBounded(t *testing.T) {
 	data := zipOf(t, map[string]func(io.Writer) error{"word/document.xml": attrs})
 	status, alloc := extractAllocs(t, mtDocx, "attrs.docx", data)
 	assert.Equal(t, StatusTooLarge, status)
-	assert.Less(t, alloc, uint64(allocCeiling), "allocated %d MiB", alloc>>20)
+	assert.Less(t, alloc, uint64(tagAllocCeiling), "allocated %d MiB", alloc>>20)
 }
 
 // A document nested exactly to the cap still extracts: the limits reject
@@ -257,4 +265,21 @@ func TestOOXMLRawTokenDepthAccounting(t *testing.T) {
 	_, status, err = x.Extract(context.Background(), mtDocx, "stray.docx", bytes.NewReader(stray))
 	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status, "stray end tags must not lift the depth cap")
+}
+
+// The per-token cap counts input bytes, not runes: a single Cyrillic run
+// (2 bytes a rune in UTF-8) of 190k runes, under MaxTextRunes, is ~380 KB
+// in one CharData token and must still extract rather than be too_large.
+func TestOOXMLLongCyrillicRunExtracts(t *testing.T) {
+	text := strings.Repeat("слово", 38_000) // 190k runes, 380 KB, no ASCII
+	require.Less(t, utf8.RuneCountInString(text), MaxTextRunes)
+	data := zipOf(t, map[string]func(io.Writer) error{
+		"word/document.xml": literal(docxOpen + text + docxClose),
+	})
+	x := newExtractor(t, nil)
+	secs, status, err := x.Extract(context.Background(), mtDocx, "long-ru.docx", bytes.NewReader(data))
+	require.NoError(t, err)
+	require.Equal(t, StatusOK, status)
+	require.Len(t, secs, 1)
+	assert.Equal(t, strings.TrimSpace(text), secs[0].Text)
 }

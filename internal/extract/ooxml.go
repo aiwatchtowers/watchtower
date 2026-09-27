@@ -30,15 +30,16 @@ var (
 // bounds the element stack (real Office parts nest about 10 deep);
 // maxXMLTokenBytes bounds the input one token may consume, and with it the
 // attribute slice of a single tag (which costs tens of times its input
-// bytes) and the size of a single text run — room for any real one: a
-// spreadsheet cell holds at most 32767 characters, and a longer Word run
-// would be cut at MaxTextRunes anyway. The token count needs no
+// bytes) and the size of a single text run. It counts bytes, not runes, so
+// it is 4 × MaxTextRunes — UTF-8's widest rune — letting any run up to
+// MaxTextRunes through whatever its script (a 200k-rune Cyrillic run is
+// ~400 KB) before extraction truncates it. The token count needs no
 // cap of its own: at least a few bytes per token, it is already bounded by
 // maxZipBytes, and a flat stream of tokens holds no memory. Variables so
 // tests can lower them.
 var (
 	maxXMLDepth            = 256
-	maxXMLTokenBytes int64 = 256 << 10
+	maxXMLTokenBytes int64 = 4 * MaxTextRunes
 )
 
 // errXMLDepth: a part nests deeper than any real document — a malformed
