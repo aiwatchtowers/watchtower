@@ -42,6 +42,24 @@ final class SlackAuthServiceTests: XCTestCase {
         XCTAssertFalse(service.isConnected)
     }
 
+    /// The Settings pane refreshes on every change to the Workspaces list;
+    /// a refresh after the last account is removed must report disconnected.
+    func testRefreshAfterRemovingTheLastAccountReportsNotConnected() async throws {
+        let pool = try makePool()
+        let id = try await pool.write { db in try TestDatabase.insertSlackAccount(db, teamName: "Acme") }
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        await service.refreshStatus()
+        XCTAssertTrue(service.isConnected)
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'removed', enabled = 0 WHERE id = ?", arguments: [id])
+        }
+        await service.refreshStatus()
+
+        XCTAssertFalse(service.isConnected)
+    }
+
     func testNotConnectedWithoutADatabase() async {
         let service = SlackAuthService()
         await service.refreshStatus()

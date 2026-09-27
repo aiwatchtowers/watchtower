@@ -44,9 +44,18 @@ struct SlackConnectionDetail: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
-        .task {
+        // Keyed on the pool, so a pane opened before the database exists
+        // re-configures once it does instead of keeping a nil pool.
+        .task(id: appState.databaseManager?.dbPool.path) {
             slackAuth.configure(dbPool: appState.databaseManager?.dbPool)
             await slackAuth.refreshStatus()
+        }
+        // The Workspaces list below enables/disables, removes and adds
+        // accounts through its own VM; re-derive the Workspace status from the
+        // table whenever that list changes, or it goes stale (e.g. "Slack
+        // connected" after the last account is removed).
+        .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
+            Task { await slackAuth.refreshStatus() }
         }
     }
 
@@ -143,6 +152,8 @@ struct SlackConnectionDetail: View {
             if slackAuth.error == nil {
                 config.reload()
                 flow.reconnectResult = nil
+                // `auth logout` removed a row: reload the Workspaces list too.
+                await appState.slackAccountsViewModel?.refreshAsync()
             }
             await flow.daemonManager.startDaemon()
             flow.disconnecting = false
