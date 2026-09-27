@@ -966,43 +966,47 @@ func TestSyncNoiseSkipAdvancesWatermark(t *testing.T) {
 		}
 	})
 
-	t.Run("noise then a lost message in the same second", func(t *testing.T) {
-		const s0 = 1700000000
-		var failOnce atomic.Bool
-		failOnce.Store(true)
-		mux := http.NewServeMux()
-		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Query().Get("q"), fmt.Sprintf("after:%d", s0)) {
-				fmt.Fprint(w, `{"messages":[]}`) // after:s0 excludes both
-				return
-			}
-			fmt.Fprint(w, `{"messages":[{"id":"mLost"},{"id":"mNoise"}]}`) // newest-first
-		})
-		mux.HandleFunc("/users/me/messages/mNoise", func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprintf(w, `{"id":"mNoise","threadId":"t1","labelIds":["INBOX","CATEGORY_PROMOTIONS"],
-          "snippet":"promo","internalDate":"%d000","payload":{"headers":[]}}`, s0)
-		})
-		mux.HandleFunc("/users/me/messages/mLost", func(w http.ResponseWriter, _ *http.Request) {
-			if failOnce.Swap(false) {
-				http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
-				return
-			}
-			fmt.Fprintf(w, `{"id":"mLost","threadId":"t2","labelIds":["INBOX"],"snippet":"real",
-          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Real"}]}}`, s0)
-		})
-		s, _, _ := newTestSyncerForMux(t, mux)
+}
 
-		if _, err := s.Sync(context.Background()); err != nil {
-			t.Fatalf("first Sync: %v", err)
+// A noise message advances maxSeen to second s0, then a real message in the
+// same second is lost: the watermark must not stay on s0, or the next
+// cycle's after:s0 query excludes the lost message for good.
+func TestSyncNoiseThenLossInTheSameSecond(t *testing.T) {
+	const s0 = 1700000000
+	var failOnce atomic.Bool
+	failOnce.Store(true)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Query().Get("q"), fmt.Sprintf("after:%d", s0)) {
+			fmt.Fprint(w, `{"messages":[]}`) // after:s0 excludes both
+			return
 		}
-		n, err := s.Sync(context.Background())
-		if err != nil {
-			t.Fatalf("second Sync: %v", err)
-		}
-		if n != 1 {
-			t.Fatalf("the message lost in the noise's second must be stored on the next cycle, got %d stored", n)
-		}
+		fmt.Fprint(w, `{"messages":[{"id":"mLost"},{"id":"mNoise"}]}`) // newest-first
 	})
+	mux.HandleFunc("/users/me/messages/mNoise", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"id":"mNoise","threadId":"t1","labelIds":["INBOX","CATEGORY_PROMOTIONS"],
+	          "snippet":"promo","internalDate":"%d000","payload":{"headers":[]}}`, s0)
+	})
+	mux.HandleFunc("/users/me/messages/mLost", func(w http.ResponseWriter, _ *http.Request) {
+		if failOnce.Swap(false) {
+			http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, `{"id":"mLost","threadId":"t2","labelIds":["INBOX"],"snippet":"real",
+	          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Real"}]}}`, s0)
+	})
+	s, _, _ := newTestSyncerForMux(t, mux)
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("first Sync: %v", err)
+	}
+	n, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the message lost in the noise's second must be stored on the next cycle, got %d stored", n)
+	}
 }
 
 // capTieMux serves a mailbox whose list honours after:<unix> (strictly newer)
