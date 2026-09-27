@@ -77,23 +77,27 @@ struct ProcessPipesTests {
     /// The onboarding "Connect Slack" freeze: a main-actor-isolated CLI wrapper
     /// that waited synchronously blocked the main actor for the child's whole
     /// lifetime. Awaiting `run` from the main actor must leave it free — a
-    /// main-actor ticker keeps ticking while a 1-second child runs.
+    /// main-actor ticker must get to run at least once while the child is
+    /// still running. Counting only ticks inside that window (not a total
+    /// against a threshold) keeps a slow CI runner from flaking it: a blocked
+    /// main actor scores exactly zero there however fast the machine is.
     @MainActor
     @Test("run awaited from the main actor never blocks it")
     func runNeverBlocksTheMainActor() async {
-        let ticker = Task { @MainActor () -> Int in
-            var ticks = 0
+        final class Window { var childRunning = true; var ticksWhileRunning = 0 }
+        let window = Window()
+        let ticker = Task { @MainActor in
             while !Task.isCancelled {
-                ticks += 1
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                if window.childRunning { window.ticksWhileRunning += 1 }
+                try? await Task.sleep(nanoseconds: 20_000_000)
             }
-            return ticks
         }
         let output = await ProcessPipes.run(Self.shell("sleep 1"))
+        window.childRunning = false
         ticker.cancel()
-        let ticks = await ticker.value
+        await ticker.value
         #expect(output.exitCode == 0)
-        #expect(ticks >= 5, "main actor was blocked while the child ran (\(ticks) ticks)")
+        #expect(window.ticksWhileRunning >= 1, "main actor was blocked for the child's whole run")
     }
 
     @Test("run feeds stdin to the child and closes it")
