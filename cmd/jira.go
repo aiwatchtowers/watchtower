@@ -519,17 +519,17 @@ func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
 // replaces the old one, and a plain Re-login (e.g. recovering a revoked
 // Jira) would otherwise silently strip Confluence access. kept reports that
 // default kicking in. --with-confluence stays the opt-in for a first grant.
-// When that check cannot be made (an unreadable token, a DB error) the
-// login fails rather than guess Jira-only and strip Confluence.
+// Only a failed selected-spaces lookup fails the login: an unreadable token
+// is warned about and decided from the selected spaces alone (see
+// accountUsesConfluence), so a corrupt token never blocks re-login.
 func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool, err error) {
 	opts = jiraLoginOptionsFromFlags(cmd)
 	if opts.WithConfluence {
 		return opts, false, nil
 	}
-	uses, err := accountUsesConfluence(workspaceDir, database, accountID)
+	uses, err := accountUsesConfluence(workspaceDir, database, accountID, cmd.ErrOrStderr())
 	if err != nil {
-		return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence "+
-			"(pass --with-confluence to keep it, or fix the error): %w", accountID, err)
+		return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence: %w", accountID, err)
 	}
 	if !uses {
 		return opts, false, nil
@@ -539,12 +539,18 @@ func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB
 }
 
 // accountUsesConfluence reports whether a Jira account's grant carries the
-// Confluence scopes or the account has selected Confluence spaces. A missing
-// token file is "no scopes"; an unreadable one or a DB error is an error.
-func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64) (bool, error) {
-	granted, err := confluenceScopesOK(workspaceDir, accountID)
-	if err != nil || granted {
-		return granted, err
+// Confluence scopes or the account has selected Confluence spaces. A token
+// that cannot be read (a missing file is simply "no scopes") is written to
+// warn and the answer falls back to the selected spaces — the re-login is
+// what replaces that token, so it must not be blocked by it. Only a failed
+// selected-spaces lookup is an error.
+func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64, warn io.Writer) (bool, error) {
+	granted, tokenErr := confluenceScopesOK(workspaceDir, accountID)
+	if tokenErr != nil {
+		fmt.Fprintf(warn, "Warning: %v; deciding Confluence access from the selected spaces\n", tokenErr)
+	}
+	if granted {
+		return true, nil
 	}
 	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
 	if err != nil {

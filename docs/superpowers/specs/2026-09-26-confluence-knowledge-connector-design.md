@@ -257,8 +257,10 @@ Notes:
   `scope` field, which we persist in the token file (add the field if
   absent). A token file that exists but cannot be read or parsed is not
   "scopes missing": the daemon logs it and records the account's sources
-  `status='error'` with the read error, and a plain re-login fails with
-  that error instead of silently requesting Jira-only scopes (R15).
+  `status='error'` with the read error; a plain re-login (which is what
+  replaces that token) warns and decides from the selected spaces alone —
+  spaces selected keeps Confluence, none goes Jira-only — and fails only
+  when that lookup errors too (R15).
 - **One refresher per account.** Atlassian refresh tokens rotate; two
   independent clients refreshing the same token file would revoke each other.
   So Confluence calls go through the account's existing `jira.Client`: add a
@@ -629,8 +631,8 @@ to know; this list is the traceability index, not a duplicate explanation.
 - **R15** — the scopes preflight (`extsync.Options.ScopesOK`) returns
   `(bool, error)`: a missing token file is "not granted", an unreadable one
   is an error recorded as `status='error'`, never `needs_consent`; the
-  re-login default (`jiraReloginOptions`) fails the login on the same
-  errors (§5).
+  re-login default (`jiraReloginOptions`) falls back to the selected
+  spaces on a token error and fails only on a DB error (§5).
 - **R16** — the daily reconcile enumerates comments too and deletes the
   `ext_comments` rows `All(comment)` no longer lists, stamping and
   relinking their parents; the enumeration is drained with the others

@@ -566,16 +566,36 @@ func TestConfluenceScopesOK_MissingVsCorruptToken(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// A re-login whose Confluence check cannot be made fails the login instead
-// of silently dropping to Jira-only scopes: a corrupt token, or a DB error.
-func TestJiraReloginOptions_CheckErrorFailsLogin(t *testing.T) {
-	t.Run("corrupt token", func(t *testing.T) {
+// A corrupt token never blocks a plain re-login (the re-login is what
+// replaces it): the decision falls back to the selected spaces, and the
+// token error is warned about. Only a failed selected-spaces lookup fails
+// the login.
+func TestJiraReloginOptions_TokenAndDBErrors(t *testing.T) {
+	t.Run("corrupt token, spaces selected: kept", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.OAuthScopes)
+		_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+		require.NoError(t, err)
+		corruptJiraToken(t, env)
+		cmd := jiraLoginFlagsCmd(t)
+		var warn bytes.Buffer
+		cmd.SetErr(&warn)
+		opts, kept, err := jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+		require.NoError(t, err)
+		assert.True(t, kept)
+		assert.True(t, opts.WithConfluence)
+		assert.Contains(t, warn.String(), "reading jira account 1 token")
+	})
+	t.Run("corrupt token, no spaces: Jira-only", func(t *testing.T) {
 		env := setupConfluenceEnv(t, jira.OAuthScopes)
 		corruptJiraToken(t, env)
-		_, kept, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
-		require.Error(t, err)
+		cmd := jiraLoginFlagsCmd(t)
+		var warn bytes.Buffer
+		cmd.SetErr(&warn)
+		opts, kept, err := jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+		require.NoError(t, err, "a corrupt token must not block a Jira-only re-login")
 		assert.False(t, kept)
-		assert.Contains(t, err.Error(), "--with-confluence")
+		assert.Equal(t, jira.LoginOptions{}, opts)
+		assert.Contains(t, warn.String(), "reading jira account 1 token")
 	})
 	t.Run("db error", func(t *testing.T) {
 		env := setupConfluenceEnv(t, jira.JiraScopes)
@@ -583,6 +603,7 @@ func TestJiraReloginOptions_CheckErrorFailsLogin(t *testing.T) {
 		_, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "listing selected Confluence spaces")
+		assert.NotContains(t, err.Error(), "--with-confluence")
 	})
 	t.Run("explicit flag needs no check", func(t *testing.T) {
 		env := setupConfluenceEnv(t, jira.OAuthScopes)
