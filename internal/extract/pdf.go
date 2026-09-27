@@ -23,7 +23,8 @@ const maxPDFTreeDepth = 32
 var maxPDFTreeNodes = 4 * MaxPDFPages
 
 // pdfPage is one parsed page: its text layer (possibly short) and whether
-// it is a scan — short text on a page that carries image XObjects.
+// it is a scan — short text on a page that carries image XObjects, or a
+// page whose text layer could not be read at all (OCR gets a chance).
 type pdfPage struct {
 	Index int    `json:"index"`
 	Text  string `json:"text"`
@@ -35,8 +36,9 @@ type pdfPage struct {
 // kept when OCR is unavailable or finds nothing. The status is
 // StatusOCRUnavailable / StatusOCRPending only when some scan page ended
 // with no text at all; a blank page (no text, no image) never counts. An
-// unreadable PDF — corrupt, encrypted, or one the helper process had to be
-// killed for — is StatusFailed.
+// unreadable PDF — corrupt or encrypted — is StatusFailed. A helper that
+// timed out (and was killed), crashed or exited non-zero is an error: a
+// transient failure the engine retries, not a verdict on the file.
 func (x *Extractor) pdfText(ctx context.Context, path string) ([]extsync.Section, string, error) {
 	pages, ok, err := x.parsePDF(ctx, path)
 	if err != nil || !ok {

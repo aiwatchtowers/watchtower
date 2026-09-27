@@ -116,7 +116,7 @@ func (h *helperOCR) run(ctx context.Context, path string, pages []int) ([]byte, 
 	defer cancel()
 	cmd := exec.CommandContext(cctx, h.path, helperArgs(path, pages)...) //nolint:gosec // the helper path is resolved by us, the file is our own temp file
 	stdout := &cappedBuffer{max: maxOCROutput}
-	stderr := &cappedBuffer{max: maxOCRStderr}
+	stderr := &cappedBuffer{max: maxOCRStderr, truncate: true} // more stderr must not fail a good batch
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()

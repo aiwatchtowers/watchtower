@@ -66,6 +66,16 @@ func TestHelperOCRExitError(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot read file", "the helper's stderr is in the error")
 }
 
+// TestHelperOCRChattyStderrDoesNotFailAGoodBatch: more stderr than the
+// capture keeps (maxOCRStderr) is truncated, never a failed run.
+func TestHelperOCRChattyStderrDoesNotFailAGoodBatch(t *testing.T) {
+	helper, _ := fakeHelper(t, `i=0; while [ $i -lt 200 ]; do echo "vision warning line $i padded to be long enough" >&2; i=$((i+1)); done
+echo '{"pages":[{"index":0,"text":"whiteboard"}]}'`)
+	got, err := NewHelperOCR(helper, 10*time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
+	require.NoError(t, err)
+	assert.Equal(t, map[int]string{0: "whiteboard"}, got)
+}
+
 func TestHelperOCRMalformedOutput(t *testing.T) {
 	helper, _ := fakeHelper(t, "echo 'not json'")
 	_, err := NewHelperOCR(helper, 10*time.Second).Recognize(context.Background(), "/tmp/x.png", nil)
