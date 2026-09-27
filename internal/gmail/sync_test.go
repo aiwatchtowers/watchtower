@@ -965,7 +965,6 @@ func TestSyncNoiseSkipAdvancesWatermark(t *testing.T) {
 			t.Errorf("watermark = %v, want %v — must stop below the lost message's possible second", watermark, realUnix-1)
 		}
 	})
-
 }
 
 // A noise message advances maxSeen to second s0, then a real message in the
