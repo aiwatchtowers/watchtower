@@ -28,15 +28,19 @@ import (
 type fakeConfluenceFetcher struct {
 	containers []extsync.Container
 	err        error
-	attachment *extsync.Item   // listed by Changed/All(KindAttachment) when set
-	blob       []byte          // its bytes
-	failKeys   map[string]bool // spaces whose delta listing fails
+	attachment *extsync.Item    // listed by Changed/All(KindAttachment) when set
+	blob       []byte           // its bytes
+	failKeys   map[string]bool  // spaces whose delta listing fails
+	onChanged  func(key string) // called on every delta listing, before failKeys
 }
 
 func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
 	return f.containers, f.err
 }
 func (f *fakeConfluenceFetcher) Changed(_ context.Context, c extsync.Container, kind extsync.ItemKind, _ time.Time, _ string) ([]extsync.ItemRef, string, error) {
+	if f.onChanged != nil {
+		f.onChanged(c.Key)
+	}
 	if f.failKeys[c.Key] {
 		return nil, "", errors.New("listing " + c.Key + " failed")
 	}
@@ -673,6 +677,7 @@ func TestConfluenceSync_ContinuesPastAFailingSpace(t *testing.T) {
 	assert.Contains(t, err.Error(), "listing ENG failed")
 	assert.Contains(t, err.Error(), "listing QA failed")
 	assert.Contains(t, out, "OPS: 0 fetched", "the space after a failing one still syncs")
+	assert.NotContains(t, out, "listing ENG failed", "a failure is shown once, by the returned error")
 
 	status := map[string]string{}
 	srcs, err := env.db.ListExtSources("confluence")
@@ -681,4 +686,37 @@ func TestConfluenceSync_ContinuesPastAFailingSpace(t *testing.T) {
 		status[s.ContainerKey] = s.Status
 	}
 	assert.Equal(t, map[string]string{"ENG": "error", "OPS": "ok", "QA": "error"}, status)
+}
+
+// TestConfluenceSync_CancelReturnsCollectedFailures: Ctrl-C mid-run stops
+// the loop and returns the cancellation joined with the failures so far.
+func TestConfluenceSync_CancelReturnsCollectedFailures(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	for _, k := range []string{"ENG", "OPS", "QA"} {
+		_, err := env.db.CreateExtSource("confluence", 1, k, k+"-id", k)
+		require.NoError(t, err)
+	}
+	srcs, err := env.db.ListExtSources("confluence")
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var listed []string
+	env.fetcher.failKeys = map[string]bool{"ENG": true}
+	env.fetcher.onChanged = func(key string) {
+		listed = append(listed, key)
+		if key == "OPS" {
+			cancel()
+		}
+	}
+	engine := extsync.New(env.db, extsync.Options{})
+	engine.SetFetcher(1, env.fetcher)
+	cmd := jiraLoginFlagsCmd(t)
+	cmd.SetContext(ctx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+
+	err = syncConfluenceSources(cmd, engine, srcs)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "listing ENG failed", "the failures collected before the cancel are kept")
+	assert.NotContains(t, listed, "QA", "nothing runs after the cancel")
 }
