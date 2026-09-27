@@ -46,11 +46,12 @@ type fakeFetcher struct {
 	netCalls     int             // every Fetcher call
 	failNext     error           // the next Fetcher call fails with it
 	failAll      map[ItemKind]error
-	attachCalls  []changedCall     // every Changed(KindAttachment) call, in order
-	blobs        map[string][]byte // attachment bytes by id
-	downloadErr  map[string]error  // Download fails with it
-	readErr      map[string]error  // a Read of the body fails with it after the bytes
-	downloads    map[string]int    // Download calls by id
+	failAllPage  map[ItemKind]string // All(kind) fails when asked for this page token (a partial enumeration)
+	attachCalls  []changedCall       // every Changed(KindAttachment) call, in order
+	blobs        map[string][]byte   // attachment bytes by id
+	downloadErr  map[string]error    // Download fails with it
+	readErr      map[string]error    // a Read of the body fails with it after the bytes
+	downloads    map[string]int      // Download calls by id
 }
 
 // hit counts one Fetcher call and returns the injected failure, if any.
@@ -90,6 +91,15 @@ func (f *fakeFetcher) addComment(id, pageID string, version int, modified time.T
 		CommentKind: "footer",
 		Sections:    []Section{{Text: text}},
 	}})
+}
+
+// deleteComment deletes comment id upstream: All and Comments no longer
+// list it, and — its page's version unchanged — Changed never lists it.
+func (f *fakeFetcher) deleteComment(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hidden[id] = true
+	f.find(id).item = nil
 }
 
 // setAuthor sets the author of document id.
@@ -268,6 +278,9 @@ func (f *fakeFetcher) All(_ context.Context, _ Container, kind ItemKind, page st
 	f.allCalls[kind]++
 	if err := f.failAll[kind]; err != nil {
 		return nil, "", err
+	}
+	if tok, ok := f.failAllPage[kind]; ok && tok == page {
+		return nil, "", fmt.Errorf("fake: All(%s) failed at page %q", kind, page)
 	}
 	var refs []ItemRef
 	for _, k := range f.kinds(kind) {

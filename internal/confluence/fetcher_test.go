@@ -461,6 +461,14 @@ func TestChangedCommentsAgreeWithComments(t *testing.T) {
 	}
 	assert.Empty(t, api.requestsTo("/wiki/rest/api/content/search")[1:],
 		"the parent kind was learned from the listing, no lookup call")
+
+	// The comment reconcile deletes every stored comment All(KindComment)
+	// does not list, and Comments() is what wrote them: All must list each
+	// with the same id, version and parent.
+	all, next, err := f.All(ctx, engSpace, extsync.KindComment, "")
+	require.NoError(t, err)
+	assert.Empty(t, next)
+	assert.ElementsMatch(t, refs, all)
 }
 
 func footerComment(id string) map[string]any {

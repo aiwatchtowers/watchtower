@@ -67,31 +67,28 @@ func (e *Engine) runReconcile(ctx context.Context, p pass) error {
 	return err
 }
 
-// reconcile deletes the local documents (and their comments) the provider
-// no longer enumerates — trashed, moved to another container, or no longer
-// visible to the account, which is the whole permission model — and stamps
-// last_reconcile_at. Every enumeration completes before anything is
-// deleted, so a failed listing deletes nothing.
+// reconcile deletes the local documents (and their comments) and the
+// comments the provider no longer enumerates — trashed, moved to another
+// container, or no longer visible to the account, which is the whole
+// permission model — and stamps last_reconcile_at. Every enumeration,
+// comments included, completes before anything is deleted, so a failed
+// listing deletes nothing.
 func (e *Engine) reconcile(ctx context.Context, p pass) error {
-	remote := make([]map[string]bool, len(reconcileSets))
-	for i, rs := range reconcileSets {
-		ids, err := enumerateAll(ctx, p.f, p.c, rs.kind)
+	remote, remoteComments, err := enumerateReconcile(ctx, p)
+	if err != nil {
+		return err
+	}
+	deleted := 0
+	err = e.withTx(ctx, func(q Queryer) error {
+		n, err := e.reconcileDocs(ctx, q, p.src, remote)
 		if err != nil {
 			return err
 		}
-		remote[i] = ids
-	}
-	deleted := 0
-	err := e.withTx(ctx, func(q Queryer) error {
-		for i, rs := range reconcileSets {
-			gone, err := deleteAbsent(ctx, q, p.src.ID, rs.local, remote[i])
-			if err != nil {
-				return err
-			}
-			if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, gone); err != nil {
-				return err
-			}
-			deleted += len(gone)
+		deleted = n
+		// After the documents: a deleted document's comments are gone
+		// already, so only the surviving parents are stamped and relinked.
+		if err := e.reconcileComments(ctx, q, p.src, remoteComments); err != nil {
+			return err
 		}
 		if _, err := q.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
 			formatTime(e.opts.Now()), p.src.ID); err != nil {
@@ -104,6 +101,101 @@ func (e *Engine) reconcile(ctx context.Context, p pass) error {
 	}
 	p.st.Deleted += deleted
 	return nil
+}
+
+// enumerateReconcile drains every reconcile enumeration: one id set per
+// reconcileSets entry, then the comments.
+func enumerateReconcile(ctx context.Context, p pass) ([]map[string]bool, map[string]bool, error) {
+	remote := make([]map[string]bool, len(reconcileSets))
+	for i, rs := range reconcileSets {
+		ids, err := enumerateAll(ctx, p.f, p.c, rs.kind)
+		if err != nil {
+			return nil, nil, err
+		}
+		remote[i] = ids
+	}
+	comments, err := enumerateAll(ctx, p.f, p.c, KindComment)
+	if err != nil {
+		return nil, nil, err
+	}
+	return remote, comments, nil
+}
+
+// reconcileDocs deletes the documents absent from remote (one set per
+// reconcileSets entry) and relinks them, returning how many were deleted.
+func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource, remote []map[string]bool) (int, error) {
+	deleted := 0
+	for i, rs := range reconcileSets {
+		gone, err := deleteAbsent(ctx, q, src.ID, rs.local, remote[i])
+		if err != nil {
+			return 0, err
+		}
+		if err := e.relinkDocs(ctx, q, src.Provider, src.ID, gone); err != nil {
+			return 0, err
+		}
+		deleted += len(gone)
+	}
+	return deleted, nil
+}
+
+// reconcileComments deletes the stored comments absent from remote. A
+// comment deletion does not bump its page's version, and the comments
+// stream only lists what changed, so without this a deleted comment would
+// stay searchable forever. Each parent that lost a comment is stamped
+// children_changed_at (the KB re-renders it) and relinked.
+func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]bool) error {
+	local, err := localComments(ctx, q, src.ID)
+	if err != nil {
+		return err
+	}
+	var parents []string
+	seen := map[string]bool{}
+	for _, c := range local {
+		if remote[c.id] {
+			continue
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM ext_comments WHERE source_id = ? AND ext_id = ?`,
+			src.ID, c.id); err != nil {
+			return fmt.Errorf("extsync: deleting comment %s: %w", c.id, err)
+		}
+		if !seen[c.page] {
+			seen[c.page] = true
+			parents = append(parents, c.page)
+		}
+	}
+	now := e.opts.Now()
+	for _, page := range parents {
+		if err := stampChildrenChanged(ctx, q, src.ID, page, now); err != nil {
+			return err
+		}
+	}
+	return e.relinkDocs(ctx, q, src.Provider, src.ID, parents)
+}
+
+// storedComment is one ext_comments row's identity.
+type storedComment struct{ id, page string }
+
+// localComments lists the stored comments of sourceID, ordered by id. The
+// rows are closed before it returns (see localIDs).
+func localComments(ctx context.Context, q Queryer, sourceID int64) ([]storedComment, error) {
+	rows, err := q.QueryContext(ctx, `SELECT ext_id, page_ext_id FROM ext_comments
+		WHERE source_id = ? ORDER BY ext_id`, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("extsync: listing local comments: %w", err)
+	}
+	defer rows.Close()
+	var out []storedComment
+	for rows.Next() {
+		var c storedComment
+		if err := rows.Scan(&c.id, &c.page); err != nil {
+			return nil, fmt.Errorf("extsync: scanning local comment: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("extsync: listing local comments: %w", err)
+	}
+	return out, nil
 }
 
 // enumerateAll drains All(kind) into a set of ext ids.

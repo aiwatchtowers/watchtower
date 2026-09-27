@@ -314,7 +314,12 @@ Per enabled `ext_sources` row, in order:
    deleted; `trashed` = deleted; `archived` stays with `status='archived'`.
    A page the owner lost access to disappears from `All` and is deleted —
    that is the whole permission model. Comments are also reconciled per page
-   on every page re-fetch (full reload replaces the set). **Implementation
+   on every page re-fetch (full reload replaces the set), and by the daily
+   reconcile itself (`All(comment)`, R16): a deleted comment bumps neither
+   its page's version nor `Changed`, so without it the comment would stay
+   searchable; each parent that lost one is stamped `children_changed_at`
+   and relinked. Like attachments, a comment on an already-archived page
+   falls out of CQL `All` and is reconcile-deleted. **Implementation
    deviation (R9/R10):** CQL search omits archived content entirely, so
    `All(page)` cannot use CQL like `Changed` does — it walks the v2 space
    page listing instead (which does include archived pages) so `All` stays
@@ -618,3 +623,8 @@ to know; this list is the traceability index, not a duplicate explanation.
   is an error recorded as `status='error'`, never `needs_consent`; the
   re-login default (`jiraReloginOptions`) fails the login on the same
   errors (§5).
+- **R16** — the daily reconcile enumerates comments too and deletes the
+  `ext_comments` rows `All(comment)` no longer lists, stamping and
+  relinking their parents; the enumeration is drained with the others
+  before any delete, on the same once-a-day schedule and failure backoff
+  (§6 step 5).
