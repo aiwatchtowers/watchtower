@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -27,14 +28,18 @@ import (
 type fakeConfluenceFetcher struct {
 	containers []extsync.Container
 	err        error
-	attachment *extsync.Item // listed by Changed/All(KindAttachment) when set
-	blob       []byte        // its bytes
+	attachment *extsync.Item   // listed by Changed/All(KindAttachment) when set
+	blob       []byte          // its bytes
+	failKeys   map[string]bool // spaces whose delta listing fails
 }
 
 func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
 	return f.containers, f.err
 }
-func (f *fakeConfluenceFetcher) Changed(_ context.Context, _ extsync.Container, kind extsync.ItemKind, _ time.Time, _ string) ([]extsync.ItemRef, string, error) {
+func (f *fakeConfluenceFetcher) Changed(_ context.Context, c extsync.Container, kind extsync.ItemKind, _ time.Time, _ string) ([]extsync.ItemRef, string, error) {
+	if f.failKeys[c.Key] {
+		return nil, "", errors.New("listing " + c.Key + " failed")
+	}
 	return f.refs(kind), "", nil
 }
 func (f *fakeConfluenceFetcher) All(_ context.Context, _ extsync.Container, kind extsync.ItemKind, _ string) ([]extsync.ItemRef, string, error) {
@@ -614,4 +619,45 @@ func TestExtSyncOptions_CorruptTokenIsAnErrorNotConsent(t *testing.T) {
 	require.Error(t, err)
 	assert.NotEqual(t, consentHint, err.Error())
 	assert.Contains(t, err.Error(), "reading jira account 1 token")
+}
+
+// TestConfluence_RevokedFromAPIShowsSignInHint: a revoked grant met while
+// listing spaces maps to the sign-in-expired hint, not a raw API error.
+func TestConfluence_RevokedFromAPIShowsSignInHint(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	env.fetcher.err = extsync.ErrAuthRevoked
+
+	for _, args := range [][]string{{"spaces"}, {"select", "ENG"}} {
+		_, err := runConfluence(t, 0, args...)
+		require.Error(t, err, "%v", args)
+		assert.Equal(t, "Atlassian sign-in expired — run: watchtower jira login --account 1 --with-confluence", err.Error(), "%v", args)
+	}
+	assert.Empty(t, selectedSpaceKeys(t, env.db))
+}
+
+// TestConfluenceSync_ContinuesPastAFailingSpace: like the daemon, a failing
+// space does not stop the next one; every failure is reported and the
+// command exits non-zero.
+func TestConfluenceSync_ContinuesPastAFailingSpace(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	for _, k := range []string{"ENG", "OPS", "QA"} {
+		_, err := env.db.CreateExtSource("confluence", 1, k, k+"-id", k)
+		require.NoError(t, err)
+	}
+	env.fetcher.failKeys = map[string]bool{"ENG": true, "QA": true}
+
+	out, err := runConfluence(t, 0, "sync")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "2 of 3 space(s) failed")
+	assert.Contains(t, err.Error(), "listing ENG failed")
+	assert.Contains(t, err.Error(), "listing QA failed")
+	assert.Contains(t, out, "OPS: 0 fetched", "the space after a failing one still syncs")
+
+	status := map[string]string{}
+	srcs, err := env.db.ListExtSources("confluence")
+	require.NoError(t, err)
+	for _, s := range srcs {
+		status[s.ContainerKey] = s.Status
+	}
+	assert.Equal(t, map[string]string{"ENG": "error", "OPS": "ok", "QA": "error"}, status)
 }

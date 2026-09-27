@@ -478,17 +478,29 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 	}
 }
 
-// syncConfluenceSources runs each source in turn and stops at the first
-// failure — a consent/revoked error carries the re-login hint.
+// syncConfluenceSources runs every source in turn, like the daemon's
+// Engine.Run: a failing space does not stop the ones after it. Each
+// failure is printed and all of them are returned joined (a non-zero exit);
+// a consent/revoked error carries the re-login hint. Only a cancelled
+// context (Ctrl-C) stops the loop.
 func syncConfluenceSources(cmd *cobra.Command, engine *extsync.Engine, srcs []db.ExtSource) error {
-	out := cmd.OutOrStdout()
+	ctx, out := cmd.Context(), cmd.OutOrStdout()
+	var errs []error
 	for _, src := range srcs {
-		st, err := engine.RunSource(cmd.Context(), src)
+		st, err := engine.RunSource(ctx, src)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
-			return fmt.Errorf("%s: %w", src.ContainerKey, err)
+			fmt.Fprintf(out, "%s: failed: %v\n", src.ContainerKey, err)
+			errs = append(errs, fmt.Errorf("%s: %w", src.ContainerKey, err))
+			continue
 		}
 		fmt.Fprintf(out, "%s: %d fetched, %d unchanged, %d deleted, %d comments\n",
 			src.ContainerKey, st.Fetched, st.Unchanged, st.Deleted, st.Comments)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%d of %d space(s) failed: %w", len(errs), len(srcs), errors.Join(errs...))
 	}
 	return nil
 }

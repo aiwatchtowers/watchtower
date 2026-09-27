@@ -641,3 +641,6 @@ to know; this list is the traceability index, not a duplicate explanation.
   or oversized helper output stays final. Extraction diagnostics are logged
   (`Extractor.Logger`), and a page whose text layer fails to read goes to
   OCR (§8).
+- **R18** — `confluence sync` continues past a failing space like the
+  daemon's `Engine.Run`, reports every failure, and exits non-zero if any
+  space failed (it used to stop at the first).
