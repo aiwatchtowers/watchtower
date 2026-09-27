@@ -1,9 +1,11 @@
 package extsync
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -96,7 +98,7 @@ func TestRunSourceReturnsHint(t *testing.T) {
 // no provider and no provider-specific command.
 func TestDefaultHintsAreProviderNeutral(t *testing.T) {
 	d, src := newSourceDB(t)
-	e := New(d, Options{ScopesOK: func(int64) bool { return false }})
+	e := New(d, Options{ScopesOK: func(int64) (bool, error) { return false, nil }})
 	e.SetFetcher(src.JiraAccountID, newFake())
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
@@ -141,7 +143,7 @@ func TestErrorContinuesWithNextSource(t *testing.T) {
 func TestMissingScopesMeansNoNetwork(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
-	e := New(d, Options{ScopesOK: func(int64) bool { return false }})
+	e := New(d, Options{ScopesOK: func(int64) (bool, error) { return false, nil }})
 	e.SetFetcher(src.JiraAccountID, f)
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
@@ -262,4 +264,33 @@ func TestRunRotatesAfterBudgetCut(t *testing.T) {
 	_, err = e.Run(context.Background())
 	require.NoError(t, err)
 	assert.Greater(t, countDocs(t, d, src.ID), first, "and the first one resumes after it")
+}
+
+// An unreadable grant is an error, not missing consent: every source of the
+// account records status error with the read error, no fetcher call is
+// made, Run surfaces it, and the engine logger names it.
+func TestScopesReadErrorRecordsErrorNotConsent(t *testing.T) {
+	d, src := newSourceDB(t)
+	ops := addSource(t, d, src.JiraAccountID, "OPS")
+	f := newFake()
+	var logs bytes.Buffer
+	calls := 0
+	e := New(d, Options{
+		Logger: log.New(&logs, "", 0),
+		ScopesOK: func(int64) (bool, error) {
+			calls++
+			return false, errors.New("parsing token: unexpected end of JSON input")
+		},
+	})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err := e.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected end of JSON input")
+	for _, id := range []int64{src.ID, ops} {
+		assert.Equal(t, "error", sourceStatus(t, d, id))
+	}
+	assert.Contains(t, sourceError(t, d, src.ID), "unexpected end of JSON input")
+	assert.Zero(t, f.netCalls, "no fetcher call over an unreadable grant")
+	assert.Equal(t, 1, calls, "the account is checked once per run")
+	assert.Contains(t, logs.String(), "unexpected end of JSON input")
 }

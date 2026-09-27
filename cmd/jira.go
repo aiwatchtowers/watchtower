@@ -519,23 +519,38 @@ func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
 // replaces the old one, and a plain Re-login (e.g. recovering a revoked
 // Jira) would otherwise silently strip Confluence access. kept reports that
 // default kicking in. --with-confluence stays the opt-in for a first grant.
-func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool) {
+// When that check cannot be made (an unreadable token, a DB error) the
+// login fails rather than guess Jira-only and strip Confluence.
+func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool, err error) {
 	opts = jiraLoginOptionsFromFlags(cmd)
-	if opts.WithConfluence || !accountUsesConfluence(workspaceDir, database, accountID) {
-		return opts, false
+	if opts.WithConfluence {
+		return opts, false, nil
+	}
+	uses, err := accountUsesConfluence(workspaceDir, database, accountID)
+	if err != nil {
+		return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence "+
+			"(pass --with-confluence to keep it, or fix the error): %w", accountID, err)
+	}
+	if !uses {
+		return opts, false, nil
 	}
 	opts.WithConfluence = true
-	return opts, true
+	return opts, true, nil
 }
 
 // accountUsesConfluence reports whether a Jira account's grant carries the
-// Confluence scopes or the account has selected Confluence spaces.
-func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64) bool {
-	if confluenceScopesOK(workspaceDir, accountID) {
-		return true
+// Confluence scopes or the account has selected Confluence spaces. A missing
+// token file is "no scopes"; an unreadable one or a DB error is an error.
+func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64) (bool, error) {
+	granted, err := confluenceScopesOK(workspaceDir, accountID)
+	if err != nil || granted {
+		return granted, err
 	}
 	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
-	return err == nil && len(srcs) > 0
+	if err != nil {
+		return false, fmt.Errorf("listing selected Confluence spaces: %w", err)
+	}
+	return len(srcs) > 0, nil
 }
 
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
@@ -642,7 +657,10 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
-	opts, kept := jiraReloginOptions(cmd, cfg.WorkspaceDir(), database, accountID)
+	opts, kept, err := jiraReloginOptions(cmd, cfg.WorkspaceDir(), database, accountID)
+	if err != nil {
+		return err
+	}
 	if kept {
 		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
 	}

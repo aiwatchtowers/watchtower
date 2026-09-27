@@ -498,7 +498,8 @@ func TestExtSyncOptions_WiresTheConfluenceHints(t *testing.T) {
 func TestJiraReloginOptions_ScopedTokenKeepsConfluence(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
 
-	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	opts, kept, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
 	assert.True(t, kept)
 	assert.True(t, opts.WithConfluence)
 }
@@ -510,7 +511,8 @@ func TestJiraReloginOptions_SelectedSpacesKeepConfluence(t *testing.T) {
 	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
 	require.NoError(t, err)
 
-	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	opts, kept, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
 	assert.True(t, kept)
 	assert.True(t, opts.WithConfluence)
 }
@@ -519,13 +521,95 @@ func TestJiraReloginOptions_SelectedSpacesKeepConfluence(t *testing.T) {
 func TestJiraReloginOptions_JiraOnlyStaysJiraOnly(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.JiraScopes)
 
-	opts, kept := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	opts, kept, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
 	assert.False(t, kept)
 	assert.Equal(t, jira.LoginOptions{}, opts)
 
 	cmd := jiraLoginFlagsCmd(t)
 	require.NoError(t, cmd.Flags().Set("with-confluence", "true"))
-	opts, kept = jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+	opts, kept, err = jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
 	assert.False(t, kept, "the explicit flag is not the default kicking in")
 	assert.True(t, opts.WithConfluence)
+}
+
+// corruptJiraToken overwrites account 1's token file with unparseable JSON.
+func corruptJiraToken(t *testing.T, env *confluenceEnv) {
+	t.Helper()
+	path := jira.NewTokenStore(env.cfg.WorkspaceDir(), 1).Path()
+	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
+}
+
+// A missing token file is "not granted" (no error); a corrupt one is an
+// error, never "not granted".
+func TestConfluenceScopesOK_MissingVsCorruptToken(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	ok, err := confluenceScopesOK(env.cfg.WorkspaceDir(), 1)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	ok, err = confluenceScopesOK(env.cfg.WorkspaceDir(), 99)
+	require.NoError(t, err, "a missing token file is simply not granted")
+	assert.False(t, ok)
+
+	corruptJiraToken(t, env)
+	ok, err = confluenceScopesOK(env.cfg.WorkspaceDir(), 1)
+	require.Error(t, err)
+	assert.False(t, ok)
+}
+
+// A re-login whose Confluence check cannot be made fails the login instead
+// of silently dropping to Jira-only scopes: a corrupt token, or a DB error.
+func TestJiraReloginOptions_CheckErrorFailsLogin(t *testing.T) {
+	t.Run("corrupt token", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.OAuthScopes)
+		corruptJiraToken(t, env)
+		_, kept, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+		require.Error(t, err)
+		assert.False(t, kept)
+		assert.Contains(t, err.Error(), "--with-confluence")
+	})
+	t.Run("db error", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.JiraScopes)
+		require.NoError(t, env.db.Close())
+		_, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "listing selected Confluence spaces")
+	})
+	t.Run("explicit flag needs no check", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.OAuthScopes)
+		corruptJiraToken(t, env)
+		cmd := jiraLoginFlagsCmd(t)
+		require.NoError(t, cmd.Flags().Set("with-confluence", "true"))
+		opts, _, err := jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+		require.NoError(t, err)
+		assert.True(t, opts.WithConfluence)
+	})
+}
+
+// The daemon wiring over a corrupt token records the source as error with
+// the read error (and logs it) — never needs_consent — and the CLI reports
+// the read error instead of the consent hint.
+func TestExtSyncOptions_CorruptTokenIsAnErrorNotConsent(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+	corruptJiraToken(t, env)
+
+	var logs bytes.Buffer
+	e := extsync.New(env.db, extSyncOptions(env.cfg, log.New(&logs, "", 0), 0))
+	e.SetFetcher(1, env.fetcher)
+	_, err = e.Run(context.Background())
+	require.Error(t, err)
+	var status, text string
+	require.NoError(t, env.db.QueryRow(`SELECT status, error FROM ext_sources`).Scan(&status, &text))
+	assert.Equal(t, "error", status)
+	assert.Contains(t, text, "reading jira account 1 token")
+	assert.Contains(t, logs.String(), "reading jira account 1 token")
+
+	_, err = runConfluence(t, 0, "spaces")
+	require.Error(t, err)
+	assert.NotEqual(t, consentHint, err.Error())
+	assert.Contains(t, err.Error(), "reading jira account 1 token")
 }

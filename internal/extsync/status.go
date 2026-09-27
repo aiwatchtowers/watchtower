@@ -46,14 +46,16 @@ func (o outcome) expected() bool {
 	return o.status == statusNeedsConsent || o.status == statusRevoked
 }
 
-// err is the error an expected outcome surfaces: its hint, wrapping the
-// matching sentinel.
+// err is the error a stopped or expected outcome surfaces: an expected
+// state's hint wrapping the matching sentinel, an error outcome's text.
 func (o outcome) err() error {
 	switch o.status {
 	case statusRevoked:
 		return fmt.Errorf("%s: %w", o.text, ErrAuthRevoked)
 	case statusNeedsConsent:
 		return fmt.Errorf("%s: %w", o.text, ErrNeedsConsent)
+	case statusError:
+		return errors.New(o.text)
 	}
 	return nil
 }

@@ -123,8 +123,11 @@ type Options struct {
 	Extractor Extractor        // nil → attachments stored as skipped_type
 	// ScopesOK reports whether an account's grant carries the scopes the
 	// sources need; false records needs_consent without any network call.
+	// An error (the stored grant is unreadable) is logged and records every
+	// source of the account as error with its text — never needs_consent,
+	// which would send the owner to re-consent over a corrupt file.
 	// nil = assume granted.
-	ScopesOK func(jiraAccountID int64) bool
+	ScopesOK func(jiraAccountID int64) (bool, error)
 	// Hints returns the re-consent hint texts recorded on a source whose
 	// account's grant is revoked / lacks the scopes (ext_sources.error, and
 	// the error RunSource returns). nil = a generic provider-neutral text;

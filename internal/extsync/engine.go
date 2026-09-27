@@ -187,9 +187,10 @@ func isExpected(err error) bool {
 func (e *Engine) syncSource(ctx context.Context, src db.ExtSource, b *budget, stopped map[int64]outcome) (st Stats, runErr, recErr error) {
 	acct := src.JiraAccountID
 	o, isStopped := stopped[acct]
-	if !isStopped && e.opts.ScopesOK != nil && !e.opts.ScopesOK(acct) {
-		o, isStopped = e.needsConsentOutcome(acct), true
-		stopped[acct] = o
+	if !isStopped {
+		if o, isStopped = e.scopesOutcome(acct); isStopped {
+			stopped[acct] = o
+		}
 	}
 	if isStopped {
 		return st, o.err(), e.record(src, o)
@@ -206,6 +207,25 @@ func (e *Engine) syncSource(ctx context.Context, src db.ExtSource, b *budget, st
 		runErr = o.err()
 	}
 	return st, runErr, e.record(src, o)
+}
+
+// scopesOutcome runs the Options.ScopesOK preflight for an account: stop
+// reports that its sources must not sync this run, with outcome o —
+// needs_consent for a grant without the scopes, error for an unreadable
+// grant (logged here).
+func (e *Engine) scopesOutcome(acct int64) (o outcome, stop bool) {
+	if e.opts.ScopesOK == nil {
+		return outcome{}, false
+	}
+	ok, err := e.opts.ScopesOK(acct)
+	if err != nil {
+		e.opts.Logger.Printf("extsync: checking the granted scopes of account %d: %v", acct, err)
+		return outcome{status: statusError, accountWide: true, text: fmt.Sprintf("checking the granted scopes: %v", err)}, true
+	}
+	if !ok {
+		return e.needsConsentOutcome(acct), true
+	}
+	return outcome{}, false
 }
 
 // record writes a source's outcome. A clean run stamps last_synced_at and

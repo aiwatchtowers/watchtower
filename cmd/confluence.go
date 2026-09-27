@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"path/filepath"
 	"sort"
@@ -80,10 +81,18 @@ func errConfluenceConsent(accountID int64) error {
 }
 
 // confluenceScopesOK reports whether account id's stored grant carries the
-// Confluence scopes. An unreadable token counts as not granted.
-func confluenceScopesOK(workspaceDir string, id int64) bool {
+// Confluence scopes. A missing token file is simply not granted; any other
+// read or parse failure is an error — a corrupt token must never read as
+// "consent missing" (a re-consent would not be the fix).
+func confluenceScopesOK(workspaceDir string, id int64) (bool, error) {
 	tok, err := jira.NewTokenStore(workspaceDir, id).Load()
-	return err == nil && jira.HasConfluenceScopes(tok)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading jira account %d token: %w", id, err)
+	}
+	return jira.HasConfluenceScopes(tok), nil
 }
 
 // confluenceSession is the resolved account plus a fetcher over its grant.
@@ -111,8 +120,12 @@ func openConfluenceSession() (*confluenceSession, error) {
 		database.Close()
 		return nil, fmt.Errorf("jira account %d has no token or site — run: watchtower jira login --account %d --with-confluence", account.ID, account.ID)
 	}
-	if !confluenceScopesOK(cfg.WorkspaceDir(), account.ID) {
+	granted, err := confluenceScopesOK(cfg.WorkspaceDir(), account.ID)
+	if err != nil || !granted {
 		database.Close()
+		if err != nil {
+			return nil, err
+		}
 		return nil, errConfluenceConsent(account.ID)
 	}
 	client := jira.NewClient(account.CloudID, resolveJiraOAuthConfig(), store)
@@ -454,7 +467,7 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 			PDFHelper: pdfHelperArgv(),
 			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout, extract.WithLogger(logger)),
 		},
-		ScopesOK: func(id int64) bool { return confluenceScopesOK(wd, id) },
+		ScopesOK: func(id int64) (bool, error) { return confluenceScopesOK(wd, id) },
 		Hints:    confluenceHints,
 		// Jira keys in stored Confluence text → doc_links (spec §10). Wired
 		// here so the engine stays free of link/Atlassian packages.
