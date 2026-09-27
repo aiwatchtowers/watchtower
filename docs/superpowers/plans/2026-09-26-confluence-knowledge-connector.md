@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - All repo text (code, comments, docs, commits) in English. Commit per task, ending with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
-- Work only inside the worktree `/Users/user/PhpstormProjects/watchtower/.claude/worktrees/knowledge-connectors`, branch `feature/knowledge-connectors`. Never `git add -A` from a shared tree; add the task's files by path.
+- Work only inside the repo-relative worktree `.claude/worktrees/knowledge-connectors`, branch `feature/knowledge-connectors`. Never `git add -A` from a shared tree; add the task's files by path.
 - Inner-loop testing only: `go test ./internal/<pkg>` (no reflexive `-count=1`), `make test-swift FILTER=<Class>`. Full gates run once in Task 13.
 - Migration number: `00074`. Before writing it, `ls internal/db/migrations | tail -3` — if `00074` is taken on `origin/main`, use the next free number everywhere this plan says 00074.
 - Mechanical feature: no AI call anywhere in this plan.

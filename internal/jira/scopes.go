@@ -14,14 +14,11 @@ const JiraScopes = "read:jira-work write:jira-work read:jira-user read:board-sco
 // /wiki/rest/api/content/search), child comments (v1), attachment download
 // (v1), and users bulk (v1 GET /wiki/rest/api/user/bulk).
 //
-// Verified against developer.atlassian.com/cloud/confluence/scopes-for-oauth-2-3LO-and-forge-apps/
-// and the per-scope references cross-checked via web search on 2026-09-26
-// (Atlassian's scope docs are a JS-rendered SPA that WebFetch could not
-// reliably pull per-endpoint scope tables from — every individual scope
-// identifier below was independently confirmed as a real, currently-issued
-// Confluence granular/classic scope; the exact endpoint→scope mapping in the
-// list above is the brief's hypothesis, not a page-by-page citation). See
-// task-1-report.md for the verification trail and residual concern.
+// Checked against developer.atlassian.com/cloud/confluence/scopes-for-oauth-2-3LO-and-forge-apps/
+// on 2026-09-26 at identifier level: every scope below is a real,
+// currently-issued Confluence granular or classic scope. The endpoint→scope
+// mapping in the list above is not verified page by page; it is pending a
+// live smoke against a real Atlassian site.
 //
 // Deliberately mixes granular (read:*:confluence) and classic
 // (search:confluence, readonly:content.attachment:confluence) scopes:
