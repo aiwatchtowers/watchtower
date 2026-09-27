@@ -312,6 +312,27 @@ func TestVaultWriteNodesSingleCommit(t *testing.T) {
 	assert.False(t, made, "machine write leaves a clean worktree")
 }
 
+// Re-writing nodes whose rendered bytes equal what is already committed is a
+// no-op, not an error: go-git refuses an empty commit, and that error used to
+// abort the whole memory run (and freeze the chat-turn floor behind it).
+func TestVaultWriteNodesUnchangedIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	v, err := OpenVault(dir)
+	require.NoError(t, err)
+
+	a := vaultTestNode("ent_01ARZ3NDEKTSV4RRFFQ69G5FA1", "entity", "Alpha")
+	msg := CommitMsg{Op: "seed", Summary: "seed", Cause: "run:1", NodeIDs: []string{a.ID}}
+	_, err = v.WriteNodes([]Node{a}, msg)
+	require.NoError(t, err)
+
+	hash, err := v.WriteNodes([]Node{a}, msg)
+	require.NoError(t, err, "an unchanged re-write must not fail")
+	assert.Empty(t, hash, "no commit is made when nothing changed")
+
+	repo := openTestRepo(t, dir)
+	assert.Equal(t, 2, commitCount(t, repo), "init + the first write only")
+}
+
 func TestVaultReadNodeRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	v, err := OpenVault(dir)
