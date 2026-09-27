@@ -414,9 +414,9 @@ struct JiraBoardsSettingsView: View {
 /// drop an exit code again.
 enum JiraBoardsCLI {
     /// Runs `arguments`, returning nil on success or a user-facing message on
-    /// failure (trimmed stderr, else `fallbackMessage`). stderr is drained
-    /// before `waitUntilExit` so a chatty failure can't fill the pipe buffer
-    /// and deadlock the wait.
+    /// failure (trimmed stderr, else `fallbackMessage` plus the exit status).
+    /// stderr is drained before `waitUntilExit` so a chatty failure can't fill
+    /// the pipe buffer and deadlock the wait.
     static func run(
         cliPath: String,
         arguments: [String],
@@ -444,6 +444,9 @@ enum JiraBoardsCLI {
         guard process.terminationStatus != 0 else { return nil }
         let stderr = String(data: stderrData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return stderr.isEmpty ? fallbackMessage : String(stderr.prefix(200))
+        // With nothing on stderr the exit status is the only diagnostic left.
+        return stderr.isEmpty
+            ? "\(fallbackMessage) (exit \(process.terminationStatus))"
+            : String(stderr.prefix(200))
     }
 }

@@ -12,7 +12,8 @@ import WatchtowerTestSupport
 @MainActor
 final class SlackAuthServiceTests: XCTestCase {
     private func makePool() throws -> DatabasePool {
-        let (pool, _) = try TestDatabase.createPool()
+        let (pool, path) = try TestDatabase.createPool()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         return pool
     }
 

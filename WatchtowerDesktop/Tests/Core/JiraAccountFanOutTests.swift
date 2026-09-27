@@ -8,7 +8,8 @@ import WatchtowerTestSupport
 /// two sites are enabled. Account-scoped actions now fan out per enabled site.
 final class JiraAccountFanOutTests: XCTestCase {
     func testOneAccountScopedInvocationPerEnabledSite() throws {
-        let (pool, _) = try TestDatabase.createPool()
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
         let (first, second) = try pool.write { db -> (Int64, Int64) in
             let first = try TestDatabase.insertJiraAccount(db, siteName: "Site A")
             _ = try TestDatabase.insertJiraAccount(db, siteName: "Paused", enabled: false)
