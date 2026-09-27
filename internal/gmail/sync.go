@@ -109,6 +109,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		m, err := s.client.GetMessage(ctx, id)
 		if err != nil {
 			s.logger.Printf("gmail: fetch message %s: %v", id, err)
+			// The lost message's date is unknown, but oldest-first order puts
+			// it at or after the last second the pass advanced to — a noise
+			// skip or a stored message in that same second must not leave
+			// the watermark on it.
+			maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
 			stalled = true
 			continue
 		}
@@ -148,6 +153,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		row.SyncedAt = syncedAt
 		if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
+			maxSeen = holdBelowLoss(maxSeen, watermark, msgUnix)
 			stalled = true
 			continue
 		}
@@ -180,6 +186,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// holdBelowLoss keeps the watermark strictly below the second of a lost
+// message (lostUnix): everything at or below the watermark is excluded next
+// cycle, so a noise skip or stored message that already advanced maxSeen onto
+// that second would otherwise strand the lost one for good. It never goes
+// below the pass's starting watermark.
+func holdBelowLoss(maxSeen, watermark, lostUnix float64) float64 {
+	if lostUnix <= maxSeen {
+		maxSeen = max(lostUnix-1, watermark)
+	}
+	return maxSeen
 }
 
 // clampBelowCut keeps a capped pass's watermark strictly below the second of

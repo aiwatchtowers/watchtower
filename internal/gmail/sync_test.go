@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -749,8 +750,10 @@ func TestSyncStopsWatermarkAtFirstFailureButStillStoresLaterMessages(t *testing.
 	if err != nil {
 		t.Fatalf("watermark: %v", err)
 	}
-	if watermark != float64(t1Unix) {
-		t.Errorf("watermark = %v, want %v (stop at the message before the failure, not %v)", watermark, t1Unix, t3Unix)
+	// Stop below the failure, not at m3: the lost message's date is unknown
+	// and could share m1's second, so the watermark holds one second below it.
+	if watermark != float64(t1Unix-1) {
+		t.Errorf("watermark = %v, want %v (stop below the failure's possible second, not %v)", watermark, t1Unix-1, t3Unix)
 	}
 
 	rows, err := database.GmailMessagesSyncedAfter(accountID, "2000-01-01T00:00:00Z")
@@ -955,8 +958,49 @@ func TestSyncNoiseSkipAdvancesWatermark(t *testing.T) {
 		if err != nil {
 			t.Fatalf("watermark: %v", err)
 		}
-		if watermark != float64(realUnix) {
-			t.Errorf("watermark = %v, want %v — must stop before the lost message", watermark, realUnix)
+		// The lost message's date is unknown and may share realUnix, so the
+		// watermark holds one second below it; re-listing realUnix only
+		// re-upserts the already-stored message.
+		if watermark != float64(realUnix-1) {
+			t.Errorf("watermark = %v, want %v — must stop below the lost message's possible second", watermark, realUnix-1)
+		}
+	})
+
+	t.Run("noise then a lost message in the same second", func(t *testing.T) {
+		const s0 = 1700000000
+		var failOnce atomic.Bool
+		failOnce.Store(true)
+		mux := http.NewServeMux()
+		mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Query().Get("q"), fmt.Sprintf("after:%d", s0)) {
+				fmt.Fprint(w, `{"messages":[]}`) // after:s0 excludes both
+				return
+			}
+			fmt.Fprint(w, `{"messages":[{"id":"mLost"},{"id":"mNoise"}]}`) // newest-first
+		})
+		mux.HandleFunc("/users/me/messages/mNoise", func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, `{"id":"mNoise","threadId":"t1","labelIds":["INBOX","CATEGORY_PROMOTIONS"],
+          "snippet":"promo","internalDate":"%d000","payload":{"headers":[]}}`, s0)
+		})
+		mux.HandleFunc("/users/me/messages/mLost", func(w http.ResponseWriter, _ *http.Request) {
+			if failOnce.Swap(false) {
+				http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+				return
+			}
+			fmt.Fprintf(w, `{"id":"mLost","threadId":"t2","labelIds":["INBOX"],"snippet":"real",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":"Real"}]}}`, s0)
+		})
+		s, _, _ := newTestSyncerForMux(t, mux)
+
+		if _, err := s.Sync(context.Background()); err != nil {
+			t.Fatalf("first Sync: %v", err)
+		}
+		n, err := s.Sync(context.Background())
+		if err != nil {
+			t.Fatalf("second Sync: %v", err)
+		}
+		if n != 1 {
+			t.Fatalf("the message lost in the noise's second must be stored on the next cycle, got %d stored", n)
 		}
 	})
 }
