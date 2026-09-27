@@ -28,7 +28,7 @@ func newOCRExtractor(hasOCR bool) *ocrExtractor {
 	return &ocrExtractor{hasOCR: hasOCR, queue: map[string][]string{}, calls: map[string]int{}}
 }
 
-func (x *ocrExtractor) HasOCR() bool {
+func (x *ocrExtractor) HasOCR(context.Context) bool {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	return x.hasOCR

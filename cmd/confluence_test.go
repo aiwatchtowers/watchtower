@@ -421,7 +421,7 @@ func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 	require.True(t, ok, "the engine gets the attachment extractor")
 	assert.Equal(t, filepath.Join(env.cfg.WorkspaceDir(), "tmp", "extract"), x.TempDir)
 	assert.Nil(t, x.OCR, "no watchtower-ocr next to the test binary: OCR unavailable")
-	assert.False(t, x.HasOCR())
+	assert.False(t, x.HasOCR(context.Background()))
 	require.Len(t, x.PDFHelper, 2, "PDFs are parsed out of process")
 	assert.Equal(t, "extract-pdf-text", x.PDFHelper[1])
 	assert.Equal(t, extSyncCycleBudget, opts.Budget)
@@ -444,7 +444,7 @@ func TestExtSyncOptions_WiresTheOCRHelper(t *testing.T) {
 	x, ok := extSyncOptions(env.cfg, log.New(io.Discard, "", 0), 0).Extractor.(*extract.Extractor)
 	require.True(t, ok)
 	assert.NotNil(t, x.OCR)
-	assert.True(t, x.HasOCR())
+	assert.True(t, x.HasOCR(context.Background()))
 }
 
 // A re-login of an account whose grant already carries the Confluence

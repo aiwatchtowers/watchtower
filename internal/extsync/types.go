@@ -95,7 +95,9 @@ type Extractor interface {
 // OCRCapable is optionally implemented by an Extractor: HasOCR reports
 // whether OCR is available, so a retry of OCR-pending attachments can be
 // skipped when it is not.
-type OCRCapable interface{ HasOCR() bool }
+type OCRCapable interface {
+	HasOCR(ctx context.Context) bool
+}
 
 // TempSweeper is optionally implemented by an Extractor: SweepStale removes
 // the temp files a process killed mid-extraction left behind (EXT-03), and

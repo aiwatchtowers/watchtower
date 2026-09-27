@@ -54,10 +54,11 @@ type helperVerifier struct {
 	goos   string
 	logger *log.Logger
 
-	once    sync.Once
-	team    string // our Team ID; "" with skip or selfErr
-	skip    bool   // our own executable is ad-hoc/unsigned: no check
-	selfErr error  // our signature class could not be read: fail closed
+	selfMu   sync.Mutex
+	selfDone bool   // our signature class was read (a cancelled read is not)
+	team     string // our Team ID; "" with skip or selfErr
+	skip     bool   // our own executable is ad-hoc/unsigned: no check
+	selfErr  error  // our signature class could not be read: fail closed
 
 	mu      sync.Mutex
 	cache   map[string]verdict // by path
@@ -84,9 +85,15 @@ func (v *helperVerifier) logf(format string, args ...any) {
 	}
 }
 
-// allowed reports whether the helper at path may be executed.
-func (v *helperVerifier) allowed(path string) bool {
-	v.once.Do(v.readSelf)
+// allowed reports whether the helper at path may be executed. The
+// codesign calls run under ctx: a cancelled ctx answers false and caches
+// nothing, so a shutdown can neither hang on codesign nor leave a
+// fail-closed verdict behind.
+func (v *helperVerifier) allowed(ctx context.Context, path string) bool {
+	v.ensureSelf(ctx)
+	if ctx.Err() != nil {
+		return false
+	}
 	switch {
 	case v.selfErr != nil:
 		return false
@@ -106,7 +113,10 @@ func (v *helperVerifier) allowed(path string) bool {
 	if c, ok := v.cache[path]; ok && c.key == key {
 		return c.ok
 	}
-	ok := v.verify(path)
+	ok := v.verify(ctx, path)
+	if ctx.Err() != nil {
+		return false // cut short: no verdict to cache
+	}
 	if v.cache == nil {
 		v.cache = map[string]verdict{}
 	}
@@ -114,12 +124,16 @@ func (v *helperVerifier) allowed(path string) bool {
 	return ok
 }
 
-// verify runs the Team-ID requirement check on path.
-func (v *helperVerifier) verify(path string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), codesignTimeout)
+// verify runs the Team-ID requirement check on path under ctx (bounded by
+// codesignTimeout). A cancelled ctx is not a failed check and is not logged.
+func (v *helperVerifier) verify(ctx context.Context, path string) bool {
+	cctx, cancel := context.WithTimeout(ctx, codesignTimeout)
 	defer cancel()
 	req := fmt.Sprintf(`-R=anchor apple generic and certificate leaf[subject.OU] = "%s"`, v.team)
-	out, err := v.run(ctx, "--verify", "--strict", req, path)
+	out, err := v.run(cctx, "--verify", "--strict", req, path)
+	if err != nil && ctx.Err() != nil {
+		return false
+	}
 	if err != nil {
 		v.logf("ocr helper %s fails the signature check for team %s (%v: %s); OCR unavailable",
 			path, v.team, err, bytes.TrimSpace(out))
@@ -128,8 +142,21 @@ func (v *helperVerifier) verify(path string) bool {
 	return true
 }
 
-// readSelf reads our own signature class once.
-func (v *helperVerifier) readSelf() {
+// ensureSelf reads our own signature class once. A read cut short by ctx
+// is not remembered, so the next call retries it.
+func (v *helperVerifier) ensureSelf(ctx context.Context) {
+	v.selfMu.Lock()
+	defer v.selfMu.Unlock()
+	if v.selfDone {
+		return
+	}
+	v.readSelf(ctx)
+	v.selfDone = ctx.Err() == nil
+}
+
+// readSelf reads our own signature class under ctx (bounded by
+// codesignTimeout). A cancelled ctx leaves every field untouched.
+func (v *helperVerifier) readSelf(ctx context.Context) {
 	if v.goos != "darwin" {
 		v.skip = true
 		return
@@ -139,9 +166,12 @@ func (v *helperVerifier) readSelf() {
 		v.fail(fmt.Errorf("locating own executable: %w", err))
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), codesignTimeout)
+	cctx, cancel := context.WithTimeout(ctx, codesignTimeout)
 	defer cancel()
-	out, err := v.run(ctx, "-dv", "--verbose=2", exe)
+	out, err := v.run(cctx, "-dv", "--verbose=2", exe)
+	if ctx.Err() != nil {
+		return
+	}
 	if m := teamIDLine.FindSubmatch(out); m != nil {
 		team := string(bytes.TrimSpace(m[1]))
 		switch {

@@ -321,9 +321,9 @@ func downloadOutcome(err error) (extraction, bool) {
 
 // hasOCR asks the extractor whether OCR is available; one that cannot say
 // has none (controller ruling R2).
-func hasOCR(x Extractor) bool {
+func hasOCR(ctx context.Context, x Extractor) bool {
 	c, ok := x.(OCRCapable)
-	return ok && c.HasOCR()
+	return ok && c.HasOCR(ctx)
 }
 
 // supports asks the extractor whether it handles it's type; an extractor
@@ -395,7 +395,7 @@ func revisitRefs(ctx context.Context, q Queryer, sourceID int64, x Extractor, ex
 		    OR (extract_status IN (?, ?) AND extract_attempts > 0 AND extract_attempts < ?)
 		    OR (extract_status = ? AND ? AND extract_attempts < ?))
 		ORDER BY ext_id`, sourceID, extractSkippedType, extractFailed, extractOCRPending, maxExtractAttempts,
-		extractOCRMissing, hasOCR(x), maxExtractAttempts)
+		extractOCRMissing, hasOCR(ctx, x), maxExtractAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: listing attachments to revisit: %w", err)
 	}

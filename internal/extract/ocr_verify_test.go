@@ -95,7 +95,7 @@ func TestHelperFailingSignatureNeverRuns(t *testing.T) {
 	assert.Contains(t, logs.String(), "fails the signature check")
 
 	x := newExtractor(t, ocr)
-	assert.False(t, x.HasOCR())
+	assert.False(t, x.HasOCR(context.Background()))
 	_, status := run(t, x, "image/png", "sample.png")
 	assert.Equal(t, StatusOCRUnavailable, status)
 	_, status = run(t, x, "application/pdf", "scanned.pdf")
@@ -142,7 +142,7 @@ func TestHelperVerdictCachedPerFileIdentity(t *testing.T) {
 		_, err := ocr.Recognize(context.Background(), "/tmp/extract/att-1.png", nil)
 		require.NoError(t, err)
 	}
-	assert.True(t, ocr.(*helperOCR).Available())
+	assert.True(t, ocr.(*helperOCR).Available(context.Background()))
 	assert.Len(t, cs.verifyCalls(), 1, "five runs, one verification")
 
 	path := ocr.(*helperOCR).path
@@ -168,6 +168,60 @@ func TestHelperCheckSkippedOffDarwin(t *testing.T) {
 	assert.Empty(t, cs.calls)
 }
 
+// blockingCodesign answers like fakeCodesign, except that while block is
+// set every call waits for its ctx to end (a hung codesign).
+type blockingCodesign struct {
+	fakeCodesign
+	block bool
+}
+
+func (b *blockingCodesign) run(ctx context.Context, args ...string) ([]byte, error) {
+	b.mu.Lock()
+	block := b.block
+	b.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return b.fakeCodesign.run(ctx, args...)
+}
+
+// TestHelperCheckStopsOnCancel: codesign runs under the caller's ctx, so a
+// shutdown stops a hung check at once; the cut-short check caches nothing
+// (neither our own signature class nor the helper's verdict), so a later
+// call verifies normally instead of failing closed for good.
+func TestHelperCheckStopsOnCancel(t *testing.T) {
+	for _, stage := range []string{"own signature", "helper verify"} {
+		t.Run(stage, func(t *testing.T) {
+			cs := &blockingCodesign{fakeCodesign: fakeCodesign{self: developerIDSelf}}
+			ocr, args, _ := verifiedHelper(t, &cs.fakeCodesign)
+			v := ocr.(*helperOCR).verifier
+			v.run = cs.run
+			if stage == "helper verify" {
+				v.ensureSelf(context.Background()) // our own class read; only the helper check hangs
+			}
+			cs.mu.Lock()
+			cs.block = true
+			cs.mu.Unlock()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+			start := time.Now()
+			_, err := ocr.Recognize(ctx, "/tmp/extract/att-1.png", nil)
+			require.ErrorIs(t, err, context.Canceled, "a cancelled check is not ErrOCRUnavailable")
+			assert.Less(t, time.Since(start), 5*time.Second, "codesign was stopped by the cancel, not its own timeout")
+			assert.NoFileExists(t, args)
+
+			cs.mu.Lock()
+			cs.block = false
+			cs.mu.Unlock()
+			got, err := ocr.Recognize(context.Background(), "/tmp/extract/att-1.png", nil)
+			require.NoError(t, err, "nothing was cached by the cancelled check")
+			assert.Equal(t, map[int]string{0: "words"}, got)
+		})
+	}
+}
+
 // TestRealBundleHelperSignature checks the real codesign path against a
 // built app bundle when WATCHTOWER_OCR_E2E_BUNDLE names its
 // Contents/MacOS directory: the bundled helper passes against the bundled
@@ -183,7 +237,7 @@ func TestRealBundleHelperSignature(t *testing.T) {
 		v.self = func() (string, error) { return cli, nil }
 		return v
 	}
-	assert.True(t, newV().allowed(filepath.Join(dir, "watchtower-ocr")))
+	assert.True(t, newV().allowed(context.Background(), filepath.Join(dir, "watchtower-ocr")))
 
 	copyPath := filepath.Join(t.TempDir(), "watchtower-ocr")
 	b, err := os.ReadFile(filepath.Join(dir, "watchtower-ocr")) //nolint:gosec // test input
@@ -191,5 +245,5 @@ func TestRealBundleHelperSignature(t *testing.T) {
 	require.NoError(t, os.WriteFile(copyPath, b, 0o700)) //nolint:gosec // test executable
 	_, err = runCodesign(context.Background(), "--force", "--sign", "-", copyPath)
 	require.NoError(t, err)
-	assert.False(t, newV().allowed(copyPath), "an ad-hoc signed swap is rejected")
+	assert.False(t, newV().allowed(context.Background(), copyPath), "an ad-hoc signed swap is rejected")
 }

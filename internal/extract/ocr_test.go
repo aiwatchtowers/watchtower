@@ -85,7 +85,7 @@ func TestHelperOCRCancelledContext(t *testing.T) {
 func TestNewHelperOCRNilWhenNoPath(t *testing.T) {
 	ocr := NewHelperOCR("", time.Second)
 	assert.Nil(t, ocr)
-	assert.False(t, (&Extractor{OCR: ocr}).HasOCR())
+	assert.False(t, (&Extractor{OCR: ocr}).HasOCR(context.Background()))
 }
 
 func TestOCRTimeoutIsSixtySeconds(t *testing.T) {

@@ -68,17 +68,19 @@ var (
 // HasOCR reports whether an OCR is wired and can run now (controller ruling
 // R2): an OCR that reports availability (the helper's signature check) is
 // asked. It is what keeps HasOCR ⇔ Extract never answering ocr_unavailable.
-func (x *Extractor) HasOCR() bool {
+func (x *Extractor) HasOCR(ctx context.Context) bool {
 	if x.OCR == nil {
 		return false
 	}
 	a, ok := x.OCR.(availabilityReporter)
-	return !ok || a.Available()
+	return !ok || a.Available(ctx)
 }
 
 // availabilityReporter is optionally implemented by an OCR that may be
 // wired yet unable to run (the helper OCR's signature check).
-type availabilityReporter interface{ Available() bool }
+type availabilityReporter interface {
+	Available(ctx context.Context) bool
+}
 
 // Supports reports whether Extract handles the type: exactly the types for
 // which it never answers StatusSkippedType.

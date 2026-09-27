@@ -65,7 +65,7 @@ func NewHelperOCR(path string, timeout time.Duration, opts ...HelperOption) OCR 
 // Available reports whether the helper passes the signature check now
 // (cached per file identity). Extractor.HasOCR consults it, so rows stored
 // ocr_unavailable are not downloaded again while the helper is rejected.
-func (h *helperOCR) Available() bool { return h.verifier.allowed(h.path) }
+func (h *helperOCR) Available(ctx context.Context) bool { return h.verifier.allowed(ctx, h.path) }
 
 type ocrHelperOutput struct {
 	Pages []struct {
@@ -83,7 +83,10 @@ func (h *helperOCR) Recognize(ctx context.Context, path string, pages []int) (ma
 	if pages != nil && len(pages) == 0 {
 		return map[int]string{}, nil // nothing asked; an image passes nil
 	}
-	if !h.Available() {
+	if !h.Available(ctx) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, ErrOCRUnavailable
 	}
 	out, err := h.run(ctx, path, pages)

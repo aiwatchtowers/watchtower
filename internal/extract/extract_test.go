@@ -395,9 +395,9 @@ func TestNoTempDirIsAnError(t *testing.T) {
 
 func TestHasOCR(t *testing.T) {
 	var c extsync.OCRCapable = &Extractor{}
-	assert.False(t, c.HasOCR())
+	assert.False(t, c.HasOCR(context.Background()))
 	c = &Extractor{OCR: &fakeOCR{}}
-	assert.True(t, c.HasOCR())
+	assert.True(t, c.HasOCR(context.Background()))
 }
 
 type ocrFunc func(ctx context.Context, path string, pages []int) (map[int]string, error)
