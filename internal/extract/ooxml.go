@@ -21,14 +21,43 @@ var (
 	maxZipEntries       = 1000
 )
 
+// XML structure guards for every OOXML part walked. encoding/xml keeps one
+// stack entry per open element and builds a start tag's whole attribute
+// slice inside a single Token call, with no limit on either — so a part a
+// few KiB compressed, far under the byte budget, could still drive the
+// daemon to gigabytes of heap (20M nested elements: ~2 GB). maxXMLDepth
+// bounds the element stack (real Office parts nest about 10 deep);
+// maxXMLTokenBytes bounds the input one token may consume, and with it the
+// attribute slice of a single tag (which costs tens of times its input
+// bytes) and the size of a single text run — room for any real one: a
+// spreadsheet cell holds at most 32767 characters, and a longer Word run
+// would be cut at MaxTextRunes anyway. The token count needs no
+// cap of its own: at least a few bytes per token, it is already bounded by
+// maxZipBytes, and a flat stream of tokens holds no memory. Variables so
+// tests can lower them.
+var (
+	maxXMLDepth            = 256
+	maxXMLTokenBytes int64 = 256 << 10
+)
+
+// errXMLDepth: a part nests deeper than any real document — a malformed
+// (or hostile) file, recorded failed.
+var errXMLDepth = errors.New("extract: XML nested deeper than the limit")
+
+// errXMLToken: one token of a part needs more input than maxXMLTokenBytes
+// — recorded too_large, like the zip budget.
+var errXMLToken = errors.New("extract: XML token exceeds the size limit")
+
 // errZipBudget: the archive needs more than the zip budget to extract.
 var errZipBudget = errors.New("extract: archive exceeds the extraction budget")
 
 // errMissingPart: a required OOXML part is absent (not a valid document).
 var errMissingPart = errors.New("extract: missing OOXML part")
 
-// ooxmlText extracts a docx/xlsx/pptx spooled at path. A corrupt archive
-// is StatusFailed; one that exceeds the zip budget is StatusTooLarge.
+// ooxmlText extracts a docx/xlsx/pptx spooled at path. A corrupt archive,
+// or a part nested deeper than maxXMLDepth, is StatusFailed; one that
+// exceeds the zip budget or holds an XML token over maxXMLTokenBytes is
+// StatusTooLarge.
 func ooxmlText(k kind, path string, logf logFunc) ([]extsync.Section, string, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
@@ -50,7 +79,7 @@ func ooxmlText(k kind, path string, logf logFunc) ([]extsync.Section, string, er
 		secs, err = pptxText(pkg)
 	}
 	switch {
-	case errors.Is(err, errZipBudget):
+	case errors.Is(err, errZipBudget), errors.Is(err, errXMLToken):
 		logf("extract: OOXML archive over the extraction budget: %v", err)
 		return nil, StatusTooLarge, nil
 	case err != nil:
@@ -68,7 +97,8 @@ type ooxmlPackage struct {
 }
 
 // walk streams the XML tokens of part name to fn, charging the budget.
-// A missing part is errMissingPart.
+// A missing part is errMissingPart; a part nested deeper than maxXMLDepth
+// is errXMLDepth, one with a token over maxXMLTokenBytes errXMLToken.
 func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 	f, ok := p.files[name]
 	if !ok {
@@ -82,8 +112,11 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 		return fmt.Errorf("extract: opening %s: %w", name, err)
 	}
 	defer rc.Close()
-	d := xml.NewDecoder(&budgetReader{r: rc, p: p})
+	br := &budgetReader{r: rc, p: p}
+	d := xml.NewDecoder(br)
+	depth := 0
 	for {
+		br.tokenLeft = maxXMLTokenBytes
 		tok, err := d.Token()
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -91,21 +124,37 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 		if err != nil {
 			return fmt.Errorf("extract: parsing %s: %w", name, err)
 		}
+		switch tok.(type) {
+		case xml.StartElement:
+			if depth++; depth > maxXMLDepth {
+				return fmt.Errorf("%w: %s nests deeper than %d elements", errXMLDepth, name, maxXMLDepth)
+			}
+		case xml.EndElement:
+			depth--
+		}
 		fn(tok)
 	}
 }
 
-// budgetReader charges every byte read to its package's budget.
+// budgetReader charges every byte read to its package's budget and to the
+// current token's allowance (tokenLeft, reset by walk before each Token;
+// the decoder's read-ahead buffer makes the per-token bound approximate by
+// at most one buffer, a few KiB).
 type budgetReader struct {
-	r io.Reader
-	p *ooxmlPackage
+	r         io.Reader
+	p         *ooxmlPackage
+	tokenLeft int64
 }
 
 func (b *budgetReader) Read(buf []byte) (int, error) {
 	n, err := b.r.Read(buf)
 	b.p.bytesLeft -= int64(n)
-	if b.p.bytesLeft < 0 {
+	b.tokenLeft -= int64(n)
+	switch {
+	case b.p.bytesLeft < 0:
 		return n, errZipBudget
+	case b.tokenLeft < 0:
+		return n, fmt.Errorf("%w: a single token over %d bytes", errXMLToken, maxXMLTokenBytes)
 	}
 	return n, err
 }
