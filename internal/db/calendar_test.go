@@ -517,34 +517,3 @@ func TestAttendeeMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "U999", uid)
 }
-
-// TestDeselectUnlistedCalendars pins the scoping: only accountID's selected
-// calendars missing from listed are deselected; another account's and
-// NULL-account (caldav/ics) rows are never touched.
-func TestDeselectUnlistedCalendars(t *testing.T) {
-	db := openTestDB(t)
-	a, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com"})
-	require.NoError(t, err)
-	b, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com"})
-	require.NoError(t, err)
-	for _, c := range []struct {
-		acct int64
-		id   string
-	}{{a, "a-keep"}, {a, "a-gone"}, {b, "b-other"}, {0, "ics:1:x"}} {
-		require.NoError(t, db.UpsertCalendar(c.acct, CalendarCalendar{ID: c.id, Name: c.id, IsSelected: true, SyncedAt: "now"}))
-	}
-
-	n, err := db.DeselectUnlistedCalendars(a, []string{"a-keep"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n)
-
-	idsA, err := db.GetSelectedCalendarIDs(a)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"a-keep"}, idsA)
-	idsB, err := db.GetSelectedCalendarIDs(b)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"b-other"}, idsB, "another account's calendars must not be touched")
-	var sel bool
-	require.NoError(t, db.QueryRow(`SELECT is_selected FROM calendar_calendars WHERE id = 'ics:1:x'`).Scan(&sel))
-	assert.True(t, sel, "a NULL-account calendar must not be touched")
-}

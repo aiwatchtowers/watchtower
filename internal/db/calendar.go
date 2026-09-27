@@ -2,7 +2,6 @@ package db
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -74,29 +73,6 @@ func (db *DB) GetSelectedCalendarIDs(accountID int64) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
-}
-
-// DeselectUnlistedCalendars clears is_selected on accountID's calendars whose
-// id is not in listed, returning how many rows changed. Scoped by account_id,
-// so another account's (or a caldav/ics NULL-account) calendar is never touched.
-func (db *DB) DeselectUnlistedCalendars(accountID int64, listed []string) (int64, error) {
-	query := `UPDATE calendar_calendars SET is_selected = 0 WHERE account_id = ? AND is_selected = 1`
-	args := []any{accountID}
-	if len(listed) > 0 {
-		query += ` AND id NOT IN (?` + strings.Repeat(`,?`, len(listed)-1) + `)`
-		for _, id := range listed {
-			args = append(args, id)
-		}
-	}
-	res, err := db.Exec(query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("deselecting unlisted calendars for account %d: %w", accountID, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("deselecting unlisted calendars for account %d: %w", accountID, err)
-	}
-	return n, nil
 }
 
 // SetCalendarSelected updates the is_selected flag for a calendar.

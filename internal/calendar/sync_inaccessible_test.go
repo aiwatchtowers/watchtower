@@ -80,18 +80,19 @@ func TestSync_InaccessibleSelectedCalendarDoesNotStopTheAccount(t *testing.T) {
 	}
 }
 
-// TestSync_UnlistedCalendarIsDeselected: a calendar that has dropped out of
-// the account's calendar list is deselected on a successful list fetch, so
-// GetSelectedCalendarIDs stops returning the dead id and the account
-// recovers instead of retrying it every cycle.
-func TestSync_UnlistedCalendarIsDeselected(t *testing.T) {
+// TestSync_UnlistedCalendarIsSkippedNotDeselected: a calendar that has
+// dropped out of the calendar list (and 404s) is skipped by the 404/410 path
+// — the account still syncs and stays ok — but is NOT deselected: the list
+// is fetched one page at a time without hidden calendars, so its absence is
+// no proof the calendar is gone, and a deselect would be one-way.
+func TestSync_UnlistedCalendarIsSkippedNotDeselected(t *testing.T) {
 	database, acct, client := inaccessibleCalendarSetup(t, http.StatusNotFound, [2]any{"aliceprimary", true})
 	_, err := NewSyncer(client, database, &config.Config{}, nil, acct).Sync(context.Background())
 	assertOtherCalendarsSynced(t, database, acct, err)
 
 	ids, err := database.GetSelectedCalendarIDs(acct)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"aliceprimary"}, ids, "the unlisted calendar must be deselected")
+	assert.ElementsMatch(t, []string{"aliceprimary", "gonecal"}, ids, "an unlisted calendar must stay selected")
 }
 
 // TestClient_FetchEvents_OtherErrorsStillFail pins the other side of the
