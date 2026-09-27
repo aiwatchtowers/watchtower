@@ -1370,13 +1370,10 @@ struct OnboardingView: View {
 
     /// A connected Slack account is an enabled, non-removed `slack_accounts`
     /// row — the multi-account replacement for the retired config.yaml
-    /// `slack_token` check (`SlackAuthService.tokenPresent`), which the
-    /// multi-account CLI no longer writes.
+    /// `slack_token` check, which the multi-account CLI no longer writes.
     private func hasConnectedSlackAccount() -> Bool {
         guard let dbPool = appState.databaseManager?.dbPool else { return false }
-        return (try? dbPool.read { db in
-            try SlackAccountQueries.fetchAll(db).contains { $0.enabled && $0.status != "removed" }
-        }) ?? false
+        return (try? dbPool.read { db in try SlackAccountQueries.hasConnectedAccount(db) }) ?? false
     }
 
     private func runSync() {
@@ -1385,9 +1382,9 @@ struct OnboardingView: View {
         // No Slack connected — the one-shot CLI sync is Slack-only, so skip it;
         // other sources sync via the daemon after onboarding. Connection is a
         // slack_accounts row (the multi-account model), NOT the retired
-        // config.yaml slack_token that SlackAuthService.tokenPresent() reads —
-        // the CLI stopped writing that, so the old check made a freshly
-        // connected account look disconnected and never synced (audit fn #6).
+        // config.yaml slack_token check — the CLI stopped writing that, so the
+        // old check made a freshly connected account look disconnected and
+        // never synced (audit fn #6).
         guard hasConnectedSlackAccount() else {
             appState.onboarding.syncCompleted = true
             return

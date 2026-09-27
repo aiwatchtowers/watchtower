@@ -44,8 +44,9 @@ struct SlackConnectionDetail: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
-        .onAppear {
-            slackAuth.checkStatus()
+        .task {
+            slackAuth.configure(dbPool: appState.databaseManager?.dbPool)
+            await slackAuth.refreshStatus()
         }
     }
 
@@ -404,7 +405,7 @@ struct SlackConnectionDetail: View {
                     flow.reconnectSuccess = true
                     flow.reconnectResult = "Connected"
                     config.reload()
-                    slackAuth.checkStatus()
+                    Task { await slackAuth.refreshStatus() }
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
                     flow.reconnectResult = nil

@@ -1,0 +1,67 @@
+import XCTest
+import GRDB
+import WatchtowerTestSupport
+@testable import WatchtowerCore
+
+/// Settings → Slack "Workspace" status used to read `config.yaml`'s
+/// `workspaces.<active>.slack_token`, which the multi-account CLI no longer
+/// writes (it moves the token into `slack_token_<id>.json`), so every
+/// post-migration install showed "Slack not connected" next to healthy
+/// accounts. The status now comes from `slack_accounts` alone — no config
+/// file is involved at all, which is exactly the post-migration shape.
+@MainActor
+final class SlackAuthServiceTests: XCTestCase {
+    private func makePool() throws -> DatabasePool {
+        let (pool, _) = try TestDatabase.createPool()
+        return pool
+    }
+
+    func testConnectedWhenAnEnabledAccountRowExists() async throws {
+        let pool = try makePool()
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamName: "Acme") }
+
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        await service.refreshStatus()
+
+        XCTAssertTrue(service.isConnected)
+        XCTAssertNil(service.error)
+    }
+
+    func testNotConnectedWhenOnlyDisabledOrRemovedAccountsExist() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, enabled: false)
+            _ = try TestDatabase.insertSlackAccount(db, status: "removed", enabled: false)
+        }
+
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        await service.refreshStatus()
+
+        XCTAssertFalse(service.isConnected)
+    }
+
+    func testNotConnectedWithoutADatabase() async {
+        let service = SlackAuthService()
+        await service.refreshStatus()
+        XCTAssertFalse(service.isConnected)
+    }
+
+    func testHasConnectedAccountIgnoresDisabledAndRemovedRows() throws {
+        let pool = try makePool()
+        XCTAssertFalse(try pool.read { db in try SlackAccountQueries.hasConnectedAccount(db) })
+
+        try pool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, enabled: false)
+            // An enabled row whose status is "removed" still does not count.
+            _ = try TestDatabase.insertSlackAccount(db, status: "removed", enabled: true)
+        }
+        XCTAssertFalse(try pool.read { db in try SlackAccountQueries.hasConnectedAccount(db) })
+
+        // A revoked-but-enabled account is still a connected account (it shows
+        // its own status row in the list below the Workspace section).
+        try pool.write { db in _ = try TestDatabase.insertSlackAccount(db, status: "revoked") }
+        XCTAssertTrue(try pool.read { db in try SlackAccountQueries.hasConnectedAccount(db) })
+    }
+}
