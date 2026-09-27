@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -255,4 +256,20 @@ func TestRun_ClampedGapNoteSurvivesTheRunsOKWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ok", got.Status)
 	assert.Empty(t, got.Error, "a later gap-free successful run clears the note")
+}
+
+// A later phase failing in the same run must not erase the gap note the
+// search phase recorded: the error write keeps it after the error text.
+func TestRecordAuthResult_ErrorKeepsTheRunsGapNote(t *testing.T) {
+	ts := newTestSetup(t, baseMux())
+	ts.orch.logger = log.New(io.Discard, "", 0)
+	ts.orch.searchGapNote = "search catch-up cap: a gap of 45 days was not fetched"
+
+	ts.orch.recordAuthResult(context.Background(), errors.New("fetching user profiles: boom"))
+
+	got, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "error", got.Status)
+	assert.Contains(t, got.Error, "fetching user profiles: boom")
+	assert.Contains(t, got.Error, "catch-up cap", "the run's gap note must survive a later phase's error")
 }

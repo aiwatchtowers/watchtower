@@ -158,8 +158,8 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 }
 
 // recordAuthResult persists the account's sync auth state. Pass err=nil to
-// mark it healthy; a healthy run keeps this run's search-gap note (if any) in
-// the error column rather than clearing it. Errors writing to the DB are
+// mark it healthy; either way this run's search-gap note (if any) is kept in
+// the error column — alone on success, after the error on failure. Errors writing to the DB are
 // logged but not returned — auth state is best-effort telemetry. A cancelled
 // ctx means daemon shutdown, not an auth problem, so the state is left
 // untouched (calendar.Syncer's recordAuthResult precedent).
@@ -181,7 +181,13 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 	if isRevokedAuthError(err) {
 		status = "revoked"
 	}
-	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, err.Error()); dbErr != nil {
+	msg := err.Error()
+	if o.searchGapNote != "" {
+		// A later phase failing must not erase the record of a data gap the
+		// search phase already clamped in this same run.
+		msg += "; " + o.searchGapNote
+	}
+	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, msg); dbErr != nil {
 		o.logger.Printf("slack: failed to record auth state: %v", dbErr)
 	}
 }
