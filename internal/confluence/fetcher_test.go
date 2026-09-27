@@ -469,6 +469,43 @@ func TestChangedCommentsAgreeWithComments(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, next)
 	assert.ElementsMatch(t, refs, all)
+
+	// The reverse, which the reconcile depends on: every comment Comments()
+	// returns — over every page and blog post of the space, not only the
+	// parents listed above — is in All(KindComment) with the same version
+	// and parent, or the reconcile would delete a live comment it wrote.
+	listed := map[string]extsync.ItemRef{}
+	for _, r := range all {
+		listed[r.ExtID] = r
+	}
+	parents := map[string]bool{}
+	for _, r := range refs {
+		parents[r.ParentID] = true
+	}
+	for page := ""; ; {
+		docs, nextPage, err := f.All(ctx, engSpace, extsync.KindPage, page)
+		require.NoError(t, err)
+		for _, d := range docs {
+			parents[d.ExtID] = true
+		}
+		if nextPage == "" {
+			break
+		}
+		page = nextPage
+	}
+	written := 0
+	for parent := range parents {
+		items, err := f.Comments(ctx, engSpace, parent)
+		require.NoError(t, err)
+		for _, it := range items {
+			written++
+			r, ok := listed[it.Ref.ExtID]
+			require.True(t, ok, "comment %s returned by Comments(%s) but not listed by All", it.Ref.ExtID, parent)
+			assert.Equal(t, it.Ref.Version, r.Version, it.Ref.ExtID)
+			assert.Equal(t, parent, r.ParentID, it.Ref.ExtID)
+		}
+	}
+	assert.Equal(t, len(all), written, "Comments() over every parent returns exactly the listed set")
 }
 
 func footerComment(id string) map[string]any {
