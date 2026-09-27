@@ -267,6 +267,19 @@ func TestOOXMLRawTokenDepthAccounting(t *testing.T) {
 	assert.Equal(t, StatusFailed, status, "stray end tags must not lift the depth cap")
 }
 
+// RawToken does not match start and end tags, so walk must: a part whose
+// tags balance in count but not in name is malformed and fails, as it did
+// under Token.
+func TestOOXMLMismatchedEndTagFails(t *testing.T) {
+	x := newExtractor(t, nil)
+	data := zipOf(t, map[string]func(io.Writer) error{
+		"word/document.xml": literal(docxOpen + "<a><b>text</a></b>" + docxClose),
+	})
+	_, status, err := x.Extract(context.Background(), mtDocx, "mismatch.docx", bytes.NewReader(data))
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, status)
+}
+
 // The per-token cap counts input bytes, not runes: a single Cyrillic run
 // (2 bytes a rune in UTF-8) of 190k runes, under MaxTextRunes, is ~380 KB
 // in one CharData token and must still extract rather than be too_large.

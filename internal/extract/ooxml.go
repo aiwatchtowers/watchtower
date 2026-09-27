@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"path"
 	"sort"
@@ -118,7 +119,7 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 	defer rc.Close()
 	br := &budgetReader{r: rc, p: p}
 	d := xml.NewDecoder(br)
-	depth := 0
+	open := make([]uint64, 0, 16)
 	for {
 		br.tokenLeft = maxXMLTokenBytes
 		// RawToken, not Token: Token keeps every open element's xmlns:*
@@ -126,28 +127,52 @@ func (p *ooxmlPackage) walk(name string, fn func(xml.Token)) error {
 		// maxXMLDepth tags each just under maxXMLTokenBytes of declarations
 		// held hundreds of MiB live. RawToken keeps no per-element state;
 		// the price is that names stay prefixed (every walker matches on
-		// Name.Local only) and start/end tags are not matched — depth is
-		// clamped at zero so stray end tags cannot buy extra nesting.
+		// Name.Local only) and RawToken does not match start/end tags, so
+		// walk does: open holds a hash of each open element's raw name (a
+		// hash, not the name, so maxXMLDepth long names retain nothing),
+		// and an end tag that does not close the innermost element — or
+		// closes nothing — is a syntax error, as it was under Token.
 		tok, err := d.RawToken()
 		if errors.Is(err, io.EOF) {
-			if depth > 0 {
-				return fmt.Errorf("extract: parsing %s: unexpected EOF inside %d open elements", name, depth)
+			if len(open) > 0 {
+				return fmt.Errorf("extract: parsing %s: unexpected EOF inside %d open elements", name, len(open))
 			}
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("extract: parsing %s: %w", name, err)
 		}
-		switch tok.(type) {
+		switch t := tok.(type) {
 		case xml.StartElement:
-			if depth++; depth > maxXMLDepth {
+			if len(open) >= maxXMLDepth {
 				return fmt.Errorf("%w: %s nests deeper than %d elements", errXMLDepth, name, maxXMLDepth)
 			}
+			open = append(open, rawNameHash(t.Name))
 		case xml.EndElement:
-			depth = max(depth-1, 0)
+			if len(open) == 0 || open[len(open)-1] != rawNameHash(t.Name) {
+				return fmt.Errorf("extract: parsing %s: end tag </%s> does not match the open element", name, rawName(t.Name))
+			}
+			open = open[:len(open)-1]
 		}
 		fn(tok)
 	}
+}
+
+// rawName is an element's name as written: prefix:local, or local alone.
+func rawName(n xml.Name) string {
+	if n.Space == "" {
+		return n.Local
+	}
+	return n.Space + ":" + n.Local
+}
+
+// rawNameHash identifies an element's raw name without retaining it.
+func rawNameHash(n xml.Name) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(n.Space))
+	_, _ = h.Write([]byte{':'})
+	_, _ = h.Write([]byte(n.Local))
+	return h.Sum64()
 }
 
 // budgetReader charges every byte read to its package's budget and to the
