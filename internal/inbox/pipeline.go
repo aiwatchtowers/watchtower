@@ -826,7 +826,7 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int
 		var list []calAttendee
 		_ = json.Unmarshal([]byte(att), &list)
 		for _, a := range list {
-			if a.Email == ownerEmail && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
+			if strings.EqualFold(a.Email, ownerEmail) && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
 				if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User responded to invite', updated_at=? WHERE id=?`,
 					time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
 					p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)

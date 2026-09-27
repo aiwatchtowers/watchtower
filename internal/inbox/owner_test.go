@@ -21,7 +21,7 @@ func TestOwner01_InboxRunsForGoogleOnlyOwner(t *testing.T) {
 	d := newTestDB(t)
 	_, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@x.com", CalendarEnabled: true})
 	require.NoError(t, err)
-	seedCalendarEvent(t, d, "evt-g", "Planning", `[{"email":"me@x.com","rsvp_status":"needsAction"}]`, "confirmed",
+	seedCalendarEvent(t, d, "evt-g", "Planning", `[{"email":"me@x.com","response_status":"needsAction"}]`, "confirmed",
 		time.Now().Add(-10*time.Minute), time.Now().Add(-10*time.Minute))
 
 	p := New(d, testConfig(), nil, log.Default())

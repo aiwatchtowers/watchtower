@@ -135,7 +135,7 @@ func TestOwner01_DaemonInboxUsesResolvedOwnerEmail(t *testing.T) {
 	_, err = database.Exec(`INSERT INTO calendar_events
 		(id, calendar_id, title, attendees, event_status, synced_at, updated_at, start_time, end_time,
 		 description, location, organizer_email, is_recurring, is_all_day, event_type, html_link, raw_json)
-		VALUES ('evt-1', 'cal-1', 'Planning', '[{"email":"me@x.com","rsvp_status":"needsAction"}]', 'confirmed',
+		VALUES ('evt-1', 'cal-1', 'Planning', '[{"email":"me@x.com","response_status":"needsAction"}]', 'confirmed',
 		        ?, ?, ?, ?, '', '', '', 0, 0, '', '', '{}')`,
 		now.Add(-10*time.Minute).Format(time.RFC3339), now.Add(-10*time.Minute).Format(time.RFC3339),
 		now.Add(time.Hour).Format(time.RFC3339), now.Add(2*time.Hour).Format(time.RFC3339))
