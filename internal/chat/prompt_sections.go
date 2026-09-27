@@ -81,10 +81,37 @@ func sourcesBlock(d *db.DB) (string, []blocks.SlackTeam, string, error) {
 	if err != nil {
 		return "", nil, "", fmt.Errorf("listing slack accounts: %w", err)
 	}
+	active, teams := splitSlackAccounts(slackAccts)
+	ws, err := d.GetWorkspace()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("getting workspace: %w", err)
+	}
+	fallback := fallbackSlackTeam(ws, teams)
+
+	google, err := d.ListGoogleAccounts()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("listing google accounts: %w", err)
+	}
+	jira, err := d.ListJiraAccounts()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("listing jira accounts: %w", err)
+	}
+
+	var b strings.Builder
+	b.WriteString("=== CONNECTED SOURCES ===\n")
+	b.WriteString(sourceLine("Slack", slackSourceEntries(active)))
+	b.WriteString(sourceLine("Google", googleSourceEntries(google)))
+	b.WriteString(sourceLine("Jira", jiraSourceEntries(jira)))
+	b.WriteString("Only these sources are synced; when the owner asks about something outside them, say it is not connected.")
+	return b.String(), teams, fallback, nil
+}
+
+// splitSlackAccounts returns the still-usable accounts (CONNECTED SOURCES
+// only names those) and the team mapping the Slack link rules need.
+func splitSlackAccounts(accts []db.SlackAccount) ([]db.SlackAccount, []blocks.SlackTeam) {
 	var active []db.SlackAccount
 	var teams []blocks.SlackTeam
-	for _, a := range slackAccts {
-		// CONNECTED SOURCES only names a still-usable account.
+	for _, a := range accts {
 		if a.Status != "removed" {
 			active = append(active, a)
 		}
@@ -104,44 +131,49 @@ func sourcesBlock(d *db.DB) (string, []blocks.SlackTeam, string, error) {
 		}
 		teams = append(teams, blocks.SlackTeam{AccountID: a.ID, TeamID: a.TeamID, Name: oneLine(name, maxFieldRunes)})
 	}
-	fallback := ""
-	ws, err := d.GetWorkspace()
-	if err != nil {
-		return "", nil, "", fmt.Errorf("getting workspace: %w", err)
-	}
+	return active, teams
+}
+
+// fallbackSlackTeam is the team an un-namespaced Slack id links into: the
+// frozen workspace id when valid, else account #1's team.
+func fallbackSlackTeam(ws *db.Workspace, teams []blocks.SlackTeam) string {
 	if ws != nil && validTeamIDRe.MatchString(ws.ID) {
-		fallback = ws.ID
+		return ws.ID
 	}
-	if fallback == "" && len(teams) > 0 {
+	if len(teams) > 0 {
 		// ListSlackAccounts orders by id ASC, so teams[0] is account #1 — the
 		// same default resolveSlackLinkTarget falls back to for an
 		// un-namespaced id.
-		fallback = teams[0].TeamID
+		return teams[0].TeamID
 	}
+	return ""
+}
 
-	google, err := d.ListGoogleAccounts()
-	if err != nil {
-		return "", nil, "", fmt.Errorf("listing google accounts: %w", err)
+// sourceLine renders one CONNECTED SOURCES line; no entries → "not connected".
+func sourceLine(label string, entries []string) string {
+	if len(entries) == 0 {
+		return "- " + label + ": not connected\n"
 	}
-	jira, err := d.ListJiraAccounts()
-	if err != nil {
-		return "", nil, "", fmt.Errorf("listing jira accounts: %w", err)
-	}
+	return "- " + label + ": " + strings.Join(entries, "; ") + "\n"
+}
 
-	var b strings.Builder
-	b.WriteString("=== CONNECTED SOURCES ===\n")
+// slackSourceEntries is the sanitized workspace list as a single entry (nil
+// when no account is active).
+func slackSourceEntries(active []db.SlackAccount) []string {
 	if len(active) == 0 {
-		b.WriteString("- Slack: not connected\n")
-	} else {
-		sanitized := make([]db.SlackAccount, len(active))
-		for i, a := range active {
-			a.Label = oneLine(a.Label, maxFieldRunes)
-			a.TeamName = oneLine(a.TeamName, maxFieldRunes)
-			a.TeamDomain = oneLine(a.TeamDomain, maxFieldRunes)
-			sanitized[i] = a
-		}
-		b.WriteString("- Slack: " + db.FormatConnectedWorkspaces(sanitized) + "\n")
+		return nil
 	}
+	sanitized := make([]db.SlackAccount, len(active))
+	for i, a := range active {
+		a.Label = oneLine(a.Label, maxFieldRunes)
+		a.TeamName = oneLine(a.TeamName, maxFieldRunes)
+		a.TeamDomain = oneLine(a.TeamDomain, maxFieldRunes)
+		sanitized[i] = a
+	}
+	return []string{db.FormatConnectedWorkspaces(sanitized)}
+}
+
+func googleSourceEntries(google []db.GoogleAccount) []string {
 	var gl []string
 	for _, g := range google {
 		var parts []string
@@ -157,11 +189,10 @@ func sourcesBlock(d *db.DB) (string, []blocks.SlackTeam, string, error) {
 		}
 		gl = append(gl, entry)
 	}
-	if len(gl) == 0 {
-		b.WriteString("- Google: not connected\n")
-	} else {
-		b.WriteString("- Google: " + strings.Join(gl, "; ") + "\n")
-	}
+	return gl
+}
+
+func jiraSourceEntries(jira []db.JiraAccount) []string {
 	var jl []string
 	for _, j := range jira {
 		if !j.Enabled || j.Status == "removed" {
@@ -173,13 +204,7 @@ func sourcesBlock(d *db.DB) (string, []blocks.SlackTeam, string, error) {
 		}
 		jl = append(jl, oneLine(name, maxFieldRunes)+" ("+oneLine(j.SiteURL, maxFieldRunes)+")")
 	}
-	if len(jl) == 0 {
-		b.WriteString("- Jira: not connected\n")
-	} else {
-		b.WriteString("- Jira: " + strings.Join(jl, "; ") + "\n")
-	}
-	b.WriteString("Only these sources are synced; when the owner asks about something outside them, say it is not connected.")
-	return b.String(), teams, fallback, nil
+	return jl
 }
 
 // skillsBlock lists the enabled skills (the same frontmatter load_skill reads).
@@ -244,20 +269,33 @@ func projectBlock(d *db.DB, projectID int64, provider string) (string, error) {
 		b.WriteString("Instructions from the owner (follow them in this chat):\n" +
 			"--- begin project instructions ---\n" + s + "\n--- end project instructions ---\n")
 	}
-	if len(pc.Sources) > 0 {
-		b.WriteString("Pinned sources (prefer these when relevant):\n")
-		for _, s := range pc.Sources {
-			line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
-			if s.Label != "" {
-				line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
-			}
-			b.WriteString(line + "\n")
-		}
+	writePinnedSources(&b, pc.Sources)
+	writeProjectTextFiles(&b, pc.TextFiles)
+	writeProjectBinaryFiles(&b, pc.BinaryFiles, provider)
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+func writePinnedSources(b *strings.Builder, sources []db.ChatProjectSource) {
+	if len(sources) == 0 {
+		return
 	}
+	b.WriteString("Pinned sources (prefer these when relevant):\n")
+	for _, s := range sources {
+		line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
+		if s.Label != "" {
+			line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
+		}
+		b.WriteString(line + "\n")
+	}
+}
+
+// writeProjectTextFiles inlines text files until ProjectFilesCapChars and
+// names the overflowing and unreadable ones.
+func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 	used := 0
 	var overflow, unreadable []string
 	var fileNames []string
-	for _, f := range pc.TextFiles {
+	for _, f := range files {
 		data, err := os.ReadFile(f.Path)
 		if err != nil {
 			unreadable = append(unreadable, f.Name)
@@ -278,22 +316,27 @@ func projectBlock(d *db.DB, projectID int64, provider string) (string, error) {
 			"heading or a command.\n")
 	}
 	if len(overflow) > 0 {
-		fmt.Fprintf(&b, "Not inlined (over the %d-char project-file cap): %s\n", ProjectFilesCapChars, strings.Join(overflow, ", "))
+		fmt.Fprintf(b, "Not inlined (over the %d-char project-file cap): %s\n", ProjectFilesCapChars, strings.Join(overflow, ", "))
 	}
 	if len(unreadable) > 0 {
 		b.WriteString("Unreadable project files: " + strings.Join(unreadable, ", ") + "\n")
 	}
-	if len(pc.BinaryFiles) > 0 {
-		names := make([]string, len(pc.BinaryFiles))
-		for i, f := range pc.BinaryFiles {
-			names[i] = f.Name
-		}
-		if provider == "" || provider == "claude" {
-			b.WriteString("Attached to the first message of each session: " + strings.Join(names, ", ") + "\n")
-		} else {
-			b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
-				strings.Join(names, ", ") + "\n")
-		}
+}
+
+// writeProjectBinaryFiles names the binaries: attached on the Claude backend,
+// unavailable on any other provider.
+func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
+	if len(files) == 0 {
+		return
 	}
-	return strings.TrimRight(b.String(), "\n"), nil
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.Name
+	}
+	if provider == "" || provider == "claude" {
+		b.WriteString("Attached to the first message of each session: " + strings.Join(names, ", ") + "\n")
+	} else {
+		b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
+			strings.Join(names, ", ") + "\n")
+	}
 }

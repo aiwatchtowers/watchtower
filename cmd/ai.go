@@ -133,7 +133,12 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		streamQueryV2(os.Stdout, v2TurnID(), textCh, errCh, sidCh)
 		return nil
 	}
+	streamQueryV1(enc, textCh, errCh, sidCh)
+	return nil
+}
 
+// streamQueryV1 writes the v1 protocol (text/reset/session_id/error/done).
+func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
 	// Drain text channel (main stream). A tool-boundary chunk becomes a "reset"
 	// event so the desktop drops the pre-tool preamble and renders only the
 	// answer that follows the tool call.
@@ -160,7 +165,6 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	}
 
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
-	return nil
 }
 
 func runAITest(_ *cobra.Command, _ []string) error {

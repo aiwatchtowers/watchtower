@@ -108,24 +108,15 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 	if !filepath.IsAbs(a.Path) {
 		return reject("path is not absolute")
 	}
-	f, err := os.OpenFile(a.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return reject("file not found or unreadable")
+	f, size, reason := openRegularNoFollow(a.Path)
+	if reason != "" {
+		return reject(reason)
 	}
 	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
+	head, err := readHead(f)
 	if err != nil {
-		return reject("file not found or unreadable")
+		return reject(errUnreadable)
 	}
-	if !info.Mode().IsRegular() {
-		return reject("not a regular file")
-	}
-	head := make([]byte, 512)
-	n, err := io.ReadFull(f, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return reject("file not found or unreadable")
-	}
-	head = head[:n]
 	kind, media, limit, ok := classifyAttachment(http.DetectContentType(head), a.Mime)
 	if !ok {
 		return reject(fmt.Sprintf("unsupported file type %q (images, PDFs and text files only)", a.Mime))
@@ -133,23 +124,65 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 	if textOnly && kind != kindText {
 		return reject("images and PDFs need the Claude provider")
 	}
-	if info.Size() > limit {
-		return reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", info.Size(), limit))
+	if size > limit {
+		return reject(fmt.Sprintf("file is %d bytes; the limit for this type is %d", size, limit))
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return reject("file not found or unreadable")
-	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return reject("file not found or unreadable")
-	}
-	if int64(len(data)) > limit {
-		return reject(fmt.Sprintf("file grew past the %d-byte limit for this type while it was being read", limit))
+	data, reason := readCapped(f, limit)
+	if reason != "" {
+		return reject(reason)
 	}
 	if kind == kindText && !utf8.Valid(data) {
 		return reject("text file is not UTF-8")
 	}
 	return loadedAttachment{kind: kind, mediaType: media, name: name, data: data}, nil
+}
+
+const errUnreadable = "file not found or unreadable"
+
+// openRegularNoFollow opens path once with O_NOFOLLOW and checks, on that
+// descriptor, that it is a regular file. A non-empty reason means rejected
+// (and nothing is left open).
+func openRegularNoFollow(path string) (*os.File, int64, string) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, 0, errUnreadable
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, errUnreadable
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, 0, "not a regular file"
+	}
+	return f, info.Size(), ""
+}
+
+// readHead reads up to the first 512 bytes (the content-sniffing window).
+func readHead(f *os.File) ([]byte, error) {
+	head := make([]byte, 512)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return head[:n], nil
+}
+
+// readCapped rewinds f and reads it whole, never past limit+1 bytes, so a
+// file that grew after the size check is still rejected.
+func readCapped(f *os.File, limit int64) ([]byte, string) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, errUnreadable
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, errUnreadable
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Sprintf("file grew past the %d-byte limit for this type while it was being read", limit)
+	}
+	return data, ""
 }
 
 type attBase64Source struct {

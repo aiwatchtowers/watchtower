@@ -63,21 +63,19 @@ type chatTitleResult struct {
 	Written bool   `json:"written"`
 }
 
-func runChatTitle(cmd *cobra.Command, args []string) error {
-	id, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil || id <= 0 {
-		return fmt.Errorf("invalid conversation id %q", args[0])
-	}
+// openChatTitleDB loads the config (workspace/provider overrides applied) and
+// opens the database `chat title` works on.
+func openChatTitleDB() (*config.Config, *db.DB, error) {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return err
+		return nil, nil, err
 	}
 	dbPath := chatTitleFlagDBPath
 	if dbPath == "" {
@@ -85,7 +83,32 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 	}
 	database, err := db.Open(dbPath)
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
+}
+
+// chatTitlePrompt renders the chat.title system prompt (the tunable DB row,
+// else the compiled default) and the first-exchange user message.
+func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string) (system, user string) {
+	tmpl, _, _ := prompts.New(database, nil).Get(prompts.ChatTitle)
+	if tmpl == "" {
+		tmpl = prompts.Defaults[prompts.ChatTitle]
+	}
+	system = fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
+	user = "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +
+		"\n\nAssistant: " + excerptRunes(assistant, chatTitleExcerptRunes)
+	return system, user
+}
+
+func runChatTitle(cmd *cobra.Command, args []string) error {
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid conversation id %q", args[0])
+	}
+	cfg, database, err := openChatTitleDB()
+	if err != nil {
+		return err
 	}
 	defer database.Close()
 
@@ -110,15 +133,7 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("conversation %d has no owner message yet", id)
 	}
 
-	store := prompts.New(database, nil)
-	tmpl, _, _ := store.Get(prompts.ChatTitle)
-	if tmpl == "" {
-		tmpl = prompts.Defaults[prompts.ChatTitle]
-	}
-	system := fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
-	user := "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +
-		"\n\nAssistant: " + excerptRunes(assistant, chatTitleExcerptRunes)
-
+	system, user := chatTitlePrompt(database, cfg, owner, assistant)
 	ctx := cmd.Context()
 	if ctx == nil { // RunE invoked directly (tests)
 		ctx = context.Background()

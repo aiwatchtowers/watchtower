@@ -227,101 +227,111 @@ func readFixture(t *testing.T, name string) []string {
 }
 
 func TestClaudeTranslator_RecordedFixtures(t *testing.T) {
-	t.Run("text", func(t *testing.T) {
-		evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_text.jsonl")...)
-		require.NotEmpty(t, evs)
-		assert.Contains(t, types(evs), EventTextDelta)
-		assert.NotContains(t, types(evs), EventError)
-		last := evs[len(evs)-1]
-		assert.Equal(t, EventTurnDone, last.Type)
-		assert.Equal(t, StatusComplete, last.Status)
-		assert.NotEmpty(t, last.SessionID)
-	})
-	t.Run("thinking", func(t *testing.T) {
-		evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_thinking.jsonl")...)
-		var text strings.Builder
-		for _, e := range evs {
-			if e.Type == EventTextDelta {
-				text.WriteString(e.Text)
-			}
+	t.Run("text", testRecordedText)
+	t.Run("thinking", testRecordedThinking)
+	t.Run("tool", testRecordedTool)
+	t.Run("interrupt then second turn", testRecordedInterruptThenSecondTurn)
+	t.Run("resume missing is session_lost", testRecordedResumeMissing)
+}
+
+// streamedText concatenates the text deltas of a translated turn.
+func streamedText(evs []Event) string {
+	var text strings.Builder
+	for _, e := range evs {
+		if e.Type == EventTextDelta {
+			text.WriteString(e.Text)
 		}
-		assert.Contains(t, text.String(), "391", "the answer streams; the thinking does not")
-		assert.Equal(t, EventTurnDone, evs[len(evs)-1].Type)
-	})
-	t.Run("tool", func(t *testing.T) {
-		evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_tool.jsonl")...)
-		var start, end *Event
-		for i := range evs {
-			switch evs[i].Type {
-			case EventToolStart:
-				start = &evs[i]
-			case EventToolEnd:
-				end = &evs[i]
-			}
+	}
+	return text.String()
+}
+
+func testRecordedText(t *testing.T) {
+	evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_text.jsonl")...)
+	require.NotEmpty(t, evs)
+	assert.Contains(t, types(evs), EventTextDelta)
+	assert.NotContains(t, types(evs), EventError)
+	last := evs[len(evs)-1]
+	assert.Equal(t, EventTurnDone, last.Type)
+	assert.Equal(t, StatusComplete, last.Status)
+	assert.NotEmpty(t, last.SessionID)
+}
+
+func testRecordedThinking(t *testing.T) {
+	evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_thinking.jsonl")...)
+	assert.Contains(t, streamedText(evs), "391", "the answer streams; the thinking does not")
+	assert.Equal(t, EventTurnDone, evs[len(evs)-1].Type)
+}
+
+func testRecordedTool(t *testing.T) {
+	evs := feedAll(t, NewClaudeTranslator(fixedTurn("t1")), readFixture(t, "claude_tool.jsonl")...)
+	var start, end *Event
+	for i := range evs {
+		switch evs[i].Type {
+		case EventToolStart:
+			start = &evs[i]
+		case EventToolEnd:
+			end = &evs[i]
 		}
-		require.NotNil(t, start, "a tool_start was translated")
-		require.NotNil(t, end, "a tool_end was translated")
-		assert.Equal(t, "list_targets", start.Name)
-		assert.Equal(t, start.ID, end.ID)
-		require.NotNil(t, end.OK)
-		assert.True(t, *end.OK)
-		assert.Equal(t, StatusComplete, evs[len(evs)-1].Status)
-		var text strings.Builder
-		for _, e := range evs {
-			if e.Type == EventTextDelta {
-				text.WriteString(e.Text)
-			}
+	}
+	require.NotNil(t, start, "a tool_start was translated")
+	require.NotNil(t, end, "a tool_end was translated")
+	assert.Equal(t, "list_targets", start.Name)
+	assert.Equal(t, start.ID, end.ID)
+	require.NotNil(t, end.OK)
+	assert.True(t, *end.OK)
+	assert.Equal(t, StatusComplete, evs[len(evs)-1].Status)
+	text := streamedText(evs)
+	assert.Contains(t, text, "then call it.\n\nThe `list_targets`",
+		"the recorded pre-tool and post-tool messages are separated by a paragraph break")
+	assert.False(t, strings.HasPrefix(text, "\n"), "the turn's first text gets no separator")
+}
+
+func testRecordedInterruptThenSecondTurn(t *testing.T) {
+	turn := "t1"
+	tr := NewClaudeTranslator(func() string { return turn })
+	var dones []Event
+	for _, l := range readFixture(t, "claude_interrupt.jsonl") {
+		if strings.Contains(l, `"control_response"`) {
+			tr.MarkInterrupted() // the backend marks it when it sends the request
 		}
-		assert.Contains(t, text.String(), "then call it.\n\nThe `list_targets`",
-			"the recorded pre-tool and post-tool messages are separated by a paragraph break")
-		assert.False(t, strings.HasPrefix(text.String(), "\n"), "the turn's first text gets no separator")
-	})
-	t.Run("interrupt then second turn", func(t *testing.T) {
-		turn := "t1"
-		tr := NewClaudeTranslator(func() string { return turn })
-		var dones []Event
-		for _, l := range readFixture(t, "claude_interrupt.jsonl") {
-			if strings.Contains(l, `"control_response"`) {
-				tr.MarkInterrupted() // the backend marks it when it sends the request
-			}
-			evs, err := tr.Feed([]byte(l))
-			require.NoError(t, err)
-			for _, e := range evs {
-				if e.Type == EventTurnDone {
-					dones = append(dones, e)
-					turn = "t2"
-				}
-			}
-		}
-		require.Len(t, dones, 2)
-		assert.Equal(t, StatusInterrupted, dones[0].Status)
-		assert.Equal(t, "t1", dones[0].TurnID)
-		assert.Equal(t, StatusComplete, dones[1].Status)
-		assert.Equal(t, "t2", dones[1].TurnID)
-	})
-	t.Run("resume missing is session_lost", func(t *testing.T) {
-		stderr, err := os.ReadFile(filepath.Join("testdata", "claude_resume_missing.stderr"))
+		evs, err := tr.Feed([]byte(l))
 		require.NoError(t, err)
-		lost := false
-		if code, _ := ClassifyClaudeError(string(stderr)); code == CodeSessionLost {
-			lost = true
-		}
-		stdout, err := os.ReadFile(filepath.Join("testdata", "claude_resume_missing.jsonl"))
-		require.NoError(t, err)
-		tr := NewClaudeTranslator(fixedTurn("t1"))
-		for _, l := range strings.Split(string(stdout), "\n") {
-			evs, err := tr.Feed([]byte(l))
-			if err != nil {
-				continue
-			}
-			for _, e := range evs {
-				if e.Type == EventError && e.Code == CodeSessionLost {
-					lost = true
-				}
+		for _, e := range evs {
+			if e.Type == EventTurnDone {
+				dones = append(dones, e)
+				turn = "t2"
 			}
 		}
-		assert.True(t, lost, "the recorded rejection must classify as session_lost — adjust ClassifyClaudeError's phrases to the recorded text")
-	})
+	}
+	require.Len(t, dones, 2)
+	assert.Equal(t, StatusInterrupted, dones[0].Status)
+	assert.Equal(t, "t1", dones[0].TurnID)
+	assert.Equal(t, StatusComplete, dones[1].Status)
+	assert.Equal(t, "t2", dones[1].TurnID)
+}
+
+func testRecordedResumeMissing(t *testing.T) {
+	stderr, err := os.ReadFile(filepath.Join("testdata", "claude_resume_missing.stderr"))
+	require.NoError(t, err)
+	lost := false
+	if code, _ := ClassifyClaudeError(string(stderr)); code == CodeSessionLost {
+		lost = true
+	}
+	stdout, err := os.ReadFile(filepath.Join("testdata", "claude_resume_missing.jsonl"))
+	require.NoError(t, err)
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	for _, l := range strings.Split(string(stdout), "\n") {
+		evs, err := tr.Feed([]byte(l))
+		if err != nil {
+			continue
+		}
+		for _, e := range evs {
+			if e.Type == EventError && e.Code == CodeSessionLost {
+				lost = true
+			}
+		}
+	}
+	assert.True(t, lost, "the recorded rejection must classify as session_lost — adjust ClassifyClaudeError's phrases to the recorded text")
 }
 
 // Claude's own ToolSearch (it loads deferred MCP tools) is plumbing, not a

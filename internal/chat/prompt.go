@@ -55,23 +55,39 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 		return "", err
 	}
 	sections := []string{identity, sources}
-
-	if o.ToolsAvailable {
-		sections = append(sections,
-			blocks.LinkingRules(teams, fallback),
-			blocks.ToolsList+"\n\n"+blocks.DataAccessRules,
-			blocks.Workflow,
-			ActionsContract(o.Surface),
-		)
-	} else {
-		sections = append(sections, noToolsBlock)
-	}
+	sections = append(sections, toolSections(o, teams, fallback)...)
 	sections = append(sections, ArtifactsContract())
+	extra, err := contextSections(d, o)
+	if err != nil {
+		return "", err
+	}
+	sections = append(sections, extra...)
+	sections = append(sections, appGuide, responseStyle)
+	return joinSections(sections), nil
+}
 
+// toolSections is the tools part of the prompt: linking rules, tool list,
+// workflow and the surface's actions contract — or the honest no-tools block.
+func toolSections(o PromptOptions, teams []blocks.SlackTeam, fallback string) []string {
+	if !o.ToolsAvailable {
+		return []string{noToolsBlock}
+	}
+	return []string{
+		blocks.LinkingRules(teams, fallback),
+		blocks.ToolsList + "\n\n" + blocks.DataAccessRules,
+		blocks.Workflow,
+		ActionsContract(o.Surface),
+	}
+}
+
+// contextSections is the optional context: skills (tools only), memory and
+// the project block.
+func contextSections(d *db.DB, o PromptOptions) ([]string, error) {
+	var sections []string
 	if o.ToolsAvailable {
 		sk, err := skillsBlock(o.SkillsDir)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		sections = append(sections, sk)
 	}
@@ -81,17 +97,20 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 	if o.ProjectID > 0 {
 		pb, err := projectBlock(d, o.ProjectID, o.Provider)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		sections = append(sections, pb)
 	}
-	sections = append(sections, appGuide, responseStyle)
+	return sections, nil
+}
 
+// joinSections drops blank sections and joins the rest with blank lines.
+func joinSections(sections []string) string {
 	var kept []string
 	for _, s := range sections {
 		if s = strings.TrimSpace(s); s != "" {
 			kept = append(kept, s)
 		}
 	}
-	return strings.Join(kept, "\n\n") + "\n", nil
+	return strings.Join(kept, "\n\n") + "\n"
 }

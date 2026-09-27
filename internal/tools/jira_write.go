@@ -434,16 +434,7 @@ func searchAssignee(ctx context.Context, c JiraWriteClient, who string) (jiraAss
 	if err != nil {
 		return jiraAssignee{}, fmt.Errorf("searching Jira users for %q: %w", who, err)
 	}
-	var people, exact []jira.User
-	for _, u := range users {
-		if !u.Active || (u.AccountType != "" && u.AccountType != "atlassian") {
-			continue
-		}
-		people = append(people, u)
-		if strings.EqualFold(u.EmailAddress, who) || strings.EqualFold(u.DisplayName, who) {
-			exact = append(exact, u)
-		}
-	}
+	people, exact := assignableJiraUsers(users, who)
 	pick := func(u jira.User) jiraAssignee {
 		return jiraAssignee{u.AccountID, firstNonEmpty(u.DisplayName, u.EmailAddress)}
 	}
@@ -463,6 +454,21 @@ func searchAssignee(ctx context.Context, c JiraWriteClient, who string) (jiraAss
 		names = append(names, u.DisplayName)
 	}
 	return jiraAssignee{}, &ValidationError{Msg: fmt.Sprintf("%q matches several Jira users (%s); pass an email", who, strings.Join(names, ", "))}
+}
+
+// assignableJiraUsers keeps the active human (atlassian) accounts of a user
+// search, and the subset whose email or display name equals who exactly.
+func assignableJiraUsers(users []jira.User, who string) (people, exact []jira.User) {
+	for _, u := range users {
+		if !u.Active || (u.AccountType != "" && u.AccountType != "atlassian") {
+			continue
+		}
+		people = append(people, u)
+		if strings.EqualFold(u.EmailAddress, who) || strings.EqualFold(u.DisplayName, who) {
+			exact = append(exact, u)
+		}
+	}
+	return people, exact
 }
 
 // NewAssignJiraIssue builds the assign_jira_issue write tool.

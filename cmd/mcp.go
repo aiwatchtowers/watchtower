@@ -67,6 +67,30 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 	return "", chat.TurnFileReader(turnFile), nil
 }
 
+// mcpModeOptions sets up chat mode (the write-tool registry) or dev mode (the
+// read-only fence) on the opened database.
+func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
+	if !mcpFlagChat {
+		// The MCP surface is read-only; enforce it at the connection level so even
+		// a buggy handler cannot write. Must run after Open (migrations need writes).
+		if err := database.SetReadOnly(); err != nil {
+			return nil, fmt.Errorf("enforcing read-only: %w", err)
+		}
+		return nil, nil
+	}
+	// Chat mode: the connection stays writable ONLY so the registry can
+	// record proposals (agent_actions) — the tools themselves still never
+	// write domain data on propose (AGENT-01). Dev mode above keeps the
+	// query_only fence (AGENT-02 / DEV-01).
+	if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
+		return nil, fmt.Errorf("--surface must be main or target")
+	}
+	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
+		Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
+		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID,
+	})}, nil
+}
+
 func runMCP(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -97,25 +121,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	opts := []internalmcp.ServerOption{
 		internalmcp.WithSkillsDir(skills.Dir(cfg.WorkspaceDir())),
 	}
-	if mcpFlagChat {
-		// Chat mode: the connection stays writable ONLY so the registry can
-		// record proposals (agent_actions) — the tools themselves still never
-		// write domain data on propose (AGENT-01). Dev mode below keeps the
-		// query_only fence (AGENT-02 / DEV-01).
-		if mcpFlagSurface != "main" && mcpFlagSurface != "target" {
-			return fmt.Errorf("--surface must be main or target")
-		}
-		opts = append(opts, internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-			Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
-			ContextType: mcpFlagContextType, ContextID: mcpFlagContextID,
-		}))
-	} else {
-		// The MCP surface is read-only; enforce it at the connection level so even
-		// a buggy handler cannot write. Must run after Open (migrations need writes).
-		if err := database.SetReadOnly(); err != nil {
-			return fmt.Errorf("enforcing read-only: %w", err)
-		}
+	modeOpts, err := mcpModeOptions(cfg, database, turn, turnFunc)
+	if err != nil {
+		return err
 	}
+	opts = append(opts, modeOpts...)
 	if cfg.Memory.Enabled {
 		opts = append(opts, internalmcp.WithMemoryVault(memoryVaultPath(cfg)))
 		if cfg.Memory.Retrieve.RecallCompare {
