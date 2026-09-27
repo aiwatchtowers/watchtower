@@ -24,7 +24,7 @@ type listTracksArgs struct {
 }
 
 type getPersonArgs struct {
-	Query string `json:"query" jsonschema:"Slack user id (U…) or a person's name (username, display or real name, partial match)"`
+	Query string `json:"query" jsonschema:"Slack user id, raw (U…) or namespaced (1:U…), or a person's name (username, display or real name, partial match). A raw id carded in several workspaces is ambiguous — pass the namespaced id"`
 }
 
 type getTrackArgs struct {
@@ -74,12 +74,9 @@ func NewGetPerson() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			card, err := d.GetLatestPeopleCard(a.Query)
-			if err != nil {
-				return nil, fmt.Errorf("getting person: %w", err)
-			}
-			if card != nil {
-				return card, nil
+			card, err := personCardByID(d, a.Query)
+			if err != nil || card != nil {
+				return card, err
 			}
 			users, err := d.SearchUsersByName(a.Query, 10)
 			if err != nil {
@@ -110,6 +107,43 @@ func NewGetPerson() *Tool {
 				return nil, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(a.Query), strings.Join(opts, ", "))
 			}
 		},
+	}
+}
+
+// personCardByID looks query up as a Slack user id, raw or namespaced
+// (slackIDForms). It returns (nil, nil) when no card matches, so the caller
+// falls through to name search. A raw id carded under several Slack accounts
+// is an ambiguity error naming each namespaced id: get_person returns one card,
+// and silently picking an account would hide the other person.
+func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {
+	forms := []string{query}
+	if looksLikeUserID(query) {
+		var err error
+		if forms, err = slackIDForms(d, query); err != nil {
+			return nil, err
+		}
+	}
+	var cards []*db.PeopleCard
+	for _, id := range forms {
+		c, err := d.GetLatestPeopleCard(id)
+		if err != nil {
+			return nil, fmt.Errorf("getting person: %w", err)
+		}
+		if c != nil {
+			cards = append(cards, c)
+		}
+	}
+	switch len(cards) {
+	case 0:
+		return nil, nil
+	case 1:
+		return cards[0], nil
+	default:
+		ids := make([]string, 0, len(cards))
+		for _, c := range cards {
+			ids = append(ids, c.UserID)
+		}
+		return nil, fmt.Errorf("ambiguous user id %s: it exists in several Slack workspaces as %s — pass one of those", strconv.Quote(query), strings.Join(ids, ", "))
 	}
 }
 

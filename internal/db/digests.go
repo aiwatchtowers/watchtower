@@ -79,22 +79,31 @@ func (db *DB) populateDigestParticipants(digestID int64, situationsJSON string) 
 
 // DigestFilter specifies criteria for querying digests.
 type DigestFilter struct {
-	ChannelID string  // filter by channel (empty = any)
-	Type      string  // filter by type (empty = any)
-	FromUnix  float64 // period_from >= this (0 = no filter)
-	ToUnix    float64 // period_to <= this (0 = no filter)
-	Limit     int     // max results (0 = no limit)
+	ChannelID string // filter by channel (empty = any)
+	// ChannelIDs filters to any of these channels (empty = any). ANDed with
+	// ChannelID when both are set. Lets a caller pass every stored form of one
+	// channel reference (e.g. a raw id namespaced under each Slack account).
+	ChannelIDs []string
+	Type       string  // filter by type (empty = any)
+	FromUnix   float64 // period_from >= this (0 = no filter)
+	ToUnix     float64 // period_to <= this (0 = no filter)
+	Limit      int     // max results (0 = no limit)
 }
 
-// GetDigests returns digests matching the filter, newest first.
-func (db *DB) GetDigests(f DigestFilter) ([]Digest, error) {
-	query := `SELECT id, channel_id, period_from, period_to, type, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, created_at, read_at FROM digests`
+// digestFilterConditions renders f's WHERE conditions and their args, shared by
+// GetDigests and GetDigestStats so both honor every filter field.
+func digestFilterConditions(f DigestFilter) ([]string, []any) {
 	var conditions []string
 	var args []any
-
 	if f.ChannelID != "" {
 		conditions = append(conditions, "channel_id = ?")
 		args = append(args, f.ChannelID)
+	}
+	if len(f.ChannelIDs) > 0 {
+		conditions = append(conditions, "channel_id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(f.ChannelIDs)), ",")+")")
+		for _, id := range f.ChannelIDs {
+			args = append(args, id)
+		}
 	}
 	if f.Type != "" {
 		conditions = append(conditions, "type = ?")
@@ -108,6 +117,13 @@ func (db *DB) GetDigests(f DigestFilter) ([]Digest, error) {
 		conditions = append(conditions, "period_to <= ?")
 		args = append(args, f.ToUnix)
 	}
+	return conditions, args
+}
+
+// GetDigests returns digests matching the filter, newest first.
+func (db *DB) GetDigests(f DigestFilter) ([]Digest, error) {
+	query := `SELECT id, channel_id, period_from, period_to, type, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, created_at, read_at FROM digests`
+	conditions, args := digestFilterConditions(f)
 
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
@@ -337,25 +353,7 @@ type DigestStats struct {
 // GetDigestStats returns aggregate stats for digests matching the filter.
 func (db *DB) GetDigestStats(f DigestFilter) (DigestStats, error) {
 	query := `SELECT COUNT(*), COALESCE(SUM(message_count),0), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost_usd),0) FROM digests`
-	var conditions []string
-	var args []any
-
-	if f.ChannelID != "" {
-		conditions = append(conditions, "channel_id = ?")
-		args = append(args, f.ChannelID)
-	}
-	if f.Type != "" {
-		conditions = append(conditions, "type = ?")
-		args = append(args, f.Type)
-	}
-	if f.FromUnix > 0 {
-		conditions = append(conditions, "period_from >= ?")
-		args = append(args, f.FromUnix)
-	}
-	if f.ToUnix > 0 {
-		conditions = append(conditions, "period_to <= ?")
-		args = append(args, f.ToUnix)
-	}
+	conditions, args := digestFilterConditions(f)
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}

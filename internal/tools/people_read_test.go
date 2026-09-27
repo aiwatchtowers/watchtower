@@ -36,7 +36,7 @@ func TestGetPerson_NotFound(t *testing.T) {
 // An LLM client rarely knows Slack ids — get_person resolves by partial name.
 func TestGetPerson_ByName(t *testing.T) {
 	d := openDB(t)
-	seedPersonCard(t, d, "U100", "alice", "Alice Smith", "drives launches")
+	seedPersonCard(t, d, "1:U100", "alice", "Alice Smith", "drives launches")
 
 	got := callReadString(t, peopleRegistry(t, d), "get_person", `{"query":"Alice"}`)
 	assert.Contains(t, got, "drives launches")
@@ -45,8 +45,8 @@ func TestGetPerson_ByName(t *testing.T) {
 // Several name matches → an ambiguity error listing the candidate ids.
 func TestGetPerson_AmbiguousName(t *testing.T) {
 	d := openDB(t)
-	seedPersonCard(t, d, "U101", "alice.a", "Alice Anderson", "card U101")
-	seedPersonCard(t, d, "U102", "alice.b", "Alice Brown", "card U102")
+	seedPersonCard(t, d, "1:U101", "alice.a", "Alice Anderson", "card U101")
+	seedPersonCard(t, d, "1:U102", "alice.b", "Alice Brown", "card U102")
 
 	_, err := peopleRegistry(t, d).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"alice"}`))
 	require.Error(t, err)
@@ -77,8 +77,8 @@ func TestGetTrack_NotFound(t *testing.T) {
 
 func TestListPeople_ReturnsCards(t *testing.T) {
 	d := openDB(t)
-	require.NoError(t, d.UpsertUser(db.User{ID: "U1", Name: "alice", RealName: "Alice Smith"}))
-	_, err := d.UpsertPeopleCard(db.PeopleCard{UserID: "U1", Summary: "works on launch", Status: "active", PeriodFrom: 1, PeriodTo: 2})
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U1", Name: "alice", RealName: "Alice Smith"}))
+	_, err := d.UpsertPeopleCard(db.PeopleCard{UserID: "1:U1", Summary: "works on launch", Status: "active", PeriodFrom: 1, PeriodTo: 2})
 	require.NoError(t, err)
 
 	got := callReadString(t, peopleRegistry(t, d), "list_people", `{}`)
@@ -93,8 +93,8 @@ func TestListPeople_EmptyIsArray(t *testing.T) {
 // list_people threads the limit through: limit=1 returns exactly one row.
 func TestListPeople_Limit(t *testing.T) {
 	d := openDB(t)
-	seedPersonCard(t, d, "U1", "alice", "Alice", "one")
-	seedPersonCard(t, d, "U2", "bob", "Bob", "two")
+	seedPersonCard(t, d, "1:U1", "alice", "Alice", "one")
+	seedPersonCard(t, d, "1:U2", "bob", "Bob", "two")
 
 	var rows []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(callReadString(t, peopleRegistry(t, d), "list_people", `{"limit":1}`)), &rows))

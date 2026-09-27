@@ -21,11 +21,11 @@ func messagesRegistry(t *testing.T, d *db.DB) *Registry {
 func seedMessagesDB(t *testing.T) *db.DB {
 	t.Helper()
 	d := openDB(t)
-	require.NoError(t, d.UpsertUser(db.User{ID: "U001", Name: "esaenko", DisplayName: "Женя Саенко"}))
-	require.NoError(t, d.UpsertUser(db.User{ID: "U002", Name: "bogdan", DisplayName: "Богдан"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000001.0001", UserID: "U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000002.0001", UserID: "U002", Text: "unrelated chatter", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000003.0001", UserID: "U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U001", Name: "esaenko", DisplayName: "Женя Саенко"}))
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U002", Name: "bogdan", DisplayName: "Богдан"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000001.0001", UserID: "1:U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000002.0001", UserID: "1:U002", Text: "unrelated chatter", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000003.0001", UserID: "1:U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3", RawJSON: "{}"}))
 	return d
 }
 
