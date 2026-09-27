@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-wave1-small: parseJSONLOutput splits the in-memory output on newlines instead of using a 1 MB-capped bufio.Scanner, so no line is too long to parse; pinned by TestParseJSONLOutput_OversizedLineDoesNotHideFinalMessage.
+Fixed in fix/backlog-wave1: parseJSONLOutput splits the in-memory output on newlines instead of using a 1 MB-capped bufio.Scanner, so no line is too long to parse; pinned by TestParseJSONLOutput_OversizedLineDoesNotHideFinalMessage.

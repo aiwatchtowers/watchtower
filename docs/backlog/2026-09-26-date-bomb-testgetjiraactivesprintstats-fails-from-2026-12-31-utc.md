@@ -15,4 +15,4 @@ The test seeds an active sprint with the hardcoded `EndDate: "2026-12-31"` and a
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-jira-calendar: the test seeds sprint dates from time.Now() and asserts DaysLeft == 14 exactly.
+Fixed in fix/backlog-wave1: the test seeds sprint dates from time.Now() and asserts DaysLeft == 14 exactly.

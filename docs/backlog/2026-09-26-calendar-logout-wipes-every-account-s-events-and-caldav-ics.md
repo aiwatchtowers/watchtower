@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-jira-calendar: calendar logout now purges only the disconnected account's calendars and events via ClearGoogleAccountCalendarData, keeping CalDAV/ICS, other Google accounts, the attendee cache and every event a recording or recap references; the unscoped ClearCalendarEvents had no other caller and is deleted.
+Fixed in fix/backlog-wave1: calendar logout now purges only the disconnected account's calendars and events via ClearGoogleAccountCalendarData, keeping CalDAV/ICS, other Google accounts, the attendee cache and every event a recording or recap references; the unscoped ClearCalendarEvents had no other caller and is deleted.

@@ -23,4 +23,4 @@ path is unchanged on main. Fix: in WriteNodes skip nodes whose rendered bytes eq
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-wave1-small: WriteNodes treats go-git ErrEmptyCommit as a no-op ("", nil); pinned by TestVaultWriteNodesUnchangedIsNoop. No caller used the returned hash. Not done: skipping byte-identical nodes before staging (unneeded for the fix).
+Fixed in fix/backlog-wave1: WriteNodes treats go-git ErrEmptyCommit as a no-op ("", nil); pinned by TestVaultWriteNodesUnchangedIsNoop. No caller used the returned hash. Not done: skipping byte-identical nodes before staging (unneeded for the fix).

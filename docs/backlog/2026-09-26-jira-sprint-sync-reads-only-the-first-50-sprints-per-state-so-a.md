@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-jira-calendar: SyncSprints pages through board sprints with startAt until isLast (capped at 40 pages per state), storing what it read even when a later page fails.
+Fixed in fix/backlog-wave1: SyncSprints pages through board sprints with startAt until isLast (capped at 40 pages per state), storing what it read even when a later page fails.

@@ -15,4 +15,4 @@ Since migration 00048 `messages.user_id`, `messages.channel_id`, `channels.id`, 
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-tools-namespaced-ids: one shared resolver (internal/tools/slackids.go) expands a raw Slack id to every account's namespaced form (plus the bare legacy form) and takes a namespaced id as-is, used by list_messages person/channel, list_digests channel and get_person; a raw id in two workspaces returns both (get_person: an ambiguity error naming both namespaced ids).
+Fixed in fix/backlog-wave1: one shared resolver (internal/tools/slackids.go) expands a raw Slack id to every account's namespaced form (plus the bare legacy form) and takes a namespaced id as-is, used by list_messages person/channel, list_digests channel and get_person; a raw id in two workspaces returns both (get_person: an ambiguity error naming both namespaced ids).

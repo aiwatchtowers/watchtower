@@ -24,7 +24,7 @@ type listTracksArgs struct {
 }
 
 type getPersonArgs struct {
-	Query string `json:"query" jsonschema:"Slack user id, raw (U…) or namespaced (1:U…), or a person's name (username, display or real name, partial match). A raw id carded in several workspaces is ambiguous — pass the namespaced id"`
+	Query string `json:"query" jsonschema:"Slack user id, raw (U…) or namespaced (1:U…), or a person's name (username, display or real name, partial match). A raw id with a people card in several workspaces is ambiguous — pass the namespaced id"`
 }
 
 type getTrackArgs struct {
@@ -112,7 +112,7 @@ func NewGetPerson() *Tool {
 
 // personCardByID looks query up as a Slack user id, raw or namespaced
 // (slackIDForms). It returns (nil, nil) when no card matches, so the caller
-// falls through to name search. A raw id carded under several Slack accounts
+// falls through to name search. A raw id with a people card under several Slack accounts
 // is an ambiguity error naming each namespaced id: get_person returns one card,
 // and silently picking an account would hide the other person.
 func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {

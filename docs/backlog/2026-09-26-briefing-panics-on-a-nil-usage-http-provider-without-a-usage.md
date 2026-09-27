@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-wave1-small: Model is read only inside the existing usage != nil guard; pinned by TestPipelineRunForDate_NilUsageDoesNotPanic.
+Fixed in fix/backlog-wave1: Model is read only inside the existing usage != nil guard; pinned by TestPipelineRunForDate_NilUsageDoesNotPanic.

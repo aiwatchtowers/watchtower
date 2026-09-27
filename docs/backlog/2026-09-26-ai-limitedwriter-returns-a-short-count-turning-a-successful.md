@@ -15,4 +15,4 @@ When a single stderr write crosses the 64 KB cap, `Write` truncates `p` and retu
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-wave1-small: limitedWriter reports len(p) after keeping the prefix; pinned by TestLimitedWriter_CrossingCapReportsFullLength (drives it through io.Copy like os/exec does).
+Fixed in fix/backlog-wave1: limitedWriter reports len(p) after keeping the prefix; pinned by TestLimitedWriter_CrossingCapReportsFullLength (drives it through io.Copy like os/exec does).

@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-wave1-small: calAttendee now decodes `response_status` (the calendar.Attendee key); fixtures switched to the production key with assertions unchanged, plus TestCalendarDetector_ProductionAttendeeShape pinning the syncer-marshalled shape; owner email now matched case-insensitively in both the detector and autoResolveCalendar. Not done: matching invites to a second Google/CalDAV account (needs every owner email, not just the ladder one).
+Fixed in fix/backlog-wave1: calAttendee now decodes `response_status` (the calendar.Attendee key); fixtures switched to the production key with assertions unchanged, plus TestCalendarDetector_ProductionAttendeeShape pinning the syncer-marshalled shape; owner email now matched case-insensitively in both the detector and autoResolveCalendar. Not done: matching invites to a second Google/CalDAV account (needs every owner email, not just the ladder one).
