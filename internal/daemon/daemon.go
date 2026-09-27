@@ -946,6 +946,9 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
 		return
 	}
+	if ctx.Err() != nil {
+		return // shutting down: start nothing, record no pipeline run
+	}
 	srcs, err := d.db.ListExtSources("confluence")
 	if err != nil {
 		d.logger.Printf("external sync: listing sources: %v", err)

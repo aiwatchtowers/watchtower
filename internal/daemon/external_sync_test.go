@@ -165,6 +165,21 @@ func TestPhaseExternalSync_ShutdownCancelIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestPhaseExternalSync_AlreadyCancelledWritesNothing: a phase reached
+// after shutdown began starts nothing and writes no pipeline_runs row.
+func TestPhaseExternalSync_AlreadyCancelledWritesNothing(t *testing.T) {
+	d, database, fake := newExternalSyncTestDaemon(t)
+	d.config.Knowledge.Connectors.Enabled = true
+	seedConfluenceSource(t, database)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d.phaseExternalSync(ctx)
+
+	assert.Zero(t, fake.calls)
+	assert.Equal(t, 0, countPipelineRuns(t, database, "external-sync"))
+}
+
 func TestPhaseExternalSync_RealErrorIsRecorded(t *testing.T) {
 	d, database, fake := newExternalSyncTestDaemon(t)
 	d.config.Knowledge.Connectors.Enabled = true

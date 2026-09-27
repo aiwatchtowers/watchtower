@@ -44,3 +44,22 @@ func TestSweepStaleMissingDirIsNoOp(t *testing.T) {
 	assert.Zero(t, n)
 	assert.Equal(t, 10*time.Minute, StaleTempAge)
 }
+
+// TestSweepStaleReportsUninspectableFile: a file whose metadata cannot be
+// read is an error, not silently "not stale". A directory that can be
+// listed but not searched (no x bit) makes every Info fail.
+func TestSweepStaleReportsUninspectableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	x := &Extractor{TempDir: filepath.Join(t.TempDir(), "extract")}
+	require.NoError(t, os.MkdirAll(x.TempDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(x.TempDir, "att-1.pdf"), []byte("x"), 0o600))
+	require.NoError(t, os.Chmod(x.TempDir, 0o600))
+	t.Cleanup(func() { _ = os.Chmod(x.TempDir, 0o700) })
+
+	n, err := x.SweepStale(time.Now().Add(time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "att-1.pdf")
+	assert.Zero(t, n)
+}

@@ -42,7 +42,14 @@ func (x *Extractor) SweepStale(now time.Time) (int, error) {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil || now.Sub(info.ModTime()) < StaleTempAge {
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // removed since the listing: nothing left to sweep
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("extract: inspecting %s: %w", e.Name(), err))
+			continue
+		}
+		if now.Sub(info.ModTime()) < StaleTempAge {
 			continue
 		}
 		if err := os.Remove(filepath.Join(x.TempDir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
