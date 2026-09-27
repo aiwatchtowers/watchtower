@@ -30,6 +30,10 @@ struct OnboardingView: View {
     @State private var settingsHistoryDays = 3
     @State private var settingsCustomDays = ""
     @State private var settingsModelPreset = ModelPreset.balanced
+    /// The configured `ai.provider` (nil = default claude), read when the
+    /// Settings step appears: the model presets are claude aliases, so they
+    /// are shown and written only for claude (`OnboardingSettingsPlan`).
+    @State private var settingsProvider: String?
     @State private var settingsPollPreset = PollPreset.normal
     @State private var settingsNotifications = true
 
@@ -292,7 +296,9 @@ struct OnboardingView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Claude is ready with **\(settingsModelPreset.title)** model.")
+            Text(OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider)
+                ? "Claude is ready with **\(settingsModelPreset.title)** model."
+                : "AI provider is ready.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -313,7 +319,9 @@ struct OnboardingView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Sending a test request to Claude (**\(settingsModelPreset.title)**)...")
+            Text(OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider)
+                ? "Sending a test request to Claude (**\(settingsModelPreset.title)**)..."
+                : "Sending a test request to the AI provider...")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -672,6 +680,7 @@ struct OnboardingView: View {
             .controlSize(.large)
             .disabled(isRunning || (settingsHistoryDays == -1 && resolvedHistoryDays == -1))
         }
+        .onAppear { settingsProvider = ConfigService().aiProvider }
     }
 
     private var settingsCardStack: some View {
@@ -692,18 +701,20 @@ struct OnboardingView: View {
                 .pickerStyle(.menu)
             }
 
-            settingCard(
-                icon: "cpu",
-                iconColor: .secondary,
-                title: "AI Model",
-                description: settingsModelPreset.settingDescription
-            ) {
-                Picker("", selection: $settingsModelPreset) {
-                    ForEach(ModelPreset.allCases, id: \.self) { preset in
-                        Text(preset.title).tag(preset)
+            if OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider) {
+                settingCard(
+                    icon: "cpu",
+                    iconColor: .secondary,
+                    title: "AI Model",
+                    description: settingsModelPreset.settingDescription
+                ) {
+                    Picker("", selection: $settingsModelPreset) {
+                        ForEach(ModelPreset.allCases, id: \.self) { preset in
+                            Text(preset.title).tag(preset)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
 
             settingCard(
@@ -1259,17 +1270,18 @@ struct OnboardingView: View {
         let days = resolvedHistoryDays
         let model = settingsModelPreset
         let poll = settingsPollPreset
+        let provider = settingsProvider
 
         Task.detached {
-            // Apply settings via `watchtower config set`
-            var settings: [(String, String)] = [
-                ("digest.language", lang),
-                ("sync.initial_history_days", "\(days)"),
-                ("sync.poll_interval", poll.interval)
-            ]
-            if let strong = model.strongModelOverride {
-                settings.append(("ai.models.strong", strong))
-            }
+            // Apply settings via `watchtower config set`. The model preset is
+            // written only for claude — its values are claude aliases.
+            let settings = OnboardingSettingsPlan.configSets(
+                language: lang,
+                initialHistoryDays: days,
+                pollInterval: poll.interval,
+                provider: provider,
+                strongModelOverride: model.strongModelOverride
+            )
             for (key, value) in settings {
                 let result = await Self.runCLI(path: path, arguments: ["config", "set", key, value])
                 if result.exitCode != 0 {
