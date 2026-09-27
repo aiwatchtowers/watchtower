@@ -1796,5 +1796,5 @@ CREATE INDEX IF NOT EXISTS idx_doc_links_to ON doc_links(to_kind, to_ref);
 
 CREATE TABLE IF NOT EXISTS ext_link_state (          -- doc_links detection watermark per scanned kind
   from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
-  cursor    TEXT NOT NULL DEFAULT ''   -- rowid / synced_at high-water, per kind
+  cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
 );
