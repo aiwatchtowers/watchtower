@@ -447,6 +447,52 @@ func TestExtSyncOptions_WiresTheOCRHelper(t *testing.T) {
 	assert.True(t, x.HasOCR(context.Background()))
 }
 
+// revokedConfluenceFetcher fails every delta listing as a revoked grant.
+type revokedConfluenceFetcher struct{ fakeConfluenceFetcher }
+
+func (revokedConfluenceFetcher) Changed(context.Context, extsync.Container, extsync.ItemKind, time.Time, string) ([]extsync.ItemRef, string, error) {
+	return nil, "", extsync.ErrAuthRevoked
+}
+
+// TestExtSyncOptions_WiresTheConfluenceHints pins the exact hint texts the
+// engine records through the wired extsync.Options.Hints — the Desktop's
+// ConfluenceSpacesViewModel.needsConsent keys on "--with-confluence" in
+// them (dual path).
+func TestExtSyncOptions_WiresTheConfluenceHints(t *testing.T) {
+	const revokedHint = "Atlassian sign-in expired — run: watchtower jira login --account 1 --with-confluence"
+	sourceError := func(t *testing.T, database *db.DB) (string, string) {
+		t.Helper()
+		var status, text string
+		require.NoError(t, database.QueryRow(`SELECT status, error FROM ext_sources`).Scan(&status, &text))
+		return status, text
+	}
+
+	t.Run("needs consent", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.JiraScopes)
+		_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+		require.NoError(t, err)
+		e := extsync.New(env.db, extSyncOptions(env.cfg, log.New(io.Discard, "", 0), 0))
+		e.SetFetcher(1, env.fetcher)
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+		status, text := sourceError(t, env.db)
+		assert.Equal(t, "needs_consent", status)
+		assert.Equal(t, consentHint, text)
+	})
+	t.Run("revoked", func(t *testing.T) {
+		env := setupConfluenceEnv(t, jira.OAuthScopes)
+		_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+		require.NoError(t, err)
+		e := extsync.New(env.db, extSyncOptions(env.cfg, log.New(io.Discard, "", 0), 0))
+		e.SetFetcher(1, &revokedConfluenceFetcher{})
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+		status, text := sourceError(t, env.db)
+		assert.Equal(t, "revoked", status)
+		assert.Equal(t, revokedHint, text)
+	})
+}
+
 // A re-login of an account whose grant already carries the Confluence
 // scopes keeps requesting them without --with-confluence.
 func TestJiraReloginOptions_ScopedTokenKeepsConfluence(t *testing.T) {

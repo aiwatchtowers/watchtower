@@ -188,7 +188,7 @@ func (e *Engine) syncSource(ctx context.Context, src db.ExtSource, b *budget, st
 	acct := src.JiraAccountID
 	o, isStopped := stopped[acct]
 	if !isStopped && e.opts.ScopesOK != nil && !e.opts.ScopesOK(acct) {
-		o, isStopped = needsConsentOutcome(acct), true
+		o, isStopped = e.needsConsentOutcome(acct), true
 		stopped[acct] = o
 	}
 	if isStopped {
@@ -198,7 +198,7 @@ func (e *Engine) syncSource(ctx context.Context, src db.ExtSource, b *budget, st
 	if ctx.Err() != nil {
 		return st, runErr, nil
 	}
-	o = classify(runErr, acct)
+	o = e.classify(runErr, acct)
 	if o.accountWide {
 		stopped[acct] = o
 	}

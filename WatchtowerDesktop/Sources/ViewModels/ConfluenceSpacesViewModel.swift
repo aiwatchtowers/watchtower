@@ -270,7 +270,8 @@ final class ConfluenceSpacesViewModel {
     // MARK: - Errors
 
     /// Every consent-shaped CLI failure (scopes missing, sign-in expired, no
-    /// token) names the same remedy: `jira login … --with-confluence`. The
+    /// token) names the same remedy: `jira login … --with-confluence` (dual
+    /// path: the Go texts live in cmd/confluence.go's `confluenceHints`). The
     /// CLI prints its error as the last stderr line (cmd/root.go), after any
     /// log lines the command wrote.
     private func apply(_ error: Error) {

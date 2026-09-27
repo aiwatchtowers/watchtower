@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,12 @@ func addSource(t *testing.T, d *db.DB, acct int64, key string) int64 {
 	return id
 }
 
+// testHints stands in for the provider's wired Options.Hints (cmd wires the
+// Confluence texts; TestExtSyncOptions_WiresTheConfluenceHints pins them).
+func testHints(id int64) (revoked, consent string) {
+	return fmt.Sprintf("revoked hint for %d", id), fmt.Sprintf("consent hint for %d", id)
+}
+
 func TestStatusTransitions(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -43,10 +50,8 @@ func TestStatusTransitions(t *testing.T) {
 		wantText string // "" = err.Error() of the run
 		runFails bool
 	}{
-		{"revoked", fmt.Errorf("wrap: %w", ErrAuthRevoked), "revoked",
-			"Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", false},
-		{"scope", fmt.Errorf("403 scope does not match: %w", ErrNeedsConsent), "needs_consent",
-			"Confluence access not granted — run: watchtower jira login --account %d --with-confluence", false},
+		{"revoked", fmt.Errorf("wrap: %w", ErrAuthRevoked), "revoked", "revoked hint for %d", false},
+		{"scope", fmt.Errorf("403 scope does not match: %w", ErrNeedsConsent), "needs_consent", "consent hint for %d", false},
 		{"other", errors.New("boom"), "error", "", true},
 	}
 	for _, tc := range cases {
@@ -54,7 +59,7 @@ func TestStatusTransitions(t *testing.T) {
 			d, src := newSourceDB(t)
 			f := newFake()
 			f.failWith(tc.err)
-			e := New(d, Options{})
+			e := New(d, Options{Hints: testHints})
 			e.SetFetcher(src.JiraAccountID, f)
 			_, err := e.Run(context.Background())
 			assert.Equal(t, tc.runFails, err != nil, "only a real failure is returned from Run: %v", err)
@@ -79,12 +84,26 @@ func TestRunSourceReturnsHint(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
 	f.failWith(ErrAuthRevoked)
-	e := New(d, Options{})
+	e := New(d, Options{Hints: testHints})
 	e.SetFetcher(src.JiraAccountID, f)
 	_, err := e.RunSource(context.Background(), src)
 	require.ErrorIs(t, err, ErrAuthRevoked)
-	assert.Contains(t, err.Error(), "--with-confluence")
+	assert.Contains(t, err.Error(), fmt.Sprintf("revoked hint for %d", src.JiraAccountID))
 	assert.Equal(t, "revoked", sourceStatus(t, d, src.ID))
+}
+
+// Without wired hints the engine records a provider-neutral text: it names
+// no provider and no provider-specific command.
+func TestDefaultHintsAreProviderNeutral(t *testing.T) {
+	d, src := newSourceDB(t)
+	e := New(d, Options{ScopesOK: func(int64) bool { return false }})
+	e.SetFetcher(src.JiraAccountID, newFake())
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	text := sourceError(t, d, src.ID)
+	assert.NotEmpty(t, text)
+	assert.NotContains(t, strings.ToLower(text), "confluence")
+	assert.NotContains(t, text, "--with-")
 }
 
 // A revoked account stops all its sources for the run, without calling the

@@ -63,11 +63,20 @@ var newConfluenceFetcher = func(client *jira.Client, siteURL string) extsync.Fet
 	return confluence.NewFetcher(client.Confluence(), siteURL)
 }
 
-// errConfluenceConsent is the re-consent hint (the extsync needs_consent
-// text, R6). Keep "--with-confluence" in it and in the sign-in-expired hint:
-// the Desktop's ConfluenceSpacesViewModel.needsConsent keys on that token.
+// confluenceHints are the re-consent hints for a Confluence source: the
+// sign-in-expired text and the needs-consent text (R6). They are recorded on
+// ext_sources by the engine (extsync.Options.Hints) and returned by the CLI.
+// Keep "--with-confluence" in both: the Desktop's
+// ConfluenceSpacesViewModel.needsConsent keys on that token (dual path).
+func confluenceHints(accountID int64) (revoked, consent string) {
+	return fmt.Sprintf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", accountID),
+		fmt.Sprintf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID)
+}
+
+// errConfluenceConsent is the needs-consent hint as an error.
 func errConfluenceConsent(accountID int64) error {
-	return fmt.Errorf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID) //nolint:staticcheck // user-facing sentence, product name capitalized
+	_, consent := confluenceHints(accountID)
+	return errors.New(consent)
 }
 
 // confluenceScopesOK reports whether account id's stored grant carries the
@@ -118,7 +127,8 @@ func (s *confluenceSession) liveContainers(cmd *cobra.Command) ([]extsync.Contai
 	case errors.Is(err, extsync.ErrNeedsConsent):
 		return nil, errConfluenceConsent(s.account.ID)
 	case errors.Is(err, extsync.ErrAuthRevoked):
-		return nil, fmt.Errorf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", s.account.ID) //nolint:staticcheck // user-facing sentence
+		revoked, _ := confluenceHints(s.account.ID)
+		return nil, errors.New(revoked)
 	case err != nil:
 		return nil, fmt.Errorf("listing Confluence spaces: %w", err)
 	}
@@ -445,6 +455,7 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 			OCR:       extract.NewHelperOCR(extract.ResolveHelperPath(), extract.OCRTimeout, extract.WithLogger(logger)),
 		},
 		ScopesOK: func(id int64) bool { return confluenceScopesOK(wd, id) },
+		Hints:    confluenceHints,
 		// Jira keys in stored Confluence text → doc_links (spec §10). Wired
 		// here so the engine stays free of link/Atlassian packages.
 		Relink: func(ctx context.Context, q extsync.Queryer, ref string, texts ...string) error {

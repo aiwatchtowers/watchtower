@@ -125,6 +125,12 @@ type Options struct {
 	// sources need; false records needs_consent without any network call.
 	// nil = assume granted.
 	ScopesOK func(jiraAccountID int64) bool
+	// Hints returns the re-consent hint texts recorded on a source whose
+	// account's grant is revoked / lacks the scopes (ext_sources.error, and
+	// the error RunSource returns). nil = a generic provider-neutral text;
+	// the provider's wording (which command to run) belongs to the wiring,
+	// not the engine.
+	Hints func(jiraAccountID int64) (revoked, consent string)
 	// Relink records the cross-source links of every document the engine
 	// writes or deletes, inside the batch transaction (see RelinkFunc).
 	// nil = no links.

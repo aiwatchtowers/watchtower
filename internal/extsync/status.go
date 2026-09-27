@@ -58,28 +58,39 @@ func (o outcome) err() error {
 	return nil
 }
 
-// The two hint texts below keep the "--with-confluence" token: the Desktop's
-// ConfluenceSpacesViewModel.needsConsent keys on it (dual path).
-func revokedOutcome(jiraAccountID int64) outcome {
-	return outcome{status: statusRevoked, accountWide: true, text: fmt.Sprintf(
-		"Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", jiraAccountID)}
+// hints returns the re-consent hint texts for an account: the provider's
+// (Options.Hints, wired in cmd — the Confluence texts name
+// "--with-confluence", which the Desktop's
+// ConfluenceSpacesViewModel.needsConsent keys on: dual path), or a generic
+// provider-neutral fallback when none is wired.
+func (e *Engine) hints(jiraAccountID int64) (revoked, consent string) {
+	if e.opts.Hints != nil {
+		return e.opts.Hints(jiraAccountID)
+	}
+	return fmt.Sprintf("sign-in expired for account %d — sign in again", jiraAccountID),
+		fmt.Sprintf("access not granted for account %d — sign in again granting the required scopes", jiraAccountID)
 }
 
-func needsConsentOutcome(jiraAccountID int64) outcome {
-	return outcome{status: statusNeedsConsent, accountWide: true, text: fmt.Sprintf(
-		"Confluence access not granted — run: watchtower jira login --account %d --with-confluence", jiraAccountID)}
+func (e *Engine) revokedOutcome(jiraAccountID int64) outcome {
+	text, _ := e.hints(jiraAccountID)
+	return outcome{status: statusRevoked, accountWide: true, text: text}
+}
+
+func (e *Engine) needsConsentOutcome(jiraAccountID int64) outcome {
+	_, text := e.hints(jiraAccountID)
+	return outcome{status: statusNeedsConsent, accountWide: true, text: text}
 }
 
 // classify maps a source run's error to its recorded outcome. The caller
 // handles a cancelled ctx before classifying: shutdown is never recorded.
-func classify(err error, jiraAccountID int64) outcome {
+func (e *Engine) classify(err error, jiraAccountID int64) outcome {
 	switch {
 	case err == nil:
 		return outcome{status: statusOK}
 	case errors.Is(err, ErrAuthRevoked):
-		return revokedOutcome(jiraAccountID)
+		return e.revokedOutcome(jiraAccountID)
 	case errors.Is(err, ErrNeedsConsent):
-		return needsConsentOutcome(jiraAccountID)
+		return e.needsConsentOutcome(jiraAccountID)
 	default:
 		return outcome{status: statusError, text: err.Error()}
 	}
