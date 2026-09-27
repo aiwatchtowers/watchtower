@@ -240,7 +240,7 @@ type apiMessage struct {
 // GetMessageUnix fetches only a message's internalDate (format=minimal),
 // in whole unix seconds — the same truncation Sync's watermark uses.
 func (c *Client) GetMessageUnix(ctx context.Context, id string) (int64, error) {
-	body, err := c.doGet(ctx, "/users/me/messages/"+id, url.Values{"format": {"minimal"}})
+	body, err := c.doGet(ctx, "/users/me/messages/"+id, url.Values{"format": {"minimal"}, "fields": {"internalDate"}})
 	if err != nil {
 		return 0, err
 	}

@@ -985,8 +985,18 @@ func capTieMux(t *testing.T, msgs []capTieMsg, failMinimal bool) *http.ServeMux 
 	})
 	for _, m := range msgs {
 		mux.HandleFunc("/users/me/messages/"+m.id, func(w http.ResponseWriter, r *http.Request) {
-			if failMinimal && r.URL.Query().Get("format") == "minimal" {
-				http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+			if r.URL.Query().Get("format") == "minimal" {
+				if failMinimal {
+					http.Error(w, `{"error":"backend error"}`, http.StatusInternalServerError)
+					return
+				}
+				// Gmail documents format=minimal as "id and labels only", so
+				// the date must be asked for with an explicit fields projection.
+				if r.URL.Query().Get("fields") != "internalDate" {
+					fmt.Fprintf(w, `{"id":%q,"labelIds":["INBOX"]}`, m.id)
+					return
+				}
+				fmt.Fprintf(w, `{"internalDate":"%d000"}`, m.unix)
 				return
 			}
 			labels := `"INBOX"`

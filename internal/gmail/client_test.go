@@ -73,3 +73,38 @@ func TestClientListAndGet(t *testing.T) {
 		t.Errorf("permalink: %v", m.Permalink)
 	}
 }
+
+// Gmail documents format=minimal as returning only the id and labels, so
+// GetMessageUnix must ask for internalDate with an explicit fields
+// projection rather than rely on minimal happening to include it.
+func TestGetMessageUnixRequestsInternalDateProjection(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages/m1", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fields") != "internalDate" {
+			fmt.Fprint(w, `{"id":"m1","labelIds":["INBOX"]}`)
+			return
+		}
+		fmt.Fprint(w, `{"internalDate":"1700000000123"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"at"}`)
+	}))
+	defer tokenSrv.Close()
+	oldBase, oldTok := gmailAPIBase, googleTokenEndpoint
+	gmailAPIBase, googleTokenEndpoint = srv.URL, tokenSrv.URL
+	defer func() { gmailAPIBase, googleTokenEndpoint = oldBase, oldTok }()
+
+	c, err := NewClient(context.Background(), "refresh", GoogleOAuthConfig{ClientID: "cid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.GetMessageUnix(context.Background(), "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 1700000000 {
+		t.Fatalf("GetMessageUnix = %d, want 1700000000", got)
+	}
+}
