@@ -365,6 +365,44 @@ extension TestDatabase {
         owner_display_name            TEXT NOT NULL DEFAULT ''
     );
 
+    -- jira_issues / jira_releases copied verbatim from internal/db/schema.sql (tables only)
+    CREATE TABLE IF NOT EXISTS jira_issues (
+        account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+        key TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
+        board_id INTEGER,
+        summary TEXT NOT NULL, description_text TEXT NOT NULL DEFAULT '',
+        issue_type TEXT NOT NULL DEFAULT '', issue_type_category TEXT NOT NULL DEFAULT '',
+        is_bug INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL, status_category TEXT NOT NULL,
+        status_category_changed_at TEXT NOT NULL DEFAULT '',
+        assignee_account_id TEXT NOT NULL DEFAULT '', assignee_email TEXT NOT NULL DEFAULT '',
+        assignee_display_name TEXT NOT NULL DEFAULT '', assignee_slack_id TEXT NOT NULL DEFAULT '',
+        reporter_account_id TEXT NOT NULL DEFAULT '', reporter_email TEXT NOT NULL DEFAULT '',
+        reporter_display_name TEXT NOT NULL DEFAULT '', reporter_slack_id TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT '', story_points REAL,
+        due_date TEXT NOT NULL DEFAULT '', sprint_id INTEGER, sprint_name TEXT NOT NULL DEFAULT '',
+        epic_key TEXT NOT NULL DEFAULT '',
+        labels TEXT NOT NULL DEFAULT '[]', components TEXT NOT NULL DEFAULT '[]',
+        fix_versions TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
+        raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
+        synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, key)
+    );
+    CREATE TABLE IF NOT EXISTS jira_releases (
+        account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+        id INTEGER NOT NULL,
+        project_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        release_date TEXT NOT NULL DEFAULT '',
+        released INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        synced_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (account_id, id),
+        UNIQUE(account_id, project_key, name)
+    );
+
     CREATE TABLE IF NOT EXISTS jira_user_map (
         jira_account_id  TEXT PRIMARY KEY,
         email            TEXT NOT NULL DEFAULT '',
