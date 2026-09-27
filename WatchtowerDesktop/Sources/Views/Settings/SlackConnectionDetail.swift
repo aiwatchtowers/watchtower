@@ -88,7 +88,7 @@ struct SlackConnectionDetail: View {
                     }
                 }
 
-                if slackAuth.isConnected {
+                if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
                         showSlackDisconnectConfirm = true
                     } label: {
@@ -123,21 +123,27 @@ struct SlackConnectionDetail: View {
             }
         }
         .confirmationDialog(
-            "Disconnect Slack?",
+            "Disconnect \(disconnectName)?",
             isPresented: $showSlackDisconnectConfirm,
             titleVisibility: .visible
         ) {
-            Button("Disconnect Slack", role: .destructive) {
+            Button("Disconnect \(disconnectName)", role: .destructive) {
                 disconnectSlack()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Removes the Slack connection and stops syncing. Already-synced Slack messages and the AI "
-                    + "products built on them (digests, tracks, people cards, inbox items, situations) are kept "
-                    + "and stay queryable. Gmail, Calendar, and Jira data are unaffected."
+                "Removes the \(disconnectName) connection and stops syncing it. Other connected Slack "
+                    + "workspaces keep syncing. Already-synced messages and the AI products built on them "
+                    + "(digests, tracks, people cards, inbox items, situations) are kept and stay queryable. "
+                    + "Gmail, Calendar, and Jira data are unaffected."
             )
         }
+    }
+
+    /// The workspace `auth logout` removes (account #1), named in the dialog.
+    private var disconnectName: String {
+        slackAuth.disconnectTarget?.displayName ?? "Slack"
     }
 
     private func disconnectSlack() {

@@ -5,6 +5,9 @@ import GRDB
 @Observable
 package final class SlackAuthService {
     package var isConnected: Bool = false
+    /// The workspace a Workspace-level Disconnect would remove, nil when that
+    /// action must not be offered — see `logoutTarget(in:)`.
+    package private(set) var disconnectTarget: SlackAccount?
     package var error: String?
 
     private var dbPool: DatabasePool?
@@ -51,14 +54,32 @@ package final class SlackAuthService {
     package func refreshStatus() async {
         guard let dbPool else {
             isConnected = false
+            disconnectTarget = nil
             return
         }
         do {
-            isConnected = try await dbPool.read { db in try SlackAccountQueries.hasConnectedAccount(db) }
+            let (connected, rows) = try await dbPool.read { db in
+                (try SlackAccountQueries.hasConnectedAccount(db), try SlackAccountQueries.fetchAll(db))
+            }
+            isConnected = connected
+            disconnectTarget = Self.logoutTarget(in: rows)
         } catch {
             isConnected = false
+            disconnectTarget = nil
             self.error = "Couldn't read Slack accounts: \(error.localizedDescription)"
         }
+    }
+
+    /// The account `auth logout` removes — `cmd/auth.go` takes the lowest-id
+    /// row of the whole table (`ListSlackAccounts()[0]`, removed rows
+    /// included) — returned only while that row is itself connected. Once #1
+    /// is removed or disabled, a Disconnect would re-remove it and leave every
+    /// other workspace connected, so it is not offered at all; those accounts
+    /// are managed per row in the Workspaces list.
+    package nonisolated static func logoutTarget(in accounts: [SlackAccount]) -> SlackAccount? {
+        guard let first = accounts.min(by: { $0.id < $1.id }),
+              first.enabled, first.status != "removed" else { return nil }
+        return first
     }
 
     // MARK: - CLI Helpers

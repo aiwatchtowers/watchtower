@@ -60,6 +60,40 @@ final class SlackAuthServiceTests: XCTestCase {
         XCTAssertFalse(service.isConnected)
     }
 
+    /// `auth logout` removes the lowest-id row. With #1 removed and #2 still
+    /// enabled, Slack is connected but a Workspace-level Disconnect would only
+    /// re-remove #1 — so it is not offered.
+    func testDisconnectOfferedOnlyWhileAccountOneIsConnected() async throws {
+        let pool = try makePool()
+        let (first, _) = try await pool.write { db -> (Int64, Int64) in
+            (try TestDatabase.insertSlackAccount(db, teamName: "First"),
+             try TestDatabase.insertSlackAccount(db, teamName: "Second"))
+        }
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+        await service.refreshStatus()
+        XCTAssertEqual(service.disconnectTarget?.displayName, "First")
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'removed', enabled = 0 WHERE id = ?", arguments: [first])
+        }
+        await service.refreshStatus()
+
+        XCTAssertTrue(service.isConnected)
+        XCTAssertNil(service.disconnectTarget)
+    }
+
+    func testLogoutTargetIgnoresADisabledAccountOne() throws {
+        let pool = try makePool()
+        let rows = try pool.write { db -> [SlackAccount] in
+            _ = try TestDatabase.insertSlackAccount(db, enabled: false)
+            _ = try TestDatabase.insertSlackAccount(db)
+            return try SlackAccountQueries.fetchAll(db)
+        }
+        XCTAssertNil(SlackAuthService.logoutTarget(in: rows))
+        XCTAssertNil(SlackAuthService.logoutTarget(in: []))
+    }
+
     func testNotConnectedWithoutADatabase() async {
         let service = SlackAuthService()
         await service.refreshStatus()
