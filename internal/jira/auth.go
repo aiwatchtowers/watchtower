@@ -101,16 +101,43 @@ func (s *TokenStore) Load() (*OAuthToken, error) {
 	return &token, nil
 }
 
-// Save writes the token to disk.
+// Save writes the token to disk atomically: a 0600 temp file in the same
+// directory, renamed over the old one. Readers that do not hold the
+// client's lock (the Confluence scopes check loads the file directly) must
+// never see a half-written token mid-refresh.
 func (s *TokenStore) Save(token *OAuthToken) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating token directory: %w", err)
 	}
 	data, err := json.MarshalIndent(token, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*") // created 0600
+	if err != nil {
+		return fmt.Errorf("creating token temp file: %w", err)
+	}
+	if err := writeAndRename(tmp, data, s.path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// writeAndRename writes data to tmp, closes it and renames it to path.
+func writeAndRename(tmp *os.File, data []byte, path string) error {
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing token: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("writing token: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	return nil
 }
 
 // Delete removes the token file.
