@@ -46,7 +46,6 @@ func seedSituationForChannel(t *testing.T, d *db.DB, channelID, userID string) i
 // subject; assistant turns are ignored; the floor advances to the max scanned id.
 func TestIngestChatStatementsStages(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -88,7 +87,6 @@ func TestIngestChatStatementsAbsentTablesNoop(t *testing.T) {
 // but stages nothing.
 func TestIngestChatStatementsBelowFloorSkipped(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	// A situation whose channel resolves to NO entity (no entity aliased C9UNK).
 	sitID := seedSituationForChannel(t, d, "C9UNK", "U9UNK")
@@ -109,7 +107,6 @@ func TestIngestChatStatementsBelowFloorSkipped(t *testing.T) {
 // belief updates per rank math, and the chat-turn floor advances.
 func TestRunSemanticChatOwnerEvidence(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -149,7 +146,6 @@ func TestRunSemanticChatOwnerEvidence(t *testing.T) {
 // chat-turn floor unmoved so the same owner turns are re-staged next run.
 func TestRunSemanticChatFloorHeldOnBeliefError(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -180,7 +176,6 @@ func TestRunSemanticChatFloorHeldOnBeliefError(t *testing.T) {
 // chat evidence reaches the belief pass.
 func TestRunSemanticChatGateOffNoop(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -216,7 +211,6 @@ func TestRunSemanticChatGateOffNoop(t *testing.T) {
 // owner rank (MEM-09 defense in depth).
 func TestReviseBeliefsModelCannotMintUnstagedOwnerRank(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	entID := "ent_00000000000000000000000001"
 	epID := "ep_00000000000000000000000001"
 	tsRef := fmt.Sprintf("%d.000100", beliefNow.AddDate(0, 0, -5).Unix())
@@ -251,7 +245,6 @@ func TestReviseBeliefsModelCannotMintUnstagedOwnerRank(t *testing.T) {
 // silently dropped.
 func TestIngestChatStatementsMappingErrorHoldsFloor(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -275,7 +268,6 @@ func TestIngestChatStatementsMappingErrorHoldsFloor(t *testing.T) {
 // floor is held for a re-scan and the turns are not counted as ingested (M3b/n8).
 func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -312,7 +304,6 @@ func TestRunSemanticChatFloorHeldOnCapBreak(t *testing.T) {
 // (by-design — the turns had their chance), and the consumed turns are counted.
 func TestRunSemanticChatFloorAdvancesWhenModelDeclinesToCite(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -439,7 +430,6 @@ func TestChatSubjectsTargetMirrorPresentMapsToMirror(t *testing.T) {
 // subject-mapped to the mirror.
 func TestIngestChatStatementsTargetMirrorPresentStages(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	mirrorID := "ent_00000000000000000000000001"
 	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
@@ -465,7 +455,6 @@ func TestIngestChatStatementsTargetMirrorPresentStages(t *testing.T) {
 // advances) but NOT staged — byte-unchanged slice-2 behavior (Task 3).
 func TestIngestChatStatementsTargetNoMirrorNotStaged(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	tgtID, err := d.CreateTarget(db.Target{Text: "lonely", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
@@ -512,7 +501,6 @@ func TestParseRememberCommand(t *testing.T) {
 // "remember this:" stages the prefix-stripped fact about the track's subjects.
 func TestIngestChatStatementsTrackRequiresCommand(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	chID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
@@ -544,7 +532,6 @@ func TestIngestChatStatementsTrackRequiresCommand(t *testing.T) {
 // the prefix is stripped for the statement text.
 func TestIngestChatStatementsSituationStagesEitherWay(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	entID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(entID, "C1GEN"))
@@ -570,7 +557,6 @@ func TestIngestChatStatementsSituationStagesEitherWay(t *testing.T) {
 // track owner turn is never scanned — MEM-09 byte-identical behavior.
 func TestIngestChatStatementsOffIgnoresTrack(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	chID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
@@ -599,7 +585,6 @@ func chatsSourceConfig() config.MemoryConfig {
 // subject entity (MEM-09 code-mint), and the chat-turn floor advances.
 func TestRunSemanticRememberThisTrackOwnerEvidence(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	chID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))
@@ -634,7 +619,6 @@ func TestRunSemanticRememberThisTrackOwnerEvidence(t *testing.T) {
 // {situation}), so no owner evidence is minted and the floor stays.
 func TestRunSemanticRememberThisTrackFlagOffNoEvidence(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	seedWorkspaceRow(t, d)
 	chID := "ent_00000000000000000000000001"
 	writeAndIndex(t, v, d, bareEntity(chID, "C1TRACK"))

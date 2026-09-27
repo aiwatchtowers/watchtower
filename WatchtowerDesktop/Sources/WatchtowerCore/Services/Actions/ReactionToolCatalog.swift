@@ -77,6 +77,32 @@ package enum ReactionToolCatalog {
             summary: "Starts watching a Jira board",
             destination: "Jira",
             alwaysAsks: true
+        ),
+        // Chat-only Jira issue writes (spec 2026-09-26 §8) — External, so they
+        // always land behind Approve; not in ReactionDictionaryTools.all.
+        "add_jira_comment": ReactionToolInfo(
+            title: "Comment on a Jira issue",
+            summary: "Posts a comment on an existing issue",
+            destination: "Jira",
+            alwaysAsks: true
+        ),
+        "transition_jira_issue": ReactionToolInfo(
+            title: "Move a Jira issue",
+            summary: "Moves an existing issue to another status",
+            destination: "Jira",
+            alwaysAsks: true
+        ),
+        "assign_jira_issue": ReactionToolInfo(
+            title: "Assign a Jira issue",
+            summary: "Sets an existing issue's assignee",
+            destination: "Jira",
+            alwaysAsks: true
+        ),
+        "update_jira_issue": ReactionToolInfo(
+            title: "Update a Jira issue",
+            summary: "Edits an existing issue's summary, priority, labels or due date",
+            destination: "Jira",
+            alwaysAsks: true
         )
     ]
 

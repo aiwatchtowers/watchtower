@@ -385,8 +385,6 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         var returnedPath: String?
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
             try TestDatabase.insertCalendarEvent(db, id: "evt-1")
             try TestDatabase.insertMeetingRecap(db, eventID: "evt-1", recapJSON: self.summaryJSON)
             try TestDatabase.insertMeetingTranscript(
@@ -415,8 +413,6 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         var returnedPath: String? = "sentinel"
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
             try TestDatabase.insertMeetingTranscript(db, id: 1, audioPath: nil)
             returnedPath = try MeetingTranscriptQueries.delete(db, id: 1)
         }
@@ -429,8 +425,6 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
     func test_deleteUnknownIDIsNoOp() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
             XCTAssertNil(try MeetingTranscriptQueries.delete(db, id: 999))
         }
     }

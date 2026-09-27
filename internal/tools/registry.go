@@ -42,13 +42,24 @@ const (
 )
 
 // Binding is where a proposal came from: the chat surface, conversation and
-// turn the Desktop passed to the chat-mode server.
+// turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
+// read at propose time and wins over TurnID — a warm `ai session` spans many
+// turns and publishes the running one through a turn file (spec §1.2).
 type Binding struct {
 	Surface        string
 	ConversationID int64
 	ContextType    string
 	ContextID      string
 	TurnID         string
+	TurnIDFunc     func() string
+}
+
+// turnID is the turn a proposal attaches to right now.
+func (b Binding) turnID() string {
+	if b.TurnIDFunc != nil {
+		return b.TurnIDFunc()
+	}
+	return b.TurnID
 }
 
 // Call is what Execute receives: the recorded row id (0 for RunDirect), the
@@ -76,6 +87,16 @@ type Tool struct {
 	Validate func(ctx context.Context, d *db.DB, args json.RawMessage) error
 	// Execute performs the write. Only Apply (and RunDirect) call it.
 	Execute func(ctx context.Context, d *db.DB, call Call) (any, error)
+	// Normalize runs once, in Propose, after Validate succeeds and before the
+	// args are persisted to agent_actions.args_json: whatever it returns is
+	// exactly what Execute sees when Apply runs later, possibly hours after
+	// approval. A tool whose Validate resolves something ambiguous (which
+	// site a key lives on, which person a name means) uses Normalize to pin
+	// that resolution into the stored args, so Execute never re-derives it
+	// from free text against data that may have since changed — the owner's
+	// approval is of the resolved action, not of a string that gets
+	// re-interpreted at apply time. Optional; nil leaves args unchanged.
+	Normalize func(ctx context.Context, d *db.DB, args json.RawMessage) (json.RawMessage, error)
 
 	// resolved is InputSchema prepared for validation. Unexported: a tool
 	// author declares the schema, the registry prepares it once in Register
@@ -255,16 +276,8 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if t.Access != AccessWrite {
 		return Receipt{}, ErrNotWritable
 	}
-	if len(args) == 0 {
-		args = json.RawMessage(`{}`)
-	}
-	if !json.Valid(args) {
-		return Receipt{}, &ValidationError{Msg: "arguments are not valid JSON"}
-	}
-	if err := t.validateSchema(args); err != nil {
-		return Receipt{}, err
-	}
-	if err := t.Validate(ctx, r.db, args); err != nil {
+	args, err := r.prepareProposalArgs(ctx, t, args)
+	if err != nil {
 		return Receipt{}, err
 	}
 	reason := reasonOf(args)
@@ -284,7 +297,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	row := db.AgentAction{
 		Tool: name, External: t.External, ArgsJSON: string(args), Reason: reason,
 		Surface: b.Surface, ConversationID: b.ConversationID,
-		ContextType: b.ContextType, ContextID: b.ContextID, TurnID: b.TurnID,
+		ContextType: b.ContextType, ContextID: b.ContextID, TurnID: b.turnID(),
 		Status: "pending", TrustAtCreate: string(trust),
 	}
 	if trust == TrustExecute {
@@ -295,28 +308,63 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		return Receipt{}, err
 	}
 	if trust == TrustExecute {
-		// Stamp decided_at the way an owner approval would.
-		if _, err := r.finishTransition(id, []string{"approved"}, "approved", "", ""); err != nil {
-			return Receipt{}, err
-		}
-		applied, err := r.Apply(ctx, id)
-		if err != nil {
-			// The row exists even though Apply itself could not finish the
-			// transition (a rare DB-level race) — the model must still learn
-			// the action id and the row's own status, not be told the
-			// proposal was never recorded, which risks a duplicate re-propose.
-			if row, rerr := r.db.GetAgentAction(id); rerr == nil && row != nil {
-				return receiptFor(row), nil
-			}
-			return Receipt{}, err
-		}
-		return receiptFor(applied), nil
+		return r.applyTrusted(ctx, id)
 	}
 	return Receipt{
 		ActionID: id, Status: "pending", Tool: name,
 		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it in this chat before "+
 			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name),
 	}, nil
+}
+
+// prepareProposalArgs validates a write-tool call's arguments (JSON, schema,
+// the tool's own Validate) and returns them after the tool's Normalize — the
+// exact args that get persisted and later executed.
+func (r *Registry) prepareProposalArgs(ctx context.Context, t *Tool, args json.RawMessage) (json.RawMessage, error) {
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	if !json.Valid(args) {
+		return nil, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if err := t.validateSchema(args); err != nil {
+		return nil, err
+	}
+	if err := t.Validate(ctx, r.db, args); err != nil {
+		return nil, err
+	}
+	if t.Normalize == nil {
+		return args, nil
+	}
+	normalized, err := t.Normalize(ctx, r.db, args)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(normalized) {
+		return nil, fmt.Errorf("normalize: tool %q returned invalid JSON", t.Name)
+	}
+	return normalized, nil
+}
+
+// applyTrusted runs an execute-trust proposal inline: the row was inserted
+// as approved, so stamp decided_at the way an owner approval would, then
+// apply it.
+func (r *Registry) applyTrusted(ctx context.Context, id int64) (Receipt, error) {
+	if _, err := r.finishTransition(id, []string{"approved"}, "approved", "", ""); err != nil {
+		return Receipt{}, err
+	}
+	applied, err := r.Apply(ctx, id)
+	if err != nil {
+		// The row exists even though Apply itself could not finish the
+		// transition (a rare DB-level race) — the model must still learn
+		// the action id and the row's own status, not be told the
+		// proposal was never recorded, which risks a duplicate re-propose.
+		if row, rerr := r.db.GetAgentAction(id); rerr == nil && row != nil {
+			return receiptFor(row), nil
+		}
+		return Receipt{}, err
+	}
+	return receiptFor(applied), nil
 }
 
 // CallRead runs a read tool's Execute and returns its data. It is the runtime-B

@@ -23,6 +23,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Owner identity | [owner-identity.md](owner-identity.md) | `internal/db/owner.go`, `internal/daemon/owner.go`, `internal/inbox/pipeline.go`, `internal/inbox/jira_detector.go`, `internal/inbox/style_sample.go`, `internal/jira/client.go` (`GetMyself`), `cmd/jira_owner.go`, `cmd/day_plan.go`, `cmd/briefing.go`, `cmd/tracks.go`, `cmd/profile.go`, `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/OwnerQueries.swift`, `WatchtowerDesktop/Sources/Views/Components/NoOwnerEmptyState.swift` |
 | Knowledge Search | [knowledge-search.md](knowledge-search.md) | `internal/kb/`, `internal/tools/knowledge.go`, `internal/daemon/daemon.go` (`phaseKnowledgeIndex`), `cmd/kb.go` |
 | External Sources (Confluence) | [external-sources.md](external-sources.md) | `internal/extsync/`, `internal/confluence/`, `internal/jira/confluence_api.go`, `internal/db/ext_sources.go`, `internal/kb/source_ext.go`, `internal/daemon/daemon.go` (`phaseExternalSync`), `cmd/confluence.go` |
+| Chat (main AI Chat) | [chat.md](chat.md) | `internal/chat/`, `cmd/ai_session.go`, `cmd/chat.go`, `internal/db/chat.go`, `internal/db/chat_migrate.go`, `internal/db/migrations/00076_chat_core.sql`, `WatchtowerDesktop/Sources/Services/Chat/`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Chat/`, `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift`, `WatchtowerDesktop/Sources/Views/Chat/` |
 
 (Other modules will be added as their inventories are written.)
 

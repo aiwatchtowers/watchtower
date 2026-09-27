@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/chat/blocks"
 	"watchtower/internal/prompts"
 )
 
@@ -16,20 +17,10 @@ Current time: %s
 
 IMPORTANT: You MUST look things up with the tools below to answer every question. You have NO pre-loaded data — the local database is your only source of truth.
 
-=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-- search_knowledge / get_knowledge_document: relevance search across Slack, mail, Jira, Confluence, calendar, transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref.
-- list_messages: search/list raw Slack messages by person, channel, and/or keyword, newest first. At least one of person/channel/query is required.
-- list_people / get_person: people cards; list_tracks / get_track: work narratives.
-- list_targets / get_target: the user's action items and goals.
-- get_today_briefing / list_digests / get_digest: the daily briefing and AI summaries of Slack activity.
-- list_jira_issues / get_jira_issue: synced Jira issues.
-- list_transcripts / get_transcript: recorded meeting transcripts.
-- list_upcoming_events: calendar events in the next N hours.
-- memory_recall / memory_open / memory_map: the assistant's long-term memory, once it has been built.
-Never ask for a database path; the data is already local and the tools are already connected.
+%s
 
-There is no SQL tool and no shell — you cannot run database or shell commands of any kind. The schema below documents the fields behind those tools; read it as reference, never as something to execute.
-You also have NO internet access and NO live access to Slack, Jira, or Calendar — the local database already mirrors them, and the tools above are the only way in. Never say you will check an external system, and never ask the user to approve tool permissions: everything you can use is already connected; everything else is unavailable by design.
+%s
+The schema below documents the fields behind those tools; read it as reference, never as something to execute.
 
 === DATABASE SCHEMA (reference) ===
 %s
@@ -45,36 +36,9 @@ The workspace uses a hierarchical goal system called "targets" (replaces the old
   created_by is 'ai' (auto-linked) or 'user' (manually added).
 Reach targets and their links with list_targets / get_target — status, priority, level, and ownership are filters on list_targets.
 
-Deep link format: slack://channel?team=%s&id={channel_id}&message={ts}
-  Example: ts "1740577800.000100" → slack://channel?team=%s&id=C123&message=1740577800.000100
+%s
 
-=== WORKFLOW ===
-1. Look the data up with the tools above. For a topical question (what was decided / discussed / happened about X) start with search_knowledge: pass 2-5 queries — the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms — then open the best hits with get_knowledge_document or the source tools. Use list_messages for "latest from a person/channel" questions.
-2. If results are empty or insufficient, broaden the lookup (wider filters, different keywords)
-3. Analyze the actual message content from the results
-4. Respond with insights, organized by channel or topic
-5. Include Slack deep links for key messages
-
-=== LINKING RULES ===
-ALWAYS include Slack links as descriptive markdown — never bare URLs.
-
-Channel link: [#channel-name](slack://channel?team=%s&id={channel_id})
-  Example: [#engineering](slack://channel?team=%s&id=C0123EXAMPLE)
-
-Message link: [descriptive text](slack://channel?team=%s&id={channel_id}&message={ts})
-  Use the raw ts value (with dot). Example: "1740577800.000100" → message=1740577800.000100
-  Examples:
-    [message about the deploy](slack://channel?team=%s&id=C123&message=1740577800.000100)
-    [thread about cancelling the payout](slack://channel?team=%s&id=C456&message=1700000001.000000)
-    [discussion in #general](slack://channel?team=%s&id=C789&message=1740577800.000100)
-
-Rules:
-- Every channel mention (#name) MUST be a link to that channel
-- Every referenced message or thread MUST have a link with descriptive text in the user's language
-- Link text should describe WHAT is being linked, not "click here" or "link"
-- When listing messages, each one gets its own link
-- list_messages returns the channel and ts of every message, so you can always build a link
-- search_knowledge hits: prefer the hit's "link" (a permalink) when present. To link a specific Slack message instead, take anchor.channel_id without its "N:" account prefix ("1:C123" → C123) and, as the message ts, anchor.thread_ts for a thread hit, otherwise the hit's chunk_anchor. A Confluence hit links via its "link" (the page or attachment URL); when its chunk_anchor is a URL, that is a deep link to the matching heading or comment.
+%s
 
 === RESPONSE STYLE ===
 - Be concise and direct
@@ -91,10 +55,11 @@ var (
 // system prompt. Delegates to prompts.Directive for a single source of truth.
 func languageInstruction(lang string) string { return prompts.Directive(lang) }
 
-// BuildSystemPrompt generates the system prompt with database access context.
-// The database path is deliberately NOT part of the prompt: the assistant reads
-// the data through the read-only watchtower MCP tools, and naming a file it
-// could open is only useful to something trying to shell out.
+// BuildSystemPrompt generates the system prompt for `ask`/`repl`. The tool
+// list, data-access rules, workflow and linking rules are the shared blocks
+// the main AI Chat uses too (internal/chat/blocks — one copy). The database
+// path is deliberately NOT part of the prompt: the assistant reads the data
+// through the read-only watchtower MCP tools.
 func BuildSystemPrompt(workspaceName, domain, teamID, schema, language string) string {
 	// Sanitize workspace name and domain to prevent prompt injection
 	safeName := safeNameRe.ReplaceAllString(workspaceName, "")
@@ -111,15 +76,14 @@ func BuildSystemPrompt(workspaceName, domain, teamID, schema, language string) s
 	}
 
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")
-	langInstr := languageInstruction(language)
 	return fmt.Sprintf(systemPromptTemplate,
 		safeName, safeDomain, now,
+		blocks.ToolsList,
+		blocks.DataAccessRules,
 		schema,
-		safeTeamID, safeTeamID, // deep link format + example
-		safeTeamID, safeTeamID, // channel link + example
-		safeTeamID,                         // message link
-		safeTeamID, safeTeamID, safeTeamID, // examples
-		langInstr,
+		blocks.Workflow,
+		blocks.LinkingRules(nil, safeTeamID),
+		languageInstruction(language),
 	)
 }
 

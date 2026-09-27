@@ -212,6 +212,23 @@ func TestCatchupComposePromptRegistered(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(tmpl, "%s"), "one placeholder: the language directive")
 }
 
+// TestChatTitlePromptRegistered pins chat.title into all four registration
+// surfaces, with the language directive slot and no leading dash.
+func TestChatTitlePromptRegistered(t *testing.T) {
+	id := ChatTitle
+	allIDs := make(map[string]bool, len(AllIDs))
+	for _, x := range AllIDs {
+		allIDs[x] = true
+	}
+	assert.NotEmpty(t, Defaults[id], "Defaults must contain %q", id)
+	assert.True(t, allIDs[id], "AllIDs must contain %q", id)
+	assert.Equal(t, 1, DefaultVersions[id])
+	assert.NotEmpty(t, Descriptions[id])
+	rendered := DefaultFor(id)
+	assert.True(t, HasDirective(fmt.Sprintf(rendered, Directive(""))))
+	assert.False(t, strings.HasPrefix(rendered, "-"))
+}
+
 // contains checks if a slice contains a string value.
 func contains(slice []string, val string) bool {
 	for _, v := range slice {

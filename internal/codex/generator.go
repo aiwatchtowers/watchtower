@@ -19,6 +19,9 @@ type CodexGenerator struct {
 	modelLight  string
 	modelStrong string
 	codexPath   string
+	// stdinOnly routes every user message through stdin regardless of its
+	// size (see SetStdinOnly).
+	stdinOnly bool
 }
 
 // NewCodexGenerator creates a generator that uses the Codex CLI.
@@ -27,6 +30,12 @@ type CodexGenerator struct {
 func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerator {
 	return &CodexGenerator{modelLight: modelLight, modelStrong: modelStrong, codexPath: codexPath}
 }
+
+// SetStdinOnly makes every subsequent Generate pass the user message on
+// stdin ("-" positional), never as a positional argv value, whatever its
+// size. Callers whose user message carries the owner's chat text set it
+// (CHAT-04: `chat title`); every other caller keeps the size-based routing.
+func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // Generate calls Codex CLI with the given prompt and returns the response text,
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
@@ -38,7 +47,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args, stdin := buildArgs(model, systemPrompt, userMessage)
+	args, stdin := buildArgs(model, systemPrompt, userMessage, g.stdinOnly)
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	if stdin != "" {
@@ -88,10 +97,10 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 }
 
 // buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold the final positional arg is "-" (codex reads the
+// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
 // prompt from stdin) and the message is returned as stdin content instead,
 // to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
-func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
+func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
 	args := []string{
 		"exec",
 		"--model", model,
@@ -105,7 +114,7 @@ func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}
 	stdin := ""
-	if len(userMessage) > digest.StdinThreshold {
+	if stdinOnly || len(userMessage) > digest.StdinThreshold {
 		stdin = userMessage
 		args = append(args, "-")
 	} else {

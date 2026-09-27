@@ -13,10 +13,6 @@ final class IdeaChatViewModelTests: XCTestCase {
         super.setUp()
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-            try dbManager.dbPool.write { db in
-                try ChatConversationQueries.ensureTable(db)
-                try ChatMessageQueries.ensureTable(db)
-            }
         } catch { XCTFail("setUp failed: \(error)") }
     }
 

@@ -95,7 +95,10 @@ final class AgentActionCardViewTests: XCTestCase {
     }
 
     /// The created issue's link IS the card's Open affordance — one link,
-    /// shown even on a chat surface that passes no in-app navigation.
+    /// shown even on a chat surface that passes no in-app navigation. Since
+    /// spec 2026-09-26 §8 the label follows the generic label→key→url rule
+    /// (no per-tool "Open X →" text) — `outcome`'s generic link renders it,
+    /// and `links` skips a `.url` destination to avoid a duplicate.
     func testAppliedJiraCardShowsOneOpenLink() throws {
         let result = #"{"key":"ABC-7","url":"https://acme.atlassian.net/browse/ABC-7"}"#
         let action = try row { db in
@@ -103,7 +106,7 @@ final class AgentActionCardViewTests: XCTestCase {
         }
         let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         let link = try view.inspect().find(ViewType.Link.self)
-        XCTAssertEqual(try link.labelView().text().string(), "Open ABC-7 →")
+        XCTAssertEqual(try link.labelView().text().string(), "ABC-7")
         XCTAssertEqual(try link.url().absoluteString, "https://acme.atlassian.net/browse/ABC-7")
         XCTAssertEqual(try view.inspect().findAll(ViewType.Link.self).count, 1)
     }
@@ -168,5 +171,70 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "create_track", argsJSON: #"{"title":"stale","text":"Watch the rollout"}"#)
         }
         XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Watch the rollout"])
+    }
+
+    func testJiraIssueWriteSummaryLines() throws {
+        func lines(_ tool: String, _ args: String) throws -> [String] {
+            let action = try row { db in try TestDatabase.insertAgentAction(db, tool: tool, external: true, argsJSON: args) }
+            return AgentActionCardView.summaryLines(for: action)
+        }
+        XCTAssertEqual(try lines("add_jira_comment", #"{"key":"ABC-7","body":"Ship it","reason":"r"}"#),
+                       ["Issue: ABC-7", "Ship it"])
+        XCTAssertEqual(try lines("transition_jira_issue", #"{"key":"ABC-7","status":"Done","reason":"r"}"#),
+                       ["Issue: ABC-7 → Done"])
+        XCTAssertEqual(try lines("assign_jira_issue", #"{"key":"ABC-7","assignee":"me","reason":"r"}"#),
+                       ["Issue: ABC-7 · Assignee: me"], "no pin → the raw string")
+        // The card names the person Execute will assign (pinned at propose),
+        // not the model's search words.
+        let pinned = #"{"key":"ABC-7","assignee":"alex","resolved_assignee_name":"Alex Doe","#
+            + #""resolved_assignee_account_id":"acc-123","reason":"r"}"#
+        XCTAssertEqual(try lines("assign_jira_issue", pinned),
+                       ["Issue: ABC-7 · Assignee: Alex Doe", "asked for \"alex\" · Jira account acc-123"])
+        let exact = #"{"key":"ABC-7","assignee":"Alex Doe","resolved_assignee_name":"Alex Doe","reason":"r"}"#
+        XCTAssertEqual(try lines("assign_jira_issue", exact), ["Issue: ABC-7 · Assignee: Alex Doe"])
+        let updateArgs = #"{"key":"ABC-7","summary":"New","priority":"High","#
+            + #""labels_add":["a","b"],"labels_remove":["c"],"due_date":"2026-10-01","reason":"r"}"#
+        XCTAssertEqual(
+            try lines("update_jira_issue", updateArgs),
+            ["Issue: ABC-7", "Summary: New", "Priority: High", "Add labels: a, b", "Remove labels: c", "Due: 2026-10-01"])
+    }
+
+    /// Any applied row with a url renders as a link titled by `label`, then
+    /// `key`, then the url itself — no per-tool code for new tools.
+    func testAppliedResultWithURLRendersGenericLabelledLink() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "transition_jira_issue", external: true, status: "applied",
+                                               resultJSON: #"{"key":"ABC-7","url":"https://acme.atlassian.net/browse/ABC-7","label":"ABC-7 → Done"}"#,
+                                               appliedAt: "2026-09-26T10:00:00Z")
+        }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let link = try view.inspect().find(ViewType.Link.self)
+        XCTAssertEqual(try link.labelView().text().string(), "ABC-7 → Done")
+        XCTAssertEqual(try link.url(), URL(string: "https://acme.atlassian.net/browse/ABC-7"))
+    }
+
+    func testAppliedJiraIssueWithoutLabelStillShowsTheKey() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "applied",
+                                               resultJSON: #"{"key":"ABC-8","url":"https://acme.atlassian.net/browse/ABC-8"}"#,
+                                               appliedAt: "2026-09-26T10:00:00Z")
+        }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertEqual(try view.inspect().find(ViewType.Link.self).labelView().text().string(), "ABC-8")
+    }
+
+    /// The generic url+label link reuses `AgentActionDestination.resultWebURL`'s
+    /// http/https-only check (review round 1, Important 1) — a non-web scheme
+    /// in `result.url` must never render as a clickable Link.
+    func testAppliedResultWithNonWebSchemeRendersNoLink() throws {
+        for url in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,x"] {
+            let action = try row { db in
+                try TestDatabase.insertAgentAction(db, tool: "transition_jira_issue", external: true, status: "applied",
+                                                   resultJSON: #"{"key":"ABC-7","url":"\#(url)"}"#,
+                                                   appliedAt: "2026-09-26T10:00:00Z")
+            }
+            let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+            XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self), "\(url) must not render a Link")
+        }
     }
 }

@@ -41,6 +41,35 @@ final class QuitCoordinatorTests: XCTestCase {
         await fulfillment(of: [replied], timeout: 5)
     }
 
+    /// CHAT-03: no chat session process outlives the app, and they are closed
+    /// BEFORE the daemon stop (each keeps its partial text, CHAT-01).
+    /// BEHAVIOR CHAT-03 — see docs/inventory/chat.md
+    func testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon() async {
+        var order: [String] = []
+        let replied = expectation(description: "replied")
+        let reply = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: false,
+            confirmQuit: { true },
+            closeChatSessions: { order.append("chat") },
+            stopDaemon: { order.append("daemon") },
+            reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
+        XCTAssertEqual(reply, .terminateLater)
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertEqual(order, ["chat", "daemon"])
+    }
+
+    func testCancelledQuitLeavesChatSessionsRunning() {
+        var closed = false
+        let reply = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: true,
+            confirmQuit: { false },
+            closeChatSessions: { closed = true },
+            stopDaemon: {},
+            reply: { _ in XCTFail("must not reply") })
+        XCTAssertEqual(reply, .terminateCancel)
+        XCTAssertFalse(closed)
+    }
+
 }
 
 /// The quit gate widened from "capturing" to `MeetingRecorderCenter.isBusy`:

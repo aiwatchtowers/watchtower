@@ -114,6 +114,6 @@ func TestCreateIdea_Registration(t *testing.T) {
 	assert.Equal(t, "create_idea", tool.Name)
 	assert.Equal(t, AccessWrite, tool.Access)
 	assert.False(t, tool.External)
-	assert.Equal(t, []string{"reaction"}, tool.Surfaces, "reaction-path only")
+	assert.ElementsMatch(t, []string{"reaction", "main"}, tool.Surfaces, "reaction path + main chat; never the target chat (TGT-BRIEF-01 axis 3)")
 	require.NotNil(t, tool.InputSchema)
 }

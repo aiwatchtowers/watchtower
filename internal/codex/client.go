@@ -23,10 +23,49 @@ type Client struct {
 	// mode flags (--chat --surface … --conversation … --turn …) the Desktop
 	// passes through `ai query --tools chat`. Empty = the read-only dev server.
 	mcpArgs []string
+	// stdinOnly routes the system prompt and user message through stdin only
+	// (see SetStdinOnly) — never through argv.
+	stdinOnly bool
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
+
+// SetStdinOnly makes every subsequent call route the system prompt and user
+// message through stdin ONLY (CHAT-04, spec §9: no content on any process's
+// argv) instead of the default `-c developer_instructions=...` argv flag and
+// the positional-or-stdin heuristic in promptPositionalOrStdin. This is an
+// opt-in: existing callers (cliGenerator, digest generators, `ai query`)
+// never set it and keep today's behavior byte-for-byte. It exists for the
+// chat session's codex backend (`ai session --provider codex`,
+// cmd/ai_session.go's newSessionBackend), where the system prompt and the
+// replayed conversation can both carry arbitrarily sensitive content that
+// must never sit in a process listing (ps, /proc, crash reports).
+func (c *Client) SetStdinOnly(v bool) { c.stdinOnly = v }
+
+// codexStdinHeader/codexStdinUserHeader delimit the two sections of the
+// stdin-only payload (buildStdinOnlyArgs) so codex can still tell the system
+// instructions apart from the owner's turn even though both now arrive as
+// one stdin stream instead of separate channels.
+const (
+	codexStdinSystemHeader = "SYSTEM INSTRUCTIONS:\n"
+	codexStdinUserHeader   = "USER MESSAGE:\n"
+)
+
+// codexStdinContent renders the whole turn (system prompt + user message,
+// which for the chat session already carries the replayed history — see
+// chat.ReplayFromDB) as one delimited stdin payload.
+func codexStdinContent(systemPrompt, userMessage string) string {
+	var b strings.Builder
+	if systemPrompt != "" {
+		b.WriteString(codexStdinSystemHeader)
+		b.WriteString(systemPrompt)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(codexStdinUserHeader)
+	b.WriteString(userMessage)
+	return b.String()
+}
 
 // NewClient creates a new AI client that invokes the Codex CLI.
 // dbPath is the path to the SQLite database; when non-empty, an MCP SQLite
@@ -57,8 +96,13 @@ func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
 // buildArgs constructs the CLI arguments for a codex exec call, plus stdin
 // content when userMessage must travel that way instead of inline (see
 // promptPositionalOrStdin). workDir is an optional working directory to pass
-// via --cd.
+// via --cd. When c.stdinOnly is set (SetStdinOnly), it instead never emits
+// developer_instructions on argv and never places userMessage positionally —
+// see buildStdinOnlyArgs.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
+	if c.stdinOnly {
+		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
+	}
 	args := []string{
 		"exec",
 		"--model", c.model,
@@ -77,6 +121,28 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string,
 	positional, stdin := promptPositionalOrStdin(userMessage)
 	args = append(args, positional)
 	return args, stdin
+}
+
+// buildStdinOnlyArgs is buildArgs' CHAT-04 mode (see SetStdinOnly): no
+// -c developer_instructions=..., no positional prompt — codex always reads
+// "-" from stdin, and stdin carries the whole turn (system prompt then user
+// message, delimited by codexStdinContent) regardless of length or leading
+// characters.
+func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
+	args := []string{
+		"exec",
+		"--model", c.model,
+		"--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"-c", "approval_policy=never",
+		"-c", "sandbox_mode=read-only",
+	}
+	if workDir != "" {
+		args = append(args, "--cd", workDir)
+	}
+	args = append(args, "-")
+	return args, codexStdinContent(systemPrompt, userMessage)
 }
 
 // Query sends a streaming request via the Codex CLI and returns channels

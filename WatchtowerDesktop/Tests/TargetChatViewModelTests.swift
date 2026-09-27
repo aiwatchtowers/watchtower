@@ -19,9 +19,7 @@ final class TargetChatViewModelTests: XCTestCase {
     }
 
     /// A chat VM wired to a real conversation row. The VM adopts a conversation
-    /// the container resolved for it, so the tab has to exist first — and the
-    /// chat tables are Desktop-owned (created at runtime by `DatabaseManager`),
-    /// so the shared test schema does not carry them.
+    /// the container resolved for it, so the tab has to exist first.
     private func makeChat(
         target: Target,
         vm: TargetsViewModel,
@@ -30,9 +28,7 @@ final class TargetChatViewModelTests: XCTestCase {
         toolsAvailable: Bool = true
     ) throws -> TargetChatViewModel {
         let conversationID = try manager.dbPool.write { db -> Int64 in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-            return try ChatConversationQueries.create(
+            try ChatConversationQueries.create(
                 db, title: "Task", contextType: "target", contextID: String(target.id)
             ).id
         }
@@ -51,13 +47,6 @@ final class TargetChatViewModelTests: XCTestCase {
     private func fetchConversationID(_ manager: DatabaseManager, targetID: Int) throws -> Int64? {
         try manager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "target", id: String(targetID))?.id
-        }
-    }
-
-    private func ensureChatTables(_ manager: DatabaseManager) throws {
-        try manager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
         }
     }
 
@@ -106,7 +95,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testExecuteModeActionAutoAppliesWithOneSummaryMessage() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let reply = """
@@ -150,7 +138,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testSendRendersTheCurrentChecklistNotTheSnapshotFromInit() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService()
@@ -179,7 +166,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testExecuteModeDoesNotAutoApplyToAnotherTarget() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let root = try makeTarget(manager, intent: "x")
         let current = try makeChild(manager, parent: root)
         let vm = TargetsViewModel(dbManager: manager)
@@ -222,7 +208,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testExecuteMixedSuccessAndFailureReportsBothInOneSummary() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let reply = """
@@ -269,7 +254,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testStreamFailurePersistsFailureIntoTranscript() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService(error: StubStreamError())
@@ -326,7 +310,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testMalformedExecuteModeBlockNotApplied() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let reply = """
@@ -372,8 +355,14 @@ final class TargetChatViewModelTests: XCTestCase {
         let prompt = TargetChatViewModel.buildSystemPrompt(target: target, dbPool: manager.dbPool)
         XCTAssertTrue(prompt.contains("list_messages"))
         XCTAssertTrue(prompt.contains("search_knowledge"))
-        XCTAssertTrue(prompt.contains(ChatViewModel.knowledgeLinkRule), "search hits link via permalink or chunk_anchor")
+        XCTAssertTrue(prompt.contains(ChatPromptRules.knowledgeLinkRule), "search hits link via permalink or chunk_anchor")
         XCTAssertTrue(prompt.contains("Slack, mail, Jira, Confluence, calendar"), "Confluence is an indexed source")
+        // Same wording as the Go link rule (internal/chat/blocks, pinned by
+        // TestBuildSystemPrompt_NamesConfluenceSource).
+        XCTAssertTrue(ChatPromptRules.knowledgeLinkRule.hasSuffix(
+            "A Confluence hit links via its \"link\" (the page or attachment URL); "
+                + "when its chunk_anchor is a URL, that is a deep link to the matching heading or comment."
+        ))
         XCTAssertFalse(prompt.contains("same anchor fields"), "the old rule built links from namespaced ids")
         XCTAssertTrue(prompt.contains("list_targets"))
         XCTAssertTrue(prompt.contains("never ask the user to approve tool permissions"))
@@ -1211,8 +1200,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testSendPassesTargetToolModeWithContext() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
-        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService(events: [.text("ok"), .done])
@@ -1236,8 +1223,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testStreamEndSurfacesProposalsWrittenBySubprocess() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
-        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let chat = try makeChat(target: target, vm: vm, manager: manager,
@@ -1268,8 +1253,6 @@ final class TargetChatViewModelTests: XCTestCase {
     func testOllamaTargetChatSendsNoToolModeAndNoAgentActionsContract() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
-        try await manager.dbPool.write { db in try ChatMessageQueries.ensureTurnIDColumn(db) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
         let mock = MockClaudeService(events: [.text("ok"), .done])

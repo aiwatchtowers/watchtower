@@ -101,6 +101,22 @@ final class ReactionToolCatalogTests: XCTestCase {
         XCTAssertEqual(rows.first?.needsApproval, true)
     }
 
+    /// The Jira issue writes are chat-only (never in the reaction dictionary)
+    /// but render on the same agent-action card, so they need human names too.
+    func testJiraIssueWriteToolsHaveHumanNamesAndAlwaysAsk() {
+        let expected = [
+            "add_jira_comment": "Comment on a Jira issue",
+            "transition_jira_issue": "Move a Jira issue",
+            "assign_jira_issue": "Assign a Jira issue",
+            "update_jira_issue": "Update a Jira issue"
+        ]
+        for (tool, title) in expected {
+            XCTAssertEqual(ReactionToolCatalog.title(for: tool), title)
+            XCTAssertEqual(ReactionToolCatalog.info(for: tool)?.alwaysAsks, true, "\(tool) is External (AGENT-03)")
+            XCTAssertFalse(ReactionDictionaryTools.all.contains(tool), "\(tool) is not a reaction tool")
+        }
+    }
+
     func testStatusLineWithAndWithoutALastCheck() {
         XCTAssertEqual(ReactionCheatSheet.statusLine(lastCheck: nil), "Watching your Slack reactions")
         let fiveMinutesAgo = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-5 * 60))

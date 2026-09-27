@@ -83,8 +83,9 @@ func TestBuildSystemPrompt_KnowledgeHitLinkRule(t *testing.T) {
 }
 
 // Confluence is an indexed source: the tool line names it and the link rule
-// says how a Confluence hit links. Swift twins: the five chat prompt copies
-// and ChatViewModel.knowledgeLinkRule (dual path, same wording).
+// says how a Confluence hit links. The text lives in internal/chat/blocks
+// (shared with the main AI Chat); Swift twins: the Discuss chat prompt copies
+// and ChatPromptRules.knowledgeLinkRule (dual path, same wording).
 func TestBuildSystemPrompt_NamesConfluenceSource(t *testing.T) {
 	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
 

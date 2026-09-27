@@ -13,34 +13,6 @@ import (
 	"watchtower/internal/db"
 )
 
-// createChatTables mirrors the Swift-owned chat tables into a memory-package
-// test DB (see the db package's createChatTablesForTest — the same DDL the
-// Desktop GRDB ensureTable helpers run). Absent from Go's goose schema, so a
-// test that needs owner Discuss turns must create them explicitly.
-func createChatTables(t *testing.T, d *db.DB) {
-	t.Helper()
-	stmts := []string{
-		`CREATE TABLE chat_conversations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			context_type TEXT,
-			context_id TEXT,
-			created_at REAL NOT NULL,
-			updated_at REAL NOT NULL)`,
-		`CREATE TABLE chat_messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-			role TEXT NOT NULL,
-			text TEXT NOT NULL,
-			created_at REAL NOT NULL)`,
-	}
-	for _, s := range stmts {
-		_, err := d.Exec(s)
-		require.NoError(t, err)
-	}
-}
-
 func seedChatConversation(t *testing.T, d *db.DB, contextType, contextID string) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
@@ -86,7 +58,6 @@ func TestChatEvidenceLineRoundTrips(t *testing.T) {
 // direction follows the op.
 func TestValidateChatRefsOwnerTurn(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	conv := seedChatConversation(t, d, "situation", "7")
 	seedChatMessage(t, d, conv, "user", "alice is unreliable", 1720000000.0)
 	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
@@ -107,7 +78,6 @@ func TestValidateChatRefsOwnerTurn(t *testing.T) {
 // like a hallucinated ref.
 func TestValidateChatRefsDropsNonOwner(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	conv := seedChatConversation(t, d, "situation", "7")
 	other := seedChatConversation(t, d, "track", "9")
 	seedChatMessage(t, d, conv, "assistant", "secretary said", 1720000000.0)
@@ -187,7 +157,6 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 
 	t.Run("chat ref absent from the belief-pass input is dropped as invented", func(t *testing.T) {
 		v, d := newTestVault(t), newTestDB(t)
-		createChatTables(t, d)
 		conv := seedChatConversation(t, d, "situation", "7")
 		seedChatMessage(t, d, conv, "user", "alice is unreliable", 1720000000.0)
 		subjectID := "ent_00000000000000000000000001"
@@ -213,7 +182,6 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 
 	t.Run("chat ref resolving to a non-owner turn is dropped", func(t *testing.T) {
 		v, d := newTestVault(t), newTestDB(t)
-		createChatTables(t, d)
 		conv := seedChatConversation(t, d, "situation", "7")
 		seedChatMessage(t, d, conv, "assistant", "secretary said", 1720000000.0)
 		p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)
@@ -238,7 +206,6 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 	// resolver-confirmed chat ref, whatever its context type.
 	t.Run("target/track owner turn mints owner rank only when memory.sources.chats is on", func(t *testing.T) {
 		v, d := newTestVault(t), newTestDB(t)
-		createChatTables(t, d)
 		track := seedChatConversation(t, d, "track", "7")
 		seedChatMessage(t, d, track, "user", "remember this: the track slipped a week", 1720000000.0)
 		ref := episodeRef{ChannelID: fmt.Sprintf("chat:%d", track), TS: "1720000000"}
@@ -274,7 +241,6 @@ func TestMemory09_OwnerRankOnlyFromAuthoredTurns(t *testing.T) {
 // retires an unprotected belief per the rank math.
 func TestReviseBeliefsOwnerChatRetires(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	conv := seedChatConversation(t, d, "situation", "7")
 	seedChatMessage(t, d, conv, "user", "alice keeps missing deadlines", 1720000000.0)
 

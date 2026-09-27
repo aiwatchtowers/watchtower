@@ -385,7 +385,7 @@ final class TrackChatViewModel {
         newest first. Pass this track's channel ids (listed above) as `channel` to scan its traffic.
         - get_person / list_people — people cards; list_targets / get_target, list_tracks, \
         list_digests, list_jira_issues — work context.
-        \(ChatViewModel.noLiveSourcesRule)
+        \(ChatPromptRules.noLiveSourcesRule)
 
         === WORKSPACE ===
         Slack team ID: \(teamID)
@@ -424,7 +424,7 @@ final class TrackChatViewModel {
         - Every referenced message MUST have a link
         - Link text describes WHAT is linked, not "link" or "click here"
         - list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links
-        - \(ChatViewModel.knowledgeLinkRule)
+        - \(ChatPromptRules.knowledgeLinkRule)
         - NEVER link to a channel when the user asked for a specific message — resolve the actual ts first
 
         === RESPONSE STYLE ===
@@ -529,7 +529,7 @@ struct TrackChatSection: View {
                             .font(.subheadline)
                             .foregroundStyle(.tertiary)
                     } else {
-                        MarkdownText(text: msg.text)
+                        MarkdownView(text: msg.text)
                             .font(.subheadline)
                     }
                     if msg.isStreaming {
