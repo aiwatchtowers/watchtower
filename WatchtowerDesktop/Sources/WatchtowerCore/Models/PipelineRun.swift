@@ -45,6 +45,7 @@ package struct PipelineRun: Decodable, FetchableRecord, Identifiable {
         case "digests": return "Digests"
         case "tracks": return "Tracks"
         case "people": return "People Cards"
+        case "external-sync": return "Confluence sync"
         default: return pipeline.capitalized
         }
     }
@@ -55,6 +56,7 @@ package struct PipelineRun: Decodable, FetchableRecord, Identifiable {
         case "digests": return "doc.text.magnifyingglass"
         case "tracks": return "checklist"
         case "people": return "person.2.circle"
+        case "external-sync": return "books.vertical"
         default: return "gearshape"
         }
     }
