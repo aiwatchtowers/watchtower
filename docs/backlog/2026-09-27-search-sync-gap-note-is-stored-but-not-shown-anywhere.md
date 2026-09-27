@@ -18,3 +18,5 @@ sees that messages were skipped. Fix: show a non-error warning line in Settings 
 `slack accounts` when `error` is non-empty on an ok account.
 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
+
+Review note (fix/backlog-wave2): the note survives its own run but is erased by the next gap-free cycle (~15 min), and `TestRun_ClampedGapNoteSurvivesTheRunsOKWrite` pins that clearing — whoever implements this changes that assertion on purpose. Suggested shape: a separate `sync_gap_note` column cleared only when the owner acknowledges it (owner UX call: acknowledge vs keep N days).
