@@ -9,8 +9,11 @@ import Testing
 @Suite("ProcessPipes")
 struct ProcessPipesTests {
     /// Well over the 64 KiB default pipe buffer, written to stderr BEFORE the
-    /// child writes (and closes) stdout.
-    private static let largeStderrScript = "yes x | head -c 300000 1>&2; echo done"
+    /// child writes (and closes) stdout. Written by the shell's own `printf`
+    /// builtin, so there is no child process at all: the watchdog's
+    /// `terminate()` reaches only the shell, and a `yes | head` pipeline (or
+    /// any external writer) would outlive it as an orphan.
+    private static let largeStderrScript = "printf '%300000s' '' 1>&2; echo done"
 
     private static func shell(_ script: String) -> Process {
         let process = Process()
