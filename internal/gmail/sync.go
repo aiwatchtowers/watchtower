@@ -113,7 +113,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			// it at or after the last second the pass advanced to — a noise
 			// skip or a stored message in that same second must not leave
 			// the watermark on it.
-			maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
+			if !stalled { // later losses sit at or after the first one
+				maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
+			}
 			stalled = true
 			continue
 		}

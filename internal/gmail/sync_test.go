@@ -1107,3 +1107,35 @@ func TestSyncCapTieDoesNotLoseSameSecondMessage(t *testing.T) {
 		})
 	}
 }
+
+// A stored message and a message whose upsert fails in the same second: the
+// watermark must hold below that second so the failed one is retried.
+func TestSyncUpsertLossHoldsWatermarkBelowItsSecond(t *testing.T) {
+	const s0 = 1700000000
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"messages":[{"id":"mB"},{"id":"mA"}]}`) // newest-first
+	})
+	for _, id := range []string{"mA", "mB"} {
+		mux.HandleFunc("/users/me/messages/"+id, func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintf(w, `{"id":%q,"threadId":"t-%s","labelIds":["INBOX"],"snippet":"s",
+          "internalDate":"%d000","payload":{"headers":[{"name":"Subject","value":%q}]}}`, id, id, s0, id)
+		})
+	}
+	s, database, accountID := newTestSyncerForMux(t, mux)
+	if _, err := database.Exec(`CREATE TRIGGER fail_mb BEFORE INSERT ON gmail_messages
+		WHEN NEW.id = 'mB' BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	watermark, err := database.GetGmailAccountWatermark(accountID)
+	if err != nil {
+		t.Fatalf("watermark: %v", err)
+	}
+	if watermark != float64(s0-1) {
+		t.Fatalf("watermark = %v, want %v — a same-second upsert loss must not be excluded next cycle", watermark, s0-1)
+	}
+}
