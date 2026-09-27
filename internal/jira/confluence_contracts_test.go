@@ -40,7 +40,7 @@ func TestEXT01_ConfluenceAPIIsGETOnly(t *testing.T) {
 		exported = append(exported, apiType.Method(i).Name)
 	}
 	sort.Strings(exported)
-	require.Equal(t, []string{"Download", "GetJSON", "GrantedScopes"}, exported,
+	require.Equal(t, []string{"Download", "GetJSON"}, exported,
 		"a new ConfluenceAPI method must be exercised by this guard before it ships")
 
 	api := newTestClient(t, srv.URL, "", "tok").Confluence()
@@ -50,8 +50,6 @@ func TestEXT01_ConfluenceAPIIsGETOnly(t *testing.T) {
 	rc, err := api.Download(ctx, "/wiki/rest/api/content/1/child/attachment/2/download", 1<<20)
 	require.NoError(t, err)
 	require.NoError(t, rc.Close())
-	_, err = api.GrantedScopes() // token store only, no request
-	require.NoError(t, err)
 
 	mu.Lock()
 	defer mu.Unlock()

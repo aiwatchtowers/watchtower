@@ -134,24 +134,6 @@ func (c *Client) downloadHTTPClient() *http.Client {
 	return &hc
 }
 
-// GrantedScopes returns the scope field of the stored OAuth token — the
-// scopes Atlassian actually granted at consent, which HasConfluenceScopes
-// checks against ConfluenceScopes to decide whether re-consent is needed.
-// Reads under c.mu, the same lock getAccessToken/refreshIfCurrent hold while
-// writing: TokenStore.Save is not atomic (MarshalIndent + WriteFile, no
-// tmp+rename), so a read racing an in-flight refresh could otherwise land
-// mid-write and see truncated or partial JSON.
-func (a *ConfluenceAPI) GrantedScopes() (string, error) {
-	a.c.mu.Lock()
-	defer a.c.mu.Unlock()
-
-	tok, err := a.c.tokenStore.Load()
-	if err != nil {
-		return "", fmt.Errorf("loading token: %w", err)
-	}
-	return tok.Scope, nil
-}
-
 // cappedBody wraps a download body in a hard budget of max+1 bytes (via
 // io.LimitReader): once more than max bytes have been read, the read that
 // would return byte max+1 is turned into ErrTooLarge instead of silently

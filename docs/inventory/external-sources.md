@@ -25,9 +25,8 @@ anywhere. Design:
 **Status:** Enforced
 
 **Observable:** No code path issues a non-GET request to Confluence. The
-only Confluence client is `*jira.ConfluenceAPI`, whose exported methods are
-`GetJSON` and `Download` (each one GET) and `GrantedScopes` (reads the local
-token store, no request). The fetcher reaches the network only through the
+only Confluence client is `*jira.ConfluenceAPI`, whose only exported
+methods are `GetJSON` and `Download` (each one GET). The fetcher reaches the network only through the
 `confluence.API` interface — exactly `GetJSON` and `Download` — and every
 path it requests is under `/wiki/`. Nothing in Watchtower can create, edit,
 comment on, or delete Confluence content.
@@ -37,7 +36,7 @@ comment on, or delete Confluence content.
   — every exported `ConfluenceAPI` method is exercised against an
   `httptest` server that fails the test on any non-GET, and a `reflect`
   check pins the exported method set to exactly
-  {`Download`, `GetJSON`, `GrantedScopes`}, so a new method (a write, say)
+  {`Download`, `GetJSON`}, so a new method (a write, say)
   fails the guard until it is exercised there too.
 - `TestEXT01_FetcherReachesOnlyTheGETAPI` (`internal/confluence/fetcher_test.go`)
   — the `API` seam is pinned to {`Download`, `GetJSON`}, the `*Fetcher`

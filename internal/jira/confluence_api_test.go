@@ -225,48 +225,6 @@ func TestConfluenceGetJSON_NonOKStatus(t *testing.T) {
 	assert.Contains(t, statusErr.Error(), "403")
 }
 
-func TestConfluenceGrantedScopes(t *testing.T) {
-	c := newTestClient(t, "http://unused", "", "tok")
-	got, err := c.Confluence().GrantedScopes()
-	require.NoError(t, err)
-	assert.Equal(t, OAuthScopes, got)
-}
-
-// TestConfluenceGrantedScopes_WaitsForInFlightRefresh pins that GrantedScopes
-// reads the token store under c.mu, the same lock getAccessToken/
-// refreshIfCurrent hold while writing it. TokenStore.Save is
-// MarshalIndent+WriteFile with no tmp+rename, so it is not atomic; without
-// this lock, GrantedScopes could read the file mid-write during a concurrent
-// refresh and see truncated/partial JSON. The test holds c.mu itself (a
-// stand-in for "a refresh is in flight") and asserts GrantedScopes blocks
-// until the lock is released rather than racing straight through to
-// tokenStore.Load.
-func TestConfluenceGrantedScopes_WaitsForInFlightRefresh(t *testing.T) {
-	c := newTestClient(t, "http://unused", "", "tok")
-
-	c.mu.Lock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, err := c.Confluence().GrantedScopes()
-		assert.NoError(t, err)
-	}()
-
-	select {
-	case <-done:
-		t.Fatal("GrantedScopes returned before the held lock was released")
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	c.mu.Unlock()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("GrantedScopes did not return after the lock was released")
-	}
-}
-
 // TestConfluenceDownload_OmitsJSONAcceptHeader pins that Download never sends
 // Accept: application/json — an attachment binary is not JSON, and telling
 // Confluence's download endpoint to expect one is wrong for this request
