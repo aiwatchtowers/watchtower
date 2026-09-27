@@ -150,3 +150,13 @@ func TestSyncer_Sync_FailedMiddleBatchKeepsWritingLaterBatches(t *testing.T) {
 	assert.Equal(t, 0, n, "a failed project contributes nothing to the count")
 	assertMiddleBatchFailure(t, database)
 }
+
+// TestSyncer_InitialLoad_RecordsBatchFailure: InitialLoad records a failed
+// project on its jira_sync_state row the same way Sync does, instead of
+// only logging it.
+func TestSyncer_InitialLoad_RecordsBatchFailure(t *testing.T) {
+	database := failMiddleBatchDB(t)
+	_, err := quietSyncer(t, database, pagedOPSServer(t).URL).InitialLoad(context.Background())
+	require.NoError(t, err)
+	assertMiddleBatchFailure(t, database)
+}

@@ -135,10 +135,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			// log is the ONLY place this failure would otherwise land. Record
 			// it on the project's own row, which `jira status` renders and the
 			// next successful pass clears.
-			s.logger.Printf("sync error for project %s: %v", projectKey, err)
-			if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
-				s.logger.Printf("recording sync error for project %s: %v", projectKey, rerr)
-			}
+			s.recordProjectError("sync", projectKey, err)
 			continue
 		}
 
@@ -349,6 +346,17 @@ func buildStatusNotIn(statuses []string) string {
 	return strings.Join(quoted, ",")
 }
 
+// recordProjectError logs a per-project failure and records it on the
+// project's jira_sync_state row (rendered by `jira status`, cleared by the
+// next successful pass), leaving its watermark alone. what names the pass
+// in the log line.
+func (s *Syncer) recordProjectError(what, projectKey string, err error) {
+	s.logger.Printf("%s error for project %s: %v", what, projectKey, err)
+	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+		s.logger.Printf("recording %s error for project %s: %v", what, projectKey, rerr)
+	}
+}
+
 // InitialLoad performs a full backlog sync without the updated filter.
 func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	total := 0
@@ -375,7 +383,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		// backlog import from blowing the per-issue API budget.
 		n, _, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
-			s.logger.Printf("initial load error for project %s: %v", projectKey, err)
+			s.recordProjectError("initial load", projectKey, err)
 			continue
 		}
 		total += n

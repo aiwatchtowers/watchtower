@@ -15,4 +15,4 @@ In `syncWithJQL`, an `UpsertJiraIssueBatch` error is only logged (`batch upsert 
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Fixed in fix/backlog-sync-watermarks: a failed UpsertJiraIssueBatch is logged and the pass keeps writing the later batches (a poison batch no longer freezes the rest of the project), then the first write error is returned (joined with any reader error, so a revoked grant still aborts the account), so Sync/InitialLoad record it on the project row and skip that project's watermark; other projects continue.
+Fixed in fix/backlog-sync-watermarks: a failed UpsertJiraIssueBatch is logged and the pass keeps writing the later batches (a poison batch no longer freezes the rest of the project), then the first write error is returned (joined with any reader error, so a revoked grant still aborts the account), so Sync and InitialLoad (which used to only log it) record it on the project row and skip that project's watermark; other projects continue.
