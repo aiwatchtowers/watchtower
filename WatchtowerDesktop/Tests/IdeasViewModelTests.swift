@@ -461,7 +461,7 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
 
         let firstTask = Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
-        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        await waitUntil("the first run to reach the CLI") { blocking.invocations.count == 1 }
         XCTAssertTrue(vm.isBackfilling)
 
         await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date())
@@ -533,7 +533,7 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
 
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
-        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        await waitUntil("the first run to reach the CLI") { blocking.invocations.count == 1 }
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
         XCTAssertEqual(blocking.invocations.count, 1, "the second call must not invoke the CLI again")
 
@@ -626,5 +626,16 @@ final class IdeasViewModelTests: XCTestCase {
 
     func testParseBackfillEnvelopeReturnsNilOnMalformedOutput() {
         XCTAssertNil(IdeasViewModel.parseBackfillEnvelope(Data("not json at all".utf8)))
+    }
+
+    /// Yields until `condition` holds or a wall-clock deadline passes. A
+    /// yield-count spin is load-sensitive: under a full parallel suite the
+    /// first run can flip isBackfilling before its CLI call lands.
+    private func waitUntil(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("timed out waiting for \(what)"); return }
+            await Task.yield()
+        }
     }
 }
