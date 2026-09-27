@@ -42,13 +42,24 @@ const (
 )
 
 // Binding is where a proposal came from: the chat surface, conversation and
-// turn the Desktop passed to the chat-mode server.
+// turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
+// read at propose time and wins over TurnID — a warm `ai session` spans many
+// turns and publishes the running one through a turn file (spec §1.2).
 type Binding struct {
 	Surface        string
 	ConversationID int64
 	ContextType    string
 	ContextID      string
 	TurnID         string
+	TurnIDFunc     func() string
+}
+
+// turnID is the turn a proposal attaches to right now.
+func (b Binding) turnID() string {
+	if b.TurnIDFunc != nil {
+		return b.TurnIDFunc()
+	}
+	return b.TurnID
 }
 
 // Call is what Execute receives: the recorded row id (0 for RunDirect), the
@@ -76,6 +87,16 @@ type Tool struct {
 	Validate func(ctx context.Context, d *db.DB, args json.RawMessage) error
 	// Execute performs the write. Only Apply (and RunDirect) call it.
 	Execute func(ctx context.Context, d *db.DB, call Call) (any, error)
+	// Normalize runs once, in Propose, after Validate succeeds and before the
+	// args are persisted to agent_actions.args_json: whatever it returns is
+	// exactly what Execute sees when Apply runs later, possibly hours after
+	// approval. A tool whose Validate resolves something ambiguous (which
+	// site a key lives on, which person a name means) uses Normalize to pin
+	// that resolution into the stored args, so Execute never re-derives it
+	// from free text against data that may have since changed — the owner's
+	// approval is of the resolved action, not of a string that gets
+	// re-interpreted at apply time. Optional; nil leaves args unchanged.
+	Normalize func(ctx context.Context, d *db.DB, args json.RawMessage) (json.RawMessage, error)
 
 	// resolved is InputSchema prepared for validation. Unexported: a tool
 	// author declares the schema, the registry prepares it once in Register
@@ -267,6 +288,16 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if err := t.Validate(ctx, r.db, args); err != nil {
 		return Receipt{}, err
 	}
+	if t.Normalize != nil {
+		normalized, err := t.Normalize(ctx, r.db, args)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if !json.Valid(normalized) {
+			return Receipt{}, fmt.Errorf("normalize: tool %q returned invalid JSON", name)
+		}
+		args = normalized
+	}
 	reason := reasonOf(args)
 	if reason == "" {
 		return Receipt{}, &ValidationError{Msg: `"reason" is required: say why you propose this`}
@@ -284,7 +315,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	row := db.AgentAction{
 		Tool: name, External: t.External, ArgsJSON: string(args), Reason: reason,
 		Surface: b.Surface, ConversationID: b.ConversationID,
-		ContextType: b.ContextType, ContextID: b.ContextID, TurnID: b.TurnID,
+		ContextType: b.ContextType, ContextID: b.ContextID, TurnID: b.turnID(),
 		Status: "pending", TrustAtCreate: string(trust),
 	}
 	if trust == TrustExecute {

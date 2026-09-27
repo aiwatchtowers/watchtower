@@ -190,6 +190,8 @@ func TestAllTablesExist(t *testing.T) {
 		"kb_documents", "kb_chunks", "kb_sources",
 		"ext_sources", "ext_documents", "ext_comments", "ext_users",
 		"doc_links", "ext_link_state",
+		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",
+		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
 	}
 
 	for _, table := range expectedTables {

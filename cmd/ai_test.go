@@ -1,11 +1,20 @@
 package cmd
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/ai"
+	"watchtower/internal/chat"
 )
 
 func TestChatMCPArgs_Shape(t *testing.T) {
@@ -85,5 +94,56 @@ func TestAIQueryCmd_FlagsBeforeSeparatorReachRunEVerbatim(t *testing.T) {
 				t.Errorf("--system-prompt value = %q, want %q — a flag placed after \"--\" would never reach its variable", gotSystemPrompt, "S")
 			}
 		})
+	}
+}
+
+func runV2(t *testing.T, chunks []ai.StreamChunk, sid string, err error) []chat.Event {
+	t.Helper()
+	textCh := make(chan ai.StreamChunk, len(chunks))
+	for _, c := range chunks {
+		textCh <- c
+	}
+	close(textCh)
+	sidCh := make(chan string, 1)
+	sidCh <- sid
+	close(sidCh)
+	errCh := make(chan error, 1)
+	if err != nil {
+		errCh <- err
+	}
+	close(errCh)
+
+	var buf bytes.Buffer
+	streamQueryV2(&buf, "t1", textCh, errCh, sidCh)
+	var out []chat.Event
+	sc := bufio.NewScanner(&buf)
+	for sc.Scan() {
+		var e chat.Event
+		require.NoError(t, json.Unmarshal(sc.Bytes(), &e))
+		out = append(out, e)
+	}
+	return out
+}
+
+func TestAIQueryV2_StreamsWithoutReset(t *testing.T) {
+	evs := runV2(t, []ai.StreamChunk{{Text: "Let me check."}, {ToolBoundary: true}, {Text: "Found it."}}, "s1", nil)
+	var types []string
+	for _, e := range evs {
+		types = append(types, e.Type)
+	}
+	assert.Equal(t, []string{chat.EventTurnStart, chat.EventTextDelta, chat.EventTextDelta, chat.EventTurnDone}, types)
+	assert.Equal(t, "t1", evs[3].TurnID)
+	assert.Equal(t, "s1", evs[3].SessionID)
+	assert.Equal(t, chat.StatusComplete, evs[3].Status)
+}
+
+func TestAIQueryV2_ErrorIsTerminal(t *testing.T) {
+	evs := runV2(t, []ai.StreamChunk{{Text: "partial"}}, "", errors.New("API Error: 429 rate_limit_error"))
+	last := evs[len(evs)-1]
+	assert.Equal(t, chat.EventError, last.Type)
+	assert.Equal(t, "t1", last.TurnID)
+	assert.Equal(t, chat.CodeRateLimit, last.Code)
+	for _, e := range evs {
+		assert.NotEqual(t, chat.EventTurnDone, e.Type)
 	}
 }

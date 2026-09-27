@@ -147,6 +147,9 @@ final class AppState {
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
     private(set) var chatHistoryViewModel: ChatHistoryViewModel?
+    /// App-wide warm chat sessions (spec §1.4) — owns every running main-chat
+    /// turn, so turns survive navigation. Created once the DB is open.
+    private(set) var chatSessionPool: ChatSessionPool?
 
     /// Calendar ViewModel — persists across tab switches.
     private(set) var calendarViewModel: CalendarViewModel?
@@ -274,45 +277,28 @@ final class AppState {
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
-        let configProvider = ConfigService().aiProvider
-        let provider: AIProvider = configProvider == "codex" ? .codex : .claude
-        let service = WatchtowerAIService()
-        let cvm = ChatViewModel(aiService: service, dbManager: db, provider: provider)
+        let provider = AIProvider.fromConfig(ConfigService().aiProvider)
+        let cvm = ChatViewModel(
+            dbManager: db,
+            pool: ensureChatSessionPool(db),
+            provider: provider,
+            cliRunner: ProcessCLIRunner.makeDefault()
+        )
         let hvm = ChatHistoryViewModel(dbManager: db)
-        hvm.load { [weak self, weak cvm, weak hvm] in
-            self?.maybeCreateWelcomeChat(chatVM: cvm, historyVM: hvm)
-        }
-
-        cvm.onConversationUpdated = { [weak hvm] convID, title, sessionID in
-            guard let hvm else { return }
-            if let title { hvm.updateTitle(convID, title: title) }
-            if let sessionID { hvm.updateSessionID(convID, sessionID: sessionID) }
-            if title == nil && sessionID == nil { hvm.touch(convID) }
-        }
-
+        hvm.load()
+        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
         chatViewModel = cvm
         chatHistoryViewModel = hvm
     }
 
-    /// Creates a welcome chat with AI greeting when no conversations exist and user profile is available.
-    private func maybeCreateWelcomeChat(chatVM: ChatViewModel?, historyVM: ChatHistoryViewModel?) {
-        guard let chatVM, let historyVM, let db = databaseManager else { return }
-        guard historyVM.conversations.isEmpty else { return }
-
-        // Load user profile
-        let profile: UserProfile? = try? db.dbPool.read { db in
-            try ProfileQueries.fetchCurrentProfile(db)
-        }
-        guard let profile, profile.onboardingDone else { return }
-
-        let language = ConfigService().digestLanguage ?? "English"
-
-        // Create conversation and send welcome message
-        guard let conv = historyVM.createConversation() else { return }
-        chatVM.newChat()
-        chatVM.bind(to: conv)
-        historyVM.updateTitle(conv.id, title: "Welcome")
-        chatVM.sendWelcomeMessage(profile: profile, language: language)
+    @discardableResult
+    func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
+        if let chatSessionPool { return chatSessionPool }
+        let pool = ChatSessionPool(dbPool: db.dbPool)
+        // CHAT-03: an idle session dies within TTL + one 30 s poll.
+        pool.startPolicy()
+        chatSessionPool = pool
+        return pool
     }
 
     func navigateToDigest(_ digestID: Int) {
@@ -695,6 +681,11 @@ final class AppState {
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
+        // So the quit path always has a pool to close, even before the Chat
+        // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
+        // creating the pool here only starts its idle-eviction poll; it never
+        // spawns a session process (that happens on select/prewarm/send).
+        ensureChatSessionPool(manager)
     }
 
     private func initCalendar(dbPool: DatabasePool) {

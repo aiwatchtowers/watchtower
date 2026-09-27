@@ -32,17 +32,23 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		return out
 	}
 	reactionTools := []string{"create_track", "create_idea", "remind_me", "brief_context"}
+	// Spec 2026-09-26 §8: three reaction tools widen to the main chat; the
+	// target chat still gets none (TGT-BRIEF-01 axis 3); brief_context stays
+	// reaction-only (its summary needs a reacted thread).
+	mainLocalTools := []string{"create_track", "create_idea", "remind_me"}
+	jiraWrites := []string{"add_jira_comment", "transition_jira_issue", "assign_jira_issue", "update_jira_issue"}
 
 	main := names("main")
-	for _, w := range []string{"create_target", "create_jira_issue", "connect_jira_board"} {
+	for _, w := range append([]string{"create_target", "create_jira_issue", "connect_jira_board"}, jiraWrites...) {
 		assert.True(t, main[w], "write tool %s missing on main", w)
 	}
 	for _, rt := range tools.ReadTools() {
 		assert.True(t, main[rt.Name], "read tool %s missing on main", rt.Name)
 	}
-	for _, w := range reactionTools {
-		assert.False(t, main[w], "%s is reaction-path only; in chat it would create work with no message to bind to", w)
+	for _, w := range mainLocalTools {
+		assert.True(t, main[w], "%s is offered in the main chat", w)
 	}
+	assert.False(t, main["brief_context"], "brief_context is reaction-path only")
 
 	target := names("target")
 	assert.False(t, target["create_target"], "create_target is main-only (TGT-BRIEF-01 axis 3)")
@@ -51,9 +57,18 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, w := range reactionTools {
 		assert.False(t, target[w], "%s must not be offered on the target surface (TGT-BRIEF-01 axis 3)", w)
 	}
+	for _, w := range jiraWrites {
+		assert.True(t, target[w], "%s is offered on the target surface", w)
+		tool, ok := reg.Get(w)
+		require.True(t, ok)
+		assert.True(t, tool.External, "%s leaves the machine (AGENT-03)", w)
+	}
 
 	reaction := names("reaction")
 	for _, w := range reactionTools {
 		assert.True(t, reaction[w], "%s missing on the reaction surface", w)
+	}
+	for _, w := range jiraWrites {
+		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
 }

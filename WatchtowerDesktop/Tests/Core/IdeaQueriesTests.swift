@@ -385,7 +385,6 @@ final class IdeaQueriesTests: XCTestCase {
             let ideaID = try TestDatabase.insertIdea(db, status: "active")
             try TestDatabase.insertIdeaMention(db, ideaID: ideaID, quote: "first sighting", saidAt: "2026-04-27T00:00:01Z")
             try TestDatabase.insertIdeaMention(db, ideaID: ideaID, quote: "second sighting", saidAt: "2026-04-27T00:00:02Z")
-            try Self.createChatTables(db)
             try Self.insertChat(db, ideaID: ideaID, messages: 1)
             return ideaID
         }
@@ -631,7 +630,6 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_RemovesRowMentionsAndChat() throws {
         let db = try TestDatabase.create()
         let (doomedID, keptID) = try db.write { db -> (Int64, Int64) in
-            try Self.createChatTables(db)
             let doomedID = try TestDatabase.insertIdea(db, title: "Throw this away")
             try TestDatabase.insertIdeaMention(db, ideaID: doomedID, quote: "first sighting")
             try TestDatabase.insertIdeaMention(db, ideaID: doomedID, quote: "second sighting")
@@ -662,7 +660,6 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_NullsBackReferencesOnSurvivors() throws {
         let db = try TestDatabase.create()
         let ids = try db.write { db -> (doomed: Int64, similar: Int64, superseded: Int64) in
-            try Self.createChatTables(db)
             let doomed = try TestDatabase.insertIdea(db, title: "Canonical")
             let similar = try TestDatabase.insertIdea(db, title: "Similar to it", similarToID: Int(doomed))
             let superseded = try TestDatabase.insertIdea(db, title: "Superseded by it", supersededByID: Int(doomed))
@@ -688,7 +685,6 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_CascadesToMergedChildren() throws {
         let db = try TestDatabase.create()
         let (survivorID, mergedID, unrelatedID) = try db.write { db -> (Int64, Int64, Int64) in
-            try Self.createChatTables(db)
             let survivorID = try TestDatabase.insertIdea(db, title: "Canonical")
             try Self.insertChat(db, ideaID: survivorID, messages: 1)
             let mergedID = try TestDatabase.insertIdea(
@@ -715,7 +711,6 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_CascadesThroughAMergeChain() throws {
         let db = try TestDatabase.create()
         let ids = try db.write { db -> (a: Int64, b: Int64, c: Int64) in
-            try Self.createChatTables(db)
             let a = try TestDatabase.insertIdea(db, title: "A")
             let b = try TestDatabase.insertIdea(db, title: "B", status: "merged", mergedIntoID: Int(a))
             let c = try TestDatabase.insertIdea(db, title: "C", status: "merged", mergedIntoID: Int(b))
@@ -741,7 +736,6 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_NullsBackReferencesPointingAtACascadedChild() throws {
         let db = try TestDatabase.create()
         let (survivorID, pointerID) = try db.write { db -> (Int64, Int64) in
-            try Self.createChatTables(db)
             let survivorID = try TestDatabase.insertIdea(db, title: "Canonical")
             let mergedID = try TestDatabase.insertIdea(
                 db, title: "Merged away", status: "merged", mergedIntoID: Int(survivorID))
@@ -760,8 +754,7 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_UnknownIDIsACleanNoOp() throws {
         let db = try TestDatabase.create()
         let ideaID = try db.write { db -> Int64 in
-            try Self.createChatTables(db)
-            return try TestDatabase.insertIdea(db, title: "Untouched")
+            try TestDatabase.insertIdea(db, title: "Untouched")
         }
 
         try db.write { try IdeaQueries.delete($0, id: 999) }
@@ -773,8 +766,7 @@ final class IdeaQueriesTests: XCTestCase {
     func testDelete_NoChatIsCleanSuccess() throws {
         let db = try TestDatabase.create()
         let ideaID = try db.write { db -> Int64 in
-            try Self.createChatTables(db)
-            return try TestDatabase.insertIdea(db, title: "Never discussed")
+            try TestDatabase.insertIdea(db, title: "Never discussed")
         }
 
         try db.write { try IdeaQueries.delete($0, id: Int(ideaID)) }
@@ -827,26 +819,6 @@ final class IdeaQueriesTests: XCTestCase {
     }
 
     // MARK: - Chat fixtures
-
-    /// The chat tables are created lazily at runtime by `DatabaseManager`, not
-    /// by the test schema. `ChatMessageQueries` stays app-side, so its
-    /// `ensureTable` DDL is mirrored here to let this file live in
-    /// WatchtowerCoreTests.
-    private static func createChatTables(_ db: Database) throws {
-        try ChatConversationQueries.ensureTable(db)
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                text TEXT NOT NULL,
-                created_at REAL NOT NULL
-            )
-        """)
-        try db.execute(sql: """
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)
-        """)
-    }
 
     private static func insertChat(_ db: Database, ideaID: Int64, messages: Int) throws {
         try db.execute(sql: """

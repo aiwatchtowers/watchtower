@@ -187,3 +187,28 @@ func TestLoop_ModelEndpointErrorFailsRun(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "500") || strings.Contains(err.Error(), "boom"))
 }
+
+// With EmitToolEvents on (the chat session turns it on), each tool call is
+// reported as a start and an end chunk around its dispatch; the boundary and
+// the text stay exactly as before.
+func TestLoop_EmitsToolEventsWhenEnabled(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, _ := scriptedServer(t, toolCallResp("list_targets", `{}`), finalResp("here it is"))
+	c := clientWith(reg, srv.URL)
+	c.EmitToolEvents()
+
+	var chunks []ai.StreamChunk
+	_, _, err := c.run(context.Background(), "", "go", func(ch ai.StreamChunk) { chunks = append(chunks, ch) })
+	require.NoError(t, err)
+	require.Len(t, chunks, 4)
+	assert.True(t, chunks[0].ToolBoundary)
+	require.NotNil(t, chunks[1].Tool)
+	assert.Equal(t, "c1", chunks[1].Tool.ID)
+	assert.Equal(t, "list_targets", chunks[1].Tool.Name)
+	assert.False(t, chunks[1].Tool.Done)
+	require.NotNil(t, chunks[2].Tool)
+	assert.True(t, chunks[2].Tool.Done)
+	assert.True(t, chunks[2].Tool.OK)
+	assert.Equal(t, "[]", chunks[2].Tool.Result)
+	assert.Equal(t, "here it is", chunks[3].Text)
+}

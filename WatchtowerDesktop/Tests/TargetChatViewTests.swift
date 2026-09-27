@@ -41,10 +41,6 @@ final class TargetChatViewTests: XCTestCase {
     func testChatSectionConstructsFromAnAssistantContainer() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try manager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-        }
         let id = try manager.dbPool.write { db in
             try TargetQueries.create(db, text: "ship feature", intent: "x",
                                      periodStart: "2026-06-01", periodEnd: "2026-06-30")

@@ -107,6 +107,11 @@ func (db *DB) setPragmas() error {
 }
 
 func (db *DB) migrate() error {
+	// Before goose: adopt Swift-created chat tables into the shape 00076
+	// expects (see normalizeLegacyChatTables).
+	if err := normalizeLegacyChatTables(db.DB); err != nil {
+		return fmt.Errorf("normalizing legacy chat tables: %w", err)
+	}
 	return goose.Up(db.DB, "migrations")
 }
 

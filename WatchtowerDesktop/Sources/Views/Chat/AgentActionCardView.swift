@@ -39,8 +39,51 @@ struct AgentActionCardView: View {
             if let p = action.argString("priority"), !p.isEmpty { lines.append("Priority: \(p)") }
             return lines
         default:
-            return waveTwoSummaryLines(for: action) ?? [action.argsJSON]
+            return waveTwoSummaryLines(for: action) ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
         }
+    }
+
+    /// The four existing-issue Jira writes (spec 2026-09-26 §8); nil for any other tool.
+    private static func jiraIssueWriteSummaryLines(for action: AgentAction) -> [String]? {
+        let key = action.argString("key") ?? "?"
+        switch action.tool {
+        case "add_jira_comment":
+            return ["Issue: \(key)", action.argString("body") ?? ""]
+        case "transition_jira_issue":
+            return ["Issue: \(key) → \(action.argString("status") ?? "?")"]
+        case "assign_jira_issue":
+            return assignSummaryLines(for: action, key: key)
+        case "update_jira_issue":
+            var lines = ["Issue: \(key)"]
+            let fields: [(String, String)] = [("summary", "Summary"), ("priority", "Priority"),
+                                              ("labels_add", "Add labels"), ("labels_remove", "Remove labels"),
+                                              ("due_date", "Due")]
+            for (arg, title) in fields {
+                if let value = action.argString(arg), !value.isEmpty { lines.append("\(title): \(value)") }
+            }
+            return lines
+        default:
+            return nil
+        }
+    }
+
+    /// Execute assigns the person pinned at propose time (`resolved_assignee_*`,
+    /// `internal/tools/jira_write.go`), not whatever the raw `assignee` string
+    /// would match now — so the card names that person, plus the words asked
+    /// for when they differ and the Jira account id. A row without a pin (none
+    /// is ever written without one) falls back to the raw string.
+    private static func assignSummaryLines(for action: AgentAction, key: String) -> [String] {
+        let asked = action.argString("assignee") ?? "?"
+        guard let name = action.argString("resolved_assignee_name"), !name.isEmpty else {
+            return ["Issue: \(key) · Assignee: \(asked)"]
+        }
+        var detail: [String] = []
+        if name != asked { detail.append("asked for \"\(asked)\"") }
+        if let account = action.argString("resolved_assignee_account_id"), !account.isEmpty {
+            detail.append("Jira account \(account)")
+        }
+        let head = "Issue: \(key) · Assignee: \(name)"
+        return detail.isEmpty ? [head] : [head, detail.joined(separator: " · ")]
     }
 
     /// connect_jira_board + the Reaction Commands Wave 2 tools; nil for a tool
@@ -125,7 +168,14 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private var outcome: some View {
-        if action.status == "applied", let id = action.resultString("target_id") {
+        if action.status == "applied", let link = action.resultWebURL("url") {
+            // Generic: any tool that returns a url (+ optional label) links it —
+            // label, then key, then the url itself (spec 2026-09-26 §8).
+            // `resultWebURL` is the same http/https-only check
+            // `AgentActionDestination.destination` uses, so a `javascript:`/
+            // `file:`/custom-scheme result never renders as a clickable link.
+            Link(action.resultString("label") ?? action.resultString("key") ?? link.absoluteString, destination: link).font(.callout)
+        } else if action.status == "applied", let id = action.resultString("target_id") {
             Text("Task #\(id) created").font(.callout)
         } else if action.status == "applied", let board = action.resultString("board_name") {
             Text("Board \(board) connected").font(.callout)
@@ -140,17 +190,19 @@ struct AgentActionCardView: View {
     }
 
     /// "Open" for what an applied action produced, and the Slack message a
-    /// reaction command was placed on.
+    /// reaction command was placed on. A `.url` destination is NOT rendered
+    /// here — `outcome`'s generic url+label link already covers it (both
+    /// derive from the same `result.url`), so this stays the in-app-navigation
+    /// path only (`onOpen`).
     @ViewBuilder
     private var links: some View {
         let destination = action.destination
+        let inApp: AgentActionDestination? = { if case .url = destination { return nil }; return destination }()
         let source = action.sourceMessageURL
-        if destination != nil || source != nil {
+        if inApp != nil || source != nil {
             HStack(spacing: 12) {
-                if case .url(let url) = destination {
-                    Link(openLabel, destination: url)
-                } else if let destination, let onOpen {
-                    Button(openLabel) { onOpen(destination) }
+                if let inApp, let onOpen {
+                    Button(openLabel) { onOpen(inApp) }
                         .buttonStyle(.link)
                 }
                 if let source {

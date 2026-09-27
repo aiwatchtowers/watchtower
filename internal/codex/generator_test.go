@@ -25,7 +25,7 @@ func TestNewCodexGenerator(t *testing.T) {
 }
 
 func TestCodexArgsSmallMessageInline(t *testing.T) {
-	args, stdin := buildArgs("gpt-5.4", "sys", "hello")
+	args, stdin := buildArgs("gpt-5.4", "sys", "hello", false)
 	if stdin != "" {
 		t.Errorf("stdin = %q, want empty for small message", stdin)
 	}
@@ -45,7 +45,7 @@ func TestCodexArgsSmallMessageInline(t *testing.T) {
 
 func TestCodexArgsLargeMessageViaStdin(t *testing.T) {
 	big := strings.Repeat("x", digest.StdinThreshold+1)
-	args, stdin := buildArgs("gpt-5.4", "sys", big)
+	args, stdin := buildArgs("gpt-5.4", "sys", big, false)
 	if stdin != big {
 		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
 	}
@@ -91,7 +91,7 @@ esac
 
 func TestCodexArgsThresholdBoundary(t *testing.T) {
 	exact := strings.Repeat("x", digest.StdinThreshold)
-	args, stdin := buildArgs("gpt-5.4", "sys", exact)
+	args, stdin := buildArgs("gpt-5.4", "sys", exact, false)
 	if stdin != "" {
 		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
 	}

@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	internalmcp "watchtower/internal/mcp"
@@ -32,6 +34,7 @@ var (
 	mcpFlagSurface      string
 	mcpFlagConversation int64
 	mcpFlagTurn         string
+	mcpFlagTurnFile     string
 	mcpFlagContextType  string
 	mcpFlagContextID    string
 )
@@ -43,8 +46,25 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target")
 	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
 	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
+	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
+}
+
+// mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
+// --turn (one-shot `ai query`) or a --turn-file read at propose time (a warm
+// `ai session`). Exactly one may be given, and only in chat mode.
+func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string, error) {
+	if turnFile == "" {
+		return turn, nil, nil
+	}
+	if !chatMode {
+		return "", nil, errors.New("--turn-file requires --chat")
+	}
+	if turn != "" {
+		return "", nil, errors.New("--turn and --turn-file are mutually exclusive")
+	}
+	return "", chat.TurnFileReader(turnFile), nil
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
@@ -57,6 +77,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	}
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	turn, turnFunc, err := mcpTurnBinding(mcpFlagChat, mcpFlagTurn, mcpFlagTurnFile)
+	if err != nil {
+		return err
 	}
 
 	dbPath := cfg.DBPath()
@@ -81,7 +106,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--surface must be main or target")
 		}
 		opts = append(opts, internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-			Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: mcpFlagTurn,
+			Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
 			ContextType: mcpFlagContextType, ContextID: mcpFlagContextID,
 		}))
 	} else {

@@ -217,6 +217,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             managesLifecycle: managesLifecycle,
             hasBlockingWork: AppState.shared.meetingRecorderCenter.isBusy,
             confirmQuit: Self.confirmQuitDuringWork,
+            closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
@@ -231,6 +232,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         managesLifecycle: Bool,
         hasBlockingWork: Bool,
         confirmQuit: () -> Bool,
+        closeChatSessions: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
@@ -238,6 +240,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         return QuitCoordinator.shouldTerminate(
             hasBlockingWork: hasBlockingWork,
             confirmQuit: confirmQuit,
+            closeChatSessions: closeChatSessions,
             stopDaemon: stopDaemon,
             reply: reply
         )

@@ -10,10 +10,6 @@ import WatchtowerTestSupport
 final class TargetAssistantCenterTests: XCTestCase {
     private func makeManager() throws -> (DatabaseManager, String) {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        try manager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-        }
         return (manager, path)
     }
 

@@ -682,7 +682,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		IssueTypeCategory:       normalizeIssueTypeCategory(f.IssueType.HierarchyLevel),
 		IsBug:                   isBug(f.IssueType.Name),
 		Status:                  f.Status.Name,
-		StatusCategory:          normalizeStatusCategory(f.Status.StatusCategory.Key),
+		StatusCategory:          NormalizeStatusCategory(f.Status.StatusCategory.Key),
 		StatusCategoryChangedAt: statusCatChanged,
 		AssigneeAccountID:       assigneeAccountID,
 		AssigneeEmail:           assigneeEmail,
@@ -922,8 +922,12 @@ func extractDisplayValue(val interface{}) string {
 	}
 }
 
-// normalizeStatusCategory maps Jira status category keys to normalized values.
-func normalizeStatusCategory(jiraKey string) string {
+// NormalizeStatusCategory maps a Jira status category key ("new",
+// "indeterminate", "done") to the normalized value the sync writes
+// (jira_issues.status_category: "todo"/"in_progress"/"done") — exported so
+// any other writer of that column (the four issue-write tools' mirror
+// refresh) stores the same values the syncer does, instead of the raw key.
+func NormalizeStatusCategory(jiraKey string) string {
 	switch strings.ToLower(jiraKey) {
 	case "new":
 		return "todo"

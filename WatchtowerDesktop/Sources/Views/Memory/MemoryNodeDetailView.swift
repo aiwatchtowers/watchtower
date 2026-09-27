@@ -21,7 +21,7 @@ struct MemoryNodeDetailView: View {
                         .font(.callout)
                         .foregroundStyle(.orange)
                 } else {
-                    MarkdownText(text: detail.renderedBody)
+                    MarkdownView(text: detail.renderedBody)
                 }
                 if !detail.backlinks.isEmpty {
                     backlinksSection

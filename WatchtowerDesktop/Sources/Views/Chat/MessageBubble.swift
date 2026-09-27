@@ -32,12 +32,7 @@ struct MessageBubble: View {
 
         case .assistant:
             VStack(alignment: .leading, spacing: 6) {
-                if message.isStreaming {
-                    Text(message.text)
-                        .textSelection(.enabled)
-                } else {
-                    MarkdownText(text: message.text)
-                }
+                MarkdownView(text: message.text)
                 if message.isStreaming {
                     StreamingIndicator()
                 } else if !message.text.isEmpty {
@@ -70,6 +65,7 @@ struct MessageBubble: View {
         }
         .buttonStyle(.plain)
         .help("Copy message")
+        .accessibilityLabel("Copy message")
     }
 
     @ViewBuilder

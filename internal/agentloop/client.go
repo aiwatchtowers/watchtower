@@ -47,7 +47,15 @@ type Client struct {
 	reg     registry
 	binding tools.Binding
 	maxIter int
+
+	toolEvents bool // emit ai.StreamChunk{Tool: …} around each dispatch (EmitToolEvents)
 }
+
+// EmitToolEvents makes Query report every tool call as a start and an end
+// chunk (ai.StreamChunk.Tool) around its dispatch, so a protocol-v2 chat can
+// show the call as a step. Off by default: v1 consumers see only the
+// boundary and the text, unchanged.
+func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // NewClient builds a runtime-B client. baseURL is the OpenAI-compatible server
 // ("" for the Ollama default); reg is the tool registry; b carries the chat
@@ -142,11 +150,15 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		emitBoundary()
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
+			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
+			result := c.dispatch(ctx, call)
+			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
+				OK: !strings.HasPrefix(result, `{"error":`), Result: result})
 			msgs = append(msgs, oaMessage{
 				Role:       "tool",
 				ToolCallID: call.ID,
 				Name:       call.Function.Name,
-				Content:    c.dispatch(ctx, call),
+				Content:    result,
 			})
 		}
 	}
@@ -162,6 +174,13 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 	const note = "I couldn't complete that within the tool-call limit."
 	emitText(note)
 	return note, usage, nil
+}
+
+// emitTool forwards a tool start/end chunk when tool events are on.
+func (c *Client) emitTool(emit func(ai.StreamChunk), ev *ai.ToolEvent) {
+	if emit != nil && c.toolEvents {
+		emit(ai.StreamChunk{Tool: ev})
+	}
 }
 
 // dispatch runs one tool call against the registry and returns the JSON string

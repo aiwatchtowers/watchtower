@@ -32,6 +32,21 @@ CREATE INDEX idx_channels_name ON channels(name)
 index	idx_channels_type
 CREATE INDEX idx_channels_type ON channels(type)
 
+index	idx_chat_attachments_conversation
+CREATE INDEX idx_chat_attachments_conversation ON chat_attachments(conversation_id)
+
+index	idx_chat_attachments_project
+CREATE INDEX idx_chat_attachments_project ON chat_attachments(project_id)
+
+index	idx_chat_conversations_project
+CREATE INDEX idx_chat_conversations_project ON chat_conversations(project_id)
+
+index	idx_chat_messages_conversation
+CREATE INDEX idx_chat_messages_conversation ON chat_messages(conversation_id)
+
+index	idx_chat_messages_parent
+CREATE INDEX idx_chat_messages_parent ON chat_messages(parent_id)
+
 index	idx_day_plan_items_plan
 CREATE INDEX idx_day_plan_items_plan ON day_plan_items(day_plan_id)
 
@@ -499,6 +514,134 @@ num_members INTEGER NOT NULL DEFAULT 0,
 last_read TEXT NOT NULL DEFAULT '', -- Slack conversations.mark cursor (message ts)
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , digest_considered_ts INTEGER)
+
+table	chat_artifacts
+CREATE TABLE chat_artifacts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+artifact_key TEXT NOT NULL,
+version INTEGER NOT NULL,
+kind TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+title TEXT NOT NULL DEFAULT '',
+content TEXT NOT NULL,
+meta_json TEXT NOT NULL DEFAULT '{}',
+edited INTEGER NOT NULL DEFAULT 0,
+created_at REAL NOT NULL,
+UNIQUE(conversation_id, artifact_key, version)
+)
+
+table	chat_attachments
+CREATE TABLE chat_attachments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE CASCADE,
+project_id INTEGER REFERENCES chat_projects(id) ON DELETE CASCADE,
+message_id INTEGER REFERENCES chat_messages(id) ON DELETE SET NULL,
+name TEXT NOT NULL,
+mime TEXT NOT NULL,
+size INTEGER NOT NULL,
+path TEXT NOT NULL,
+sha256 TEXT NOT NULL,
+created_at REAL NOT NULL,
+CHECK ((conversation_id IS NULL) <> (project_id IS NULL))
+)
+
+table	chat_conversations
+CREATE TABLE chat_conversations (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+title TEXT NOT NULL DEFAULT '',
+session_id TEXT,
+context_type TEXT,
+context_id TEXT,
+created_at REAL NOT NULL,
+updated_at REAL NOT NULL
+, pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
+CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER)
+
+table	chat_fts
+CREATE VIRTUAL TABLE chat_fts USING fts5(
+text,
+content='chat_messages', content_rowid='id',
+tokenize='porter unicode61 remove_diacritics 2'
+)
+
+table	chat_fts_config
+CREATE TABLE 'chat_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+
+table	chat_fts_data
+CREATE TABLE 'chat_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+
+table	chat_fts_docsize
+CREATE TABLE 'chat_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+
+table	chat_fts_idx
+CREATE TABLE 'chat_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+
+table	chat_messages
+CREATE TABLE chat_messages (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+role TEXT NOT NULL,
+text TEXT NOT NULL,
+created_at REAL NOT NULL,
+turn_id TEXT NOT NULL DEFAULT ''
+, status TEXT NOT NULL DEFAULT 'complete'
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT)
+
+table	chat_project_sources
+CREATE TABLE chat_project_sources (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
+kind TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','target','track','person')),
+ref TEXT NOT NULL,
+label TEXT NOT NULL DEFAULT '',
+UNIQUE(project_id, kind, ref)
+)
+
+table	chat_projects
+CREATE TABLE chat_projects (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+instructions TEXT NOT NULL DEFAULT '',
+created_at REAL NOT NULL,
+updated_at REAL NOT NULL,
+archived_at REAL
+)
+
+table	chat_title_fts
+CREATE VIRTUAL TABLE chat_title_fts USING fts5(
+title,
+content='chat_conversations', content_rowid='id',
+tokenize='porter unicode61 remove_diacritics 2'
+)
+
+table	chat_title_fts_config
+CREATE TABLE 'chat_title_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID
+
+table	chat_title_fts_data
+CREATE TABLE 'chat_title_fts_data'(id INTEGER PRIMARY KEY, block BLOB)
+
+table	chat_title_fts_docsize
+CREATE TABLE 'chat_title_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
+
+table	chat_title_fts_idx
+CREATE TABLE 'chat_title_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
+
+table	chat_turn_steps
+CREATE TABLE chat_turn_steps (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+seq INTEGER NOT NULL,
+tool_id TEXT NOT NULL,
+name TEXT NOT NULL,
+args_json TEXT NOT NULL DEFAULT '{}',
+ok INTEGER,
+summary TEXT NOT NULL DEFAULT '',
+sources_json TEXT NOT NULL DEFAULT '[]',
+started_at REAL NOT NULL,
+ended_at REAL,
+UNIQUE(message_id, tool_id)
+)
 
 table	custom_emojis
 CREATE TABLE custom_emojis (
@@ -1857,6 +2000,38 @@ synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
 , secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0)
 
+trigger	chat_conversations_fts_ad
+CREATE TRIGGER chat_conversations_fts_ad AFTER DELETE ON chat_conversations BEGIN
+INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
+END
+
+trigger	chat_conversations_fts_ai
+CREATE TRIGGER chat_conversations_fts_ai AFTER INSERT ON chat_conversations BEGIN
+INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
+END
+
+trigger	chat_conversations_fts_au
+CREATE TRIGGER chat_conversations_fts_au AFTER UPDATE OF title ON chat_conversations BEGIN
+INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
+INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
+END
+
+trigger	chat_messages_fts_ad
+CREATE TRIGGER chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
+INSERT INTO chat_fts(chat_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+END
+
+trigger	chat_messages_fts_ai
+CREATE TRIGGER chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
+INSERT INTO chat_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END
+
+trigger	chat_messages_fts_au
+CREATE TRIGGER chat_messages_fts_au AFTER UPDATE OF text ON chat_messages BEGIN
+INSERT INTO chat_fts(chat_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+INSERT INTO chat_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END
+
 trigger	kb_chunks_ad
 CREATE TRIGGER kb_chunks_ad AFTER DELETE ON kb_chunks BEGIN
 INSERT INTO kb_fts(kb_fts, rowid, title, body, meta) VALUES ('delete', OLD.id, OLD.title, OLD.body, OLD.meta);
@@ -2045,6 +2220,130 @@ END
 9	last_read	TEXT	notnull=1	dflt=''	pk=0
 10	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 11	digest_considered_ts	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## chat_artifacts
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	message_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	artifact_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	version	INTEGER	notnull=1	dflt=NULL	pk=0
+5	kind	TEXT	notnull=1	dflt=NULL	pk=0
+6	title	TEXT	notnull=1	dflt=''	pk=0
+7	content	TEXT	notnull=1	dflt=NULL	pk=0
+8	meta_json	TEXT	notnull=1	dflt='{}'	pk=0
+9	edited	INTEGER	notnull=1	dflt=0	pk=0
+10	created_at	REAL	notnull=1	dflt=NULL	pk=0
+
+## chat_attachments
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	conversation_id	INTEGER	notnull=0	dflt=NULL	pk=0
+2	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	message_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	name	TEXT	notnull=1	dflt=NULL	pk=0
+5	mime	TEXT	notnull=1	dflt=NULL	pk=0
+6	size	INTEGER	notnull=1	dflt=NULL	pk=0
+7	path	TEXT	notnull=1	dflt=NULL	pk=0
+8	sha256	TEXT	notnull=1	dflt=NULL	pk=0
+9	created_at	REAL	notnull=1	dflt=NULL	pk=0
+
+## chat_conversations
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	title	TEXT	notnull=1	dflt=''	pk=0
+2	session_id	TEXT	notnull=0	dflt=NULL	pk=0
+3	context_type	TEXT	notnull=0	dflt=NULL	pk=0
+4	context_id	TEXT	notnull=0	dflt=NULL	pk=0
+5	created_at	REAL	notnull=1	dflt=NULL	pk=0
+6	updated_at	REAL	notnull=1	dflt=NULL	pk=0
+7	pinned	INTEGER	notnull=1	dflt=0	pk=0
+8	archived_at	REAL	notnull=0	dflt=NULL	pk=0
+9	title_source	TEXT	notnull=1	dflt='prefix'	pk=0
+10	provider	TEXT	notnull=0	dflt=NULL	pk=0
+11	model	TEXT	notnull=0	dflt=NULL	pk=0
+12	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
+13	active_leaf_message_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## chat_fts
+0	text		notnull=0	dflt=NULL	pk=0
+
+## chat_fts_config
+0	k		notnull=1	dflt=NULL	pk=1
+1	v		notnull=0	dflt=NULL	pk=0
+
+## chat_fts_data
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	block	BLOB	notnull=0	dflt=NULL	pk=0
+
+## chat_fts_docsize
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	sz	BLOB	notnull=0	dflt=NULL	pk=0
+
+## chat_fts_idx
+0	segid		notnull=1	dflt=NULL	pk=1
+1	term		notnull=1	dflt=NULL	pk=2
+2	pgno		notnull=0	dflt=NULL	pk=0
+
+## chat_messages
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	role	TEXT	notnull=1	dflt=NULL	pk=0
+3	text	TEXT	notnull=1	dflt=NULL	pk=0
+4	created_at	REAL	notnull=1	dflt=NULL	pk=0
+5	turn_id	TEXT	notnull=1	dflt=''	pk=0
+6	status	TEXT	notnull=1	dflt='complete'	pk=0
+7	provider	TEXT	notnull=0	dflt=NULL	pk=0
+8	model	TEXT	notnull=0	dflt=NULL	pk=0
+9	tokens_in	INTEGER	notnull=0	dflt=NULL	pk=0
+10	tokens_out	INTEGER	notnull=0	dflt=NULL	pk=0
+11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
+12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
+
+## chat_project_sources
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	ref	TEXT	notnull=1	dflt=NULL	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+
+## chat_projects
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	name	TEXT	notnull=1	dflt=NULL	pk=0
+2	instructions	TEXT	notnull=1	dflt=''	pk=0
+3	created_at	REAL	notnull=1	dflt=NULL	pk=0
+4	updated_at	REAL	notnull=1	dflt=NULL	pk=0
+5	archived_at	REAL	notnull=0	dflt=NULL	pk=0
+
+## chat_title_fts
+0	title		notnull=0	dflt=NULL	pk=0
+
+## chat_title_fts_config
+0	k		notnull=1	dflt=NULL	pk=1
+1	v		notnull=0	dflt=NULL	pk=0
+
+## chat_title_fts_data
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	block	BLOB	notnull=0	dflt=NULL	pk=0
+
+## chat_title_fts_docsize
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	sz	BLOB	notnull=0	dflt=NULL	pk=0
+
+## chat_title_fts_idx
+0	segid		notnull=1	dflt=NULL	pk=1
+1	term		notnull=1	dflt=NULL	pk=2
+2	pgno		notnull=0	dflt=NULL	pk=0
+
+## chat_turn_steps
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	message_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	seq	INTEGER	notnull=1	dflt=NULL	pk=0
+3	tool_id	TEXT	notnull=1	dflt=NULL	pk=0
+4	name	TEXT	notnull=1	dflt=NULL	pk=0
+5	args_json	TEXT	notnull=1	dflt='{}'	pk=0
+6	ok	INTEGER	notnull=0	dflt=NULL	pk=0
+7	summary	TEXT	notnull=1	dflt=''	pk=0
+8	sources_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	started_at	REAL	notnull=1	dflt=NULL	pk=0
+10	ended_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1

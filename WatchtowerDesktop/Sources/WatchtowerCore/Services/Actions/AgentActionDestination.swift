@@ -45,7 +45,11 @@ extension AgentAction {
         return id
     }
 
-    private func resultWebURL(_ key: String) -> URL? {
+    /// A `result_json` value that is a web URL (http/https only — never
+    /// `javascript:`/`file:`/a custom scheme). `package` so the generic
+    /// url+label card link (`AgentActionCardView.outcome`) shares this one
+    /// scheme check instead of re-validating with a bare `URL(string:)`.
+    package func resultWebURL(_ key: String) -> URL? {
         guard let raw = resultString(key), let url = URL(string: raw),
               url.scheme == "https" || url.scheme == "http" else { return nil }
         return url

@@ -688,34 +688,6 @@ func TestGenerateAllNextSteps_RespectsActiveSnapshotLimit(t *testing.T) {
 
 // --- enriched next-step prompt (2026-08-18: the step becomes live) ---
 
-// createChatTablesForNextStepTest creates the Swift-owned chat tables the way
-// the Desktop app's GRDB ensureTable helpers do. They are absent from Go's
-// goose schema, so the prompt builder must work with and without them.
-func createChatTablesForNextStepTest(t *testing.T, d *db.DB) {
-	t.Helper()
-	stmts := []string{
-		`CREATE TABLE chat_conversations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			context_type TEXT,
-			context_id TEXT,
-			created_at REAL NOT NULL,
-			updated_at REAL NOT NULL)`,
-		`CREATE TABLE chat_messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-			role TEXT NOT NULL,
-			text TEXT NOT NULL,
-			created_at REAL NOT NULL)`,
-	}
-	for _, s := range stmts {
-		if _, err := d.Exec(s); err != nil {
-			t.Fatalf("create chat table: %v", err)
-		}
-	}
-}
-
 // seedTargetChat inserts one conversation for the target plus the given turns
 // (oldest first), spaced one minute apart ending now — no hardcoded dates.
 func seedTargetChat(t *testing.T, d *db.DB, targetID int64, turns [][2]string) {
@@ -761,7 +733,6 @@ func notesJSON(t *testing.T, texts ...string) string {
 // conversation (system "Action applied" lines included) all reach the model.
 func TestBuildNextStepPrompt_RendersProgressNotesAndChatExcerpt(t *testing.T) {
 	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
-	createChatTablesForNextStepTest(t, d)
 
 	id, err := d.CreateTarget(db.Target{
 		Text: "Ship the v2 API", Status: "in_progress", Ownership: "mine", Priority: "high",
@@ -818,7 +789,6 @@ func TestBuildNextStepPrompt_RendersProgressNotesAndChatExcerpt(t *testing.T) {
 // the character budget, and it is the NEWEST turns that survive.
 func TestBuildNextStepPrompt_ChatExcerptIsCapped(t *testing.T) {
 	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
-	createChatTablesForNextStepTest(t, d)
 
 	id, err := d.CreateTarget(db.Target{
 		Text: "Long chat", Status: "todo", Ownership: "mine", Priority: "medium",
@@ -864,7 +834,6 @@ func TestBuildNextStepPrompt_ChatExcerptIsCapped(t *testing.T) {
 // one of the same visible length — a byte budget would silently halve it.
 func TestBuildNextStepPrompt_CyrillicExcerptGetsTheSameBudget(t *testing.T) {
 	p, d := makeTestPipeline(t, &mockGenerator{responses: []string{`{"title":"x","actions":[]}`}})
-	createChatTablesForNextStepTest(t, d)
 
 	id, err := d.CreateTarget(db.Target{
 		Text: "Кириллица", Status: "todo", Ownership: "mine", Priority: "medium",

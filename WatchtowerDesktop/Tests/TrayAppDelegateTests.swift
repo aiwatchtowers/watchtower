@@ -48,6 +48,16 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
         XCTAssertEqual(reply, .terminateCancel)
         XCTAssertFalse(stopped)
     }
+
+    func testTerminateDecisionClosesChatSessionsWhenManagingLifecycle() async {
+        var closed = false
+        let replied = expectation(description: "replied")
+        _ = TrayAppDelegate.terminateDecision(
+            managesLifecycle: true, hasBlockingWork: false, confirmQuit: { true },
+            closeChatSessions: { closed = true }, stopDaemon: {}, reply: { _ in replied.fulfill() })
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertTrue(closed)
+    }
 }
 
 final class TrayAppDelegateLoginItemTests: XCTestCase {

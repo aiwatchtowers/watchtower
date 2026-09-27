@@ -1110,12 +1110,12 @@ final class TargetChatViewModel {
             - list_targets / get_target — other targets and their links (resolve ids for link_target here).
             - get_person / list_people — people cards; list_tracks / list_digests / list_jira_issues — work context.
             - list_transcripts / get_transcript — recorded meeting transcripts.
-            \(ChatViewModel.noLiveSourcesRule)
+            \(ChatPromptRules.noLiveSourcesRule)
             """
             : AgentToolsContract.noToolsBlock
         let linkSourceRule = toolsAvailable
             ? "\n- list_messages returns channel_id, ts, and thread_ts for every message, so you can always build correct links" +
-              "\n- \(ChatViewModel.knowledgeLinkRule)"
+              "\n- \(ChatPromptRules.knowledgeLinkRule)"
             : ""
 
         return """

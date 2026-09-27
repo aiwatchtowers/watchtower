@@ -270,15 +270,17 @@ package enum SkillFrontmatter {
 }
 
 package enum SkillsCatalog {
-    /// Chat `context_type`s whose prompts list skills, mirroring the assistant
-    /// contract in `docs/review/review-rules.md` ("The assistant & chat
-    /// contracts"). Setup/onboarding chats are deliberately absent.
+    /// Chat surfaces that offer skills, mirroring the assistant contract in
+    /// `docs/review/review-rules.md` ("The assistant & chat contracts").
+    /// Setup/onboarding chats are deliberately absent.
     ///
-    /// Swift-side only, with no Go twin: every chat prompt is built in Swift.
-    /// A chat surface joins the set by adding its `context_type` here — see
-    /// `promptBlock(contextType:dir:)`, which every chat VM goes through.
+    /// The four Discuss chats build their prompts in Swift and read the set
+    /// through `promptBlock(contextType:dir:)`. `main` — the main AI Chat, whose
+    /// conversations store no `context_type` — has its prompt built in Go
+    /// (`internal/chat`, which lists skills itself); it is listed here because
+    /// the `/` skill picker reads the set through `pickerSkills`.
     package static let chatContextTypes: Set<String> = [
-        "meeting", "target", "track", "idea"
+        "main", "meeting", "target", "track", "idea"
     ]
 
     /// The active workspace's skills directory
@@ -460,5 +462,15 @@ package enum SkillsCatalog {
     ) -> String? {
         guard chatContextTypes.contains(contextType) else { return nil }
         return promptBlock(dir: dir)
+    }
+
+    /// The enabled skills a surface's `/` picker offers; empty for a surface
+    /// not in `chatContextTypes`.
+    package nonisolated static func pickerSkills(
+        contextType: String,
+        dir: String? = defaultDir()
+    ) -> [SkillSummary] {
+        guard chatContextTypes.contains(contextType) else { return [] }
+        return list(dir: dir).filter(\.enabled)
     }
 }

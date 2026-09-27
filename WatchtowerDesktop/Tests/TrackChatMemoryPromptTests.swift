@@ -54,7 +54,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
             track: track, dbPool: dbManager.dbPool, memoryChatEnabled: false, memoryVaultDir: nil)
         XCTAssertTrue(prompt.contains("list_messages"))
         XCTAssertTrue(prompt.contains("search_knowledge"))
-        XCTAssertTrue(prompt.contains(ChatViewModel.knowledgeLinkRule), "search hits link via permalink or chunk_anchor")
+        XCTAssertTrue(prompt.contains(ChatPromptRules.knowledgeLinkRule), "search hits link via permalink or chunk_anchor")
         XCTAssertTrue(prompt.contains("Slack, mail, Jira, Confluence, calendar"), "Confluence is an indexed source")
         XCTAssertFalse(prompt.contains("same anchor fields"), "the old rule built links from namespaced ids")
         XCTAssertTrue(prompt.contains("never ask the user to approve tool permissions"))
