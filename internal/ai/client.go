@@ -570,17 +570,24 @@ type limitedWriter struct {
 	written int
 }
 
+// Write always reports len(p) on success, even when it keeps only a prefix:
+// os/exec drains stderr through io.Copy, which turns a short count into
+// io.ErrShortWrite and fails a run that exited 0.
 func (lw *limitedWriter) Write(p []byte) (int, error) {
 	remaining := lw.limit - lw.written
 	if remaining <= 0 {
 		return len(p), nil // silently discard
 	}
-	if len(p) > remaining {
-		p = p[:remaining]
+	kept := p
+	if len(kept) > remaining {
+		kept = kept[:remaining]
 	}
-	n, err := lw.w.Write(p)
+	n, err := lw.w.Write(kept)
 	lw.written += n
-	return n, err
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }
 
 // classifyError wraps CLI errors with user-friendly messages.
