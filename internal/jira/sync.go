@@ -406,23 +406,22 @@ type fetchedPage struct {
 // `ORDER BY updated ASC` order (oldest first) — the caller's comment sync
 // takes the tail of this slice to fetch the newest issues first.
 //
-// A failed batch write returns an error (after the keys of the batches that
-// did land), so the caller treats the project as failed and does not advance
-// its watermark past the lost issues.
+// A failed batch write does not stop the pass: the batches after it are
+// still written (a deterministic poison batch must not freeze every later
+// issue of the project), and the first write error is returned at the end,
+// after the keys of the batches that did land, so the caller treats the
+// project as failed and does not advance its watermark past the lost issues.
 func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int, []string, error) {
 	maxResults := 100
 	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
 	fetchErr := make(chan error, 1)
-	// readCtx lets the writer stop the reader once a batch write fails.
-	readCtx, cancelRead := context.WithCancel(ctx)
-	defer cancelRead()
 
 	// Reader: fetch pages from Jira API using cursor-based pagination (no DB access).
 	go func() {
 		defer close(pageCh)
 		nextToken := ""
 		for {
-			result, err := s.client.SearchIssues(readCtx, jql, maxResults, nextToken)
+			result, err := s.client.SearchIssues(ctx, jql, maxResults, nextToken)
 			if err != nil {
 				fetchErr <- fmt.Errorf("searching issues: %w", err)
 				return
@@ -442,18 +441,20 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	// Writer: convert and write batches to DB.
 	written := 0
 	var changedKeys []string
+	var writeErr error // the first failed batch write
 	for page := range pageCh {
 		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID)
 
 		if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
-			// A lost batch is a project failure: returning it keeps the
-			// caller from stamping the project watermark past issues that
+			// A lost batch is a project failure: returning it (below) keeps
+			// the caller from stamping the project watermark past issues that
 			// never reached jira_issues (the next incremental JQL would never
-			// ask for them again). Stop the reader and drain so it can exit.
-			cancelRead()
-			for range pageCh {
+			// ask for them again). Keep writing the remaining batches.
+			s.logger.Printf("upserting issue batch (%d issues): %v", len(dbIssues), err)
+			if writeErr == nil {
+				writeErr = fmt.Errorf("upserting issue batch: %w", err)
 			}
-			return written, changedKeys, fmt.Errorf("upserting issue batch: %w", err)
+			continue
 		}
 		for i := range dbIssues {
 			changedKeys = append(changedKeys, dbIssues[i].Key)
@@ -466,13 +467,14 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 		}
 	}
 
-	// Check if reader exited with error.
+	// Reader error, if any. Joined with a write error rather than dropped,
+	// so a revoked grant (ErrAuthRevoked) still aborts the account.
+	var readErr error
 	select {
-	case err := <-fetchErr:
-		return written, changedKeys, err
+	case readErr = <-fetchErr:
 	default:
-		return written, changedKeys, nil
 	}
+	return written, changedKeys, errors.Join(writeErr, readErr)
 }
 
 // syncComments fetches and stores comments for at most commentSyncLimit of
