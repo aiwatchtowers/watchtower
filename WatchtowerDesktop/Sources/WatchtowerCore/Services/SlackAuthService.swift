@@ -67,41 +67,18 @@ package final class SlackAuthService {
         process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            CLILog.failure(args: arguments, exitCode: -1, stderr: error.localizedDescription)
-            return (-1, "", error.localizedDescription)
-        }
-
-        let stdoutData = stdoutPipe.fileHandleForReading
-            .readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading
-            .readDataToEndOfFile()
-        process.waitUntilExit()
-
-        let stdout = String(
-            data: stdoutData, encoding: .utf8
-        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(
-            data: stderrData, encoding: .utf8
-        )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
+        let (exitCode, stdout, stderr) = await ProcessPipes.run(process).trimmed
+        // A launch failure arrives here as exit -1 with the launch error as stderr.
         // The third ad-hoc Process wrapper in the app (after ProcessCLIRunner and
         // CatchUpViewModel's), so it logs the child's stderr itself: `disconnect`
         // turns it into one line of UI text, and a failed sign-out otherwise left
         // nothing behind to debug. Logged here rather than at the caller because
         // this helper is private and knows the arguments.
-        if process.terminationStatus != 0 {
-            CLILog.failure(args: arguments, exitCode: process.terminationStatus, stderr: stderr)
+        if exitCode != 0 {
+            CLILog.failure(args: arguments, exitCode: exitCode, stderr: stderr)
         } else {
             CLILog.warning(args: arguments, stderr: stderr)
         }
-        return (process.terminationStatus, stdout, stderr)
+        return (exitCode, stdout, stderr)
     }
 }

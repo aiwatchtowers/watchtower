@@ -146,8 +146,12 @@ final class DatabaseManager: Sendable {
         process.arguments = ["db", "migrate"]
         process.environment = Constants.resolvedEnvironment()
         process.standardOutput = nil
-        process.standardError = Pipe() // capture for debugging
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
         guard (try? process.run()) != nil else { return }
+        // SB3: drain stderr while the child runs — an unread pipe fills at
+        // 64 KiB and a chatty migrate then blocks until the timer kills it.
+        let stderrRead = ProcessPipes.drain(stderrPipe)
         // C2: timeout to prevent indefinite hang on DB lock or broken CLI
         let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + 30)
@@ -155,8 +159,13 @@ final class DatabaseManager: Sendable {
         timer.resume()
         process.waitUntilExit()
         timer.cancel()
-        if process.terminationStatus != 0 {
-            NSLog("[Watchtower] CLI migration failed with exit code \(process.terminationStatus)")
+        let status = process.terminationStatus
+        guard status != 0 else { return }
+        // Off this (possibly main) thread: the drain finishes at the child's
+        // EOF, which a grandchild still holding stderr could postpone.
+        Task.detached {
+            let stderr = String(data: await stderrRead.value, encoding: .utf8) ?? ""
+            NSLog("[Watchtower] CLI migration failed with exit code \(status): \(CLILog.detail(stderr))")
         }
     }
 

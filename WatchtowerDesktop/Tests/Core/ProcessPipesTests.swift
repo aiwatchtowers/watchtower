@@ -1,0 +1,101 @@
+import Foundation
+import Testing
+@testable import WatchtowerCore
+
+/// SB3 for the ad-hoc wrappers: every one of them used to read stdout to EOF
+/// and only then stderr (or stderr only after `waitUntilExit`), so a child
+/// writing more than the 64 KiB pipe buffer to stderr before closing stdout
+/// hung both sides forever. They all drain through `ProcessPipes` now.
+@Suite("ProcessPipes")
+struct ProcessPipesTests {
+    /// Well over the 64 KiB default pipe buffer, written to stderr BEFORE the
+    /// child writes (and closes) stdout.
+    private static let largeStderrScript = "yes x | head -c 300000 1>&2; echo done"
+
+    private static func shell(_ script: String) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        return process
+    }
+
+    /// Runs `body` against a deadline; on timeout the child is terminated so a
+    /// regression fails the test instead of hanging the suite.
+    private static func withDeadline<T: Sendable>(
+        _ process: Process,
+        seconds: UInt64 = 10,
+        _ body: @escaping @Sendable () async -> T
+    ) async -> T? {
+        let watchdog = Task.detached {
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            if !Task.isCancelled, process.isRunning { process.terminate() }
+            return !Task.isCancelled
+        }
+        let value = await body()
+        watchdog.cancel()
+        let fired = await watchdog.value
+        return fired ? nil : value
+    }
+
+    @Test("run drains a large stderr concurrently with stdout")
+    func runLargeStderrDoesNotDeadlock() async throws {
+        let process = Self.shell(Self.largeStderrScript)
+        let output = await Self.withDeadline(process) { await ProcessPipes.run(process) }
+        let result = try #require(output, "ProcessPipes.run deadlocked on >64 KiB of stderr")
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "done")
+        #expect(result.stderr.count >= 300_000)
+    }
+
+    @Test("drain lets a caller stream stdout while stderr fills")
+    func drainWhileStreamingStdout() async throws {
+        let process = Self.shell(Self.largeStderrScript)
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+
+        let output = await Self.withDeadline(process) { () -> (lines: [String], stderr: Int) in
+            let stderrRead = ProcessPipes.drain(stderrPipe)
+            var lines: [String] = []
+            do {
+                for try await line in stdoutPipe.fileHandleForReading.bytes.lines { lines.append(line) }
+            } catch {}
+            let stderrData = await stderrRead.value
+            return (lines, stderrData.count)
+        }
+        let result = try #require(output, "streaming stdout deadlocked on >64 KiB of stderr")
+        #expect(result.lines == ["done"])
+        #expect(result.stderr >= 300_000)
+        process.waitUntilExit()
+    }
+
+    @Test("run feeds stdin to the child and closes it")
+    func runWritesStdin() async {
+        let process = Self.shell("cat")
+        process.standardInput = Pipe()
+        let output = await Self.withDeadline(process) { await ProcessPipes.run(process, stdin: "secret-value") }
+        #expect(output?.stdout == "secret-value")
+        #expect(output?.exitCode == 0)
+    }
+
+    @Test("run reports a launch failure as exit -1 with the error text")
+    func runLaunchFailure() async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/nonexistent/watchtower-fake")
+        let output = await ProcessPipes.run(process)
+        #expect(output.exitCode == -1)
+        #expect(!output.stderr.isEmpty)
+        #expect(output.stdout.isEmpty)
+    }
+
+    @Test("trimmed strips surrounding whitespace from both streams")
+    func trimmedStrips() async {
+        let output = await ProcessPipes.run(Self.shell("echo ' out '; echo ' err ' 1>&2; exit 3"))
+        let trimmed = output.trimmed
+        #expect(trimmed.exitCode == 3)
+        #expect(trimmed.stdout == "out")
+        #expect(trimmed.stderr == "err")
+    }
+}
