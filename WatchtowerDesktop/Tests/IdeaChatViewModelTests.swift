@@ -120,6 +120,7 @@ final class IdeaChatViewModelTests: XCTestCase {
         let idea = try makeIdea()
         let prompt = IdeaChatViewModel.buildSystemPrompt(idea: idea, mentions: [], dbPool: dbManager.dbPool)
         XCTAssertTrue(prompt.contains("search_knowledge"))
+        XCTAssertTrue(prompt.contains("Slack, mail, Jira, Confluence, calendar"), "Confluence is an indexed source")
     }
 
     func testStreamErrorSurfacesInline() async throws {

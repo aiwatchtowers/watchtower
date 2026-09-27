@@ -14,7 +14,7 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, calendar, transcript, recap, digest, stream_digest, idea"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
@@ -31,7 +31,7 @@ func NewSearchKnowledge() *Tool {
 	return &Tool{
 		Name: "search_knowledge",
 		Description: "Search everything Watchtower has seen — Slack threads and DMs, mail, Jira issues with " +
-			"comments, calendar events, meeting transcripts and recaps, digests, decisions and ideas — ranked by " +
+			"comments, Confluence pages with comments and attachments, calendar events, meeting transcripts and recaps, digests, decisions and ideas — ranked by " +
 			"relevance. Pass several queries (synonyms, Russian and English variants, stems with *). Returns " +
 			"documents with snippets, a ref for get_knowledge_document, the best-matching chunk (open the " +
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +

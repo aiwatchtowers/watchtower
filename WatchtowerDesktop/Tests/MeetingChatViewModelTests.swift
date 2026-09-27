@@ -88,6 +88,7 @@ final class MeetingChatViewModelTests: XCTestCase {
                       "prompt must point the model at the MCP tool for the full text")
         XCTAssertTrue(prompt.contains("search_knowledge"),
                       "the Go prompt and this Swift copy are a deliberate dual path")
+        XCTAssertTrue(prompt.contains("Slack, mail, Jira, Confluence, calendar"), "Confluence is an indexed source")
         XCTAssertLessThan(prompt.count, 16_000,
                           "transcript excerpt must be capped so the interactive CLI prompt stays clear of ARG_MAX")
     }

@@ -103,6 +103,17 @@ final class JiraAccountsViewModelTests: XCTestCase {
         )
     }
 
+    /// "Grant Confluence access" rides the same login flow plus
+    /// `--with-confluence`; the default Re-login must never ask for the
+    /// Confluence scopes (they are opt-in on the CLI side).
+    func testLoginArgsWithConfluence() {
+        XCTAssertEqual(
+            JiraAccountsViewModel.loginArgs(accountID: 3, withConfluence: true),
+            ["jira", "login", "--account", "3", "--app-return", "--with-confluence"]
+        )
+        XCTAssertFalse(JiraAccountsViewModel.loginArgs(accountID: 3).contains("--with-confluence"))
+    }
+
     // MARK: - setEnabledArgs (pure)
 
     func testSetEnabledArgsEnable() {

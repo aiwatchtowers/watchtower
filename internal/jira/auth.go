@@ -101,16 +101,43 @@ func (s *TokenStore) Load() (*OAuthToken, error) {
 	return &token, nil
 }
 
-// Save writes the token to disk.
+// Save writes the token to disk atomically: a 0600 temp file in the same
+// directory, renamed over the old one. Readers that do not hold the
+// client's lock (the Confluence scopes check loads the file directly) must
+// never see a half-written token mid-refresh.
 func (s *TokenStore) Save(token *OAuthToken) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating token directory: %w", err)
 	}
 	data, err := json.MarshalIndent(token, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*") // created 0600
+	if err != nil {
+		return fmt.Errorf("creating token temp file: %w", err)
+	}
+	if err := writeAndRename(tmp, data, s.path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
+
+// writeAndRename writes data to tmp, closes it and renames it to path.
+func writeAndRename(tmp *os.File, data []byte, path string) error {
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing token: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("writing token: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	return nil
 }
 
 // Delete removes the token file.
@@ -155,7 +182,7 @@ func Prepare(cfg JiraOAuthConfig, customRedirectURI string) (*PrepareResult, err
 		redirectURI = fmt.Sprintf("http://localhost:%d%s", defaultRedirectPort, callbackPath)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, JiraScopes)
 
 	return &PrepareResult{
 		AuthorizeURL: authorizeURL,
@@ -164,11 +191,18 @@ func Prepare(cfg JiraOAuthConfig, customRedirectURI string) (*PrepareResult, err
 	}, nil
 }
 
-func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state string) string {
+// buildAuthURL builds the Atlassian authorize URL requesting scope — callers
+// decide which scope set (JiraScopes by default, OAuthScopes when the caller
+// opted into Confluence) rather than buildAuthURL hardcoding one, so
+// requesting Confluence access is opt-in per login, not baked into every
+// Jira connect (see LoginOptions.WithConfluence — an OAuth app without the
+// Confluence API enabled in the developer console rejects the wider scope
+// set outright, breaking `jira login`/`jira add` for everyone by default).
+func buildAuthURL(cfg JiraOAuthConfig, redirectURI, state, scope string) string {
 	params := url.Values{
 		"audience":      {"api.atlassian.com"},
 		"client_id":     {cfg.ClientID},
-		"scope":         {"read:jira-work write:jira-work read:jira-user read:board-scope:jira-software read:sprint:jira-software read:issue:jira-software read:project:jira offline_access"},
+		"scope":         {scope},
 		"redirect_uri":  {redirectURI},
 		"state":         {state},
 		"response_type": {"code"},
@@ -230,8 +264,17 @@ func Complete(ctx context.Context, cfg JiraOAuthConfig, code, redirectURI string
 	return exchangeCode(ctx, cfg, code, redirectURI)
 }
 
-// RefreshToken refreshes an expired access token using a refresh token.
+// RefreshToken refreshes an expired access token using a refresh token,
+// against the package's jiraTokenEndpoint. Client's own refresh paths call
+// refreshTokenAt directly with c.tokenEndpoint() instead, so a test can
+// redirect one Client's refreshes to a private httptest.Server without
+// mutating jiraTokenEndpoint — package state a concurrent test could race.
 func RefreshToken(ctx context.Context, cfg JiraOAuthConfig, refreshToken string) (*OAuthToken, error) {
+	return refreshTokenAt(ctx, cfg, refreshToken, jiraTokenEndpoint)
+}
+
+// refreshTokenAt is RefreshToken with the token endpoint as a parameter.
+func refreshTokenAt(ctx context.Context, cfg JiraOAuthConfig, refreshToken, tokenURL string) (*OAuthToken, error) {
 	payload := map[string]string{
 		"grant_type":    "refresh_token",
 		"client_id":     cfg.ClientID,
@@ -243,7 +286,7 @@ func RefreshToken(ctx context.Context, cfg JiraOAuthConfig, refreshToken string)
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, jiraTokenEndpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +374,12 @@ type LoginOptions struct {
 	// watchtower-auth:// scheme so macOS brings the desktop app back to the
 	// foreground after consent — the slack/google.LoginOptions.AppReturn shape.
 	AppReturn bool
+	// WithConfluence requests OAuthScopes (JiraScopes + ConfluenceScopes)
+	// instead of the default JiraScopes-only. Opt-in: an Atlassian OAuth app
+	// that hasn't enabled the Confluence API in its developer console rejects
+	// the wider scope set outright, so requesting it unconditionally would
+	// break every `jira login`/`jira add` for such an app.
+	WithConfluence bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -355,7 +404,11 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 		return nil, fmt.Errorf("generating state: %w", err)
 	}
 
-	authorizeURL := buildAuthURL(cfg, redirectURI, state)
+	scope := JiraScopes
+	if opt.WithConfluence {
+		scope = OAuthScopes
+	}
+	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 
 	resultCh := make(chan callbackResult, 1)
 

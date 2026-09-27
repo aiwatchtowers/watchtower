@@ -16,6 +16,7 @@ struct JiraConnectionDetail: View {
     var body: some View {
         Form {
             jiraSettingsSection
+            confluenceSections
         }
         .formStyle(.grouped)
         .padding(.horizontal)
@@ -130,6 +131,20 @@ struct JiraConnectionDetail: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    /// One Confluence spaces picker per enabled site — Confluence rides the
+    /// Jira account's grant. The site name joins the header only when there
+    /// is more than one to tell apart.
+    @ViewBuilder
+    private var confluenceSections: some View {
+        let sites = appState.jiraAccountsViewModel?.accounts.filter(\.enabled) ?? []
+        ForEach(sites) { account in
+            ConfluenceSpacesSection(
+                account: account,
+                title: sites.count > 1 ? "Confluence — \(account.displayName)" : "Confluence"
+            )
         }
     }
 

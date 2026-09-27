@@ -270,6 +270,31 @@ func TestFeaturesDisable_DryRunJSONWireShape(t *testing.T) {
 	assert.Contains(t, rawJSON, `"dependents":[]`, "an empty dependent list must marshal as [], not null")
 }
 
+// TestFeaturesDisable_KnowledgeConnectorsDryRun pins the connector's
+// cascade: its one dependent is knowledge-search, and a dry run writes
+// nothing.
+func TestFeaturesDisable_KnowledgeConnectorsDryRun(t *testing.T) {
+	configPath := writeFeaturesConfig(t, "")
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	featuresDisableFlagDryRun = true
+	featuresDisableFlagJSON = true
+	t.Cleanup(func() {
+		featuresDisableFlagDryRun = false
+		featuresDisableFlagJSON = false
+	})
+	buf := new(bytes.Buffer)
+	featuresDisableCmd.SetOut(buf)
+	featuresDisableCmd.SetErr(&bytes.Buffer{})
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"knowledge-connectors"}))
+
+	assert.JSONEq(t, `{"feature":"knowledge-connectors","dependents":[{"id":"knowledge-search","title":"Knowledge search"}]}`, buf.String())
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+}
+
 func TestFeaturesDisable_WritesOnlyNamedKey(t *testing.T) {
 	configPath := writeFeaturesConfig(t, "")
 

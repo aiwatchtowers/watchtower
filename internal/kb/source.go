@@ -28,8 +28,8 @@ type progressReporter interface {
 }
 
 // allSources is the indexing order: small sources first so everything but
-// Slack is searchable after the first budgeted cycle, Slack (the backfill
-// giant) last.
+// Slack is searchable after the first budgeted cycle, then Confluence (a
+// whole-space backfill can be large), Slack (the backfill giant) last.
 func allSources() []Source {
 	return []Source{
 		calendarSource{},
@@ -41,6 +41,7 @@ func allSources() []Source {
 		jiraSource{},
 		imapSource{},
 		gmailSource{},
+		extSource{provider: "confluence"},
 		newSlackSource(),
 	}
 }

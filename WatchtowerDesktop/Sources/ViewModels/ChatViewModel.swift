@@ -450,7 +450,7 @@ final class ChatViewModel {
             You have NO pre-loaded data — the local database is your only source of truth.
 
             === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-            - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, calendar, \
+            - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, Confluence, calendar, \
             transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref. Pass 2-5 queries: \
             key terms, synonyms, Russian and English variants, stems ending in * for Russian word forms.
             - list_messages — search/list raw Slack messages by person, channel, and/or keyword, newest first. \
@@ -498,11 +498,15 @@ final class ChatViewModel {
     /// How to link a search_knowledge hit — the same rule as the Go main-chat
     /// prompt (`internal/ai/prompt.go`): a hit's anchor.channel_id is the
     /// namespaced "N:C123" id and a channel-day hit has no single ts, so the
-    /// model must strip the prefix and take the ts from chunk_anchor.
+    /// model must strip the prefix and take the ts from chunk_anchor. A
+    /// Confluence hit links via its "link"; a URL chunk_anchor deep-links to
+    /// the matching heading or comment.
     nonisolated static let knowledgeLinkRule =
         "search_knowledge hits: prefer the hit's \"link\" (a permalink) when present. To link a specific " +
         "Slack message instead, take anchor.channel_id without its \"N:\" account prefix (\"1:C123\" → C123) " +
-        "and, as the message ts, anchor.thread_ts for a thread hit, otherwise the hit's chunk_anchor."
+        "and, as the message ts, anchor.thread_ts for a thread hit, otherwise the hit's chunk_anchor. " +
+        "A Confluence hit links via its \"link\" (the page or attachment URL); when its chunk_anchor is a URL, " +
+        "that is a deep link to the matching heading or comment."
 
     nonisolated private static func promptDeepLinksAndRestrictions(teamID: String, toolsAvailable: Bool) -> String {
         // The second bullet must promise neither a write tool nor a read tool the

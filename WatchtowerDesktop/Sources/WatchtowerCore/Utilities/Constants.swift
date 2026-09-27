@@ -262,6 +262,18 @@ package enum Constants {
         return nil
     }
 
+    /// The `watchtower-ocr` helper shipped next to the bundled CLI (nil for
+    /// `swift run`/`swift test`, and for a bundle built before the helper).
+    package nonisolated static func bundledOCRHelperPath() -> String? {
+        if let path = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("watchtower-ocr").path,
+           FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
     /// Resolve the watchtower CLI binary path.
     /// Priority: Application Support store copy → app bundle → resolved PATH.
     /// The store copy is used only while it matches the bundled CLI (validated

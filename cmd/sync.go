@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/extsync"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/imap"
@@ -828,34 +829,43 @@ func jiraCommentSyncEnabled(cfg *config.Config) bool {
 	return cfg.Streams.Enabled
 }
 
-// wireJiraSyncers wires one Jira syncer per connected, enabled jira_accounts
-// row whose token file exists. A broken account records its own auth-state
-// error rather than aborting the wiring step for the others — the
-// wireGoogleSyncers fan-out pattern. The global cfg.Jira.Enabled toggle gates
-// the whole phase, matching every other daemon phase's on/off switch. Zero
-// accounts is a clean no-op.
-//
-// It also lazily fills the Jira rung of the owner ladder (Task 2): an
-// account wired here that has never recorded its /myself identity gets one
-// attempt per daemon start via maybeRecordJiraOwner, so an install that
-// connected before this feature shipped catches up without a re-login.
+// wireJiraSyncers wires the Atlassian consumers: one Jira syncer per
+// connected, enabled jira_accounts row whose token file exists (only when
+// cfg.Jira.Enabled, the phase's global on/off switch), and the external
+// knowledge sync engine (when knowledge.connectors.enabled). Both consume the
+// SAME *jira.Client per account (buildAtlassianClients): the client owns the
+// single-flight token refresh, and Atlassian rotates refresh tokens, so two
+// clients over one grant could each refresh and revoke the other. A broken
+// account records its own auth-state error rather than aborting the wiring
+// step for the others — the wireGoogleSyncers fan-out pattern. Zero accounts
+// is a clean no-op.
 func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
-	if !cfg.Jira.Enabled {
+	if !cfg.Jira.Enabled && !cfg.Knowledge.Connectors.Enabled {
 		return
 	}
+	accounts, clients := buildAtlassianClients(cfg, database, logger)
+	if cfg.Jira.Enabled {
+		wireJiraAccountSyncers(ctx, d, cfg, database, accounts, clients, logger)
+	}
+	wireExternalSync(d, cfg, database, accounts, clients, logger)
+}
+
+// buildAtlassianClients builds one *jira.Client per enabled account with a
+// token file and a cloud_id, returning the enabled accounts alongside (in
+// list order). An account missing either is flagged "error" — only when it
+// is currently "ok", so an account already flagged error/revoked doesn't
+// churn its status on every daemon start.
+func buildAtlassianClients(cfg *config.Config, database *db.DB, logger *log.Logger) ([]db.JiraAccount, map[int64]*jira.Client) {
+	clients := map[int64]*jira.Client{}
 	accounts, err := database.ListEnabledJiraAccounts()
 	if err != nil {
 		logger.Printf("jira: failed to list accounts: %v", err)
-		return
+		return nil, clients
 	}
 	jiraCfg := resolveJiraOAuthConfig()
-	var syncers []*jira.Syncer
 	for _, acct := range accounts {
 		store := jira.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if acct.CloudID == "" || !store.Exists() {
-			// Only flip a currently-"ok" account to "error" — an account
-			// already flagged error/revoked stays as-is, so this doesn't
-			// churn the status on every daemon cycle.
 			if acct.Status == "ok" {
 				if err := database.SetJiraAccountAuthState(acct.ID, "error", "no token or site — re-login required"); err != nil {
 					logger.Printf("jira: account %d: record auth state: %v", acct.ID, err)
@@ -865,40 +875,88 @@ func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		}
 		client := jira.NewClient(acct.CloudID, jiraCfg, store)
 		client.SetLogger(subLogger(logger, "[jira] "))
-		maybeRecordJiraOwner(ctx, logger.Writer(), database, acct, client)
-		mapper := jira.NewUserMapper(client, database)
-		mapper.SetLogger(subLogger(logger, "[jira-users] "))
-		boards, err := database.GetJiraSelectedBoards(acct.ID)
-		if err != nil {
-			logger.Printf("jira: account %d: failed to load selected boards: %v", acct.ID, err)
+		clients[acct.ID] = client
+	}
+	return accounts, clients
+}
+
+// wireJiraAccountSyncers builds one Jira syncer per account that has a
+// client. It also lazily fills the Jira rung of the owner ladder: an account
+// wired here that has never recorded its /myself identity gets one attempt
+// per daemon start via maybeRecordJiraOwner, so an install that connected
+// before that feature shipped catches up without a re-login.
+func wireJiraAccountSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, accounts []db.JiraAccount, clients map[int64]*jira.Client, logger *log.Logger) {
+	var syncers []*jira.Syncer
+	for _, acct := range accounts {
+		client := clients[acct.ID]
+		if client == nil {
 			continue
 		}
-		boardIDs := make([]int, len(boards))
-		for i, b := range boards {
-			boardIDs[i] = b.ID
+		maybeRecordJiraOwner(ctx, logger.Writer(), database, acct, client)
+		syncer, err := newJiraAccountSyncer(cfg, database, acct, client, logger)
+		if err != nil {
+			logger.Printf("jira: account %d: %v", acct.ID, err)
+			continue
 		}
-		syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
-		syncer.SetLogger(subLogger(logger, "[jira-sync] "))
-		// Bounded comment sync feeds the stream digests' Jira pre-digest
-		// (internal/ideas stage 1); it stays off (0 = disabled) unless the
-		// stream digests phase itself is on — decoupled from ideas.enabled
-		// since the registry consolidator (stage 2) no longer owns the
-		// comment feed.
-		if jiraCommentSyncEnabled(cfg) {
-			syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
-		}
-		// Wire board analyzer for auto-refresh of changed configs. This
-		// serves Boards, not digests, so it attaches whenever the account
-		// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).
-		aiProvider := newAIClient(cfg, cfg.DBPath())
-		analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
-		analyzer.SetLogger(subLogger(logger, "[jira-analyzer] "))
-		analyzer.SetLanguage(cfg.Digest.Language)
-		syncer.SetBoardAnalyzer(analyzer)
-		syncer.SetAutoRefresh(true)
 		syncers = append(syncers, syncer)
 	}
 	d.SetJiraSyncers(syncers)
+}
+
+// newJiraAccountSyncer builds one account's syncer over its shared client.
+func newJiraAccountSyncer(cfg *config.Config, database *db.DB, acct db.JiraAccount, client *jira.Client, logger *log.Logger) (*jira.Syncer, error) {
+	mapper := jira.NewUserMapper(client, database)
+	mapper.SetLogger(subLogger(logger, "[jira-users] "))
+	boards, err := database.GetJiraSelectedBoards(acct.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load selected boards: %w", err)
+	}
+	boardIDs := make([]int, len(boards))
+	for i, b := range boards {
+		boardIDs[i] = b.ID
+	}
+	syncer := jira.NewSyncer(client, database, mapper, boardIDs, acct.ID)
+	syncer.SetLogger(subLogger(logger, "[jira-sync] "))
+	// Bounded comment sync feeds the stream digests' Jira pre-digest
+	// (internal/ideas stage 1); it stays off (0 = disabled) unless the
+	// stream digests phase itself is on — decoupled from ideas.enabled
+	// since the registry consolidator (stage 2) no longer owns the
+	// comment feed.
+	if jiraCommentSyncEnabled(cfg) {
+		syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
+	}
+	// Wire board analyzer for auto-refresh of changed configs. This
+	// serves Boards, not digests, so it attaches whenever the account
+	// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).
+	aiProvider := newAIClient(cfg, cfg.DBPath())
+	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, acct.ID)
+	analyzer.SetLogger(subLogger(logger, "[jira-analyzer] "))
+	analyzer.SetLanguage(cfg.Digest.Language)
+	syncer.SetBoardAnalyzer(analyzer)
+	syncer.SetAutoRefresh(true)
+	return syncer, nil
+}
+
+// extSyncCycleBudget bounds one daemon cycle's external sync, so a first
+// Confluence backfill spreads across cycles.
+const extSyncCycleBudget = 90 * time.Second
+
+// wireExternalSync builds the ONE external-sync engine the daemon keeps
+// across cycles (its rotation state is in memory) and gives it a Confluence
+// fetcher per account over that account's shared client. Wired even with no
+// space selected yet, so a space picked while the daemon runs is synced on
+// the next cycle.
+func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, accounts []db.JiraAccount, clients map[int64]*jira.Client, logger *log.Logger) {
+	if !cfg.Knowledge.Connectors.Enabled {
+		return
+	}
+	engine := extsync.New(database, extSyncOptions(cfg, subLogger(logger, "[ext-sync] "), extSyncCycleBudget))
+	for _, acct := range accounts {
+		if client := clients[acct.ID]; client != nil {
+			engine.SetFetcher(acct.ID, newConfluenceFetcher(client, acct.SiteURL))
+		}
+	}
+	d.SetExternalSync(engine)
 }
 
 // newJiraKeyDetector is jira.NewKeyDetectorIfEnabled with the detector's

@@ -40,6 +40,10 @@ const (
 	// DefaultKnowledgeEnabled gates the knowledge-search index. Mechanical
 	// (no AI), on by default.
 	DefaultKnowledgeEnabled = true
+	// DefaultKnowledgeConnectorsEnabled gates the external-sync phase
+	// (Confluence). Mechanical (no AI), on by default, inert until a space
+	// is selected.
+	DefaultKnowledgeConnectorsEnabled = true
 
 	// Ideas & decisions registry defaults
 	DefaultIdeasEnabled                 = true

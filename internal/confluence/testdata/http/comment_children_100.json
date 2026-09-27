@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "id": "101",
+      "status": "current",
+      "title": "Re: Release plan",
+      "version": {
+        "number": 1,
+        "createdAt": "2026-09-01T16:00:00.000Z",
+        "authorId": "acc-3",
+        "message": "",
+        "minorEdit": false
+      },
+      "body": {
+        "storage": {
+          "representation": "storage",
+          "value": "<p>Agreed.</p>"
+        }
+      },
+      "parentCommentId": "100"
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

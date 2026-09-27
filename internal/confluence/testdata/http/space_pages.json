@@ -1,0 +1,36 @@
+{
+  "results": [
+    {
+      "id": "1",
+      "status": "current",
+      "title": "Release plan",
+      "spaceId": "10",
+      "createdAt": "2026-08-01T10:00:00.000Z",
+      "version": {
+        "number": 3,
+        "createdAt": "2026-09-01T13:00:00.000Z",
+        "authorId": "acc-editor",
+        "message": "",
+        "minorEdit": false
+      }
+    },
+    {
+      "id": "6",
+      "status": "archived",
+      "title": "Q1 plan",
+      "spaceId": "10",
+      "createdAt": "2026-01-01T10:00:00.000Z",
+      "version": {
+        "number": 7,
+        "createdAt": "2026-04-01T10:00:00.000Z",
+        "authorId": "acc-author",
+        "message": "",
+        "minorEdit": false
+      }
+    }
+  ],
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "next": "/wiki/api/v2/spaces/10/pages?cursor=pc2&limit=100&depth=all"
+  }
+}

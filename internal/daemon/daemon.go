@@ -21,6 +21,8 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/doclinks/linkscan"
+	"watchtower/internal/extsync"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
@@ -99,6 +101,7 @@ type Daemon struct {
 	gmailSyncers        []*gmail.Syncer
 	imapSyncers         []*imap.Syncer
 	jiraSyncers         []jiraAccountSyncer
+	externalSync        ExternalSyncRunner
 	dayPlanPipeline     DayPlanRunner
 	lastJira            time.Time
 	lastPeople          time.Time // when people cards last ran (once per day)
@@ -261,6 +264,22 @@ func (d *Daemon) SetJiraSyncers(s []*jira.Syncer) {
 	}
 }
 
+// ExternalSyncRunner is the slice of *extsync.Engine behaviour
+// phaseExternalSync uses. The daemon holds ONE runner across cycles: the
+// engine keeps its source-rotation state in memory.
+type ExternalSyncRunner interface {
+	Run(ctx context.Context) (extsync.Stats, error)
+	// HasRunnable reports whether Run would sync any of srcs (an enabled
+	// source whose account is wired).
+	HasRunnable(srcs []db.ExtSource) bool
+}
+
+// SetExternalSync sets the external knowledge sync engine (Confluence
+// spaces). nil disables the external-sync phase.
+func (d *Daemon) SetExternalSync(e ExternalSyncRunner) {
+	d.externalSync = e
+}
+
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
 func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p
@@ -386,6 +405,7 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseGmailSync(ctx)
 	d.phaseImapSync(ctx)
 	d.phaseJiraSync(ctx)
+	d.phaseExternalSync(ctx)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
@@ -912,6 +932,77 @@ func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
 		}
 		return pipelineRunStats{items: st.Written + st.Deleted, err: reportErr}
 	})
+}
+
+// phaseExternalSync pulls the selected external knowledge sources
+// (Confluence spaces) into ext_* for the knowledge index. Mechanical (no
+// AI); off = no sync, the synced ext_* rows and the index stay readable
+// (FEAT-01/02). With no runnable source it writes nothing, not even a
+// pipeline_runs row — the feature is inert until a space is picked, and
+// goes inert again when every selected space belongs to a removed or
+// disabled Jira account (no fetcher wired), instead of logging an empty run
+// every cycle.
+func (d *Daemon) phaseExternalSync(ctx context.Context) {
+	if !d.config.Knowledge.Connectors.Enabled || d.externalSync == nil || d.db == nil {
+		return
+	}
+	if ctx.Err() != nil {
+		return // shutting down: start nothing, record no pipeline run
+	}
+	srcs, err := d.db.ListExtSources("confluence")
+	if err != nil {
+		d.logger.Printf("external sync: listing sources: %v", err)
+		return
+	}
+	if !d.externalSync.HasRunnable(srcs) {
+		return
+	}
+	d.trackedPipelineRun("external-sync", func() pipelineRunStats {
+		st, err := d.externalSync.Run(ctx)
+		reportErr := err
+		if err != nil {
+			if isBenignShutdownErr(ctx, err) {
+				// Shutdown mid-cycle: cursors and page tokens are saved with
+				// the batch that advanced them, so the next cycle resumes.
+				d.logger.Printf("external sync: stopped by shutdown")
+				reportErr = nil
+			} else {
+				d.logger.Printf("external sync: %v", err)
+			}
+		}
+		if st.Incomplete {
+			d.logger.Printf("external sync: cycle budget reached (%d fetched, %d deleted), continuing next cycle", st.Fetched, st.Deleted)
+		}
+		linked, linkErr := d.scanDocLinks(ctx)
+		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments + linked, err: errors.Join(reportErr, linkErr)}
+	})
+}
+
+// docLinkScanBudget bounds one cycle's doc_links detection (Confluence page
+// URLs in Slack/mail/Jira). The first run backfills history over as many
+// cycles as it takes; cursors persist per batch.
+const docLinkScanBudget = 20 * time.Second
+
+// scanDocLinks runs linkscan.ScanSources after the engine (spec §10). It
+// runs only inside phaseExternalSync's gates (feature on, ≥1 space
+// selected) and ScanSources itself skips when no enabled source or no
+// connected site exists. A shutdown mid-scan is not an error: every
+// committed batch saved its cursor.
+func (d *Daemon) scanDocLinks(ctx context.Context) (int, error) {
+	select {
+	case <-ctx.Done():
+		return 0, nil // shutting down: nothing started, nothing to report
+	default:
+	}
+	n, err := linkscan.ScanSources(ctx, d.db, docLinkScanBudget)
+	if err != nil {
+		if isBenignShutdownErr(ctx, err) {
+			return n, nil
+		}
+		d.logger.Printf("doc links: %v", err)
+		return n, fmt.Errorf("doc links: %w", err)
+	}
+	return n, nil
 }
 
 // isBenignShutdownErr reports whether err is fully explained by ctx being

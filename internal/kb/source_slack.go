@@ -79,6 +79,14 @@ func parseSlackRef(ref string) (kind, channelID, tail string, ok bool) {
 	return "", "", "", false
 }
 
+// SlackDocRef is the ref of the knowledge-index document a Slack message
+// renders into: its thread, or its channel-day when top-level. internal/doclinks
+// uses it as the from_ref of a Slack mention, so a link names the same
+// document search_knowledge returns.
+func SlackDocRef(channelID, threadTS string, tsUnix float64) string {
+	return slackKeyFor(channelID, threadTS, tsUnix)
+}
+
 func slackKeyFor(channelID, threadTS string, tsUnix float64) string {
 	if threadTS != "" {
 		return slackThreadRef(channelID, threadTS)

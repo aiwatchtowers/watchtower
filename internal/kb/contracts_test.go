@@ -58,6 +58,7 @@ func dumpKB(t *testing.T, d *db.DB) string {
 var kbSourceTables = []string{
 	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "calendar_events",
 	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions",
+	"ext_documents", "ext_comments", "ext_users",
 }
 
 func dumpSourceTables(t *testing.T, d *db.DB) string {
@@ -87,6 +88,8 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	exec(t, d, `UPDATE gmail_messages SET body_text = 'Урезать на треть', updated_at = '2026-09-26T12:30:00Z' WHERE id = 'm1'`)
 	exec(t, d, `INSERT INTO idea_mentions (id, idea_id, source, quote, author, said_at, created_at)
 		VALUES (2, 9, 'jira', 'кэш на уровне CDN', 'Bob', '2026-09-26T12:00:00Z', '2026-09-26T12:30:00Z')`)
+	// A Confluence comment author is renamed: only ext_users moves.
+	exec(t, d, `UPDATE ext_users SET display_name = 'Robert', fetched_at = '2026-09-26T12:30:00Z' WHERE ext_user_id = 'u2'`)
 	_, err := Run(ctx, d, Options{Now: testNow().Add(time.Hour)}) // pass 2, same UTC day
 	require.NoError(t, err)
 	var recentDocs int
@@ -103,6 +106,11 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	msg(t, d, "1:D1", "1758000450.000550", "1:U1", "ответ в тред", "1758000400.000500", "")
 	exec(t, d, `DELETE FROM jira_comments`)
 	exec(t, d, `DELETE FROM jira_issues`)
+	// A Confluence comment is removed (the engine stamps children_changed_at)
+	// and an attachment is hard-deleted (the reconcile drops it).
+	exec(t, d, `DELETE FROM ext_comments WHERE ext_id = '501'`)
+	exec(t, d, `UPDATE ext_documents SET children_changed_at = '2026-09-26T12:40:00Z' WHERE ext_id = '101'`)
+	exec(t, d, `DELETE FROM ext_documents WHERE ext_id = 'att9'`)
 	sourceBefore := dumpSourceTables(t, d)
 
 	day2 := testNow().Add(24 * time.Hour)
@@ -115,6 +123,9 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	assert.Contains(t, incremental, "кэш на уровне CDN")
 	assert.Contains(t, incremental, "и еще договорились про стейдж")
 	assert.Contains(t, incremental, "ответ в тред")
+	assert.Contains(t, incremental, "Robert on")
+	assert.NotContains(t, incremental, "согласовано")
+	assert.NotContains(t, incremental, "confluence:1:att9")
 
 	_, err = Reindex(ctx, d, nil, day2)
 	require.NoError(t, err)
@@ -166,6 +177,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"digest":        {"выкатку", "итоги"},
 		"stream_digest": {"стейдж", "untitled"},
 		"idea":          {"кэш*"},
+		"confluence":    {"канарейк*", "diagram"},
 	}
 	require.Len(t, perSource, len(SourceNames()), "the fixture covers every source")
 	var all []Hit

@@ -1,0 +1,11 @@
+{
+  "sections": [
+    {
+      "heading": "Team roster",
+      "anchor": "Team-roster",
+      "text": "Team roster\nName | Role\nAlice | Engineer\nBob | Manager"
+    }
+  ],
+  "userIDs": null,
+  "jiraKeys": null
+}

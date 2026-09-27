@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"watchtower/internal/db"
+	"watchtower/internal/extract"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -34,7 +35,19 @@ import (
 // below (db template, isolated HOME) is relevant to a helper process — it
 // doesn't touch the database or read config — so it must run before any of
 // it, not just before the DB call specifically.
+//
+// extract-pdf-text short-circuit: the attachment extractor parses PDFs by
+// re-executing os.Executable() with the hidden `extract-pdf-text <path>`
+// command (pdfHelperArgv). Under `go test` that executable is this test
+// binary, which would ignore the unknown arguments and run the whole suite
+// again — so a cmd test that syncs a PDF must be served the parse here.
 func TestMain(m *testing.M) {
+	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
+		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
 		os.Exit(m.Run())
 	}

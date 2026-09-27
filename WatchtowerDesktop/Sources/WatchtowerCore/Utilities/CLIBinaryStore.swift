@@ -160,25 +160,74 @@ package enum CLIBinaryStore {
         let firstInstall = !fm.fileExists(atPath: storeBinary)
         if !firstInstall { await stopDaemon() }
 
-        let tmp = storeDir + "/\(tmpPrefix)\(ProcessInfo.processInfo.processIdentifier)\(tmpSuffix)"
+        if let failure = copyIn(from: bundleBinary, to: storeBinary, tag: "") {
+            return .failed(failure)
+        }
+        invalidateResolvedPath()
+        return firstInstall ? .installed : .replaced
+    }
+
+    /// Copies `source` over `destination` through a temp file in the same
+    /// directory and an atomic rename. Returns the failure, nil on success.
+    nonisolated private static func copyIn(from source: String, to destination: String, tag: String) -> String? {
+        let fm = FileManager.default
+        let dir = (destination as NSString).deletingLastPathComponent
+        let tmp = dir + "/\(tmpPrefix)\(tag)\(ProcessInfo.processInfo.processIdentifier)\(tmpSuffix)"
         do {
-            try fm.createDirectory(atPath: storeDir, withIntermediateDirectories: true)
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
             if fm.fileExists(atPath: tmp) { try fm.removeItem(atPath: tmp) }
-            try fm.copyItem(atPath: bundleBinary, toPath: tmp)
+            try fm.copyItem(atPath: source, toPath: tmp)
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp)
         } catch {
             try? fm.removeItem(atPath: tmp)
-            return .failed(error.localizedDescription)
+            return error.localizedDescription
         }
         // rename(2) is atomic and re-points the directory entry: even if a
         // straggler still runs from the old inode, that inode's bytes are
         // never modified, so its code signature stays intact.
-        guard rename(tmp, storeBinary) == 0 else {
+        guard rename(tmp, destination) == 0 else {
             let err = String(cString: strerror(errno))
             try? fm.removeItem(atPath: tmp)
-            return .failed("rename to \(storeBinary) failed: \(err)")
+            return "rename to \(destination) failed: \(err)"
         }
-        invalidateResolvedPath()
+        return nil
+    }
+
+    // MARK: - OCR helper
+
+    /// The `watchtower-ocr` helper's store location: next to the stored CLI,
+    /// where the Go side looks for it (`extract.ResolveHelperPath`: next to
+    /// its own executable).
+    package nonisolated static var storeOCRHelperPath: String {
+        ((storeBinaryPath as NSString).deletingLastPathComponent as NSString)
+            .appendingPathComponent("watchtower-ocr")
+    }
+
+    /// Bring the store's OCR helper in sync with the bundled one, validated
+    /// on its own (size, then SHA256) — independent of the CLI: nothing here
+    /// can fail or change the CLI copy, so a helper problem never blocks CLI
+    /// resolution; the CLI just reports OCR as unavailable. No daemon stop:
+    /// the daemon spawns the helper per attachment, and the atomic rename
+    /// never modifies a running helper's inode. When the bundle has no helper
+    /// or the copy fails, any store copy is removed rather than left
+    /// unvalidated.
+    package nonisolated static func syncOCRHelper(
+        bundleHelper: String?,
+        storeHelper: String = storeOCRHelperPath
+    ) -> Outcome {
+        let fm = FileManager.default
+        guard let bundleHelper, fm.isExecutableFile(atPath: bundleHelper) else {
+            try? fm.removeItem(atPath: storeHelper)
+            return .failed("bundled OCR helper missing or not executable")
+        }
+        if installedPath(storeBinary: storeHelper, bundleBinary: bundleHelper) != nil {
+            return .upToDate
+        }
+        let firstInstall = !fm.fileExists(atPath: storeHelper)
+        if let failure = copyIn(from: bundleHelper, to: storeHelper, tag: "ocr-") {
+            try? fm.removeItem(atPath: storeHelper)
+            return .failed(failure)
+        }
         return firstInstall ? .installed : .replaced
     }
 

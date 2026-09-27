@@ -335,7 +335,7 @@ final class MeetingChatViewModel {
         \(truncated ? "(…truncated — use get_transcript with the transcript id above for the full text)" : "(full transcript shown)")
 
         === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-        - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, calendar, \
+        - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, Confluence, calendar, \
         transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref. Pass 2-5 queries: \
         key terms, synonyms, Russian and English variants, stems ending in * for Russian word forms.
         - get_transcript / list_transcripts — the full transcript text of this and other recordings.

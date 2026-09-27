@@ -1,0 +1,27 @@
+{
+  "results": [
+    {
+      "type": "known",
+      "accountId": "acc-1",
+      "accountType": "atlassian",
+      "email": "ann@example.com",
+      "publicName": "Ann",
+      "displayName": "Ann Lee"
+    },
+    {
+      "type": "known",
+      "accountId": "acc-2",
+      "accountType": "atlassian",
+      "email": "",
+      "publicName": "",
+      "displayName": "Bob Stone"
+    }
+  ],
+  "start": 0,
+  "limit": 100,
+  "size": 2,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki"
+  }
+}

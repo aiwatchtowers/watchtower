@@ -1,0 +1,16 @@
+{
+  "sections": [
+    {
+      "heading": "Left column",
+      "anchor": "Left-column",
+      "text": "Left column\nLeft text."
+    },
+    {
+      "heading": "Right column",
+      "anchor": "Right-column",
+      "text": "Right column\nRight text."
+    }
+  ],
+  "userIDs": null,
+  "jiraKeys": null
+}

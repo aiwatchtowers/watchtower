@@ -4,16 +4,20 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/jirakey"
 )
 
-// jiraKeyPattern matches Jira issue keys like "PROJ-123".
-var jiraKeyPattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+-\d+)\b`)
+// KeyRegexp matches Jira issue keys like "PROJ-123". Exported so other
+// packages that need the same pattern without the known-project-key
+// filtering `KeyDetector` applies (e.g. internal/confluence's storage-format
+// converter) can reuse it directly instead of duplicating the regex. It is
+// the dependency-free internal/jirakey pattern, re-exported here.
+var KeyRegexp = jirakey.KeyRegexp
 
 // KeyDetector detects Jira issue keys in text and links them to Slack messages.
 type KeyDetector struct {
@@ -67,7 +71,7 @@ func NewKeyDetectorIfEnabled(cfg *config.Config, database *db.DB) *KeyDetector {
 // RFC-9728 — and wrote it into jira_slack_links, which feeds AI prompts, the
 // Desktop and the get_task_context dev surface.
 func (d *KeyDetector) DetectKeys(text string) []string {
-	matches := jiraKeyPattern.FindAllString(text, -1)
+	matches := KeyRegexp.FindAllString(text, -1)
 	if len(matches) == 0 {
 		return nil
 	}

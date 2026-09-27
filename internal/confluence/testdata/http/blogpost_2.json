@@ -1,0 +1,28 @@
+{
+  "id": "2",
+  "status": "current",
+  "title": "Launch notes",
+  "spaceId": "10",
+  "authorId": "acc-blogger",
+  "createdAt": "2026-09-02T09:00:00.000Z",
+  "version": {
+    "number": 1,
+    "createdAt": "2026-09-02T09:15:30.123Z",
+    "authorId": "acc-blogger",
+    "message": "",
+    "minorEdit": false
+  },
+  "body": {
+    "storage": {
+      "representation": "storage",
+      "value": "<p>We launched.</p>"
+    }
+  },
+  "labels": {
+    "results": []
+  },
+  "_links": {
+    "webui": "/spaces/ENG/blog/2026/09/02/2/Launch+notes",
+    "base": "https://acme.atlassian.net/wiki"
+  }
+}

@@ -136,6 +136,15 @@ if [ ! -f "$BINARY" ]; then
     exit 1
 fi
 
+# The watchtower-ocr helper (Vision OCR for attachment scans, run by the Go
+# CLI): its own small executable target with no GRDB/ML dependencies.
+swift build -c release --arch arm64 --product watchtower-ocr 2>&1
+OCR_HELPER=$(swift build -c release --arch arm64 --show-bin-path)/watchtower-ocr
+if [ ! -f "$OCR_HELPER" ]; then
+    echo "ERROR: OCR helper not found at $OCR_HELPER"
+    exit 1
+fi
+
 echo "==> Creating app bundle..."
 
 # Create .app structure
@@ -180,8 +189,10 @@ cat > "$MLX_BUNDLE/Info.plist" << 'MLXPLIST'
 MLXPLIST
 echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut -f1))"
 
-# Copy Go CLI into bundle
+# Copy Go CLI into bundle, and the OCR helper next to it (the CLI looks for
+# watchtower-ocr beside its own executable; CLIBinaryStore copies both).
 cp "$BUILD_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
+cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
 
 # Create Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
@@ -353,6 +364,7 @@ fi
 if [ "$SIGN_IDENTITY" != "-" ]; then
     echo "==> Code signing with: $SIGN_IDENTITY"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
+    codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
@@ -361,6 +373,8 @@ else
     echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
     echo "    which changes every build."
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE/Contents/MacOS/watchtower"
+    # The OCR helper needs no entitlement at all: never give it the app's.
+    codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
 

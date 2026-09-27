@@ -285,10 +285,12 @@ func init() {
 	jiraLoginCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
+	jiraLoginCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
+	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
 	jiraBoardsAnalyzeCmd.Flags().Bool("force", false, "re-analyze even if config hash unchanged")
 	jiraBoardsAnalyzeCmd.Flags().Bool("auto", false, "auto re-analyze boards with changed config (respects 24h cooldown)")
@@ -498,6 +500,65 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 	return site, nil
 }
 
+// jiraLoginOptionsFromFlags builds jira.LoginOptions from the flags shared by
+// `jira login` and `jira add` — with-confluence is opt-in (default false):
+// an Atlassian OAuth app that hasn't enabled the Confluence API in its
+// developer console rejects the wider scope set outright, so requesting it
+// unconditionally would break every login/add for such an app.
+func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
+	noOpen, _ := cmd.Flags().GetBool("no-open")
+	appReturn, _ := cmd.Flags().GetBool("app-return")
+	withConfluence, _ := cmd.Flags().GetBool("with-confluence")
+	return jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn, WithConfluence: withConfluence}
+}
+
+// jiraReloginOptions is jiraLoginOptionsFromFlags for a re-consent of an
+// existing account: without --with-confluence it still requests the
+// Confluence scopes when the account already uses Confluence — its stored
+// grant carries them, or it owns selected spaces — because a new grant
+// replaces the old one, and a plain Re-login (e.g. recovering a revoked
+// Jira) would otherwise silently strip Confluence access. kept reports that
+// default kicking in. --with-confluence stays the opt-in for a first grant.
+// Only a failed selected-spaces lookup fails the login: an unreadable token
+// is warned about and decided from the selected spaces alone (see
+// accountUsesConfluence), so a corrupt token never blocks re-login.
+func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool, err error) {
+	opts = jiraLoginOptionsFromFlags(cmd)
+	if opts.WithConfluence {
+		return opts, false, nil
+	}
+	uses, err := accountUsesConfluence(workspaceDir, database, accountID, cmd.ErrOrStderr())
+	if err != nil {
+		return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence: %w", accountID, err)
+	}
+	if !uses {
+		return opts, false, nil
+	}
+	opts.WithConfluence = true
+	return opts, true, nil
+}
+
+// accountUsesConfluence reports whether a Jira account's grant carries the
+// Confluence scopes or the account has selected Confluence spaces. A token
+// that cannot be read (a missing file is simply "no scopes") is written to
+// warn and the answer falls back to the selected spaces — the re-login is
+// what replaces that token, so it must not be blocked by it. Only a failed
+// selected-spaces lookup is an error.
+func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64, warn io.Writer) (bool, error) {
+	granted, tokenErr := confluenceScopesOK(workspaceDir, accountID)
+	if tokenErr != nil {
+		fmt.Fprintf(warn, "Warning: %v; deciding Confluence access from the selected spaces\n", tokenErr)
+	}
+	if granted {
+		return true, nil
+	}
+	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
+	if err != nil {
+		return false, fmt.Errorf("listing selected Confluence spaces: %w", err)
+	}
+	return len(srcs) > 0, nil
+}
+
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
 // config.yaml (the per-account on/off lives on the jira_accounts row).
 func enableJiraPhase() error {
@@ -522,13 +583,11 @@ func runJiraAdd(cmd *cobra.Command, _ []string) error {
 	}
 
 	jiraCfg := resolveJiraOAuthConfig()
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, jiraLoginOptionsFromFlags(cmd))
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -601,12 +660,17 @@ func runJiraLogin(cmd *cobra.Command, _ []string) error {
 	}
 
 	jiraCfg := resolveJiraOAuthConfig()
-	noOpen, _ := cmd.Flags().GetBool("no-open")
-	appReturn, _ := cmd.Flags().GetBool("app-return")
 	siteFlag, _ := cmd.Flags().GetString("site")
 	out := cmd.OutOrStdout()
 
-	token, err := jira.Login(cmd.Context(), jiraCfg, out, jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn})
+	opts, kept, err := jiraReloginOptions(cmd, cfg.WorkspaceDir(), database, accountID)
+	if err != nil {
+		return err
+	}
+	if kept {
+		fmt.Fprintln(out, "This account uses Confluence; keeping its Confluence access in the new grant.")
+	}
+	token, err := jira.Login(cmd.Context(), jiraCfg, out, opts)
 	if err != nil {
 		return fmt.Errorf("jira login: %w", err)
 	}
@@ -662,6 +726,7 @@ func runJiraLogout(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Jira Cloud disconnected. Token removed; synced data kept.")
+	printKeptConfluenceSpaces(cmd, database, accounts[0].ID)
 	return nil
 }
 
@@ -749,7 +814,29 @@ func runJiraRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Jira account %d removed. Token deleted; synced data kept.\n", id)
+	printKeptConfluenceSpaces(cmd, database, id)
 	return nil
+}
+
+// printKeptConfluenceSpaces tells the user how to drop the Confluence spaces
+// a removed account still owns: remove is non-destructive, the Desktop hides
+// removed accounts, and the spaces' documents stay searchable until they are
+// unselected. A listing failure only warns — the remove itself succeeded.
+func printKeptConfluenceSpaces(cmd *cobra.Command, database *db.DB, accountID int64) {
+	srcs, err := database.ListExtSourcesForJiraAccount(providerConfluence, accountID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: listing Confluence spaces: %v\n", err)
+		return
+	}
+	if len(srcs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(srcs))
+	for _, s := range srcs {
+		keys = append(keys, s.ContainerKey)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%d Confluence space(s) kept; run `watchtower confluence unselect --account %d %s` to remove them.\n",
+		len(srcs), accountID, strings.Join(keys, " "))
 }
 
 func runJiraStatus(cmd *cobra.Command, _ []string) error {

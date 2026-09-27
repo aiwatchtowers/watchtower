@@ -64,6 +64,31 @@ func TestTokenStore_SaveCreatesDirectory(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestTokenStore_SaveIsAtomic: a save replaces the file by rename (a new
+// inode — a reader holding the old file never sees a partial write), keeps
+// it 0600 and leaves no temp file behind.
+func TestTokenStore_SaveIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTokenStore(dir, 1)
+	require.NoError(t, store.Save(&OAuthToken{AccessToken: "first"}))
+	before, err := os.Stat(store.Path())
+	require.NoError(t, err)
+
+	require.NoError(t, store.Save(&OAuthToken{AccessToken: "second"}))
+	after, err := os.Stat(store.Path())
+	require.NoError(t, err)
+
+	assert.False(t, os.SameFile(before, after), "the token file is replaced, not rewritten in place")
+	assert.Equal(t, os.FileMode(0o600), after.Mode().Perm())
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "second", loaded.AccessToken)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp file is left behind")
+	assert.Equal(t, "jira_token_1.json", entries[0].Name())
+}
+
 func TestOAuthToken_IsExpired(t *testing.T) {
 	tests := []struct {
 		name    string

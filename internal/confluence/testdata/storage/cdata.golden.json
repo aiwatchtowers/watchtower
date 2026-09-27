@@ -1,0 +1,11 @@
+{
+  "sections": [
+    {
+      "heading": "CDATA edge cases",
+      "anchor": "CDATA-edge-cases",
+      "text": "CDATA edge cases\nif a < b && c > d {\n    y := 1\n}\nx >= 10\n// pipeline: a -> b -> c\n// end]] not a cdata close\n<div class=\"a\">x</div>\nSee a < b -> c >= d for details."
+    }
+  ],
+  "userIDs": null,
+  "jiraKeys": null
+}

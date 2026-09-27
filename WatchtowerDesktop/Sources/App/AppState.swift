@@ -200,6 +200,11 @@ final class AppState {
     /// window.
     private(set) var jiraAccountsViewModel: JiraAccountsViewModel?
 
+    /// Confluence spaces pickers (Settings → Jira), one per Jira account id —
+    /// held here so a select/unselect or re-consent still running when the
+    /// Settings pane goes away finishes and is visible on return.
+    private(set) var confluenceSpacesViewModels: [Int64: ConfluenceSpacesViewModel] = [:]
+
     /// External Connections ("Quick Connections") ViewModel — persists across
     /// tab switches so an in-flight add/remove survives navigating away from
     /// the Settings window.
@@ -565,6 +570,13 @@ final class AppState {
             // for this launch — including the daemon.
             NSLog("CLIBinaryStore: sync failed (%@); the CLI runs from the app bundle this launch", reason)
         }
+        // The OCR helper travels next to the CLI copy, validated on its own:
+        // a failure here only means attachment OCR is unavailable to the
+        // store CLI, never that the CLI itself is unusable — so it is logged,
+        // not surfaced as cliStoreError.
+        if case .failed(let reason) = CLIBinaryStore.syncOCRHelper(bundleHelper: Constants.bundledOCRHelperPath()) {
+            NSLog("CLIBinaryStore: OCR helper sync failed (%@); attachment OCR is unavailable to the store CLI", reason)
+        }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
@@ -751,10 +763,44 @@ final class AppState {
         vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
         vm.refresh()
         jiraAccountsViewModel = vm
+        // Pickers built over a previous pool would read a stale database.
+        confluenceSpacesViewModels = [:]
         // Browse-URL resolution reads jira_accounts.site_url — wire the pool
         // here, the same point the sibling VM gets its pool, so per-issue
         // links resolve from the DB instead of the frozen config keys.
         JiraConfigHelper.configure(dbPool: dbPool)
+    }
+
+    /// The Confluence spaces picker for `accountID`, created on first use
+    /// (nil until the DB is open). `runner` and `syncNow` (default: the
+    /// daemon's Sync Now, run after a successful select) only matter on that
+    /// first call; tests pass fakes.
+    /// "Grant Confluence access" runs the Jira account's own login flow with
+    /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
+    /// and errors land where every other Jira re-login's do.
+    @discardableResult
+    func confluenceSpacesViewModel(
+        forJiraAccount accountID: Int64,
+        runner: CLIRunnerProtocol? = ProcessCLIRunner.makeDefault(),
+        syncNow: (@MainActor () async -> Void)? = nil
+    ) -> ConfluenceSpacesViewModel? {
+        if let existing = confluenceSpacesViewModels[accountID] { return existing }
+        guard let pool = databaseManager?.dbPool else { return nil }
+        let vm = ConfluenceSpacesViewModel(
+            accountID: accountID,
+            dbPool: pool,
+            runner: runner,
+            onReconsent: { [weak self] id in
+                guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
+                await jira.reloginWithConfluence(accountID: Int(id))
+                return jira.error
+            },
+            // Best-effort, the tray's Sync Now: a failure only means the
+            // daemon picks the space up on its next poll instead.
+            onSelected: syncNow ?? { [weak self] in await self?.daemonManager.syncNow() }
+        )
+        confluenceSpacesViewModels[accountID] = vm
+        return vm
     }
 
     func initExternalConnections(dbPool: DatabasePool) {

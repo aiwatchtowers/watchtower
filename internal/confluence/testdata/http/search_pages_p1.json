@@ -1,0 +1,51 @@
+{
+  "results": [
+    {
+      "id": "1",
+      "type": "page",
+      "status": "current",
+      "title": "Release plan",
+      "version": {
+        "number": 3,
+        "when": "2026-09-01T13:00:00.000Z"
+      },
+      "container": {
+        "id": 10,
+        "key": "ENG",
+        "name": "Engineering",
+        "type": "global"
+      },
+      "_links": {
+        "webui": "/spaces/ENG/pages/1/Release+plan"
+      }
+    },
+    {
+      "id": "2",
+      "type": "blogpost",
+      "status": "current",
+      "title": "Launch notes",
+      "version": {
+        "number": 1,
+        "when": "2026-09-02T09:15:30.123Z"
+      },
+      "container": {
+        "id": 10,
+        "key": "ENG",
+        "name": "Engineering",
+        "type": "global"
+      },
+      "_links": {
+        "webui": "/spaces/ENG/blog/2026/09/02/2/Launch+notes"
+      }
+    }
+  ],
+  "start": 0,
+  "limit": 100,
+  "size": 2,
+  "_links": {
+    "base": "https://acme.atlassian.net/wiki",
+    "context": "/wiki",
+    "self": "https://acme.atlassian.net/wiki/rest/api/content/search",
+    "next": "/rest/api/content/search?next=true&cursor=abc&limit=100&expand=version%2Ccontainer&cql=space+%3D+%22ENG%22"
+  }
+}

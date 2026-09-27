@@ -1,0 +1,16 @@
+{
+  "sections": [
+    {
+      "heading": "First",
+      "anchor": "First",
+      "text": "First\nBody one PROJ-1. Always smiling at work."
+    },
+    {
+      "heading": "Second",
+      "anchor": "Second",
+      "text": "Second\nSee External link text for more."
+    }
+  ],
+  "userIDs": null,
+  "jiraKeys": ["PROJ-1"]
+}

@@ -22,6 +22,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Reaction Commands + Inbox Action Strip | [reaction-commands.md](reaction-commands.md) | `internal/reactioncmd/`, `internal/db/reaction_commands.go`, `internal/db/reminders.go`, `cmd/reaction_commands.go`, `WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift` |
 | Owner identity | [owner-identity.md](owner-identity.md) | `internal/db/owner.go`, `internal/daemon/owner.go`, `internal/inbox/pipeline.go`, `internal/inbox/jira_detector.go`, `internal/inbox/style_sample.go`, `internal/jira/client.go` (`GetMyself`), `cmd/jira_owner.go`, `cmd/day_plan.go`, `cmd/briefing.go`, `cmd/tracks.go`, `cmd/profile.go`, `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/OwnerQueries.swift`, `WatchtowerDesktop/Sources/Views/Components/NoOwnerEmptyState.swift` |
 | Knowledge Search | [knowledge-search.md](knowledge-search.md) | `internal/kb/`, `internal/tools/knowledge.go`, `internal/daemon/daemon.go` (`phaseKnowledgeIndex`), `cmd/kb.go` |
+| External Sources (Confluence) | [external-sources.md](external-sources.md) | `internal/extsync/`, `internal/confluence/`, `internal/jira/confluence_api.go`, `internal/db/ext_sources.go`, `internal/kb/source_ext.go`, `internal/daemon/daemon.go` (`phaseExternalSync`), `cmd/confluence.go` |
 
 (Other modules will be added as their inventories are written.)
 
