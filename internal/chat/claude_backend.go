@@ -65,7 +65,37 @@ type claudeProc struct {
 	stderr    *boundedBuffer
 	resumed   bool
 	gotResult atomic.Bool
+	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 }
+
+// rejectedResume returns the --resume rejection an exited child died of
+// before any turn result, or "" when it died of anything else. Only called
+// once the child has exited.
+func (p *claudeProc) rejectedResume() string {
+	if !p.resumed {
+		return ""
+	}
+	waitClosed(p.outDone, 500*time.Millisecond)
+	if m, _ := p.lostMsg.Load().(string); m != "" {
+		return m
+	}
+	if p.gotResult.Load() {
+		return ""
+	}
+	waitClosed(p.errDone, 500*time.Millisecond)
+	msg := strings.TrimSpace(p.stderr.String())
+	if code, _ := ClassifyClaudeError(msg); code == CodeSessionLost {
+		return msg
+	}
+	return ""
+}
+
+// resumeRejectedError is ensureProcLocked's refusal to respawn a --resume the
+// CLI already rejected: Turn treats it as outcomeLost and retries fresh, with
+// the replayed history and the project files.
+type resumeRejectedError struct{ msg string }
+
+func (e *resumeRejectedError) Error() string { return e.msg }
 
 func (p *claudeProc) write(b []byte) error {
 	p.writeMu.Lock()
@@ -312,6 +342,9 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			if isTerminal(e) {
 				p.gotResult.Store(true)
 			}
+			if e.Type == EventError && e.Code == CodeSessionLost {
+				p.lostMsg.Store(e.Message)
+			}
 			if e.Type == EventTurnDone && e.SessionID != "" {
 				b.mu.Lock()
 				b.resume = e.SessionID
@@ -359,33 +392,10 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 		b.restartFresh()
 	}
 	for attempt := 0; ; attempt++ {
-		text := c.Text
-		if fresh {
-			prefix, err := b.replayText(c.TurnID)
-			if err != nil {
-				return fmt.Errorf("building the replay: %w", err)
-			}
-			text = prefix + c.Text
-		}
-		// A rejected attachment (*AttachmentError) returns here, before
-		// anything reaches the child's stdin (CHAT-04): the session maps it
-		// to attachment_unsupported via fallbackTerminal. Project files are
-		// lenient (projectBlocks); only the owner's own fail the turn.
-		withProject := b.projectPending
-		line, err := claudeUserMessageLineWith(b.projectBlocks(), text, c.Attachments)
+		out, err := b.attemptTurn(ctx, c, fresh, emit)
 		if err != nil {
 			return err
 		}
-		p, sent, err := b.send(ctx, line, withProject)
-		if err != nil {
-			return err
-		}
-		if !sent { // cancelled before the message reached the child
-			emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.sessionToResume()})
-			return nil
-		}
-
-		out := b.await(ctx, p, emit)
 		switch out.kind {
 		case outcomeDone:
 			return nil
@@ -404,6 +414,42 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 			return nil
 		}
 	}
+}
+
+// attemptTurn sends one try of the turn (fresh = prefixed with the replayed
+// history) and relays its events until an outcome. A child whose --resume was
+// already rejected before this turn is outcomeLost without a respawn.
+func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, emit func(Event)) (outcome, error) {
+	text := c.Text
+	if fresh {
+		prefix, err := b.replayText(c.TurnID)
+		if err != nil {
+			return outcome{}, fmt.Errorf("building the replay: %w", err)
+		}
+		text = prefix + c.Text
+	}
+	// A rejected attachment (*AttachmentError) returns here, before
+	// anything reaches the child's stdin (CHAT-04): the session maps it
+	// to attachment_unsupported via fallbackTerminal. Project files are
+	// lenient (projectBlocks); only the owner's own fail the turn.
+	withProject := b.projectPending
+	line, err := claudeUserMessageLineWith(b.projectBlocks(), text, c.Attachments)
+	if err != nil {
+		return outcome{}, err
+	}
+	p, sent, err := b.send(ctx, line, withProject)
+	var rejected *resumeRejectedError
+	if errors.As(err, &rejected) {
+		return outcome{kind: outcomeLost, msg: rejected.msg}, nil
+	}
+	if err != nil {
+		return outcome{}, err
+	}
+	if !sent { // cancelled before the message reached the child
+		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.sessionToResume()})
+		return outcome{kind: outcomeDone}, nil
+	}
+	return b.await(ctx, p, emit), nil
 }
 
 // exitedTerminal is the terminal event of a turn whose child exited without a
@@ -532,6 +578,11 @@ func (b *claudeBackend) sessionToResume() string {
 
 // ensureProcLocked returns the live child, respawning (with --resume of the
 // last session, if any) when it has exited. Never spawns after Close.
+//
+// A child that exited because the CLI rejected its --resume (the warm child
+// started at session open usually dies of it before the owner's first turn)
+// is not respawned with the same doomed --resume: a *resumeRejectedError lets
+// Turn go straight to its fresh retry.
 func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 	if b.closed {
 		return nil, errBackendClosed
@@ -540,6 +591,9 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 		select {
 		case <-b.proc.exited:
 			sweep(b.proc)
+			if msg := b.proc.rejectedResume(); msg != "" {
+				return nil, &resumeRejectedError{msg: msg}
+			}
 		default:
 			return b.proc, nil
 		}

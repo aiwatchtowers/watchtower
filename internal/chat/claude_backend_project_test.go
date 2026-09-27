@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,7 +140,42 @@ func TestClaudeBackend_SessionLostRetryReattachesProjectFiles(t *testing.T) {
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
 	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
 	require.NoError(t, h.finish())
+	assertOneFreshRetryWithProject(t, f, marker)
+}
 
+// The warm --resume child started at session open usually dies of the
+// rejection before the owner's first turn arrives. That dead child must not
+// be respawned with the same doomed --resume: the turn goes straight to the
+// fresh retry (one rejected run, one fresh run). Both rejection shapes.
+func TestClaudeBackend_ResumeRejectedBeforeFirstTurnIsNotRespawned(t *testing.T) {
+	for _, mode := range []string{"lost", "lost_result"} {
+		t.Run(mode, func(t *testing.T) {
+			opts, f := fakeClaude(t, mode)
+			att, marker := projectFixture(t)
+			opts.ProjectAttachments = []Attachment{att}
+			opts.ResumeSessionID = "gone"
+			opts.Replay = func(string) (string, error) { return "", nil }
+			be := NewClaudeBackend(opts).(*claudeBackend)
+			h := startSession(t, be, nil)
+			h.next(EventSessionReady)
+			be.mu.Lock()
+			p := be.proc
+			be.mu.Unlock()
+			require.NotNil(t, p)
+			require.True(t, waitClosed(p.exited, 5*time.Second), "the rejected --resume child exits on its own")
+
+			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
+			assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+			require.NoError(t, h.finish())
+			assertOneFreshRetryWithProject(t, f, marker)
+		})
+	}
+}
+
+// assertOneFreshRetryWithProject: exactly one rejected --resume run, then one
+// fresh run whose first (and only logged) message carries the project file.
+func assertOneFreshRetryWithProject(t *testing.T, f fakeFiles, marker string) {
+	t.Helper()
 	runs := argvRuns(t, f.argv)
 	require.Len(t, runs, 2)
 	assert.True(t, contains(runs[0], "--resume"))
