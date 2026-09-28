@@ -266,15 +266,21 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	return stored, 0, err
 }
 
+// maxBatchRetryAttempts bounds how many runs a digest whose extraction batch
+// failed is re-offered to (see track_retry_digests): a transient failure gets
+// retried, a batch that fails deterministically is not re-sent forever.
+const maxBatchRetryAttempts = 3
+
 // RunForWindow executes track extraction for a specific time window and owner.
 // digestsSinceISO, if non-empty, restricts to digests created after that ISO timestamp
 // (incremental mode). If empty, falls back to overlap-based query (first run / CLI).
+//
+// A partially failed run stays a success (the watermark advances past the
+// digests that were processed), so the digests of its failed batches go into
+// the durable retry set and every later run re-offers them next to the new
+// digests, until their batch succeeds or has failed maxBatchRetryAttempts times.
 func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to float64, digestsSinceISO ...string) (int, error) {
 	p.loadCaches()
-
-	userID := owner.ID
-	profile, allActive := p.loadWindowContext(owner)
-	userName := p.userName(userID)
 
 	sinceISO := ""
 	if len(digestsSinceISO) > 0 {
@@ -284,25 +290,103 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	if err != nil {
 		return 0, err
 	}
+	digests, retryIDs := p.withRetryDigests(digests)
+
+	stored, res, err := p.extractFromDigests(ctx, owner, digests, from, to)
+	if err == nil || res.aborted != nil || res.failed > 0 {
+		p.settleRetryDigests(retryIDs, res)
+	}
+	return stored, err
+}
+
+// withRetryDigests appends the retry set's digests that the window query did
+// not already return, and reports which ids came from the retry set. A failed
+// read of the retry set is logged and the run proceeds on the window alone.
+func (p *Pipeline) withRetryDigests(digests []db.Digest) ([]db.Digest, map[int]bool) {
+	retry, err := p.db.GetTrackRetryDigests()
+	if err != nil {
+		p.logger.Printf("tracks: warning: could not load retry digests: %v", err)
+		return digests, nil
+	}
+	if len(retry) == 0 {
+		return digests, nil
+	}
+	seen := make(map[int]bool, len(digests))
+	for _, d := range digests {
+		seen[d.ID] = true
+	}
+	ids := make(map[int]bool, len(retry))
+	for _, d := range retry {
+		ids[d.ID] = true
+		if !seen[d.ID] {
+			digests = append(digests, d)
+		}
+	}
+	p.logger.Printf("tracks: re-offering %d digest(s) from earlier failed batches", len(retry))
+	return digests, ids
+}
+
+// settleRetryDigests records a run's batch outcome in the retry set: digests of
+// failed batches gain an attempt, and a retry-set digest leaves the set once
+// this run processed it (its batch succeeded, or it was filtered out before
+// batching). An interrupted run only clears what its succeeded batches covered
+// — the batches that never ran are owed another go.
+func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) {
+	failed := make(map[int]bool, len(res.failedDigests))
+	for _, id := range res.failedDigests {
+		failed[id] = true
+	}
+	var done []int
+	if res.aborted != nil {
+		for _, id := range res.succeededDigests {
+			if retryIDs[id] && !failed[id] {
+				done = append(done, id)
+			}
+		}
+	} else {
+		for id := range retryIDs {
+			if !failed[id] {
+				done = append(done, id)
+			}
+		}
+	}
+	gaveUp, err := p.db.SettleTrackRetryDigests(done, res.failedDigests, maxBatchRetryAttempts)
+	if err != nil {
+		p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", err)
+		return
+	}
+	if gaveUp > 0 {
+		p.logger.Printf("tracks: giving up on %d digest(s) after %d failed batch attempts", gaveUp, maxBatchRetryAttempts)
+	}
+}
+
+// extractFromDigests runs relevance filtering and the AI batches over the
+// loaded digests and reports the batch outcome alongside the run error.
+func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, digests []db.Digest, from, to float64) (int, trackBatchResult, error) {
+	var res trackBatchResult
+	userID := owner.ID
+	profile, allActive := p.loadWindowContext(owner)
+	userName := p.userName(userID)
+
 	if len(digests) == 0 {
 		p.progress(0, 0, "No new digests to process")
 		p.logger.Printf("tracks: no digests found")
-		return 0, nil
+		return 0, res, nil
 	}
 
 	allEntries, err := p.buildDigestEntries(digests)
 	if err != nil {
-		return 0, err
+		return 0, res, err
 	}
 	if len(allEntries) == 0 {
-		return 0, nil
+		return 0, res, nil
 	}
 
 	signals := buildRelevanceSignals(profile, allActive)
 	allEntries = p.filterEntriesByRelevance(allEntries, userID, signals)
 	if len(allEntries) == 0 {
 		p.progress(0, 0, "No relevant topics after filtering")
-		return 0, nil
+		return 0, res, nil
 	}
 
 	sort.Slice(allEntries, func(i, j int) bool {
@@ -320,7 +404,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for @%s in %d batch(es)...",
 		len(allEntries), totalTopicCount, userName, len(batches)))
 
-	res := p.runTrackBatches(ctx, batches, userID, userName, from, to)
+	res = p.runTrackBatches(ctx, batches, userID, userName, from, to)
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
 	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
@@ -332,12 +416,12 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	switch {
 	case res.aborted != nil:
 		// Shutdown is not a batch failure, but the window is unfinished either way.
-		return res.stored, fmt.Errorf("track extraction interrupted after %d of %d batch(es): %w",
+		return res.stored, res, fmt.Errorf("track extraction interrupted after %d of %d batch(es): %w",
 			res.succeeded+res.failed, len(batches), res.aborted)
 	case res.succeeded == 0 && res.failed > 0:
-		return res.stored, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
+		return res.stored, res, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
 	}
-	return res.stored, nil //nolint:nilerr // partial success only: at least one batch stored tracks, the rest are logged above
+	return res.stored, res, nil //nolint:nilerr // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
 }
 
 // loadWindowContext caches the owner's profile + active-tracks reference and
@@ -600,6 +684,9 @@ type trackBatchResult struct {
 	failed    int
 	lastErr   error
 	aborted   error // non-nil when the loop stopped early because ctx was cancelled
+	// Digest ids of the batches that stored/failed, for the retry set.
+	succeededDigests []int
+	failedDigests    []int
 }
 
 // runTrackBatches runs each AI batch sequentially (per-batch errors logged but
@@ -639,14 +726,26 @@ func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry,
 			}
 			res.failed++
 			res.lastErr = err
+			res.failedDigests = appendBatchDigestIDs(res.failedDigests, batch)
 		} else {
 			res.stored += n
 			res.succeeded++
+			res.succeededDigests = appendBatchDigestIDs(res.succeededDigests, batch)
 		}
 		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 		p.progress(i+1, len(batches), fmt.Sprintf("Batch %d/%d done (%d tracks)", i+1, len(batches), n))
 	}
 	return res
+}
+
+// appendBatchDigestIDs appends the ids of every digest a batch covered.
+func appendBatchDigestIDs(ids []int, batch []digestEntry) []int {
+	for _, e := range batch {
+		for _, d := range e.digests {
+			ids = append(ids, d.ID)
+		}
+	}
+	return ids
 }
 
 // digestEntry represents a channel's digest data for batch processing.

@@ -378,6 +378,14 @@ CREATE TABLE IF NOT EXISTS track_states (
 );
 CREATE INDEX IF NOT EXISTS idx_track_states_track ON track_states(track_id, created_at DESC);
 
+-- Channel digests whose track-extraction batch failed inside an otherwise
+-- successful tracks run; re-offered to later runs, dropped after 3 failures.
+CREATE TABLE IF NOT EXISTS track_retry_digests (
+    digest_id  INTEGER PRIMARY KEY REFERENCES digests(id) ON DELETE CASCADE,
+    attempts   INTEGER NOT NULL DEFAULT 0,             -- failed batches this digest was part of
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- Hierarchical goal targets (replaces tasks)
 CREATE TABLE IF NOT EXISTS targets (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

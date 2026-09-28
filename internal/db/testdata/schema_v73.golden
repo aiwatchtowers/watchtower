@@ -1785,6 +1785,13 @@ read_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
+table	track_retry_digests
+CREATE TABLE track_retry_digests (
+digest_id INTEGER PRIMARY KEY REFERENCES digests(id) ON DELETE CASCADE,
+attempts INTEGER NOT NULL DEFAULT 0,
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	track_states
 CREATE TABLE track_states (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3341,6 +3348,11 @@ END
 9	action_status	TEXT	notnull=1	dflt='none'	pk=0
 10	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 11	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## track_retry_digests
+0	digest_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	attempts	INTEGER	notnull=1	dflt=0	pk=0
+2	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## track_states
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

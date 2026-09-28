@@ -200,3 +200,98 @@ func TestRunForWindow_CancellationDuringLastBatchIsNotAnAllFailedError(t *testin
 	assert.Contains(t, err.Error(), "interrupted after 0 of 1 batch(es)")
 	assert.NotContains(t, err.Error(), "batch(es) failed")
 }
+
+func retryDigestCount(t *testing.T, database *db.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM track_retry_digests`).Scan(&n))
+	return n
+}
+
+// futureWatermark is a digestsSinceISO past every seeded digest, so a run sees
+// no new digests — only what the retry set re-offers (the state right after a
+// partially failed run advanced the watermark).
+func futureWatermark() string {
+	return time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+}
+
+// A partially failed run advances the watermark, so the failed batch's
+// digests must be re-offered by the next run through the retry set, and leave
+// it once their batch succeeds. 16 channels → two batches, one fails.
+func TestRunForWindow_PartialFailureReoffersFailedBatchDigests(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &failingGenerator{failFirst: 1, response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err, "a partial failure stays a success")
+	require.Equal(t, 2, gen.calls)
+	owed := retryDigestCount(t, database)
+	require.Greater(t, owed, 0, "the failed batch's digests must be kept for retry")
+	require.Less(t, owed, 16, "the succeeded batch's digests must not be kept")
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	require.NoError(t, err)
+	assert.Equal(t, 3, gen.calls, "the next run re-offers the failed batch even with no new digests")
+	assert.Equal(t, 0, retryDigestCount(t, database), "a succeeded retry leaves the set")
+}
+
+// A batch that keeps failing is re-offered at most maxBatchRetryAttempts
+// times, then given up on — never re-sent forever.
+func TestRunForWindow_RetryGivesUpAfterMaxAttempts(t *testing.T) {
+	database := testDB(t)
+	seedTrackWindow(t, database, 2)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &failingGenerator{failFirst: 1 << 30}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.Error(t, err)
+	assert.Equal(t, 2, retryDigestCount(t, database))
+	for i := 1; i < maxBatchRetryAttempts+2; i++ {
+		_, _ = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	}
+	assert.Equal(t, maxBatchRetryAttempts, gen.calls, "one call per attempt, then no more")
+	assert.Equal(t, 0, retryDigestCount(t, database))
+}
+
+// A shutdown is not a batch failure: an interrupted run charges nothing to
+// the retry set, whether the cut came between batches or mid-call.
+func TestRunForWindow_ShutdownIsNotChargedToRetrySet(t *testing.T) {
+	for name, mk := range map[string]func(context.CancelFunc, string) digest.Generator{
+		"between batches": func(c context.CancelFunc, r string) digest.Generator {
+			return &cancelingGenerator{cancel: c, response: r}
+		},
+		"mid-call": func(c context.CancelFunc, _ string) digest.Generator {
+			return &cancelThenFailGenerator{cancel: c}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := testDB(t)
+			response := seedTrackWindow(t, database, 16)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			pipe := New(database, cfg, mk(cancel, response), log.Default())
+
+			_, _, err := pipe.Run(ctx)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, 0, retryDigestCount(t, database))
+		})
+	}
+}
