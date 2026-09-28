@@ -263,6 +263,7 @@ func TestGoogleAccount_DeleteGoogleAccount_SparesRecordedEvents(t *testing.T) {
 	}
 	rows, err := d.Query(`SELECT id, account_id, is_selected FROM calendar_calendars`)
 	require.NoError(t, err)
+	defer rows.Close()
 	got := map[string]calRow{}
 	for rows.Next() {
 		var id string
@@ -271,7 +272,6 @@ func TestGoogleAccount_DeleteGoogleAccount_SparesRecordedEvents(t *testing.T) {
 		got[id] = r
 	}
 	require.NoError(t, rows.Err())
-	require.NoError(t, rows.Close())
 	assert.Equal(t, map[string]calRow{
 		"a-recorded": {account: sql.NullInt64{}, selected: false},
 		"b-primary":  {account: sql.NullInt64{Int64: idB, Valid: true}, selected: true},
