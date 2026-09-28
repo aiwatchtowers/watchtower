@@ -82,10 +82,24 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testExpandingSectionNilWhenMapHasNoEntryForTheSection() {
-        // No stored preference yet (fresh install, defaults not yet materialized
-        // into the map) must not be treated as "collapsed" — only an explicit
-        // `true` triggers an expand.
+        // In practice `loadCollapsedSections()` always fills every ordered
+        // section's entry, so this shape shouldn't occur from real UserDefaults
+        // state — this pins the pure function's own defensive contract for an
+        // incomplete map (e.g. a future caller building one by hand): a
+        // missing entry must not be treated as "collapsed" and trigger a
+        // spurious expand, only an explicit `true` does.
         XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [:]))
+    }
+
+    func testExpandingSectionHandlesInitialSelectionInsideACollapsedSection() {
+        // The same pure function backs both the sidebar's `onAppear` and its
+        // `onChange(of: selection)` — the initial `selection` can already sit
+        // inside a collapsed section (window reopened from the tray via a
+        // notification route, or the sidebar toggled off and back on with a
+        // stale selection), so this must expand exactly like a live
+        // navigation does.
+        let updated = SidebarView.expandingSection(for: .memory, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
     }
 
     // MARK: - Feature-gated visibility

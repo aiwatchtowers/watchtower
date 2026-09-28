@@ -163,12 +163,24 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { googleAuth.checkStatus() }
-        .onChange(of: selection) { _, newValue in
+        .onAppear {
             googleAuth.checkStatus()
-            if let expanded = Self.expandingSection(for: newValue, in: collapsedSections) {
-                collapsedSections = expanded
-            }
+            expandSectionContainingSelection()
+        }
+        .onChange(of: selection) { _, _ in
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+        }
+    }
+
+    /// Expands `selection`'s section if it's currently collapsed. Called both
+    /// on first appearance — the initial `selection` can already sit inside a
+    /// collapsed section (the window reopened from the tray via a
+    /// notification route, or the sidebar toggled off and back on with a
+    /// stale selection) — and on every later change.
+    private func expandSectionContainingSelection() {
+        if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
+            collapsedSections = expanded
         }
     }
 
