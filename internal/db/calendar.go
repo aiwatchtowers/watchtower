@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -91,9 +93,14 @@ func (db *DB) SetCalendarSelected(id string, selected bool) error {
 }
 
 // calendarEventUpdateSet is the ON CONFLICT(id) DO UPDATE clause shared by the
-// single and batch event upserts — every column except the id. The upserts
-// must NEVER use INSERT OR REPLACE: with foreign_keys=ON, REPLACE resolves a
-// PK conflict as DELETE+INSERT, firing the FK actions on the children — it
+// single and batch event upserts — every column except the id.
+// time_changed_at is stamped with the pass's synced_at only when start/end
+// actually moved (a column qualified with the table name on the right-hand
+// side is the row's pre-update value); a first insert leaves it empty.
+// rsvp_changed is computed in Go before the write (mergeRSVPChanges), since it
+// needs the stored and the new attendee lists side by side.
+// The upserts must NEVER use INSERT OR REPLACE: with foreign_keys=ON, REPLACE
+// resolves a PK conflict as DELETE+INSERT, firing the FK actions on the children — it
 // NULLs meeting_transcripts.event_id (ON DELETE SET NULL) and deletes the
 // event's meeting_recaps row (ON DELETE CASCADE) on every sync cycle.
 const calendarEventUpdateSet = `ON CONFLICT(id) DO UPDATE SET
@@ -104,44 +111,42 @@ const calendarEventUpdateSet = `ON CONFLICT(id) DO UPDATE SET
 		event_status=excluded.event_status, event_type=excluded.event_type,
 		html_link=excluded.html_link, conference_url=excluded.conference_url,
 		raw_json=excluded.raw_json, ical_uid=excluded.ical_uid,
-		synced_at=excluded.synced_at, updated_at=excluded.updated_at`
+		synced_at=excluded.synced_at, updated_at=excluded.updated_at,
+		time_changed_at=CASE
+			WHEN calendar_events.start_time <> excluded.start_time
+			  OR calendar_events.end_time <> excluded.end_time
+			THEN excluded.synced_at ELSE calendar_events.time_changed_at END,
+		rsvp_changed=excluded.rsvp_changed`
 
 // UpsertCalendarEvent inserts or updates a calendar event (never REPLACE —
 // see calendarEventUpdateSet for why that would wipe FK children).
 // syncedAt is an ISO8601 timestamp used to track when the event was last synced.
-// If empty, the current time from SQLite is used as a fallback.
+// If empty, the current UTC time is used.
 func (db *DB) UpsertCalendarEvent(ev CalendarEvent, syncedAt ...string) error {
-	sa := "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
-	args := []any{
-		ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
-		ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
-		ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-		ev.HTMLLink, ev.ConferenceURL, ev.RawJSON, ev.ICalUID,
+	sa := ""
+	if len(syncedAt) > 0 {
+		sa = syncedAt[0]
 	}
-	if len(syncedAt) > 0 && syncedAt[0] != "" {
-		sa = "?"
-		args = append(args, syncedAt[0])
-	}
-	args = append(args, ev.UpdatedAt)
-	_, err := db.Exec(`INSERT INTO calendar_events
-		(id, calendar_id, title, description, location, start_time, end_time,
-		 organizer_email, attendees, is_recurring, is_all_day, event_status,
-		 event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, `+sa+`, ?)
-		`+calendarEventUpdateSet,
-		args...)
-	if err != nil {
-		return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
-	}
-	return nil
+	return db.upsertCalendarEventsTx([]CalendarEvent{ev}, sa)
 }
 
 // UpsertCalendarEvents inserts or updates multiple calendar events in a single
 // transaction (never REPLACE — see calendarEventUpdateSet for why that would
-// wipe FK children).
+// wipe FK children), all stamped with the current UTC time as synced_at.
 func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 	if len(events) == 0 {
 		return nil
+	}
+	return db.upsertCalendarEventsTx(events, "")
+}
+
+// upsertCalendarEventsTx writes events in one transaction. Each event's
+// stored row is read first so rsvp_changed can be carried forward: an
+// attendee whose response_status differs from the stored one gets this
+// pass's synced_at (see mergeRSVPChanges).
+func (db *DB) upsertCalendarEventsTx(events []CalendarEvent, syncedAt string) error {
+	if syncedAt == "" {
+		syncedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -150,16 +155,29 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 	defer tx.Rollback()
 
 	for _, ev := range events {
-		_, err := tx.Exec(`INSERT INTO calendar_events
+		var prevAttendees, prevChanges string
+		err := tx.QueryRow(`SELECT attendees, rsvp_changed FROM calendar_events WHERE id = ?`, ev.ID).
+			Scan(&prevAttendees, &prevChanges)
+		existed := err == nil
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("reading calendar event %s: %w", ev.ID, err)
+		}
+		rsvpChanged := "{}"
+		if existed {
+			rsvpChanged = mergeRSVPChanges(prevAttendees, prevChanges, ev.Attendees, syncedAt)
+		}
+		_, err = tx.Exec(`INSERT INTO calendar_events
 			(id, calendar_id, title, description, location, start_time, end_time,
 			 organizer_email, attendees, is_recurring, is_all_day, event_status,
-			 event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?)
+			 event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at,
+			 rsvp_changed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`+calendarEventUpdateSet,
 			ev.ID, ev.CalendarID, ev.Title, ev.Description, ev.Location,
 			ev.StartTime, ev.EndTime, ev.OrganizerEmail, ev.Attendees,
 			ev.IsRecurring, ev.IsAllDay, ev.EventStatus, ev.EventType,
-			ev.HTMLLink, ev.ConferenceURL, ev.RawJSON, ev.ICalUID, ev.UpdatedAt)
+			ev.HTMLLink, ev.ConferenceURL, ev.RawJSON, ev.ICalUID, syncedAt, ev.UpdatedAt,
+			rsvpChanged)
 		if err != nil {
 			return fmt.Errorf("upserting calendar event %s: %w", ev.ID, err)
 		}
@@ -169,6 +187,57 @@ func (db *DB) UpsertCalendarEvents(events []CalendarEvent) error {
 		return fmt.Errorf("committing calendar events tx: %w", err)
 	}
 	return nil
+}
+
+// calendarRSVP is the slice of one attendees-JSON element rsvp tracking reads
+// (the calendar.Attendee wire keys).
+type calendarRSVP struct {
+	Email          string `json:"email"`
+	ResponseStatus string `json:"response_status"`
+}
+
+// mergeRSVPChanges returns the rsvp_changed JSON object (lower-cased
+// attendee email → the synced_at of the pass that last saw that attendee's
+// response_status change) for a re-sync: the stored stamps, plus stamp for
+// every attendee present in both the stored and the new attendee list whose
+// response differs. An attendee who only appears or disappears is not a
+// response change. It is keyed per attendee rather than on one "owner"
+// because the upsert does not know who the owner is — the inbox applies its
+// own owner identity when it reads the map. Unparseable input degrades to
+// "no change seen", never an error.
+func mergeRSVPChanges(prevAttendees, prevChanges, newAttendees, stamp string) string {
+	changes := map[string]string{}
+	_ = json.Unmarshal([]byte(prevChanges), &changes)
+	if changes == nil {
+		changes = map[string]string{}
+	}
+	var prev, cur []calendarRSVP
+	_ = json.Unmarshal([]byte(prevAttendees), &prev)
+	_ = json.Unmarshal([]byte(newAttendees), &cur)
+	before := make(map[string]string, len(prev))
+	for _, a := range prev {
+		before[strings.ToLower(a.Email)] = a.ResponseStatus
+	}
+	for _, a := range cur {
+		email := strings.ToLower(a.Email)
+		if old, ok := before[email]; ok && email != "" && old != a.ResponseStatus {
+			changes[email] = stamp
+		}
+	}
+	out, err := json.Marshal(changes)
+	if err != nil {
+		return "{}"
+	}
+	return string(out)
+}
+
+// CalendarRSVPChangedAt returns when the sync last saw email's
+// response_status change on the event (the rsvp_changed stamp), "" when it
+// never has. Email is matched case-insensitively.
+func CalendarRSVPChangedAt(rsvpChanged, email string) string {
+	changes := map[string]string{}
+	_ = json.Unmarshal([]byte(rsvpChanged), &changes)
+	return changes[strings.ToLower(email)]
 }
 
 // GetCalendarEvents returns events matching the filter.

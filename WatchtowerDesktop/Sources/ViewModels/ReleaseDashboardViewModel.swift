@@ -21,7 +21,9 @@ final class ReleaseDashboardViewModel {
     }
 
     struct ReleaseItem: Identifiable {
-        let id: Int
+        /// Site-qualified (`JiraRelease.id`), so equal release ids from two
+        /// sites stay distinct rows.
+        let id: String
         let name: String
         let projectKey: String
         let releaseDate: String
@@ -147,7 +149,7 @@ final class ReleaseDashboardViewModel {
         allIssues: [JiraIssue],
         issueByKey: [String: JiraIssue]
     ) throws -> ReleaseItem {
-        let issues = try JiraQueries.fetchIssuesByFixVersion(db, versionName: release.name)
+        let issues = try JiraQueries.fetchIssuesByFixVersion(db, accountID: release.accountID, versionName: release.name)
         let total = issues.count
         let done = issues.filter { $0.statusCategory == "done" }.count
         let blocked = issues.filter { $0.status.lowercased().contains("block") }.count
@@ -207,24 +209,13 @@ final class ReleaseDashboardViewModel {
         let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
         let scopeRaw = try JiraQueries.fetchScopeChanges(
             db,
+            accountID: release.accountID,
             versionName: release.name,
             since: weekAgo
         )
         let scopeChanges = ScopeChanges(added: scopeRaw.added, removed: scopeRaw.removed)
 
-        // Ping targets from blocked issues
-        var pingTargets: [PingTargetItem] = []
-        var seenSlack: Set<String> = []
-        for issue in issues where issue.status.lowercased().contains("block") {
-            if !issue.assigneeSlackId.isEmpty, !seenSlack.contains(issue.assigneeSlackId) {
-                seenSlack.insert(issue.assigneeSlackId)
-                pingTargets.append(PingTargetItem(
-                    slackUserID: issue.assigneeSlackId,
-                    displayName: issue.assigneeDisplayName,
-                    reason: "assignee_blocker"
-                ))
-            }
-        }
+        let pingTargets = Self.blockerPingTargets(issues)
 
         return ReleaseItem(
             id: release.id,
@@ -244,6 +235,23 @@ final class ReleaseDashboardViewModel {
             issues: issues,
             pingTargets: pingTargets
         )
+    }
+
+    /// One ping target per distinct Slack-mapped assignee of a blocked issue.
+    nonisolated private static func blockerPingTargets(_ issues: [JiraIssue]) -> [PingTargetItem] {
+        var pingTargets: [PingTargetItem] = []
+        var seenSlack: Set<String> = []
+        for issue in issues where issue.status.lowercased().contains("block") {
+            if !issue.assigneeSlackId.isEmpty, !seenSlack.contains(issue.assigneeSlackId) {
+                seenSlack.insert(issue.assigneeSlackId)
+                pingTargets.append(PingTargetItem(
+                    slackUserID: issue.assigneeSlackId,
+                    displayName: issue.assigneeDisplayName,
+                    reason: "assignee_blocker"
+                ))
+            }
+        }
+        return pingTargets
     }
 
     // MARK: - Date Helpers

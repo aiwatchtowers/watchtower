@@ -152,10 +152,18 @@ final class ChannelStatsViewModel {
 
     func toggleMute(channelID: String) {
         guard let stat = stats.first(where: { $0.id == channelID }) else { return }
-        let newValue = !stat.isMutedForLLM
+        setMuted(channelID: channelID, muted: !stat.isMutedForLLM)
+    }
+
+    func toggleFavorite(channelID: String) {
+        guard let stat = stats.first(where: { $0.id == channelID }) else { return }
+        setFavorite(channelID: channelID, favorite: !stat.isFavorite)
+    }
+
+    private func setMuted(channelID: String, muted: Bool) {
         do {
             try dbManager.dbPool.write { db in
-                try ChannelStatsQueries.toggleMuteForLLM(db, channelID: channelID, muted: newValue)
+                try ChannelStatsQueries.toggleMuteForLLM(db, channelID: channelID, muted: muted)
             }
             load()
         } catch {
@@ -163,12 +171,10 @@ final class ChannelStatsViewModel {
         }
     }
 
-    func toggleFavorite(channelID: String) {
-        guard let stat = stats.first(where: { $0.id == channelID }) else { return }
-        let newValue = !stat.isFavorite
+    private func setFavorite(channelID: String, favorite: Bool) {
         do {
             try dbManager.dbPool.write { db in
-                try ChannelStatsQueries.toggleFavorite(db, channelID: channelID, favorite: newValue)
+                try ChannelStatsQueries.toggleFavorite(db, channelID: channelID, favorite: favorite)
             }
             load()
         } catch {
@@ -180,14 +186,16 @@ final class ChannelStatsViewModel {
         slackLinks?.channelURL(channelID)
     }
 
+    /// Sets the recommended state outright — never a toggle, so a stale or
+    /// repeated apply is idempotent and can never un-mute (feeding the channel
+    /// back into the AI pipelines) or un-favorite. "Leave" mutes: Watchtower
+    /// cannot leave a Slack channel for the owner.
     func applyRecommendation(_ rec: ChannelRecommendation) {
         switch rec.action {
-        case .mute:
-            toggleMute(channelID: rec.channelID)
-        case .leave:
-            toggleMute(channelID: rec.channelID)
+        case .mute, .leave:
+            setMuted(channelID: rec.channelID, muted: true)
         case .favorite:
-            toggleFavorite(channelID: rec.channelID)
+            setFavorite(channelID: rec.channelID, favorite: true)
         }
     }
 

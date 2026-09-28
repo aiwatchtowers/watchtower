@@ -366,12 +366,12 @@ struct JiraBoardsSettingsView: View {
         let dbPool = db.dbPool
 
         Task.detached {
-            let enabled: [JiraAccount]
+            let calls: [(account: JiraAccount, arguments: [String])]
             do {
                 let all = try await dbPool.read { db in
                     try JiraAccountQueries.fetchAll(db)
                 }
-                enabled = all.filter(\.enabled)
+                calls = JiraAccountFanOut.invocations(for: all, subcommand: ["boards"])
             } catch {
                 await MainActor.run {
                     isFetching = false
@@ -380,7 +380,7 @@ struct JiraBoardsSettingsView: View {
                 return
             }
 
-            guard !enabled.isEmpty else {
+            guard !calls.isEmpty else {
                 await MainActor.run {
                     isFetching = false
                     toggleError = "No connected Jira sites"
@@ -389,22 +389,18 @@ struct JiraBoardsSettingsView: View {
             }
 
             var failures: [String] = []
-            for account in enabled {
+            for call in calls {
                 let failure = JiraBoardsCLI.run(
                     cliPath: cliPath,
-                    arguments: [
-                        "jira", "--account", String(account.id), "boards"
-                    ],
+                    arguments: call.arguments,
                     fallbackMessage: "failed to fetch boards"
                 )
                 if let failure {
-                    failures.append("\(account.displayName): \(failure)")
+                    failures.append("\(call.account.displayName): \(failure)")
                 }
             }
 
-            let message = failures.isEmpty
-                ? nil
-                : String(failures.joined(separator: "; ").prefix(200))
+            let message = JiraAccountFanOut.failureMessage(failures)
             await MainActor.run {
                 isFetching = false
                 toggleError = message
@@ -418,9 +414,9 @@ struct JiraBoardsSettingsView: View {
 /// drop an exit code again.
 enum JiraBoardsCLI {
     /// Runs `arguments`, returning nil on success or a user-facing message on
-    /// failure (trimmed stderr, else `fallbackMessage`). stderr is drained
-    /// before `waitUntilExit` so a chatty failure can't fill the pipe buffer
-    /// and deadlock the wait.
+    /// failure (trimmed stderr, else `fallbackMessage` plus the exit status).
+    /// stderr is drained before `waitUntilExit` so a chatty failure can't fill
+    /// the pipe buffer and deadlock the wait.
     static func run(
         cliPath: String,
         arguments: [String],
@@ -448,6 +444,9 @@ enum JiraBoardsCLI {
         guard process.terminationStatus != 0 else { return nil }
         let stderr = String(data: stderrData, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return stderr.isEmpty ? fallbackMessage : String(stderr.prefix(200))
+        // With nothing on stderr the exit status is the only diagnostic left.
+        return stderr.isEmpty
+            ? "\(fallbackMessage) (exit \(process.terminationStatus))"
+            : String(stderr.prefix(200))
     }
 }

@@ -785,3 +785,97 @@ func TestAttendeeMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "U999", uid)
 }
+
+// TestUpsertCalendarEvent_TimeChangedAt pins the stamp the inbox's
+// calendar_time_change trigger keys on: empty on first insert and on a re-sync
+// that leaves start/end alone, the re-sync's synced_at when either moves, and
+// kept (not cleared) by a later re-sync with no further move.
+func TestUpsertCalendarEvent_TimeChangedAt(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main"}))
+
+	base := time.Now().UTC().Truncate(time.Second)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339) }
+	stamp := func() string {
+		t.Helper()
+		var s string
+		require.NoError(t, db.QueryRow(`SELECT time_changed_at FROM calendar_events WHERE id = 'evt1'`).Scan(&s))
+		return s
+	}
+	ev := CalendarEvent{ID: "evt1", CalendarID: "primary", StartTime: ts(24 * time.Hour), EndTime: ts(25 * time.Hour)}
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-3*time.Hour)))
+	assert.Empty(t, stamp(), "first insert")
+
+	ev.Description = "agenda added"
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-2*time.Hour)))
+	assert.Empty(t, stamp(), "re-sync without a time change")
+
+	ev.EndTime = ts(26 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-1*time.Hour)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "end moved")
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(0)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "a later re-sync keeps the last move's stamp")
+
+	// The batch upsert shares the same ON CONFLICT clause.
+	ev.StartTime = ts(48 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
+	var syncedAt string
+	require.NoError(t, db.QueryRow(`SELECT synced_at FROM calendar_events WHERE id = 'evt1'`).Scan(&syncedAt))
+	assert.NotEqual(t, ts(-1*time.Hour), syncedAt, "the batch pass stamps its own synced_at")
+	assert.Equal(t, syncedAt, stamp(), "start moved via the batch upsert: stamped with that pass's synced_at")
+}
+
+// TestUpsertCalendarEvent_RSVPChanged pins the per-attendee RSVP stamps the
+// inbox's calendar_time_change auto-resolve reads (owner decision 2026-09-29):
+// nothing on first insert or on an unchanged re-sync; the pass's synced_at for
+// exactly the attendee whose response_status changed; earlier stamps kept.
+func TestUpsertCalendarEvent_RSVPChanged(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main"}))
+
+	base := time.Now().UTC().Truncate(time.Second)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339) }
+	att := func(me, other string) string {
+		return `[{"email":"Me@x.com","response_status":"` + me + `"},{"email":"other@x.com","response_status":"` + other + `"}]`
+	}
+	stored := func() string {
+		t.Helper()
+		var s string
+		require.NoError(t, db.QueryRow(`SELECT rsvp_changed FROM calendar_events WHERE id = 'evt1'`).Scan(&s))
+		return s
+	}
+	ev := CalendarEvent{ID: "evt1", CalendarID: "primary", StartTime: ts(24 * time.Hour), EndTime: ts(25 * time.Hour),
+		Attendees: att("needsAction", "needsAction")}
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-3*time.Hour)))
+	assert.Equal(t, "{}", stored(), "first insert")
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-2*time.Hour)))
+	assert.Equal(t, "{}", stored(), "unchanged re-sync")
+
+	ev.Attendees = att("needsAction", "accepted")
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-90*time.Minute)))
+	assert.Empty(t, CalendarRSVPChangedAt(stored(), "me@x.com"), "a colleague's RSVP is not the owner's")
+	assert.Equal(t, ts(-90*time.Minute), CalendarRSVPChangedAt(stored(), "other@x.com"))
+
+	ev.Attendees = att("accepted", "accepted")
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-1*time.Hour)))
+	assert.Equal(t, ts(-1*time.Hour), CalendarRSVPChangedAt(stored(), "ME@x.com"), "matched case-insensitively")
+	assert.Equal(t, ts(-90*time.Minute), CalendarRSVPChangedAt(stored(), "other@x.com"), "earlier stamps are kept")
+
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
+	assert.Equal(t, ts(-1*time.Hour), CalendarRSVPChangedAt(stored(), "me@x.com"), "the batch upsert keeps it on no change")
+}
+
+func TestMergeRSVPChanges_Degenerate(t *testing.T) {
+	stamp := time.Now().UTC().Format(time.RFC3339)
+	// Malformed stored/new lists and stamps degrade to "no change seen".
+	assert.Equal(t, "{}", mergeRSVPChanges("not json", "not json", `[{"email":"a@x.com","response_status":"accepted"}]`, stamp))
+	// An attendee newly added (or dropped) is not a response change.
+	assert.Equal(t, "{}", mergeRSVPChanges(`[]`, `{}`, `[{"email":"a@x.com","response_status":"accepted"}]`, stamp))
+	// An attendee with no email is never stamped.
+	assert.Equal(t, "{}", mergeRSVPChanges(`[{"response_status":"needsAction"}]`, `{}`, `[{"response_status":"accepted"}]`, stamp))
+	assert.Empty(t, CalendarRSVPChangedAt("", "a@x.com"))
+}

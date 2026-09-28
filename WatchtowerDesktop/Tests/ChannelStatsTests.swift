@@ -221,6 +221,42 @@ final class ChannelStatsTests: XCTestCase {
         XCTAssertFalse(recs.contains { $0.action == .leave })
     }
 
+    /// Applying a "leave" recommendation mutes the channel (Watchtower can't
+    /// leave it), so a leave on an already-muted channel has nothing to do —
+    /// and applying it used to TOGGLE mute, un-muting the channel.
+    func testLeaveSkippedWhenAlreadyMuted() {
+        let stat = makeStat(type: "public", isMember: true, userMessages: 0, isMutedForLLM: true)
+        let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
+        XCTAssertFalse(recs.contains { $0.action == .leave })
+    }
+
+    /// Apply must set the target state, never flip it: a leave/mute applied to
+    /// a channel that is already muted (a stale recommendation, or one raised
+    /// before the rule above) must leave it muted.
+    @MainActor
+    func testApplyRecommendationNeverUnmutesOrUnfavorites() throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "muted")
+            try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
+            try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
+        }
+        let vm = ChannelStatsViewModel(dbManager: dbManager)
+        vm.stats = [makeStat(id: "C001", isMember: true, isMutedForLLM: true, isFavorite: true)]
+
+        for action in [ChannelRecommendation.Action.leave, .mute, .favorite] {
+            vm.applyRecommendation(ChannelRecommendation(
+                channelID: "C001", channelName: "muted", action: action, reason: "test"
+            ))
+        }
+
+        let settings = try XCTUnwrap(dbManager.dbPool.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertTrue(settings.isMutedForLLM, "applying a recommendation un-muted the channel")
+        XCTAssertTrue(settings.isFavorite, "applying a recommendation un-favorited the channel")
+        XCTAssertNil(vm.errorMessage)
+    }
+
     func testFavoriteHighEngagement() {
         // Go: userMsgs>=10 AND mentions>=3
         let stat = makeStat(userMessages: 15, mentionCount: 5)

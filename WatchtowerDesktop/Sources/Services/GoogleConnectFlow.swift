@@ -216,31 +216,10 @@ final class GoogleConnectFlow {
         }
     }
 
-    /// Runs a pre-configured Process, reading pipe data before waitUntilExit to avoid deadlock.
+    /// Runs a pre-configured Process, draining stdout and stderr concurrently (`ProcessPipes`, SB3).
     nonisolated private static func runProcess(
         _ process: Process
     ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-
-        // Read pipe data BEFORE waitUntilExit to prevent deadlock when output exceeds 64KB
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        let stdout = String(data: stdoutData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        return (process.terminationStatus, stdout, stderr)
+        await ProcessPipes.run(process).trimmed
     }
 }

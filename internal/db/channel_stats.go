@@ -244,9 +244,11 @@ func ComputeRecommendations(stats []ChannelStatRow, currentUserID string, signal
 
 		// Leave candidates:
 		// - user_msgs==0 OR last_activity 30+ days ago
-		// - AND not favorite, not watched, not DM
+		// - AND not favorite, not watched, not already muted, not DM
+		//   (the Desktop applies "leave" as a mute, so a muted channel has
+		//   nothing left to do — mirrored in Swift computeRecommendations)
 		// - Blocked by pending inbox, active tasks, active tracks, or >=3 decisions
-		if !s.IsFavorite && !s.IsWatched && s.ChannelType != "dm" && s.ChannelType != "group_dm" && s.IsMember {
+		if !s.IsFavorite && !s.IsWatched && !s.IsMuted && s.ChannelType != "dm" && s.ChannelType != "group_dm" && s.IsMember {
 			if s.UserMsgs == 0 || (s.LastUserActivity > 0 && s.LastUserActivity < thirtyDaysAgo) {
 				if vs.PendingInboxCount > 0 || vs.TaskCount > 0 || vs.ActiveTrackCount > 0 || vs.DecisionCount >= 3 {
 					// Value signals block leave — fall through to favorite check
