@@ -481,6 +481,12 @@ final class ChatViewModel {
         scrollTarget = messageID
     }
 
+    /// Called by the thread view once it has jumped to `scrollTarget`, so
+    /// reopening the same hit changes the target again and jumps again.
+    func consumeScrollTarget() {
+        scrollTarget = nil
+    }
+
     /// The sibling `offset` steps from `messageID` (‹ = -1, › = +1), nil at an
     /// end. A read failure also answers nil: the arrow simply does nothing.
     func variant(of messageID: Int64, offset: Int) -> Int64? {

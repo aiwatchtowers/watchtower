@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Chat does not auto-follow a streaming reply
-status: open
+status: done
 priority: high
 tags: [desktop, chat, scroll, streaming, ux]
 context: fix/settings-storage-size-off-main — owner screenshot of the main AI Chat right after sending a message
@@ -26,3 +26,27 @@ Check the "at bottom" detection threshold against content that grows inside a
 single message (text deltas) rather than only new rows being appended.
 
 > Original note: «написал сообщение в чат и он не фолоапит что бот пишет. Надо чтоб по умолчанию скролило, но я мог бы если что подскролить вверх и читать спокойно»
+
+Resolution: the follow state used to be derived from one number — how far a
+trailing sentinel sat below the viewport — so one streamed paragraph taller
+than the 40 pt threshold read exactly like the owner scrolling up, and the
+state stuck off across sends. `ChatFollowTracker` (WatchtowerCore,
+`ChatAutoScrollPolicy.swift`) now reads consecutive measurements of the whole
+thread content: content growing below the viewport only moves its bottom edge
+and keeps a following view pinned, pulling it down on every growth (streamed
+text, tool steps, artifact blocks, action cards alike) and never otherwise; a
+scroll up is read from the content's top edge moving down against a baseline
+that advances only on a real move, so even a slow sub-point drag adds up and
+stops following; scrolling back down near the bottom or tapping "Jump to
+latest" re-pins. Starting a turn (send, regenerate, edit, continue) always
+re-pins. A ⌘K search hit — including one that switches into a conversation
+whose reply is still streaming in the same update — lands on the message and
+does not follow; a plain switch lands at the bottom; a live-turn change counts
+as a turn start only within the same conversation (`threadChange`, one
+handler for all four). The view consumes the jump target
+(`ChatViewModel.consumeScrollTarget`), so reopening the same hit jumps again.
+Pinned by `ChatAutoScrollPolicyTests` (multi-measurement runs: streaming, slow
+drag, growth while reading, re-pin on scroll down, overscroll, shrink, reset
+following/not following, repin, thread-change classification incl. a jump into a streaming
+conversation and reopening a consumed hit) and
+`ChatViewModelTests.testConsumedScrollTargetLetsTheSameHitJumpAgain`.

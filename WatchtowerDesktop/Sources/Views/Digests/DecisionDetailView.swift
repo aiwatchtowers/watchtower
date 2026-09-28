@@ -56,6 +56,9 @@ struct DecisionDetailView: View {
             Divider()
             actionBar
         }
+        // Below the action bar — the pane's bottom-most content, under the
+        // Discuss input.
+        .clearsRecordingIndicator()
         .task(id: idea.id) { await loadMentions() }
         .task { jiraSiteURL = JiraConfigHelper.readSiteURL() }
     }

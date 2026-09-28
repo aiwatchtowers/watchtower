@@ -781,6 +781,31 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.scrollTarget, firstAnswer)
     }
 
+    /// Once the thread view consumed a jump, reopening the same hit sets the
+    /// target again, so the view jumps again instead of seeing no change.
+    func testConsumedScrollTargetLetsTheSameHitJumpAgain() async throws {
+        let vm = try makeViewModel()
+        let convID = try XCTUnwrap(vm.newConversation())
+        vm.send(text: "q")
+        try await complete(vm, turn: "turn-1", text: "answer")
+        let answer = try XCTUnwrap(vm.thread.last?.id)
+        let hit = ChatSearchHit(conversationID: convID, messageID: answer, title: "", snippet: "")
+
+        vm.open(hit)
+        XCTAssertEqual(vm.scrollTarget, answer)
+        vm.consumeScrollTarget()
+        XCTAssertNil(vm.scrollTarget)
+        vm.open(hit)
+        XCTAssertEqual(vm.scrollTarget, answer)
+    }
+
+    /// Degenerate: consuming with no pending target is a no-op.
+    func testConsumingWithoutATargetIsANoOp() throws {
+        let vm = try makeViewModel()
+        vm.consumeScrollTarget()
+        XCTAssertNil(vm.scrollTarget)
+    }
+
     func testArrowUpEditsTheLastUserMessage() async throws {
         let vm = try makeViewModel()
         _ = vm.newConversation()
