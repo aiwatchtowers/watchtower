@@ -194,6 +194,116 @@ Mutation-checked the proportion design (ratio, `anomalyShareMax`,
 `anomalyCountMin`) and the F4/F5/F7 mechanisms — each disabled/loosened in
 turn and confirmed to turn the matching test(s) red.
 
+**Round 4 (verify-round finding: R3-1 regression + R3-2..R3-6) — replaced
+the case-based rules with letter-frequency scoring.** Round 3's
+case-based proportional rules (word-mixing, mid-word case-flip) were
+themselves found broken: realistic, lowercase-heavy KOI8-R/KOI8-U prose —
+ordinary sentence capitalization is far too sparse in a real paragraph to
+clear a 10%-of-words floor — was rejected as StatusFailed, when round 1/2
+already rejected it and this was meant to be the fix. Letter case is the
+wrong signal for telling a correct decode from a wrong one across the
+windows-1251/koi8-r/koi8-u family, so the whole case-based mechanism
+(`looksLikeCyrillicPlainText`, `isWordAnomalyMeaningful`, the anomaly
+constants) is removed and replaced with `bestCyrillicText`/
+`scoreCyrillicText`: decode the undeclared bytes as **all three** of
+windows-1251/koi8-r/koi8-u, score each by combining the Cyrillic-letter
+ratio with the share of Cyrillic letters among ~10 common Russian/
+Ukrainian letters (о е а и н т с р в л і, case-insensitive), and accept the
+winner only if it clears an absolute floor **and** beats the runner-up by a
+margin. When koi8-r/koi8-u wins, ITS OWN decode is returned, so a genuine
+KOI8 file is indexed correctly rather than merely "not rejected."
+
+Measured scores (ratio + topShare; see `scoreCyrillicText`), each sample's
+own correct-encoding score:
+
+| sample | score | verdict |
+|---|---|---|
+| real Russian prose (4 sentences, cp1251) | 1.66 | accept |
+| real Ukrainian prose (4 sentences, cp1251) | 1.63 | accept |
+| the same paragraphs actually encoded in KOI8-R / KOI8-U | 1.66 / 1.63 | accept (decoded as KOI8, not cp1251) |
+| all-lowercase short "привет мир как дела" (KOI8-R) | 1.69 | accept |
+| cp1251 prose with brand names (ПриватБанк, МегаФон) | 1.66 | accept |
+| all-caps cp1251 line ("ИТОГО ПО ДОГОВОРУ …") | 1.63 (margin over koi8 ≈ 0.04 — the tightest accept-side gap measured) | accept |
+| CSV with Latin headers + Cyrillic rows (cp1251) | 1.57 | accept |
+| ultra-short "ИТОГО" alone (5 letters) | 1.80 | accept |
+| ultra-short "да" (2 letters) | 1.50 | accept |
+| "Привет мир" (10 letters) | 1.78 | accept |
+| cp1252 / ISO-8859-1 mojibake | 0.79 | reject |
+| ISO-8859-2 mojibake | 0.49 | reject |
+| GBK mojibake | 1.23 (closest any rejected sample comes to the accept side) | reject |
+| Shift-JIS mojibake | 0.99 | reject |
+| short mojibake "Café Müller" | 0.70 | reject |
+
+`cyrillicScoreMin` = **1.40** (between GBK's 1.23 worst-mojibake and 1.50
+least-accept); `cyrillicScoreMargin` = **0.02** (comfortably under the
+all-caps line's ~0.04, the tightest real accept-side margin observed).
+koi8-r and koi8-u are collapsed to whichever scores higher before the
+margin check runs against windows-1251 — their letter tables are nearly
+identical, so margin-checking them against EACH OTHER would reject genuine
+KOI8 content on that internal coin-flip (a Ukrainian paragraph's koi8-u vs.
+koi8-r margin measured ~0.016, well under any workable threshold, while its
+margin over the WRONG cp1251 reading is ~0.28). **No separate short-text
+rule**: the shortest accept cases above (2 and 5 letters) already clear
+both thresholds; a fragment too short to carry a meaningful letter
+distribution either fails the ratio component outright or is rare enough in
+practice not to special-case — documented in `bestCyrillicText`'s doc
+comment alongside the full table above.
+
+Also in this round:
+- **R3-2** (minor): the guess decoded the untrimmed bytes, so a file with a
+  spurious UTF-8 BOM followed by a non-UTF-8 body decoded that BOM as three
+  garbage characters ("п»ї") glued onto otherwise-correct text — on both the
+  plain-text path and, newly reachable since round 3's F5 fallthrough, the
+  HTML path. Fixed: both paths now score the BOM-trimmed bytes.
+- **R3-3** (minor): resolved as a side effect of the redesign — a short
+  cp1251 text with two brand names ("Договор с МегаФон и ПриватБанк
+  подписан") now scores comfortably above both thresholds, since the
+  frequency signal doesn't degrade with word count the way the old
+  word-count floor did.
+- **R3-4** (minor, test-quality): `headChildDepth` counted void head-only
+  elements (`meta`/`link`/`base`) the same as `title`/`style`/`script`, but
+  a void element never gets a matching end tag — so once a real `<head>`
+  (which almost always has at least one `meta` or `link`) was seen, the
+  depth stayed stuck above zero forever and the F7 text-closes-head rule
+  never fired again in practice, only in its own no-other-children test
+  fixture. Fixed: only `title`/`style`/`script`/`noscript`/`template`
+  (`headContainerTags`, a narrower set than `headAllowedTags`) bump the
+  depth. The first version of this fix's own test didn't actually exercise
+  the bug (a subsequent `<p>` tag closes head via its own, unrelated,
+  already-correct rule regardless) — fixed by asserting the full text
+  instead of a substring.
+- **R3-5** (minor, accepted limit): a declared **single-byte** charset that
+  is wrong still produces `StatusOK` mojibake — the U+FFFD share check
+  (F5) cannot see it, since a single-byte charmap never emits a replacement
+  character no matter which byte it reads. This is the same "an explicit
+  declaration is trusted over any guess" rule the whole declared-charset
+  path exists to implement (matching browser/HTML5 behavior), so it is left
+  as-is rather than special-cased further. Documented in
+  `replacementShareMax`'s doc comment and the PR description.
+- **R3-6** (nit, accepted limit): BOM-less UTF-16 HTML (no BOM, no
+  meta/MIME declaration at all) is still indexed as raw bytes with
+  interspersed NULs — `scanMetaCharset` cannot tokenize UTF-16 bytes, and
+  `utf8.Valid` happens to accept ASCII-plus-NUL. Pre-existing (predates this
+  PR) and rare in practice; left undocumented in code beyond this note,
+  per the routing for this round.
+
+Tests: `internal/extract/encoding_test.go` fixtures are now realistic,
+lowercase-heavy, multi-sentence paragraphs throughout (the exact gap the
+R3-1 regression exploited) —
+`TestPlainMojibakeFamiliesFail`/`TestPlainKOI8ProseDecodesCorrectly`
+(KOI8 now indexes **correctly**, not merely "accepted")/
+`TestPlainAllLowercaseKOI8RPhraseDecodesCorrectly` (the exact regression
+sample)/`TestPlainAcceptsRealWorldCyrillicEdgeCases`/
+`TestPlainShortMojibakeFails`/`TestScoreCyrillicText` (direct scoring
+pins)/`TestPlainBOMIsTrimmedBeforeCyrillicScoring`/
+`TestHTMLBOMIsTrimmedBeforeCyrillicScoring` (R3-2)/
+`TestHTMLHeadClosedByTextDespiteVoidElements` (R3-4). Mutation-checked the
+new thresholds (`cyrillicScoreMin`, `cyrillicScoreMargin`,
+`cyrillicTopLetters`) and the R3-2/R3-4 fixes — each disabled/reintroduced
+in turn and confirmed to turn the matching test(s) red; the first R3-4 test
+draft passed even with the bug reintroduced and was rewritten to actually
+exercise it (see above).
+
 ## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
 
 - type: bug · confidence: med · tags: [doclinks, linkscan, slack, cursor]
