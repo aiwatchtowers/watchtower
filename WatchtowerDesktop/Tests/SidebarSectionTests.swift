@@ -49,9 +49,57 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testCollapsedByDefault() {
-        for section in SidebarSection.ordered {
-            XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")
-        }
+        XCTAssertFalse(SidebarSection.today.collapsedByDefault, "FOCUS is an everyday section and should start expanded")
+        XCTAssertTrue(SidebarSection.delivery.collapsedByDefault, "EXECUTION should start collapsed")
+        XCTAssertTrue(SidebarSection.analytics.collapsedByDefault, "INSIGHTS should start collapsed")
+    }
+
+    func testContainingReturnsTheOwningSection() {
+        XCTAssertEqual(SidebarSection.containing(.digests), .analytics)
+        XCTAssertEqual(SidebarSection.containing(.releases), .delivery)
+        XCTAssertEqual(SidebarSection.containing(.inbox), .today)
+    }
+
+    func testContainingIsNilForRootAndToolItems() {
+        XCTAssertNil(SidebarSection.containing(.targets))
+        XCTAssertNil(SidebarSection.containing(.chat))
+        XCTAssertNil(SidebarSection.containing(.search))
+    }
+
+    // MARK: - Auto-expand on navigation
+
+    func testExpandingSectionExpandsACollapsedSection() {
+        let updated = SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
+    }
+
+    func testExpandingSectionNilWhenAlreadyExpanded() {
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: false]))
+    }
+
+    func testExpandingSectionNilWhenDestinationHasNoSection() {
+        XCTAssertNil(SidebarView.expandingSection(for: .targets, in: [SidebarSection.analytics.id: true]))
+    }
+
+    func testExpandingSectionNilWhenMapHasNoEntryForTheSection() {
+        // In practice `loadCollapsedSections()` always fills every ordered
+        // section's entry, so this shape shouldn't occur from real UserDefaults
+        // state — this pins the pure function's own defensive contract for an
+        // incomplete map (e.g. a future caller building one by hand): a
+        // missing entry must not be treated as "collapsed" and trigger a
+        // spurious expand, only an explicit `true` does.
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [:]))
+    }
+
+    func testExpandingSectionHandlesInitialSelectionInsideACollapsedSection() {
+        // The same pure function backs both the sidebar's `onAppear` and its
+        // `onChange(of: selection)` — the initial `selection` can already sit
+        // inside a collapsed section (window reopened from the tray via a
+        // notification route, or the sidebar toggled off and back on with a
+        // stale selection), so this must expand exactly like a live
+        // navigation does.
+        let updated = SidebarView.expandingSection(for: .memory, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
     }
 
     // MARK: - Feature-gated visibility
@@ -130,5 +178,30 @@ final class SidebarSectionTests: XCTestCase {
 
     func testFallbackDestinationNilWhenCurrentStillVisible() {
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"]))
+    }
+
+    // MARK: - Next-meeting card countdown
+
+    func testNextEventCountdownShowsWholeMinutesAboveOneMinute() {
+        let now = Date()
+        XCTAssertEqual(
+            SidebarView.nextEventCountdownText(start: now.addingTimeInterval(34 * 60 + 7), now: now),
+            "in 34 min",
+            "seconds must not show — drop them rather than round the minute up or down"
+        )
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(120), now: now), "in 2 min")
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(60), now: now), "in 1 min")
+    }
+
+    func testNextEventCountdownShowsSecondsInTheLastMinute() {
+        let now = Date()
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(45), now: now), "in 45 sec")
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(1), now: now), "in 1 sec")
+    }
+
+    func testNextEventCountdownAtOrAfterStartReadsStartingNow() {
+        let now = Date()
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now, now: now), "starting now")
+        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(-30), now: now), "starting now")
     }
 }

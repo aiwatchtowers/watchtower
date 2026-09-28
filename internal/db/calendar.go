@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -14,8 +15,11 @@ import (
 // subscribed by two different accounts syncs to the SAME row. On conflict
 // this never steals ownership — an already-claimed (non-NULL account_id) row
 // keeps its original owner regardless of which account syncs it next; only a
-// NULL account_id (unclaimed, or a legacy row stamped by migration 00043) can
-// be claimed. Combined with GetSelectedCalendarIDs filtering by account_id,
+// NULL account_id (unclaimed, a legacy row stamped by migration 00043, or a
+// row a logout/remove kept and detached — see purgeGoogleAccountCalendarsTx)
+// can be claimed, and a claim takes the incoming is_selected too, as a fresh
+// insert would (a detached row was unselected by the detach, not by the
+// owner). Combined with GetSelectedCalendarIDs filtering by account_id,
 // a shared calendar is synced (and stale-cleaned) by whichever account
 // connected it first — the other account simply never selects it, so it can
 // neither duplicate nor cross-delete that calendar's events.
@@ -27,6 +31,8 @@ func (db *DB) UpsertCalendar(accountID int64, cal CalendarCalendar) error {
 	_, err := db.Exec(`INSERT INTO calendar_calendars (id, name, is_primary, is_selected, color, synced_at, account_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, is_primary=excluded.is_primary, color=excluded.color, synced_at=excluded.synced_at,
+			is_selected = CASE WHEN calendar_calendars.account_id IS NULL AND excluded.account_id IS NOT NULL
+				THEN excluded.is_selected ELSE calendar_calendars.is_selected END,
 			account_id = CASE WHEN calendar_calendars.account_id IS NULL THEN excluded.account_id ELSE calendar_calendars.account_id END`,
 		cal.ID, cal.Name, cal.IsPrimary, cal.IsSelected, cal.Color, cal.SyncedAt, accountArg)
 	if err != nil {
@@ -292,7 +298,9 @@ func (db *DB) DeleteStaleCalendarEvents(calendarID string, beforeSyncedAt string
 // the same NOT EXISTS guard as DeleteStaleCalendarEvents (owner decision 14 —
 // deleting it would SET NULL the recording's event link for good), and so is
 // the calendar row that still holds such an event (calendar_events.calendar_id
-// is a foreign key). Returns the number of events deleted.
+// is a foreign key) — detached from the account (account_id NULL,
+// is_selected 0), so another Google account sharing that calendar id can
+// claim it on UpsertCalendar. Returns the number of events deleted.
 func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -300,6 +308,26 @@ func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
 	}
 	defer tx.Rollback()
 
+	n, err := purgeGoogleAccountCalendarsTx(tx, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
+	}
+	return int(n), nil
+}
+
+// purgeGoogleAccountCalendarsTx deletes accountID's calendar events and
+// calendar rows inside tx, except that an event a meeting_transcripts or
+// meeting_recaps row references is spared (the DeleteStaleCalendarEvents
+// guard, owner decision 14), and so is the calendar row still holding such an
+// event (calendar_events.calendar_id is a foreign key). A spared calendar row
+// is detached — account_id NULL, is_selected 0 — so it no longer names the
+// account (whose row may be deleted next) and is never synced for it; a later
+// account sharing that calendar id claims it on UpsertCalendar. Returns the
+// number of events deleted.
+func purgeGoogleAccountCalendarsTx(tx *sql.Tx, accountID int64) (int64, error) {
 	result, err := tx.Exec(`
 		DELETE FROM calendar_events
 		 WHERE calendar_id IN (SELECT id FROM calendar_calendars WHERE account_id = ?)
@@ -307,23 +335,24 @@ func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
 		   AND NOT EXISTS (SELECT 1 FROM meeting_recaps    r WHERE r.event_id = calendar_events.id)
 	`, accountID)
 	if err != nil {
-		return 0, fmt.Errorf("clearing calendar events for google account %d: %w", accountID, err)
+		return 0, fmt.Errorf("deleting calendar events of google account %d: %w", accountID, err)
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("counting cleared calendar events for google account %d: %w", accountID, err)
+		return 0, fmt.Errorf("counting deleted calendar events of google account %d: %w", accountID, err)
 	}
 	if _, err := tx.Exec(`
 		DELETE FROM calendar_calendars
 		 WHERE account_id = ?
 		   AND NOT EXISTS (SELECT 1 FROM calendar_events e WHERE e.calendar_id = calendar_calendars.id)
 	`, accountID); err != nil {
-		return 0, fmt.Errorf("clearing calendars for google account %d: %w", accountID, err)
+		return 0, fmt.Errorf("deleting calendars of google account %d: %w", accountID, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
+	if _, err := tx.Exec(`UPDATE calendar_calendars SET account_id = NULL, is_selected = 0 WHERE account_id = ?`,
+		accountID); err != nil {
+		return 0, fmt.Errorf("detaching kept calendars of google account %d: %w", accountID, err)
 	}
-	return int(n), nil
+	return n, nil
 }
 
 // UpsertAttendeeMap caches an email to slack_user_id mapping.

@@ -100,8 +100,11 @@ func (db *DB) UpdateGoogleAccountConnection(id int64, email string, calendarEnab
 // calendar_calendars rows and their calendar_events, so a removed account
 // leaves no ghost events behind (mirroring DeleteCalendarAccount). Its
 // gmail_messages rows cascade via ON DELETE CASCADE. Deleting the events
-// cascades meeting_prep_cache and SET-NULLs meeting_transcripts exactly as
-// DeleteCalendarAccount already relies on. Deleting a missing account is a
+// cascades meeting_prep_cache. An event still referenced by a
+// meeting_transcripts or meeting_recaps row is spared, and so is the calendar
+// row holding it, detached from the account (see
+// purgeGoogleAccountCalendarsTx) — deleting it would SET NULL the recording's
+// event link for good (owner decision 14). Deleting a missing account is a
 // no-op, mirroring DeleteEmailAccount/DeleteCalendarAccount.
 func (db *DB) DeleteGoogleAccount(id int64) error {
 	tx, err := db.Begin()
@@ -109,12 +112,8 @@ func (db *DB) DeleteGoogleAccount(id int64) error {
 		return fmt.Errorf("deleting google account %d: %w", id, err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM calendar_events WHERE calendar_id IN
-	        (SELECT id FROM calendar_calendars WHERE account_id = ?)`, id); err != nil {
-		return fmt.Errorf("deleting google account %d events: %w", id, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM calendar_calendars WHERE account_id = ?`, id); err != nil {
-		return fmt.Errorf("deleting google account %d calendars: %w", id, err)
+	if _, err := purgeGoogleAccountCalendarsTx(tx, id); err != nil {
+		return fmt.Errorf("deleting google account %d: %w", id, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM google_accounts WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("deleting google account %d: %w", id, err)

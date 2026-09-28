@@ -172,7 +172,7 @@ func TestAllTablesExist(t *testing.T) {
 		"workspace", "users", "channels", "messages",
 		"reactions", "files", "sync_state", "watch_list", "user_checkpoints",
 		"digests", "decision_reads", "user_analyses", "period_summaries",
-		"custom_emojis", "tracks",
+		"custom_emojis", "tracks", "track_retry_digests",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
 		"meeting_transcripts", "voice_prints",

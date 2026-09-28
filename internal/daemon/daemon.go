@@ -67,7 +67,7 @@ type jiraAccountSyncer interface {
 var minPollInterval = 1 * time.Second
 
 // maxDailyAIAttempts caps how many real (error-producing) attempts the
-// day-plan, briefing, and daily-rollup phases make in one calendar day before
+// day-plan, briefing, daily-rollup and people-cards phases make in one calendar day before
 // backing off until the next day. A "real attempt" is one that reached the
 // AI/parse/store step and failed — a benign skip (no current user yet, no
 // data yet, fewer than 2 channel digests, nothing new since the last rollup)
@@ -126,6 +126,8 @@ type Daemon struct {
 	briefingAttempts    int
 	rollupAttemptDate   string // YYYY-MM-DD (UTC) the counter below is for
 	rollupAttempts      int
+	peopleAttemptDate   string // YYYY-MM-DD the counter below is for
+	peopleAttempts      int
 
 	// noOwnerLoggedDay maps a phase to the UTC day its "no owner identity"
 	// skip line was last printed (logNoOwnerOnce).
@@ -329,6 +331,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadDayPlanAttempts()
 	d.loadBriefingAttempts()
 	d.loadRollupAttempts()
+	d.loadPeopleAttempts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -1115,11 +1118,23 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if !d.lastPeople.IsZero() && now.Sub(d.lastPeople) < 24*time.Hour {
 		return
 	}
+	// A failed run does not stamp lastPeople, so without this budget an AI
+	// outage would re-run every batch on every cycle (the day-plan/briefing
+	// shape, maxDailyAIAttempts).
+	date := now.Format("2006-01-02")
+	if d.peopleAttemptsExhausted(date) {
+		return
+	}
 
 	d.trackedPipelineRun("people", func() pipelineRunStats {
 		n, err := d.peoplePipe.Run(ctx)
 		if err != nil {
 			d.logger.Printf("people cards error: %v", err)
+			// A shutdown mid-run is not a failed attempt: the next start
+			// resumes the users still without a card.
+			if !isBenignShutdownErr(ctx, err) {
+				d.recordPeopleAttempt(date)
+			}
 		} else {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
@@ -1429,6 +1444,14 @@ func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 		return
 	}
 	if d.customTracksPipe == nil {
+		return
+	}
+	// Nothing to scan (no custom track, or every one has spent today's
+	// failure budget): skip before trackedPipelineRun so the day's error rows
+	// are not buried under a 0-item "done" row every cycle — the
+	// day-plan/briefing/people budget precedent. A failed check falls through
+	// so Run reports the same error in a tracked row.
+	if due, err := d.customTracksPipe.HasDueTracks(); err == nil && !due {
 		return
 	}
 	d.trackedPipelineRun("custom_tracks", func() pipelineRunStats {
@@ -1807,6 +1830,40 @@ func (d *Daemon) recordRollupAttempt(date string) {
 // passes even though the UTC day (and the rollup it targets) hasn't changed.
 func (d *Daemon) rollupAttemptsExhausted(date string) bool {
 	return d.rollupAttemptDate == date && d.rollupAttempts >= maxDailyAIAttempts
+}
+
+func (d *Daemon) peopleAttemptsPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "people_attempts.txt")
+}
+
+// loadPeopleAttempts is the people-cards counterpart to loadDayPlanAttempts.
+func (d *Daemon) loadPeopleAttempts() {
+	m := loadAttemptMarker(d.peopleAttemptsPath())
+	d.peopleAttemptDate = m.date
+	d.peopleAttempts = m.attempts
+}
+
+// recordPeopleAttempt is the people-cards counterpart to recordDayPlanAttempt.
+func (d *Daemon) recordPeopleAttempt(date string) {
+	if d.peopleAttemptDate != date {
+		d.peopleAttemptDate = date
+		d.peopleAttempts = 0
+	}
+	d.peopleAttempts++
+	if err := saveAttemptMarker(d.peopleAttemptsPath(), attemptMarker{date: date, attempts: d.peopleAttempts}); err != nil {
+		d.logger.Printf("failed to save people attempt marker: %v", err)
+	}
+	// See recordDayPlanAttempt's comment: logged once, when the budget is
+	// actually spent.
+	if d.peopleAttempts == maxDailyAIAttempts {
+		d.logger.Printf("people: giving up for %s after %d failed attempts, will retry tomorrow", date, d.peopleAttempts)
+	}
+}
+
+// peopleAttemptsExhausted is the people-cards counterpart to
+// dayPlanAttemptsExhausted.
+func (d *Daemon) peopleAttemptsExhausted(date string) bool {
+	return d.peopleAttemptDate == date && d.peopleAttempts >= maxDailyAIAttempts
 }
 
 // runDayPlanPhases runs Phases 7 and 8 over one owner resolved once for the

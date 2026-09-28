@@ -33,5 +33,10 @@ struct JoinButton: View {
         .controlSize(.small)
         .tint(prominent ? Color.accentColor : nil)
         .help("Open the meeting link")
+        // Keep the label at its intrinsic size: in a tight HStack (the
+        // sidebar's next-meeting card) an unconstrained Button competes with
+        // its neighboring Text for width and gets compressed down to a
+        // single glyph ("J…") instead of the sibling Text truncating.
+        .fixedSize()
     }
 }

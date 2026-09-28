@@ -43,6 +43,10 @@ struct UpcomingMeetingBannerView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                // Same fix as the shared JoinButton: keep the label at its
+                // intrinsic size so the capsule's other controls (title,
+                // countdown, Record, dismiss) absorb the squeeze instead.
+                .fixedSize()
             }
 
             Button {

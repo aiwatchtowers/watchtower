@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Jira board auto-refresh retries the LLM analysis every 15 minutes after a failure; analyzer and field discovery have zero tests"
-status: open
+status: done
 priority: med
 tags: [ai-cost, attempt-budget, jira, test-coverage, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track test coverage (Go)
@@ -14,3 +14,17 @@ created: 2026-09-26
 The daemon wires every Jira syncer with `SetAutoRefresh(true)`, and `Syncer.Sync` runs `CheckAndRefreshProfiles` on each Jira pass (default `jira.sync_interval_mins` = 15). The 24h cooldown is keyed on `ProfileGeneratedAt`, and only a successful `AnalyzeBoard` writes that field (`UpdateJiraBoardProfile(..., now)`). So when a board's config hash changed and the analysis fails (LLM error, or "LLM returned empty workflow"), the config hash stays different and the cooldown has already elapsed. Every 15-minute pass then re-runs `callLLM`, and possibly `MapFieldsForBoard`/`DiscoverAndClassify` LLM calls, indefinitely. The error is only logged, and the result is folded into `RefreshResult.Error`. None of this code has any test: cooldown skip, override merge (`mergeUserOverrides` 0%), hash-unchanged short-circuit, the failure path. Suggested fix: stamp an attempt time (or a failure counter) on a failed refresh so the cooldown also covers failures, and add fake-client tests for the cooldown and failure paths.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+Resolution: `CheckAndRefreshProfiles` now spends a per-board, per-config-hash retry budget
+(`maxDailyBoardRefreshAttempts = 3`, the day-plan/briefing/next-step "3 attempts/day" shape from
+CLAUDE.md's "Strong-tier cost fixes") — charged only when `AnalyzeBoard` actually returns an error,
+never on a benign skip (cooldown, `autoRefresh=false`). A hash change or a new UTC calendar day
+resets the budget (in-memory, process-lifetime only — no new migration, staying scoped to
+internal/jira/). A one-time "giving up for today" log line fires on the attempt that spends the
+budget; every later same-day pass is a silent skip. Pinned end-to-end by
+`TestCheckAndRefreshProfiles_GivesUpAfterDailyBudgetThenResumesNextDay`, which drives the real
+`CheckAndRefreshProfiles`/`AnalyzeBoard`/`callLLM` failure path through a fake `ai.Provider` (the
+existing `TestCheckAndRefreshProfiles_Cooldown*`/`TestMergeUserOverridesLogic` tests the finding
+flagged as fake — asserting against hand-built data instead of calling the named function — are
+unchanged and still have that gap; `fields.go`'s `DiscoverFields`/`ClassifyFields` remain untested
+too). Those two remaining coverage gaps are left open as a smaller follow-up.
