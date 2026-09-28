@@ -339,7 +339,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     instruction         TEXT NOT NULL DEFAULT '',       -- custom tracks: watch instruction
     enabled             INTEGER NOT NULL DEFAULT 1,      -- custom tracks: scan on/off
     last_run_at         TEXT NOT NULL DEFAULT '',        -- custom tracks: scan watermark, ''=never
-    linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL
+    linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    scan_attempts       INTEGER NOT NULL DEFAULT 0,      -- custom tracks: failed scans on the UTC day of scan_attempted_at (3/day cap)
+    scan_attempted_at   TEXT NOT NULL DEFAULT ''         -- custom tracks: last failed scan, ISO8601 UTC
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority);
 CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates);

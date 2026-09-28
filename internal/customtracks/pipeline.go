@@ -64,27 +64,60 @@ func New(database *db.DB, gen digest.Generator, lang string, logger *log.Logger)
 	return &Pipeline{db: database, gen: gen, lang: lang, logger: logger}
 }
 
+// maxDailyScanAttempts caps how many FAILED daemon scans one custom track gets
+// per UTC day (the next-step/day-plan/briefing budget shape). A failing scan
+// keeps its watermark, so without a cap the same growing window went back to
+// the strong model on every daemon cycle. A successful scan, or a new UTC day,
+// restores the budget; the user-initiated Refresh/Scan actions are unbudgeted.
+const maxDailyScanAttempts = 3
+
 // Run scans every enabled custom track over activity since its watermark.
-// Returns the number of events created. Per-track failures are logged and
-// skipped.
+// Returns the number of events created. Per-track failures are logged, counted
+// against that track's daily budget and skipped; a track that has spent its
+// budget is not scanned again until the next UTC day. Run returns an error when
+// every track it attempted failed, so a total failure is not recorded as a
+// clean run. A shutdown mid-scan returns ctx.Err() and is never counted.
 func (p *Pipeline) Run(ctx context.Context) (int, error) {
-	enabled, err := p.db.GetEnabledCustomTracks()
+	now := time.Now().UTC()
+	due, err := p.db.GetCustomTracksDueForScan(now.Format("2006-01-02"), maxDailyScanAttempts)
 	if err != nil {
 		return 0, err
 	}
-	total := 0
-	for i := range enabled {
+	total, failed := 0, 0
+	for i := range due {
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		events, err := p.runOne(ctx, enabled[i], runOpts{})
+		events, err := p.runOne(ctx, due[i], runOpts{})
 		if err != nil {
-			p.logger.Printf("customtracks: track %d: %v", enabled[i].ID, err)
+			if ctx.Err() != nil {
+				return total, ctx.Err()
+			}
+			failed++
+			p.recordScanFailure(due[i].ID, now, err)
 			continue
 		}
 		total += len(events)
 	}
+	if failed > 0 && failed == len(due) {
+		return total, fmt.Errorf("all %d custom track scan(s) failed", failed)
+	}
 	return total, nil
+}
+
+// recordScanFailure logs a failed scan and charges it to the track's daily
+// budget, noting once when that failure spends the budget.
+func (p *Pipeline) recordScanFailure(trackID int, now time.Time, scanErr error) {
+	p.logger.Printf("customtracks: track %d: %v", trackID, scanErr)
+	attempts, err := p.db.RecordCustomTrackScanFailure(trackID, now)
+	if err != nil {
+		p.logger.Printf("customtracks: track %d: %v", trackID, err)
+		return
+	}
+	if attempts == maxDailyScanAttempts {
+		p.logger.Printf("customtracks: track %d: giving up for %s after %d failed scans, will retry tomorrow",
+			trackID, now.Format("2006-01-02"), attempts)
+	}
 }
 
 // RunForTrack force-runs one custom track over activity since its watermark and
