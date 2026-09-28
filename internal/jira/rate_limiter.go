@@ -2,6 +2,8 @@ package jira
 
 import (
 	"context"
+	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -66,4 +68,28 @@ func BackoffDuration(attempt int) time.Duration {
 	default:
 		return 4 * time.Second
 	}
+}
+
+// retryAfterDuration parses a Retry-After header value (RFC 9110 §10.2.3) —
+// either a non-negative number of seconds or an HTTP-date — as a duration to
+// wait measured from now. ok is false when the header is absent, malformed,
+// negative, or names a time already in the past; the caller falls back to
+// BackoffDuration's fixed schedule in that case. Without this, a 429's fixed
+// 1/2/4s backoff ignored the server's own Retry-After hint entirely.
+func retryAfterDuration(header string, now time.Time) (time.Duration, bool) {
+	if header == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(header); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := t.Sub(now); d > 0 {
+			return d, true
+		}
+	}
+	return 0, false
 }

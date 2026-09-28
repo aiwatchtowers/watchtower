@@ -162,7 +162,11 @@ func TestClient_PersistentUnauthorizedIsAuthRevoked(t *testing.T) {
 // TestClient_PersistentUnauthorizedScopeIsNotRevoked: Atlassian answers a
 // request the grant lacks a scope for with 401 "Unauthorized; scope does
 // not match". That grant is alive and needs re-consent, so the surviving 401
-// comes back as *HTTPStatusError carrying the body, never as ErrAuthRevoked.
+// comes back as *HTTPStatusError carrying the body, never as ErrAuthRevoked —
+// and, since refreshing an access token can never fix a missing scope, it
+// must surface on the very first response rather than after burning the
+// refresh-token rotation budget (a scope-denied 401 used to rotate the
+// refresh token three times before this classification kicked in).
 func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -171,8 +175,6 @@ func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":401,"message":"Unauthorized; SCOPE DOES NOT MATCH"}`))
 	}))
 	defer srv.Close()
-
-	stubTokenEndpoint(t)
 
 	c := makeTestClient(t, srv.URL)
 	var got map[string]any
@@ -184,7 +186,44 @@ func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 	require.True(t, errors.As(err, &he), "got %v", err)
 	assert.Equal(t, http.StatusUnauthorized, he.Status)
 	assert.Contains(t, he.Body, "SCOPE DOES NOT MATCH")
-	assert.Equal(t, int32(4), calls.Load(), "the refresh budget is still spent first")
+	assert.Equal(t, int32(1), calls.Load(), "a scope-denied 401 must surface immediately, with no refresh attempt")
+}
+
+// TestClient_401AfterRateLimitedAttemptsStillRefreshes pins the fix for the
+// 401/429 counter split: three 429s (e.g. the access token expiring mid
+// backoff) must not spend the 401 refresh budget — a 401 arriving right
+// after them must still get its own three refresh attempts, not be declared
+// ErrAuthRevoked immediately. Each 429 response carries "Retry-After: 0" so
+// the test does not sleep through BackoffDuration's fixed schedule.
+func TestClient_401AfterRateLimitedAttemptsStillRefreshes(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1, 2, 3:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 4:
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			assert.Equal(t, "Bearer at-refreshed", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+	prev := jiraTokenEndpoint
+	jiraTokenEndpoint = tokenSrv.URL
+	defer func() { jiraTokenEndpoint = prev }()
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	require.NoError(t, c.get(context.Background(), "/x", &got))
+	assert.Equal(t, true, got["ok"])
+	assert.Equal(t, int32(5), calls.Load(), "3 rate-limit retries + 1 failing 401 + 1 refreshed retry")
 }
 
 func TestClient_SearchIssues(t *testing.T) {

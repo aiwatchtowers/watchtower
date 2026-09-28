@@ -18,12 +18,22 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `knownProjectKeys` memoizes the first non-empty set and reloads only while it is empty. `ResetCache` has no production caller. A daemon launched from the tray runs for weeks. When a board for a new project is connected (or a new project appears in `jira_issues`), that project's keys are never linked from Slack messages, digests or tracks until the daemon restarts. `get_task_context`, the Linked Jira badges and `--jira` silently leave those links out. Fix: refresh on a TTL (e.g. hourly), or call `ResetCache` after a Jira sync pass that added boards or projects.
 
-## Jira client: a 401 after three 429s is reported as a revoked grant with no refresh attempt
+## Jira client: a 401 after three 429s is reported as a revoked grant with no refresh attempt (fixed in fix/bl-jira-hardening)
 
 - type: bug · confidence: med · tags: [jira, auth, retry]
 - where: internal/jira/client.go:56-113, internal/jira/rate_limiter.go:60-69
 
 `do` has one shared attempt counter (0..3) for both 429 and 401. If attempts 0–2 get 429 and attempt 3 is the first 401 (for example, the access token expired during the backoff), the `attempt == 3` branch returns `ErrAuthRevoked` without ever refreshing. `phaseJiraSync` then stamps the account `revoked`, and only a re-login clears it. The 429 backoff is also a fixed 1/2/4 s that ignores `Retry-After`, which makes this path more likely under real throttling. Fix: count 401-after-refresh separately from 429 retries, and honor `Retry-After`.
+
+Resolution: `doURLWith` now tracks `refreshAttempts` (401) and `rateLimitAttempts` (429) as two
+independent 3-retry budgets instead of one shared counter, so a run of 429s can no longer spend the
+401 refresh budget before a real 401 arrives. The 429 branch also honors a `Retry-After` header
+(`retryAfterDuration`, seconds or an HTTP-date) before falling back to `BackoffDuration`'s fixed
+1/2/4s schedule. Pinned by `TestClient_401AfterRateLimitedAttemptsStillRefreshes` (three 429s, a
+`Retry-After: 0` header, then a 401 that must still refresh and succeed) and the
+`TestRetryAfterDuration_*` tests in `internal/jira/rate_limiter_test.go`. The same change also fixes
+the scope-denied-401 sub-item in `docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md`
+(both live in the same `doURLWith` 401 branch) — see that file's own resolution note.
 
 ## IMAP "new since" listing uses a N:* UID range, which per RFC 3501 always includes the last message
 
