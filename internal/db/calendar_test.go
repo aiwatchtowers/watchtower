@@ -287,6 +287,43 @@ func TestGetCalendarEventsForDate_LocalDayAndAllDayBoundaries(t *testing.T) {
 	}
 }
 
+// A DST transition day is 23 or 25 hours long; the window must follow the
+// local calendar day, not a fixed 24h. Fixed past dates are fine here: this is
+// pure window arithmetic, not a date bomb.
+func TestGetCalendarEventsForDate_DSTTransitionDays(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	for _, date := range []string{"2026-03-08", "2026-11-01"} {
+		t.Run(date, func(t *testing.T) {
+			db := openTestDB(t)
+			require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: time.Now().UTC().Format(time.RFC3339)}))
+			day, err := time.ParseInLocation("2006-01-02", date, loc)
+			require.NoError(t, err)
+			next := day.AddDate(0, 0, 1)
+			ts := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }
+			for _, ev := range []CalendarEvent{
+				// On the 23h day, next-early falls inside a fixed day+24h window;
+				// on the 25h day, late falls outside it. Only the local-day
+				// window gets both right.
+				{ID: "late", StartTime: ts(next.Add(-30 * time.Minute)), EndTime: ts(next.Add(-10 * time.Minute))},
+				{ID: "next-early", StartTime: ts(next.Add(10 * time.Minute)), EndTime: ts(next.Add(40 * time.Minute))},
+				{ID: "prev-late", StartTime: ts(day.Add(-40 * time.Minute)), EndTime: ts(day.Add(-10 * time.Minute))},
+			} {
+				ev.CalendarID, ev.Title = "primary", ev.ID
+				require.NoError(t, db.UpsertCalendarEvent(ev))
+			}
+			events, err := db.GetCalendarEventsForDate(date, loc)
+			require.NoError(t, err)
+			var got []string
+			for _, e := range events {
+				got = append(got, e.ID)
+			}
+			assert.Equal(t, []string{"late"}, got)
+			assert.NotEqual(t, 24*time.Hour, next.Sub(day), "the fixture really is a DST transition day")
+		})
+	}
+}
+
 func TestGetCalendarEventsForDate_BadDate(t *testing.T) {
 	db := openTestDB(t)
 	_, err := db.GetCalendarEventsForDate("not-a-date", time.UTC)
