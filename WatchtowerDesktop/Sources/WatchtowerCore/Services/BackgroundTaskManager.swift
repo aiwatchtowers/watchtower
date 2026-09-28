@@ -344,20 +344,16 @@ package final class BackgroundTaskManager {
         // Stream JSON lines from stdout
         let readTask = Task<InsightProgressData?, Never> {
             var lastFinished: InsightProgressData?
-            do {
-                for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                    if let data = line.data(using: .utf8),
-                       let json = try? decoder.decode(InsightProgressData.self, from: data) {
-                        await MainActor.run {
-                            self.handleProgressUpdate(kind: kind, json: json)
-                        }
-                        if json.finished == true {
-                            lastFinished = json
-                        }
+            for await line in stdoutPipe.fileHandleForReading.ndjsonLines {
+                if let data = line.data(using: .utf8),
+                   let json = try? decoder.decode(InsightProgressData.self, from: data) {
+                    await MainActor.run {
+                        self.handleProgressUpdate(kind: kind, json: json)
+                    }
+                    if json.finished == true {
+                        lastFinished = json
                     }
                 }
-            } catch {
-                // EOF or pipe closed
             }
             return lastFinished
         }

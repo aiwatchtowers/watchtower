@@ -1422,16 +1422,12 @@ struct OnboardingView: View {
             // so syncProgress updates trigger SwiftUI re-renders directly.
             let decoder = JSONDecoder()
             let readTask = Task<Void, Never> {
-                do {
-                    for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                        if let data = line.data(using: .utf8),
-                           let json = try? decoder.decode(SyncProgressData.self, from: data) {
-                            self.syncProgress = json
-                            self.updateSyncETA(json)
-                        }
+                for await line in stdoutPipe.fileHandleForReading.ndjsonLines {
+                    if let data = line.data(using: .utf8),
+                       let json = try? decoder.decode(SyncProgressData.self, from: data) {
+                        self.syncProgress = json
+                        self.updateSyncETA(json)
                     }
-                } catch {
-                    // EOF or pipe closed
                 }
             }
 

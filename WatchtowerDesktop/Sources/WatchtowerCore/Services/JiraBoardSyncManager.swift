@@ -80,15 +80,11 @@ package final class JiraBoardSyncManager {
         }
 
         let decoder = JSONDecoder()
-        do {
-            for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                if let data = line.data(using: .utf8),
-                   let json = try? decoder.decode(InsightProgressData.self, from: data) {
-                    await onProgress(json)
-                }
+        for await line in stdoutPipe.fileHandleForReading.ndjsonLines {
+            if let data = line.data(using: .utf8),
+               let json = try? decoder.decode(InsightProgressData.self, from: data) {
+                await onProgress(json)
             }
-        } catch {
-            // EOF or pipe closed.
         }
 
         proc.waitUntilExit()

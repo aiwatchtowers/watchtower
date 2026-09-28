@@ -174,7 +174,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         var accumulatedText = ""
         let handle = stdout.fileHandleForReading
 
-        for try await line in handle.bytes.lines {
+        for await line in handle.ndjsonLines {
             if Task.isCancelled { break }
             if let event = parseLine(line, accumulatedText: &accumulatedText) {
                 continuation.yield(event)
