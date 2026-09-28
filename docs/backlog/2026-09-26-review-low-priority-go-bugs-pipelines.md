@@ -25,12 +25,14 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `parseBriefingResult` output is marshalled straight into the briefing columns. `YourDayItem.TrackID/TargetID`, `WhatHappenedItem.DigestID` and `AttentionItem.SourceType/SourceID` are never checked against the ids that `gatherTargets`/`gatherTracks`/`gatherDigests` actually rendered. The Desktop turns them into navigation links, so an invented id either opens nothing or opens an unrelated row. The day plan already does this validation (`validateSource` against `targetsIDSet`/`jiraKeySet`), and so does Catch-Up (CATCHUP-04). Fix: collect the rendered id sets while gathering, and blank unknown ids while keeping the item (the `blankInventedMessageRefs` disposition). Minor, in the same file: `gatherTracks` byte-slices `t.Context[:200]` and `participants[:150]`, which can split a Cyrillic rune in the prompt. This affects the prompt only.
 
-## Day plan: persistence is not atomic and an empty or partial plan sticks for the whole day
+## Day plan: persistence is not atomic and an empty or partial plan sticks for the whole day (fixed in fix/bl-window-timing)
 
 - type: bug · confidence: med · tags: [dayplan, atomicity, stuck-state]
 - where: internal/dayplan/pipeline.go:175-196, 59-65
 
 The comment says "persist atomically", but `UpsertDayPlan`, `ReplaceAIItems`, `syncCalendarItems` and `IncrementRegenerateCount` are separate writes. If `ReplaceAIItems` or `syncCalendarItems` fails after a first-time upsert, a plan row with no AI items remains. The next daemon cycle hits the `existing != nil && !Force` short-circuit and never regenerates it that day, and the attempt budget is never charged because the next call "succeeds". The same happens when `buildItems` drops every AI item: an empty plan is persisted as `active` with no retry. Fix: do the plan upsert and item replace in one transaction, and treat zero surviving AI items as a failed attempt rather than a finished plan.
+
+Resolution: `Pipeline.Run` now drops a freshly created plan row when its item writes (`ReplaceAIItems`/`syncCalendarItems`) fail, so the next run regenerates instead of short-circuiting on it (an existing plan is never dropped); the row cascade-deletes its items (new `db.DeleteDayPlan`). A compensating delete rather than one transaction, because the item writers each run on the pool. A response whose every item fails validation now returns an error before anything is persisted (a charged, retried attempt), while a model that proposes nothing is still an honest empty plan. A failed `IncrementRegenerateCount` is logged instead of discarded. Pinned by `TestRun_PartialPersistFailureLeavesNoFreshPlan` (SQLite-trigger failure injection) and `TestRun_AllItemsDroppedIsAFailedAttempt`.
 
 ## RunWeeklyTrends is dead code
 

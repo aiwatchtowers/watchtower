@@ -144,8 +144,15 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 			p.logger.Printf("dayplan: dropped item: %s", d)
 		}
 	}
+	// The model proposed items but validation dropped every one: that is a
+	// failed attempt (charged to the daemon's budget and retried), not a
+	// finished empty plan that would stick for the day. A model that proposed
+	// nothing at all is an honest empty plan.
+	if len(newItems) == 0 && len(dropped) > 0 {
+		return nil, fmt.Errorf("day plan for %s: all %d generated items failed validation", opts.Date, len(dropped))
+	}
 
-	// ── persist atomically ────────────────────────────────────────────────────
+	// ── persist (a fresh plan either lands whole or not at all) ───────────────
 
 	var briefingID sql.NullInt64
 	if briefingData != nil {
@@ -171,25 +178,44 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	if err != nil {
 		return nil, fmt.Errorf("upsert plan: %w", err)
 	}
-
-	if err := p.db.ReplaceAIItems(planID, newItems); err != nil {
-		return nil, fmt.Errorf("replace AI items: %w", err)
+	if err := p.persistItems(planID, opts.Date, newItems, events); err != nil {
+		// A freshly created plan row that failed half-way would otherwise stick
+		// for the whole day: the next cycle's "plan exists" short-circuit takes
+		// an empty or partial plan as done. Drop it so the next run regenerates.
+		// A plan that existed before this run is never deleted here.
+		if existing == nil {
+			if derr := p.db.DeleteDayPlan(planID); derr != nil && p.logger != nil {
+				p.logger.Printf("dayplan: could not drop partial plan %d for %s: %v", planID, opts.Date, derr)
+			}
+		}
+		return nil, err
 	}
 
-	// syncCalendarItems is implemented in T10; stub here returns nil.
-	if err := p.syncCalendarItems(planID, opts.Date, events); err != nil {
-		return nil, fmt.Errorf("sync calendar items: %w", err)
-	}
-
-	// Increment regenerate count when this is a regeneration (with feedback or forced).
+	// Increment regenerate count when this is a regeneration (with feedback or
+	// forced). Bookkeeping only: the regenerated plan is already in place, so a
+	// failure is logged rather than reported as a failed run.
 	if opts.Feedback != "" || (existing != nil && opts.Force) {
-		_ = p.db.IncrementRegenerateCount(planID, opts.Feedback)
+		if err := p.db.IncrementRegenerateCount(planID, opts.Feedback); err != nil && p.logger != nil {
+			p.logger.Printf("dayplan: increment regenerate count for plan %d: %v", planID, err)
+		}
 	}
 
 	// DetectConflicts is implemented in T11; stub here is a no-op.
 	_ = p.DetectConflicts(ctx, opts.UserID, opts.Date)
 
 	return p.db.GetDayPlanByID(planID)
+}
+
+// persistItems writes a generated plan's items: the AI items, then the
+// calendar timeblocks.
+func (p *Pipeline) persistItems(planID int64, date string, newItems []db.DayPlanItem, events []db.CalendarEvent) error {
+	if err := p.db.ReplaceAIItems(planID, newItems); err != nil {
+		return fmt.Errorf("replace AI items: %w", err)
+	}
+	if err := p.syncCalendarItems(planID, date, events); err != nil {
+		return fmt.Errorf("sync calendar items: %w", err)
+	}
+	return nil
 }
 
 // ── internal helpers ───────────────────────────────────────────────────────────
