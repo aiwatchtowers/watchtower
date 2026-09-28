@@ -225,6 +225,39 @@ func TestConfluenceGetJSON_NonOKStatus(t *testing.T) {
 	assert.Contains(t, statusErr.Error(), "403")
 }
 
+// TestConfluenceGetJSON_SuccessBodyCap pins that a 2xx response is bounded
+// the same way Download already is: a body over the cap fails loudly with
+// ErrTooLarge instead of json.Decode reading (or OOMing on) it unbounded.
+func TestConfluenceGetJSON_SuccessBodyCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxSuccessBodyBytes+1))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+	var out map[string]any
+	err := c.Confluence().GetJSON(context.Background(), "/wiki/api/v2/spaces", nil, &out)
+	assert.ErrorIs(t, err, ErrTooLarge)
+}
+
+// TestConfluenceGetJSON_ExactlyAtCapSucceeds pins the boundary: a body of
+// exactly maxSuccessBodyBytes is still read and decoded normally.
+func TestConfluenceGetJSON_ExactlyAtCapSucceeds(t *testing.T) {
+	const wrapper = 10 // len(`{"pad":""}`)
+	padLen := maxSuccessBodyBytes - wrapper
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := append([]byte(`{"pad":"`), bytes.Repeat([]byte("a"), padLen)...)
+		body = append(body, []byte(`"}`)...)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+	var out struct {
+		Pad string `json:"pad"`
+	}
+	require.NoError(t, c.Confluence().GetJSON(context.Background(), "/wiki/api/v2/spaces", nil, &out))
+	assert.Len(t, out.Pad, padLen)
+}
+
 // TestConfluenceDownload_OmitsJSONAcceptHeader pins that Download never sends
 // Accept: application/json — an attachment binary is not JSON, and telling
 // Confluence's download endpoint to expect one is wrong for this request
