@@ -70,24 +70,45 @@ func BackoffDuration(attempt int) time.Duration {
 	}
 }
 
+// maxRetryAfter caps how long doURLWith will honor a server's Retry-After
+// hint. jira.Client.doURLWith runs inside phaseJiraSync's sequential
+// runSync, and nothing reads the daemon's ctx before shutdown — an
+// uncapped hour-long (or longer) Retry-After from a misbehaving proxy or a
+// long throttling window would stall that one request, and everything the
+// daemon cycle runs after it, for as long as the header says (up to 3x
+// before "max retries exceeded"). A capped wait still honors the server's
+// "not now" without blocking a whole sync cycle on it.
+const maxRetryAfter = 60 * time.Second
+
 // retryAfterDuration parses a Retry-After header value (RFC 9110 §10.2.3) —
 // either a non-negative number of seconds or an HTTP-date — as a duration to
-// wait measured from now. ok is false when the header is absent, malformed,
-// negative, or names a time already in the past; the caller falls back to
-// BackoffDuration's fixed schedule in that case. Without this, a 429's fixed
-// 1/2/4s backoff ignored the server's own Retry-After hint entirely.
+// wait measured from now, clamped to maxRetryAfter. ok is false when the
+// header is absent, malformed, negative, or names a time already in the
+// past; the caller falls back to BackoffDuration's fixed schedule in that
+// case. The seconds path checks secs against the cap BEFORE the
+// time.Duration multiplication: a very large but validly-parsed value (Atoi
+// accepts anything an int holds) would otherwise overflow int64 nanoseconds
+// and wrap to a negative duration, making time.After fire immediately
+// instead of waiting — the opposite of what Retry-After asks for.
 func retryAfterDuration(header string, now time.Time) (time.Duration, bool) {
 	if header == "" {
 		return 0, false
 	}
 	if secs, err := strconv.Atoi(header); err == nil {
-		if secs < 0 {
+		switch {
+		case secs < 0:
 			return 0, false
+		case secs > int(maxRetryAfter/time.Second):
+			return maxRetryAfter, true
+		default:
+			return time.Duration(secs) * time.Second, true
 		}
-		return time.Duration(secs) * time.Second, true
 	}
 	if t, err := http.ParseTime(header); err == nil {
 		if d := t.Sub(now); d > 0 {
+			if d > maxRetryAfter {
+				return maxRetryAfter, true
+			}
 			return d, true
 		}
 	}

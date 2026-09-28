@@ -164,17 +164,9 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 		}
 
 		if resp.StatusCode == http.StatusUnauthorized {
-			scopeErr, revokedErr := classify401(resp, method, fullURL)
-			if scopeErr != nil {
-				// The grant is alive but missing a permission a fresh access
-				// token can never grant — surface it right away instead of
-				// spending a refresh-token rotation (widening the
-				// cross-process refresh race, see refreshIfCurrent) on every
-				// attempt before giving up.
-				return nil, scopeErr
-			}
-			if refreshAttempts >= maxRefreshAttempts {
-				return nil, revokedErr
+			immediateErr, shouldRefresh := unauthorizedOutcome(resp, method, fullURL, refreshAttempts)
+			if !shouldRefresh {
+				return nil, immediateErr
 			}
 			refreshAttempts++
 			if refreshErr := c.refreshIfCurrent(ctx, token); refreshErr != nil {
@@ -184,16 +176,12 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
-			if rateLimitAttempts >= maxRateLimitAttempts {
-				resp.Body.Close()
-				return nil, fmt.Errorf("max retries exceeded for %s %s", method, fullURL)
-			}
-			wait := BackoffDuration(rateLimitAttempts)
-			if ra, ok := retryAfterDuration(resp.Header.Get("Retry-After"), time.Now()); ok {
-				wait = ra
+			wait, giveUpErr, giveUp := rateLimitOutcome(resp, rateLimitAttempts, method, fullURL)
+			resp.Body.Close()
+			if giveUp {
+				return nil, giveUpErr
 			}
 			rateLimitAttempts++
-			resp.Body.Close()
 			c.logger.Printf("rate limited, backing off %s (attempt %d)", wait, rateLimitAttempts)
 			select {
 			case <-ctx.Done():
@@ -207,23 +195,48 @@ func (c *Client) doURLWith(ctx context.Context, hc *http.Client, method, fullURL
 	}
 }
 
-// classify401 reads and closes resp's body and classifies a 401 response.
-// Atlassian answers a request the grant lacks a scope for with 401
-// "Unauthorized; scope does not match" — that grant is alive and only needs
-// re-consent, so a body naming a scope comes back as scopeErr (a plain
-// *HTTPStatusError; Confluence maps it to needs-consent) with revokedErr nil.
-// Any other body means the access token itself was rejected: revokedErr wraps
-// ErrAuthRevoked (what lets Sync abort and the daemon mark the account for
-// re-login) and scopeErr is nil. Called on every 401, not only the last one
-// doURLWith is willing to retry, so a scope error is recognized on the first
-// response instead of only after the refresh budget is spent.
-func classify401(resp *http.Response, method, fullURL string) (scopeErr, revokedErr error) {
+// unauthorizedOutcome classifies a 401 response and decides whether
+// doURLWith should refresh the token and retry. Atlassian answers a request
+// the grant lacks a scope for with 401 "Unauthorized; scope does not match"
+// — that grant is alive and only needs re-consent, so a body naming a scope
+// always returns immediately (shouldRefresh=false, immediateErr a plain
+// *HTTPStatusError; Confluence maps it to needs-consent) — surfacing it
+// right away instead of spending a refresh-token rotation (widening the
+// cross-process refresh race, see refreshIfCurrent) on every attempt before
+// giving up. Any other body means the access token itself was rejected:
+// refreshing is worth retrying until refreshAttempts's budget is spent, then
+// immediateErr wraps ErrAuthRevoked instead (what lets Sync abort and the
+// daemon mark the account for re-login). Reads and closes resp's body.
+// Called on every 401, not only the last one doURLWith is willing to retry,
+// so a scope error is recognized on the first response instead of only
+// after the refresh budget is spent.
+func unauthorizedOutcome(resp *http.Response, method, fullURL string, refreshAttempts int) (immediateErr error, shouldRefresh bool) {
 	herr := newHTTPStatusError(resp)
 	resp.Body.Close()
 	if strings.Contains(strings.ToLower(herr.Body), "scope") {
-		return herr, nil
+		return herr, false
 	}
-	return nil, fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, fullURL)
+	if refreshAttempts >= maxRefreshAttempts {
+		return fmt.Errorf("%w: %s %s returned 401 after token refresh", ErrAuthRevoked, method, fullURL), false
+	}
+	return nil, true
+}
+
+// rateLimitOutcome decides what doURLWith does with a 429 response: wait
+// then retry (giveUp=false, wait set), or stop (giveUp=true, giveUpErr set).
+// giveUpErr wraps the 429's own *HTTPStatusError (via newHTTPStatusError) so
+// a caller can still tell the exhausted budget was a rate limit rather than
+// some other failure. Does not close resp's body — the caller does that
+// exactly once regardless of which branch runs.
+func rateLimitOutcome(resp *http.Response, rateLimitAttempts int, method, fullURL string) (wait time.Duration, giveUpErr error, giveUp bool) {
+	if rateLimitAttempts >= maxRateLimitAttempts {
+		return 0, fmt.Errorf("max retries exceeded for %s %s: %w", method, fullURL, newHTTPStatusError(resp)), true
+	}
+	wait = BackoffDuration(rateLimitAttempts)
+	if ra, ok := retryAfterDuration(resp.Header.Get("Retry-After"), time.Now()); ok {
+		wait = ra
+	}
+	return wait, nil, false
 }
 
 // getAccessToken loads the current token, refreshing if expired.

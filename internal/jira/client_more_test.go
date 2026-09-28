@@ -226,6 +226,30 @@ func TestClient_401AfterRateLimitedAttemptsStillRefreshes(t *testing.T) {
 	assert.Equal(t, int32(5), calls.Load(), "3 rate-limit retries + 1 failing 401 + 1 refreshed retry")
 }
 
+// TestClient_RateLimitExhaustedPreservesStatus pins that giving up on a 429
+// still lets a caller tell it was a rate limit: the returned error wraps the
+// response's own *HTTPStatusError (status 429) instead of a bare
+// "max retries exceeded" string with no status attached.
+func TestClient_RateLimitExhaustedPreservesStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	err := c.get(context.Background(), "/x", &got)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max retries exceeded")
+	var he *HTTPStatusError
+	require.True(t, errors.As(err, &he), "got %v", err)
+	assert.Equal(t, http.StatusTooManyRequests, he.Status)
+	assert.Contains(t, he.Body, "rate limited")
+}
+
 func TestClient_SearchIssues(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/rest/api/3/search/jql")
