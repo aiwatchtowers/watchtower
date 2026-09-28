@@ -103,3 +103,24 @@ func TestAdvanceWatermark_NeverMovesBackwards(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, newer+60, got, "a newer ts advances the watermark")
 }
+
+// TestLoadContext_BlockCapCountsRunes crosses the 2000 cap on the whole
+// block with multi-byte text: ten thread lines of ~200 Cyrillic runes are
+// ~4000 bytes but ~2080 runes, so a rune cap keeps exactly 2000 runes (plus
+// the ellipsis) where a byte cut would keep only about half of them.
+func TestLoadContext_BlockCapCountsRunes(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	p := New(d, testConfig(), nil, log.Default())
+	insertChannel(t, d, "C1", "public")
+	long := strings.Repeat("ж", 400)
+	for i := 0; i < 10; i++ {
+		_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, thread_ts) VALUES (?, ?, ?, ?, ?)`,
+			"C1", fmt.Sprintf("200.%d", i+1), "U2", long, "200.1")
+		require.NoError(t, err)
+	}
+
+	ctx := p.loadContext("C1", "200.10", "200.1")
+	assert.True(t, utf8.ValidString(ctx), "item context must stay valid UTF-8")
+	assert.Equal(t, 2000+len("..."), utf8.RuneCountInString(ctx), "the block is capped at 2000 runes, not bytes")
+}

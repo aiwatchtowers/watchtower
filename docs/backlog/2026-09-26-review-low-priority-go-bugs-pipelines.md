@@ -66,7 +66,7 @@ Resolution: `LinkExisting` computes `forbiddenParentIDs` (internal/targets/linke
 
 `loadContext` cuts each line with `line[:200]` and the whole block with `result[:2000]`. For Cyrillic text this regularly splits a 2-byte rune, and the invalid UTF-8 is written into `inbox_items.context`, which Catch-Up, the briefing and meeting prep all read. The same file already has `truncateRunes` for the snippet. Fix: use it here too.
 
-Resolution: `loadContext` now caps each line and the whole block with `truncateRunes` (200 and 2000 runes) instead of byte slices, so the persisted context is always valid UTF-8. Pinned by `TestLoadContext_TruncatesByRunesNotBytes` (Cyrillic at odd byte offsets) and `TestLoadContext_ShortLinesUntouched` (within-cap text stays verbatim).
+Resolution: `loadContext` now caps each line and the whole block with `truncateRunes` (200 and 2000 runes) instead of byte slices, so the persisted context is always valid UTF-8. Pinned by `TestLoadContext_TruncatesByRunesNotBytes` (Cyrillic at odd byte offsets), `TestLoadContext_BlockCapCountsRunes` (the 2000-rune block cap crossed with multi-byte text) and `TestLoadContext_ShortLinesUntouched` (within-cap text stays verbatim).
 
 ## Episode-count caps silently drop overflow episodes while the batch is marked done
 
