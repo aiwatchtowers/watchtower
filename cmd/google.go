@@ -271,7 +271,8 @@ func runGoogleRemove(cmd *cobra.Command, args []string) error {
 // revoke failure is logged and swallowed, since a stale grant on Google's
 // side never blocks the local removal), purges the Gmail data that has no FK
 // back to the account row, deletes id's google_accounts row (cascading its
-// calendars/events/messages), then deletes its token and
+// calendars/events/messages — an event a recording or recap references is
+// kept, its calendar detached; see db.DeleteGoogleAccount), then deletes its token and
 // credentials files. It also deletes any lingering legacy
 // google_token.json/gmail_token.json (belt-and-braces: after the C1 fix to
 // ensureLegacyGoogleAccount these shouldn't exist once any account is

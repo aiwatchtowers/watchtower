@@ -553,11 +553,18 @@ func TestClearGoogleAccountCalendarData(t *testing.T) {
 		got[c.ID] = c.IsSelected
 	}
 	assert.Equal(t, map[string]bool{
-		"a-recorded":   true, // still holds referenced events
-		"b-primary":    true, // selection of another account is untouched
+		"a-recorded":   false, // kept for its referenced events, detached and unselected
+		"b-primary":    true,  // selection of another account is untouched
 		"caldav:work":  true,
 		"ics:holidays": true,
 	}, got)
+
+	var keptOwner sql.NullInt64
+	require.NoError(t, db.QueryRow(`SELECT account_id FROM calendar_calendars WHERE id = 'a-recorded'`).Scan(&keptOwner))
+	assert.False(t, keptOwner.Valid, "a kept calendar no longer names the logged-out account")
+	selA, err := db.GetSelectedCalendarIDs(acctA)
+	require.NoError(t, err)
+	assert.Empty(t, selA, "nothing is left selected for the logged-out account")
 
 	m, err := db.GetAttendeeMap()
 	require.NoError(t, err)
@@ -567,6 +574,99 @@ func TestClearGoogleAccountCalendarData(t *testing.T) {
 	n, err = db.ClearGoogleAccountCalendarData(acctA)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
+}
+
+// TestUpsertCalendar_ClaimsCalendarKeptByLogout pins the hand-off of a
+// calendar row that `calendar logout` kept only because a recording still
+// references one of its events: the row is detached (account_id NULL), so a
+// second Google account sharing that calendar id claims it on its next sync —
+// owner and selection both, as for a freshly discovered calendar — while a
+// row still owned by a connected account is never stolen, and a CalDAV/ICS
+// upsert (no account) never changes a detached row's selection.
+func TestUpsertCalendar_ClaimsCalendarKeptByLogout(t *testing.T) {
+	db := openTestDB(t)
+
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
+	require.NoError(t, err)
+
+	start := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	end := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	for _, id := range []string{"shared", "a-owned"} {
+		require.NoError(t, db.UpsertCalendar(acctA, CalendarCalendar{ID: id, Name: id, IsSelected: true, SyncedAt: start}))
+	}
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "evt-recorded", CalendarID: "shared", Title: "M", StartTime: start, EndTime: end}))
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-recorded", Valid: true}, Title: "T", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+
+	owner := func(id string) sql.NullInt64 {
+		t.Helper()
+		var v sql.NullInt64
+		require.NoError(t, db.QueryRow(`SELECT account_id FROM calendar_calendars WHERE id = ?`, id).Scan(&v))
+		return v
+	}
+
+	// B syncing a calendar A still owns never takes it over.
+	require.NoError(t, db.UpsertCalendar(acctB, CalendarCalendar{ID: "a-owned", Name: "a-owned", IsSelected: true, SyncedAt: start}))
+	assert.Equal(t, acctA, owner("a-owned").Int64, "a connected account's calendar is never stolen")
+
+	_, err = db.ClearGoogleAccountCalendarData(acctA)
+	require.NoError(t, err)
+	require.False(t, owner("shared").Valid, "logout detaches the kept calendar")
+
+	// A no-account (CalDAV/ICS-shaped) upsert leaves the detached row alone.
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "shared", Name: "shared", IsSelected: true, SyncedAt: start}))
+	assert.False(t, owner("shared").Valid)
+	sel, err := db.GetCalendars()
+	require.NoError(t, err)
+	for _, c := range sel {
+		if c.ID == "shared" {
+			assert.False(t, c.IsSelected, "a no-account upsert does not reselect a detached row")
+		}
+	}
+
+	require.NoError(t, db.UpsertCalendar(acctB, CalendarCalendar{ID: "shared", Name: "shared", IsSelected: true, SyncedAt: start}))
+	assert.Equal(t, acctB, owner("shared").Int64, "B claims the detached calendar")
+	selB, err := db.GetSelectedCalendarIDs(acctB)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"shared"}, selB, "the claimed calendar is selected for B, as a new calendar would be")
+
+	ev, err := db.GetCalendarEventByID("evt-recorded")
+	require.NoError(t, err)
+	require.NotNil(t, ev, "the recorded event survived the whole hand-off")
+}
+
+// TestUpsertCalendar_OwnedRowKeepsItsSelection pins the other half of the
+// claim rule: only a claim of an ownerless row takes the incoming is_selected.
+// A calendar its owner deselected stays deselected however often the owner's
+// or another account's syncer upserts it with IsSelected: true.
+func TestUpsertCalendar_OwnedRowKeepsItsSelection(t *testing.T) {
+	db := openTestDB(t)
+
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	cal := CalendarCalendar{ID: "a-owned", Name: "a-owned", IsSelected: true, SyncedAt: syncedAt}
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.SetCalendarSelected("a-owned", false))
+
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.UpsertCalendar(acctB, cal))
+
+	var owner sql.NullInt64
+	var selected bool
+	require.NoError(t, db.QueryRow(`SELECT account_id, is_selected FROM calendar_calendars WHERE id = 'a-owned'`).Scan(&owner, &selected))
+	assert.Equal(t, sql.NullInt64{Int64: acctA, Valid: true}, owner, "the row stays owned by A")
+	assert.False(t, selected, "a deselected owned calendar is never re-selected by an upsert")
+	selA, err := db.GetSelectedCalendarIDs(acctA)
+	require.NoError(t, err)
+	assert.NotContains(t, selA, "a-owned")
 }
 
 func TestAttendeeMap(t *testing.T) {

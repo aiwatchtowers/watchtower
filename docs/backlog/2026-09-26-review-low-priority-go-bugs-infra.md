@@ -41,6 +41,8 @@ stays readable. Split any item into its own file when it gets picked up.
 
 ## Google calendar events share one global id key across accounts, so shared meetings flip owner and account removal unlinks recordings
 
+(Minimal guard fixed in fix/bl-calendar-account-removal — `DeleteGoogleAccount` now spares referenced events and detaches their calendar; tracked as done in `2026-09-27-google-remove-unlinks-recordings-from-their-calendar-events`. The `(account_id, id)` identity / flip-flop half stays open.)
+
 - type: bug · confidence: med · tags: [calendar, multi-account, schema]
 - where: internal/db/calendar.go:87-112 (ON CONFLICT(id)), internal/db/google_accounts.go:106-123, internal/calendar/sync.go:143-186
 
