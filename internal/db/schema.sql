@@ -808,7 +808,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     raw_json        TEXT NOT NULL DEFAULT '{}',
     ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT ''
+    updated_at      TEXT NOT NULL DEFAULT '',
+    time_changed_at TEXT NOT NULL DEFAULT '',  -- sync pass that last saw start/end move, '' never (see 00079)
+    rsvp_changed    TEXT NOT NULL DEFAULT '{}' -- JSON {lower(email): synced_at of the pass that saw their RSVP change} (see 00079)
 );
 CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -1572,6 +1574,7 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_comments_issue_author ON jira_comments(issue_key, author_account_id);
 CREATE INDEX IF NOT EXISTS idx_jira_comments_synced ON jira_comments(synced_at);
 
 CREATE TABLE IF NOT EXISTS agent_actions (
