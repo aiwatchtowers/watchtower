@@ -16,7 +16,6 @@ import (
 // adds itself.
 func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
 	taskIDs, jiraKeys map[string]bool) (out []db.DayPlanItem, dropped []string, invalid int) {
-
 	order := 0
 	for _, ai := range r.Timeblocks {
 		it, reason, calendarOwned := aiToTimeblock(ai, date, events, taskIDs, jiraKeys)
