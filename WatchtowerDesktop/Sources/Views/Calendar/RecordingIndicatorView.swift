@@ -30,6 +30,13 @@ struct RecordingIndicatorView: View {
     /// Receives the bottom space composers must keep free while pills show
     /// (`RecordingIndicatorInset.reserved`), 0 once the stack is empty.
     var onReservedInsetChange: (CGFloat) -> Void = { _ in }
+    @State private var stackHeight: CGFloat = 0
+    /// Height of the expanded live-transcript panel while shown, 0 otherwise.
+    @State private var expandedPanelHeight: CGFloat = 0
+
+    private var reservedInset: CGFloat {
+        RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelHeight: expandedPanelHeight)
+    }
 
     /// Whether the active capture has a live transcript to offer: the engine
     /// can produce one AND the capture opted in — the Center's start-time
@@ -46,13 +53,12 @@ struct RecordingIndicatorView: View {
     var body: some View {
         let center = appState.meetingRecorderCenter
         let provisioner = appState.transcriptionModelProvisioner
-        VStack(alignment: .trailing, spacing: 10) {
+        VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
             recorderContent(center)
             provisionerContent(provisioner)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-            onReservedInsetChange(RecordingIndicatorInset.reserved(stackHeight: height))
-        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
+        .onChange(of: reservedInset, initial: true) { _, inset in onReservedInsetChange(inset) }
         .padding(RecordingIndicatorInset.outerPadding)
     }
 
@@ -217,6 +223,9 @@ struct RecordingIndicatorView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator))
         .shadow(radius: 8, y: 2)
+        // Excluded from the reserved inset — see `RecordingIndicatorInset.reserved`.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { expandedPanelHeight = $0 }
+        .onDisappear { expandedPanelHeight = 0 }
     }
 
     @ViewBuilder

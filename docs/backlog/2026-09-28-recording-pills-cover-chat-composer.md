@@ -26,14 +26,17 @@ screen with a bottom composer (main chat, Discuss chats), not just the main one.
 
 Resolution: space is reserved rather than the indicator moved, so it stays
 visible from every screen. `RecordingIndicatorView` measures its pill stack
-and reports `RecordingIndicatorInset.reserved(stackHeight:)` (the stack's
-height plus its gap to the window bottom; 0 when nothing shows) to the root
-view, which injects it as the `recordingIndicatorInset` environment value.
-`ChatInput` — the shared input of every bottom composer in the main window
-(main chat, target/idea/meeting Discuss chats, onboarding) — pads its bottom
-by it; the main chat's `ChatComposerView` pads as a whole (model pill
-included) and zeroes the value for its inner input. Pinned by
-`RecordingIndicatorViewTests.testEmptyStackReservesNothing` /
-`testVisibleStackReservesItsHeightPlusOuterPadding`. Not covered: the target
-extraction pill (`ExtractIndicatorView`, same corner, fixed 72 pt offset) —
-separate indicator, not part of this report.
+and reports `RecordingIndicatorInset.reserved(stackHeight:expandedPanelHeight:)`
+to the root view, which injects it as the `recordingIndicatorInset`
+environment value. Only the collapsed pills reserve space; the expanded
+live-transcript panel is a transient overlay the owner opened and may cover
+content. Screens opt in with `.clearsRecordingIndicator()` on their
+bottom-most content: the main chat composer (`ChatComposerView`, model pill
+included), the target chat pane (below its error labels), the meeting chat tab
+(`RecordingChatTab`) and the idea/decision detail panes (below the action bar
+under the Discuss input). The shared `ChatInput` reserves nothing, so sheets,
+onboarding and the setup assistants are unaffected. Pinned by
+`RecordingIndicatorViewTests` (reservation arithmetic incl. the expanded panel,
+and a source scan pinning exactly those five call sites). Not covered: the
+target extraction pill (`ExtractIndicatorView`, same corner, fixed 72 pt
+offset) — separate indicator, not part of this report.

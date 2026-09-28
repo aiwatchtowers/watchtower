@@ -32,7 +32,6 @@ struct ChatInput: View {
     /// sends, Esc stops).
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     @Environment(\.dictationCenter) private var dictationCenter
-    @Environment(\.recordingIndicatorInset) private var recordingIndicatorInset
 
     var body: some View {
         ChatInputContent(
@@ -54,8 +53,6 @@ struct ChatInput: View {
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey
         )
-        // Every bottom composer keeps clear of the recorder pills.
-        .padding(.bottom, recordingIndicatorInset)
     }
 }
 
