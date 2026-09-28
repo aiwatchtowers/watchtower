@@ -155,9 +155,10 @@ private struct Fields {
     func sources() -> [ChatSource] {
         let items = json["sources"] as? [[String: Any]] ?? []
         return items.map { item in
-            let url = item["url"] as? String
-            return ChatSource(kind: item["kind"] as? String ?? "", title: item["title"] as? String ?? "",
-                              url: (url?.isEmpty ?? true) ? nil : url, ref: item["ref"] as? String ?? "")
+            let field = Self(json: item)
+            return ChatSource(kind: field.string("kind"), title: field.string("title"), url: field.optional("url"),
+                              ref: field.string("ref"), group: field.optional("group"),
+                              snippet: field.optional("snippet"), date: field.optional("date"))
         }
     }
 }

@@ -87,6 +87,12 @@ final class ChatViewModel {
     /// forgetting a conversation closes it (CHAT-05 storage has no notion of
     /// "panel for a conversation not on screen").
     private(set) var artifactPanel: ArtifactPanelModel?
+    /// The sources panel (one finished answer's sources); nil = closed. It
+    /// shares the inspector with `artifactPanel` under `ChatInspectorPolicy`
+    /// and closes with it on a conversation switch.
+    private(set) var sourcesPanel: ChatSourcesSelection?
+    /// The inspector tab opened last; see `inspectorMode` for what shows.
+    var preferredInspectorMode: ChatInspectorMode = .artifacts
     /// Non-edited version numbers per message, for the card badges — reloaded
     /// with the thread (`reload()`).
     private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
@@ -163,6 +169,7 @@ final class ChatViewModel {
         guard switching else { return }
         errorMessage = nil
         artifactPanel = nil
+        sourcesPanel = nil
         dismissedArtifactKeys = []
         applyConversationSettings()
         actionFeed.start(conversationID: id)
@@ -192,6 +199,7 @@ final class ChatViewModel {
         editingMessageID = nil
         errorMessage = nil
         artifactPanel = nil
+        sourcesPanel = nil
         dismissedArtifactKeys = []
         actionFeed.stop()
     }
@@ -227,6 +235,7 @@ final class ChatViewModel {
     func openProject(_ id: Int64) {
         openProjectID = id
         artifactPanel = nil
+        sourcesPanel = nil
     }
 
     /// Called by the project page after it deleted its project: its chats
@@ -297,7 +306,9 @@ final class ChatViewModel {
 
     /// Opens (or re-focuses) the panel for `key` in the current conversation.
     func openArtifact(key: String) {
-        guard let conversationID, artifactPanel?.key != key else { return }
+        guard let conversationID else { return }
+        preferredInspectorMode = .artifacts
+        guard artifactPanel?.key != key else { return }
         artifactPanel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
     }
 
@@ -306,6 +317,32 @@ final class ChatViewModel {
     func closeArtifactPanel() {
         if let key = artifactPanel?.key { dismissedArtifactKeys.insert(key) }
         artifactPanel = nil
+    }
+
+    // MARK: - Inspector
+
+    /// The panel the inspector shows, or nil when it is closed.
+    var inspectorMode: ChatInspectorMode? {
+        ChatInspectorPolicy.visibleMode(preferred: preferredInspectorMode, artifactOpen: artifactPanel != nil,
+                                        sourcesOpen: sourcesPanel != nil)
+    }
+
+    /// Shows one finished answer's sources; an open artifact stays open
+    /// behind its tab.
+    func openSources(messageID: Int64, sources: [ChatSource]) {
+        guard !sources.isEmpty else { return }
+        sourcesPanel = ChatSourcesSelection(messageID: messageID, sources: sources)
+        preferredInspectorMode = .sources
+    }
+
+    func closeSourcesPanel() {
+        sourcesPanel = nil
+    }
+
+    /// The whole inspector was dismissed: both panels close.
+    func closeInspector() {
+        closeArtifactPanel()
+        closeSourcesPanel()
     }
 
     /// Fed by the thread view whenever `liveTurn?.text` changes (the view
