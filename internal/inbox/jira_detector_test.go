@@ -362,3 +362,103 @@ func TestIsOwnCommentBump(t *testing.T) {
 		}
 	}
 }
+
+// assignedAfterOwnActivity runs one detection over a jira_assigned issue whose
+// earlier item was resolved, the owner having commented at commentAt (and
+// edited that comment at editedAt when non-zero) and the issue last updated
+// at issueUpdated. Returns the number of jira_assigned items afterwards.
+func assignedAfterOwnActivity(t *testing.T, commentAt, editedAt, issueUpdated time.Time) int {
+	t.Helper()
+	d := testDB(t)
+	owner := db.Owner{JiraAccountID: "acc-alice"}
+	since := time.Now().Add(-4 * time.Hour)
+	seedJiraIssue(t, d, "WT-10", "acc-alice", time.Now().Add(-3*time.Hour))
+	if _, err := DetectJira(context.Background(), d, owner, since); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE inbox_items SET status = 'resolved' WHERE trigger_type = 'jira_assigned'`); err != nil {
+		t.Fatal(err)
+	}
+	seedJiraComment(t, d, "WT-10", "acc-alice", "on it", commentAt)
+	if !editedAt.IsZero() {
+		if _, err := d.Exec(`UPDATE jira_comments SET updated_at = ? WHERE issue_key = 'WT-10'`,
+			db.FormatJiraTime(editedAt.UTC())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec(`UPDATE jira_issues SET updated_at = ? WHERE key = 'WT-10'`,
+		db.FormatJiraTime(issueUpdated.UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DetectJira(context.Background(), d, owner, since); err != nil {
+		t.Fatal(err)
+	}
+	return len(queryInboxByTrigger(t, d, "jira_assigned"))
+}
+
+// Editing an own comment bumps the issue's updated_at as well; the edit is
+// the owner's own activity and must not re-mint a resolved item either.
+func TestJiraDetector_AssignedOwnCommentEditDoesNotReMint(t *testing.T) {
+	commentAt := time.Now().Add(-2 * time.Hour)
+	editedAt := time.Now().Add(-30 * time.Minute)
+	if n := assignedAfterOwnActivity(t, commentAt, editedAt, editedAt.Add(2*time.Second)); n != 1 {
+		t.Fatalf("an edit of the owner's own comment re-minted: want 1 jira_assigned item, got %d", n)
+	}
+}
+
+// The 60-second window is a deliberate trade-off: a colleague's change that
+// lands within ownCommentBumpTolerance of the owner's comment is taken for
+// the comment's own bump and does not surface; one just past it does.
+func TestJiraDetector_AssignedColleagueChangeInsideToleranceSwallowed(t *testing.T) {
+	commentAt := time.Now().Add(-1 * time.Hour)
+	if n := assignedAfterOwnActivity(t, commentAt, time.Time{}, commentAt.Add(ownCommentBumpTolerance*time.Second)); n != 1 {
+		t.Fatalf("a change inside the tolerance: want it swallowed (1 item), got %d", n)
+	}
+	if n := assignedAfterOwnActivity(t, commentAt, time.Time{}, commentAt.Add((ownCommentBumpTolerance+2)*time.Second)); n != 2 {
+		t.Fatalf("a change past the tolerance: want a new item (2), got %d", n)
+	}
+}
+
+// latestFor reads only the keys it is asked about and serves repeat keys
+// from its per-cycle cache, so detection and auto-resolve share one read.
+func TestOwnJiraComments_FiltersByKeyAndCaches(t *testing.T) {
+	d := testDB(t)
+	seedJiraIssue(t, d, "WT-11", "acc-alice", time.Now().Add(-2*time.Hour))
+	at := time.Now().Add(-1 * time.Hour)
+	seedJiraComment(t, d, "WT-11", "acc-alice", "mine", at)
+	seedJiraComment(t, d, "WT-12", "acc-alice", "mine too", at)
+	seedJiraComment(t, d, "WT-11", "acc-bob", "not mine", time.Now())
+
+	own := newOwnJiraComments(d, db.Owner{JiraAccountID: "acc-alice"})
+	got, err := own.latestFor([]string{"WT-11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["WT-11"].created != at.Unix() {
+		t.Fatalf("latestFor(WT-11) = %+v, want only WT-11 at the owner's comment", got)
+	}
+
+	if _, err := d.Exec(`DELETE FROM jira_comments`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = own.latestFor([]string{"WT-11", "WT-12"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["WT-11"].created != at.Unix() {
+		t.Errorf("WT-11 must be served from the cycle cache, got %+v", got["WT-11"])
+	}
+	if _, ok := got["WT-12"]; ok {
+		t.Errorf("WT-12 was first asked for after the delete; want no entry, got %+v", got["WT-12"])
+	}
+}
+
+// Degenerate branch: an owner with no Atlassian id reads nothing.
+func TestOwnJiraComments_NoIdentityReadsNothing(t *testing.T) {
+	d := testDB(t)
+	seedJiraComment(t, d, "WT-13", "acc-alice", "mine", time.Now())
+	got, err := newOwnJiraComments(d, db.Owner{}).latestFor([]string{"WT-13"})
+	if err != nil || got != nil {
+		t.Fatalf("latestFor with no identity = %+v, %v; want nil, nil", got, err)
+	}
+}

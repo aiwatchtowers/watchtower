@@ -284,14 +284,17 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// failure freezes the watermark below so no window is skipped).
 	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, lastTS, sinceTime)
+	// The owner's Jira identity and own comments are read once per cycle and
+	// shared by the Jira detector and Jira auto-resolve.
+	jiraOwn := newOwnJiraComments(p.db, owner)
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, jiraOwn, lastTS, sinceTime)
 	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
 	p.progress(2, totalSteps, "auto-resolving")
 	stepStart = time.Now()
-	resolved := p.autoResolveByRules(ctx, owner)
+	resolved := p.autoResolveByRules(ctx, owner, jiraOwn)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
@@ -328,7 +331,7 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 // detectAll runs the per-source detectors and returns counts.
 // The returned error is non-nil if any detector failed; callers use it to gate
 // the watermark advance so a failed pass does not skip its message window.
-func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
+func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
 	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
 		p.logger.Printf("inbox: slack detect error: %v", e)
@@ -336,7 +339,7 @@ func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, lastTS float64
 	} else {
 		slack = n
 	}
-	if n, e := DetectJira(ctx, p.db, owner, sinceTime); e != nil {
+	if n, e := detectJira(ctx, p.db, owner, jiraOwn, sinceTime); e != nil {
 		p.logger.Printf("inbox: jira detect error: %v", e)
 		errs = append(errs, fmt.Errorf("jira: %w", e))
 	} else {
@@ -609,10 +612,10 @@ func (p *Pipeline) progress(done, total int, status string) {
 
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,
 // Jira, and Calendar sources. Returns the total number of items resolved.
-func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner) int {
+func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments) int {
 	resolved := 0
 	resolved += p.autoResolveSlack(ctx)
-	resolved += p.autoResolveJira(ctx, owner)
+	resolved += p.autoResolveJira(ctx, jiraOwn)
 	resolved += p.autoResolveCalendar(ctx, owner.Email)
 	return resolved
 }
@@ -684,13 +687,11 @@ func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
 // autoResolveJira resolves pending jira_comment_mention and jira_assigned items
 // when the owner has authored a comment on the issue after the item was created.
 // If the jira_comments table does not exist, or the owner has no known
-// Atlassian account id (ownerAtlassianIDs), this method is a no-op.
-func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
-	if !jiraCommentsTableExists(p.db) {
-		return 0
-	}
-	atlassianIDs := ownerAtlassianIDs(p.db, owner)
-	if len(atlassianIDs) == 0 {
+// Atlassian account id (ownerAtlassianIDs), this method is a no-op. Only a
+// comment's creation counts here — an edit of an older comment is not an
+// answer to an item that arrived after it.
+func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) int {
+	if len(jiraOwn.ids) == 0 {
 		return 0
 	}
 
@@ -725,7 +726,14 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 	// have to be a whole second newer to register at all, and one in the same
 	// second never would. Both sides are parsed in Go instead
 	// (db.ParseJiraTime accepts either format).
-	latestByIssue := p.latestOwnJiraCommentPerIssue(atlassianIDs)
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.issueKey
+	}
+	latestByIssue, err := jiraOwn.latestFor(keys)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: %v", err)
+	}
 
 	resolved := 0
 	for _, c := range candidates {
@@ -733,7 +741,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 		if !ok {
 			continue
 		}
-		if commentTS, found := latestByIssue[c.issueKey]; !found || commentTS < itemTS {
+		if own, found := latestByIssue[c.issueKey]; !found || own.created < itemTS {
 			continue
 		}
 		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
@@ -744,54 +752,6 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 		resolved++
 	}
 	return resolved
-}
-
-// latestOwnJiraCommentPerIssue is latestOwnJiraComments with its error
-// logged: auto-resolve is best-effort, so a failed read resolves nothing.
-func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
-	latest, err := latestOwnJiraComments(p.db, atlassianIDs)
-	if err != nil {
-		p.logger.Printf("inbox: autoResolveJira: %v", err)
-	}
-	return latest
-}
-
-// latestOwnJiraComments returns, per issue key, the unix time of the newest
-// comment authored by any of the given Atlassian account ids. One
-// fully-drained query up front, so the caller's loop issues no reads at all
-// (the MaxOpenConns(1) SQLite deadlock rule). An unparseable timestamp is
-// skipped, matching ParseJiraTime's defensive-skip contract. On a scan error
-// the map read so far is returned alongside the error.
-func latestOwnJiraComments(database *db.DB, atlassianIDs []string) (map[string]int64, error) {
-	placeholders := make([]string, len(atlassianIDs))
-	args := make([]any, len(atlassianIDs))
-	for i, id := range atlassianIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	rows, err := database.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
-		WHERE author_account_id IN (%s)`, strings.Join(placeholders, ",")), args...)
-	if err != nil {
-		return nil, fmt.Errorf("comment query: %w", err)
-	}
-	defer rows.Close()
-
-	latest := map[string]int64{}
-	for rows.Next() {
-		var issueKey, createdAt string
-		if err := rows.Scan(&issueKey, &createdAt); err != nil {
-			return latest, fmt.Errorf("comment scan: %w", err)
-		}
-		ts, ok := db.ParseJiraTime(createdAt)
-		if !ok {
-			continue
-		}
-		if cur, seen := latest[issueKey]; !seen || ts > cur {
-			latest[issueKey] = ts
-		}
-	}
-	return latest, rows.Err()
 }
 
 // autoResolveCalendar resolves pending calendar_invite and calendar_time_change

@@ -30,6 +30,12 @@ import (
 // TODO(inbox-pulse v2): add status/priority change detection once jira_issue_history is added.
 // TODO(inbox-pulse v2): add watching detection once jira_watchers is added.
 func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS time.Time) (int, error) {
+	return detectJira(ctx, database, owner, newOwnJiraComments(database, owner), sinceTS)
+}
+
+// detectJira is DetectJira with the cycle's shared view of the owner's own
+// Jira comments (Pipeline.Run builds it once for detection and auto-resolve).
+func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJiraComments, sinceTS time.Time) (int, error) {
 	assigneeID := ownerAssigneeID(owner)
 	if assigneeID == "" {
 		return 0, nil
@@ -73,13 +79,17 @@ func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS ti
 		return created, fmt.Errorf("jira detector: rows error: %w", err)
 	}
 
-	ownComments, err := ownJiraCommentsForAssigned(database, owner, len(assignedCandidates))
+	candidateKeys := make([]string, len(assignedCandidates))
+	for i, c := range assignedCandidates {
+		candidateKeys[i] = c.key
+	}
+	ownComments, err := own.latestFor(candidateKeys)
 	if err != nil {
 		return created, fmt.Errorf("jira detector: %w", err)
 	}
 
 	for _, c := range assignedCandidates {
-		if isOwnCommentBump(c.updatedAt, ownComments[c.key]) {
+		if isOwnCommentBump(c.updatedAt, ownComments[c.key].touched) {
 			continue
 		}
 		// Every edit of an assigned issue — the owner's own included — bumps
@@ -105,33 +115,28 @@ func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS ti
 		}
 	}
 
-	// --- jira_comment_mention: detect when jira_comments table is available ---
-	// jira_comments is part of the core schema since migration 00050; the
-	// existence check is now a defensive no-op that only matters for a
-	// mid-migration or otherwise unusual database state.
-	if jiraCommentsTableExists(database) {
-		// A Jira [~mention] embeds the mentioned user's ATLASSIAN account id,
-		// not their Slack id. Zero known ids means we cannot recognize a
-		// mention at all, so the detector skips comment mentions gracefully.
-		atlassianIDs := ownerAtlassianIDs(database, owner)
-		commentCandidates := collectJiraCommentCandidates(database, atlassianIDs, sinceISO)
-		for _, c := range commentCandidates {
-			if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
-				continue
-			}
-			item := db.InboxItem{
-				ChannelID:    c.issueKey,
-				MessageTS:    c.createdAt,
-				SenderUserID: c.issueKey,
-				TriggerType:  "jira_comment_mention",
-				Snippet:      c.body,
-				ItemClass:    DefaultItemClass("jira_comment_mention"),
-				Status:       "pending",
-				Priority:     "medium",
-			}
-			if _, err := database.CreateInboxItem(item); err == nil {
-				created++
-			}
+	// --- jira_comment_mention ---
+	// A Jira [~mention] embeds the mentioned user's ATLASSIAN account id, not
+	// their Slack id. Zero known ids (or no jira_comments table — own.ids is
+	// then empty) means we cannot recognize a mention at all, so the detector
+	// skips comment mentions gracefully.
+	commentCandidates := collectJiraCommentCandidates(database, own.ids, sinceISO)
+	for _, c := range commentCandidates {
+		if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
+			continue
+		}
+		item := db.InboxItem{
+			ChannelID:    c.issueKey,
+			MessageTS:    c.createdAt,
+			SenderUserID: c.issueKey,
+			TriggerType:  "jira_comment_mention",
+			Snippet:      c.body,
+			ItemClass:    DefaultItemClass("jira_comment_mention"),
+			Status:       "pending",
+			Priority:     "medium",
+		}
+		if _, err := database.CreateInboxItem(item); err == nil {
+			created++
 		}
 	}
 
@@ -154,23 +159,114 @@ func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS ti
 // Jira stamps the issue a moment after the comment it just stored.
 const ownCommentBumpTolerance = 60 // seconds
 
-// ownJiraCommentsForAssigned returns, per issue key, the unix time of the
-// owner's newest comment — nil (no suppression) when there are no candidates,
-// no jira_comments table, or no known Atlassian id for the owner.
-func ownJiraCommentsForAssigned(database *db.DB, owner db.Owner, candidates int) (map[string]int64, error) {
-	if candidates == 0 || !jiraCommentsTableExists(database) {
+// ownJiraComments is one inbox cycle's view of the owner's own Jira
+// comments. The identity lookups (jira_comments present, the owner's
+// Atlassian ids) run once at construction; latestFor reads only the issue
+// keys it is asked about and caches them, so detection and auto-resolve in
+// the same cycle share one set of reads.
+type ownJiraComments struct {
+	database *db.DB
+	// ids is every Atlassian id that is the owner — empty when the owner has
+	// none or jira_comments does not exist (no comment signal at all).
+	ids    []string
+	cached map[string]ownComment
+	loaded map[string]bool
+}
+
+// ownComment is the owner's newest comment activity on one issue, as unix
+// seconds (0 = none): created is the newest comment's creation (what
+// auto-resolve compares against an item), touched additionally counts an
+// edit of any own comment (an edit bumps the issue's updated_at too).
+type ownComment struct {
+	created, touched int64
+}
+
+func newOwnJiraComments(database *db.DB, owner db.Owner) *ownJiraComments {
+	o := &ownJiraComments{database: database, cached: map[string]ownComment{}, loaded: map[string]bool{}}
+	if jiraCommentsTableExists(database) {
+		o.ids = ownerAtlassianIDs(database, owner)
+	}
+	return o
+}
+
+// ownCommentKeyChunk bounds the issue keys bound into one IN (...) list.
+const ownCommentKeyChunk = 500
+
+// latestFor returns the owner's comment activity for each of keys that has
+// any. Keys already read this cycle are served from the cache; the rest are
+// read in one fully-drained query per chunk (the MaxOpenConns(1) SQLite
+// deadlock rule). An unparseable timestamp is skipped, matching
+// ParseJiraTime's defensive-skip contract. On an error the entries read so
+// far are returned alongside it.
+func (o *ownJiraComments) latestFor(keys []string) (map[string]ownComment, error) {
+	if len(o.ids) == 0 || len(keys) == 0 {
 		return nil, nil
 	}
-	ids := ownerAtlassianIDs(database, owner)
-	if len(ids) == 0 {
-		return nil, nil
+	var missing []string
+	for _, k := range keys {
+		if !o.loaded[k] {
+			o.loaded[k] = true
+			missing = append(missing, k)
+		}
 	}
-	return latestOwnJiraComments(database, ids)
+	var err error
+	for start := 0; start < len(missing) && err == nil; start += ownCommentKeyChunk {
+		err = o.load(missing[start:min(start+ownCommentKeyChunk, len(missing))])
+	}
+	out := make(map[string]ownComment, len(keys))
+	for _, k := range keys {
+		if c, ok := o.cached[k]; ok {
+			out[k] = c
+		}
+	}
+	return out, err
+}
+
+func (o *ownJiraComments) load(keys []string) error {
+	args := make([]any, 0, len(o.ids)+len(keys))
+	for _, id := range o.ids {
+		args = append(args, id)
+	}
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	rows, err := o.database.Query(fmt.Sprintf(`SELECT issue_key, created_at, updated_at FROM jira_comments
+		WHERE author_account_id IN (%s) AND issue_key IN (%s)`,
+		placeholders(len(o.ids)), placeholders(len(keys))), args...)
+	if err != nil {
+		return fmt.Errorf("own comment query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var issueKey, createdAt, updatedAt string
+		if err := rows.Scan(&issueKey, &createdAt, &updatedAt); err != nil {
+			return fmt.Errorf("own comment scan: %w", err)
+		}
+		created, ok := db.ParseJiraTime(createdAt)
+		if !ok {
+			continue
+		}
+		touched := created
+		if edited, ok := db.ParseJiraTime(updatedAt); ok && edited > touched {
+			touched = edited
+		}
+		cur := o.cached[issueKey]
+		o.cached[issueKey] = ownComment{created: max(cur.created, created), touched: max(cur.touched, touched)}
+	}
+	return rows.Err()
+}
+
+// placeholders renders n comma-separated SQL bind markers.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 // isOwnCommentBump reports whether an assigned issue's newest change is the
-// owner's own comment (ownCommentTS, 0 when none): its updated_at is not
-// later than that comment plus ownCommentBumpTolerance. Such a change is the
+// owner's own comment activity (ownCommentTS — the newest creation or edit
+// of an own comment, 0 when none): its updated_at is not later than that
+// plus ownCommentBumpTolerance. The trade-off is deliberate: a change by
+// someone else inside that window is taken for the owner's own bump and not
+// surfaced until the issue changes again. Such a change is the
 // owner answering in the source — the thing that resolves a jira_assigned
 // item (INBOX-02) — so it must not mint a fresh one. An unparseable
 // updated_at never suppresses.
