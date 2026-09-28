@@ -40,23 +40,42 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 	if assigneeID == "" {
 		return 0, nil
 	}
-	created := 0
 	// Both comparisons below are plain SQL string compares against columns
 	// holding Jira Cloud's own dotted-millisecond format, so the bound has to
 	// be rendered the same way — an RFC3339 bound sorts above every Jira
 	// timestamp in the same second and hides it (see db.FormatJiraTime).
 	sinceISO := db.FormatJiraTime(sinceTS.UTC())
 
-	// --- jira_assigned: issues assigned to me updated since sinceTS ---
-	// Collect all candidates first; the loop below fully drains rows (Next
-	// returns false), which auto-closes it before the dedup queries below run.
-	// This avoids a deadlock on in-memory SQLite with MaxOpenConns(1). The
-	// deferred Close is just a safety net for the scan/rows-error paths, which
-	// return immediately without issuing further queries.
-	type jiraCandidate struct {
-		key, summary, updatedAt string
+	created, err := detectJiraAssigned(database, assigneeID, own, sinceISO)
+	if err != nil {
+		return created, err
 	}
-	var assignedCandidates []jiraCandidate
+	created += detectJiraCommentMentions(database, own.ids, sinceISO)
+
+	// --- jira_status_change: no-op until jira_issue_history table is added ---
+	// TODO(inbox-pulse v2): detect status changes on issues assigned to the owner
+	// using jira_issue_history once that table is added to the schema.
+
+	// --- jira_priority_change: no-op until jira_issue_history table is added ---
+	// TODO(inbox-pulse v2): detect priority changes analogous to status_change.
+
+	// --- jira_comment_watching: no-op until jira_watchers table is added ---
+	// TODO(inbox-pulse v2): detect new comments on issues where the owner is a watcher
+	// using jira_watchers once that table is added to the schema.
+
+	return created, nil
+}
+
+// jiraAssignedCandidate is one issue assigned to the owner updated in the window.
+type jiraAssignedCandidate struct {
+	key, summary, updatedAt string
+}
+
+// queryJiraAssigned returns the issues assigned to assigneeID updated after
+// sinceISO. The rows are fully drained (auto-closing them) before the caller
+// issues any dedup query — required on the MaxOpenConns(1) SQLite pool; the
+// deferred Close is just a safety net for the scan/rows-error paths.
+func queryJiraAssigned(database *db.DB, assigneeID, sinceISO string) ([]jiraAssignedCandidate, error) {
 	rows, err := database.Query(`
 		SELECT key, summary, updated_at
 		FROM jira_issues
@@ -65,30 +84,41 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 		  AND is_deleted = 0`,
 		assigneeID, sinceISO)
 	if err != nil {
-		return created, fmt.Errorf("jira detector: query jira_issues: %w", err)
+		return nil, fmt.Errorf("jira detector: query jira_issues: %w", err)
 	}
 	defer rows.Close()
+	var out []jiraAssignedCandidate
 	for rows.Next() {
-		var c jiraCandidate
+		var c jiraAssignedCandidate
 		if err := rows.Scan(&c.key, &c.summary, &c.updatedAt); err != nil {
-			return created, fmt.Errorf("jira detector: scan jira_issues: %w", err)
+			return nil, fmt.Errorf("jira detector: scan jira_issues: %w", err)
 		}
-		assignedCandidates = append(assignedCandidates, c)
+		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		return created, fmt.Errorf("jira detector: rows error: %w", err)
+		return nil, fmt.Errorf("jira detector: rows error: %w", err)
 	}
+	return out, nil
+}
 
-	candidateKeys := make([]string, len(assignedCandidates))
-	for i, c := range assignedCandidates {
-		candidateKeys[i] = c.key
-	}
-	ownComments, err := own.latestFor(candidateKeys)
+// detectJiraAssigned mints jira_assigned items: issues assigned to the owner
+// updated since sinceISO, minus the owner's own comment bumps.
+func detectJiraAssigned(database *db.DB, assigneeID string, own *ownJiraComments, sinceISO string) (int, error) {
+	candidates, err := queryJiraAssigned(database, assigneeID, sinceISO)
 	if err != nil {
-		return created, fmt.Errorf("jira detector: %w", err)
+		return 0, err
+	}
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.key
+	}
+	ownComments, err := own.latestFor(keys)
+	if err != nil {
+		return 0, fmt.Errorf("jira detector: %w", err)
 	}
 
-	for _, c := range assignedCandidates {
+	created := 0
+	for _, c := range candidates {
 		if isOwnCommentBump(c.updatedAt, ownComments[c.key].touched) {
 			continue
 		}
@@ -114,14 +144,17 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 			created++
 		}
 	}
+	return created, nil
+}
 
-	// --- jira_comment_mention ---
-	// A Jira [~mention] embeds the mentioned user's ATLASSIAN account id, not
-	// their Slack id. Zero known ids (or no jira_comments table — own.ids is
-	// then empty) means we cannot recognize a mention at all, so the detector
-	// skips comment mentions gracefully.
-	commentCandidates := collectJiraCommentCandidates(database, own.ids, sinceISO)
-	for _, c := range commentCandidates {
+// detectJiraCommentMentions mints jira_comment_mention items. A Jira
+// [~mention] embeds the mentioned user's ATLASSIAN account id, not their
+// Slack id. Zero known ids (or no jira_comments table — the owner's ids are
+// then empty) means we cannot recognize a mention at all, so it is a
+// graceful no-op.
+func detectJiraCommentMentions(database *db.DB, atlassianIDs []string, sinceISO string) int {
+	created := 0
+	for _, c := range collectJiraCommentCandidates(database, atlassianIDs, sinceISO) {
 		if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
 			continue
 		}
@@ -139,19 +172,7 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 			created++
 		}
 	}
-
-	// --- jira_status_change: no-op until jira_issue_history table is added ---
-	// TODO(inbox-pulse v2): detect status changes on issues assigned to the owner
-	// using jira_issue_history once that table is added to the schema.
-
-	// --- jira_priority_change: no-op until jira_issue_history table is added ---
-	// TODO(inbox-pulse v2): detect priority changes analogous to status_change.
-
-	// --- jira_comment_watching: no-op until jira_watchers table is added ---
-	// TODO(inbox-pulse v2): detect new comments on issues where the owner is a watcher
-	// using jira_watchers once that table is added to the schema.
-
-	return created, nil
+	return created
 }
 
 // ownCommentBumpTolerance is how far an issue's updated_at may trail the
