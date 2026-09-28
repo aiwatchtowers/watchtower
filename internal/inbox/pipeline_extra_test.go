@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
@@ -80,4 +81,25 @@ func TestLoadContext_ShortLinesUntouched(t *testing.T) {
 	ctx := p.loadContext("C1", "100.2", "")
 	assert.Contains(t, ctx, "короткое сообщение")
 	assert.NotContains(t, ctx, "...")
+}
+
+// TestAdvanceWatermark_NeverMovesBackwards pins advanceWatermark's clamp: a
+// clock stepping backwards (NTP correction, VM resume) must not rewind
+// inbox_last_processed_ts and re-open an already-processed window.
+func TestAdvanceWatermark_NeverMovesBackwards(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	p := New(d, testConfig(), nil, log.Default())
+	newer := float64(time.Now().Unix())
+	older := newer - 3600
+
+	p.advanceWatermark(older, newer)
+	got, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, newer, got, "an older ts must be clamped to lastTS")
+
+	p.advanceWatermark(newer+60, newer)
+	got, err = d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, newer+60, got, "a newer ts advances the watermark")
 }
