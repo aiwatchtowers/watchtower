@@ -118,42 +118,72 @@ func decodeCleanly(b []byte, enc encoding.Encoding) ([]byte, bool) {
 	return out, true
 }
 
+// cyrillicRatioMin is looksLikeCyrillicPlainText's floor on Cyrillic's share
+// of all letters.
+const cyrillicRatioMin = 0.5
+
+// anomalyShareMax/anomalyCountMin gate looksLikeCyrillicPlainText's two
+// word-level anomaly counts (mixed-script words, mid-word case flips): an
+// anomaly is disqualifying only once it clears BOTH a share of Cyrillic-
+// bearing words (not a single stray typo, e.g. a keyboard-layout homoglyph,
+// or a one-off brand-style camelCase name like "ПриватБанк"/"МегаФон") and
+// an absolute floor (a short document has too few words for a percentage
+// alone to mean anything). Real mojibake reliably produces MANY such words
+// across a document of any realistic length, not one or two.
+const (
+	anomalyShareMax = 0.10
+	anomalyCountMin = 2
+)
+
 // looksLikeCyrillicPlainText reports whether text plausibly is Russian or
 // Ukrainian read through a correct windows-1251 decode, as opposed to
 // mojibake produced by decoding some OTHER single-byte (or byte-at-a-time
-// double-byte) encoding — cp1252, ISO-8859-2, KOI8-R, GBK, ... — as if it
-// were windows-1251. All four checks below must hold (spot-checked against
-// cp1252/ISO-8859-2/KOI8-R/GBK mojibake samples, each of which reliably
-// breaks at least one):
+// double-byte) encoding — cp1252, ISO-8859-1/-2, KOI8-R/-U, GBK, Shift-JIS,
+// ... — as if it were windows-1251. Both checks below must hold
+// (spot-checked against realistic, properly-capitalized samples of each,
+// each of which reliably breaks at least one — see encoding_test.go):
 //
 //   - Cyrillic letters are at least half of all letters (Latin ASCII
 //     included in the denominator, so English column headers alongside
 //     Russian data rows — a common CSV shape — don't by themselves fail
 //     this: the check is a ratio over all letters, not a ban on Latin).
-//   - no single word mixes a Latin and a Cyrillic letter (ordinary Russian/
-//     Ukrainian text essentially never does; a wrong-encoding guess
-//     routinely produces such words from what were multi-byte sequences or
-//     adjacent unrelated glyphs in the true encoding).
-//   - no lowercase-to-uppercase flip between two consecutive Cyrillic
-//     letters (ordinary prose capitalizes at most a word's first letter; a
-//     flip mid-run is a mojibake tell). This check only ever looks at
-//     Cyrillic-to-Cyrillic transitions — an all-Latin word (an English
-//     "CustomerID" header, say) is exempt, since its casing says nothing
-//     about whether the CYRILLIC portion of the text is real.
-//   - uppercase Cyrillic letters do not outnumber lowercase ones (ordinary
-//     prose is mostly lowercase; several mojibake samples decode as
-//     overwhelmingly uppercase Cyrillic).
+//   - word-level anomalies — a word mixing a Latin and a Cyrillic letter, or
+//     a lowercase-to-uppercase flip between two consecutive Cyrillic letters
+//     within one word — stay under anomalyShareMax/anomalyCountMin (see
+//     above). A flip only ever looks at Cyrillic-to-Cyrillic transitions —
+//     an all-Latin word (an English "CustomerID" header, say) is exempt,
+//     since its casing says nothing about whether the CYRILLIC portion of
+//     the text is real.
+//
+// Deliberately NOT checked: whether uppercase Cyrillic outnumbers lowercase.
+// A real all-caps document (a legacy 1C/accounting cp1251 export — "ФИО",
+// "ИТОГО", full rows of capitalized names — is a common real source of
+// cp1251 CSVs) is structurally IDENTICAL, letter-case-wise, to an all-caps
+// mojibake decode: nothing in the case pattern alone can tell them apart, so
+// a case-only signal here would either reject real all-caps exports or miss
+// all-caps mojibake — never both correctly. Accepted, disclosed limitation:
+// an all-caps-only decode (of any origin) always passes this function; the
+// ratio and word-anomaly checks still catch the vast majority of realistic
+// mojibake, since genuine prose in any of the rejected encodings almost
+// always has at least ordinary sentence capitalization somewhere, which
+// reliably trips the case-flip check when misdecoded as windows-1251.
 func looksLikeCyrillicPlainText(text string) bool {
-	var cyrillic, latinLetters, upperCyrillic, lowerCyrillic int
-	var mixedWords, caseFlips int
-	wordHasCyrillic, wordHasLatin := false, false
+	var cyrillic, latinLetters int
+	var cyrillicWords, mixedWords, flippedWords int
+	wordHasCyrillic, wordHasLatin, wordHasFlip := false, false, false
 	hadPrevCyr, prevCyrLower := false, false
 
 	endWord := func() {
-		if wordHasCyrillic && wordHasLatin {
-			mixedWords++
+		if wordHasCyrillic {
+			cyrillicWords++
+			if wordHasLatin {
+				mixedWords++
+			}
+			if wordHasFlip {
+				flippedWords++
+			}
 		}
-		wordHasCyrillic, wordHasLatin = false, false
+		wordHasCyrillic, wordHasLatin, wordHasFlip = false, false, false
 	}
 
 	for _, r := range text {
@@ -161,13 +191,8 @@ func looksLikeCyrillicPlainText(text string) bool {
 		case unicode.Is(unicode.Cyrillic, r):
 			cyrillic++
 			wordHasCyrillic = true
-			if unicode.IsUpper(r) {
-				upperCyrillic++
-			} else {
-				lowerCyrillic++
-			}
 			if hadPrevCyr && prevCyrLower && unicode.IsUpper(r) {
-				caseFlips++
+				wordHasFlip = true
 			}
 			hadPrevCyr, prevCyrLower = true, unicode.IsLower(r)
 		case unicode.Is(unicode.Latin, r):
@@ -185,10 +210,17 @@ func looksLikeCyrillicPlainText(text string) bool {
 	if total == 0 || cyrillic == 0 {
 		return false
 	}
-	if float64(cyrillic)/float64(total) < 0.5 {
+	if float64(cyrillic)/float64(total) < cyrillicRatioMin {
 		return false
 	}
-	return mixedWords == 0 && caseFlips == 0 && upperCyrillic <= lowerCyrillic
+	return !isWordAnomalyMeaningful(mixedWords, cyrillicWords) && !isWordAnomalyMeaningful(flippedWords, cyrillicWords)
+}
+
+// isWordAnomalyMeaningful reports whether count anomalous words out of
+// cyrillicWords Cyrillic-bearing words is enough to call the whole decode
+// implausible — see anomalyShareMax/anomalyCountMin.
+func isWordAnomalyMeaningful(count, cyrillicWords int) bool {
+	return count >= anomalyCountMin && float64(count) > anomalyShareMax*float64(cyrillicWords)
 }
 
 // plainText is one section holding the whole text (text, markdown, csv,
@@ -215,9 +247,13 @@ func oneSection(text string) []extsync.Section {
 // Content-Type tag — is honored unconditionally, before any guess (HTML5's
 // own "determining the character encoding" algorithm, minus its final
 // windows-1252-by-default step: an UNDECLARED document falls through to
-// decodeUndeclared's own UTF-8/windows-1251-plausibility path instead of
-// that default, since silently guessing windows-1252 is exactly the
-// mojibake risk this package otherwise guards against for plain text).
+// decodeGuessed's own UTF-8/windows-1251-plausibility path instead of that
+// default, since silently guessing windows-1252 is exactly the mojibake risk
+// this package otherwise guards against for plain text). A declared charset
+// whose decode is mostly (or, for a declared utf-8, at all) U+FFFD
+// replacement characters is treated as a wrong declaration and also falls
+// through to the same undeclared path, rather than being indexed as ok
+// garbage — see tooManyReplacementRunes.
 func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) {
 	b, err := readCapped(r)
 	if errors.Is(err, errTooLarge) {
@@ -226,13 +262,20 @@ func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) 
 	if err != nil {
 		return nil, "", err
 	}
-	if enc, ok := declaredHTMLEncoding(mediaType, b); ok {
+	if enc, name, ok := declaredHTMLEncoding(mediaType, b); ok {
 		out, derr := enc.NewDecoder().Bytes(b)
 		if derr != nil {
 			return nil, StatusFailed, nil //nolint:nilerr // a declared-but-broken decode is a content status, not a Go error
 		}
 		text := normalizeNewlines(string(bytes.TrimPrefix(out, utf8BOM)))
-		return oneSection(stripHTML(text)), StatusOK, nil
+		if !tooManyReplacementRunes(text, name == "utf-8") {
+			return oneSection(stripHTML(text)), StatusOK, nil
+		}
+		// The declared charset decoded without a Go error but is (mostly, or
+		// for a declared utf-8 at all) U+FFFD replacement characters — the
+		// declaration was wrong, not the content. Fall through to the same
+		// undeclared path used when nothing was declared at all, instead of
+		// indexing "�" as ok.
 	}
 	text, guessed, ok := decodeGuessed(b)
 	if !ok {
@@ -249,24 +292,80 @@ func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) 
 	return oneSection(stripped), StatusOK, nil
 }
 
-// declaredHTMLEncoding reports a charset HTML itself declares: a byte-order
-// mark or the MIME Content-Type's charset param (both "certain" per
-// charset.DetermineEncoding), or an HTML <meta charset>/http-equiv
-// Content-Type tag (scanMetaCharset) — charset.DetermineEncoding's own meta
-// detection is, through its public API, indistinguishable from its final
-// windows-1252-by-default guess (both return certain=false with no way to
-// tell them apart), so this package runs its own narrow meta scan instead of
-// trusting an uncertain result from the library.
-func declaredHTMLEncoding(mediaType string, b []byte) (encoding.Encoding, bool) {
-	if enc, _, certain := charset.DetermineEncoding(b, mediaType); certain {
-		return enc, true
+// declaredHTMLEncoding reports a charset HTML itself declares — the encoding
+// to decode with, and its canonical name (used by the caller's replacement-
+// character check: a declared "utf-8" gets zero tolerance, see
+// tooManyReplacementRunes) — from a byte-order mark or the MIME
+// Content-Type's charset param (both "certain" per charset.DetermineEncoding),
+// or an HTML <meta charset>/http-equiv Content-Type tag (scanMetaCharset) —
+// charset.DetermineEncoding's own meta detection is, through its public API,
+// indistinguishable from its final windows-1252-by-default guess (both
+// return certain=false with no way to tell them apart), so this package runs
+// its own narrow meta scan instead of trusting an uncertain result from the
+// library.
+func declaredHTMLEncoding(mediaType string, b []byte) (enc encoding.Encoding, name string, ok bool) {
+	if enc, name, certain := charset.DetermineEncoding(b, mediaType); certain {
+		return enc, name, true
 	}
-	if label, ok := scanMetaCharset(b); ok {
-		if enc, name := charset.Lookup(label); enc != nil && name != "" {
-			return enc, true
+	label, found := scanMetaCharset(b)
+	if !found {
+		return nil, "", false
+	}
+	if html5MetaUTF16Labels[strings.ToLower(strings.TrimSpace(label))] {
+		// HTML5's encoding-sniffing algorithm remaps a META-DECLARED (never
+		// a real byte-order-mark-backed) UTF-16/"unicode" label to UTF-8: a
+		// document actually encoded in UTF-16 could never spell out an
+		// ASCII <meta charset="utf-16"> tag in the first place without a
+		// BOM, so the label only ever survives from an old tool (e.g. Word's
+		// "Web Page" export) that re-saved as UTF-8 but left the legacy tag
+		// behind. A real UTF-16 document is instead caught by its BOM, above
+		// — an unambiguous, reliable signal this carve-out does not touch.
+		return xunicode.UTF8, "utf-8", true
+	}
+	if enc, name := charset.Lookup(label); enc != nil && name != "" {
+		return enc, name, true
+	}
+	return nil, "", false
+}
+
+// html5MetaUTF16Labels are the charset labels HTML5 remaps to UTF-8 when
+// found via a <meta> tag (see declaredHTMLEncoding).
+var html5MetaUTF16Labels = map[string]bool{
+	"utf-16": true, "utf-16le": true, "utf-16be": true, "unicode": true,
+}
+
+// replacementShareMax bounds how much of a declared-charset decode may be
+// U+FFFD before it counts as a wrong declaration rather than real content: a
+// document can legitimately contain an occasional stray replacement
+// character (one corrupted byte in an otherwise-fine file), but one that's
+// mostly replacement characters was decoded under the wrong charset.
+const replacementShareMax = 0.10
+
+// tooManyReplacementRunes reports whether text carries enough U+FFFD runes
+// to call its declared-charset decode a wrong declaration. zeroTolerance
+// requests zero tolerance: UTF-8 validity is unambiguous, so a declared
+// "utf-8" that produces even one replacement character proves the bytes are
+// not what was declared (golang.org/x/text's UTF-8 decoder otherwise
+// silently substitutes U+FFFD for invalid bytes with no Go error at all —
+// the StatusOK-with-garbage class this whole feature exists to catch).
+// Every other declared encoding gets replacementShareMax instead, since a
+// multi-byte or stateful charmap can have legitimate edge bytes a strict
+// zero-tolerance rule would misfire on.
+func tooManyReplacementRunes(text string, zeroTolerance bool) bool {
+	total, replacement := 0, 0
+	for _, r := range text {
+		total++
+		if r == utf8.RuneError {
+			replacement++
 		}
 	}
-	return nil, false
+	if total == 0 {
+		return false
+	}
+	if zeroTolerance {
+		return replacement > 0
+	}
+	return float64(replacement) > replacementShareMax*float64(total)
 }
 
 // scanMetaCharset finds an HTML <meta charset="..."> or <meta
@@ -331,8 +430,19 @@ func stripHTML(doc string) string {
 			st.flush()
 			return strings.Join(st.lines, "\n")
 		case html.TextToken:
+			text := z.Text()
+			if st.inHead && st.headChildDepth == 0 && len(bytes.TrimSpace(text)) > 0 {
+				// HTML5 §13.2.6.4.6: non-whitespace character data sitting
+				// DIRECTLY in <head> (not inside an allowed child like
+				// <title>, guarded by headChildDepth) is ALSO the "in head"
+				// insertion mode's "anything else" case — the same implicit
+				// close a stray tag triggers (see htmlStripper.tag) — so
+				// text with no closing tag at all (<html><head>Hello<p>x)
+				// isn't dropped as head content.
+				st.inHead = false
+			}
 			if st.skip == 0 && !st.inHead {
-				st.cur.Write(z.Text())
+				st.cur.Write(text)
 			}
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 			st.tag(z.Token())
@@ -347,7 +457,12 @@ type htmlStripper struct {
 	cur    strings.Builder
 	skip   int  // depth inside skippedElements
 	inHead bool // inside <head>, explicitly or implicitly (see tag)
-	cells  int  // cells opened in the current table row
+	// headChildDepth is the nesting depth inside a headAllowedTags element
+	// (title, style, ...) while inHead: head's OWN text (character data with
+	// no wrapping element at all) closes it, per HTML5 — a nested allowed
+	// child's text, like <title>'s, does not.
+	headChildDepth int
+	cells          int // cells opened in the current table row
 }
 
 func (st *htmlStripper) flush() {
@@ -374,11 +489,21 @@ func (st *htmlStripper) tag(tt html.Token) {
 	name := tt.Data
 	if name == "head" {
 		st.inHead = tt.Type == html.StartTagToken
+		st.headChildDepth = 0
 		return
 	}
 	opening := tt.Type == html.StartTagToken || tt.Type == html.SelfClosingTagToken
-	if st.inHead && opening && !headAllowedTags[name] {
-		st.inHead = false
+	if st.inHead {
+		switch {
+		case headAllowedTags[name]:
+			if tt.Type == html.StartTagToken {
+				st.headChildDepth++
+			} else if tt.Type == html.EndTagToken {
+				st.headChildDepth = max(st.headChildDepth-1, 0)
+			}
+		case opening:
+			st.inHead = false
+		}
 	}
 	if skippedElements[name] {
 		if tt.Type == html.StartTagToken {
