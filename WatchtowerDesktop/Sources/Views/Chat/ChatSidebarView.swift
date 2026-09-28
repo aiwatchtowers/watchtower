@@ -37,7 +37,17 @@ struct ChatSidebarView: View {
                     }
                 }
             }
-            .listStyle(.sidebar)
+            // `.sidebar` requests the system source-list vibrancy material —
+            // correct only as the leading column of a real NavigationSplitView.
+            // This List sits in a plain HStack (ChatView's ChatSplitView), so
+            // the material renders without its split-view backing and samples
+            // the desktop wallpaper instead, tinting both the row background
+            // and the selection highlight (owner report: solid brown panel).
+            // `.plain` + an explicit background matches the app's own
+            // hand-rolled SidebarView, which never requests that material.
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .windowBackgroundColor))
             if let error = historyVM.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
