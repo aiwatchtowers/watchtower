@@ -108,9 +108,13 @@ struct SidebarView: View {
                         Text(nextEvt.title)
                             .font(.caption)
                             .lineLimit(1)
-                        Text(nextEvt.startDate, style: .relative)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .truncationMode(.tail)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(Self.nextEventCountdownText(start: nextEvt.startDate, now: context.date))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                     if nextEvt.conferenceLink != nil {
                         Spacer(minLength: 4)
@@ -159,8 +163,25 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { googleAuth.checkStatus() }
-        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
+        .onAppear {
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+        }
+        .onChange(of: selection) { _, _ in
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+        }
+    }
+
+    /// Expands `selection`'s section if it's currently collapsed. Called both
+    /// on first appearance — the initial `selection` can already sit inside a
+    /// collapsed section (the window reopened from the tray via a
+    /// notification route, or the sidebar toggled off and back on with a
+    /// stale selection) — and on every later change.
+    private func expandSectionContainingSelection() {
+        if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
+            collapsedSections = expanded
+        }
     }
 
     // MARK: - Main Sidebar Button
@@ -249,6 +270,21 @@ struct SidebarView: View {
         }
     }
 
+    /// A single-line countdown to `start`: whole minutes until the final
+    /// minute, whole seconds only inside it. Replaces `Text(_, style: .relative)`,
+    /// whose built-in "34 min, 7 sec" phrasing has no line limit and wraps
+    /// across 2-3 lines in the sidebar's narrow footer, and whose per-second
+    /// seconds count is unnecessary noise until the meeting is about to start.
+    static func nextEventCountdownText(start: Date, now: Date) -> String {
+        let remaining = Int(start.timeIntervalSince(now).rounded())
+        guard remaining > 0 else { return "starting now" }
+        if remaining < 60 {
+            return remaining == 1 ? "in 1 sec" : "in \(remaining) sec"
+        }
+        let minutes = remaining / 60
+        return minutes == 1 ? "in 1 min" : "in \(minutes) min"
+    }
+
     /// A section's items after BOTH filters: the user's own hide choices and
     /// feature-gated visibility. Static and pure — the badge math below is
     /// otherwise only reachable through an `@Environment`-backed view
@@ -296,6 +332,24 @@ struct SidebarView: View {
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
         if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
         return .blue
+    }
+
+    /// A collapsed-sections map with `destination`'s section expanded, or nil
+    /// when there's nothing to do (the destination has no section, or its
+    /// section is already expanded) — so navigating to a tab tucked inside a
+    /// collapsed section always shows the selection instead of hiding it
+    /// behind a closed header. Pure, for the same testability reason as
+    /// `sectionBadgeCount` above.
+    static func expandingSection(
+        for destination: SidebarDestination,
+        in collapsed: [String: Bool]
+    ) -> [String: Bool]? {
+        guard let section = SidebarSection.containing(destination), collapsed[section.id] == true else {
+            return nil
+        }
+        var updated = collapsed
+        updated[section.id] = false
+        return updated
     }
 
     private func isCollapsed(_ section: SidebarSection) -> Bool {
