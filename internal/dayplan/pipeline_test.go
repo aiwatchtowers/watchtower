@@ -336,7 +336,7 @@ func TestRun_AllItemsDroppedOnMeetingDayKeepsCalendarPlan(t *testing.T) {
 	}))
 	response := `{"timeblocks":[{"source_type":"calendar","source_id":"evt-all-day-meetings","title":"Offsite","description":"x","rationale":"y","start_time_local":"09:00","end_time_local":"17:00","priority":"high"},` +
 		`{"source_type":"focus","source_id":null,"title":"Squeezed focus","description":"x","rationale":"y","start_time_local":"10:00","end_time_local":"11:00","priority":"high"}],` +
-		`"backlog":[],"summary":"meetings"}`
+		`"backlog":[{"source_type":"calendar","source_id":"evt-all-day-meetings","title":"Offsite","description":"x","rationale":"y","priority":"medium"}],"summary":"meetings"}`
 	p := newTestPipeline(d, &mockGenerator{response: response})
 
 	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})

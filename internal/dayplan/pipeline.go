@@ -151,6 +151,9 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	// syncCalendarItems to add, no manual item). A meeting-heavy day whose
 	// proposals only restated or collided with the calendar is a valid
 	// calendar-only plan, and a model that proposed nothing is an honest one.
+	// A real validation failure overrides both exemptions: a model that keeps
+	// inventing a key on a meeting day ends the day with no plan once the
+	// daemon's 3 attempts are spent (an existing plan is never touched here).
 	if len(newItems) == 0 && len(dropped) > 0 && (invalid > 0 || (len(manual) == 0 && !hasTimedEvent(events))) {
 		return nil, fmt.Errorf("day plan for %s: all %d generated items failed validation", opts.Date, len(dropped))
 	}
