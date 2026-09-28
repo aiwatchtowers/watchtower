@@ -347,3 +347,36 @@ func TestRun_AllItemsDroppedOnMeetingDayKeepsCalendarPlan(t *testing.T) {
 	require.Len(t, items, 1)
 	require.Equal(t, db.DayPlanItemSourceCalendar, items[0].SourceType)
 }
+
+// The calendar-only exemption keys on WHY items were dropped: a real
+// validation failure (unknown source, bad times) is a failed attempt even on
+// a meeting day, alone or mixed with calendar collisions.
+func TestRun_AllItemsInvalidOnMeetingDayIsAFailedAttempt(t *testing.T) {
+	cases := map[string]string{
+		"unknown-task-only": `{"timeblocks":[],"backlog":[{"source_type":"task","source_id":"999999","title":"Ghost","description":"x","rationale":"y","priority":"medium"}],"summary":"s"}`,
+		"bad-times":         `{"timeblocks":[{"source_type":"focus","source_id":null,"title":"Late","description":"x","rationale":"y","start_time_local":"18:00","end_time_local":"17:00","priority":"low"}],"backlog":[],"summary":"s"}`,
+		"mixed-with-collision": `{"timeblocks":[{"source_type":"focus","source_id":null,"title":"Squeezed","description":"x","rationale":"y","start_time_local":"10:00","end_time_local":"11:00","priority":"high"}],` +
+			`"backlog":[{"source_type":"jira","source_id":"NOPE-1","title":"Ghost","description":"x","rationale":"y","priority":"medium"}],"summary":"s"}`,
+	}
+	for name, response := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := gatherTestDB(t)
+			now := time.Now()
+			today := now.Format("2006-01-02")
+			evStart := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+			require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal-001", Name: "Primary", IsPrimary: true}))
+			require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+				ID: "evt-meetings", CalendarID: "cal-001", Title: "Meetings",
+				StartTime: evStart.UTC().Format(time.RFC3339), EndTime: evStart.Add(8 * time.Hour).UTC().Format(time.RFC3339),
+				Attendees: "[]",
+			}))
+			p := newTestPipeline(d, &mockGenerator{response: response})
+
+			_, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+			require.Error(t, err)
+			plan, err := d.GetDayPlan("U1", today)
+			require.NoError(t, err)
+			require.Nil(t, plan)
+		})
+	}
+}

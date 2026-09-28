@@ -138,19 +138,20 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		return nil, err
 	}
 
-	newItems, dropped := buildItems(parsed, opts.Date, events, targetsIDSet(targets), jiraKeySet(jiraIssues))
+	newItems, dropped, invalid := buildItems(parsed, opts.Date, events, targetsIDSet(targets), jiraKeySet(jiraIssues))
 	if p.logger != nil {
 		for _, d := range dropped {
 			p.logger.Printf("dayplan: dropped item: %s", d)
 		}
 	}
-	// The model proposed items, validation dropped every one, and the day has
-	// nothing else to show (no timed meeting for syncCalendarItems to add, no
-	// manual item): a failed attempt, charged to the daemon's budget and
-	// retried, not an empty plan that would stick for the day. A meeting-heavy
-	// day whose proposals all collided with the calendar is a valid
+	// The model proposed items and every one was dropped. That is a failed
+	// attempt (charged to the daemon's budget and retried), not an empty plan
+	// that would stick for the day, when any drop was a real validation
+	// failure, or when the day has nothing else to show (no timed meeting for
+	// syncCalendarItems to add, no manual item). A meeting-heavy day whose
+	// proposals only restated or collided with the calendar is a valid
 	// calendar-only plan, and a model that proposed nothing is an honest one.
-	if len(newItems) == 0 && len(dropped) > 0 && len(manual) == 0 && !hasTimedEvent(events) {
+	if len(newItems) == 0 && len(dropped) > 0 && (invalid > 0 || (len(manual) == 0 && !hasTimedEvent(events))) {
 		return nil, fmt.Errorf("day plan for %s: all %d generated items failed validation", opts.Date, len(dropped))
 	}
 
