@@ -284,11 +284,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				continue
 			}
 
-			// Index batch results by user_id for lookup.
-			resultMap := make(map[string]*BatchCardResult, len(results))
-			for i := range results {
-				resultMap[results[i].UserID] = &results[i]
-			}
+			lookup := newBatchResultLookup(batch, results)
 
 			// Distribute tokens evenly across batch users for progress reporting.
 			inTokPer, outTokPer, costPer := 0, 0, 0.0
@@ -298,7 +294,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			}
 
 			for _, entry := range batch {
-				result, ok := resultMap[entry.stats.UserID]
+				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to insufficient_data.
 					aiFailures++
@@ -370,10 +366,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				continue
 			}
 
-			resultMap := make(map[string]*BatchCardResult, len(results))
-			for i := range results {
-				resultMap[results[i].UserID] = &results[i]
-			}
+			lookup := newBatchResultLookup(batch, results)
 
 			inTokPer, outTokPer, costPer := 0, 0, 0.0
 			if usage != nil && len(batch) > 0 {
@@ -382,7 +375,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			}
 
 			for _, entry := range batch {
-				result, ok := resultMap[entry.stats.UserID]
+				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to individual.
 					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
@@ -702,6 +695,36 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 		return nil, usage, pv, fmt.Errorf("parsing batch result: %w", err)
 	}
 	return results, usage, pv, nil
+}
+
+// newBatchResultLookup returns a lookup from a batch user's stored
+// (namespaced) id to the AI result for that user. The prompt shows
+// namespaced ids but the prompt's JSON example a bare one, so the model may
+// echo either: an exact match wins, then a result carrying the user's raw
+// id — unless two users in the batch share that raw id (two accounts), where
+// the raw form is ambiguous and never guessed at (the digest pipeline's
+// batchEntryLookup rule). A user with no match falls back like before.
+func newBatchResultLookup(batch []batchUserEntry, results []BatchCardResult) func(string) (*BatchCardResult, bool) {
+	exact := make(map[string]*BatchCardResult, len(results))
+	for i := range results {
+		exact[results[i].UserID] = &results[i]
+	}
+	rawOwners := make(map[string]int, len(batch))
+	for _, entry := range batch {
+		_, rawID, _ := watchtowerslack.SplitAccountID(entry.stats.UserID)
+		rawOwners[rawID]++
+	}
+	return func(userID string) (*BatchCardResult, bool) {
+		if r, ok := exact[userID]; ok {
+			return r, true
+		}
+		_, rawID, _ := watchtowerslack.SplitAccountID(userID)
+		if rawID == userID || rawOwners[rawID] != 1 {
+			return nil, false
+		}
+		r, ok := exact[rawID]
+		return r, ok
+	}
 }
 
 // groupUsersIntoBatches splits users into batches of at most maxUsers each.
