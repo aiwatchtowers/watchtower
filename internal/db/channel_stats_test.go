@@ -287,6 +287,20 @@ func TestComputeRecommendations_LeaveSkippedForDM(t *testing.T) {
 	}
 }
 
+// A channel already muted for the LLM gets no leave recommendation: the
+// Desktop applies "leave" as a mute, and the old rule let it fire exactly when
+// the mute rule stepped aside because the channel was already muted.
+func TestComputeRecommendations_LeaveSkippedIfAlreadyMuted(t *testing.T) {
+	stats := []ChannelStatRow{
+		{ChannelID: "C1", ChannelName: "muted", ChannelType: "public", IsMember: true,
+			TotalMsgs: 10, UserMsgs: 0, IsMuted: true},
+	}
+	recs := ComputeRecommendations(stats, "U1", nil)
+	for _, r := range recs {
+		assert.NotEqual(t, "leave", r.Action)
+	}
+}
+
 func TestComputeRecommendations_LeaveSkippedIfWatched(t *testing.T) {
 	stats := []ChannelStatRow{
 		{ChannelID: "C1", ChannelName: "watched", ChannelType: "public", IsMember: true,

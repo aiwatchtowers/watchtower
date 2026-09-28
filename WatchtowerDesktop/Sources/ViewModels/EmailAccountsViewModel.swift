@@ -218,8 +218,8 @@ final class EmailAccountsViewModel {
         return await runProcess(process, stdin: stdin)
     }
 
-    /// Runs a pre-configured Process, reading pipe data before waitUntilExit to
-    /// avoid deadlock. If `stdin` is provided, `process.standardInput` must
+    /// Runs a pre-configured Process, draining stdout and stderr concurrently
+    /// (`ProcessPipes`, SB3). If `stdin` is provided, `process.standardInput` must
     /// already be a `Pipe` (see `runCLI` above) — the string is written to its
     /// `fileHandleForWriting` and the pipe is closed before draining output,
     /// which is how the IMAP password reaches the subprocess without ever
@@ -228,34 +228,6 @@ final class EmailAccountsViewModel {
         _ process: Process,
         stdin: String? = nil
     ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-
-        if let stdin, let inputPipe = process.standardInput as? Pipe {
-            if let data = stdin.data(using: .utf8) {
-                inputPipe.fileHandleForWriting.write(data)
-            }
-            inputPipe.fileHandleForWriting.closeFile()
-        }
-
-        // Read pipe data BEFORE waitUntilExit to prevent deadlock when output exceeds 64KB
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        let stdout = String(data: stdoutData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        return (process.terminationStatus, stdout, stderr)
+        await ProcessPipes.run(process, stdin: stdin).trimmed
     }
 }

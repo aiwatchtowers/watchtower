@@ -79,6 +79,9 @@ package final class JiraBoardSyncManager {
             return "Failed to launch sync"
         }
 
+        // SB3: drain stderr from launch, concurrently with the stdout stream,
+        // so a verbose sync cannot block on a full stderr pipe.
+        let stderrRead = ProcessPipes.drain(stderrPipe)
         let decoder = JSONDecoder()
         do {
             for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
@@ -91,10 +94,10 @@ package final class JiraBoardSyncManager {
             // EOF or pipe closed.
         }
 
+        let stderrData = await stderrRead.value
         proc.waitUntilExit()
 
         if proc.terminationStatus != 0 {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             let stderr = String(data: stderrData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return stderr.isEmpty ? "Sync failed" : String(stderr.prefix(200))

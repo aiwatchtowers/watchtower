@@ -129,9 +129,9 @@ enum ChannelStatsQueries {
             }
 
             // Leave: userMsgs==0 OR lastUserActivity 30+ days ago
-            // AND not favorite, not watched, not DM, is member
+            // AND not favorite, not watched, not already muted, not DM, is member
             // Blocked by pending inbox, active tasks, active tracks, or >=3 decisions
-            if !s.isFavorite && !s.isWatched
+            if !s.isFavorite && !s.isWatched && !s.isMutedForLLM
                 && s.type != "dm" && s.type != "group_dm" && s.isMember {
                 if s.userMessages == 0
                     || (s.lastUserActivity > 0 && s.lastUserActivity < thirtyDaysAgo) {

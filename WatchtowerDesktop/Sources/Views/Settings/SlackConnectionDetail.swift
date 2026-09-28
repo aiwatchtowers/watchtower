@@ -44,8 +44,23 @@ struct SlackConnectionDetail: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
-        .onAppear {
-            slackAuth.checkStatus()
+        // Keyed on the pool, so a pane opened before the database exists
+        // re-configures once it does instead of keeping a nil pool.
+        .task(id: appState.databaseManager?.dbPool.path) {
+            slackAuth.configure(dbPool: appState.databaseManager?.dbPool)
+            await slackAuth.refreshStatus()
+        }
+        // The Workspaces list below enables/disables, removes and adds
+        // accounts through its own VM; re-derive the Workspace status from the
+        // table whenever that list changes, or it goes stale (e.g. "Slack
+        // connected" after the last account is removed).
+        .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
+            Task { await slackAuth.refreshStatus() }
+        }
+        // A refresh can take the disconnect target away while the confirm
+        // dialog is open; there is then nothing left to confirm.
+        .onChange(of: slackAuth.disconnectTarget?.id) { _, newID in
+            if newID == nil { showSlackDisconnectConfirm = false }
         }
     }
 
@@ -78,7 +93,7 @@ struct SlackConnectionDetail: View {
                     }
                 }
 
-                if slackAuth.isConnected {
+                if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
                         showSlackDisconnectConfirm = true
                     } label: {
@@ -113,21 +128,31 @@ struct SlackConnectionDetail: View {
             }
         }
         .confirmationDialog(
-            "Disconnect Slack?",
+            "Disconnect \(disconnectName)?",
             isPresented: $showSlackDisconnectConfirm,
             titleVisibility: .visible
         ) {
-            Button("Disconnect Slack", role: .destructive) {
-                disconnectSlack()
+            Button("Disconnect \(disconnectName)", role: .destructive) {
+                // Re-checked at confirm time: `auth logout` must never run
+                // once the target it would remove has gone away.
+                if slackAuth.disconnectTarget != nil {
+                    disconnectSlack()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Removes the Slack connection and stops syncing. Already-synced Slack messages and the AI "
-                    + "products built on them (digests, tracks, people cards, inbox items, situations) are kept "
-                    + "and stay queryable. Gmail, Calendar, and Jira data are unaffected."
+                "Removes the \(disconnectName) connection and stops syncing it. Other connected Slack "
+                    + "workspaces keep syncing. Already-synced messages and the AI products built on them "
+                    + "(digests, tracks, people cards, inbox items, situations) are kept and stay queryable. "
+                    + "Gmail, Calendar, and Jira data are unaffected."
             )
         }
+    }
+
+    /// The workspace `auth logout` removes (account #1), named in the dialog.
+    private var disconnectName: String {
+        slackAuth.disconnectTarget?.displayName ?? "Slack"
     }
 
     private func disconnectSlack() {
@@ -138,10 +163,11 @@ struct SlackConnectionDetail: View {
             // phase. Synced data is kept (non-destructive, matches `slack
             // remove` / `auth logout` semantics).
             await flow.daemonManager.stopDaemon()
-            await slackAuth.disconnect()
-            if slackAuth.error == nil {
+            if await slackAuth.disconnect() {
                 config.reload()
                 flow.reconnectResult = nil
+                // `auth logout` removed a row: reload the Workspaces list too.
+                await appState.slackAccountsViewModel?.refreshAsync()
             }
             await flow.daemonManager.startDaemon()
             flow.disconnecting = false
@@ -369,42 +395,30 @@ struct SlackConnectionDetail: View {
             process.arguments = ["auth", "login"]
             process.environment = Constants.resolvedEnvironment()
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
-                await MainActor.run {
-                    flow.reconnecting = false
-                    flow.reconnectResult = "Failed to launch: \(error.localizedDescription)"
-                }
-                return
-            }
-
+            // Published before launch so Cancel can reach it; cancelling
+            // checks `isRunning`, so an unlaunched process is left alone.
             await MainActor.run {
                 flow.authProcess = process
             }
 
-            process.waitUntilExit()
-
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            _ = String(data: stdoutData, encoding: .utf8) // consume stdout
+            let output = await ProcessPipes.run(process)
+            let stderr = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
 
             await MainActor.run {
                 flow.authProcess = nil
                 flow.reconnecting = false
 
-                let exitCode = process.terminationStatus
-                if exitCode == 0 {
+                let exitCode = output.exitCode
+                if exitCode == -1 {
+                    flow.reconnectResult = "Failed to launch: \(stderr)"
+                } else if exitCode == 0 {
                     flow.reconnectSuccess = true
                     flow.reconnectResult = "Connected"
                     config.reload()
-                    slackAuth.checkStatus()
+                    Task {
+                        slackAuth.clearDisconnectError()
+                        await slackAuth.refreshStatus()
+                    }
                 } else if exitCode == 15 || exitCode == 9 {
                     // SIGTERM / SIGKILL — user cancelled
                     flow.reconnectResult = nil
@@ -426,30 +440,17 @@ struct SlackConnectionDetail: View {
         flow.reconnectResult = nil
     }
 
-    private static func runCLIProcess(path: String, arguments: [String]) async -> (exitCode: Int32, stdout: String, stderr: String) {
+    /// `nonisolated`: a `View` is `@MainActor`, and a main-actor static here
+    /// would run its wait on the main thread even when awaited from a
+    /// detached task (the onboarding "Connect Slack" freeze).
+    nonisolated private static func runCLIProcess(
+        path: String,
+        arguments: [String]
+    ) async -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-
-        process.waitUntilExit()
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        return (process.terminationStatus, stdout, stderr)
+        return await ProcessPipes.run(process).trimmed
     }
 }
