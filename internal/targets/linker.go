@@ -53,8 +53,12 @@ func buildLinkPrompt(tmpl string, target db.Target, snapshot []db.Target) string
 	)
 }
 
-// parseLinkResponse parses the AI link response, validates ids against the snapshot.
-func parseLinkResponse(raw string, snapshot []db.Target) (*LinkResult, error) {
+// parseLinkResponse parses the AI link response, validates ids against the
+// snapshot. forbiddenParents holds the ids that cannot be the target's parent
+// (the target itself and its descendants — either would make it its own
+// ancestor); a proposed parent among them is dropped like an unknown id.
+// selfID is the linked target's own id: a secondary link to it is dropped.
+func parseLinkResponse(raw string, snapshot []db.Target, selfID int64, forbiddenParents map[int64]bool) (*LinkResult, error) {
 	raw = strings.TrimSpace(raw)
 	// Strip markdown fences.
 	if strings.HasPrefix(raw, "```") {
@@ -82,7 +86,7 @@ func parseLinkResponse(raw string, snapshot []db.Target) (*LinkResult, error) {
 	result := &LinkResult{}
 
 	// Validate parent_id.
-	if resp.ParentID != nil && snapshotIDs[*resp.ParentID] {
+	if resp.ParentID != nil && snapshotIDs[*resp.ParentID] && !forbiddenParents[*resp.ParentID] {
 		result.ParentID = sql.NullInt64{Int64: *resp.ParentID, Valid: true}
 	}
 
@@ -115,8 +119,8 @@ func parseLinkResponse(raw string, snapshot []db.Target) (*LinkResult, error) {
 			pl.Confidence = sql.NullFloat64{Float64: sl.Confidence, Valid: true}
 		}
 		if sl.TargetID != nil {
-			if !snapshotIDs[*sl.TargetID] {
-				continue // drop unknown id
+			if !snapshotIDs[*sl.TargetID] || *sl.TargetID == selfID {
+				continue // drop unknown id or a link to the target itself
 			}
 			pl.TargetID = sql.NullInt64{Int64: *sl.TargetID, Valid: true}
 		}
@@ -127,4 +131,44 @@ func parseLinkResponse(raw string, snapshot []db.Target) (*LinkResult, error) {
 	}
 
 	return result, nil
+}
+
+// maxParentWalkDepth bounds forbiddenParentIDs' ancestor walk, matching the
+// RecomputeParentProgress cap, so a pre-existing cycle cannot loop forever.
+const maxParentWalkDepth = 20
+
+// forbiddenParentIDs returns targetID plus every snapshot target that has
+// targetID among its ancestors: making any of them targetID's parent would
+// create a cycle. parentOf resolves a target outside the snapshot (an
+// intermediate ancestor the snapshot limit cut off); ok=false stops the walk.
+func forbiddenParentIDs(targetID int64, snapshot []db.Target, parentOf func(id int64) (parent int64, ok bool)) map[int64]bool {
+	known := make(map[int64]sql.NullInt64, len(snapshot))
+	for _, t := range snapshot {
+		known[int64(t.ID)] = t.ParentID
+	}
+	parent := func(id int64) (int64, bool) {
+		if p, ok := known[id]; ok {
+			return p.Int64, p.Valid
+		}
+		return parentOf(id)
+	}
+
+	forbidden := map[int64]bool{targetID: true}
+	for _, t := range snapshot {
+		visited := map[int64]bool{}
+		id := int64(t.ID)
+		for depth := 0; depth < maxParentWalkDepth && !visited[id]; depth++ {
+			visited[id] = true
+			pid, ok := parent(id)
+			if !ok {
+				break
+			}
+			if pid == targetID {
+				forbidden[int64(t.ID)] = true
+				break
+			}
+			id = pid
+		}
+	}
+	return forbidden
 }

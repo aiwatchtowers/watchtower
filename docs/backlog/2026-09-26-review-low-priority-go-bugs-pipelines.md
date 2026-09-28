@@ -48,12 +48,14 @@ No caller exists in `cmd/` or `internal/`. `RunRollups` runs only the daily roll
 
 `runOne` reads activity with `created_at > since` / `updated_at > since` and then sets `now := time.Now()` as the next watermark. The timestamps have second granularity, so a digest, track update or inbox item written after the read in the same second as `now` falls at `== now`. The next run's strict `>` never returns it. The window is narrow in the daemon, but a Desktop "Refresh" that runs concurrently with the digest phase makes it reachable. Fix: capture the watermark before the read (as `CappedAt` already does for the capped path) and accept the harmless overlap, since summary dedup already absorbs it.
 
-## Link suggestion can make a target its own parent or create a cycle
+## Link suggestion can make a target its own parent or create a cycle (fixed in fix/bl-ai-output-validation)
 
 - type: bug · confidence: med · tags: [targets, ai-validation, hierarchy]
 - where: internal/targets/linker.go:76-87 (plus internal/targets/pipeline.go:145-172, cmd/targets_ai.go:336-345)
 
 `parseLinkResponse` accepts any `parent_id` that is in the active snapshot. That snapshot includes the target itself (only the prompt rendering skips it, and the prompt header still prints `target.ID`) and all of its descendants. A reply echoing the target's own id, or picking one of its children (the link prompt shows no parent info, so the model can't tell), becomes a confirmed self-parent or cycle through `UpdateTarget`. `UpdateTarget` has no cycle check; only `recomputeParentProgressOn` detects cycles, and it just logs. Fix: exclude the target and its descendant set when validating `parent_id` and secondary `target_id`.
+
+Resolution: `LinkExisting` computes `forbiddenParentIDs` (internal/targets/linker.go) — the target plus every snapshot target whose ancestor chain reaches it, walking through ancestors outside the snapshot via the DB, bounded at 20 levels — and `parseLinkResponse` drops a proposed `parent_id` in that set like an unknown id. A secondary link to the target itself is dropped too; a secondary link to a descendant is kept, since links are not hierarchy and cannot form a cycle. Pinned by `TestLinkExisting_RejectsSelfAndDescendantParents` and the `TestForbiddenParentIDs_*` tests (internal/targets/linker_cycle_test.go).
 
 ## Inbox item context is byte-truncated before being persisted
 

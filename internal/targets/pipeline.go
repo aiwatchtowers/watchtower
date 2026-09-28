@@ -2,6 +2,8 @@ package targets
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -168,7 +170,20 @@ func (p *Pipeline) LinkExisting(ctx context.Context, targetID int64) (*LinkResul
 		return nil, fmt.Errorf("AI link call: %w", err)
 	}
 
-	return parseLinkResponse(raw, snapshot)
+	forbidden := forbiddenParentIDs(targetID, snapshot, func(id int64) (int64, bool) {
+		t, err := p.db.GetTargetByID(int(id))
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				p.logger.Printf("targets/pipeline: resolving ancestor %d for link cycle check: %v", id, err)
+			}
+			return 0, false
+		}
+		if !t.ParentID.Valid {
+			return 0, false
+		}
+		return t.ParentID.Int64, true
+	})
+	return parseLinkResponse(raw, snapshot, targetID, forbidden)
 }
 
 // CreateFromExtraction batch-inserts proposed targets (after user confirmation)
