@@ -30,7 +30,10 @@ history in the conversation header). The ask is to drop to two columns by
 default (app sidebar + conversation / landing), with history as an opt-in
 column.
 
-Open questions for the owner: the exact resume timeout; whether a running
+**Owner decision (2026-09-28):** resume window = **2 hours** since the last
+activity in that conversation; a still-streaming turn always resumes.
+
+Open questions for the owner (resolved above: timeout): the exact resume timeout; whether a running
 (streaming) turn always forces resume regardless of the timeout (probably
 yes); how this interacts with warm-session prewarm on open (the landing's
 composer could prewarm a fresh session on first keystroke, like today).

@@ -26,6 +26,10 @@ Proposal:
 - Quick-add path: dictation or a chat/assistant action ("add to my next sync
   with X: …") could append to it later.
 
+**Owner decision (2026-09-28):** recurring meetings use a **carry-over list
+per series** — undiscussed points roll to the next occurrence, a checked point
+closes.
+
 Design questions:
 - **Storage key must survive calendar churn.** `calendar_events` rows can be
   deleted by stale cleanup (only transcript/recap-referenced events are
