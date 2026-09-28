@@ -49,9 +49,43 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testCollapsedByDefault() {
-        for section in SidebarSection.ordered {
-            XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")
-        }
+        XCTAssertFalse(SidebarSection.today.collapsedByDefault, "FOCUS is an everyday section and should start expanded")
+        XCTAssertTrue(SidebarSection.delivery.collapsedByDefault, "EXECUTION should start collapsed")
+        XCTAssertTrue(SidebarSection.analytics.collapsedByDefault, "INSIGHTS should start collapsed")
+    }
+
+    func testContainingReturnsTheOwningSection() {
+        XCTAssertEqual(SidebarSection.containing(.digests), .analytics)
+        XCTAssertEqual(SidebarSection.containing(.releases), .delivery)
+        XCTAssertEqual(SidebarSection.containing(.inbox), .today)
+    }
+
+    func testContainingIsNilForRootAndToolItems() {
+        XCTAssertNil(SidebarSection.containing(.targets))
+        XCTAssertNil(SidebarSection.containing(.chat))
+        XCTAssertNil(SidebarSection.containing(.search))
+    }
+
+    // MARK: - Auto-expand on navigation
+
+    func testExpandingSectionExpandsACollapsedSection() {
+        let updated = SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
+    }
+
+    func testExpandingSectionNilWhenAlreadyExpanded() {
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: false]))
+    }
+
+    func testExpandingSectionNilWhenDestinationHasNoSection() {
+        XCTAssertNil(SidebarView.expandingSection(for: .targets, in: [SidebarSection.analytics.id: true]))
+    }
+
+    func testExpandingSectionNilWhenMapHasNoEntryForTheSection() {
+        // No stored preference yet (fresh install, defaults not yet materialized
+        // into the map) must not be treated as "collapsed" — only an explicit
+        // `true` triggers an expand.
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [:]))
     }
 
     // MARK: - Feature-gated visibility

@@ -164,7 +164,12 @@ struct SidebarView: View {
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { googleAuth.checkStatus() }
-        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
+        .onChange(of: selection) { _, newValue in
+            googleAuth.checkStatus()
+            if let expanded = Self.expandingSection(for: newValue, in: collapsedSections) {
+                collapsedSections = expanded
+            }
+        }
     }
 
     // MARK: - Main Sidebar Button
@@ -315,6 +320,24 @@ struct SidebarView: View {
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
         if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
         return .blue
+    }
+
+    /// A collapsed-sections map with `destination`'s section expanded, or nil
+    /// when there's nothing to do (the destination has no section, or its
+    /// section is already expanded) — so navigating to a tab tucked inside a
+    /// collapsed section always shows the selection instead of hiding it
+    /// behind a closed header. Pure, for the same testability reason as
+    /// `sectionBadgeCount` above.
+    static func expandingSection(
+        for destination: SidebarDestination,
+        in collapsed: [String: Bool]
+    ) -> [String: Bool]? {
+        guard let section = SidebarSection.containing(destination), collapsed[section.id] == true else {
+            return nil
+        }
+        var updated = collapsed
+        updated[section.id] = false
+        return updated
     }
 
     private func isCollapsed(_ section: SidebarSection) -> Bool {
