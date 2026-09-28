@@ -134,20 +134,20 @@ package struct ChatFollowTracker: Equatable, Sendable {
     /// A conversation switch (`following: true`: land at the bottom) or a
     /// jump to a specific message (`following: false`: stay on it). The next
     /// measurement starts a fresh baseline.
-    package mutating func reset(following: Bool) {
+    package mutating func restartTracking(following: Bool) {
         self.following = following
         lastMetrics = nil
         baselineTop = nil
     }
 
     /// A send or "Jump to latest": follow again from wherever the view is.
-    package mutating func repin() {
+    package mutating func repinToLatest() {
         following = true
     }
 
     /// Feeds one measurement; returns whether the view should scroll to the
     /// bottom now.
-    package mutating func observe(_ current: Metrics) -> Bool {
+    package mutating func observeMeasurement(_ current: Metrics) -> Bool {
         let eps = ChatAutoScrollPolicy.scrollEpsilon
         let distance = current.distanceFromBottom
         defer { lastMetrics = current }

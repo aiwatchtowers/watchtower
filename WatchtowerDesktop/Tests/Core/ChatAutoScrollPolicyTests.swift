@@ -41,13 +41,13 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// A tracker that has already seen `first`.
     private func tracker(following: Bool = true, seen first: Metrics) -> ChatFollowTracker {
         var tracker = ChatFollowTracker(following: following)
-        _ = tracker.observe(first)
+        _ = tracker.observeMeasurement(first)
         return tracker
     }
 
     /// Feeds a run of measurements; returns every pull decision.
     private func feed(_ tracker: inout ChatFollowTracker, _ run: [Metrics]) -> [Bool] {
-        run.map { tracker.observe($0) }
+        run.map { tracker.observeMeasurement($0) }
     }
 
     /// The reported bug: streamed text taller than the threshold grows the
@@ -72,14 +72,14 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// still pulls.
     func testSmallGrowthPulls() {
         var tracker = tracker(seen: atBottom)
-        XCTAssertTrue(tracker.observe(Metrics(contentTop: -1500, contentHeight: 2010, viewportHeight: 500)))
+        XCTAssertTrue(tracker.observeMeasurement(Metrics(contentTop: -1500, contentHeight: 2010, viewportHeight: 500)))
         XCTAssertTrue(tracker.following)
     }
 
     /// The composer growing shrinks the viewport under a following view.
     func testViewportShrinkPulls() {
         var tracker = tracker(seen: atBottom)
-        XCTAssertTrue(tracker.observe(Metrics(contentTop: -1500, contentHeight: 2000, viewportHeight: 420)))
+        XCTAssertTrue(tracker.observeMeasurement(Metrics(contentTop: -1500, contentHeight: 2000, viewportHeight: 420)))
     }
 
     /// Reviewer finding I1: a slow drag in sub-epsilon steps (0.6 pt per
@@ -107,7 +107,7 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// A single real scroll up, even inside the threshold, stops following.
     func testScrollUpInsideThresholdStopsFollowing() {
         var tracker = tracker(seen: atBottom)
-        XCTAssertFalse(tracker.observe(Metrics(contentTop: -1490, contentHeight: 2000, viewportHeight: 500)))
+        XCTAssertFalse(tracker.observeMeasurement(Metrics(contentTop: -1490, contentHeight: 2000, viewportHeight: 500)))
         XCTAssertFalse(tracker.following)
     }
 
@@ -147,8 +147,8 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
 
     func testReachingTheExactBottomRepins() {
         var tracker = tracker(seen: atBottom)
-        _ = tracker.observe(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
-        XCTAssertFalse(tracker.observe(atBottom))
+        _ = tracker.observeMeasurement(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
+        XCTAssertFalse(tracker.observeMeasurement(atBottom))
         XCTAssertTrue(tracker.following)
     }
 
@@ -169,7 +169,7 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// the offset, moving the top down — the bottom is still on screen.
     func testShrinkAtBottomKeepsFollowing() {
         var tracker = tracker(seen: atBottom)
-        XCTAssertFalse(tracker.observe(Metrics(contentTop: -1300, contentHeight: 1800, viewportHeight: 500)))
+        XCTAssertFalse(tracker.observeMeasurement(Metrics(contentTop: -1300, contentHeight: 1800, viewportHeight: 500)))
         XCTAssertTrue(tracker.following)
     }
 
@@ -187,7 +187,7 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     func testRepeatedIdenticalMeasurementDoesNothing() {
         var tracker = tracker(seen: atBottom)
         let above = Metrics(contentTop: -1480, contentHeight: 2000, viewportHeight: 500)
-        _ = tracker.observe(above)
+        _ = tracker.observeMeasurement(above)
         XCTAssertEqual(feed(&tracker, [above, above]), [false, false])
     }
 
@@ -196,9 +196,9 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// A plain conversation switch: the first measurement lands at the bottom.
     func testResetFollowingFirstMeasurementPullsToBottom() {
         var tracker = tracker(following: false, seen: atBottom)
-        tracker.reset(following: true)
+        tracker.restartTracking(following: true)
         XCTAssertNil(tracker.lastMetrics)
-        XCTAssertTrue(tracker.observe(Metrics(contentTop: 0, contentHeight: 2000, viewportHeight: 500)))
+        XCTAssertTrue(tracker.observeMeasurement(Metrics(contentTop: 0, contentHeight: 2000, viewportHeight: 500)))
         XCTAssertTrue(tracker.following)
     }
 
@@ -206,7 +206,7 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// not follow — its first measurement, far from the bottom, must not pull.
     func testResetNotFollowingFirstMeasurementStaysOnTheMessage() {
         var tracker = tracker(seen: atBottom)
-        tracker.reset(following: false)
+        tracker.restartTracking(following: false)
         let hit = Metrics(contentTop: -600, contentHeight: 2000, viewportHeight: 500)
         let grown = Metrics(contentTop: -600, contentHeight: 2100, viewportHeight: 500)
         XCTAssertEqual(feed(&tracker, [hit, grown]), [false, false])
@@ -217,11 +217,11 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
     /// growth pulls.
     func testRepinFollowsAgain() {
         var tracker = tracker(seen: atBottom)
-        _ = tracker.observe(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
+        _ = tracker.observeMeasurement(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
         XCTAssertFalse(tracker.following)
-        tracker.repin()
+        tracker.repinToLatest()
         XCTAssertTrue(tracker.following)
-        XCTAssertTrue(tracker.observe(Metrics(contentTop: -800, contentHeight: 2100, viewportHeight: 500)))
+        XCTAssertTrue(tracker.observeMeasurement(Metrics(contentTop: -800, contentHeight: 2100, viewportHeight: 500)))
     }
 
     // MARK: - turnStarted

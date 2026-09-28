@@ -122,16 +122,16 @@ struct ChatThreadView: View {
     private func handleThreadChange(_ change: ChatAutoScrollPolicy.ThreadChange, proxy: ScrollViewProxy) {
         switch change {
         case let .jumpToMessage(target):
-            follow.tracker.reset(following: false)
+            follow.tracker.restartTracking(following: false)
             syncFollowing()
             proxy.scrollTo(target, anchor: .center)
             chatVM.consumeScrollTarget()
         case .switchedConversation:
-            follow.tracker.reset(following: true)
+            follow.tracker.restartTracking(following: true)
             syncFollowing()
             if let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
         case .turnStarted:
-            follow.tracker.repin()
+            follow.tracker.repinToLatest()
             syncFollowing()
             proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
         case .newLastRow:
@@ -145,7 +145,7 @@ struct ChatThreadView: View {
     /// view down when the content grew under it.
     private func updateFollowState(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
         guard current.viewportHeight > 0 else { return }
-        let pull = follow.tracker.observe(current)
+        let pull = follow.tracker.observeMeasurement(current)
         syncFollowing()
         if pull { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
     }
@@ -160,7 +160,7 @@ struct ChatThreadView: View {
     private func jumpToLatestButton(proxy: ScrollViewProxy) -> some View {
         if !isFollowing {
             Button {
-                follow.tracker.repin()
+                follow.tracker.repinToLatest()
                 syncFollowing()
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)

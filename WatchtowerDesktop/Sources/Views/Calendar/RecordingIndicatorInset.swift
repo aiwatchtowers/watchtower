@@ -20,7 +20,7 @@ enum RecordingIndicatorInset {
     /// above it, so reserving them would pad a gap that clears nothing. Only
     /// what is drawn below the panel (`belowPanelHeight`: the model-download
     /// capsules) still reserves its own height.
-    static func reserved(
+    static func reservedHeight(
         stackHeight: CGFloat,
         expandedPanelShown: Bool = false,
         belowPanelHeight: CGFloat = 0

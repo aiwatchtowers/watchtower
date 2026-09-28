@@ -26,7 +26,7 @@ screen with a bottom composer (main chat, Discuss chats), not just the main one.
 
 Resolution: space is reserved rather than the indicator moved, so it stays
 visible from every screen. `RecordingIndicatorView` measures its pill stack
-and reports `RecordingIndicatorInset.reserved(stackHeight:expandedPanelShown:belowPanelHeight:)`
+and reports `RecordingIndicatorInset.reservedHeight(stackHeight:expandedPanelShown:belowPanelHeight:)`
 to the root view, which injects it as the `recordingIndicatorInset`
 environment value. While the live-transcript panel is expanded (a transient
 overlay the owner opened) the panel and the pills above it reserve nothing;

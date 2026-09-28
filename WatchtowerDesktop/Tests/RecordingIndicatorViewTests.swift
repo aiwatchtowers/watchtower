@@ -207,23 +207,23 @@ final class RecordingIndicatorViewTests: XCTestCase {
     /// Nothing recording, queued or failed: the empty stack measures zero and
     /// composers keep their normal layout.
     func testEmptyStackReservesNothing() {
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 0), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 0), 0)
     }
 
     /// Visible pills reserve their own height plus the stack's gap to the
     /// window bottom, so a composer sits entirely above the topmost pill.
     func testVisibleStackReservesItsHeightPlusOuterPadding() {
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 40),
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 40),
                        40 + RecordingIndicatorInset.outerPadding)
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 150), 166)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 150), 166)
     }
 
     /// While the live panel is expanded the panel itself reserves nothing:
     /// it is a transient overlay, with the recorder pills above it.
     func testExpandedPanelReservesNothing() {
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 310, expandedPanelShown: true), 0)
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 360, expandedPanelShown: true), 0)
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 40, expandedPanelShown: false),
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 310, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 360, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 40, expandedPanelShown: false),
                        40 + RecordingIndicatorInset.outerPadding)
     }
 
@@ -231,12 +231,12 @@ final class RecordingIndicatorViewTests: XCTestCase {
     /// panel still reserves its own height, or it would cover the composer.
     func testPillBelowTheExpandedPanelStillReserves() {
         let stack = 310 + RecordingIndicatorInset.stackSpacing + 40
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: stack, expandedPanelShown: true,
-                                                        belowPanelHeight: 40),
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: stack, expandedPanelShown: true,
+                                                              belowPanelHeight: 40),
                        40 + RecordingIndicatorInset.outerPadding)
         // Collapsed: the whole stack reserves, whatever sits at its bottom.
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 90, expandedPanelShown: false,
-                                                        belowPanelHeight: 40),
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 90, expandedPanelShown: false,
+                                                              belowPanelHeight: 40),
                        90 + RecordingIndicatorInset.outerPadding)
     }
 

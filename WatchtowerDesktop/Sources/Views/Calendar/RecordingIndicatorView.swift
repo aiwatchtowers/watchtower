@@ -28,7 +28,7 @@ struct RecordingIndicatorView: View {
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     /// Receives the bottom space composers must keep free while pills show
-    /// (`RecordingIndicatorInset.reserved`), 0 once the stack is empty.
+    /// (`RecordingIndicatorInset.reservedHeight`), 0 once the stack is empty.
     var onReservedInsetChange: (CGFloat) -> Void = { _ in }
     @State private var stackHeight: CGFloat = 0
     /// Height of the model-download capsule drawn below the recorder pills,
@@ -37,8 +37,8 @@ struct RecordingIndicatorView: View {
 
     private var reservedInset: CGFloat {
         let provisionerShown = appState.transcriptionModelProvisioner.state != .idle
-        return RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
-                                                belowPanelHeight: provisionerShown ? provisionerHeight : 0)
+        return RecordingIndicatorInset.reservedHeight(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
+                                                      belowPanelHeight: provisionerShown ? provisionerHeight : 0)
     }
 
     /// The same condition `recordingView` renders the expanded panel under.
