@@ -30,6 +30,8 @@ const (
 // staleBuildingAfter is how long a recap may sit in 'building' before a later
 // run treats the process that was building it as gone. Generous enough that a
 // strong-tier compose over the widest window finishes well inside it.
+// Mirrored by Swift `CatchUpRecap.staleBuildingAfter`, which shows such a row
+// as failed before this reaper next runs — change both, and the error text too.
 const staleBuildingAfter = 30 * time.Minute
 
 // staleBuildingError is what a reaped recap records, in the same place a real

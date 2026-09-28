@@ -258,20 +258,53 @@ package struct CatchUpRecap: FetchableRecord, Identifiable, Equatable {
     package let createdAt: String
     package let updatedAt: String
 
+    /// How long a recap may sit in `building` before it reads as failed. Mirrors
+    /// Go `staleBuildingAfter` (internal/catchup/pipeline.go) — change both.
+    package static let staleBuildingAfter: TimeInterval = 30 * 60
+
+    /// What a stale `building` row reads as. Mirrors Go `staleBuildingError`,
+    /// which the next `catchup run` writes into the same row.
+    package static let staleBuildingError =
+        "the run building this recap did not finish (the process was interrupted)"
+
     package init(row: Row) {
+        self.init(row: row, now: Date())
+    }
+
+    /// A `building` row older than `staleBuildingAfter` was abandoned by a process
+    /// that died mid-run. Go reaps such rows only at the start of the next
+    /// `catchup run`, so without this projection the list spins forever with no
+    /// Retry until the operator happens to build again. Read-time only: the row
+    /// on disk is left for the Go reaper, which writes the same outcome.
+    package init(row: Row, now: Date) {
         id = row["id"]
         periodFrom = row["period_from"] ?? 0
         periodTo = row["period_to"] ?? 0
-        status = row["status"] ?? ""
+        let rawStatus: String = row["status"] ?? ""
+        let rawError: String = row["error"] ?? ""
+        let created: String = row["created_at"] ?? ""
+        if rawStatus == "building", Self.isStale(createdAt: created, now: now) {
+            status = "failed"
+            error = rawError.isEmpty ? Self.staleBuildingError : rawError
+        } else {
+            status = rawStatus
+            error = rawError
+        }
         tldr = row["tldr"] ?? ""
         bodyJSON = row["body_json"] ?? "{}"
         coverageJSON = row["coverage_json"] ?? "{}"
-        error = row["error"] ?? ""
         regenOfID = row["regen_of_id"]
         acknowledgedAt = row["acknowledged_at"]
         model = row["model"] ?? ""
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+    }
+
+    /// `created_at` is Go's `%Y-%m-%dT%H:%M:%SZ`; an unparseable stamp is never
+    /// stale, so a malformed row keeps its real status rather than inventing one.
+    private static func isStale(createdAt: String, now: Date) -> Bool {
+        guard let created = ISO8601DateFormatter().date(from: createdAt) else { return false }
+        return now.timeIntervalSince(created) > staleBuildingAfter
     }
 
     // MARK: - Status predicates

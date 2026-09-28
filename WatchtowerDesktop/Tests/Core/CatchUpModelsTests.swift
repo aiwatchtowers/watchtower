@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import WatchtowerCore
 
 final class CatchUpModelsTests: XCTestCase {
@@ -69,5 +70,62 @@ final class CatchUpModelsTests: XCTestCase {
 
         let later = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 9, day: 6, hour: 9, minute: 15)))
         XCTAssertEqual(CatchUpRecap.windowLabel(from: from, to: later, calendar: cal), "4 Sep 09:00 – 6 Sep 09:15")
+    }
+
+    // MARK: - Stale building projection
+
+    private func recapRow(status: String, createdAt: String, error: String = "") -> Row {
+        Row(["id": 1, "period_from": 100.0, "period_to": 200.0, "status": status,
+             "error": error, "created_at": createdAt])
+    }
+
+    private static let stamp = ISO8601DateFormatter()
+    /// Whole seconds, like the `created_at` stamps, so the exact-threshold case is exact.
+    private static let fixedNow = Date(timeIntervalSince1970: 1_789_000_000)
+
+    func testBuildingPastThresholdReadsAsFailedWithGoErrorText() {
+        let now = Self.fixedNow
+        let created = Self.stamp.string(from: now.addingTimeInterval(-31 * 60))
+        let recap = CatchUpRecap(row: recapRow(status: "building", createdAt: created), now: now)
+        XCTAssertTrue(recap.isFailed)
+        XCTAssertFalse(recap.isBuilding)
+        XCTAssertEqual(recap.error,
+                       "the run building this recap did not finish (the process was interrupted)",
+                       "must match Go staleBuildingError, which the reaper later writes")
+    }
+
+    func testBuildingWithinThresholdStaysBuilding() {
+        let now = Self.fixedNow
+        for age: TimeInterval in [0, 29 * 60, 30 * 60] {
+            let created = Self.stamp.string(from: now.addingTimeInterval(-age))
+            let recap = CatchUpRecap(row: recapRow(status: "building", createdAt: created), now: now)
+            XCTAssertTrue(recap.isBuilding, "age \(age)s is not past the threshold")
+            XCTAssertEqual(recap.error, "")
+        }
+    }
+
+    func testUnparseableCreatedAtNeverReadsAsStale() {
+        for created in ["", "not a date", "2026-09-11 19:10:21"] {
+            let recap = CatchUpRecap(row: recapRow(status: "building", createdAt: created), now: Date())
+            XCTAssertTrue(recap.isBuilding, "created_at \(created.debugDescription)")
+        }
+    }
+
+    func testOldRowsOfOtherStatusesAreUntouched() {
+        let now = Self.fixedNow
+        let created = Self.stamp.string(from: now.addingTimeInterval(-86_400))
+        for status in ["ready", "failed"] {
+            let recap = CatchUpRecap(row: recapRow(status: status, createdAt: created, error: "e"), now: now)
+            XCTAssertEqual(recap.status, status)
+            XCTAssertEqual(recap.error, "e")
+        }
+    }
+
+    func testStaleBuildingKeepsAnErrorAlreadyOnTheRow() {
+        let now = Self.fixedNow
+        let created = Self.stamp.string(from: now.addingTimeInterval(-3_600))
+        let recap = CatchUpRecap(row: recapRow(status: "building", createdAt: created, error: "boom"), now: now)
+        XCTAssertTrue(recap.isFailed)
+        XCTAssertEqual(recap.error, "boom")
     }
 }
