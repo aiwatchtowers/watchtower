@@ -58,6 +58,36 @@ func TestPlainCyrillicCSVWithLatinHeadersDecodes(t *testing.T) {
 	assert.Equal(t, strings.TrimSpace(csv), secs[0].Text, "plainText trims surrounding whitespace, the trailing newline included")
 }
 
+// TestLooksLikeCyrillicPlainText isolates each of looksLikeCyrillicPlainText's
+// four conditions: every "false" case below is crafted to trip exactly ONE
+// of them (verified by mutation — disabling any single condition turns the
+// matching case green while the others stay red), so the table pins each
+// condition independently rather than relying on real-world mojibake samples
+// that happen to trip several at once (TestPlainNonCyrillicMojibakeFails
+// above covers those).
+func TestLooksLikeCyrillicPlainText(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"real Russian prose", "привет мир, это тест кодировки", true},
+		{
+			"ratio: mostly Latin with only a couple of separate Cyrillic words",
+			"This is a long English sentence with only один русский word inside for testing purposes today",
+			false,
+		},
+		{"word mixing: one word carries both a Latin and a Cyrillic letter", "йabc привет", false},
+		{"case flip: lowercase to uppercase within one Cyrillic word", "оШибка", false},
+		{"uppercase dominance: an all-caps Cyrillic phrase", "ПРИВЕТ МИР", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, looksLikeCyrillicPlainText(c.text))
+		})
+	}
+}
+
 // TestHTMLHonorsDeclaredMIMECharset pins that an HTML document's MIME
 // Content-Type charset param is honored unconditionally — before any guess,
 // and even for content that would otherwise fail the plain-text
