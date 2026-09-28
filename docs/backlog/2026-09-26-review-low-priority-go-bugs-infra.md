@@ -11,12 +11,21 @@ created: 2026-09-26
 5 low-priority findings from the bugs (Go sync/daemon/integrations) track, bundled so the backlog
 stays readable. Split any item into its own file when it gets picked up.
 
-## Jira key detector caches known project keys for the whole daemon lifetime
+## Jira key detector caches known project keys for the whole daemon lifetime (fixed in fix/bl-jira-hardening)
 
 - type: bug · confidence: high · tags: [jira, slack-links, cache]
 - where: internal/jira/key_detector.go:97-116, internal/jira/key_detector.go:230-252
 
 `knownProjectKeys` memoizes the first non-empty set and reloads only while it is empty. `ResetCache` has no production caller. A daemon launched from the tray runs for weeks. When a board for a new project is connected (or a new project appears in `jira_issues`), that project's keys are never linked from Slack messages, digests or tracks until the daemon restarts. `get_task_context`, the Linked Jira badges and `--jira` silently leave those links out. Fix: refresh on a TTL (e.g. hourly), or call `ResetCache` after a Jira sync pass that added boards or projects.
+
+Resolution: `KeyDetector` gained an hourly `knownProjectKeysTTL`; `knownProjectKeys` now reloads once
+the cached set is either empty or older than the TTL (stamped in `loadedAt` on every successful
+load), via an injectable `now` clock (the `internal/sync.Orchestrator.now` precedent) so the tests
+cross the TTL without a real hour's wait. A failed TTL-triggered reload keeps serving the last
+known-good set instead of wiping it, so a transient DB hiccup can't turn a stale-but-correct cache
+into "detects nothing." `ResetCache` is untouched and still available for an immediate forced
+reload. Pinned by `TestKeyDetector_KnownKeysRefreshOnTTLExpiry` and
+`TestKeyDetector_TTLReloadFailureKeepsServingStaleSet`.
 
 ## Jira client: a 401 after three 429s is reported as a revoked grant with no refresh attempt (fixed in fix/bl-jira-hardening)
 
