@@ -74,6 +74,14 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 		return "", nil, "", fmt.Errorf("decoding ollama response: %w", err)
 	}
 
+	// A 200 response can still carry an inline error object with zero choices
+	// (the same shape internal/ollama/client.go's streamSSE guards against)
+	// — report it directly instead of the generic "no choices" below, which
+	// would otherwise hide the real reason.
+	if result.Error != nil {
+		return "", nil, "", fmt.Errorf("ollama returned an error: %s", formatChatError(result.Error))
+	}
+
 	if len(result.Choices) == 0 {
 		return "", nil, "", fmt.Errorf("ollama returned no choices")
 	}

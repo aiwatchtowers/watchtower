@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/digest"
 )
 
@@ -96,6 +97,23 @@ func TestGenerator_ErrorPaths(t *testing.T) {
 	if _, _, _, err := g2.Generate(context.Background(), "", "msg", ""); err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Errorf("want no-choices error, got %v", err)
 	}
+
+	// 200 response carrying an inline error object → that error, not the
+	// generic no-choices message.
+	mux3 := http.NewServeMux()
+	mux3.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"message":"context length exceeded","type":"invalid_request_error"}}`))
+	})
+	srv3 := httptest.NewServer(mux3)
+	defer srv3.Close()
+	g3 := NewGenerator("l", "s", srv3.URL)
+	_, _, _, err := g3.Generate(context.Background(), "", "msg", "")
+	if err == nil || !strings.Contains(err.Error(), "context length exceeded") {
+		t.Errorf("want the inline error's message, got %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "no choices") {
+		t.Errorf("err = %v, must not fall back to the generic no-choices message", err)
+	}
 }
 
 func TestClient_QuerySync(t *testing.T) {
@@ -146,6 +164,125 @@ func TestClient_QueryStreaming(t *testing.T) {
 	}
 	if got.String() != "Hello" {
 		t.Errorf("streamed = %q, want %q", got.String(), "Hello")
+	}
+}
+
+// TestStreamSSE_InlineErrorObjectSurfacesAsError pins that an OpenAI-compatible
+// mid-stream failure (model OOM / context overflow while generating), sent as
+// a "data: {"error":{...}}" line after a 200 status, reaches errCh instead of
+// silently unmarshaling to zero choices and ending the stream cleanly.
+func TestStreamSSE_InlineErrorObjectSurfacesAsError(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"partial "}}]}` + "\n\n" +
+			`data: {"error":{"message":"model ran out of memory","type":"server_error"}}` + "\n\n",
+	)
+	textCh := make(chan ai.StreamChunk, 8)
+	errCh := make(chan error, 1)
+
+	streamSSE(context.Background(), body, textCh, errCh)
+	close(textCh)
+	close(errCh)
+
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != "partial " {
+		t.Errorf("streamed text = %q, want the text delivered before the error", got.String())
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("want an error for the inline error object, got nil")
+	}
+	if !strings.Contains(err.Error(), "model ran out of memory") || !strings.Contains(err.Error(), "server_error") {
+		t.Errorf("err = %v, want it to carry the server's message and type", err)
+	}
+}
+
+// TestStreamSSE_ConnectionClosedBeforeDoneIsAnError pins the other silent-
+// failure shape: the connection ends (clean EOF, scanner.Err() == nil) after
+// ordinary deltas but before "[DONE]" or any finish_reason — a server
+// crash/restart mid-generation must not look like a short, complete answer.
+func TestStreamSSE_ConnectionClosedBeforeDoneIsAnError(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"Hel"}}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{"content":"lo"}}]}` + "\n\n",
+		// no [DONE], no finish_reason, then EOF
+	)
+	textCh := make(chan ai.StreamChunk, 8)
+	errCh := make(chan error, 1)
+
+	streamSSE(context.Background(), body, textCh, errCh)
+	close(textCh)
+	close(errCh)
+
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != "Hello" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "Hello")
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("want an error for a stream truncated before [DONE]/finish_reason, got nil")
+	}
+	if !strings.Contains(err.Error(), "closed early") {
+		t.Errorf("err = %v, want it to describe the early close", err)
+	}
+}
+
+// TestStreamSSE_FinishReasonWithoutLiteralDoneIsNotAnError is the degenerate
+// clean-exit counterpart: some OpenAI-compatible servers end the stream right
+// after a chunk carrying finish_reason, without ever sending a literal
+// "[DONE]" line — that must NOT be misclassified as a truncated stream.
+func TestStreamSSE_FinishReasonWithoutLiteralDoneIsNotAnError(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"ok"}}]}` + "\n\n" +
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n",
+	)
+	textCh := make(chan ai.StreamChunk, 8)
+	errCh := make(chan error, 1)
+
+	streamSSE(context.Background(), body, textCh, errCh)
+	close(textCh)
+	close(errCh)
+
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != "ok" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "ok")
+	}
+	if err := <-errCh; err != nil {
+		t.Errorf("want no error when a finish_reason chunk closes the stream, got %v", err)
+	}
+}
+
+// TestQuerySync_InlineErrorObjectSurfacesAsError is QuerySync's non-streaming
+// counterpart: a 200 response with an inline "error" object and no choices
+// must report that error, not the generic "no choices" message.
+func TestQuerySync_InlineErrorObjectSurfacesAsError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"message":"context length exceeded","type":"invalid_request_error"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient("m", srv.URL)
+	_, _, err := c.QuerySync(context.Background(), "", "hi", "")
+	if err == nil {
+		t.Fatal("want an error for the inline error object, got nil")
+	}
+	if !strings.Contains(err.Error(), "context length exceeded") {
+		t.Errorf("err = %v, want it to carry the server's message", err)
+	}
+	if strings.Contains(err.Error(), "no choices") {
+		t.Errorf("err = %v, must not fall back to the generic no-choices message", err)
 	}
 }
 
