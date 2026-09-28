@@ -147,7 +147,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	targetsCtx, hasRealTargets := p.gatherTargets()
 	tracksCtx, hasRealTracks := p.gatherTracks()
 	inboxCtx, hasRealInbox := p.gatherInbox()
-	calendarCtx := p.gatherCalendar()
+	calendarCtx := p.gatherCalendar(date)
 	digestsCtx := p.gatherDigests(date)
 	dailyDigestCtx := p.gatherLatestDailyDigest()
 	peopleCardsCtx := p.gatherPeopleCards()
@@ -534,11 +534,15 @@ func (p *Pipeline) gatherPeopleSummary() string {
 	return fmt.Sprintf("Team summary: %s\nAttention: %s\nTips: %s\n", s.Summary, s.Attention, s.Tips)
 }
 
-// gatherCalendar loads today's calendar events for the briefing.
-func (p *Pipeline) gatherCalendar() string {
-	today := time.Now().Local().Format("2006-01-02")
-	events, err := p.db.GetCalendarEventsForDate(today)
-	if err != nil || len(events) == 0 {
+// gatherCalendar loads the briefing date's calendar events (date is the
+// local YYYY-MM-DD the briefing is for).
+func (p *Pipeline) gatherCalendar(date string) string {
+	events, err := p.db.GetCalendarEventsForDate(date, time.Local)
+	if err != nil {
+		p.logger.Printf("briefing: error loading calendar events for %s: %v", date, err)
+		return ""
+	}
+	if len(events) == 0 {
 		return ""
 	}
 

@@ -50,6 +50,11 @@ type Pipeline struct {
 	// unverifiable".
 	slackRefsDropped int
 	refsRejected     int
+
+	// abandonedProjectLogged memoes the "no longer holding the ideas floor"
+	// line per (account, stalled sync stamp, UTC day), so a permanently broken
+	// board logs it once a day instead of every pass.
+	abandonedProjectLogged map[string]bool
 }
 
 // New creates a new ideas pipeline.

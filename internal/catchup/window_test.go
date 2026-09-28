@@ -104,3 +104,38 @@ func TestParseWindowTime(t *testing.T) {
 	_, err = ParseWindowTime("yesterday", time.Local)
 	assert.Error(t, err)
 }
+
+// After an absence longer than the cap, the auto window must not fail on every
+// run: it is clamped to the last maxWindowDays and flagged as truncated, while
+// an explicit custom window of the same length is still rejected.
+func TestResolveWindow_AutoClampsAncientAck(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	now := time.Now().In(loc)
+	ack := now.Add(-45 * 24 * time.Hour)
+
+	w, err := ResolveWindow(WindowSpec{}, now, float64(ack.Unix()))
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(-maxWindowDays*24*time.Hour), w.From)
+	assert.Equal(t, now, w.To)
+	assert.True(t, w.Truncated)
+	assert.Equal(t, "auto", w.Source)
+
+	_, err = ResolveWindow(WindowSpec{From: ack}, now, 0)
+	assert.ErrorIs(t, err, ErrWindow, "an explicit custom window over the cap is still rejected")
+}
+
+// An ack exactly at the cap (and anything newer) is not truncated.
+func TestResolveWindow_AutoAckWithinCapNotTruncated(t *testing.T) {
+	// Whole seconds: the ack is stored as unix seconds.
+	now := time.Now().Truncate(time.Second)
+	for _, age := range []time.Duration{maxWindowDays * 24 * time.Hour, 30 * 24 * time.Hour, time.Hour} {
+		w, err := ResolveWindow(WindowSpec{}, now, float64(now.Add(-age).Unix()))
+		require.NoError(t, err)
+		assert.False(t, w.Truncated, "age %v", age)
+		assert.Equal(t, now.Add(-age).Unix(), w.From.Unix())
+	}
+	w, err := ResolveWindow(WindowSpec{}, now, 0)
+	require.NoError(t, err)
+	assert.False(t, w.Truncated, "the 24h fallback is never truncated")
+}

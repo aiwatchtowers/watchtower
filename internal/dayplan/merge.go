@@ -10,16 +10,20 @@ import (
 
 // buildItems validates AI items and converts them into DayPlanItem records.
 // Invalid items are dropped; reasons are returned in the `dropped` slice.
+// invalid counts the drops that were real validation failures (unknown
+// source, missing or bad times) — every other drop is calendar-owned: the
+// item restated or collided with a calendar event, which syncCalendarItems
+// adds itself.
 func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
-	taskIDs, jiraKeys map[string]bool) ([]db.DayPlanItem, []string) {
-	var out []db.DayPlanItem
-	var dropped []string
-
+	taskIDs, jiraKeys map[string]bool) (out []db.DayPlanItem, dropped []string, invalid int) {
 	order := 0
 	for _, ai := range r.Timeblocks {
-		it, reason := aiToTimeblock(ai, date, events, taskIDs, jiraKeys)
+		it, reason, calendarOwned := aiToTimeblock(ai, date, events, taskIDs, jiraKeys)
 		if reason != "" {
 			dropped = append(dropped, reason)
+			if !calendarOwned {
+				invalid++
+			}
 			continue
 		}
 		it.OrderIndex = order
@@ -29,9 +33,12 @@ func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
 
 	order = 0
 	for _, ai := range r.Backlog {
-		it, reason := aiToBacklog(ai, taskIDs, jiraKeys)
+		it, reason, calendarOwned := aiToBacklog(ai, taskIDs, jiraKeys)
 		if reason != "" {
 			dropped = append(dropped, reason)
+			if !calendarOwned {
+				invalid++
+			}
 			continue
 		}
 		it.OrderIndex = order
@@ -39,31 +46,31 @@ func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
 		out = append(out, *it)
 	}
 
-	return out, dropped
+	return out, dropped, invalid
 }
 
 func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
-	taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string) {
+	taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string, bool) {
 	if ai.SourceType == "calendar" {
-		return nil, "calendar items must not come from AI"
+		return nil, "calendar items must not come from AI", true
 	}
 	if ai.StartTimeLocal == "" || ai.EndTimeLocal == "" {
-		return nil, fmt.Sprintf("timeblock %q missing start/end time", ai.Title)
+		return nil, fmt.Sprintf("timeblock %q missing start/end time", ai.Title), false
 	}
 	if reason := validateSource(ai, taskIDs, jiraKeys); reason != "" {
-		return nil, reason
+		return nil, reason, false
 	}
 
 	start, err := time.ParseInLocation("2006-01-02 15:04", date+" "+ai.StartTimeLocal, time.Local)
 	if err != nil {
-		return nil, fmt.Sprintf("parse start_time: %v", err)
+		return nil, fmt.Sprintf("parse start_time: %v", err), false
 	}
 	end, err := time.ParseInLocation("2006-01-02 15:04", date+" "+ai.EndTimeLocal, time.Local)
 	if err != nil {
-		return nil, fmt.Sprintf("parse end_time: %v", err)
+		return nil, fmt.Sprintf("parse end_time: %v", err), false
 	}
 	if !end.After(start) {
-		return nil, fmt.Sprintf("timeblock %q end before start", ai.Title)
+		return nil, fmt.Sprintf("timeblock %q end before start", ai.Title), false
 	}
 
 	for _, ev := range events {
@@ -79,7 +86,7 @@ func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
 			continue
 		}
 		if timesOverlap(start, end, evStart, evEnd) {
-			return nil, fmt.Sprintf("timeblock %q overlaps calendar event %q", ai.Title, ev.Title)
+			return nil, fmt.Sprintf("timeblock %q overlaps calendar event %q", ai.Title, ev.Title), true
 		}
 	}
 
@@ -96,15 +103,15 @@ func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
 		Priority:    strToNull(ai.Priority),
 		Status:      db.DayPlanItemStatusPending,
 		Tags:        "[]",
-	}, ""
+	}, "", false
 }
 
-func aiToBacklog(ai AIItem, taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string) {
+func aiToBacklog(ai AIItem, taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string, bool) {
 	if ai.SourceType == "calendar" {
-		return nil, "calendar items must not come from AI"
+		return nil, "calendar items must not come from AI", true
 	}
 	if reason := validateSource(ai, taskIDs, jiraKeys); reason != "" {
-		return nil, reason
+		return nil, reason, false
 	}
 	return &db.DayPlanItem{
 		Kind:        db.DayPlanItemKindBacklog,
@@ -116,7 +123,7 @@ func aiToBacklog(ai AIItem, taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem,
 		Priority:    strToNull(ai.Priority),
 		Status:      db.DayPlanItemStatusPending,
 		Tags:        "[]",
-	}, ""
+	}, "", false
 }
 
 func validateSource(ai AIItem, taskIDs, jiraKeys map[string]bool) string {
