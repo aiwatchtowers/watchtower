@@ -215,7 +215,7 @@ package enum TargetQueries {
         tags: String = "[]",
         subItems: String = "[]",
         notes: String = "[]",
-        progress: Double = 0.0,
+        progress: Double? = nil,
         sourceType: String = "manual",
         sourceID: String = "",
         aiLevelConfidence: Double? = nil,
@@ -228,8 +228,13 @@ package enum TargetQueries {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, intent, level, customLabel, periodStart, periodEnd,
                              parentId, status, priority, ownership, ballOn, dueDate, snoozeUntil,
-                             blocking, tags, subItems, notes, progress, sourceType, sourceID, aiLevelConfidence])
+                             blocking, tags, subItems, notes, progress ?? statusProgress(status),
+                             sourceType, sourceID, aiLevelConfidence])
         let newID = Int(db.lastInsertedRowID)
+        // Go `CreateTarget` parity: fold the new child into its parent chain.
+        if let parentId {
+            try recomputeParentProgress(db, parentID: parentId)
+        }
 
         for link in secondaryLinks {
             let ref = link.externalRef
@@ -258,6 +263,7 @@ package enum TargetQueries {
                 """,
             arguments: [status, id]
         )
+        try applyStatusProgress(db, id: id, status: status)
 
         // BEHAVIOR INBOX-02 — closing a target resolves its pending `target_due`
         // inbox items so the user never has to close the same thing twice.
@@ -367,6 +373,7 @@ package enum TargetQueries {
                 """,
             arguments: [clamped, id]
         )
+        try recomputeParentOf(db, id: id)
     }
 
     package static func updateSubItems(_ db: Database, id: Int, subItems: [TargetSubItem]) throws {
@@ -461,12 +468,17 @@ package enum TargetQueries {
                 """,
             arguments: [dateStr, id]
         )
+        try applyStatusProgress(db, id: id, status: "snoozed")
     }
 
     // MARK: - Delete
 
     package static func delete(_ db: Database, id: Int) throws {
+        let parent = try parentID(db, of: id)
         try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id])
+        if let parent {
+            try recomputeParentProgress(db, parentID: parent)
+        }
     }
 
     // MARK: - Links
