@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/claude"
 	"watchtower/internal/digest"
@@ -36,6 +37,7 @@ type cliUsage struct {
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
 	Type       string   `json:"type"`
+	Subtype    string   `json:"subtype"`
 	Result     string   `json:"result"`
 	CostUSD    float64  `json:"total_cost_usd"`
 	DurationMS int      `json:"duration_ms"`
@@ -74,6 +76,32 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 	}
 
 	return nil, fmt.Errorf("unexpected claude CLI output format: %s", claude.DescribeOutput(trimmed))
+}
+
+// envelopeMessage returns the CLI's own diagnostic message for a failed run,
+// bounded and rune-safe — the digest generator's errorEnvelopeMessage
+// precedent (internal/digest/generator.go), reused here so a failed chat
+// query surfaces the CLI's own reason (e.g. "Invalid API key · Please run
+// /login") instead of a bare exit code. The cap keeps a subtype=error_max_turns
+// envelope (whose "result" carries the model's own partial output rather than
+// a short diagnostic) from writing an unbounded amount of that content into
+// logs or the UI.
+func envelopeMessage(result string) string {
+	msg := strings.TrimSpace(result)
+	if msg == "" {
+		return "no message in the CLI result envelope"
+	}
+	const maxEnvelopeMessage = 4096
+	if len(msg) <= maxEnvelopeMessage {
+		return msg
+	}
+	// Back off to a rune boundary: this text is model output and routinely
+	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
+	cut := maxEnvelopeMessage
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }
 
 // ExternalMCPServer is a plain DTO describing an owner-added external MCP
@@ -427,6 +455,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// Allow up to 1MB lines for large context responses
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		// lastResult remembers the most recent "result" event's is_error/result
+		// fields — the CLI's own diagnostic (e.g. "Invalid API key · Please run
+		// /login") for an API/usage failure, which otherwise arrives on stdout
+		// as an ordinary envelope (classifyError only ever sees stderr, which
+		// is empty in this case; see internal/digest/generator.go's
+		// errorEnvelopeMessage for the same pattern on the batch path).
+		var lastResult *streamEvent
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -438,9 +474,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 				continue
 			}
 
-			// Capture session ID from result event
-			if event.Type == "result" && event.SessionID != "" {
-				sidCh <- event.SessionID
+			if event.Type == "result" {
+				captured := event
+				lastResult = &captured
+				if event.SessionID != "" {
+					sidCh <- event.SessionID
+				}
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -478,8 +517,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			return
 		}
 
-		if err := cmd.Wait(); err != nil {
-			errCh <- classifyError(err, stderrBuf.String())
+		waitErr := cmd.Wait()
+
+		// The CLI can flag is_error in its own envelope regardless of exit
+		// code (a failure surfaced this way, or one that exits 0 anyway) —
+		// its own message is always more actionable than a bare exit code or
+		// empty stderr, so it takes priority over classifyError below.
+		if lastResult != nil && lastResult.IsError {
+			errCh <- fmt.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result))
+			return
+		}
+
+		if waitErr != nil {
+			errCh <- classifyError(waitErr, stderrBuf.String())
 		}
 	}()
 
@@ -517,6 +567,18 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 
 	output, err := cmd.Output()
 	if err != nil {
+		// The CLI reports an API or usage failure as an ordinary result
+		// envelope on stdout and exits 1, with the actionable reason (e.g.
+		// "Invalid API key · Please run /login") behind kilobytes of usage
+		// telemetry — and with stderr empty. Parse it first so that message
+		// survives instead of a bare "exit code 1" (the digest generator's
+		// errorEnvelopeMessage precedent, internal/digest/generator.go).
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
+				return "", nil, fmt.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
+			}
+		}
 		return "", nil, classifyError(err, stderrBuf.String())
 	}
 
@@ -527,7 +589,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	}
 
 	if resp.IsError {
-		return "", nil, fmt.Errorf("claude returned error: %s", resp.Result)
+		return "", nil, fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
 	}
 
 	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
@@ -547,6 +609,7 @@ type streamEvent struct {
 	SessionID string         `json:"session_id"`
 	Message   *streamMessage `json:"message"`
 	Result    string         `json:"result"`
+	IsError   bool           `json:"is_error"`
 }
 
 type streamMessage struct {
