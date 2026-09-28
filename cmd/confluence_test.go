@@ -32,7 +32,13 @@ type fakeConfluenceFetcher struct {
 	blob       []byte           // its bytes
 	failKeys   map[string]bool  // spaces whose delta listing fails
 	onChanged  func(key string) // called on every delta listing, before failKeys
+	logger     *log.Logger      // set by SetLogger, nil until wired
 }
+
+// SetLogger records the logger it was given (nil until a caller wires one),
+// mirroring *confluence.Fetcher's own seam so a test can assert wiring
+// without touching the real HTTP fetcher.
+func (f *fakeConfluenceFetcher) SetLogger(logger *log.Logger) { f.logger = logger }
 
 func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
 	return f.containers, f.err
@@ -388,6 +394,23 @@ func TestExternalSyncWiring_SharesTheJiraClient(t *testing.T) {
 	assert.Equal(t, "error", acct2.Status)
 }
 
+// TestExternalSyncWiring_SetsFetcherLogger pins that wireExternalSync gives
+// the Confluence fetcher a logger of its own (the storage-parse-fallback
+// diagnostic has nowhere else to go): a fetcher not implementing SetLogger
+// at all — the extsync.Fetcher interface itself has no such method — must
+// not be required to; the wiring is a best-effort type assertion.
+func TestExternalSyncWiring_SetsFetcherLogger(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return env.fetcher }
+	logger := log.New(io.Discard, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(daemon.New(env.cfg), env.cfg, env.db, accounts, clients, logger)
+
+	assert.NotNil(t, env.fetcher.logger, "wireExternalSync must wire the fetcher's SetLogger seam")
+}
+
 func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
 	called := false
@@ -421,6 +444,20 @@ func TestConfluenceSync_ExtractsAttachments(t *testing.T) {
 		Scan(&status, &sections))
 	assert.Equal(t, "ok", status)
 	assert.Contains(t, sections, "hello world")
+}
+
+// TestConfluenceSync_SetsFetcherLogger pins that the foreground `confluence
+// sync` command wires the fetcher's SetLogger seam too, not only the daemon
+// path (wireExternalSync) — the storage-parse-fallback diagnostic must reach
+// the command's own stderr, not silently discard.
+func TestConfluenceSync_SetsFetcherLogger(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 0, "sync")
+	require.NoError(t, err)
+	assert.NotNil(t, env.fetcher.logger, "runConfluenceSync must wire the fetcher's SetLogger seam")
 }
 
 func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {

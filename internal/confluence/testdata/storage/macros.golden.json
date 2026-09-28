@@ -3,7 +3,7 @@
     {
       "heading": "Macros",
       "anchor": "Macros",
-      "text": "Macros\nfunc main() {\n    fmt.Println(\"hi\")\n}\nPanel body text.\nHidden details here.\nUnknown macro body text.\nSee PROJ-42 for details."
+      "text": "Macros\nfunc main() {\n    fmt.Println(\"hi\")\n}\nPanel body text.\nHidden details here.\nUnknown macro body text.\nSee PROJ-42 for details.\nStatus: DONE\nDue 2026-09-01 ship it."
     }
   ],
   "userIDs": null,

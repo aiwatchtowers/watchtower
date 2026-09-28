@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -868,11 +869,12 @@ func TestEXT01_FetcherReachesOnlyTheGETAPI(t *testing.T) {
 	for i := 0; i < fetcherType.NumMethod(); i++ {
 		fetcherMethods = append(fetcherMethods, fetcherType.Method(i).Name)
 	}
-	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "Users"}, fetcherMethods,
+	assert.Equal(t, []string{"All", "Changed", "Comments", "Containers", "Download", "Fetch", "SetLogger", "Users"}, fetcherMethods,
 		"a new Fetcher method must be exercised by this guard")
 
 	api := newFakeAPI(t)
 	f := NewFetcher(api, testSite)
+	f.SetLogger(log.New(io.Discard, "", 0)) // diagnostics only; no network reach
 	ctx := context.Background()
 	_, err := f.Containers(ctx)
 	require.NoError(t, err)

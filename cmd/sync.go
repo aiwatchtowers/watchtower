@@ -987,7 +987,11 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 	engine := extsync.New(database, extSyncOptions(cfg, subLogger(logger, "[ext-sync] "), extSyncCycleBudget))
 	for _, acct := range accounts {
 		if client := clients[acct.ID]; client != nil {
-			engine.SetFetcher(acct.ID, newConfluenceFetcher(client, acct.SiteURL))
+			fetcher := newConfluenceFetcher(client, acct.SiteURL)
+			if lg, ok := fetcher.(interface{ SetLogger(*log.Logger) }); ok {
+				lg.SetLogger(subLogger(logger, "[confluence] "))
+			}
+			engine.SetFetcher(acct.ID, fetcher)
 		}
 	}
 	d.SetExternalSync(engine)

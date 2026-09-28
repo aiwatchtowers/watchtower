@@ -444,7 +444,11 @@ func runConfluenceSync(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "No spaces selected for this account. See 'watchtower confluence select'.")
 		return nil
 	}
-	engine := extsync.New(s.db, extSyncOptions(s.cfg, jiraCmdLogger(cmd), 0))
+	logger := jiraCmdLogger(cmd)
+	if lg, ok := s.fetcher.(interface{ SetLogger(*log.Logger) }); ok {
+		lg.SetLogger(subLogger(logger, "[confluence] "))
+	}
+	engine := extsync.New(s.db, extSyncOptions(s.cfg, logger, 0))
 	engine.SetFetcher(s.account.ID, s.fetcher)
 	return syncConfluenceSources(cmd, engine, srcs)
 }
