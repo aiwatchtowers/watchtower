@@ -201,4 +201,92 @@ final class RecordingIndicatorViewTests: XCTestCase {
     // Retry/dismiss eligibility now lives on the Center
     // (`retriableFailureID`/`dismissableFailureID`, so the buttons can never
     // disagree with what the Center would do); see MeetingRecorderQueueTests.
+
+    // MARK: - Reserved composer inset
+
+    /// Nothing recording, queued or failed: the empty stack measures zero and
+    /// composers keep their normal layout.
+    func testEmptyStackReservesNothing() {
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 0), 0)
+    }
+
+    /// Visible pills reserve their own height plus the stack's gap to the
+    /// window bottom, so a composer sits entirely above the topmost pill.
+    func testVisibleStackReservesItsHeightPlusOuterPadding() {
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 40),
+                       40 + RecordingIndicatorInset.outerPadding)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 150), 166)
+    }
+
+    /// While the live panel is expanded the panel itself reserves nothing:
+    /// it is a transient overlay, with the recorder pills above it.
+    func testExpandedPanelReservesNothing() {
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 310, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 360, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 40, expandedPanelShown: false),
+                       40 + RecordingIndicatorInset.outerPadding)
+    }
+
+    /// Verify finding R1: a model-download capsule drawn BELOW the expanded
+    /// panel still reserves its own height, or it would cover the composer.
+    func testPillBelowTheExpandedPanelStillReserves() {
+        let stack = 310 + RecordingIndicatorInset.stackSpacing + 40
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: stack, expandedPanelShown: true,
+                                                              belowPanelHeight: 40),
+                       40 + RecordingIndicatorInset.outerPadding)
+        // Collapsed: the whole stack reserves, whatever sits at its bottom.
+        XCTAssertEqual(RecordingIndicatorInset.reservedHeight(stackHeight: 90, expandedPanelShown: false,
+                                                              belowPanelHeight: 40),
+                       90 + RecordingIndicatorInset.outerPadding)
+    }
+
+    /// The inset is opt-in on the bottom-most content of main-window screens
+    /// only — never inside the shared `ChatInput` (which also serves sheets,
+    /// onboarding and setup assistants). Exact per-file counts of code
+    /// (non-comment) occurrences, so a second opt-in inside a listed file
+    /// fails too.
+    func testInsetIsAppliedOnlyAtTheAgreedMainWindowSites() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .appendingPathComponent("Sources")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+        var counts: [String: Int] = [:]
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            if url.lastPathComponent == "ChatInput.swift" {
+                XCTAssertFalse(text.contains("recordingIndicatorInset"), "ChatInput must not reserve the pill inset")
+            }
+            guard !url.path.hasSuffix("RecordingIndicatorInset.swift") else { continue }
+            let uses = Self.codeLines(text).reduce(0) { total, line in
+                total + line.components(separatedBy: ".clearsRecordingIndicator()").count - 1
+            }
+            if uses > 0 { counts[url.lastPathComponent, default: 0] += uses }
+        }
+        XCTAssertEqual(counts, [
+            "ChatComposerView.swift": 1,
+            "TargetChatView.swift": 1,
+            "TargetDetailView.swift": 1,
+            "TrackChatView.swift": 1,
+            "RecordingDetailTabs.swift": 1,
+            "IdeaDetailPane.swift": 1,
+            "DecisionDetailView.swift": 1
+        ])
+    }
+
+    func testCodeLinesSkipsCommentLines() {
+        let text = """
+        // .clearsRecordingIndicator() in a comment
+        /// .clearsRecordingIndicator() in a doc comment
+          .clearsRecordingIndicator()
+        """
+        XCTAssertEqual(Self.codeLines(text), ["  .clearsRecordingIndicator()"])
+    }
+
+    /// Source lines minus `//` / `///` comment lines.
+    private static func codeLines(_ text: String) -> [String] {
+        text.components(separatedBy: "\n").filter {
+            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+        }
+    }
 }

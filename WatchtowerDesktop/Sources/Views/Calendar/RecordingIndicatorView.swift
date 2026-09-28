@@ -27,6 +27,26 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    /// Receives the bottom space composers must keep free while pills show
+    /// (`RecordingIndicatorInset.reservedHeight`), 0 once the stack is empty.
+    var onReservedInsetChange: (CGFloat) -> Void = { _ in }
+    @State private var stackHeight: CGFloat = 0
+    /// Height of the model-download capsule drawn below the recorder pills,
+    /// read only while one shows.
+    @State private var provisionerHeight: CGFloat = 0
+
+    private var reservedInset: CGFloat {
+        let provisionerShown = appState.transcriptionModelProvisioner.state != .idle
+        return RecordingIndicatorInset.reservedHeight(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
+                                                      belowPanelHeight: provisionerShown ? provisionerHeight : 0)
+    }
+
+    /// The same condition `recordingView` renders the expanded panel under.
+    private var expandedPanelShown: Bool {
+        let center = appState.meetingRecorderCenter
+        guard case .recording = center.captureState else { return false }
+        return expanded && showsLiveAffordance(center)
+    }
 
     /// Whether the active capture has a live transcript to offer: the engine
     /// can produce one AND the capture opted in — the Center's start-time
@@ -43,11 +63,13 @@ struct RecordingIndicatorView: View {
     var body: some View {
         let center = appState.meetingRecorderCenter
         let provisioner = appState.transcriptionModelProvisioner
-        VStack(alignment: .trailing, spacing: 10) {
+        VStack(alignment: .trailing, spacing: RecordingIndicatorInset.stackSpacing) {
             recorderContent(center)
             provisionerContent(provisioner)
         }
-        .padding(16)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stackHeight = $0 }
+        .onChange(of: reservedInset, initial: true) { _, inset in onReservedInsetChange(inset) }
+        .padding(RecordingIndicatorInset.outerPadding)
     }
 
     @ViewBuilder
@@ -97,8 +119,10 @@ struct RecordingIndicatorView: View {
                 ProgressView(value: progress).controlSize(.small).frame(width: 80)
                 Text("Downloading model… \(Int(progress * 100))%").font(.callout)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         case let .failed(message):
             modelFailedCapsule(provisioner, message: message)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         }
     }
 
@@ -169,6 +193,10 @@ struct RecordingIndicatorView: View {
             .controlSize(.small)
             .tint(.red)
         }
+        // Ideal width, never compressed: a squeezed capsule blanked the Stop
+        // label and pushed the button out past the capsule's (and the
+        // window's) right edge.
+        .fixedSize()
     }
 
     @ViewBuilder
