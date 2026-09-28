@@ -455,10 +455,19 @@ func (p *Pipeline) relevantEntries(digests []db.Digest, userID string, signals r
 		return nil, err
 	}
 	entries = p.filterEntriesByRelevance(entries, userID, signals)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].topicCount > entries[j].topicCount
-	})
+	sortEntriesForBatching(entries)
 	return entries, nil
+}
+
+// sortEntriesForBatching orders entries largest-first, breaking ties by
+// channel id, so which channels share a batch is reproducible from run to run.
+func sortEntriesForBatching(entries []digestEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].topicCount != entries[j].topicCount {
+			return entries[i].topicCount > entries[j].topicCount
+		}
+		return entries[i].channelID < entries[j].channelID
+	})
 }
 
 // loadWindowContext caches the owner's profile + active-tracks reference and
@@ -1143,14 +1152,61 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		return 0, fmt.Errorf("parsing batch result: %w", err)
 	}
 
-	totalStored := 0
+	resolve := newBatchChannelResolver(entries)
+	totalStored, rejected := 0, 0
 	for _, cr := range results {
-		chName := p.channelName(cr.ChannelID)
-		stored := p.storeTrackItems(cr.Items, userID, cr.ChannelID, chName, usage, promptVersion, from, to)
+		channelID, ok := resolve(cr.ChannelID)
+		if !ok {
+			// An id the batch never offered (invented, or a raw id two
+			// accounts in this batch share) must not be written as a
+			// track's channel — drop the result, keep the rest.
+			rejected++
+			continue
+		}
+		chName := p.channelName(channelID)
+		stored := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
 		totalStored += stored
+	}
+	if rejected > 0 {
+		p.logger.Printf("tracks: batch dropped %d result(s) with a channel_id not in the batch", rejected)
 	}
 
 	return totalStored, nil
+}
+
+// newBatchChannelResolver maps a model-emitted channel_id back to the
+// namespaced id of the batch entry it refers to. The prompt shows each
+// channel's namespaced id ("1:C…") but its JSON example a bare one, so the
+// model may echo either form: an exact match wins, then a raw id that
+// exactly one entry carries. A raw id shared by two entries (two accounts in
+// one batch) and an id matching no entry both resolve to ok=false — the
+// digest pipeline's batchEntryLookup rule.
+func newBatchChannelResolver(entries []digestEntry) func(string) (string, bool) {
+	exact := make(map[string]bool, len(entries))
+	byRaw := make(map[string]string, len(entries))
+	ambiguous := make(map[string]bool)
+	for _, e := range entries {
+		exact[e.channelID] = true
+		_, rawID, _ := watchtowerslack.SplitAccountID(e.channelID)
+		if rawID == "" {
+			continue
+		}
+		if prev, seen := byRaw[rawID]; seen && prev != e.channelID {
+			ambiguous[rawID] = true
+			continue
+		}
+		byRaw[rawID] = e.channelID
+	}
+	return func(id string) (string, bool) {
+		if exact[id] {
+			return id, true
+		}
+		if ambiguous[id] {
+			return "", false
+		}
+		ns, ok := byRaw[id]
+		return ns, ok
+	}
 }
 
 // maxTracksForRollup is the maximum number of tracks included in rollup prompts.

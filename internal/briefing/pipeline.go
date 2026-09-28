@@ -28,9 +28,9 @@ type BriefingResult struct {
 // AttentionItem is something requiring the user's immediate focus.
 type AttentionItem struct {
 	Text          string `json:"text"`
-	SourceType    string `json:"source_type"` // track, digest, people, target
-	SourceID      string `json:"source_id"`
-	Priority      string `json:"priority"` // high, medium
+	SourceType    string `json:"source_type"`         // track, digest, people, target
+	SourceID      string `json:"source_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
+	Priority      string `json:"priority"`            // high, medium
 	Reason        string `json:"reason"`
 	SuggestTarget bool   `json:"suggest_target,omitempty"`
 }
@@ -77,6 +77,10 @@ type Pipeline struct {
 	generator   digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+
+	// shown collects the ids the current RunForDate's prompt rendered; nil
+	// outside a run (see shownIDs).
+	shown *shownIDs
 
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
@@ -143,7 +147,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		p.logger.Printf("briefing: could not load user profile: %v", err)
 	}
 
-	// Gather data in parallel-friendly sections.
+	// Gather data in parallel-friendly sections, recording every id shown.
+	p.shown = newShownIDs()
+	defer func() { p.shown = nil }()
 	targetsCtx, hasRealTargets := p.gatherTargets()
 	tracksCtx, hasRealTracks := p.gatherTracks()
 	inboxCtx, hasRealInbox := p.gatherInbox()
@@ -215,6 +221,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parsing briefing response: %w", err)
 	}
+	p.blankUnshownIDs(result)
 
 	// Serialize JSON sections.
 	attentionJSON, _ := json.Marshal(result.Attention)
@@ -315,6 +322,7 @@ func (p *Pipeline) gatherTargets() (string, bool) {
 		if t.DueDate != "" && t.DueDate < today {
 			overdue = " OVERDUE"
 		}
+		p.shown.addTarget(t.ID)
 		sb.WriteString(fmt.Sprintf("- [target_id=%d level=%s %s%s] %s\n", t.ID, t.Level, t.Priority, overdue, t.Text))
 		if t.Intent != "" {
 			sb.WriteString(fmt.Sprintf("  Why: %s\n", t.Intent))
@@ -347,6 +355,7 @@ func (p *Pipeline) gatherTracks() (string, bool) {
 
 	var sb strings.Builder
 	for _, t := range tracks {
+		p.shown.addTrack(t.ID)
 		sb.WriteString(fmt.Sprintf("- [id=%d %s %s] %s\n", t.ID, t.Priority, t.Ownership, t.Text))
 		if t.Context != "" {
 			ctx := t.Context
@@ -385,6 +394,7 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 		if item.TriggerType == "dm" {
 			typeLabel = "DM"
 		}
+		p.shown.addInbox(item.ID)
 		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
 			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
 		if item.AIReason != "" {
@@ -461,6 +471,7 @@ func (p *Pipeline) gatherDigests(date string) string {
 	var sb strings.Builder
 	for _, d := range digests {
 		channelName := d.ChannelID
+		p.shown.addDigest(d.ID)
 		sb.WriteString(fmt.Sprintf("--- [digest_id=%d] #%s (msgs: %d) ---\n", d.ID, channelName, d.MessageCount))
 
 		topics := topicsByDigest[d.ID]
@@ -494,6 +505,7 @@ func (p *Pipeline) gatherLatestDailyDigest() string {
 	if err != nil || d == nil {
 		return ""
 	}
+	p.shown.addDigest(d.ID)
 	return fmt.Sprintf("--- DAILY ROLLUP (digest_id=%d) ---\n%s\n", d.ID, d.Summary)
 }
 
@@ -513,6 +525,7 @@ func (p *Pipeline) gatherPeopleCards() string {
 		if c.Status == "insufficient_data" {
 			continue
 		}
+		p.shown.addPerson(c.UserID)
 		sb.WriteString(fmt.Sprintf("@%s: %s", c.UserID, c.Summary))
 		if c.RedFlags != "" && c.RedFlags != "[]" {
 			sb.WriteString(fmt.Sprintf(" [flags: %s]", c.RedFlags))

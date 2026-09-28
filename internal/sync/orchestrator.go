@@ -62,6 +62,15 @@ type Orchestrator struct {
 	// column, so the only record of a permanent data gap outlives its run.
 	searchGapNote string
 
+	// searchRateLimited records whether the current Run's search sync gave up
+	// on its first page specifically because Slack rate-limited the token
+	// (isRateLimitError — never set for a scope/permission problem or any
+	// other non-fatal error, which keep falling back to full sync as before).
+	// Run resets it; runSearchSync's "zero channels discovered" fallback must
+	// not escalate to the far more expensive full sync while this is true, or
+	// a rate-limited token gets hit with even more calls instead of backing off.
+	searchRateLimited bool
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -152,6 +161,7 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // later cycle's failure surfaces at the top level.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
+	o.searchRateLimited = false
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
@@ -299,6 +309,21 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 			return o.runFullSync(ctx, opts)
 		}
 		return fmt.Errorf("search sync: %w", err)
+	}
+
+	// Slack is already throttling this token (searchRateLimited, set by
+	// syncViaSearch's page-1 handling): end the cycle here rather than spend
+	// more of the same budget on the read-state/roster refreshes or the
+	// reactions sync below, or on the zero-channels full-sync fallback right
+	// after this. searchGapNote already carries a note so this doesn't look
+	// like a healthy "ok" cycle in the account row; finishSync (in
+	// particular TouchSyncedAt) is skipped too, so the Desktop's "last
+	// synced" time isn't refreshed for a cycle that fetched nothing. Neither
+	// readStateSyncedAt nor rosterSyncedAt is touched, so both refreshes are
+	// still due next cycle exactly as if this cycle hadn't run at all.
+	if o.searchRateLimited {
+		o.logger.Println("search sync: rate-limited by Slack, skipping the rest of this cycle")
+		return nil
 	}
 
 	// Fallback: if search found 0 channels (e.g. missing search:read scope),
@@ -834,6 +859,20 @@ func isNonFatalError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isRateLimitError reports whether err is specifically a Slack rate-limit
+// response (*slack.RateLimitedError) — as opposed to any other non-fatal
+// condition (a scope/permission problem, a dead account/channel, ...). Only
+// a rate limit gets the special "don't escalate to full sync" handling in
+// syncViaSearch's page-1 branch; every other isNonFatalError case keeps
+// falling back to full sync exactly as before that fix.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rlErr *slack.RateLimitedError
+	return errors.As(err, &rlErr)
 }
 
 // channelName returns a human-readable channel identifier for logging.

@@ -149,6 +149,24 @@ func IsValidExternalRef(ref string) bool {
 	return strings.HasPrefix(ref, "jira:") || strings.HasPrefix(ref, "slack:")
 }
 
+// validLevels and validPriorities mirror the targets table's CHECK
+// constraints (case-sensitive in SQLite). A model value outside them would
+// fail the insert and roll back the whole confirmed batch.
+var (
+	validLevels     = map[string]bool{"quarter": true, "month": true, "week": true, "day": true, "custom": true}
+	validPriorities = map[string]bool{"high": true, "medium": true, "low": true}
+)
+
+// normalizeEnum lower-cases and trims a model-emitted enum value, returning
+// fallback when it is not one of allowed.
+func normalizeEnum(value string, allowed map[string]bool, fallback string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if allowed[v] {
+		return v
+	}
+	return fallback
+}
+
 // parseExtractResponse parses the JSON from the AI, enforces caps, validates ids.
 // On malformed JSON it returns an error (caller retries once).
 func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Logger) (*ExtractResult, error) {
@@ -195,15 +213,23 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 	}
 
 	var result []ProposedTarget
+	emptyText := 0
 	for _, item := range resp.Extracted {
+		text := strings.TrimSpace(item.Text)
+		if text == "" {
+			// A target with no text is noise, and one bad row must not reach
+			// the confirm batch's single transaction.
+			emptyText++
+			continue
+		}
 		pt := ProposedTarget{
-			Text:        item.Text,
+			Text:        text,
 			Intent:      item.Intent,
-			Level:       item.Level,
+			Level:       normalizeEnum(item.Level, validLevels, "day"),
 			CustomLabel: item.CustomLabel,
 			PeriodStart: item.PeriodStart,
 			PeriodEnd:   item.PeriodEnd,
-			Priority:    item.Priority,
+			Priority:    normalizeEnum(item.Priority, validPriorities, "medium"),
 			DueDate:     item.DueDate,
 		}
 
@@ -297,6 +323,9 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 		}
 
 		result = append(result, pt)
+	}
+	if emptyText > 0 && logger != nil {
+		logger.Printf("targets/extractor: dropped %d item(s) with empty text", emptyText)
 	}
 
 	return &ExtractResult{
