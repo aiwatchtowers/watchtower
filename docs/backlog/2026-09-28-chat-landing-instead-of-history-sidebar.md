@@ -21,11 +21,22 @@ Previous 30 Days / Older) permanently, which feels cluttered. Proposed layout:
   (to decide — e.g. 15–30 min without activity in that conversation) the next
   visit lands on the landing view again.
 
+Current layout (owner screenshot): three columns at once — the app's main
+navigation sidebar, the Chats history column (brown background, see the
+related finding), and the conversation itself. The history column takes ~a
+quarter of the window width and competes with the main sidebar for attention;
+there are also two separate sidebar toggles (app sidebar top-left, chat
+history in the conversation header). The ask is to drop to two columns by
+default (app sidebar + conversation / landing), with history as an opt-in
+column.
+
 Open questions for the owner: the exact resume timeout; whether a running
 (streaming) turn always forces resume regardless of the timeout (probably
 yes); how this interacts with warm-session prewarm on open (the landing's
 composer could prewarm a fresh session on first keystroke, like today).
 
 Related: [[2026-09-28-chat-history-sidebar-turned-brown]].
+
+> Follow-up note (with screenshot): «фотка чтобы фолоуапнуть предыдущий»
 
 > Original note: «чаты по умолчанию скрыть, а то аляповато как-то. При заходе на страницу вывести список последних и окно начать новый. Текущий активный какое то время открывается по умолчанию»
