@@ -74,6 +74,7 @@ type Pipeline struct {
 	generator   digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+	now         func() time.Time // clock for the retry set's UTC day; tests inject it
 
 	OnProgress ProgressFunc
 
@@ -114,6 +115,7 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		cfg:       cfg,
 		generator: gen,
 		logger:    logger,
+		now:       time.Now,
 	}
 }
 
@@ -332,14 +334,21 @@ func (p *Pipeline) withRetryDigests(digests []db.Digest) ([]db.Digest, map[int]b
 // batching). An interrupted run only clears what its succeeded batches covered
 // — the batches that never ran are owed another go.
 //
-// Failed batches are charged only when at least one batch succeeded, i.e. the
-// provider demonstrably worked: a run in which every batch failed is an outage
-// (and freezes the watermark anyway), so it must not age owed digests toward
-// being given up on.
+// Failed batches are charged in full when at least one batch succeeded, i.e.
+// the provider demonstrably worked. A run in which every batch failed may be
+// an outage (and freezes the watermark anyway): it adds nothing new to the set
+// and charges an owed digest at most once per UTC day, so a short outage costs
+// nothing while a digest that fails even on its own still gives up.
 func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) {
-	charged := res.failedDigests
-	if res.succeeded == 0 {
-		charged = nil
+	var charged, chargedDaily []int
+	if res.succeeded > 0 {
+		charged = res.failedDigests
+	} else {
+		for _, id := range res.failedDigests {
+			if retryIDs[id] {
+				chargedDaily = append(chargedDaily, id)
+			}
+		}
 	}
 	failed := make(map[int]bool, len(res.failedDigests))
 	for _, id := range res.failedDigests {
@@ -359,7 +368,8 @@ func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResul
 			}
 		}
 	}
-	gaveUp, err := p.db.SettleTrackRetryDigests(done, charged, maxBatchRetryAttempts)
+	day := p.now().UTC().Format("2006-01-02")
+	gaveUp, err := p.db.SettleTrackRetryDigests(done, charged, chargedDaily, day, maxBatchRetryAttempts)
 	if err != nil {
 		p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", err)
 		return

@@ -331,6 +331,53 @@ func TestRunForWindow_FullyFailedRunsKeepRetryDigests(t *testing.T) {
 	assert.Equal(t, 1, maxAttempts, "fully failed runs charge nothing")
 }
 
+// An owed digest that fails even on its own (every run all-failed, no batch
+// ever succeeds) is charged at most once per UTC day and given up on after
+// maxBatchRetryAttempts days — never re-sent forever, never aged twice a day.
+func TestRunForWindow_OwedDigestAloneGivesUpOverUTCDays(t *testing.T) {
+	database := testDB(t)
+	seedTrackWindow(t, database, 1)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	day0 := time.Now().UTC()
+	var digestID int
+	require.NoError(t, database.QueryRow(`SELECT id FROM digests WHERE channel_id = 'C1'`).Scan(&digestID))
+	_, err = database.Exec(`INSERT INTO track_retry_digests (digest_id, attempts, last_charged_day) VALUES (?, 1, ?)`,
+		digestID, day0.Format("2006-01-02"))
+	require.NoError(t, err)
+
+	gen := &failingGenerator{failFirst: 1 << 30}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+	clock := day0
+	pipe.now = func() time.Time { return clock }
+
+	run := func() {
+		t.Helper()
+		_, rerr := pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+		require.Error(t, rerr, "the owed digest's batch fails")
+	}
+	run() // same day as the last charge: no charge
+	assert.Equal(t, 1, retryAttempts(t, database, "C1"), "not charged again on the day it was last charged")
+
+	clock = day0.Add(24 * time.Hour)
+	run()
+	run()
+	assert.Equal(t, 2, retryAttempts(t, database, "C1"), "one charge per UTC day, however many runs")
+
+	clock = day0.Add(48 * time.Hour)
+	run()
+	assert.Equal(t, 0, retryAttempts(t, database, "C1"), "given up on after the last allowed attempt")
+	calls := gen.calls
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	require.NoError(t, err, "nothing left to offer")
+	assert.Equal(t, calls, gen.calls, "a digest given up on is not re-sent")
+}
+
 // A shutdown is not a batch failure: an interrupted run charges nothing to
 // the retry set, whether the cut came between batches or mid-call.
 func TestRunForWindow_ShutdownIsNotChargedToRetrySet(t *testing.T) {

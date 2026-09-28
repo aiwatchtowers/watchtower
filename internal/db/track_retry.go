@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // GetTrackRetryDigests returns the channel digests whose track-extraction batch
 // failed in an earlier run and that are still owed a retry.
@@ -27,11 +30,13 @@ func (db *DB) GetTrackRetryDigests() ([]Digest, error) {
 }
 
 // SettleTrackRetryDigests records one tracks run's outcome in the retry set, in
-// one transaction: every id in done leaves the set, every id in failed gains an
-// attempt, and a failed id that reaches maxAttempts leaves the set too (the run
-// gives up on it). Returns how many digests were given up on.
-func (db *DB) SettleTrackRetryDigests(done, failed []int, maxAttempts int) (int, error) {
-	if len(done) == 0 && len(failed) == 0 {
+// one transaction: every id in done leaves the set; every id in failed gains an
+// attempt (joining the set if new); every id in failedDaily — owed digests of a
+// run in which every batch failed — gains an attempt only if it has not been
+// charged yet on the UTC date day. A charged id that reaches maxAttempts leaves
+// the set (the run gives up on it). Returns how many digests were given up on.
+func (db *DB) SettleTrackRetryDigests(done, failed, failedDaily []int, day string, maxAttempts int) (int, error) {
+	if len(done) == 0 && len(failed) == 0 && len(failedDaily) == 0 {
 		return 0, nil
 	}
 	tx, err := db.Begin()
@@ -45,19 +50,38 @@ func (db *DB) SettleTrackRetryDigests(done, failed []int, maxAttempts int) (int,
 		}
 	}
 	gaveUp := 0
-	for _, id := range failed {
+	charge := func(id int, query string) error {
 		var attempts int
-		if err := tx.QueryRow(`INSERT INTO track_retry_digests (digest_id, attempts) VALUES (?, 1)
-			ON CONFLICT(digest_id) DO UPDATE SET attempts = attempts + 1,
-				updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-			RETURNING attempts`, id).Scan(&attempts); err != nil {
-			return 0, fmt.Errorf("recording track retry digest %d: %w", id, err)
+		err := tx.QueryRow(query, id, day).Scan(&attempts)
+		if err == sql.ErrNoRows {
+			return nil // already charged today (daily) — nothing to do
 		}
-		if attempts >= maxAttempts {
-			if _, err := tx.Exec(`DELETE FROM track_retry_digests WHERE digest_id = ?`, id); err != nil {
-				return 0, fmt.Errorf("dropping track retry digest %d: %w", id, err)
-			}
-			gaveUp++
+		if err != nil {
+			return fmt.Errorf("recording track retry digest %d: %w", id, err)
+		}
+		if attempts < maxAttempts {
+			return nil
+		}
+		if _, err := tx.Exec(`DELETE FROM track_retry_digests WHERE digest_id = ?`, id); err != nil {
+			return fmt.Errorf("dropping track retry digest %d: %w", id, err)
+		}
+		gaveUp++
+		return nil
+	}
+	for _, id := range failed {
+		if err := charge(id, `INSERT INTO track_retry_digests (digest_id, attempts, last_charged_day) VALUES (?1, 1, ?2)
+			ON CONFLICT(digest_id) DO UPDATE SET attempts = attempts + 1, last_charged_day = ?2,
+				updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			RETURNING attempts`); err != nil {
+			return 0, err
+		}
+	}
+	for _, id := range failedDaily {
+		if err := charge(id, `UPDATE track_retry_digests SET attempts = attempts + 1, last_charged_day = ?2,
+				updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			WHERE digest_id = ?1 AND last_charged_day != ?2
+			RETURNING attempts`); err != nil {
+			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
