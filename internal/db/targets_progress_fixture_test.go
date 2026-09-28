@@ -46,8 +46,8 @@ func loadTargetProgressCases(t *testing.T) []targetProgressCase {
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatalf("decoding fixture: %v", err)
 	}
-	if len(cases) < 8 {
-		t.Fatalf("fixture has %d cases, want at least 8", len(cases))
+	if len(cases) < 9 {
+		t.Fatalf("fixture has %d cases, want at least 9", len(cases))
 	}
 	return cases
 }

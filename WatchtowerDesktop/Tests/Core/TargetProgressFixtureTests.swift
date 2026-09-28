@@ -90,7 +90,7 @@ final class TargetProgressFixtureTests: XCTestCase {
 
     func testSharedFixtureMatchesGo() throws {
         let cases = try Self.cases()
-        XCTAssertGreaterThanOrEqual(cases.count, 8, "fixture must not silently shrink")
+        XCTAssertGreaterThanOrEqual(cases.count, 9, "fixture must not silently shrink")
 
         for fixture in cases {
             let queue = try TestDatabase.create()

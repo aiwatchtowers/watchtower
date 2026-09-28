@@ -30,13 +30,17 @@ extension TargetQueries {
     /// ancestor chain. A row is written — and its `updated_at` bumped — only
     /// when the computed value differs from the stored one (the next-step
     /// budget keys on `updated_at`). Cycles stop at the first revisited id;
-    /// the walk is capped at 20 levels. Port of Go `recomputeParentProgressOn`.
+    /// the walk is capped at 20 levels; both stops are logged, as in Go.
+    /// Port of Go `recomputeParentProgressOn`.
     package static func recomputeParentProgress(_ db: Database, parentID: Int) throws {
         var visited = Set<Int>()
         var current = parentID
 
         for _ in 0..<recomputeParentProgressMaxDepth {
-            if visited.contains(current) { return }
+            if visited.contains(current) {
+                NSLog("TargetQueries: recomputeParentProgress detected cycle at target %d — stopping", current)
+                return
+            }
             visited.insert(current)
 
             let avgRow = try Row.fetchOne(
@@ -70,6 +74,10 @@ extension TargetQueries {
             guard let next = nextRow?["parent_id"] as Int? else { return }
             current = next
         }
+        NSLog(
+            "TargetQueries: recomputeParentProgress reached max depth (%d) at target %d — stopping",
+            recomputeParentProgressMaxDepth, current
+        )
     }
 
     /// The progress half of Go `UpdateTargetStatus`: a leaf (no non-dismissed
