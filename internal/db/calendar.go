@@ -199,11 +199,36 @@ func (db *DB) GetCalendarEvents(filter CalendarEventFilter) ([]CalendarEvent, er
 	return db.queryCalendarEvents(query, args...)
 }
 
-// GetCalendarEventsForDate returns all events on a given date (YYYY-MM-DD).
-func (db *DB) GetCalendarEventsForDate(date string) ([]CalendarEvent, error) {
-	from := date + "T00:00:00Z"
-	to := date + "T23:59:59Z"
-	return db.GetCalendarEvents(CalendarEventFilter{FromTime: from, ToTime: to})
+// GetCalendarEventsForDate returns all events on the local calendar day date
+// (YYYY-MM-DD, interpreted in loc; nil = time.Local). A timed event matches
+// when it overlaps [local midnight, next local midnight), both converted to
+// UTC — the column format. An all-day event is stored as UTC midnight of its
+// date with an EXCLUSIVE end (Google's End.Date, iCal DTEND;VALUE=DATE), so it
+// matches by its own date: start before the next date's midnight and end
+// strictly after this date's midnight — yesterday's all-day event, whose end
+// is exactly today's midnight, does not leak into today.
+func (db *DB) GetCalendarEventsForDate(date string, loc *time.Location) ([]CalendarEvent, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	day, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return nil, fmt.Errorf("parsing calendar date %q: %w", date, err)
+	}
+	const layout = "2006-01-02T15:04:05Z"
+	next := day.AddDate(0, 0, 1)
+	allDayFrom := date + "T00:00:00Z"
+	allDayTo := next.Format("2006-01-02") + "T00:00:00Z"
+	timedFrom := day.UTC().Format(layout)
+	timedTo := next.UTC().Format(layout)
+	query := `SELECT id, calendar_id, title, description, location, start_time, end_time,
+		organizer_email, attendees, is_recurring, is_all_day, event_status,
+		event_type, html_link, conference_url, raw_json, ical_uid, synced_at, updated_at
+		FROM calendar_events
+		WHERE (is_all_day = 1 AND end_time > ? AND start_time < ?)
+		   OR (is_all_day = 0 AND end_time > ? AND start_time < ?)
+		ORDER BY start_time`
+	return db.queryCalendarEvents(query, allDayFrom, allDayTo, timedFrom, timedTo)
 }
 
 // GetCalendarEventByID returns a single event by its Google ID.
