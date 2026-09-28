@@ -636,11 +636,13 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 
 // JiraIssueOffsetsSince returns the distinct UTC offsets (seconds east) that
 // the account's live jira_issues.updated_at values past sinceISO carry. The
-// column keeps Jira's own offset ("…000-0400", RFC3339 "Z"/"+03:00" in older
-// rows), so a caller building a string bound needs them. Unparseable suffixes
+// column keeps Jira's own offset ("…000-0400"; older RFC3339 rows end in "Z"
+// or "+03:00"), so a caller building a string bound needs them. Only the
+// distinct suffixes are read — everything after the seconds field, i.e. the
+// optional fraction plus the offset — never every row. Unparseable suffixes
 // are skipped.
 func (db *DB) JiraIssueOffsetsSince(accountID int64, sinceISO string) ([]int, error) {
-	rows, err := db.Query(`SELECT DISTINCT updated_at FROM jira_issues
+	rows, err := db.Query(`SELECT DISTINCT substr(updated_at, 20) FROM jira_issues
 		WHERE account_id = ? AND is_deleted = 0 AND updated_at > ?`, accountID, sinceISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing jira issue offsets: %w", err)
@@ -649,22 +651,32 @@ func (db *DB) JiraIssueOffsetsSince(accountID int64, sinceISO string) ([]int, er
 	seen := map[int]bool{}
 	var out []int
 	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
+		var suffix string
+		if err := rows.Scan(&suffix); err != nil {
 			return nil, fmt.Errorf("scanning jira issue offset: %w", err)
 		}
-		t, err := time.Parse(jiraUpdatedLayout, u)
-		if err != nil {
-			if t, err = time.Parse(time.RFC3339, u); err != nil {
-				continue
-			}
-		}
-		if _, off := t.Zone(); !seen[off] {
+		off, ok := parseJiraOffsetSuffix(suffix)
+		if ok && !seen[off] {
 			seen[off] = true
 			out = append(out, off)
 		}
 	}
 	return out, rows.Err()
+}
+
+// parseJiraOffsetSuffix parses what follows "YYYY-MM-DDTHH:MM:SS" in an
+// updated_at: an optional ".fff" fraction, then "Z", "±hhmm" or "±hh:mm".
+func parseJiraOffsetSuffix(suffix string) (int, bool) {
+	if i := strings.IndexAny(suffix, "Z+-"); i >= 0 {
+		suffix = suffix[i:]
+	}
+	for _, layout := range []string{"Z0700", "Z07:00"} {
+		if t, err := time.Parse(layout, suffix); err == nil {
+			_, off := t.Zone()
+			return off, true
+		}
+	}
+	return 0, false
 }
 
 // GetJiraSyncStates returns all Jira sync states across every account.
