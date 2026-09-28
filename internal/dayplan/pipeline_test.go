@@ -319,3 +319,31 @@ func TestRun_AllItemsDroppedIsAFailedAttempt(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, plan, "an empty proposal is still a plan")
 }
+
+// A meeting-heavy day: every proposal collides with (or restates) the
+// calendar and is dropped, but the meetings themselves make a valid
+// calendar-only plan — never a failed attempt.
+func TestRun_AllItemsDroppedOnMeetingDayKeepsCalendarPlan(t *testing.T) {
+	d := gatherTestDB(t)
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	evStart := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal-001", Name: "Primary", IsPrimary: true}))
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+		ID: "evt-all-day-meetings", CalendarID: "cal-001", Title: "Offsite sessions",
+		StartTime: evStart.UTC().Format(time.RFC3339), EndTime: evStart.Add(8 * time.Hour).UTC().Format(time.RFC3339),
+		Attendees: "[]",
+	}))
+	response := `{"timeblocks":[{"source_type":"calendar","source_id":"evt-all-day-meetings","title":"Offsite","description":"x","rationale":"y","start_time_local":"09:00","end_time_local":"17:00","priority":"high"},` +
+		`{"source_type":"focus","source_id":null,"title":"Squeezed focus","description":"x","rationale":"y","start_time_local":"10:00","end_time_local":"11:00","priority":"high"}],` +
+		`"backlog":[],"summary":"meetings"}`
+	p := newTestPipeline(d, &mockGenerator{response: response})
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err, "a calendar-only day is a plan, not a failure")
+	require.NotNil(t, plan)
+	items, err := d.GetDayPlanItems(plan.ID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, db.DayPlanItemSourceCalendar, items[0].SourceType)
+}

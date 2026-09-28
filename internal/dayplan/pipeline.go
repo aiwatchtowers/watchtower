@@ -144,11 +144,13 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 			p.logger.Printf("dayplan: dropped item: %s", d)
 		}
 	}
-	// The model proposed items but validation dropped every one: that is a
-	// failed attempt (charged to the daemon's budget and retried), not a
-	// finished empty plan that would stick for the day. A model that proposed
-	// nothing at all is an honest empty plan.
-	if len(newItems) == 0 && len(dropped) > 0 {
+	// The model proposed items, validation dropped every one, and the day has
+	// nothing else to show (no timed meeting for syncCalendarItems to add, no
+	// manual item): a failed attempt, charged to the daemon's budget and
+	// retried, not an empty plan that would stick for the day. A meeting-heavy
+	// day whose proposals all collided with the calendar is a valid
+	// calendar-only plan, and a model that proposed nothing is an honest one.
+	if len(newItems) == 0 && len(dropped) > 0 && len(manual) == 0 && !hasTimedEvent(events) {
 		return nil, fmt.Errorf("day plan for %s: all %d generated items failed validation", opts.Date, len(dropped))
 	}
 
@@ -204,6 +206,17 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	_ = p.DetectConflicts(ctx, opts.UserID, opts.Date)
 
 	return p.db.GetDayPlanByID(planID)
+}
+
+// hasTimedEvent reports whether events hold a non-all-day event, i.e. one
+// syncCalendarItems turns into a timeblock.
+func hasTimedEvent(events []db.CalendarEvent) bool {
+	for _, e := range events {
+		if !e.IsAllDay {
+			return true
+		}
+	}
+	return false
 }
 
 // persistItems writes a generated plan's items: the AI items, then the
