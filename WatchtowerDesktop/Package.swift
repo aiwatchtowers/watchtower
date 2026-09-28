@@ -9,7 +9,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
-        // swift-markdown removed: MarkdownText uses Foundation's AttributedString(markdown:)
+        // Markdown AST for the shared chat renderer (tables, task lists, fences).
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
@@ -35,6 +36,7 @@ let package = Package(
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
+                .product(name: "Markdown", package: "swift-markdown"),
             ],
             path: "Sources/WatchtowerCore"
         ),

@@ -99,13 +99,21 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	if f.Priority != nil {
 		priority = f.Priority.Name
 	}
+	resolvedAt := ""
+	if f.Resolved != nil {
+		resolvedAt = *f.Resolved
+	}
 	raw, _ := json.Marshal(issue)
 	return db.JiraIssue{
 		AccountID: accountID, Key: issue.Key, ID: issue.ID, ProjectKey: projectKey,
 		Summary: f.Summary, DescriptionText: jira.DescriptionText(f.Description),
-		IssueType: f.IssueType.Name, Status: f.Status.Name, StatusCategory: f.Status.StatusCategory.Key,
+		// StatusCategory uses the same normalizer the syncer writes
+		// (jira.NormalizeStatusCategory: "todo"/"in_progress"/"done"), not the raw
+		// Jira key — every reader that filters on status_category (briefing,
+		// dashboards, memory) compares against the normalized form.
+		IssueType: f.IssueType.Name, Status: f.Status.Name, StatusCategory: jira.NormalizeStatusCategory(f.Status.StatusCategory.Key),
 		Priority: priority, Labels: string(labels), Components: "[]", FixVersions: "[]",
-		CreatedAt: f.Created, UpdatedAt: f.Updated, RawJSON: string(raw), SyncedAt: now,
+		CreatedAt: f.Created, UpdatedAt: f.Updated, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
 	}
 }
 

@@ -46,6 +46,9 @@ type ClaudeGenerator struct {
 	modelLight  string
 	modelStrong string
 	claudePath  string // optional override from config (claude_path)
+	// stdinOnly routes every user message through stdin regardless of its
+	// size (see SetStdinOnly).
+	stdinOnly bool
 }
 
 // NewClaudeGenerator creates a generator that uses the Claude CLI.
@@ -54,6 +57,12 @@ type ClaudeGenerator struct {
 func NewClaudeGenerator(modelLight, modelStrong, claudePath string) *ClaudeGenerator {
 	return &ClaudeGenerator{modelLight: modelLight, modelStrong: modelStrong, claudePath: claudePath}
 }
+
+// SetStdinOnly makes every subsequent Generate pass the user message on
+// stdin, never as a positional argv value, whatever its size. Callers whose
+// user message carries the owner's chat text set it (CHAT-04: `chat title`);
+// every other caller keeps the size-based routing.
+func (g *ClaudeGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // modelForContext picks the tier model for a call: the source tag routes to
 // light or strong; an untagged call uses the strong model.
@@ -87,13 +96,14 @@ func validateModelArgs(model string) []string {
 const StdinThreshold = 32 * 1024
 
 // generateArgs builds the CLI args for a digest generation request; when
-// userMessage exceeds StdinThreshold it is returned as stdin content instead
-// ("-p" with no value makes claude read the prompt from stdin).
+// userMessage exceeds StdinThreshold (or stdinOnly is set) it is returned as
+// stdin content instead ("-p" with no value makes claude read the prompt from
+// stdin).
 // See validateModelArgs for why --setting-sources project,local is required.
-func generateArgs(model, systemPrompt, userMessage string) ([]string, string) {
+func generateArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
 	stdin := ""
 	args := []string{"-p"}
-	if len(userMessage) > StdinThreshold {
+	if stdinOnly || len(userMessage) > StdinThreshold {
 		stdin = userMessage
 	} else {
 		args = append(args, userMessage)
@@ -226,7 +236,7 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.modelForContext(ctx)
 
-	args, stdin := generateArgs(model, systemPrompt, userMessage)
+	args, stdin := generateArgs(model, systemPrompt, userMessage, g.stdinOnly)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)

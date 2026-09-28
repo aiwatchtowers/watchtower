@@ -15,12 +15,6 @@ final class IdeasViewModelTests: XCTestCase {
         super.setUp()
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-            // Created lazily by DatabaseManager in production, not by the test
-            // schema — deleting an idea touches its Discuss chat.
-            try dbManager.dbPool.write { db in
-                try ChatConversationQueries.ensureTable(db)
-                try ChatMessageQueries.ensureTable(db)
-            }
         } catch {
             XCTFail("setUp failed: \(error)")
         }

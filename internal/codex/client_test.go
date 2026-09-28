@@ -186,6 +186,55 @@ esac
 	}
 }
 
+// TestChat04_CodexSessionArgvCarriesNoContent pins CHAT-04 (spec §9) for the
+// chat session's codex backend: cmd/ai_session.go calls SetStdinOnly(true)
+// on the codex client it builds for `ai session --provider codex`, and under
+// that mode buildArgs must never emit the system prompt via
+// -c developer_instructions=... nor place a short user message positionally
+// — both must travel only on stdin, delimited so codex can still tell them
+// apart. A client that never calls SetStdinOnly (every other caller —
+// cliGenerator, digest generators, plain `ai query`) must be unaffected.
+// BEHAVIOR CHAT-04 — see docs/inventory/chat.md
+func TestChat04_CodexSessionArgvCarriesNoContent(t *testing.T) {
+	c := NewClient("gpt-5.4", "", "codex")
+	c.SetStdinOnly(true)
+
+	const sysSecret = "SYSTEM-PROMPT-SENTINEL-9f3a"
+	const userSecret = "short owner message"
+	args, stdin := c.buildArgs(sysSecret, userSecret, "")
+
+	argv := strings.Join(args, "\x00")
+	if strings.Contains(argv, sysSecret) {
+		t.Errorf("argv %v must never carry the system prompt", args)
+	}
+	if strings.Contains(argv, userSecret) {
+		t.Errorf("argv %v must never carry the user message", args)
+	}
+	assertNotContains(t, args, "developer_instructions="+sysSecret)
+	assertContains(t, args, "-") // codex exec - reads the whole turn from stdin
+	if args[len(args)-1] != "-" {
+		t.Errorf("last arg = %q, want \"-\"", args[len(args)-1])
+	}
+
+	if !strings.Contains(stdin, sysSecret) {
+		t.Errorf("stdin must carry the system prompt, got %q", stdin)
+	}
+	if !strings.Contains(stdin, userSecret) {
+		t.Errorf("stdin must carry the user message, got %q", stdin)
+	}
+	if strings.Index(stdin, sysSecret) > strings.Index(stdin, userSecret) {
+		t.Errorf("system instructions must come before the user message in stdin, got %q", stdin)
+	}
+
+	// A plain client (no SetStdinOnly, every existing caller) is unaffected.
+	c2 := NewClient("gpt-5.4", "", "codex")
+	args2, stdin2 := c2.buildArgs(sysSecret, userSecret, "")
+	if stdin2 != "" {
+		t.Errorf("stdin = %q, want empty for the default (non-StdinOnly) client", stdin2)
+	}
+	assertContains(t, args2, "developer_instructions="+sysSecret)
+}
+
 func assertContains(t *testing.T, args []string, want string) {
 	t.Helper()
 	for _, a := range args {

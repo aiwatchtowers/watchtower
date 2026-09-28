@@ -10,16 +10,8 @@ import WatchtowerTestSupport
 final class TargetAssistantViewModelTests: XCTestCase {
     // MARK: - Fixtures
 
-    /// The chat tables are Desktop-owned (`DatabaseManager` creates them at
-    /// runtime), and the shared test schema does not carry them — the container
-    /// needs them for real, so they are created here.
     private func makeManager() throws -> (DatabaseManager, String) {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        try manager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-        }
-        return (manager, path)
+        try TestDatabase.createDatabaseManager()
     }
 
     private func makeTarget(_ manager: DatabaseManager, text: String = "ship feature") throws -> Target {
@@ -307,11 +299,12 @@ final class TargetAssistantViewModelTests: XCTestCase {
 
     /// A read that fails is "unknown", not "this target has no chats": falling
     /// through to the create would open a duplicate tab beside the existing ones.
-    /// The chat tables are missing here, so the list read throws.
+    /// The chat table is dropped here so the list read throws.
     func testAFailedTabListReadNeverOpensAReplacementTab() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
+        try manager.dbPool.write { db in try db.execute(sql: "DROP TABLE chat_conversations") }
 
         let assistant = makeContainer(manager, target: target)
 

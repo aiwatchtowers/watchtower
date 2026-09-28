@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
@@ -27,6 +29,7 @@ var (
 	aiFlagTurn         string
 	aiFlagContextType  string
 	aiFlagContextID    string
+	aiFlagEvents       string
 )
 
 var aiCmd = &cobra.Command{
@@ -86,11 +89,15 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextID, "context-id", "", "chat context id")
+	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 }
 
 func runAIQuery(_ *cobra.Command, args []string) error {
 	prompt := args[0]
 	enc := json.NewEncoder(os.Stdout)
+	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
+		return emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+	}
 
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -122,6 +129,16 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	systemPrompt := aiFlagSystemPrompt
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
+	if aiFlagEvents == "v2" {
+		streamQueryV2(os.Stdout, v2TurnID(), textCh, errCh, sidCh)
+		return nil
+	}
+	streamQueryV1(enc, textCh, errCh, sidCh)
+	return nil
+}
+
+// streamQueryV1 writes the v1 protocol (text/reset/session_id/error/done).
+func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
 	// Drain text channel (main stream). A tool-boundary chunk becomes a "reset"
 	// event so the desktop drops the pre-tool preamble and renders only the
 	// answer that follows the tool call.
@@ -148,7 +165,6 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	}
 
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
-	return nil
 }
 
 func runAITest(_ *cobra.Command, _ []string) error {
@@ -279,9 +295,49 @@ func orPickHint(model string) string {
 }
 
 func emitError(enc *json.Encoder, msg string) error {
+	if aiFlagEvents == "v2" {
+		_ = enc.Encode(chat.Event{Type: chat.EventError, TurnID: v2TurnID(), Code: chat.CodeInternal, Message: msg, Retryable: true})
+		return nil
+	}
 	_ = enc.Encode(aiStreamEvent{Type: "error", Error: msg})
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
 	return nil
+}
+
+// v2TurnID is the turn id `ai query --events v2` stamps on its events: the
+// --turn flag when given (tool-bearing chats pass one), else "query".
+func v2TurnID() string {
+	if aiFlagTurn != "" {
+		return aiFlagTurn
+	}
+	return "query"
+}
+
+// streamQueryV2 renders a one-shot query as protocol-v2 events: turn_start,
+// text_delta per chunk (a tool boundary never wipes text), then turn_done —
+// or, on failure, one classified turn error in its place.
+func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
+	out := chat.NewEventWriter(w)
+	_ = out.Emit(chat.Event{Type: chat.EventTurnStart, TurnID: turnID})
+	for chunk := range textCh {
+		for _, e := range chat.ChunkEvents(turnID, chunk) {
+			_ = out.Emit(e)
+		}
+	}
+	sid := ""
+	for s := range sidCh {
+		if s != "" {
+			sid = s
+		}
+	}
+	for err := range errCh {
+		if err != nil {
+			code, retry := chat.ClassifyClaudeError(err.Error())
+			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: err.Error(), Retryable: retry})
+			return
+		}
+	}
+	_ = out.Emit(chat.Event{Type: chat.EventTurnDone, TurnID: turnID, Status: chat.StatusComplete, SessionID: sid})
 }
 
 // mcpConfigurable is implemented by the CLI-backed providers (claude, codex)

@@ -14,13 +14,6 @@ final class TargetBriefCenterTests: XCTestCase {
         return try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
     }
 
-    private func ensureChatTables(_ manager: DatabaseManager) throws {
-        try manager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-        }
-    }
-
     private func makeCenter(manager: DatabaseManager, mock: MockClaudeService) -> TargetBriefCenter {
         makeCenter(manager: manager) { _ in mock }
     }
@@ -112,7 +105,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testBriefSurvivesWithNoViewAndReleasesToIdle() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager)
         let mock = MockClaudeService(events: [.sessionID("s1"), .text("On it — decomposing."), .done])
         let center = makeCenter(manager: manager, mock: mock)
@@ -149,7 +141,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testAdoptionReturnsTheSameInstanceWhileHeld() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager)
         let mock = MockClaudeService(events: [.sessionID("s1"), .text("ok"), .done])
         let center = makeCenter(manager: manager, mock: mock)
@@ -169,7 +160,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testStreamFailureLandsInFailed() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager)
         struct Boom: Error, LocalizedError {
             var errorDescription: String? { "CLI unavailable" }
@@ -199,7 +189,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testSecondBriefQueuesBehindTheFirstAndBothComplete() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let execBlock = """
@@ -258,7 +247,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testFailedBriefKeepsItsBannerAndDoesNotBlockTheQueue() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         struct Boom: Error, LocalizedError {
@@ -295,7 +283,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testMarkFailedForAnotherTargetLeavesTheRunningBriefAlone() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("working on it")],
@@ -333,7 +320,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testExplicitCancelWritesNothing() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager, text: "target A")
         let execBlock = """
         Working on it.
@@ -382,7 +368,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testStartingAnotherBriefKeepsTheEarlierFailureVisible() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         struct Boom: Error, LocalizedError {
@@ -452,7 +437,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testBriefDueOnABusyChatFailsVisibly() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenAwaitsRelease: true)
@@ -490,7 +474,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testBriefKeepsTheOwnersUnsentDraft() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenAwaitsRelease: true)
@@ -520,7 +503,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testBriefThatCannotBeSentFailsVisibly() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let target = try makeTarget(manager)
         let mock = MockClaudeService(events: [.sessionID("s1"), .text("ok"), .done])
         let center = makeCenter(manager: manager, mock: mock)
@@ -538,7 +520,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testExplicitCancelOfTheRunningBriefStartsTheQueuedOne() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenHangs: true)
@@ -568,7 +549,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testCancelledWatcherDoesNotStrandTheQueue() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenAwaitsRelease: true)
@@ -602,7 +582,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testBriefForATargetDeletedWhileQueuedNeverRuns() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenAwaitsRelease: true)
@@ -630,7 +609,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testDropForgetsTheTargetsQueuedAndFailedBriefsOnly() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         let mockA = MockClaudeService(events: [.sessionID("a1"), .text("A working")], thenAwaitsRelease: true)
@@ -660,7 +638,6 @@ final class TargetBriefCenterTests: XCTestCase {
     func testAnEarlierFailedOwnerTurnDoesNotFailALaterBrief() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try ensureChatTables(manager)
         let targetA = try makeTarget(manager, text: "target A")
         let targetB = try makeTarget(manager, text: "target B")
         struct Boom: Error, LocalizedError {

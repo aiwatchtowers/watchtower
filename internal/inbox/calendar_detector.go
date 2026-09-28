@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -12,7 +13,7 @@ import (
 // calAttendee is the JSON shape of each element in calendar_events.attendees.
 type calAttendee struct {
 	Email      string `json:"email"`
-	RSVPStatus string `json:"rsvp_status"`
+	RSVPStatus string `json:"response_status"` // calendar.Attendee wire key
 }
 
 // calEventRow holds a single calendar_events row we care about.
@@ -76,7 +77,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 		amIAttendee := false
 		myRSVP := ""
 		for _, a := range attendees {
-			if a.Email == myEmail {
+			if strings.EqualFold(a.Email, myEmail) {
 				amIAttendee = true
 				myRSVP = a.RSVPStatus
 				break

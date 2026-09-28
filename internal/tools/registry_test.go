@@ -720,3 +720,22 @@ func TestAll_ReturnsEveryToolInRegistrationOrder(t *testing.T) {
 	assert.Equal(t, "echo", all[0].Name)
 	assert.Equal(t, "other", all[1].Name)
 }
+
+// A warm chat session spans many turns: the proposal must carry the turn that
+// is running at propose time, read through TurnIDFunc, not the launch value.
+func TestPropose_TurnIDFuncWinsOverStaticTurn(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
+
+	current := "turn-live"
+	rc, err := reg.Propose(context.Background(), "echo",
+		json.RawMessage(`{"text":"hi","reason":"because"}`),
+		Binding{Surface: "main", ConversationID: 4, TurnID: "turn-at-launch", TurnIDFunc: func() string { return current }})
+	require.NoError(t, err)
+
+	row, err := database.GetAgentAction(rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "turn-live", row.TurnID)
+}

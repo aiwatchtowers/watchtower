@@ -1,7 +1,7 @@
 package codex
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +19,9 @@ type CodexGenerator struct {
 	modelLight  string
 	modelStrong string
 	codexPath   string
+	// stdinOnly routes every user message through stdin regardless of its
+	// size (see SetStdinOnly).
+	stdinOnly bool
 }
 
 // NewCodexGenerator creates a generator that uses the Codex CLI.
@@ -27,6 +30,12 @@ type CodexGenerator struct {
 func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerator {
 	return &CodexGenerator{modelLight: modelLight, modelStrong: modelStrong, codexPath: codexPath}
 }
+
+// SetStdinOnly makes every subsequent Generate pass the user message on
+// stdin ("-" positional), never as a positional argv value, whatever its
+// size. Callers whose user message carries the owner's chat text set it
+// (CHAT-04: `chat title`); every other caller keeps the size-based routing.
+func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // Generate calls Codex CLI with the given prompt and returns the response text,
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
@@ -38,7 +47,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args, stdin := buildArgs(model, systemPrompt, userMessage)
+	args, stdin := buildArgs(model, systemPrompt, userMessage, g.stdinOnly)
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	if stdin != "" {
@@ -88,10 +97,10 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 }
 
 // buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold the final positional arg is "-" (codex reads the
+// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
 // prompt from stdin) and the message is returned as stdin content instead,
 // to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
-func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
+func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
 	args := []string{
 		"exec",
 		"--model", model,
@@ -105,7 +114,7 @@ func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}
 	stdin := ""
-	if len(userMessage) > digest.StdinThreshold {
+	if stdinOnly || len(userMessage) > digest.StdinThreshold {
 		stdin = userMessage
 		args = append(args, "-")
 	} else {
@@ -117,20 +126,21 @@ func buildArgs(model, systemPrompt, userMessage string) ([]string, string) {
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
 // content and accumulated usage.
 func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 	var lastContent string
 	totalUsage := &CodexUsage{}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+	// The whole output is already in memory, so split it instead of using a
+	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
+	// scanner buffer, and a scanner stopping there silently returned the
+	// pre-tool preamble as the answer.
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 
 		var event CodexEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
 			continue
 		}
 

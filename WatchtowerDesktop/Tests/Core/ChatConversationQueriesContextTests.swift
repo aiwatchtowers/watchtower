@@ -4,28 +4,11 @@ import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 /// The two multi-conversation readers behind the target assistant tabs.
-/// `chat_conversations` is Swift-owned (created by `ensureTable`), so these
-/// tests build it themselves rather than expecting it in the shared schema.
+/// Chat tables come from the shared test schema (goose 00076).
 final class ChatConversationQueriesContextTests: XCTestCase {
 
     private func makeDB() throws -> DatabaseQueue {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            // `chat_messages` is created by the Desktop module (ChatMessageQueries,
-            // outside WatchtowerCore), so its shape is spelled out here — the
-            // turn-activity reader joins the two.
-            try db.execute(sql: """
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                )
-            """)
-        }
-        return db
+        try TestDatabase.create()
     }
 
     private func insertMessage(

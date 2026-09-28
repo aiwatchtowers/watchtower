@@ -187,14 +187,16 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
-		"--disallowedTools", "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
-			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
-			"ExitPlanMode,SlashCommand,Skill",
+		"--disallowedTools", DisallowedTools,
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
 		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
 		"--setting-sources", "project,local",
+		// Only the MCP servers named in --mcp-config (watchtower + the owner's
+		// Quick Connections): never the owner's claude.ai connectors or any
+		// other server the CLI would load on its own.
+		"--strict-mcp-config",
 	})
 	// Claude CLI requires --verbose for stream-json output format.
 	if outputFormat == "stream-json" {
@@ -268,15 +270,56 @@ func writeMCPConfigTempFile(config string) (string, error) {
 	return path, nil
 }
 
+// DisallowedTools hides every built-in Claude Code tool from the chat model
+// (see buildArgs for why each group is hidden). Shared by the one-shot client
+// and the warm `ai session` backend. The last two lines are the newer CLI
+// built-ins (scheduling/remote triggers, workflows, agent/task plumbing, MCP
+// resource readers that would bypass the Quick Connections allowlist) — an
+// unknown name is ignored by older CLIs. ToolSearch stays allowed: it loads
+// the deferred watchtower tool schemas.
+const DisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
+	"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
+	"ExitPlanMode,SlashCommand,Skill," +
+	"CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor," +
+	"EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate," +
+	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool"
+
+// AllowedTools builds the --allowedTools value: the built-in watchtower
+// server plus one mcp__<Name> token per external server, in slice order.
+func AllowedTools(ext []ExternalMCPServer) string {
+	tools := "mcp__watchtower"
+	for _, s := range ext {
+		tools += ",mcp__" + s.Name
+	}
+	return tools
+}
+
+// ChatMCPConfig renders the chat's mcp-config JSON: the watchtower server
+// (this binary as `mcp --db-path <db>` plus mcpArgs) and every external
+// server. Shared by the one-shot client and the warm `ai session` backend.
+func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) string {
+	args := append([]string{"mcp", "--db-path", dbPath}, mcpArgs...)
+	servers := map[string]any{
+		"watchtower": map[string]any{
+			"command": watchtowerBinary(),
+			"args":    args,
+		},
+	}
+	for _, s := range ext {
+		servers[s.Name] = externalServerConfig(s)
+	}
+	data, err := json.Marshal(map[string]any{"mcpServers": servers})
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
 // allowedToolsFlag builds the --allowedTools value: the built-in watchtower
 // server plus one mcp__<Name> token per external server, in slice order
 // (deterministic — no external servers means byte-identical to today).
 func (c *Client) allowedToolsFlag() string {
-	tools := "mcp__watchtower"
-	for _, s := range c.externalServers {
-		tools += ",mcp__" + s.Name
-	}
-	return tools
+	return AllowedTools(c.externalServers)
 }
 
 // buildMCPConfig generates a JSON string for the chat's MCP server config.
@@ -287,24 +330,7 @@ func (c *Client) allowedToolsFlag() string {
 // servers (Quick Connections) are merged in alongside it, one entry per
 // server: stdio servers run a local command, http servers point at a URL.
 func (c *Client) buildMCPConfig() string {
-	args := append([]string{"mcp", "--db-path", c.dbPath}, c.mcpArgs...)
-	servers := map[string]any{
-		"watchtower": map[string]any{
-			"command": watchtowerBinary(),
-			"args":    args,
-		},
-	}
-	for _, s := range c.externalServers {
-		servers[s.Name] = externalServerConfig(s)
-	}
-	cfg := map[string]any{
-		"mcpServers": servers,
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return "{}"
-	}
-	return string(data)
+	return ChatMCPConfig(c.dbPath, c.mcpArgs, c.externalServers)
 }
 
 // externalServerConfig renders one owner-added external MCP server into its
@@ -570,17 +596,24 @@ type limitedWriter struct {
 	written int
 }
 
+// Write always reports len(p) on success, even when it keeps only a prefix:
+// os/exec drains stderr through io.Copy, which turns a short count into
+// io.ErrShortWrite and fails a run that exited 0.
 func (lw *limitedWriter) Write(p []byte) (int, error) {
 	remaining := lw.limit - lw.written
 	if remaining <= 0 {
 		return len(p), nil // silently discard
 	}
-	if len(p) > remaining {
-		p = p[:remaining]
+	kept := p
+	if len(kept) > remaining {
+		kept = kept[:remaining]
 	}
-	n, err := lw.w.Write(p)
+	n, err := lw.w.Write(kept)
 	lw.written += n
-	return n, err
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }
 
 // classifyError wraps CLI errors with user-friendly messages.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,14 +14,30 @@ import (
 )
 
 type remindMeArgs struct {
-	RemindAt string `json:"remind_at" jsonschema:"when to resurface this: RFC 3339 with a timezone offset or Z (e.g. 2026-09-07T09:00:00+02:00), or owner-local YYYY-MM-DDTHH:MM; stored as UTC"`
-	Note     string `json:"note,omitempty" jsonschema:"a short note about what to follow up on"`
-	Reason   string `json:"reason" jsonschema:"one sentence for the owner"`
+	RemindAt   string `json:"remind_at" jsonschema:"when to resurface this: RFC 3339 with a timezone offset or Z (e.g. 2026-09-07T09:00:00+02:00), or owner-local YYYY-MM-DDTHH:MM; stored as UTC"`
+	Note       string `json:"note,omitempty" jsonschema:"a short note about what to follow up on"`
+	MessageRef string `json:"message_ref,omitempty" jsonschema:"optional: the Slack message this is about, as <channel_id>@<message_ts> (e.g. 1:C0123@1712345678.000100)"`
+	Reason     string `json:"reason" jsonschema:"one sentence for the owner"`
 }
 
-// NewRemindMe builds the remind_me write tool: parks the reacted message
-// (its ref threaded through Call.Binding.ContextID, REACT-02) to resurface
-// at a chosen time.
+// messageRefRE is the "<channel_id>@<message_ts>" shape the reaction binding
+// writes (channel ids are namespaced "<account>:<raw>").
+var messageRefRE = regexp.MustCompile(`^[^@\s]+@\d+\.\d+$`)
+
+// reminderRef picks the stored message ref. On the reaction path it is the
+// reacted message from the binding and nothing else (REACT-02: no invented
+// provenance); elsewhere the binding's ContextID is a chat context, so only
+// the model's explicit message_ref (or none) is used.
+func reminderRef(a remindMeArgs, b Binding) string {
+	if b.Surface == "reaction" {
+		return b.ContextID
+	}
+	return strings.TrimSpace(a.MessageRef)
+}
+
+// NewRemindMe builds the remind_me write tool: a reminder that resurfaces at
+// a chosen time — about the reacted message on the reaction path (REACT-02),
+// or an optional explicit message_ref in the main chat.
 func NewRemindMe() *Tool {
 	schema, err := jsonschema.For[remindMeArgs](nil)
 	if err != nil {
@@ -28,13 +45,12 @@ func NewRemindMe() *Tool {
 	}
 	return &Tool{
 		Name:        "remind_me",
-		Description: "Park a message to resurface in the inbox at a chosen time.",
+		Description: "Set a reminder that resurfaces in the Inbox at a chosen time, optionally about one Slack message.",
 		InputSchema: schema,
 		Access:      AccessWrite,
-		// Reaction-path only (REACT-02 threads the reacted message ref through
-		// Call.Binding): mounting it in the main/target chat would let a chat
-		// turn create work outside its mandate with no message to bind to.
-		Surfaces: []string{"reaction"},
+		// The reaction path (REACT-02 binds the reacted message) and the main
+		// chat; never the target chat (TGT-BRIEF-01 axis 3).
+		Surfaces: []string{"reaction", "main"},
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a remindMeArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -45,6 +61,9 @@ func NewRemindMe() *Tool {
 			}
 			if _, err := normalizeRemindAt(a.RemindAt); err != nil {
 				return err
+			}
+			if ref := strings.TrimSpace(a.MessageRef); ref != "" && !messageRefRE.MatchString(ref) {
+				return &ValidationError{Msg: fmt.Sprintf("message_ref %q must look like <channel_id>@<message_ts>", ref)}
 			}
 			return nil
 		},
@@ -58,7 +77,7 @@ func NewRemindMe() *Tool {
 				return nil, err
 			}
 			id, err := d.InsertReminder(db.Reminder{
-				MessageRef: call.Binding.ContextID,
+				MessageRef: reminderRef(a, call.Binding),
 				Note:       strings.TrimSpace(a.Note),
 				RemindAt:   remindAt,
 			})

@@ -30,19 +30,14 @@ final class DatabaseManager: Sendable {
                 throw WatchtowerDatabaseError.schemaVersionTooOld(version)
             }
             let tables = try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table'")
-            for required in ["workspace", "channels", "messages", "users"] {
-                guard tables.contains(required) else {
-                    throw WatchtowerDatabaseError.missingTable(required)
+            // chat_turn_steps exists only once goose migration 00076 ran; the
+            // older Swift-created chat tables alone do not satisfy the floor.
+            let required = ["workspace", "channels", "messages", "users", "chat_conversations", "chat_messages", "chat_turn_steps"]
+            for table in required {
+                guard tables.contains(table) else {
+                    throw WatchtowerDatabaseError.missingTable(table)
                 }
             }
-        }
-
-        // Desktop-only tables (not managed by Go CLI schema versioning)
-        try dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatConversationQueries.ensureContextColumns(db)
-            try ChatMessageQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTurnIDColumn(db)
         }
     }
 

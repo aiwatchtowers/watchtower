@@ -255,7 +255,15 @@ final class SkillsCatalogTests: XCTestCase {
 
     func testChatContextTypesMatchesTheContract() {
         XCTAssertEqual(SkillsCatalog.chatContextTypes,
-                       ["meeting", "target", "track", "idea"])
+                       ["main", "meeting", "target", "track", "idea"])
+    }
+
+    func testPickerSkillsListsOnlyEnabledSkillsOnAListedSurface() {
+        seedMixedCatalog()
+        XCTAssertEqual(SkillsCatalog.pickerSkills(contextType: "main", dir: dir).map(\.name),
+                       ["alpha-on", "beta-on"])
+        XCTAssertTrue(SkillsCatalog.pickerSkills(contextType: "onboarding", dir: dir).isEmpty)
+        XCTAssertTrue(SkillsCatalog.pickerSkills(contextType: "main", dir: nil).isEmpty)
     }
 
     /// The overload every chat VM goes through: the context type it stores on

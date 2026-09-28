@@ -2,9 +2,11 @@ package inbox
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"watchtower/internal/calendar"
 	"watchtower/internal/db"
 )
 
@@ -54,7 +56,7 @@ func TestCalendarDetector_NewInvite(t *testing.T) {
 	syncedAt := time.Now().Add(-30 * time.Minute)
 	updatedAt := syncedAt
 	seedCalendarEvent(t, d, "evt-1", "Team sync",
-		`[{"email":"me@x.com","rsvp_status":"needsAction"}]`,
+		`[{"email":"me@x.com","response_status":"needsAction"}]`,
 		"confirmed", syncedAt, updatedAt)
 
 	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
@@ -76,7 +78,7 @@ func TestCalendarDetector_EndedInviteSkipped(t *testing.T) {
 	// sync with calendar.history_days — it must NOT mint a calendar_invite.
 	syncedAt := time.Now().Add(-30 * time.Minute)
 	seedCalendarEventAt(t, d, "evt-ended", "Old meeting",
-		`[{"email":"me@x.com","rsvp_status":"needsAction"}]`,
+		`[{"email":"me@x.com","response_status":"needsAction"}]`,
 		"confirmed", syncedAt, syncedAt,
 		time.Now().Add(-10*24*time.Hour), time.Now().Add(-10*24*time.Hour+time.Hour))
 
@@ -103,7 +105,7 @@ func TestCalendarDetector_UnparseableEndTimeKeepsInvite(t *testing.T) {
 			(id, calendar_id, title, attendees, event_status, synced_at, updated_at,
 			 start_time, end_time)
 		VALUES ('evt-badend', 'cal-1', 'Odd event',
-		        '[{"email":"me@x.com","rsvp_status":"needsAction"}]',
+		        '[{"email":"me@x.com","response_status":"needsAction"}]',
 		        'confirmed', ?, ?, 'not-a-date', 'not-a-date')`,
 		syncedAt.UTC().Format(time.RFC3339), syncedAt.UTC().Format(time.RFC3339))
 	if err != nil {
@@ -147,7 +149,7 @@ func TestCalendarDetector_TimeChange(t *testing.T) {
 	syncedAt := time.Now().Add(-2 * time.Hour)
 	updatedAt := time.Now().Add(-30 * time.Minute)
 	seedCalendarEvent(t, d, "evt-3", "Rescheduled meeting",
-		`[{"email":"me@x.com","rsvp_status":"accepted"}]`,
+		`[{"email":"me@x.com","response_status":"accepted"}]`,
 		"confirmed", syncedAt, updatedAt)
 
 	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-3*time.Hour))
@@ -168,7 +170,7 @@ func TestCalendarDetector_Deduplication(t *testing.T) {
 	syncedAt := time.Now().Add(-30 * time.Minute)
 	updatedAt := syncedAt
 	seedCalendarEvent(t, d, "evt-dup", "Sync",
-		`[{"email":"me@x.com","rsvp_status":"needsAction"}]`,
+		`[{"email":"me@x.com","response_status":"needsAction"}]`,
 		"confirmed", syncedAt, updatedAt)
 
 	since := time.Now().Add(-1 * time.Hour)
@@ -188,7 +190,7 @@ func TestCalendarDetector_NotMyEvent(t *testing.T) {
 	updatedAt := syncedAt
 	// Attendee is someone else, not me.
 	seedCalendarEvent(t, d, "evt-other", "Other meeting",
-		`[{"email":"other@x.com","rsvp_status":"needsAction"}]`,
+		`[{"email":"other@x.com","response_status":"needsAction"}]`,
 		"confirmed", syncedAt, updatedAt)
 
 	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
@@ -208,5 +210,49 @@ func TestCalendarDetector_EmptyEmail(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("want 0 for empty email, got %d", n)
+	}
+}
+
+// productionAttendees renders the attendees column exactly as the Google and
+// CalDAV syncers write it (calendar.Attendee), so the detector is pinned to
+// the real wire shape rather than a hand-written fixture key.
+func productionAttendees(t *testing.T, email, status string) string {
+	t.Helper()
+	b, err := json.Marshal([]calendar.Attendee{{Email: email, ResponseStatus: status}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestCalendarDetector_ProductionAttendeeShape(t *testing.T) {
+	d := testDB(t)
+	syncedAt := time.Now().Add(-30 * time.Minute)
+	seedCalendarEvent(t, d, "evt-prod", "Team sync",
+		productionAttendees(t, "me@x.com", "needsAction"),
+		"confirmed", syncedAt, syncedAt)
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 calendar_invite from a syncer-shaped attendees column, got %d", n)
+	}
+}
+
+func TestCalendarDetector_OwnerEmailCaseInsensitive(t *testing.T) {
+	d := testDB(t)
+	syncedAt := time.Now().Add(-30 * time.Minute)
+	seedCalendarEvent(t, d, "evt-case", "Team sync",
+		productionAttendees(t, "Me@X.com", "needsAction"),
+		"confirmed", syncedAt, syncedAt)
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("attendee email differing only in case must still match the owner, got %d items", n)
 	}
 }

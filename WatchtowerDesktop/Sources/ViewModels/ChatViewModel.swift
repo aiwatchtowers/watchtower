@@ -24,6 +24,12 @@ enum AIProvider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The chat provider for a config.yaml `ai.provider` value: any known
+    /// provider as is (ollama included), anything else — unset, unknown — Claude.
+    static func fromConfig(_ value: String?) -> Self {
+        value.flatMap(Self.init(rawValue:)) ?? .claude
+    }
+
     var displayName: String {
         switch self {
         case .claude: "Claude"
@@ -33,726 +39,639 @@ enum AIProvider: String, CaseIterable, Identifiable {
     }
 }
 
+/// The main AI Chat (spec §1.4, §2.3). An action surface (AGENT-04): the Go
+/// session mounts the registry's write tools for `--surface main`, and Go
+/// builds the system prompt (`internal/chat`) — Swift sends only turns.
+///
+/// Ownership: running turns live in `ChatSessionPool` (app-wide), which
+/// persists them. This view model only starts turns and renders — so it can
+/// be released or switched mid-turn without losing a byte (CHAT-01).
+///
+/// Invariant: a new owner message never sits directly under another owner
+/// message. Every turn writes its owner row and its (empty, `partial`)
+/// assistant row in one transaction, and a legacy unanswered question gets
+/// an empty `partial` reply first — Go's `HistoryBefore` drops one trailing
+/// owner row, which must only ever be the question being re-sent.
 @MainActor
 @Observable
 final class ChatViewModel {
-    var messages: [ChatMessage] = []
-    var isStreaming = false
-    var inputText = ""
-    var errorMessage: String?
-    var selectedProvider: AIProvider = .claude
-    /// Model override for this chat; empty = the provider's resolved
-    /// strong-tier model (the CLI resolves it — see `watchtower ai models`).
-    var selectedModel: String = ""
-
     private(set) var conversationID: Int64?
-    private var sessionID: String?
-    private var aiService: any AIServiceProtocol
-    private let dbManager: DatabaseManager
-    private var streamTask: Task<Void, Never>?
-    private var observationTask: Task<Void, Never>?
-    /// Guards against persisting the streaming assistant reply twice: `cancelStream()`
-    /// persists the partial text synchronously, but the stream Task's own completion
-    /// tail still runs afterward (it keeps draining/finishing the underlying stream
-    /// even once cancelled) and would otherwise persist the same reply again. Reset
-    /// at the start of every new stream.
-    private var responsePersistedOnCancel = false
+    private(set) var currentConversation: ChatConversation?
+    /// Finished rows of the active branch. Never mutated by a streaming
+    /// delta — the live message is `liveTurn` (render isolation).
+    private(set) var thread: [ChatThreadItem] = []
+    var draft = ""
+    var errorMessage: String?
+    private(set) var selectedProvider: AIProvider
+    /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
+    var selectedModel = "" {
+        didSet { if selectedModel != oldValue { recycleSession() } }
+    }
+    var scrollTarget: Int64?
+    var editingMessageID: Int64?
+    /// History list refresh (conversation order, titles written by Go).
+    @ObservationIgnored var onConversationsChanged: (() -> Void)?
 
-    /// Callback to notify history that title/session changed
-    var onConversationUpdated: ((Int64, String?, String?) -> Void)?
-
-    /// Proposal cards for the bound conversation — the main chat is an
-    /// action surface (AGENT-04): write tools land here behind Approve.
     let actionFeed: AgentActionFeed
+    let pool: ChatSessionPool
+    /// The composer's not-yet-sent attachments (Task 21). nil `store` (no
+    /// active workspace) still renders — `add`/`addPastedImage` just report
+    /// "Attachments need an active workspace".
+    let composerAttachments: ComposerAttachments
+    /// The composer's @-picker and the current draft's picked mentions
+    /// (Task 25).
+    let composer: ComposerPickerModel
 
-    /// Only CLI-backed providers reach the MCP server; Ollama has no tools,
-    /// so the prompt says so and no tool mode is sent.
-    var toolsAvailable: Bool { selectedProvider != .ollama }
+    /// The artifact side panel for the current conversation; nil = closed.
+    /// Survives navigation only within the same conversation — switching or
+    /// forgetting a conversation closes it (CHAT-05 storage has no notion of
+    /// "panel for a conversation not on screen").
+    private(set) var artifactPanel: ArtifactPanelModel?
+    /// The sources panel (one finished answer's sources); nil = closed. It
+    /// shares the inspector with `artifactPanel` under `ChatInspectorPolicy`
+    /// and closes with it on a conversation switch.
+    private(set) var sourcesPanel: ChatSourcesSelection?
+    /// The inspector tab opened last; see `inspectorMode` for what shows.
+    var preferredInspectorMode: ChatInspectorMode = .artifacts
+    /// Non-edited version numbers per message, for the card badges — reloaded
+    /// with the thread (`reload()`).
+    private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
+    private(set) var gmailConnected = false
+    private(set) var slackLinks: SlackLinkResolver?
+    /// The project page open in the detail area, or nil when a conversation
+    /// (or the empty state) is shown.
+    private(set) var openProjectID: Int64?
+    /// Active (unarchived) projects for the sidebar.
+    private(set) var projects: [ChatProject] = []
+    /// Keys the owner closed the panel for during the CURRENT turn — a
+    /// streaming turn does not reopen a panel the owner just dismissed.
+    /// Cleared at the start of every new turn.
+    @ObservationIgnored private var dismissedArtifactKeys: Set<String> = []
+
+    @ObservationIgnored private let dbManager: DatabaseManager
+    @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
+    @ObservationIgnored private let makeTurnID: () -> String
+    @ObservationIgnored private var titleRequests: Set<Int64> = []
+    @ObservationIgnored private var applyingConversationSettings = false
 
     init(
-        aiService: any AIServiceProtocol,
         dbManager: DatabaseManager,
+        pool: ChatSessionPool,
         provider: AIProvider = .claude,
-        cliRunner: CLIRunnerProtocol? = nil
+        cliRunner: CLIRunnerProtocol? = nil,
+        makeTurnID: @escaping () -> String = { UUID().uuidString }
     ) {
-        self.aiService = aiService
         self.dbManager = dbManager
+        self.pool = pool
         self.selectedProvider = provider
+        self.cliRunner = cliRunner
+        self.makeTurnID = makeTurnID
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
+        self.composerAttachments = ComposerAttachments(
+            store: ChatAttachmentStore.defaultRootDir().map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0) }
+        )
+        let dbPool = dbManager.dbPool
+        self.composer = ComposerPickerModel(
+            searchMentions: { query in
+                do {
+                    return try dbPool.read { try MentionSearch.search($0, query: query) }
+                } catch {
+                    NSLog("ChatViewModel: mention search failed: %@", error.localizedDescription)
+                    return []
+                }
+            },
+            skills: { SkillsCatalog.pickerSkills(contextType: "main") }
+        )
+        pool.onTurnFinished = { [weak self] id in self?.turnFinished(conversationID: id) }
+        reloadProjects()
+    }
+
+    /// The streaming message of the shown conversation — its own observable,
+    /// throttled to ~30 fps (`LiveTurn`); only the row showing it re-renders.
+    var liveTurn: LiveTurn? { pool.client(for: conversationID)?.liveTurn }
+    /// A turn is running — or held by the pool waiting for a session.
+    var isStreaming: Bool { liveTurn?.isRunning == true }
+    /// Every live session is busy with another conversation's turn: this
+    /// turn is held (not lost) until one finishes. The UI says so.
+    var isWaitingForSession: Bool {
+        guard let client = pool.client(for: conversationID) else { return false }
+        return client.isPending && client.isBusy
+    }
+
+    // MARK: - Conversations
+
+    func select(conversationID id: Int64) {
+        openProjectID = nil
+        let switching = id != conversationID
+        conversationID = id
+        editingMessageID = nil
+        reload()
+        guard switching else { return }
+        errorMessage = nil
+        artifactPanel = nil
+        sourcesPanel = nil
+        dismissedArtifactKeys = []
+        applyConversationSettings()
+        actionFeed.start(conversationID: id)
+        prewarm()
+    }
+
+    @discardableResult
+    func newConversation(projectID: Int64? = nil) -> Int64? {
+        do {
+            let conv = try dbManager.dbPool.write { db in try ChatConversationQueries.create(db, projectID: projectID) }
+            select(conversationID: conv.id)
+            reloadConversations()
+            return conv.id
+        } catch {
+            errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// A conversation is being deleted: close its session; stop showing it.
+    func forget(conversationID id: Int64) {
+        pool.close(conversationID: id)
+        guard id == conversationID else { return }
+        conversationID = nil
+        currentConversation = nil
+        thread = []
+        editingMessageID = nil
+        errorMessage = nil
+        artifactPanel = nil
+        sourcesPanel = nil
+        dismissedArtifactKeys = []
+        actionFeed.stop()
+    }
+
+    func reloadConversations() {
+        onConversationsChanged?()
+    }
+
+    // MARK: - Projects
+
+    func reloadProjects() {
+        do {
+            projects = try dbManager.dbPool.read { try ChatProjectQueries.fetchActive($0) }
+        } catch {
+            errorMessage = "Couldn't load projects: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func createProject(name: String) -> Int64? {
+        do {
+            let project = try dbManager.dbPool.write { try ChatProjectQueries.create($0, name: name) }
+            reloadProjects()
+            openProject(project.id)
+            return project.id
+        } catch {
+            errorMessage = "Couldn't create the project: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Shows a project page; the chat's artifact panel closes with the chat.
+    func openProject(_ id: Int64) {
+        openProjectID = id
+        artifactPanel = nil
+        sourcesPanel = nil
+    }
+
+    /// Called by the project page after it deleted its project: its chats
+    /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
+    func projectDeleted(_ id: Int64) {
+        if openProjectID == id { openProjectID = nil }
+        reloadProjects()
+        reload()
+        reloadConversations()
+    }
+
+    /// Moves a chat into a project (or out, with nil). The next turn gets a
+    /// session spawned for the new project (`ChatSessionConfig.projectID` is
+    /// part of `isCompatible`), and the stored Claude session is dropped so
+    /// that turn starts fresh with the new project prompt and replays.
+    func moveConversation(_ conversationID: Int64, toProject projectID: Int64?) {
+        do {
+            try dbManager.dbPool.write {
+                try ChatConversationQueries.setProject($0, id: conversationID, projectID: projectID)
+            }
+            if conversationID == self.conversationID { reload() }
+            reloadConversations()
+        } catch {
+            errorMessage = "Couldn't move the chat: \(error.localizedDescription)"
+        }
+    }
+
+    func reload() {
+        guard let id = conversationID else {
+            thread = []
+            currentConversation = nil
+            artifactVersionsByMessage = [:]
+            return
+        }
+        do {
+            let (conv, items, versions, gmail, slack) = try dbManager.dbPool.read { db in
+                let conv = try ChatConversationQueries.fetchByID(db, id: id)
+                let items = try ChatTreeQueries.thread(db, conversationID: id)
+                let versions = try ChatArtifactQueries.versionsByMessage(db, messageIDs: items.map(\.id))
+                let gmail = try GoogleAccountQueries.hasConnectedGmailAccount(db)
+                let slack = try SlackLinkResolver.load(db)
+                return (conv, items, versions, gmail, slack)
+            }
+            currentConversation = conv
+            if items != thread { thread = items }
+            let refreshedSources = sourcesPanel?.refreshed(in: items)
+            if refreshedSources != sourcesPanel { sourcesPanel = refreshedSources }
+            artifactVersionsByMessage = versions
+            gmailConnected = gmail
+            slackLinks = slack
+        } catch {
+            errorMessage = "Couldn't load the conversation: \(error.localizedDescription)"
+        }
+    }
+
+    /// Opening a conversation or the first keystroke: spawn the session now.
+    func prewarm() {
+        guard let id = conversationID else { return }
+        pool.prewarm(conversationID: id, config: sessionConfig(conversationID: id))
     }
 
     func switchProvider(_ provider: AIProvider) {
         guard provider != selectedProvider else { return }
-        cancelStream()
         selectedProvider = provider
         selectedModel = ""
-        aiService = Self.createService(for: provider)
+        recycleSession()
     }
 
-    // `WatchtowerAIService` talks to a single CLI binary that serves both
-    // providers via `watchtower ai query --provider <claude|codex>` (see
-    // `send()`/`sendWelcomeMessage()` below), so the same service instance
-    // works regardless of which provider is selected — no per-provider
-    // service type is needed here.
-    static func createService(for provider: AIProvider) -> any AIServiceProtocol {
-        _ = provider
-        return WatchtowerAIService()
+    // MARK: - Artifacts
+
+    /// Opens (or re-focuses) the panel for `key` in the current conversation.
+    func openArtifact(key: String) {
+        guard let conversationID else { return }
+        preferredInspectorMode = .artifacts
+        guard artifactPanel?.key != key else { return }
+        artifactPanel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
     }
 
-    func bind(to conversation: ChatConversation) {
-        // If switching to a different conversation, load from DB
-        if conversationID != conversation.id {
-            cancelStream()
-            observationTask?.cancel()
-            observationTask = nil
-            messages.removeAll()
-            errorMessage = nil
-            conversationID = conversation.id
-            sessionID = conversation.sessionID
-            loadMessages(conversationID: conversation.id)
-            startMessageObservation()
-            actionFeed.start(conversationID: conversation.id)
+    /// The owner closed the panel: remember the key so a still-streaming turn
+    /// does not reopen it for the rest of this turn.
+    func closeArtifactPanel() {
+        if let key = artifactPanel?.key { dismissedArtifactKeys.insert(key) }
+        artifactPanel = nil
+    }
+
+    // MARK: - Inspector
+
+    /// The panel the inspector shows, or nil when it is closed.
+    var inspectorMode: ChatInspectorMode? {
+        ChatInspectorPolicy.visibleMode(preferred: preferredInspectorMode, artifactOpen: artifactPanel != nil,
+                                        sourcesOpen: sourcesPanel != nil)
+    }
+
+    /// Shows one finished answer's sources; an open artifact stays open
+    /// behind its tab.
+    func openSources(messageID: Int64, sources: [ChatSource]) {
+        guard !sources.isEmpty else { return }
+        sourcesPanel = ChatSourcesSelection(messageID: messageID, sources: sources)
+        preferredInspectorMode = .sources
+    }
+
+    func closeSourcesPanel() {
+        sourcesPanel = nil
+    }
+
+    /// The whole inspector was dismissed: both panels close.
+    func closeInspector() {
+        closeArtifactPanel()
+        closeSourcesPanel()
+    }
+
+    /// Fed by the thread view whenever `liveTurn?.text` changes (the view
+    /// observes `LiveTurn` directly — there is no per-delta VM hook, deltas
+    /// go straight from the pool into `LiveTurn`, preflight A38): opens the
+    /// panel for a block that just started streaming and forwards the latest
+    /// draft to it.
+    func updateLiveArtifacts(streamingText: String) {
+        guard conversationID != nil else { return }
+        let drafts = ArtifactParser.parse(streamingText, final: false).artifacts
+        if let key = ArtifactPanelModel.keyToAutoOpen(drafts: drafts, currentKey: artifactPanel?.key,
+                                                      dismissedKeys: dismissedArtifactKeys) {
+            openArtifact(key: key)
+        }
+        artifactPanel?.applyStreaming(drafts)
+    }
+
+    // MARK: - Turns
+
+    /// Sends the composer text + any pending attachments; clears both only
+    /// when the turn really started (a failed send keeps them for retry).
+    func sendDraft() {
+        let attachments = composerAttachments.pending
+        if send(text: draft, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
+            draft = ""
+            _ = composerAttachments.takeForSend()
         }
     }
 
-    func send() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+    func attachFiles(_ urls: [URL]) {
+        guard let id = conversationIDCreatingIfNeeded() else { return }
+        composerAttachments.add(urls: urls, conversationID: id)
+    }
 
-        streamTask?.cancel()
-        inputText = ""
-        let previousOwnerMessageAt = messages.last { $0.role == .user }?.timestamp
-        let turnID = UUID().uuidString
-        messages.append(ChatMessage(id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false))
+    func attachPastedImage(_ png: Data) {
+        guard let id = conversationIDCreatingIfNeeded() else { return }
+        composerAttachments.addPastedImage(png, conversationID: id)
+    }
 
-        if let convID = conversationID {
-            persistMessage(conversationID: convID, role: "user", text: text)
-        }
+    /// `mentions` are the composer's picked candidates (Task 25); only those
+    /// still present as `@Label` in `text` are kept (`liveMentions`) and
+    /// composed into the stored/sent owner text along with `skill`
+    /// (`ChatTurnComposer`, spec §4.3, preflight A31). Clears the composer's
+    /// pending mentions/skill once the turn actually starts.
+    @discardableResult
+    func send(
+        text: String, attachments: [ChatAttachment] = [], mentions: [MentionCandidate] = [], skill: String? = nil
+    ) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
+        let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
+        // A message may carry only attachments (no text) — the ChatInput canSend twin.
+        guard !turnText.isEmpty || !attachments.isEmpty, !isStreaming else { return false }
+        guard let id = conversationIDCreatingIfNeeded() else { return false }
+        composer.reset()
+        // The floor is the PREVIOUS owner message, and it alone: codex never
+        // emits a session id, so gating on the session would exclude it.
+        let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
+        return startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
+                                  reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
+                                  forceReplay: false, titleText: trimmed))
+    }
 
-        messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID))
-        isStreaming = true
-        responsePersistedOnCancel = false
+    /// The conversation a turn/attachment writes into, creating one on first
+    /// use (a paperclip click before any text still needs somewhere to land).
+    private func conversationIDCreatingIfNeeded() -> Int64? {
+        conversationID ?? newConversation()
+    }
 
-        autoGenerateTitle(text: text)
+    func stop() {
+        pool.client(for: conversationID)?.cancel()
+    }
 
-        let currentSessionID = sessionID
-        let dbPath = dbManager.dbPool.path
-        let dbPool = dbManager.dbPool
-        let model: String? = selectedModel.isEmpty ? nil : selectedModel
-        let provider = selectedProvider.rawValue
-        let capturedConvID = conversationID
-        let capturedDBManager = dbManager
-        let capturedAIService = aiService
-        let capturedToolsAvailable = toolsAvailable
-        let toolMode = Self.makeToolMode(toolsAvailable: capturedToolsAvailable, conversationID: capturedConvID, turnID: turnID)
-        // The floor is the PREVIOUS owner message, and it alone: a first turn
-        // has none, so the block is nil there anyway. Gating on the session id
-        // instead would silently exclude codex, which never emits one.
-        let outcomes = actionFeed.outcomesBlock(after: previousOwnerMessageAt)
-        let effectivePrompt = outcomes.map { "\($0)\n\n\(text)" } ?? text
+    func retry(messageID: Int64) {
+        regenerate(messageID: messageID)
+    }
 
-        streamTask = Task { [weak self] in
-            let systemPrompt: String? = currentSessionID == nil
-                ? Self.buildSystemPrompt(dbPool: dbPool, toolsAvailable: capturedToolsAvailable)
-                : nil
+    /// "Stopped" + Continue: asks the model to carry on from its partial reply.
+    func continueStopped(messageID: Int64) {
+        guard let last = thread.last?.message, last.id == messageID, last.isAssistant, last.status == "partial" else { return }
+        send(text: "Continue")
+    }
 
-            var fullText = ""
-            var newSessionID: String?
-            do {
-                let stream = capturedAIService.stream(
-                    prompt: effectivePrompt,
-                    systemPrompt: systemPrompt,
-                    sessionID: currentSessionID,
-                    dbPath: dbPath,
-                    model: model,
-                    provider: provider,
-                    toolMode: toolMode
-                )
-                var sawTurnComplete = false
-                for try await event in stream {
-                    // State mutation is self-independent so a view model
-                    // deallocated mid-stream still drains to completion and the
-                    // persist tail saves the whole reply; only the UI-facing
-                    // effects are gated on a live self.
-                    let effect = Self.applyStreamEvent(
-                        event,
-                        fullText: &fullText,
-                        sawTurnComplete: &sawTurnComplete,
-                        newSessionID: &newSessionID
-                    )
-                    if let visible = effect.visibleText {
-                        self?.updateLastMessage(visible)
-                    }
-                    if let sid = effect.sessionID {
-                        self?.sessionID = sid
-                        if let convID = capturedConvID {
-                            self?.onConversationUpdated?(convID, nil, sid)
-                        }
-                    }
-                }
-            } catch {
-                if !Task.isCancelled {
-                    self?.errorMessage = error.localizedDescription
-                }
-            }
+    /// A new assistant sibling under the same owner message (spec §2.3). The
+    /// provider session's transcript holds the old answer, so it replays.
+    /// Replay is text-only, so the owner message's files are sent again with
+    /// it — a retried/regenerated turn about an image or PDF still sees it.
+    func regenerate(messageID: Int64) {
+        guard !isStreaming, let id = conversationID,
+              let index = thread.firstIndex(where: { $0.message.id == messageID }), index > 0,
+              thread[index].message.isAssistant, thread[index - 1].message.isUser else { return }
+        let owner = thread[index - 1]
+        startTurn(TurnPlan(conversationID: id, historyTipID: owner.message.parentID, userText: owner.message.text,
+                           reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
+                           forceReplay: true))
+    }
 
-            Self.persistTurnTail(
-                dbManager: capturedDBManager, conversationID: capturedConvID,
-                text: fullText, turnID: turnID, sessionID: newSessionID,
-                alreadyPersisted: self?.responsePersistedOnCancel == true
-            )
-            self?.finishStream()
+    /// A new owner sibling under the original's parent, then a fresh reply.
+    /// The edited body keeps the original message's skill line and REFERENCED
+    /// tokens (`ChatTurnComposer.recompose`, Review Focus 3), and its files are
+    /// sent again (the edit changes only the text). The attachment rows stay
+    /// linked to the original message — the edited sibling does not show them
+    /// (v1 limit).
+    func edit(messageID: Int64, newText: String) {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isStreaming, let id = conversationID,
+              let item = thread.first(where: { $0.message.id == messageID }), item.message.isUser else { return }
+        editingMessageID = nil
+        let turnText = ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed)
+        startTurn(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
+                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, forceReplay: true))
+    }
+
+    /// ↑ in an empty composer (spec §3.5).
+    func beginEditingLast() {
+        editingMessageID = thread.last { $0.message.isUser }?.message.id
+    }
+
+    func selectVariant(messageID: Int64) {
+        guard let id = conversationID else { return }
+        do {
+            try dbManager.dbPool.write { db in try ChatTreeQueries.selectSibling(db, conversationID: id, siblingID: messageID) }
+            reload()
+        } catch {
+            errorMessage = "Couldn't switch the variant: \(error.localizedDescription)"
         }
     }
 
-    /// A side effect the stream loop applies to `self` only while the view model
-    /// is still alive (updating the UI, publishing the session id). Kept separate
-    /// from the state mutation below so those effects can be skipped without
-    /// stopping the loop.
-    struct StreamEffect: Equatable {
-        var visibleText: String?
-        var sessionID: String?
+    /// ⌘K hit: open the conversation, make the hit's branch active, scroll to it.
+    func open(_ hit: ChatSearchHit) {
+        select(conversationID: hit.conversationID)
+        guard let messageID = hit.messageID else { return }
+        selectVariant(messageID: messageID)
+        scrollTarget = messageID
     }
 
-    /// Folds one streamed event into the turn's local state and returns the side
-    /// effects for a live view model. Static/pure so a view model deallocated
-    /// mid-stream never truncates the turn: the loop keeps draining, `fullText`/
-    /// `newSessionID` keep accumulating, and the static persist tail still saves
-    /// the whole reply (the surviving-navigation contract). A `.reset` drops the
-    /// pre-tool preamble so it never glues onto the post-tool answer. Shared by
-    /// the send() and welcome-message streams (identical handling).
-    nonisolated static func applyStreamEvent(
-        _ event: StreamEvent,
-        fullText: inout String,
-        sawTurnComplete: inout Bool,
-        newSessionID: inout String?
-    ) -> StreamEffect {
-        switch event {
-        case .text(let chunk):
-            if sawTurnComplete {
-                fullText = chunk
-                sawTurnComplete = false
-            } else {
-                fullText += chunk
-            }
-            return StreamEffect(visibleText: fullText)
-        case .turnComplete(let text):
-            fullText = text
-            sawTurnComplete = true
-            return StreamEffect(visibleText: fullText)
-        case .reset:
-            fullText = ""
-            sawTurnComplete = false
-            return StreamEffect(visibleText: "")
-        case .sessionID(let sid):
-            newSessionID = sid
-            return StreamEffect(sessionID: sid)
-        case .done:
-            return StreamEffect()
-        }
+    /// The sibling `offset` steps from `messageID` (‹ = -1, › = +1), nil at an
+    /// end. A read failure also answers nil: the arrow simply does nothing.
+    func variant(of messageID: Int64, offset: Int) -> Int64? {
+        guard let siblings = try? dbManager.dbPool.read({ db in try ChatTreeQueries.siblings(db, messageID: messageID) }),
+              let index = siblings.firstIndex(where: { $0.id == messageID }) else { return nil }
+        let target = index + offset
+        return siblings.indices.contains(target) ? siblings[target].id : nil
     }
 
-    /// Persists a finished turn's assistant reply and session id. Always runs,
-    /// even if the view model is gone — but skips the reply when cancelStream()
-    /// already persisted this same partial reply (`alreadyPersisted`), which
-    /// avoids a duplicate row.
-    nonisolated private static func persistTurnTail(
-        dbManager: DatabaseManager,
-        conversationID: Int64?,
-        text: String,
-        turnID: String,
-        sessionID: String?,
-        alreadyPersisted: Bool
-    ) {
-        guard let convID = conversationID else { return }
-        if !text.isEmpty, !alreadyPersisted {
-            persistResponseStatic(dbManager: dbManager, conversationID: convID, text: text, turnID: turnID)
-        }
-        if let sid = sessionID {
-            persistSessionStatic(dbManager: dbManager, conversationID: convID, sessionID: sid)
-        }
+    // MARK: - Private
+
+    private struct TurnPlan {
+        let conversationID: Int64
+        /// The parent of the owner message this turn answers.
+        let historyTipID: Int64?
+        let userText: String
+        /// Regenerate reuses the existing owner message.
+        let reuseUserMessageID: Int64?
+        /// The files sent with the turn: the composer's for a new message, the
+        /// original owner message's for regenerate/edit. Carries `.id` so
+        /// `persistTurnStart` can link freshly imported rows to the message it
+        /// writes (CHAT-01); rows already linked elsewhere stay where they are.
+        let attachments: [ChatAttachment]
+        /// The actions-outcome block, prefixed at send time only (never stored).
+        let outcomes: String?
+        /// Regenerate/edit branch away from what the provider session saw.
+        let forceReplay: Bool
+        /// The prefix-title source: the owner's own words, without the
+        /// skill/REFERENCED lines the stored text carries. nil = `userText`.
+        var titleText: String?
     }
 
-    private func autoGenerateTitle(text: String) {
-        let isFirstMessage = messages.filter { $0.role == .user }.count == 1
-        if isFirstMessage, let convID = conversationID {
-            onConversationUpdated?(convID, String(text.prefix(80)), nil)
-        }
+    private struct PersistedTurn {
+        let assistant: ChatMessageRecord
+        /// The parent of the owner message actually written: `historyTipID`,
+        /// or the empty reply added under a legacy unanswered question.
+        let historyTipID: Int64?
+        /// The thread tip a `--resume`d session last saw.
+        let seenTipID: Int64?
     }
 
-    /// The main chat is an action surface only once it has a conversation to
-    /// attach proposals to (AGENT-04) and a provider that reaches the MCP
-    /// server (`toolsAvailable`); otherwise no tool mode is sent.
-    nonisolated private static func makeToolMode(toolsAvailable: Bool, conversationID: Int64?, turnID: String) -> ChatToolMode? {
-        guard toolsAvailable, let conversationID else { return nil }
-        return ChatToolMode(surface: "main", conversationID: conversationID, turnID: turnID)
-    }
-
-    private func updateLastMessage(_ text: String) {
-        if let idx = messages.indices.last {
-            messages[idx].text = text
+    @discardableResult
+    private func startTurn(_ plan: TurnPlan) -> Bool {
+        let config = sessionConfig(conversationID: plan.conversationID)
+        let turnID = makeTurnID()
+        // An unreadable check only costs a replay, which is always correct.
+        let resumeIsContinuous = (try? storedSessionSawTip(plan.conversationID)) ?? false
+        let persisted: PersistedTurn
+        do {
+            // CHAT-01: the owner's text is on disk before anything is sent.
+            persisted = try persistTurnStart(plan, turnID: turnID, config: config)
+        } catch {
+            errorMessage = "Your message wasn't sent because it couldn't be saved: \(error.localizedDescription)"
+            return false
         }
-    }
-
-    private func finishStream() {
-        if let idx = messages.indices.last {
-            messages[idx].isStreaming = false
-        }
-        isStreaming = false
-        // Proposals made during the turn were inserted by the chat-mode MCP
-        // SUBPROCESS, which the feed's ValueObservation cannot see — the turn
-        // boundary is where they have to appear.
-        actionFeed.refresh()
-        if let convID = conversationID {
-            onConversationUpdated?(convID, nil, nil)
-        }
-    }
-
-    // MARK: - Static persistence (works even if self is deallocated)
-
-    nonisolated private static func persistResponseStatic(dbManager: DatabaseManager, conversationID: Int64, text: String, turnID: String) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(db, conversationID: conversationID, role: "assistant", text: text, turnID: turnID)
-            try ChatConversationQueries.touch(db, id: conversationID)
-        }
-    }
-
-    nonisolated private static func persistSessionStatic(dbManager: DatabaseManager, conversationID: Int64, sessionID: String) {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatConversationQueries.updateSessionID(db, id: conversationID, sessionID: sessionID)
-        }
-    }
-
-    func cancelStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
-        if let idx = messages.indices.last, messages[idx].isStreaming {
-            // Save partial assistant response if non-empty
-            let partialText = messages[idx].text
-            if !partialText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: partialText, turnID: messages[idx].turnID ?? "")
-                // Tell the still-running stream Task's completion tail not to
-                // persist this reply again — cancellation is cooperative, so
-                // that tail keeps executing after this synchronous save.
-                responsePersistedOnCancel = true
-            }
-            messages[idx].isStreaming = false
-        }
-    }
-
-    func newChat() {
-        // H9: cancel in-flight stream before clearing
-        cancelStream()
-        observationTask?.cancel()
-        observationTask = nil
-        messages.removeAll()
-        sessionID = nil
-        conversationID = nil
         errorMessage = nil
-        actionFeed.stop()
+        dismissedArtifactKeys = []
+        reload()
+        let client = pool.session(for: plan.conversationID, config: config)
+        client.adoptInitialContinuity(resumeIsContinuous
+            ? ChatContinuity.initialLeaf(resumeSessionID: config.resumeSessionID, activeLeafID: persisted.seenTipID)
+            : nil)
+        let replay = plan.forceReplay
+            || ChatContinuity.replayNeeded(historyTipID: persisted.historyTipID, continuousLeafID: client.continuousLeafID)
+        let command = ChatTurnCommand(
+            turnID: turnID,
+            text: ChatTurnText.compose(userText: plan.userText, outcomes: plan.outcomes),
+            attachments: plan.attachments.map { ChatCommandAttachment(path: $0.path, mime: $0.mime, name: $0.name) },
+            replay: replay)
+        client.startTurn(ChatTurnRequest(command: command, assistantMessageID: persisted.assistant.id))
+        reloadConversations()
+        return true
     }
 
-    // MARK: - Observation
-
-    /// Observe chat_messages for this conversation so background-persisted
-    /// responses (from a stream that outlived a previous ViewModel) appear automatically.
-    private func startMessageObservation() {
-        guard let convID = conversationID else { return }
-        let dbPool = dbManager.dbPool
-        observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try ChatMessageQueries.fetchByConversation(db, conversationID: convID)
-            }
-            do {
-                for try await records in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    guard let self, !self.isStreaming else { continue }
-                    if records.count != self.messages.count {
-                        self.messages = records.map { $0.toChatMessage() }
-                    }
+    private func persistTurnStart(_ plan: TurnPlan, turnID: String, config: ChatSessionConfig) throws -> PersistedTurn {
+        let seenTip = thread.last?.message.id
+        return try dbManager.dbPool.write { db in
+            var historyTip = plan.historyTipID
+            var answeredTip: Int64?
+            let userID: Int64
+            if let reuse = plan.reuseUserMessageID {
+                userID = reuse
+            } else {
+                if let tip = historyTip, let placeholder = try Self.answerIfOwnerMessage(db, messageID: tip, config: config) {
+                    historyTip = placeholder
+                    answeredTip = placeholder
                 }
-            } catch {}
+                userID = try ChatTreeQueries.insertUser(db, conversationID: plan.conversationID, parentID: historyTip,
+                                                        text: plan.userText, turnID: turnID).id
+                // CHAT-01: attachments are linked in the SAME transaction that
+                // persists the owner's message — never a separate write.
+                try ChatAttachmentQueries.link(db, attachmentIDs: plan.attachments.map(\.id), messageID: userID)
+                try ChatConversationQueries.setPrefixTitle(db, id: plan.conversationID, text: plan.titleText ?? plan.userText)
+            }
+            try ChatConversationQueries.setProviderModel(db, id: plan.conversationID, provider: config.provider, model: config.model)
+            let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: plan.conversationID, parentID: userID,
+                                                                turnID: turnID, provider: config.provider,
+                                                                model: config.model ?? "")
+            return PersistedTurn(assistant: assistant, historyTipID: historyTip, seenTipID: answeredTip ?? seenTip)
         }
     }
 
-    // MARK: - Persistence
+    /// A legacy owner question that never got a reply (the pre-session chat
+    /// persisted a reply only when one streamed) gets an empty `partial`
+    /// reply, so the new owner message never sits right under it. Returns
+    /// the new row's id, or nil when `messageID` is not an owner message.
+    private static func answerIfOwnerMessage(_ db: Database, messageID: Int64, config: ChatSessionConfig) throws -> Int64? {
+        guard let tip = try ChatMessageRecord.fetchOne(db, sql: "SELECT * FROM chat_messages WHERE id = ?",
+                                                       arguments: [messageID]),
+              tip.isUser else { return nil }
+        return try ChatTreeQueries.insertAssistant(db, conversationID: tip.conversationID, parentID: tip.id,
+                                                   turnID: tip.turnID, provider: config.provider, model: "").id
+    }
 
-    private func loadMessages(conversationID: Int64) {
+    /// Whether a stored claude session (`--resume`) has seen the current
+    /// thread tip: only when that tip is the conversation's newest message
+    /// and no other provider wrote it — the session holds exactly the branch
+    /// of the last turn it ran, so after a variant switch or a codex turn it
+    /// must replay instead. The tip must also be a reply that provably
+    /// reached the provider: an `error` row, an empty `partial` (a turn
+    /// stopped or cut before any text) or an unanswered owner message may
+    /// never have been sent, and resuming past it would lose the question.
+    private func storedSessionSawTip(_ conversationID: Int64) throws -> Bool {
+        guard let tip = thread.last?.message, tip.isAssistant,
+              tip.status == "complete" || (tip.status == "partial" && !tip.text.isEmpty) else { return false }
+        let newest = try dbManager.dbPool.read { db in try ChatTreeQueries.newestMessage(db, conversationID: conversationID) }
+        guard let newest, newest.id == tip.id else { return false }
+        return newest.provider == nil || newest.provider == AIProvider.claude.rawValue
+    }
+
+    private func sessionConfig(conversationID id: Int64) -> ChatSessionConfig {
+        // Only claude sessions resume; codex/ollama replay every turn (spec §1.1).
+        let resume = selectedProvider == .claude ? currentConversation?.sessionID : nil
+        return ChatSessionConfig(conversationID: id, provider: selectedProvider.rawValue,
+                                 model: selectedModel.isEmpty ? nil : selectedModel, resumeSessionID: resume,
+                                 projectID: currentConversation?.projectID)
+    }
+
+    /// A conversation remembers the provider/model it last ran with; a new
+    /// one keeps the current picker selection.
+    private func applyConversationSettings() {
+        guard let conv = currentConversation, let raw = conv.provider else { return }
+        applyingConversationSettings = true
+        defer { applyingConversationSettings = false }
+        if let provider = AIProvider(rawValue: raw) { selectedProvider = provider }
+        selectedModel = conv.model ?? ""
+    }
+
+    /// The live process was spawned for the old provider/model: close it; the
+    /// next turn spawns a matching one (Claude keeps `--resume`, the others
+    /// replay). Never mid-turn — the picker is disabled while streaming.
+    private func recycleSession() {
+        guard !applyingConversationSettings, !isStreaming, let id = conversationID else { return }
+        pool.close(conversationID: id)
+    }
+
+    private func turnFinished(conversationID id: Int64) {
+        if id == conversationID {
+            reload()
+            // Proposals were written by the MCP subprocess, which the feed's
+            // ValueObservation cannot see — the turn boundary surfaces them.
+            actionFeed.refresh()
+            // The terminal write (ChatTurnStore.finalizeTurn) already
+            // versioned this turn's artifacts in the same transaction as the
+            // message; drop the live draft and show what was actually stored.
+            artifactPanel?.turnFinished()
+        }
+        reloadConversations()
+        requestTitleIfNeeded(conversationID: id)
+    }
+
+    /// Fire-and-forget `watchtower chat title` after the first completed
+    /// exchange (spec §4.4). Go writes the title; the list reloads after.
+    private func requestTitleIfNeeded(conversationID id: Int64) {
+        guard let cliRunner, !titleRequests.contains(id) else { return }
+        let needed: Bool
         do {
-            let records = try dbManager.dbPool.read { db in
-                try ChatMessageQueries.fetchByConversation(db, conversationID: conversationID)
-            }
-            messages = records.map { $0.toChatMessage() }
+            needed = try dbManager.dbPool.read { db in try ChatConversationQueries.needsAITitle(db, id: id) }
         } catch {
-            // silently ignore
+            return // an unreadable count only skips the optional AI title; the prefix title stands
         }
-    }
-
-    private func persistMessage(conversationID: Int64, role: String, text: String, turnID: String = "") {
-        _ = try? dbManager.dbPool.write { db in
-            try ChatMessageQueries.insert(db, conversationID: conversationID, role: role, text: text, turnID: turnID)
+        guard needed else { return }
+        // At most once per conversation per app run: a failed call is not
+        // retried on later turns (the prefix title stands).
+        titleRequests.insert(id)
+        Task { [weak self] in
+            // ProcessCLIRunner logs a failure (CLILog); the prefix title stays, which is still correct.
+            _ = try? await cliRunner.run(args: ["chat", "title", String(id)])
+            guard let self else { return }
+            self.reloadConversations()
+            if self.conversationID == id { self.reload() }
         }
-    }
-
-    // MARK: - System Prompt
-
-    // H2: static method avoids capturing self in GRDB closure
-    nonisolated static func buildSystemPrompt(dbPool: DatabasePool, toolsAvailable: Bool = true) -> String {
-        do {
-            return try dbPool.read { db in
-                let ws = try WorkspaceQueries.fetchWorkspace(db)
-                let schema = try Self.fetchSchema(db)
-                return Self.formatSystemPrompt(workspace: ws, schema: schema, toolsAvailable: toolsAvailable)
-            }
-        } catch {
-            return "You are Watchtower, an AI assistant for Slack workspace analysis. Use the local Watchtower tools to answer questions."
-        }
-    }
-
-    nonisolated static func formatSystemPrompt(
-        workspace ws: Workspace?,
-        schema: String,
-        toolsAvailable: Bool = true
-    ) -> String {
-        let name = ws?.name ?? "unknown"
-        let domain = ws?.domain ?? "unknown"
-        let teamID = ws?.id ?? "unknown"
-
-        let now = {
-            let fmt = DateFormatter()
-            fmt.dateFormat = "yyyy-MM-dd HH:mm 'UTC'"
-            fmt.timeZone = TimeZone(identifier: "UTC")
-            return fmt.string(from: Date())
-        }()
-
-        let toolsBlock = toolsAvailable
-            ? AgentToolsContract.promptBlock(surface: .main) + "\n\n"
-            : ""
-
-        return promptHeader(name: name, domain: domain, now: now, schema: schema, toolsAvailable: toolsAvailable)
-            + toolsBlock
-            + promptDeepLinksAndRestrictions(teamID: teamID, toolsAvailable: toolsAvailable)
-            + promptRules(teamID: teamID, toolsAvailable: toolsAvailable)
-            + promptAppGuide()
-    }
-
-    nonisolated private static func promptHeader(
-        name: String,
-        domain: String,
-        now: String,
-        schema: String,
-        toolsAvailable: Bool
-    ) -> String {
-        let toolsSection = toolsAvailable
-            ? """
-            IMPORTANT: You MUST look things up with the tools below to answer every question.
-            You have NO pre-loaded data — the local database is your only source of truth.
-
-            === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
-            - search_knowledge / get_knowledge_document — relevance search across Slack, mail, Jira, Confluence, calendar, \
-            transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref. Pass 2-5 queries: \
-            key terms, synonyms, Russian and English variants, stems ending in * for Russian word forms.
-            - list_messages — search/list raw Slack messages by person, channel, and/or keyword, newest first. \
-            At least one of person/channel/query is required.
-            - list_people / get_person — people cards; list_tracks / get_track — work narratives.
-            - list_targets / get_target — the user's action items and goals.
-            - get_today_briefing / list_digests / get_digest — the daily briefing and AI summaries of Slack activity.
-            - list_jira_issues / get_jira_issue — synced Jira issues.
-            - list_transcripts / get_transcript — recorded meeting transcripts.
-            - list_upcoming_events — calendar events in the next N hours.
-            - memory_recall / memory_open / memory_map — the assistant's long-term memory, once it has been built.
-            Never ask for a database path; the data is already local and the tools are already connected.
-            """
-            : AgentToolsContract.noToolsBlock
-
-        return """
-        You are Watchtower, an AI assistant that answers questions about a Slack workspace from its local database.
-
-        Workspace: "\(name)" (domain: \(domain).slack.com)
-        Current time: \(now)
-
-        \(toolsSection)
-
-        There is no SQL tool and no shell — you cannot run database or shell commands of any kind. \
-        The schema below documents the fields behind those tools; read it as reference, never as something to execute.
-
-        === DATABASE SCHEMA (reference) ===
-        \(schema)
-
-        """
-    }
-
-    /// The data-access ground rule shared by every chat surface's system
-    /// prompt. Written against a real failure mode: tools the model cannot use
-    /// get silently denied in headless mode, so an unbriefed model wastes a
-    /// turn trying them and then asks the user to "approve tool permissions".
-    nonisolated static let noLiveSourcesRule = """
-        You have NO shell, NO filesystem access, NO internet, and NO live access to Slack, Jira, \
-        or Calendar — the local Watchtower database already mirrors them, and the tools listed above \
-        are the ONLY way in. Never say you will check an external system, and never ask the user to \
-        approve tool permissions: everything you can use is already connected; everything else is \
-        unavailable by design.
-        """
-
-    /// How to link a search_knowledge hit — the same rule as the Go main-chat
-    /// prompt (`internal/ai/prompt.go`): a hit's anchor.channel_id is the
-    /// namespaced "N:C123" id and a channel-day hit has no single ts, so the
-    /// model must strip the prefix and take the ts from chunk_anchor. A
-    /// Confluence hit links via its "link"; a URL chunk_anchor deep-links to
-    /// the matching heading or comment.
-    nonisolated static let knowledgeLinkRule =
-        "search_knowledge hits: prefer the hit's \"link\" (a permalink) when present. To link a specific " +
-        "Slack message instead, take anchor.channel_id without its \"N:\" account prefix (\"1:C123\" → C123) " +
-        "and, as the message ts, anchor.thread_ts for a thread hit, otherwise the hit's chunk_anchor. " +
-        "A Confluence hit links via its \"link\" (the page or attachment URL); when its chunk_anchor is a URL, " +
-        "that is a deep link to the matching heading or comment."
-
-    nonisolated private static func promptDeepLinksAndRestrictions(teamID: String, toolsAvailable: Bool) -> String {
-        // The second bullet must promise neither a write tool nor a read tool the
-        // provider doesn't have: with no tools there is nothing "above" to reach
-        // the database through, and saying otherwise contradicts `noToolsBlock`
-        // earlier in the same prompt.
-        let dataSourceBullet = toolsAvailable
-            ? """
-            - Your ONLY data source is the local database, reached through the tools above. \
-            You cannot write directly — every write is a proposal through a write tool, executed only after the owner approves.
-            """
-            : """
-            - Your ONLY data source is this conversation — no tools are connected in this session. \
-            Do not try to fetch from Slack, and do not try to reach the database any other way.
-            """
-
-        return """
-        Deep link format:
-          slack://channel?team=\(teamID)&id={channel_id}&message={ts}
-          Example: ts "1740577800.000100" →
-          slack://channel?team=\(teamID)&id=C123&message=1740577800.000100
-
-        === IMPORTANT RESTRICTIONS ===
-        - You have NO internet access. Do NOT call any Slack API, WebFetch, or WebSearch tools.
-        \(dataSourceBullet)
-
-        """
-    }
-
-    nonisolated private static func promptRules(teamID: String, toolsAvailable: Bool) -> String {
-        // Neither section may name a tool the session does not have: an Ollama
-        // chat that is told to "start with search_knowledge" spends its turn
-        // hunting for a tool and then asks the user to connect it.
-        let lookupStep = toolsAvailable
-            ? "1. Look the data up with the tools above (for a topical question start with search_knowledge; " +
-              "use list_messages for \"latest from a person/channel\")"
-            : "1. Answer from the conversation; no tools are connected in this session"
-        let linkSourceRule = toolsAvailable
-            ? "\n- The tools return channel_id and ts for every message, so you can always build links" +
-              "\n- \(knowledgeLinkRule)"
-            : ""
-
-        return """
-        === WORKFLOW ===
-        \(lookupStep)
-        2. If results are empty or insufficient, broaden the lookup (wider filters, different keywords)
-        3. Analyze the actual message content from the results
-        4. Respond with insights, organized by channel or topic
-        5. Include Slack permalinks for key messages
-
-        === LINKING RULES ===
-        ALWAYS include Slack links as descriptive markdown — never bare URLs.
-
-        Channel link: [#channel-name](slack://channel?team=\(teamID)&id={channel_id})
-        Message link: [descriptive text](slack://channel?team=\(teamID)&id={channel_id}&message={ts})
-          Use the raw ts value (with dot). Example: "1740577800.000100" → message=1740577800.000100
-
-        Rules:
-        - Every channel mention (#name) MUST be a link to that channel
-        - Every referenced message or thread MUST have a link with descriptive text in the user's language\(linkSourceRule)
-
-        === RESPONSE STYLE ===
-        - Be concise and direct — give the answer, not the process
-        - Do NOT describe your search steps, reasoning, or tool usage. Present findings directly.
-        - Match the user's language and tone
-        - Use markdown for readability (headers, bullet lists, bold for emphasis)
-        - Use line breaks between sections for clarity
-        - Highlight: decisions, tracks, unanswered questions, unusual activity
-        """
-    }
-
-    nonisolated private static func promptAppGuide() -> String {
-        """
-
-        === WATCHTOWER APP GUIDE ===
-        You are also an expert on the Watchtower app itself. When users ask about features,
-        how to use the app, or what something means — answer based on this guide.
-
-        Watchtower is a macOS desktop app that syncs a Slack workspace to a local SQLite database
-        and uses AI to generate insights: daily briefings, inbox, calendar with meeting prep, digests, tracks, and people analytics.
-
-        TABS:
-        - AI Chat: chat with AI about workspace data. Provider selector (Claude/Codex), model selector.
-          Claude: Sonnet/Haiku/Opus; Codex: GPT-5.4/GPT-5.4 Mini/GPT-5.3 Codex.
-          Multi-turn with session memory (Claude only; Codex is ephemeral).
-          Calendar events (48h) injected into context
-        - Briefings: personalized daily overview — today's schedule (calendar events), needs attention, your day, what happened, team pulse, coaching
-        - Inbox: messages awaiting your response — @mentions and DMs auto-detected after each sync, AI-prioritized (high/medium/low), auto-resolved when you reply. Statuses: pending, resolved, dismissed, snoozed. Actions: resolve, dismiss, snooze, create task, open in Slack
-        - Calendar: Google Calendar integration — today's and tomorrow's events, meeting prep (AI-generated talking points, open items, people notes, suggested prep). Connect in Settings. Events highlight: green=happening now, blue=upcoming within 1 hour
-        - Tasks: personal action items with priority, ownership, due dates, sub-items. Sources: track, briefing, digest, inbox, manual, chat
-        - Tracks: auto-generated narrative summaries of ongoing initiatives from digests (priority: high/medium/low; narrative, timeline, participants, key messages)
-        - Digests: AI summaries of channel activity (channel/daily/weekly), with topics, decisions, running context
-        - Decisions: flat list of all decisions across digests, with importance ratings
-        - People: team member profiles from AI analysis — communication style, decision role, accomplishments, red flags, activity hours
-        - Statistics: channel analytics, bot traffic %, recommendations (mute/leave/favorite), mute channels for AI
-        - Search: full-text search across all synced Slack messages
-        - Usage: token consumption and costs by date, model, feature; live pipeline progress
-        - Training: prompt editor, feedback stats, quality score, tuning controls
-
-        SETTINGS: sync interval, workers, history depth, AI provider (Claude/Codex), digest model/language, briefing hour,
-        Claude CLI path, Codex CLI path (when Codex selected), Google Calendar (connect/disconnect, sync days ahead),
-        Jira (OAuth, board selection, Board Profiles with workflow viz and stale sliders,
-        User Mapping, sync status, Feature toggles by category and role),
-        profile (role, team, manager, reports, peers), notifications, daemon control, logs, data management.
-
-        BACKGROUND PROCESSES: daemon syncs Slack periodically, then runs pipelines:
-        calendar sync → inbox (detect + AI prioritize) → channel digests → tracks → rollup digests → people → briefing (automatic after each sync).
-        Also auto-unsnoozes tasks and inbox items past their snooze date.
-
-        KEY CONCEPTS:
-        - Running context: AI maintains per-channel memory (active topics, decisions, open questions)
-        - Situations: extracted interaction patterns used to build people cards
-        - Feedback loop: thumbs up/down + importance corrections improve AI via prompt tuning
-        - Starred items: prioritize specific channels and people in analysis
-        - Muted channels: excluded from AI processing to reduce noise and token costs
-        - Google Calendar: optional integration syncing events to local DB, enabling meeting prep and schedule-aware briefings/chat
-        - Jira Cloud: optional integration via OAuth. Board Profiles (LLM-analyzed workflow stages,
-          stale thresholds, health signals). Issues sync every 15 min. Jira keys (PROJ-123)
-          auto-detected in Slack. Feature toggles by role (Your Work, Team, Product, Automation).
-          CLI: jira login/logout/status, boards/select/analyze, users/map, sync, features
-
-        When answering about the app, be specific and accurate. Do not invent features that don't exist.
-        """
-    }
-
-    // MARK: - Welcome Message
-
-    /// Send a welcome message in a new chat, using the user's profile for personalization.
-    func sendWelcomeMessage(profile: UserProfile, language: String = "English") {
-        guard !isStreaming else { return }
-
-        let welcomePrompt = Self.buildWelcomePrompt(profile: profile, language: language)
-
-        messages.append(ChatMessage(id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true))
-        isStreaming = true
-        responsePersistedOnCancel = false
-
-        let dbPath = dbManager.dbPool.path
-        let dbPool = dbManager.dbPool
-        let model: String? = selectedModel.isEmpty ? nil : selectedModel
-        let provider = selectedProvider.rawValue
-        let capturedConvID = conversationID
-        let capturedDBManager = dbManager
-        let capturedAIService = aiService
-
-        streamTask = Task { [weak self] in
-            let systemPrompt = Self.buildSystemPrompt(dbPool: dbPool)
-
-            var fullText = ""
-            var newSessionID: String?
-            do {
-                let stream = capturedAIService.stream(
-                    prompt: welcomePrompt,
-                    systemPrompt: systemPrompt,
-                    sessionID: nil,
-                    dbPath: dbPath,
-                    model: model,
-                    provider: provider
-                )
-                var sawTurnComplete = false
-                for try await event in stream {
-                    // State mutation is self-independent so a view model
-                    // deallocated mid-stream still drains to completion and the
-                    // persist tail saves the whole reply; only the UI-facing
-                    // effects are gated on a live self.
-                    let effect = Self.applyStreamEvent(
-                        event,
-                        fullText: &fullText,
-                        sawTurnComplete: &sawTurnComplete,
-                        newSessionID: &newSessionID
-                    )
-                    if let visible = effect.visibleText {
-                        self?.updateLastMessage(visible)
-                    }
-                    if let sid = effect.sessionID {
-                        self?.sessionID = sid
-                        if let convID = capturedConvID {
-                            self?.onConversationUpdated?(convID, nil, sid)
-                        }
-                    }
-                }
-            } catch {
-                if !Task.isCancelled {
-                    self?.errorMessage = error.localizedDescription
-                }
-            }
-
-            if !fullText.isEmpty, let convID = capturedConvID, self?.responsePersistedOnCancel != true {
-                Self.persistResponseStatic(dbManager: capturedDBManager, conversationID: convID, text: fullText, turnID: "")
-            }
-            if let sid = newSessionID, let convID = capturedConvID {
-                Self.persistSessionStatic(dbManager: capturedDBManager, conversationID: convID, sessionID: sid)
-            }
-
-            self?.finishStream()
-        }
-    }
-
-    nonisolated private static func buildWelcomePrompt(profile: UserProfile, language: String) -> String {
-        var parts: [String] = []
-        parts.append("IMPORTANT: You MUST respond entirely in \(language).")
-        parts.append("""
-            This is the user's FIRST time opening Watchtower after onboarding. \
-            Write a welcome message that serves as a quick tour of the app. \
-            Structure it as a friendly, concise guide to what Watchtower does and how to use it.
-
-            Cover these features in order, briefly (1-2 sentences each):
-            1. **Briefings** — personalized daily morning overview combining all insights (needs attention, your day, what happened, team pulse, coaching)
-            2. **Inbox** — messages awaiting your response (@mentions and DMs), auto-detected and AI-prioritized
-            3. **Tasks** — personal action items you create from tracks, briefings, digests, or inbox items
-            4. **Chat** (this tab!) — ask questions about your workspace, activity, decisions, people
-            5. **Tracks** — auto-generated narratives about ongoing initiatives across channels
-            6. **Digests** — AI summaries of channel activity, decisions, and trends
-            7. **People** — team member profiles with communication style, activity patterns
-            8. **Statistics** — channel analytics, digest coverage, recommendations to mute noisy channels
-
-            Then mention:
-            - The background daemon syncs Slack data automatically and runs AI pipelines after each sync
-            - They can rate AI quality with thumbs up/down to improve results over time
-            - Settings (⌘,) let them configure sync frequency, language, notifications, etc.
-
-            End with a friendly invitation to ask anything or explore the tabs on the left.
-            """)
-
-        if !profile.role.isEmpty {
-            parts.append("User's role: \(profile.role). Tailor examples to this role.")
-        }
-        if !profile.painPoints.isEmpty, profile.painPoints != "[]" {
-            parts.append("User's pain points: \(profile.painPoints). Mention which features address these.")
-        }
-
-        parts.append("""
-            Format: use **bold** for feature names, keep total length under 400 words. \
-            Be warm but not cheesy. No emojis unless the language culturally expects them.
-            """)
-
-        return parts.joined(separator: "\n")
-    }
-
-    /// Fetch the database schema (CREATE TABLE statements)
-    nonisolated static func fetchSchema(_ db: Database) throws -> String {
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT sql FROM sqlite_master
-            WHERE type IN ('table', 'view') AND sql IS NOT NULL
-            ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name
-        """)
-        return rows.compactMap { $0["sql"] as? String }.joined(separator: ";\n\n")
     }
 }

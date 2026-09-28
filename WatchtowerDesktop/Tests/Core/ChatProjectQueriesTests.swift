@@ -1,0 +1,168 @@
+import XCTest
+import GRDB
+import WatchtowerTestSupport
+@testable import WatchtowerCore
+
+final class ChatProjectQueriesTests: XCTestCase {
+    private var db: DatabaseQueue!
+
+    override func setUpWithError() throws {
+        db = try TestDatabase.create()
+    }
+
+    @discardableResult
+    private func insertConversation(_ d: Database, title: String, projectID: Int64?) throws -> Int64 {
+        try d.execute(
+            sql: """
+                INSERT INTO chat_conversations (title, created_at, updated_at, project_id)
+                VALUES (?, 1, 1, ?)
+                """,
+            arguments: [title, projectID]
+        )
+        return d.lastInsertedRowID
+    }
+
+    @discardableResult
+    private func insertProjectFile(_ d: Database, projectID: Int64, path: String) throws -> Int64 {
+        try d.execute(
+            sql: """
+                INSERT INTO chat_attachments (project_id, name, mime, size, path, sha256, created_at)
+                VALUES (?, 'spec.pdf', 'application/pdf', 10, ?, 'abc', 1)
+                """,
+            arguments: [projectID, path]
+        )
+        return d.lastInsertedRowID
+    }
+
+    func testCreateTrimsNameAndFallsBackWhenEmpty() throws {
+        try db.write { d in
+            let named = try ChatProjectQueries.create(d, name: "  Payments  ")
+            XCTAssertEqual(named.name, "Payments")
+            XCTAssertEqual(named.instructions, "")
+            XCTAssertNil(named.archivedAt)
+            let unnamed = try ChatProjectQueries.create(d, name: "   ")
+            XCTAssertEqual(unnamed.name, "New project")
+        }
+    }
+
+    func testFetchActiveSkipsArchivedAndSortsByName() throws {
+        try db.write { d in
+            let beta = try ChatProjectQueries.create(d, name: "beta")
+            _ = try ChatProjectQueries.create(d, name: "Alpha")
+            let gone = try ChatProjectQueries.create(d, name: "Archived")
+            try ChatProjectQueries.archive(d, id: gone.id)
+            XCTAssertEqual(try ChatProjectQueries.fetchActive(d).map(\.name), ["Alpha", "beta"])
+            XCTAssertNotNil(try ChatProjectQueries.fetchByID(d, id: beta.id))
+        }
+    }
+
+    func testFetchActiveOnEmptyTableIsEmpty() throws {
+        try db.read { d in
+            XCTAssertTrue(try ChatProjectQueries.fetchActive(d).isEmpty)
+            XCTAssertNil(try ChatProjectQueries.fetchByID(d, id: 1))
+        }
+    }
+
+    func testRenameIgnoresBlankAndUpdateInstructionsPersists() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            try ChatProjectQueries.rename(d, id: p.id, name: "  ")
+            XCTAssertEqual(try ChatProjectQueries.fetchByID(d, id: p.id)?.name, "P", "a blank rename is ignored")
+            try ChatProjectQueries.rename(d, id: p.id, name: "Q3 launch")
+            try ChatProjectQueries.updateInstructions(d, id: p.id, instructions: "Answer in Russian.")
+            let reloaded = try XCTUnwrap(ChatProjectQueries.fetchByID(d, id: p.id))
+            XCTAssertEqual(reloaded.name, "Q3 launch")
+            XCTAssertEqual(reloaded.instructions, "Answer in Russian.")
+        }
+    }
+
+    func testAddSourceDedupesAndRemoveSourceDeletes() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            XCTAssertTrue(try ChatProjectQueries.addSource(
+                d, projectID: p.id, kind: .jiraProject, ref: "PAY", label: "PAY"))
+            XCTAssertFalse(try ChatProjectQueries.addSource(
+                d, projectID: p.id, kind: .jiraProject, ref: "PAY", label: "PAY again"),
+                "same (kind, ref) twice is a no-op")
+            XCTAssertTrue(try ChatProjectQueries.addSource(
+                d, projectID: p.id, kind: .person, ref: "1:U1", label: "Anna"))
+            let sources = try ChatProjectQueries.sources(d, projectID: p.id)
+            XCTAssertEqual(sources.map(\.kind), ["jira_project", "person"])
+            XCTAssertEqual(sources.first?.label, "PAY", "the duplicate did not overwrite the label")
+            XCTAssertEqual(sources.first?.sourceKind, .jiraProject)
+            try ChatProjectQueries.removeSource(d, id: sources[0].id)
+            XCTAssertEqual(try ChatProjectQueries.sources(d, projectID: p.id).map(\.ref), ["1:U1"])
+        }
+    }
+
+    func testFilesAndRemoveFileReturnsPath() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            let fileID = try insertProjectFile(d, projectID: p.id, path: "/tmp/a.pdf")
+            XCTAssertEqual(try ChatProjectQueries.files(d, projectID: p.id).map(\.path), ["/tmp/a.pdf"])
+            XCTAssertEqual(try ChatProjectQueries.removeFile(d, id: fileID), "/tmp/a.pdf")
+            XCTAssertTrue(try ChatProjectQueries.files(d, projectID: p.id).isEmpty)
+            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: fileID), "second remove finds nothing")
+        }
+    }
+
+    /// The store reuses one disk file for the same content imported twice: the
+    /// disk file may go only with its last row.
+    func testRemoveFileKeepsADiskFileAnotherRowStillUses() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            let first = try insertProjectFile(d, projectID: p.id, path: "/tmp/shared.pdf")
+            let second = try insertProjectFile(d, projectID: p.id, path: "/tmp/shared.pdf")
+            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: first), "the other row still uses the file")
+            XCTAssertEqual(try ChatProjectQueries.removeFile(d, id: second), "/tmp/shared.pdf")
+        }
+    }
+
+    func testRemoveFileNeverTouchesAConversationAttachment() throws {
+        try db.write { d in
+            let chat = try insertConversation(d, title: "c", projectID: nil)
+            try d.execute(
+                sql: """
+                    INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+                    VALUES (?, 'x.png', 'image/png', 1, '/tmp/x.png', 'h', 1)
+                    """,
+                arguments: [chat]
+            )
+            let id = d.lastInsertedRowID
+            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: id))
+            XCTAssertEqual(try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_attachments"), 1)
+        }
+    }
+
+    func testConversationsListsOnlyThisProjectsUnarchivedChats() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            try insertConversation(d, title: "in", projectID: p.id)
+            try insertConversation(d, title: "outside", projectID: nil)
+            let archived = try insertConversation(d, title: "old", projectID: p.id)
+            try d.execute(sql: "UPDATE chat_conversations SET archived_at = 5 WHERE id = ?", arguments: [archived])
+            XCTAssertEqual(try ChatProjectQueries.conversations(d, projectID: p.id).map(\.title), ["in"])
+        }
+    }
+
+    /// Spec §6.1: deleting a project keeps its chats (ON DELETE SET NULL) and
+    /// deletes its files — the rows by cascade, the disk files by the caller
+    /// from the returned paths, post-commit.
+    func testDeleteKeepsChatsAndReturnsFilePaths() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            let chat = try insertConversation(d, title: "keep me", projectID: p.id)
+            try insertProjectFile(d, projectID: p.id, path: "/tmp/a.pdf")
+            try ChatProjectQueries.addSource(d, projectID: p.id, kind: .track, ref: "7", label: "T")
+
+            XCTAssertEqual(try ChatProjectQueries.delete(d, id: p.id), ["/tmp/a.pdf"])
+
+            XCTAssertNil(try ChatProjectQueries.fetchByID(d, id: p.id))
+            let projectOfChat = try Int64?.fetchOne(
+                d, sql: "SELECT project_id FROM chat_conversations WHERE id = ?", arguments: [chat])
+            XCTAssertEqual(projectOfChat, .some(nil), "the chat survives, detached")
+            XCTAssertEqual(try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_attachments"), 0)
+            XCTAssertEqual(try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_project_sources"), 0)
+        }
+    }
+}

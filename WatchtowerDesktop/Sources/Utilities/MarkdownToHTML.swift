@@ -1,10 +1,11 @@
 import Foundation
 
-/// Converts the same markdown subset `MarkdownText` renders (headers, bullet /
+/// Converts the markdown subset the pasteboard needs (headers, bullet /
 /// numbered lists, blockquotes, code blocks, dividers, inline bold/italic/code/
-/// links) into HTML for the pasteboard, so pasting into rich-text targets
-/// (Slack, Mail, Notes) keeps the formatting. A deliberate render/export
-/// dual-path with `MarkdownText` — extend both when the subset grows.
+/// links) into HTML, so pasting into rich-text targets (Slack, Mail, Notes)
+/// keeps the formatting. Rendering is `MarkdownView` (swift-markdown); this
+/// export path stays a hand-rolled subset on purpose — extend it when a
+/// rendered construct must survive a paste.
 enum MarkdownToHTML {
     static func convert(_ markdown: String) -> String {
         var html: [String] = []

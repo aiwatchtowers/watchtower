@@ -13,6 +13,7 @@ enum QuitCoordinator {
     static func shouldTerminate(
         hasBlockingWork: Bool,
         confirmQuit: () -> Bool,
+        closeChatSessions: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
@@ -20,6 +21,9 @@ enum QuitCoordinator {
             return .terminateCancel
         }
         Task { @MainActor in
+            // CHAT-03: every chat session gets `close`, then SIGTERM after
+            // its grace — bounded, and each keeps its partial text (CHAT-01).
+            await closeChatSessions()
             await stopDaemon()
             // Always let termination proceed: a stuck daemon must never trap
             // the user in a quit — the next launch adopts or replaces it.

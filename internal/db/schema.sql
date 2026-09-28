@@ -1798,3 +1798,136 @@ CREATE TABLE IF NOT EXISTS ext_link_state (          -- doc_links detection wate
   from_kind TEXT PRIMARY KEY,          -- 'slack' | 'gmail' | 'imap' | 'jira_issue' | 'jira_comment' | 'ext_relink'
   cursor    TEXT NOT NULL DEFAULT ''   -- slack: messages.rowid; gmail/imap/jira_*: '<synced_at>|<rowid>' of the last row read; ext_relink: '<source_id>|<ext_id>' resume point, then 'done'
 );
+
+-- Chat (see 00076). Adopted from the Desktop app; conversations form a tree via
+-- chat_messages.parent_id, the visible thread is root → active_leaf_message_id
+-- (NULL = linear). chat_fts / chat_title_fts are external-content FTS5 indexes
+-- kept by triggers.
+CREATE TABLE IF NOT EXISTS chat_projects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL,
+    archived_at  REAL
+);
+
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    title                  TEXT NOT NULL DEFAULT '',
+    session_id             TEXT,
+    context_type           TEXT,
+    context_id             TEXT,
+    created_at             REAL NOT NULL,
+    updated_at             REAL NOT NULL,
+    pinned                 INTEGER NOT NULL DEFAULT 0,
+    archived_at            REAL,
+    title_source           TEXT NOT NULL DEFAULT 'prefix' CHECK(title_source IN ('prefix','ai','user')),
+    provider               TEXT,
+    model                  TEXT,
+    project_id             INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL,
+    active_leaf_message_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_project ON chat_conversations(project_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    created_at      REAL NOT NULL,
+    turn_id         TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'complete' CHECK(status IN ('complete','partial','error')),
+    provider        TEXT,
+    model           TEXT,
+    tokens_in       INTEGER,
+    tokens_out      INTEGER,
+    parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
+    error_code      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
+
+CREATE TABLE IF NOT EXISTS chat_turn_steps (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id   INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    tool_id      TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    args_json    TEXT NOT NULL DEFAULT '{}',
+    ok           INTEGER,
+    summary      TEXT NOT NULL DEFAULT '',
+    sources_json TEXT NOT NULL DEFAULT '[]',
+    started_at   REAL NOT NULL,
+    ended_at     REAL,
+    UNIQUE(message_id, tool_id)
+);
+
+CREATE TABLE IF NOT EXISTS chat_attachments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    project_id      INTEGER REFERENCES chat_projects(id) ON DELETE CASCADE,
+    message_id      INTEGER REFERENCES chat_messages(id) ON DELETE SET NULL,
+    name            TEXT NOT NULL,
+    mime            TEXT NOT NULL,
+    size            INTEGER NOT NULL,
+    path            TEXT NOT NULL,
+    sha256          TEXT NOT NULL,
+    created_at      REAL NOT NULL,
+    CHECK ((conversation_id IS NULL) <> (project_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_attachments_conversation ON chat_attachments(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chat_attachments_project ON chat_attachments(project_id);
+
+CREATE TABLE IF NOT EXISTS chat_artifacts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    message_id      INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    artifact_key    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    kind            TEXT NOT NULL CHECK(kind IN ('document','table','email','slack','event','code')),
+    title           TEXT NOT NULL DEFAULT '',
+    content         TEXT NOT NULL,
+    meta_json       TEXT NOT NULL DEFAULT '{}',
+    edited          INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL,
+    UNIQUE(conversation_id, artifact_key, version)
+);
+
+CREATE TABLE IF NOT EXISTS chat_project_sources (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','target','track','person')),
+    ref        TEXT NOT NULL,
+    label      TEXT NOT NULL DEFAULT '',
+    UNIQUE(project_id, kind, ref)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(
+    text, content='chat_messages', content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_title_fts USING fts5(
+    title, content='chat_conversations', content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN
+    INSERT INTO chat_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_messages_fts_au AFTER UPDATE OF text ON chat_messages BEGIN
+    INSERT INTO chat_fts(chat_fts, rowid, text) VALUES ('delete', OLD.id, OLD.text);
+    INSERT INTO chat_fts(rowid, text) VALUES (NEW.id, NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_conversations_fts_ai AFTER INSERT ON chat_conversations BEGIN
+    INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_conversations_fts_ad AFTER DELETE ON chat_conversations BEGIN
+    INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
+END;
+CREATE TRIGGER IF NOT EXISTS chat_conversations_fts_au AFTER UPDATE OF title ON chat_conversations BEGIN
+    INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
+    INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
+END;

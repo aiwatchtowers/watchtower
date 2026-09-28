@@ -434,7 +434,7 @@ struct TargetChatPane: View {
                         }
                         .font(.subheadline)
                     } else {
-                        MarkdownText(text: msg.text)
+                        MarkdownView(text: msg.text)
                             .font(.subheadline)
                             .textSelection(.enabled)
                     }

@@ -75,7 +75,7 @@ The good: loopback `127.0.0.1` (not OOB), a cryptographically random `state` tha
 | Slack: messages, threads, file metadata | none | `auth logout` → `ClearSlackData` |
 | **Gmail: message bodies up to 50 KB, addresses** | **none** | **absent** — D-1 |
 | IMAP/Outlook | none | FK cascade, works |
-| Calendar | sliding window −24h…+N days | `calendar logout` → `ClearCalendarEvents` |
+| Calendar | sliding window −24h…+N days | `calendar logout` → `ClearGoogleAccountCalendarData` (account #1 only) |
 | Meeting audio (`rec_*.caf`) | **30 days**, sweep in place | automatic |
 | Transcript text, notes | none (by design) | manually from the UI only |
 | People cards, beliefs about people | none | `ClearSlackData` only (does not cascade into memory) |

@@ -25,7 +25,7 @@ func TestNormalizeStatusCategory(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.expected, normalizeStatusCategory(tt.input))
+			assert.Equal(t, tt.expected, NormalizeStatusCategory(tt.input))
 		})
 	}
 }
