@@ -22,8 +22,14 @@ final class ChatHistoryViewModel {
         self.attachmentsRoot = attachmentsRoot
     }
 
+    /// The history column. A chat with neither a message nor an unsent file
+    /// (the Chat landing's draft, an untouched project chat) is listed only
+    /// while it is the one selected, i.e. on screen.
     var sections: [ChatHistorySection] {
-        ChatHistoryGrouping.group(filteredConversations, now: now(), calendar: .current)
+        let listed = filteredConversations.filter {
+            $0.activeLeafMessageID != nil || $0.hasAttachments || $0.id == selectedConversationID
+        }
+        return ChatHistoryGrouping.group(listed, now: now(), calendar: .current)
     }
 
     func rename(_ id: Int64, title: String) {

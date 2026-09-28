@@ -7,6 +7,7 @@ struct ChatSidebarView: View {
     @Bindable var historyVM: ChatHistoryViewModel
     let chatVM: ChatViewModel
     let onNewChat: () -> Void
+    let onArchive: (Int64) -> Void
     let onDelete: (Int64) -> Void
     @State private var renaming: ChatConversation?
     @State private var renameText = ""
@@ -121,10 +122,7 @@ struct ChatSidebarView: View {
                 }
             }
         }
-        Button("Archive") {
-            chatVM.forget(conversationID: conv.id)
-            historyVM.archive(conv.id)
-        }
+        Button("Archive") { onArchive(conv.id) }
         Divider()
         Button("Delete…", role: .destructive) { deleting = conv }
     }

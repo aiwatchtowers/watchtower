@@ -293,11 +293,20 @@ final class AppState {
             provider: provider,
             cliRunner: ProcessCLIRunner.makeDefault()
         )
+        // Once per launch, before anything is shown or listed.
+        cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)
         hvm.load()
-        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
+        Self.wireChat(cvm, history: hvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
+    }
+
+    /// The main chat's two view models: the history list follows the chat's
+    /// writes, and the landing's first turn becomes the history selection.
+    static func wireChat(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
+        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
+        cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
     }
 
     @discardableResult

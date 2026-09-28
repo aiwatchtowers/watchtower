@@ -264,7 +264,10 @@ final class RecordingIndicatorViewTests: XCTestCase {
             if uses > 0 { counts[url.lastPathComponent, default: 0] += uses }
         }
         XCTAssertEqual(counts, [
+            // The thread's composer; on the Chat landing the composer opts
+            // out and the landing's recent list (bottom-most) carries it.
             "ChatComposerView.swift": 1,
+            "ChatLandingView.swift": 1,
             "TargetChatView.swift": 1,
             "TargetDetailView.swift": 1,
             "TrackChatView.swift": 1,
