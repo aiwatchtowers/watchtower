@@ -63,11 +63,12 @@ type Orchestrator struct {
 	searchGapNote string
 
 	// searchRateLimited records whether the current Run's search sync gave up
-	// on a window because Slack was rate-limiting the token (as opposed to a
-	// scope/permission problem or a window that is genuinely empty). Run
-	// resets it; runSearchSync's "zero channels discovered" fallback must not
-	// escalate to the far more expensive full sync while this is true, or a
-	// rate-limited token gets hit with even more calls instead of backing off.
+	// on its first page specifically because Slack rate-limited the token
+	// (isRateLimitError — never set for a scope/permission problem or any
+	// other non-fatal error, which keep falling back to full sync as before).
+	// Run resets it; runSearchSync's "zero channels discovered" fallback must
+	// not escalate to the far more expensive full sync while this is true, or
+	// a rate-limited token gets hit with even more calls instead of backing off.
 	searchRateLimited bool
 
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
@@ -848,32 +849,18 @@ func isNonFatalError(err error) bool {
 	return false
 }
 
-// scopeSlackErrors are the Slack error codes that mean the token itself
-// genuinely lacks search access (as opposed to a transient condition like a
-// rate limit): the only case where falling back from search sync to the far
-// more expensive full conversations.history sync is worth it.
-var scopeSlackErrors = map[string]bool{
-	"missing_scope": true,
-	"access_denied": true,
-}
-
-// isScopeError reports whether err is a Slack API error indicating the
-// token lacks a required scope or was denied access.
-func isScopeError(err error) bool {
+// isRateLimitError reports whether err is specifically a Slack rate-limit
+// response (*slack.RateLimitedError) — as opposed to any other non-fatal
+// condition (a scope/permission problem, a dead account/channel, ...). Only
+// a rate limit gets the special "don't escalate to full sync" handling in
+// syncViaSearch's page-1 branch; every other isNonFatalError case keeps
+// falling back to full sync exactly as before that fix.
+func isRateLimitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var slackErr slack.SlackErrorResponse
-	if errors.As(err, &slackErr) {
-		return scopeSlackErrors[slackErr.Err]
-	}
-	msg := err.Error()
-	for code := range scopeSlackErrors {
-		if strings.Contains(msg, code) {
-			return true
-		}
-	}
-	return false
+	var rlErr *slack.RateLimitedError
+	return errors.As(err, &rlErr)
 }
 
 // channelName returns a human-readable channel identifier for logging.

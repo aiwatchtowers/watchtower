@@ -51,28 +51,56 @@ the scope-denied-401 sub-item in `docs/backlog/2026-09-27-review-low-priority-pr
 
 `SearchNewSince` fetches the UID range `lastUID+1:*`. RFC 3501 §6.4.8 says a range like `559:*` "always includes the UID of the last message in the mailbox, even if 559 is higher than any assigned UID value". So on a real server (Dovecot, Exchange, Gmail IMAP), a cycle with no new mail still returns the latest message. The code comment claims FETCH is immune and only SEARCH has this quirk; the RFC rule applies to UID sets in general. The effect is mostly waste, but it is real: every cycle re-fetches and re-upserts that message (bumping `synced_at`/`updated_at`), logs "imap: 1 messages synced", and re-feeds the inbox detector and kb cursor. The in-repo go-imap memory test server does not implement the rule (a throwaway overlay test with lastUID = highest returned `[]`), which is why tests pass. Fix: drop UIDs `<= lastUID` from the result.
 
-## Slack search sync can never finish a window with more than 100 result pages (fixed in fix/bl-slack-sync)
+## Slack search sync can never finish a window with more than 100 result pages
 
 - type: bug · confidence: low · tags: [slack, sync, pagination]
 - where: internal/sync/search_sync.go:118-246, internal/slack/client.go:350-373
 
 `search.messages` is paged at 100 results per page, and Slack serves at most 100 pages (10k matches) per query. `syncViaSearch` keeps going until `page >= result.Pages`, and sets the watermark only when `completed`. If a window holds more than 10k matches (a first run with `initial_history_days=30` for someone in many busy channels, or a 30-day clamped catch-up), page 101 either errors or comes back empty. If it errors, the watermark never moves: the same 100 pages (100 Tier-2 calls) are re-fetched every cycle and the pass never completes. If it comes back empty, `completed=true` and the newest matches beyond page 100 are skipped for good. This is unverified against the live API (hence low confidence). Fix: shrink the window (split by `before:`/`after:` date ranges) whenever `result.Pages > 100`.
 
-Resolution: `syncViaSearch` now delegates to a new recursive `runSearchWindow`
-(`internal/sync/search_sync.go`) that checks a window's page-1 `Pages` count before
-paging any further. A window over the new `maxSearchResultPages` (100) constant is
-never paged past page 1 at all — it is bisected by date (`bisectSearchDate`, day
-granularity) into an older `[after, mid)` half (queried with an explicit `before:`
-bound) and a newer half that reuses the original upper bound, each paged and
-completed in turn; the watermark only advances as far as the last half that fully
-completed, so a still-too-wide newer half (or a rate limit inside it) preserves the
-older half's progress rather than losing it. A window already down to a single day
-(the finest granularity `after:`/`before:` filters allow) that still exceeds the page
-cap is accepted as a permanent, logged gap (`recordUnsplittableSearchGap`, the
-existing `recordSearchGap`/`maxSearchCatchUpDays` precedent) rather than retried every
-cycle for zero progress. Pinned by `TestRunSearchWindow_SplitsOverCapWindowByDate`
-(asserts page 2+ of an over-cap window is never requested, and that the split halves
-together reach today) and `TestRunSearchWindow_UnsplittableFloorRecordsGapAndAdvances`.
+**Attempted in PR #20, withdrawn.** A first attempt added a recursive date-bisection
+(`runSearchWindow`/`bisectSearchDate` in `internal/sync/search_sync.go`) that split an
+over-cap window at its midpoint and paged each half. PR #20's review (prosecutor pass)
+found it was built on an unverified assumption about Slack's `after:`/`before:` date
+filters and had several correctness gaps that only a live-API check can resolve safely:
+- **F1/F2 (blockers):** Slack's `after:`/`before:` filters are documented as exclusive
+  on both ends (`after:D` = from D+1, `before:D` = up to D-1). The bisection as written
+  assumed inclusive/adjacent bounds, so (F1) the midpoint day itself falls outside
+  *both* halves — `after:a before:mid` and `after:mid` both exclude day `mid` — yet the
+  watermark still advances past it as if fully covered, and (F2) the smallest splits
+  (a 2-day window bisecting into two 1-day-wide-by-the-arithmetic halves) can both
+  resolve to zero real days under the exclusive semantics, silently completing with 0
+  pages and skipping the over-cap day with no gap note at all.
+- **F3 (major):** when the newer half (after a successful older half) hit any error —
+  including a rate limit, which this same PR was trying to stop from escalating — the
+  function returned `("", nil)`, discarding the older half's already-completed and
+  already-upserted progress instead of still advancing the watermark to the older
+  half's boundary.
+- **F4 (major):** combined with F3, any transient failure in a later leaf (ctx cancel,
+  a Slack 5xx, a DB error) re-fetches every already-completed older leaf from scratch
+  next cycle — up to ~100 Tier-2 calls per leaf at the 40 req/min budget — with no
+  guarantee of ever converging on a heavily-throttled, >10k-match catch-up (exactly the
+  scenario this fix targets).
+- **F5 (major):** the "unsplittable floor" (a single day still over the page cap)
+  discarded the already-fetched page 1 and recorded a total gap, even though up to 100
+  pages (10k matches, sorted oldest-first) were actually fetchable and only the tail
+  beyond page 100 was genuinely unrecoverable.
+- **F7 (minor):** over-cap detection keyed only on the response's own `pages` field,
+  which — per this same finding's "unverified against the live API" framing — might
+  itself be clamped to 100 by Slack rather than reporting the true count, in which case
+  the split would never trigger and the original bug would persist undetected;
+  `result.Total > maxSearchResultPages*count` was flagged as the more robust signal.
+
+The controller decision was to drop the bisection entirely rather than patch it
+further, since every one of the above traces back to an assumption about Slack's date
+filters that needs a live API check before a fix can be trusted — see PR #20's review
+notes for the full finding list (F1-F11). A future attempt should verify
+`after:`/`before:` exclusivity and the true (unclamped or clamped) shape of the `pages`
+field against a real workspace before re-attempting a window split, and must
+checkpoint the watermark per completed leaf (fixing F3/F4) rather than only at the
+end of the whole recursion. PR #20 kept only the separate, narrower fix in
+`docs/backlog/2026-09-26-a-rate-limited-first-search-page-triggers-a-full-conversations.md`
+(status: done) — this sub-item is unchanged and stays open.
 
 ## Google calendar events share one global id key across accounts, so shared meetings flip owner and account removal unlinks recordings
 
