@@ -22,6 +22,15 @@ var ErrTooLarge = errors.New("atlassian: response exceeds size cap")
 // unbounded read of a pathological response.
 const maxErrorBodyBytes = 4096
 
+// maxSuccessBodyBytes caps how much of a 2xx GetJSON response body is read
+// before decoding. A page's storage-format body is the largest legitimate
+// payload (internal/confluence's fetcher itself caps a page body at
+// maxBodyRunes = 1,000,000 runes, up to ~4 MiB of UTF-8), so this leaves
+// generous headroom above that for the rest of the JSON envelope while still
+// failing loudly — like Download's ErrTooLarge — instead of decoding (or
+// OOMing on) an unbounded body from a runaway response or a proxy error page.
+const maxSuccessBodyBytes = 16 * 1024 * 1024
+
 // HTTPStatusError is returned for a non-2xx response from GetJSON/Download.
 // Kept a plain, unwrapped struct (not composed with ErrAuthRevoked or a
 // sentinel of its own): a later generic sync engine maps Status/Body to its
@@ -84,7 +93,15 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		return newHTTPStatusError(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSuccessBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("reading GET %s: %w", path, err)
+	}
+	if int64(len(data)) > maxSuccessBodyBytes {
+		return fmt.Errorf("GET %s: %w", path, ErrTooLarge)
+	}
+
+	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decoding GET %s: %w", path, err)
 	}
 	return nil
