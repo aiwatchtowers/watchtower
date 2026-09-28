@@ -188,13 +188,17 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.logger.Println("people: no active users with enough messages")
 		return 0, nil
 	}
+	// todo is who still needs a card; team norms stay computed over the whole
+	// active population (allStats), or a resumed window would compare its
+	// remaining users against themselves.
+	todo := allStats
 	if len(covered) > 0 {
-		allStats = withoutCovered(allStats, covered)
-		if len(allStats) == 0 {
+		todo = withoutCovered(allStats, covered)
+		if len(todo) == 0 {
 			p.logger.Printf("people: window already has AI cards for all %d users, skipping", len(covered))
 			return 0, nil
 		}
-		p.logger.Printf("people: %d user(s) still need a card for this window", len(allStats))
+		p.logger.Printf("people: %d user(s) still need a card for this window", len(todo))
 	}
 
 	// Load all situations for v2 pipeline
@@ -220,12 +224,12 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.logger.Printf("people: team norms: %d users, %.0f avg msgs, %d users with situations",
 		teamNorms.TotalUsers, teamNorms.AvgMessages, len(allSituations))
 
-	totalUsers := len(allStats)
+	totalUsers := len(todo)
 
 	// Classify users into full-data (individual AI) and batch (low-data, batched AI).
 	var fullDataUsers []db.UserStats
 	var batchEntries []batchUserEntry
-	for _, stats := range allStats {
+	for _, stats := range todo {
 		userSits := allSituations[stats.UserID]
 		sitCount := 0
 		for _, cs := range userSits {

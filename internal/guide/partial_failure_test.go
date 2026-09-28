@@ -147,3 +147,32 @@ func TestPipeline_ShutdownMidRunIsReported(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.NotContains(t, err.Error(), "no people card produced by AI")
 }
+
+// A resumed window (two users already covered by AI cards) still computes team
+// norms over the whole active population, not just the user left to process —
+// or that user would be compared against themselves.
+func TestPipeline_ResumedWindowKeepsFullTeamNorms(t *testing.T) {
+	database := testDB(t)
+	from, to := seedLowDataUsers(t, database)
+	seedUser(t, database, "U3", "carol")
+	base := from + 86400
+	for i := range 4 {
+		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64((i+20)*60)), "U3", "msg "+string(rune('a'+i)))
+	}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+
+	first := &recordingGenerator{batchResponse: batchCardJSON("U1", "U2")} // U3 falls back
+	_, err := New(database, cfg, first, testLogger()).RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	require.Len(t, first.batchPrompts, 1)
+	require.Contains(t, first.batchPrompts[0], "Team averages (3 people)")
+
+	resumed := &recordingGenerator{batchResponse: batchCardJSON("U3")}
+	_, err = New(database, cfg, resumed, testLogger()).RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	require.Len(t, resumed.batchPrompts, 1)
+	assert.Contains(t, resumed.batchPrompts[0], "(user_id: U3)")
+	assert.NotContains(t, resumed.batchPrompts[0], "(user_id: U1)")
+	assert.Contains(t, resumed.batchPrompts[0], "Team averages (3 people)", "norms cover the whole team, not the remaining user")
+}
