@@ -85,10 +85,7 @@ func parseLinkResponse(raw string, snapshot []db.Target, selfID int64, forbidden
 
 	result := &LinkResult{}
 
-	// Validate parent_id.
-	if resp.ParentID != nil && snapshotIDs[*resp.ParentID] && !forbiddenParents[*resp.ParentID] {
-		result.ParentID = sql.NullInt64{Int64: *resp.ParentID, Valid: true}
-	}
+	result.ParentID = validParentID(resp.ParentID, snapshotIDs, forbiddenParents)
 
 	// Cap secondary links at 3.
 	links := resp.SecondaryLinks
@@ -131,6 +128,15 @@ func parseLinkResponse(raw string, snapshot []db.Target, selfID int64, forbidden
 	}
 
 	return result, nil
+}
+
+// validParentID keeps a proposed parent only when it is in the snapshot and
+// not forbidden (the target itself or one of its descendants).
+func validParentID(id *int64, snapshotIDs, forbidden map[int64]bool) sql.NullInt64 {
+	if id == nil || !snapshotIDs[*id] || forbidden[*id] {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *id, Valid: true}
 }
 
 // maxParentWalkDepth bounds forbiddenParentIDs' ancestor walk, matching the

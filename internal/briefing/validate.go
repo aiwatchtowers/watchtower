@@ -119,6 +119,14 @@ func (s *shownIDs) validateIDs(result *BriefingResult) int {
 	return blanked
 }
 
+// blankUnshownIDs runs validateIDs against the current run's shown ids and
+// logs how many it blanked.
+func (p *Pipeline) blankUnshownIDs(result *BriefingResult) {
+	if n := p.shown.validateIDs(result); n > 0 {
+		p.logger.Printf("briefing: blanked %d id(s) the prompt never showed", n)
+	}
+}
+
 // resolveAttentionSource validates an attention item's source_id for its
 // source_type. A source type the prompt does not define ids for is left as
 // the model wrote it: nothing navigates on it.

@@ -221,9 +221,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parsing briefing response: %w", err)
 	}
-	if n := p.shown.validateIDs(result); n > 0 {
-		p.logger.Printf("briefing: blanked %d id(s) the prompt never showed", n)
-	}
+	p.blankUnshownIDs(result)
 
 	// Serialize JSON sections.
 	attentionJSON, _ := json.Marshal(result.Attention)
