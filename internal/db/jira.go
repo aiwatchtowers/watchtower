@@ -634,6 +634,39 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 	return oldest.String, nil
 }
 
+// JiraIssueOffsetsSince returns the distinct UTC offsets (seconds east) that
+// the account's live jira_issues.updated_at values past sinceISO carry. The
+// column keeps Jira's own offset ("…000-0400", RFC3339 "Z"/"+03:00" in older
+// rows), so a caller building a string bound needs them. Unparseable suffixes
+// are skipped.
+func (db *DB) JiraIssueOffsetsSince(accountID int64, sinceISO string) ([]int, error) {
+	rows, err := db.Query(`SELECT DISTINCT updated_at FROM jira_issues
+		WHERE account_id = ? AND is_deleted = 0 AND updated_at > ?`, accountID, sinceISO)
+	if err != nil {
+		return nil, fmt.Errorf("listing jira issue offsets: %w", err)
+	}
+	defer rows.Close()
+	seen := map[int]bool{}
+	var out []int
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, fmt.Errorf("scanning jira issue offset: %w", err)
+		}
+		t, err := time.Parse(jiraUpdatedLayout, u)
+		if err != nil {
+			if t, err = time.Parse(time.RFC3339, u); err != nil {
+				continue
+			}
+		}
+		if _, off := t.Zone(); !seen[off] {
+			seen[off] = true
+			out = append(out, off)
+		}
+	}
+	return out, rows.Err()
+}
+
 // GetJiraSyncStates returns all Jira sync states across every account.
 func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	rows, err := db.Query(`SELECT account_id, project_key, last_synced_at, issues_synced, last_error, last_error_at FROM jira_sync_state ORDER BY account_id, project_key`)
