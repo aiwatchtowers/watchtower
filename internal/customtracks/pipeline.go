@@ -105,6 +105,18 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	return total, nil
 }
 
+// HasDueTracks reports whether any enabled custom track may be scanned now,
+// i.e. has not spent today's failure budget. The daemon checks it before
+// opening a tracked run, so a day on which every track is exhausted (or none
+// exists) writes no empty "done" pipeline_runs row every cycle.
+func (p *Pipeline) HasDueTracks() (bool, error) {
+	due, err := p.db.GetCustomTracksDueForScan(time.Now().UTC().Format("2006-01-02"), maxDailyScanAttempts)
+	if err != nil {
+		return false, err
+	}
+	return len(due) > 0, nil
+}
+
 // recordScanFailure logs a failed scan and charges it to the track's daily
 // budget, noting once when that failure spends the budget.
 func (p *Pipeline) recordScanFailure(trackID int, now time.Time, scanErr error) {

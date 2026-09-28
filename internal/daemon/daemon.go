@@ -1446,6 +1446,14 @@ func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 	if d.customTracksPipe == nil {
 		return
 	}
+	// Nothing to scan (no custom track, or every one has spent today's
+	// failure budget): skip before trackedPipelineRun so the day's error rows
+	// are not buried under a 0-item "done" row every cycle — the
+	// day-plan/briefing/people budget precedent. A failed check falls through
+	// so Run reports the same error in a tracked row.
+	if due, err := d.customTracksPipe.HasDueTracks(); err == nil && !due {
+		return
+	}
 	d.trackedPipelineRun("custom_tracks", func() pipelineRunStats {
 		n, err := d.customTracksPipe.Run(ctx)
 		if err != nil {
