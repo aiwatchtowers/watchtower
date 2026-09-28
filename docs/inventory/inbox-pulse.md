@@ -72,7 +72,7 @@ guarded — not relaxed.
 
 **Why locked:** This is the basic promise that makes attention detection lower-friction than native Slack/Jira/Calendar notifications. Break it and the item stays pending forever, so Catch-Up's "needs you" list and the Briefing's attention section fill with work the owner already finished — which is exactly how a recap surface loses the owner's trust. With no per-item screen left, nothing else can catch a stale item; this contract is the only thing keeping the feeder honest.
 
-**Rescheduled meetings (owner decision 2026-09-29):** a `calendar_time_change` item is answered only by an RSVP the owner gives **after** the reschedule. An RSVP left over from before the move does not count, whether the provider kept it or reset it. The sync records when it saw each attendee's response change (`calendar_events.rsvp_changed`), and the item resolves once the owner's RSVP is an answer that changed at or after the reschedule stamp (`time_changed_at`, the item's `message_ts`). With no fresh answer, the item stays pending until the event has ended, and then it resolves as "Event has ended". `calendar_invite` is unchanged: any answered RSVP resolves it.
+**Rescheduled meetings (owner decision 2026-09-29):** a `calendar_time_change` item is answered only by an RSVP the owner gives **after** the reschedule. An RSVP left over from before the move does not count, whether the provider kept it or reset it. The sync records when it saw each attendee's response change (`calendar_events.rsvp_changed`), and the item resolves once the owner's RSVP is an answer that changed at or after the reschedule stamp (`time_changed_at`, the item's `message_ts`). With no fresh answer, the item stays pending until the event has ended, and then it resolves as "Event has ended". An all-day event counts as ended at UTC midnight of its exclusive end date, the same convention the invite detector's ended-event guard uses. An answer and a move first seen in the same sync pass count as an answer to the moved meeting, because the sync cannot tell which came first. Known limit: if the event row disappears (moved beyond the sync window, or deleted upstream), nothing can answer the item or end it, so it stays pending until `ArchiveStaleActionable` archives it. `calendar_invite` is unchanged: any answered RSVP resolves it.
 
 **Test guards:**
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveSlackOnUserReply`
@@ -82,6 +82,7 @@ guarded — not relaxed.
 - `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeKeptRSVPStaysPending`
 - `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeResolvesOnRSVPAfterMove`
 - `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeResolvesOnceEnded`
+- `internal/inbox/pipeline_test.go::TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove`
 - `internal/db/targets_remind_test.go::TestInbox02_AutoResolveTargetOnClose`
 
 **Locked since:** 2026-04-27 (target_due family added 2026-05-01; calendar_time_change rule amended by owner decision 2026-09-29)
@@ -205,6 +206,7 @@ deleted with the triage stage, not relaxed.
 
 **Test guards:**
 - `internal/inbox/pipeline_test.go::TestInbox09_WatermarkFrozenOnDetectorError`
+- `internal/inbox/pipeline_test.go::TestInbox09_OwnJiraCommentReadErrorFreezesWatermark` — a failed read of the owner's own Jira comments (the `jira_assigned` own-comment check) is a detector error and freezes the watermark.
 - `internal/inbox/pipeline_test.go::TestInbox09_SlackDetectorErrorFreezesWatermark` — a genuine Slack detector failure freezes the watermark.
 - `internal/inbox/pipeline_test.go::TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark` — an account with no resolved identity is skipped cleanly and does NOT freeze the watermark, unlike a genuine failure. **Gap, not covered by any test:** one account's genuine detector error not stopping a sibling account's detection in the same cycle — no mechanism was found to make one account's Slack query fail while a sibling's succeeds against the same shared `messages`/`reactions` tables (every column the four detectors scan is `NOT NULL`, `COALESCE`-wrapped, or a `NOT NULL`-derived `GENERATED STORED` column per `schema.sql`, and no DB-layer test seam exists in this repo to fake it); see `TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation` (skipped, not a guard) for the investigation trail.
 

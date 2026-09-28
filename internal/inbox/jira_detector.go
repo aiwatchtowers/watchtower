@@ -265,8 +265,8 @@ func (o *ownJiraComments) load(keys []string) error {
 	return rows.Err()
 }
 
-// ownCommentsQuery reads the owner's comments on a set of issues: nIDs
-// author ids, then nKeys issue keys. The issue_key-first predicate is served
+// ownCommentsQuery reads the owner's comments on a set of issues. Bind
+// order: the nKeys issue keys first, then the nIDs author ids. The issue_key-first predicate is served
 // by idx_jira_comments_issue_author (migration 00079) — pinned by
 // TestOwnJiraComments_QueryUsesIndex, since idx_jira_comments_issue leads
 // with account_id, which this read does not bind.

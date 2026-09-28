@@ -950,10 +950,12 @@ func TestCalendarReschedule_ProviderResetSurfacesAsInvite(t *testing.T) {
 	assert.Equal(t, "resolved", status)
 }
 
-// TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove: an RSVP that
-// changes to an answer on the very pass that saw the move was given around
-// the reschedule, not before it — it resolves.
+// TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove: an RSVP change
+// to an answer first seen on the same sync pass as the move counts as an
+// answer to the moved meeting — the sync cannot order the two, so it resolves.
 func TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	rescheduleForTest(t, d, "declined", "accepted", time.Time{})
 	p := newPipelineForTest(t, d, "alice", "alice@x.com")
@@ -982,6 +984,8 @@ func TestInbox02_CalendarTimeChangeResolvesOnceEnded(t *testing.T) {
 // detector's own-comment read failing is a detector error — Run returns it
 // and the watermark stays where it was.
 func TestInbox09_OwnJiraCommentReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
 	p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})

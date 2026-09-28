@@ -761,8 +761,12 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 //     given AFTER the reschedule — the sync saw it change (rsvp_changed) at or
 //     after the item's reschedule stamp (its message_ts, time_changed_at) and
 //     it is now an answer. An RSVP left as it was before the move does not
-//     count, whether the provider kept it or reset it to needsAction; with no
-//     fresh answer the item stays pending until the event has ended.
+//     count, whether the provider kept it or reset it to needsAction; an
+//     answer and a move first seen in the same pass count as an answer (the
+//     sync cannot order them). With no fresh answer the item stays pending
+//     until the event has ended — an all-day event at UTC midnight of its
+//     exclusive end date, as in the invite guard. A vanished event row leaves
+//     the item pending until ArchiveStaleActionable archives it.
 func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int {
 	if ownerEmail == "" {
 		return 0
