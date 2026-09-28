@@ -151,6 +151,9 @@ CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, sco
 index	idx_jira_comments_issue
 CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
+index	idx_jira_comments_issue_author
+CREATE INDEX idx_jira_comments_issue_author ON jira_comments(issue_key, author_account_id)
+
 index	idx_jira_comments_synced
 CREATE INDEX idx_jira_comments_synced ON jira_comments(synced_at)
 
@@ -470,7 +473,7 @@ html_link TEXT NOT NULL DEFAULT '',
 raw_json TEXT NOT NULL DEFAULT '{}',
 synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT ''
-, ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '', time_changed_at TEXT NOT NULL DEFAULT '')
+, ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '', time_changed_at TEXT NOT NULL DEFAULT '', rsvp_changed TEXT NOT NULL DEFAULT '{}')
 
 table	catchup_recaps
 CREATE TABLE catchup_recaps (
@@ -2191,6 +2194,7 @@ END
 17	ical_uid	TEXT	notnull=1	dflt=''	pk=0
 18	conference_url	TEXT	notnull=1	dflt=''	pk=0
 19	time_changed_at	TEXT	notnull=1	dflt=''	pk=0
+20	rsvp_changed	TEXT	notnull=1	dflt='{}'	pk=0
 
 ## catchup_recaps
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

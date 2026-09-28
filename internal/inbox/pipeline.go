@@ -754,29 +754,32 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 	return resolved
 }
 
-// autoResolveCalendar resolves pending calendar_invite and calendar_time_change
-// items when the owner's RSVP status is no longer 'needsAction'.
+// autoResolveCalendar resolves pending calendar items the owner has dealt
+// with (INBOX-02):
+//   - calendar_invite: the owner's RSVP is no longer 'needsAction'.
+//   - calendar_time_change (owner decision 2026-09-29): the owner's RSVP was
+//     given AFTER the reschedule — the sync saw it change (rsvp_changed) at or
+//     after the item's reschedule stamp (its message_ts, time_changed_at) and
+//     it is now an answer. An RSVP left as it was before the move does not
+//     count, whether the provider kept it or reset it to needsAction; with no
+//     fresh answer the item stays pending until the event has ended.
 func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int {
 	if ownerEmail == "" {
 		return 0
 	}
 
 	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
-	rows, err := p.db.Query(`SELECT id, channel_id FROM inbox_items
+	rows, err := p.db.Query(`SELECT id, channel_id, trigger_type, message_ts FROM inbox_items
 		WHERE trigger_type IN ('calendar_invite','calendar_time_change') AND status='pending'`)
 	if err != nil {
 		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
 		return 0
 	}
 	defer rows.Close()
-	type candidate struct {
-		id      int64
-		eventID string
-	}
-	var candidates []candidate
+	var candidates []calendarResolveCandidate
 	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.eventID); err != nil {
+		var c calendarResolveCandidate
+		if err := rows.Scan(&c.id, &c.eventID, &c.trigger, &c.itemTS); err != nil {
 			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
 			return 0
 		}
@@ -784,22 +787,62 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int
 	}
 
 	resolved := 0
+	now := time.Now()
 	for _, c := range candidates {
-		var att string
-		p.db.QueryRow(`SELECT attendees FROM calendar_events WHERE id=?`, c.eventID).Scan(&att) //nolint:errcheck
-		var list []calAttendee
-		_ = json.Unmarshal([]byte(att), &list)
-		for _, a := range list {
-			if strings.EqualFold(a.Email, ownerEmail) && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
-				if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User responded to invite', updated_at=? WHERE id=?`,
-					time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
-					p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
-				} else {
-					resolved++
-				}
-				break
-			}
+		var att, rsvpChanged, endTime string
+		// A missing event row reads as empty: nothing answers, nothing ended.
+		row := p.db.QueryRow(`SELECT attendees, rsvp_changed, end_time FROM calendar_events WHERE id=?`, c.eventID)
+		row.Scan(&att, &rsvpChanged, &endTime) //nolint:errcheck
+		reason := calendarResolveReason(c, ownerRSVP(att, ownerEmail), db.CalendarRSVPChangedAt(rsvpChanged, ownerEmail), endTime, now)
+		if reason == "" {
+			continue
 		}
+		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason=?, updated_at=? WHERE id=?`,
+			reason, time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+			p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
+			continue
+		}
+		resolved++
 	}
 	return resolved
+}
+
+// calendarResolveCandidate is one pending calendar inbox item.
+type calendarResolveCandidate struct {
+	id               int64
+	eventID, trigger string
+	itemTS           string // message_ts: the reschedule stamp for a time change
+}
+
+// ownerRSVP returns the owner's response_status in an attendees JSON list,
+// "" when the owner is not on it (or the list does not parse).
+func ownerRSVP(attendees, ownerEmail string) string {
+	var list []calAttendee
+	_ = json.Unmarshal([]byte(attendees), &list)
+	for _, a := range list {
+		if strings.EqualFold(a.Email, ownerEmail) {
+			return a.RSVPStatus
+		}
+	}
+	return ""
+}
+
+// calendarResolveReason decides whether a pending calendar item is resolved
+// and why ("" = keep it pending). rsvpChangedAt is when the sync last saw the
+// owner's RSVP change on the event ("" = never).
+func calendarResolveReason(c calendarResolveCandidate, rsvp, rsvpChangedAt, endTime string, now time.Time) string {
+	answered := rsvp != "" && rsvp != "needsAction"
+	if c.trigger != "calendar_time_change" {
+		if answered {
+			return "User responded to invite"
+		}
+		return ""
+	}
+	if answered && rsvpChangedAt != "" && rsvpChangedAt >= c.itemTS {
+		return "User responded after the reschedule"
+	}
+	if end, err := time.Parse(time.RFC3339, endTime); err == nil && end.Before(now) {
+		return "Event has ended"
+	}
+	return ""
 }

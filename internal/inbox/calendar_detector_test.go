@@ -331,3 +331,35 @@ func TestCalendarDetector_OwnerEmailCaseInsensitive(t *testing.T) {
 		t.Fatalf("attendee email differing only in case must still match the owner, got %d items", n)
 	}
 }
+
+func TestCalendarResolveReason(t *testing.T) {
+	now := time.Now()
+	moveTS := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	before := now.Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	after := now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
+	future := now.Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	past := now.Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	tc := calendarResolveCandidate{trigger: "calendar_time_change", itemTS: moveTS}
+	inv := calendarResolveCandidate{trigger: "calendar_invite", itemTS: before}
+	cases := []struct {
+		name                string
+		c                   calendarResolveCandidate
+		rsvp, changed, endT string
+		want                string
+	}{
+		{"invite answered", inv, "accepted", "", future, "User responded to invite"},
+		{"invite unanswered", inv, "needsAction", "", past, ""},
+		{"time change, RSVP kept from before", tc, "accepted", before, future, ""},
+		{"time change, RSVP never changed", tc, "accepted", "", future, ""},
+		{"time change, answered after", tc, "declined", after, future, "User responded after the reschedule"},
+		{"time change, answered on the move's pass", tc, "accepted", moveTS, future, "User responded after the reschedule"},
+		{"time change, reset after but unanswered", tc, "needsAction", after, future, ""},
+		{"time change, ended", tc, "accepted", before, past, "Event has ended"},
+		{"time change, unparseable end", tc, "accepted", before, "not-a-date", ""},
+	}
+	for _, c := range cases {
+		if got := calendarResolveReason(c.c, c.rsvp, c.changed, c.endT, now); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
