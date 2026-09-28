@@ -14,8 +14,6 @@ final class MeetingChatViewModelTests: XCTestCase {
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
             try dbManager.dbPool.write { db in
-                try ChatConversationQueries.ensureTable(db)
-                try ChatMessageQueries.ensureTable(db)
                 try TestDatabase.insertMeetingTranscript(
                     db, id: 7, title: "Weekly Sync",
                     transcriptText: "we agreed to ship v2 on friday")

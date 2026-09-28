@@ -1277,37 +1277,6 @@ func TestDisputePendingSetList(t *testing.T) {
 	}
 }
 
-// createChatTablesForTest creates the Swift-owned chat tables
-// (chat_conversations + chat_messages) exactly the way the Desktop app's GRDB
-// ensureTable helpers do. They are ABSENT from Go's goose schema (Phase-4
-// resolved ambiguity #1: created lazily by the Desktop app the first time the
-// owner opens a Discuss chat), so every Go chat reader must tolerate both their
-// presence and their absence.
-func createChatTablesForTest(t *testing.T, db *DB) {
-	t.Helper()
-	stmts := []string{
-		`CREATE TABLE chat_conversations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			context_type TEXT,
-			context_id TEXT,
-			created_at REAL NOT NULL,
-			updated_at REAL NOT NULL)`,
-		`CREATE TABLE chat_messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-			role TEXT NOT NULL,
-			text TEXT NOT NULL,
-			created_at REAL NOT NULL)`,
-	}
-	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("create chat table: %v", err)
-		}
-	}
-}
-
 func insertChatConversation(t *testing.T, db *DB, contextType, contextID string) int64 {
 	t.Helper()
 	res, err := db.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
@@ -1336,26 +1305,17 @@ func insertChatMessage(t *testing.T, db *DB, convID int64, role, text string, cr
 	return id
 }
 
-// TestChatTablesPresent: the guard reports false on a fresh goose schema (the
-// Swift chat tables do not exist) and true once they are created.
+// TestChatTablesPresent: since migration 00076 adopted the chat tables into
+// goose, a freshly migrated database always has them.
 func TestChatTablesPresent(t *testing.T) {
 	db := openTestDB(t)
 
 	present, err := db.ChatTablesPresent()
 	if err != nil {
-		t.Fatalf("ChatTablesPresent (absent): %v", err)
-	}
-	if present {
-		t.Fatal("chat tables must be reported absent on a fresh goose schema")
-	}
-
-	createChatTablesForTest(t, db)
-	present, err = db.ChatTablesPresent()
-	if err != nil {
-		t.Fatalf("ChatTablesPresent (present): %v", err)
+		t.Fatalf("ChatTablesPresent: %v", err)
 	}
 	if !present {
-		t.Fatal("chat tables must be reported present after creation")
+		t.Fatal("chat tables must exist after migration 00076")
 	}
 }
 
@@ -1364,7 +1324,6 @@ func TestChatTablesPresent(t *testing.T) {
 // wrong ts, a non-situation conversation, or an unknown conversation.
 func TestOwnerChatTurnExists(t *testing.T) {
 	db := openTestDB(t)
-	createChatTablesForTest(t, db)
 	sit := insertChatConversation(t, db, "situation", "42")
 	other := insertChatConversation(t, db, "track", "9") // non-situation context
 	insertChatMessage(t, db, sit, "user", "owner said", 1720000000.0)
@@ -1400,7 +1359,6 @@ func TestOwnerChatTurnExists(t *testing.T) {
 // context type carrying a quote is harmless (no injection).
 func TestOwnerChatTurnExistsWidenedContextTypes(t *testing.T) {
 	db := openTestDB(t)
-	createChatTablesForTest(t, db)
 	track := insertChatConversation(t, db, "track", "9")
 	insertChatMessage(t, db, track, "user", "owner on a track", 1720000000.0)
 
@@ -1435,7 +1393,6 @@ func TestOwnerChatTurnExistsWidenedContextTypes(t *testing.T) {
 // fractional-second turn against its truncated second (CAST ... AS INTEGER).
 func TestOwnerChatTurnExistsTruncatesFractionalSecond(t *testing.T) {
 	db := openTestDB(t)
-	createChatTablesForTest(t, db)
 	sit := insertChatConversation(t, db, "situation", "1")
 	insertChatMessage(t, db, sit, "user", "x", 1720000000.75)
 
@@ -1453,7 +1410,6 @@ func TestOwnerChatTurnExistsTruncatesFractionalSecond(t *testing.T) {
 // situation context_id, whole-second ts, and verbatim text.
 func TestListOwnerChatTurns(t *testing.T) {
 	db := openTestDB(t)
-	createChatTablesForTest(t, db)
 	sit := insertChatConversation(t, db, "situation", "42")
 	other := insertChatConversation(t, db, "track", "9")
 	u1 := insertChatMessage(t, db, sit, "user", "first", 1720000000.0)
@@ -1496,7 +1452,6 @@ func TestListOwnerChatTurns(t *testing.T) {
 // returns target and track owner turns, each carrying its context_type/id.
 func TestListOwnerChatTurnsWidenedContextTypes(t *testing.T) {
 	db := openTestDB(t)
-	createChatTablesForTest(t, db)
 	sit := insertChatConversation(t, db, "situation", "42")
 	trk := insertChatConversation(t, db, "track", "9")
 	tgt := insertChatConversation(t, db, "target", "3")

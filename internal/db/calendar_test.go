@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -468,24 +469,104 @@ func TestDeleteStaleCalendarEvents_SparesReferencedEvents(t *testing.T) {
 	assertEventExists("evt-both", true, "second pass, transcript and recap")
 }
 
-func TestClearCalendarEvents(t *testing.T) {
+// TestClearGoogleAccountCalendarData pins the scope of `calendar logout`:
+// only the given Google account's calendars and events go, never another
+// Google account's, never a CalDAV/ICS calendar (NULL account_id), never the
+// shared attendee cache — and an event a recording or recap still references
+// survives (owner decision 14, the DeleteStaleCalendarEvents guard), keeping
+// its calendar row so the event's foreign key stays valid.
+func TestClearGoogleAccountCalendarData(t *testing.T) {
 	db := openTestDB(t)
 
-	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: "2026-04-01T00:00:00Z"}))
-	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "primary", Title: "E1", StartTime: "2026-04-02T08:00:00Z", EndTime: "2026-04-02T09:00:00Z"}))
-	require.NoError(t, db.UpsertAttendeeMap("alice@example.com", "U123"))
-
-	err := db.ClearCalendarEvents()
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
 	require.NoError(t, err)
 
-	cals, _ := db.GetCalendars()
-	assert.Empty(t, cals)
+	start := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	end := time.Now().UTC().Add(25 * time.Hour).Format(time.RFC3339)
+	calendars := []struct {
+		account int64
+		id      string
+	}{
+		{acctA, "a-primary"},
+		{acctA, "a-team"},
+		{acctA, "a-recorded"},
+		{acctB, "b-primary"},
+		{0, "caldav:work"},
+		{0, "ics:holidays"},
+	}
+	for _, c := range calendars {
+		require.NoError(t, db.UpsertCalendar(c.account, CalendarCalendar{ID: c.id, Name: c.id, IsSelected: true, SyncedAt: start}))
+	}
+	events := map[string]string{
+		"evt-a1":         "a-primary",
+		"evt-a2":         "a-team",
+		"evt-a-recorded": "a-recorded",
+		"evt-a-recapped": "a-recorded",
+		"evt-a-unlinked": "a-recorded",
+		"evt-b":          "b-primary",
+		"evt-caldav":     "caldav:work",
+		"evt-ics":        "ics:holidays",
+	}
+	for id, cal := range events {
+		require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: id, CalendarID: cal, Title: id, StartTime: start, EndTime: end}))
+	}
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-a-recorded", Valid: true}, Title: "T", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertMeetingRecap("evt-a-recapped", "source", "{}", 0))
+	// An ad-hoc recording keeps a NULL event_id in the table the guard
+	// correlates against — it must not poison the guard into sparing nothing.
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{Title: "Ad-hoc", TranscriptText: "hello"})
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertAttendeeMap("alice@example.com", "U123"))
 
-	events, _ := db.GetCalendarEvents(CalendarEventFilter{})
-	assert.Empty(t, events)
+	n, err := db.ClearGoogleAccountCalendarData(acctA)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n, "evt-a1, evt-a2 and evt-a-unlinked are deleted")
 
-	m, _ := db.GetAttendeeMap()
-	assert.Empty(t, m)
+	for id, want := range map[string]bool{
+		"evt-a1":         false,
+		"evt-a2":         false,
+		"evt-a-unlinked": false,
+		"evt-a-recorded": true,
+		"evt-a-recapped": true,
+		"evt-b":          true,
+		"evt-caldav":     true,
+		"evt-ics":        true,
+	} {
+		got, err := db.GetCalendarEventByID(id)
+		require.NoError(t, err)
+		assert.Equalf(t, want, got != nil, "event %s survives = %v", id, want)
+	}
+
+	var transcriptEvent sql.NullString
+	require.NoError(t, db.QueryRow(`SELECT event_id FROM meeting_transcripts WHERE title = 'T'`).Scan(&transcriptEvent))
+	assert.Equal(t, "evt-a-recorded", transcriptEvent.String, "the recording stays linked to its event")
+
+	cals, err := db.GetCalendars()
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, c := range cals {
+		got[c.ID] = c.IsSelected
+	}
+	assert.Equal(t, map[string]bool{
+		"a-recorded":   true, // still holds referenced events
+		"b-primary":    true, // selection of another account is untouched
+		"caldav:work":  true,
+		"ics:holidays": true,
+	}, got)
+
+	m, err := db.GetAttendeeMap()
+	require.NoError(t, err)
+	assert.Equal(t, "U123", m["alice@example.com"], "the attendee cache is shared across accounts and kept")
+
+	// Idempotent: a second pass deletes nothing more.
+	n, err = db.ClearGoogleAccountCalendarData(acctA)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
 }
 
 func TestAttendeeMap(t *testing.T) {

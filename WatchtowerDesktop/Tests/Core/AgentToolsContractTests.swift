@@ -45,4 +45,35 @@ final class AgentToolsContractTests: XCTestCase {
         XCTAssertTrue(block.contains("#3 create_target: failed — issuetype: invalid"))
         XCTAssertNil(AgentToolsContract.actionsSinceLastTurnBlock([]))
     }
+
+    // MARK: - Shared Go fixtures (dual path, spec §4.1 item 4)
+
+    /// `internal/chat/testdata` — the files Go's
+    /// `TestActionsContract_MatchesSharedFixtures` pins `chat.ActionsContract`
+    /// to. Both sides read the SAME files, so a one-sided edit fails here or there.
+    private static func goFixture(_ surface: String) throws -> String {
+        let path = URL(fileURLWithPath: #filePath)   // …/WatchtowerDesktop/Tests/Core/<this file>
+            .deletingLastPathComponent()              // …/Tests/Core
+            .deletingLastPathComponent()              // …/Tests
+            .deletingLastPathComponent()              // …/WatchtowerDesktop
+            .deletingLastPathComponent()              // repo root
+            .appendingPathComponent("internal/chat/testdata/actions_contract_\(surface).txt")
+        let raw = try String(contentsOf: path, encoding: .utf8)
+        return raw.hasSuffix("\n") ? String(raw.dropLast()) : raw
+    }
+
+    func testPromptBlocksMatchTheGoFixturesByteForByte() throws {
+        XCTAssertEqual(AgentToolsContract.promptBlock(surface: .main), try Self.goFixture("main"))
+        XCTAssertEqual(AgentToolsContract.promptBlock(surface: .target), try Self.goFixture("target"))
+    }
+
+    func testTargetBlockOffersTheJiraIssueWrites() {
+        let block = AgentToolsContract.promptBlock(surface: .target)
+        for tool in ["add_jira_comment", "transition_jira_issue", "assign_jira_issue", "update_jira_issue"] {
+            XCTAssertTrue(block.contains("- \(tool) — "), tool)
+        }
+        for tool in ["create_track", "create_idea", "remind_me"] {
+            XCTAssertFalse(block.contains("- \(tool) — "), "\(tool) is main-chat only")
+        }
+    }
 }

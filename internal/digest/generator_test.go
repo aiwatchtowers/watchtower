@@ -21,7 +21,7 @@ func containsPair(args []string, flag, value string) bool {
 }
 
 func TestGenerateArgsSmallMessageInline(t *testing.T) {
-	args, stdin := generateArgs("m", "sys", "hello")
+	args, stdin := generateArgs("m", "sys", "hello", false)
 	if stdin != "" {
 		t.Errorf("stdin = %q, want empty for small message", stdin)
 	}
@@ -38,7 +38,7 @@ func TestGenerateArgsSmallMessageInline(t *testing.T) {
 
 func TestGenerateArgsLargeMessageViaStdin(t *testing.T) {
 	big := strings.Repeat("x", StdinThreshold+1)
-	args, stdin := generateArgs("m", "sys", big)
+	args, stdin := generateArgs("m", "sys", big, false)
 	if stdin != big {
 		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
 	}
@@ -257,7 +257,7 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 
 func TestGenerateArgsThresholdBoundary(t *testing.T) {
 	exact := strings.Repeat("x", StdinThreshold)
-	args, stdin := generateArgs("m", "sys", exact)
+	args, stdin := generateArgs("m", "sys", exact, false)
 	if stdin != "" {
 		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
 	}

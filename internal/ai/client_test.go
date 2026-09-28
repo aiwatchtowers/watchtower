@@ -58,10 +58,15 @@ func TestBuildArgs(t *testing.T) {
 	// wastes a turn calling them and asking the user for approvals: file
 	// editing and Claude Code task tooling, shell and web (live sources +
 	// exfiltration channel), and filesystem reads (TCC prompt risk).
-	assertFlagValue(t, args, "--disallowedTools",
-		"Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,"+
-			"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS,"+
-			"ExitPlanMode,SlashCommand,Skill")
+	assertFlagValue(t, args, "--disallowedTools", DisallowedTools)
+	for _, tool := range []string{"Edit", "Bash", "WebFetch", "Read", "Skill", "CronCreate", "RemoteTrigger",
+		"Workflow", "SendMessage", "ReadMcpResourceTool", "ListMcpResourcesTool"} {
+		assert.Contains(t, strings.Split(DisallowedTools, ","), tool)
+	}
+	assert.NotContains(t, strings.Split(DisallowedTools, ","), "ToolSearch",
+		"ToolSearch loads the deferred watchtower tools and must stay allowed")
+	// Only Watchtower's own MCP config: never the owner's claude.ai connectors.
+	assert.Contains(t, args, "--strict-mcp-config")
 	// TCC isolation: every spawn must skip user-level ~/.claude/settings.json
 	// via --setting-sources project,local. Dropping this re-opens the P0 where
 	// plugin/hook auto-discovery probes ~/Desktop and triggers a Watchtower.app
@@ -766,4 +771,21 @@ func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
 		t.Fatalf("expected inline JSON, got %q", val)
 	}
+}
+
+// The warm chat session builds its MCP config with the exported helpers; they
+// must render exactly what the one-shot client sends, so `ai query` and
+// `ai session` expose the same tools.
+func TestChatMCPConfig_MatchesClient(t *testing.T) {
+	ext := []ExternalMCPServer{{Name: "confluence", Kind: "http", URL: "https://mcp.example.com"}}
+	args := []string{"--chat", "--surface", "main", "--conversation", "7", "--turn-file", "/tmp/t"}
+	c := NewClient("m", "/tmp/wt.db", "")
+	c.SetMCPArgs(args)
+	c.SetExternalMCPServers(ext)
+
+	assert.Equal(t, c.buildMCPConfig(), ChatMCPConfig("/tmp/wt.db", args, ext))
+	assert.Equal(t, c.allowedToolsFlag(), AllowedTools(ext))
+	assert.Equal(t, "mcp__watchtower,mcp__confluence", AllowedTools(ext))
+	assert.Contains(t, DisallowedTools, "Bash")
+	assert.Contains(t, DisallowedTools, "WebFetch")
 }

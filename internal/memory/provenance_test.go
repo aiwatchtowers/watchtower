@@ -92,7 +92,6 @@ func TestProvenanceRegistryDispatchesMessage(t *testing.T) {
 // (MEM-09 owner-authenticity folded into the chat resolver's existence check).
 func TestProvenanceRegistryDispatchesChat(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	createChatTables(t, d)
 	conv := seedChatConversation(t, d, "situation", "7")
 	seedChatMessage(t, d, conv, "user", "owner said", 1720000000.0)
 	p := NewPipeline(d, v, &fakeGen{}, pipelineTestConfig(), t.Logf)

@@ -127,7 +127,8 @@ func runGmailLogout(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	return disconnectGoogleService(cmd, cfg, database, "gmail")
+	_, err = disconnectGoogleService(cmd, cfg, database, "gmail")
+	return err
 }
 
 func runGmailSync(cmd *cobra.Command, _ []string) error {

@@ -599,10 +599,9 @@ final class SearchQueryTests: XCTestCase {
 
 final class ChatConversationQueryTests: XCTestCase {
 
-    func testEnsureTableAndCreate() throws {
+    func testCreate() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
             let conv = try ChatConversationQueries.create(db, title: "My Chat")
             XCTAssertEqual(conv.title, "My Chat")
             XCTAssertNil(conv.sessionID)
@@ -613,7 +612,6 @@ final class ChatConversationQueryTests: XCTestCase {
     func testFetchAll() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
             try ChatConversationQueries.create(db, title: "First")
             try ChatConversationQueries.create(db, title: "Second")
         }
@@ -627,7 +625,6 @@ final class ChatConversationQueryTests: XCTestCase {
     func testSearch() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try ChatConversationQueries.ensureTable(db)
             try ChatConversationQueries.create(db, title: "Slack discussion")
             try ChatConversationQueries.create(db, title: "Meeting notes")
         }
@@ -639,8 +636,7 @@ final class ChatConversationQueryTests: XCTestCase {
     func testUpdateTitle() throws {
         let db = try TestDatabase.create()
         let conv = try db.write { db -> ChatConversation in
-            try ChatConversationQueries.ensureTable(db)
-            return try ChatConversationQueries.create(db, title: "Old Title")
+            try ChatConversationQueries.create(db, title: "Old Title")
         }
         try db.write { db in
             try ChatConversationQueries.updateTitle(db, id: conv.id, title: "New Title")
@@ -652,8 +648,7 @@ final class ChatConversationQueryTests: XCTestCase {
     func testUpdateSessionID() throws {
         let db = try TestDatabase.create()
         let conv = try db.write { db -> ChatConversation in
-            try ChatConversationQueries.ensureTable(db)
-            return try ChatConversationQueries.create(db, title: "Test")
+            try ChatConversationQueries.create(db, title: "Test")
         }
         XCTAssertNil(conv.sessionID)
 
@@ -667,8 +662,7 @@ final class ChatConversationQueryTests: XCTestCase {
     func testDelete() throws {
         let db = try TestDatabase.create()
         let conv = try db.write { db -> ChatConversation in
-            try ChatConversationQueries.ensureTable(db)
-            return try ChatConversationQueries.create(db, title: "Doomed")
+            try ChatConversationQueries.create(db, title: "Doomed")
         }
         try db.write { db in
             try ChatConversationQueries.delete(db, id: conv.id)
@@ -680,8 +674,7 @@ final class ChatConversationQueryTests: XCTestCase {
     func testTouch() throws {
         let db = try TestDatabase.create()
         let conv = try db.write { db -> ChatConversation in
-            try ChatConversationQueries.ensureTable(db)
-            return try ChatConversationQueries.create(db, title: "Test")
+            try ChatConversationQueries.create(db, title: "Test")
         }
         let originalUpdated = conv.updatedAt
 
@@ -698,8 +691,7 @@ final class ChatConversationQueryTests: XCTestCase {
     func testDisplayTitle() throws {
         let db = try TestDatabase.create()
         let conv = try db.write { db -> ChatConversation in
-            try ChatConversationQueries.ensureTable(db)
-            return try ChatConversationQueries.create(db, title: "")
+            try ChatConversationQueries.create(db, title: "")
         }
         XCTAssertEqual(conv.displayTitle, "New Chat")
 

@@ -17,301 +17,133 @@ struct ChatView: View {
     }
 }
 
-/// Extracted so that @State (historyWidth, showHistory) lives here — survives tab switches
-/// because AppState keeps the VMs alive and this view just re-renders around them.
+/// Holds view-local layout state; the VMs live on AppState and survive tab switches.
 private struct ChatSplitView: View {
     @Environment(AppState.self) private var appState
     @Bindable var chatVM: ChatViewModel
-    let historyVM: ChatHistoryViewModel
-    @State private var showHistory = true
-    @State private var historyWidth: CGFloat = 240
-    @State private var showDeleteConfirmation = false
+    @Bindable var historyVM: ChatHistoryViewModel
+    @State private var showSidebar = true
+    @State private var showSearch = false
+    @State private var showRename = false
+    @State private var renameText = ""
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                chatToolbar
-                Divider()
-                chatContent
-            }
-            .frame(maxWidth: .infinity)
-
-            if showHistory {
-                ResizeHandle { delta in
-                    historyWidth = min(max(historyWidth - delta, 160), 400)
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                if showSidebar {
+                    ChatSidebarView(historyVM: historyVM, chatVM: chatVM, onNewChat: createNewChat, onDelete: delete)
+                        .frame(width: 260)
+                    Divider()
                 }
-
-                Divider()
-
-                ChatHistoryView(historyVM: historyVM) {
-                    createNewChat()
+                VStack(spacing: 0) {
+                    toolbar
+                    Divider()
+                    if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
+                        ProjectDetailView(
+                            projectID: projectID,
+                            dbPool: dbPool,
+                            attachmentsRoot: ChatAttachmentStore.defaultRootDir(),
+                            onNewChat: createNewChat(inProject:),
+                            onOpenChat: { historyVM.selectedConversationID = $0 },
+                            onRenamed: { chatVM.reloadProjects() },
+                            onDeleted: { chatVM.projectDeleted($0) }
+                        )
+                        .id(projectID)
+                    } else {
+                        ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
+                        ChatComposerView(
+                            chatVM: chatVM,
+                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
+                            maxHeight: max(120, geo.size.height * 0.4)
+                        )
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity)
+                    }
                 }
-                .frame(width: historyWidth)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .onChange(of: historyVM.selectedConversationID) { _, newID in
-            if let newID, let conv = historyVM.conversations.first(where: { $0.id == newID }) {
-                chatVM.bind(to: conv)
+            if let newID { chatVM.select(conversationID: newID) }
+        }
+        .sheet(isPresented: $showSearch) {
+            ChatSearchView(search: { historyVM.search($0) }, onOpen: open)
+        }
+        .alert("Rename Chat", isPresented: $showRename) {
+            TextField("Title", text: $renameText)
+            Button("Save") {
+                if let id = chatVM.conversationID {
+                    historyVM.rename(id, title: renameText)
+                    chatVM.reload()
+                }
             }
-        }
-        // L6: confirmation dialog before deleting chat
-        .alert("Delete Chat?", isPresented: $showDeleteConfirmation) {
-            Button("Delete", role: .destructive) { deleteCurrentChat() }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This conversation will be permanently deleted.")
         }
+        .inspector(isPresented: Binding(
+            get: { chatVM.inspectorMode != nil },
+            set: { if !$0 { chatVM.closeInspector() } }
+        )) {
+            ChatInspectorContent(chatVM: chatVM)
+                .inspectorColumnWidth(min: 320, ideal: 460, max: 900)
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            Button { withAnimation(.easeInOut(duration: 0.2)) { showSidebar.toggle() } } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .help("Toggle Chat History")
+            .accessibilityLabel("Toggle Chat History")
+            Text(toolbarTitle)
+                .font(.headline)
+                .lineLimit(1)
+                .onTapGesture(count: 2) {
+                    guard chatVM.openProjectID == nil, chatVM.conversationID != nil else { return }
+                    renameText = chatVM.currentConversation?.title ?? ""
+                    showRename = true
+                }
+                .help("Double-click to rename")
+            Spacer()
+            Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                .keyboardShortcut("k", modifiers: .command)
+                .help("Search Chats (⌘K)")
+                .accessibilityLabel("Search Chats (⌘K)")
+            Button(action: createNewChat) { Image(systemName: "square.and.pencil") }
+                .keyboardShortcut("n", modifiers: .command)
+                .help("New Chat (⌘N)")
+                .accessibilityLabel("New Chat (⌘N)")
+            Button { appState.startOnboarding() } label: { Image(systemName: "person.crop.circle.badge.questionmark") }
+                .help(appState.profileComplete ? "Update Profile" : "Setup Profile")
+                .accessibilityLabel(appState.profileComplete ? "Update Profile" : "Setup Profile")
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var toolbarTitle: String {
+        if let projectID = chatVM.openProjectID {
+            return chatVM.projects.first { $0.id == projectID }?.name ?? "Project"
+        }
+        return chatVM.currentConversation?.displayTitle ?? "New Chat"
     }
 
     private func createNewChat() {
-        guard let conv = historyVM.createConversation() else { return }
-        chatVM.newChat()
-        chatVM.bind(to: conv)
+        if let id = chatVM.newConversation() { historyVM.selectedConversationID = id }
     }
 
-    private func deleteCurrentChat() {
-        guard let id = chatVM.conversationID else { return }
-        chatVM.cancelStream()
+    private func createNewChat(inProject projectID: Int64) {
+        if let id = chatVM.newConversation(projectID: projectID) { historyVM.selectedConversationID = id }
+    }
+
+    private func delete(_ id: Int64) {
+        chatVM.forget(conversationID: id)
         historyVM.deleteConversation(id)
-        chatVM.newChat()
-        // Switch to the next available conversation, or leave empty
-        if let next = historyVM.conversations.first {
-            chatVM.bind(to: next)
-        }
+        if let next = historyVM.selectedConversationID { chatVM.select(conversationID: next) }
     }
 
-    private var chatToolbar: some View {
-        HStack(spacing: 8) {
-            Picker("Provider", selection: Binding(
-                get: { chatVM.selectedProvider },
-                set: { chatVM.switchProvider($0) }
-            )) {
-                ForEach(AIProvider.allCases) { provider in
-                    Text(provider.displayName).tag(provider)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(width: 100)
-            .disabled(chatVM.isStreaming)
-
-            Picker("Model", selection: $chatVM.selectedModel) {
-                Text("Auto").tag("")
-                ForEach(appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue), id: \.self) { model in
-                    Text(model).tag(model)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(width: 140)
-            .disabled(chatVM.isStreaming)
-
-            Button {
-                createNewChat()
-            } label: {
-                Image(systemName: "plus.message")
-            }
-            .keyboardShortcut("n", modifiers: .command)
-            .help("New Chat")
-
-            if chatVM.conversationID != nil {
-                Button(role: .destructive) {
-                    showDeleteConfirmation = true
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .keyboardShortcut(.delete, modifiers: .command)
-                .help("Delete Chat")
-            }
-
-            Spacer()
-
-            Button {
-                appState.startOnboarding()
-            } label: {
-                Image(systemName: "person.crop.circle.badge.questionmark")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-            .help(appState.profileComplete ? "Update Profile" : "Setup Profile")
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showHistory.toggle()
-                }
-            } label: {
-                Image(systemName: "sidebar.trailing")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-            .help("Toggle Chat History")
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-    }
-
-    private var chatContent: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        if chatVM.messages.isEmpty && chatVM.conversationID != nil {
-                            quickPrompts
-                        } else if chatVM.messages.isEmpty {
-                            emptyState
-                        }
-
-                        ForEach(chatVM.messages) { msg in
-                            MessageBubble(message: msg)
-                                .id(msg.id)
-                            actionCards(for: msg)
-                        }
-                        unattachedActionCards
-
-                        if let error = chatVM.errorMessage {
-                            Text(error)
-                                .font(.callout)
-                                .foregroundStyle(.red)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                        if let err = chatVM.actionFeed.lastError {
-                            Text(err).font(.caption).foregroundStyle(.red)
-                        }
-                    }
-                    .padding()
-                }
-                .onChange(of: chatVM.messages.count) {
-                    if let last = chatVM.messages.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
-                .onChange(of: chatVM.actionFeed.rows.count) {
-                    if let last = chatVM.messages.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
-            }
-
-            Divider()
-            ChatInput(
-                text: $chatVM.inputText,
-                isStreaming: chatVM.isStreaming,
-                onSend: {
-                    if chatVM.conversationID == nil {
-                        if let conv = historyVM.createConversation() {
-                            chatVM.bind(to: conv)
-                        }
-                    }
-                    chatVM.send()
-                },
-                onStop: { chatVM.cancelStream() },
-                dictationTargetID: "chat.workspace"
-            )
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
-            Text("Start a new chat")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-            Text("Press \(Image(systemName: "command")) N or click \"+\" to begin")
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-
-            setupProfileButton
-        }
-        .padding(.top, 60)
-    }
-
-    private var quickPrompts: some View {
-        VStack(spacing: 8) {
-            Text("Ask about your workspace")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-                .padding(.top, 40)
-
-            HStack(spacing: 8) {
-                quickPromptButton("What happened today?")
-                quickPromptButton("Any decisions?")
-                quickPromptButton("Summarize activity")
-            }
-            .padding(.bottom, 20)
-
-            setupProfileButton
-        }
-    }
-
-    private var setupProfileButton: some View {
-        Button {
-            appState.startOnboarding()
-        } label: {
-            Label(
-                appState.profileComplete ? "Update Profile" : "Setup Profile",
-                systemImage: "person.crop.circle.badge.questionmark"
-            )
-        }
-        .buttonStyle(.bordered)
-        .padding(.top, 8)
-    }
-
-    private func quickPromptButton(_ text: String) -> some View {
-        Button(text) {
-            chatVM.inputText = text
-            chatVM.send()
-        }
-        .buttonStyle(.bordered)
-    }
-
-    /// Proposal cards attached to one turn — only a message with a turn id
-    /// gets a card slot (a streaming placeholder's turn id lives in memory,
-    /// so cards created mid-stream still attach to it).
-    @ViewBuilder
-    private func actionCards(for msg: ChatMessage) -> some View {
-        if let turn = msg.turnID {
-            let cards = chatVM.actionFeed.cards(forTurn: turn)
-            if cards.filter(\.isPending).count >= 2 {
-                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
-                    .font(.caption)
-            }
-            ForEach(cards) { action in
-                agentActionCard(action)
-            }
-        }
-    }
-
-    /// Proposals whose turn never persisted a message — a stream that died
-    /// mid-turn. Without a slot of their own they would be unreachable.
-    @ViewBuilder
-    private var unattachedActionCards: some View {
-        let orphans = AgentActionFeed.unattached(
-            rows: chatVM.actionFeed.rows,
-            messageTurnIDs: Set(chatVM.messages.compactMap(\.turnID))
-        )
-        if !orphans.isEmpty {
-            Text("Proposals from an interrupted turn")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(orphans) { action in
-                agentActionCard(action)
-            }
-        }
-    }
-
-    private func agentActionCard(_ action: AgentAction) -> some View {
-        AgentActionCardView(
-            action: action,
-            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
-            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
-            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
-            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
-        )
+    private func open(_ hit: ChatSearchHit) {
+        chatVM.open(hit)
+        historyVM.selectedConversationID = hit.conversationID
     }
 }

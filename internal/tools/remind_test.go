@@ -56,7 +56,7 @@ func TestRemindMe_Registration(t *testing.T) {
 	assert.Equal(t, "remind_me", tool.Name)
 	assert.Equal(t, AccessWrite, tool.Access)
 	assert.False(t, tool.External)
-	assert.Equal(t, []string{"reaction"}, tool.Surfaces, "reaction-path only")
+	assert.ElementsMatch(t, []string{"reaction", "main"}, tool.Surfaces, "reaction path + main chat; never the target chat (TGT-BRIEF-01 axis 3)")
 	require.NotNil(t, tool.InputSchema)
 }
 
@@ -104,4 +104,56 @@ func TestRemindMe_OffsetPastInUTCIsDue(t *testing.T) {
 	due, err := d.ListDueReminders("2026-01-01T00:00:00Z")
 	require.NoError(t, err)
 	require.Len(t, due, 1, "2026-01-01T02:00+05:00 is 2025-12-31T21:00Z — already due at 2026-01-01T00:00Z")
+}
+
+// Off the reaction path the binding's ContextID is a chat context, never a
+// message ref: the reminder carries the model's explicit message_ref (or none).
+func TestRemindMe_MainChatUsesExplicitMessageRefOnly(t *testing.T) {
+	d := openDB(t)
+	tool := NewRemindMe()
+	for _, tc := range []struct {
+		args, want string
+	}{
+		{`{"remind_at":"2999-01-01T09:00:00Z","message_ref":"1:C9@123.45","reason":"r"}`, "1:C9@123.45"},
+		{`{"remind_at":"2999-01-02T09:00:00Z","reason":"r"}`, ""},
+	} {
+		require.NoError(t, tool.Validate(context.Background(), d, json.RawMessage(tc.args)))
+		res, err := tool.Execute(context.Background(), d, Call{ActionID: 1, Args: json.RawMessage(tc.args),
+			Binding: Binding{Surface: "main", ConversationID: 4, ContextType: "", ContextID: "conv-context"}})
+		require.NoError(t, err)
+		id := res.(map[string]any)["reminder_id"].(int64)
+		due, err := d.ListDueReminders("3000-01-01T00:00:00Z")
+		require.NoError(t, err)
+		found := false
+		for _, r := range due {
+			if r.ID == id {
+				found = true
+				assert.Equal(t, tc.want, r.MessageRef)
+			}
+		}
+		require.True(t, found, "inserted reminder %d not found among due rows: %+v", id, due)
+	}
+}
+
+// REACT-02: on the reaction path the reacted message is the ref, whatever
+// the composed arguments say.
+func TestRemindMe_ReactionPathIgnoresModelMessageRef(t *testing.T) {
+	d := openDB(t)
+	args := json.RawMessage(`{"remind_at":"2999-01-01T09:00:00Z","message_ref":"1:CX@9.9","reason":"r"}`)
+	res, err := NewRemindMe().Execute(context.Background(), d, Call{ActionID: 1, Args: args,
+		Binding: Binding{Surface: "reaction", ContextType: "reaction", ContextID: "1:C9@123.45"}})
+	require.NoError(t, err)
+	due, err := d.ListDueReminders("3000-01-01T00:00:00Z")
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	assert.Equal(t, res.(map[string]any)["reminder_id"], due[0].ID)
+	assert.Equal(t, "1:C9@123.45", due[0].MessageRef)
+}
+
+func TestRemindMe_ValidateRejectsMalformedMessageRef(t *testing.T) {
+	err := NewRemindMe().Validate(context.Background(), openDB(t),
+		json.RawMessage(`{"remind_at":"2999-01-01T09:00:00Z","message_ref":"not a ref","reason":"r"}`))
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Msg, "message_ref")
 }

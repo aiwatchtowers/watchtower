@@ -75,6 +75,9 @@ type User struct {
 	EmailAddress string `json:"emailAddress"`
 	DisplayName  string `json:"displayName"`
 	Active       bool   `json:"active"`
+	// AccountType is "atlassian" for a person, "app"/"customer" otherwise;
+	// only user search reads it (an issue's assignee is always a person).
+	AccountType string `json:"accountType"`
 }
 
 // Priority represents a Jira issue priority.

@@ -1,0 +1,65 @@
+import SwiftUI
+import WatchtowerCore
+
+/// The inspector's Sources panel: one answer's sources, deduplicated and
+/// grouped (Slack channel / Jira project / space / Mail / Meetings / Other),
+/// each group collapsible with its count.
+///
+/// An item opens its permalink/deep link through the app-wide allowed-scheme
+/// `openURL`. Go emits a `url` only for kb hits with a `link` and
+/// `list_messages` permalinks; `SourceLinkResolver` (pure, `WatchtowerCore`)
+/// additionally turns a `jira:<KEY>` ref into `<site>/browse/<KEY>` given the
+/// site URL read via `JiraConfigHelper.readSiteURL()`. Every other url-less
+/// item is shown but not clickable — a documented v1 limitation.
+struct ChatSourcesPanelView: View {
+    let selection: ChatSourcesSelection
+    var onClose: () -> Void
+    @State private var collapsed: Set<String> = []
+    @State private var jiraSiteURL: String?
+
+    var body: some View {
+        let groups = ChatSourceGrouping.groups(selection.sources)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "books.vertical")
+                Text("Sources").font(.headline)
+                Text("\(selection.sources.count)").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(action: onClose) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Close")
+                    .accessibilityLabel("Close")
+            }
+            .padding(10)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(groups) { group in
+                        DisclosureGroup(isExpanded: expandedBinding(group.name)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(group.sources, id: \.dedupeKey) { source in
+                                    SourceItemRow(source: source,
+                                                  link: SourceLinkResolver.url(for: source, jiraSiteURL: jiraSiteURL))
+                                }
+                            }
+                            .padding(.top, 4)
+                        } label: {
+                            SourceGroupHeader(group: group)
+                        }
+                    }
+                }
+                .padding(12)
+            }
+        }
+        .task(id: selection.messageID) {
+            if jiraSiteURL == nil { jiraSiteURL = JiraConfigHelper.readSiteURL() }
+        }
+    }
+
+    private func expandedBinding(_ name: String) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(name) },
+                set: { expanded in
+                    if expanded { collapsed.remove(name) } else { collapsed.insert(name) }
+                })
+    }
+}

@@ -764,13 +764,10 @@ func (db *DB) SetMemoryChatTurnFloor(id int64) error {
 	return nil
 }
 
-// ChatTablesPresent reports whether the Swift-owned chat_conversations and
-// chat_messages tables both exist. The Desktop app creates them lazily via
-// GRDB (ChatConversationQueries/ChatMessageQueries ensureTable) the first time
-// the owner opens a Discuss chat, so a headless daemon sees them absent — the
-// Phase-4 chat surface (ingestChatStatements + the belief pass's chat: ref
-// validation) must treat their absence as an empty read, never an error
-// (MEM-05/MEM-09, resolved ambiguity #1).
+// ChatTablesPresent reports whether chat_conversations and chat_messages both
+// exist. Since migration 00076 adopted them into goose they always do after
+// Open; the check stays so a reader handed a pre-00076 raw handle degrades to
+// an empty read instead of an error (MEM-05/MEM-09).
 func (db *DB) ChatTablesPresent() (bool, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
@@ -832,9 +829,14 @@ type OwnerChatTurn struct {
 // floor, oldest id first — the input ingestChatStatements folds into the belief
 // pass. contextTypes is {"situation"} when memory.sources.chats is off (byte-
 // identical to the Phase-4 situation-only read) and {"situation","target","track"}
-// when on. The IN-clause is parameterized, never interpolated. The Swift-owned
-// chat tables are absent on a headless daemon; that is a clean empty read (nil,
-// nil), never an error (MEM-05).
+// when on. The IN-clause is parameterized, never interpolated. The chat tables
+// are absent only on a handle opened on a pre-00076 file; that is a clean empty
+// read (nil, nil), never an error (MEM-05).
+//
+// Only the active branch is read (spec §2.2): an owner turn replaced by an
+// edit is not a statement the owner stands by. Because the ingest floor is
+// id-based, a turn that sat on an inactive branch when the ingest ran is not
+// picked up later if the owner switches back to that branch — accepted.
 func (db *DB) ListOwnerChatTurns(floor int64, contextTypes []string) ([]OwnerChatTurn, error) {
 	present, err := db.ChatTablesPresent()
 	if err != nil {
@@ -845,11 +847,11 @@ func (db *DB) ListOwnerChatTurns(floor int64, contextTypes []string) ([]OwnerCha
 	}
 	placeholders, args := inClause(contextTypes)
 	args = append(args, floor)
-	rows, err := db.Query(`SELECT m.id, m.conversation_id, c.context_type, COALESCE(c.context_id, ''),
+	rows, err := db.Query(activeBranchCTE+`SELECT m.id, m.conversation_id, c.context_type, COALESCE(c.context_id, ''),
 			CAST(m.created_at AS INTEGER), m.text
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE m.role = 'user' AND c.context_type IN (`+placeholders+`) AND m.id > ?
+		WHERE m.role = 'user' AND c.context_type IN (`+placeholders+`) AND m.id > ? AND `+onActiveBranch+`
 		ORDER BY m.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing owner chat turns: %w", err)

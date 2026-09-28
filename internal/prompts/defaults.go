@@ -45,6 +45,7 @@ var Defaults = map[string]string{
 	DictationClean:             defaultDictationClean,
 	ReactionCommand:            defaultReactionCommand,
 	CatchupCompose:             defaultCatchupCompose,
+	ChatTitle:                  defaultChatTitle,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -88,6 +89,7 @@ var AllIDs = []string{
 	DictationClean,
 	ReactionCommand,
 	CatchupCompose,
+	ChatTitle,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -133,6 +135,7 @@ var DefaultVersions = map[string]int{
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
+	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -180,6 +183,7 @@ var Descriptions = map[string]string{
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
 	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
 	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
+	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1457,6 +1461,17 @@ Rules:
 
 Respond with ONLY a JSON object, no markdown fences:
 {"tldr":"...","topics":[{"title":"...","narrative":"...","priority":"high","refs":["digests#12","inbox#7"]}],"decisions":[{"text":"...","refs":["decisions#3"]}],"meetings":[{"title":"...","summary":"...","refs":["recaps#5"]}],"needs_you":[{"text":"...","kind":"mention","refs":["inbox#7"]}]}`
+
+// defaultChatTitle names a main-chat conversation from its first exchange
+// (`watchtower chat title`, light tier). The first verb is the language
+// directive, like every other prompt; the exchange rides the user message.
+const defaultChatTitle = `%s
+
+You name a conversation between the owner and their work assistant. Read the first exchange in the user message and reply with a short title for the whole conversation:
+- at most 60 characters, ideally 3-6 words;
+- name the subject, not the act ("Payments rollout risks", not "Question about payments");
+- no quotes, no trailing period, no markdown, no emoji;
+- reply with the title only, on one line.`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.

@@ -63,10 +63,6 @@ final class TrackChatSkillsPromptTests: XCTestCase {
     /// AGENT-04: the track chat is draft-only — it must never carry a tool mode.
     @MainActor
     func testSendPassesNoToolMode() async throws {
-        try await dbManager.dbPool.write { db in
-            try ChatConversationQueries.ensureTable(db)
-            try ChatMessageQueries.ensureTable(db)
-        }
         let track = try makeTrack()
         let vm = TracksViewModel(dbManager: dbManager)
         let mock = MockClaudeService(events: [.text("ok"), .done])

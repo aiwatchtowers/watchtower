@@ -470,7 +470,7 @@ struct RecordingNotesTab: View {
                         .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                 } else {
                     ScrollView {
-                        MarkdownText(text: draft)
+                        MarkdownView(text: draft)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
                     }
@@ -963,7 +963,7 @@ struct RecordingChatTab: View {
                             }
                             .font(.subheadline)
                         } else {
-                            MarkdownText(text: msg.text)
+                            MarkdownView(text: msg.text)
                                 .font(.subheadline)
                                 .textSelection(.enabled)
                         }

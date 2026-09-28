@@ -2,20 +2,6 @@ import Foundation
 import GRDB
 
 package enum ChatConversationQueries {
-    package static func ensureTable(_ db: Database) throws {
-        try db.execute(sql: """
-            CREATE TABLE IF NOT EXISTS chat_conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL DEFAULT '',
-                session_id TEXT,
-                context_type TEXT,
-                context_id TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
-            )
-        """)
-    }
-
     package static func fetchAll(_ db: Database) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(db, sql: """
             SELECT * FROM chat_conversations ORDER BY updated_at DESC
@@ -24,7 +10,9 @@ package enum ChatConversationQueries {
 
     package static func fetchStandalone(_ db: Database) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(db, sql: """
-            SELECT * FROM chat_conversations WHERE context_type IS NULL ORDER BY updated_at DESC
+            SELECT * FROM chat_conversations
+            WHERE context_type IS NULL AND archived_at IS NULL
+            ORDER BY updated_at DESC
         """)
     }
 
@@ -39,31 +27,17 @@ package enum ChatConversationQueries {
         )
     }
 
-    package static func ensureContextColumns(_ db: Database) throws {
-        let columns = try db.columns(in: "chat_conversations").map(\.name)
-        if !columns.contains("context_type") {
-            try db.execute(sql: "ALTER TABLE chat_conversations ADD COLUMN context_type TEXT")
-            // Fresh column — no migration needed.
-            if !columns.contains("context_id") {
-                try db.execute(sql: "ALTER TABLE chat_conversations ADD COLUMN context_id TEXT")
-            }
-            return
-        }
-        if !columns.contains("context_id") {
-            try db.execute(sql: "ALTER TABLE chat_conversations ADD COLUMN context_id TEXT")
-        }
-        // One-time migration: rename old "action_item" context type to "track".
-        try db.execute(sql: "UPDATE chat_conversations SET context_type = 'track' WHERE context_type = 'action_item'")
-    }
-
     @discardableResult
-    package static func create(_ db: Database, title: String = "", contextType: String? = nil, contextID: String? = nil) throws -> ChatConversation {
+    package static func create(
+        _ db: Database, title: String = "", contextType: String? = nil, contextID: String? = nil, projectID: Int64? = nil
+    ) throws -> ChatConversation {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
-            INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-        """, arguments: [title, contextType, contextID, now, now])
+            INSERT INTO chat_conversations (title, context_type, context_id, project_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, arguments: [title, contextType, contextID, projectID, now, now])
         let rowID = db.lastInsertedRowID
-        guard let conversation = try ChatConversation.fetchOne(db, sql: "SELECT * FROM chat_conversations WHERE id = ?", arguments: [rowID]) else {
+        guard let conversation = try fetchByID(db, id: rowID) else {
             throw DatabaseError(message: "Failed to fetch newly created chat conversation")
         }
         return conversation
@@ -129,11 +103,79 @@ package enum ChatConversationQueries {
         """, arguments: [title, now, id])
     }
 
+    /// Owner rename — `title_source='user'` keeps `chat title` and the
+    /// prefix title from ever overwriting it.
+    package static func rename(_ db: Database, id: Int64, title: String) throws {
+        try db.execute(sql: """
+            UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?
+        """, arguments: [title, Date().timeIntervalSince1970, id])
+    }
+
+    /// First-message title (80 chars), only while nothing better exists.
+    package static func setPrefixTitle(_ db: Database, id: Int64, text: String) throws {
+        try db.execute(sql: """
+            UPDATE chat_conversations SET title = ? WHERE id = ? AND title_source = 'prefix' AND title = ''
+        """, arguments: [String(text.prefix(80)), id])
+    }
+
+    /// True exactly when the conversation still has its prefix title and has
+    /// just finished its first assistant reply (spec §4.4).
+    package static func needsAITitle(_ db: Database, id: Int64) throws -> Bool {
+        let completed = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM chat_messages m
+            JOIN chat_conversations c ON c.id = m.conversation_id
+            WHERE c.id = ? AND c.title_source = 'prefix' AND m.role = 'assistant' AND m.status = 'complete'
+            """, arguments: [id]) ?? 0
+        return completed == 1
+    }
+
+    package static func pin(_ db: Database, id: Int64, pinned: Bool) throws {
+        try db.execute(sql: "UPDATE chat_conversations SET pinned = ? WHERE id = ?", arguments: [pinned ? 1 : 0, id])
+    }
+
+    package static func archive(_ db: Database, id: Int64) throws {
+        try db.execute(
+            sql: "UPDATE chat_conversations SET archived_at = ? WHERE id = ?",
+            arguments: [Date().timeIntervalSince1970, id]
+        )
+    }
+
+    /// Moves a conversation into (or out of) a project. An actual move also
+    /// clears the stored provider session: a `--resume`d Claude session keeps
+    /// the prompt it was started with, so it would never see the new
+    /// project's block or files — the next turn starts fresh and replays.
+    /// Moving to the project it is already in changes nothing.
+    package static func setProject(_ db: Database, id: Int64, projectID: Int64?) throws {
+        try db.execute(
+            sql: """
+                UPDATE chat_conversations SET project_id = ?, session_id = NULL
+                WHERE id = ? AND project_id IS NOT ?
+                """,
+            arguments: [projectID, id, projectID]
+        )
+    }
+
+    package static func setProviderModel(_ db: Database, id: Int64, provider: String, model: String?) throws {
+        try db.execute(
+            sql: "UPDATE chat_conversations SET provider = ?, model = ? WHERE id = ?",
+            arguments: [provider, model, id]
+        )
+    }
+
     package static func updateSessionID(_ db: Database, id: Int64, sessionID: String) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
             UPDATE chat_conversations SET session_id = ?, updated_at = ? WHERE id = ?
         """, arguments: [sessionID, now, id])
+    }
+
+    /// `updateSessionID` guarded by the project the session was spawned for:
+    /// a no-op once the conversation moved to another project (or out).
+    package static func updateSessionID(_ db: Database, id: Int64, sessionID: String, projectID: Int64?) throws {
+        let now = Date().timeIntervalSince1970
+        try db.execute(sql: """
+            UPDATE chat_conversations SET session_id = ?, updated_at = ? WHERE id = ? AND project_id IS ?
+        """, arguments: [sessionID, now, id, projectID])
     }
 
     package static func touch(_ db: Database, id: Int64) throws {

@@ -224,7 +224,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	coachingJSON, _ := json.Marshal(result.Coaching)
 
 	var inTok, outTok, totalAPI int
+	var model string
 	if usage != nil {
+		model = usage.Model
 		inTok = usage.InputTokens
 		outTok = usage.OutputTokens
 		totalAPI = usage.TotalAPITokens
@@ -244,7 +246,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		WhatHappened:  string(whatHappenedJSON),
 		TeamPulse:     string(teamPulseJSON),
 		Coaching:      string(coachingJSON),
-		Model:         usage.Model,
+		Model:         model,
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
 		CostUSD:       0,
