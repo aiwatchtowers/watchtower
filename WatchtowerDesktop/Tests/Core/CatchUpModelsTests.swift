@@ -64,20 +64,20 @@ final class CatchUpModelsTests: XCTestCase {
 
     func testAutoWindowStartMirrorsGoResolveWindow() {
         let now = Date()
-        typealias W = CatchUpAutoWindow
-        XCTAssertEqual(W.start(lastAcknowledgedTo: nil, now: now), .last24Hours)
-        XCTAssertEqual(W.start(lastAcknowledgedTo: now.addingTimeInterval(3600), now: now), .last24Hours,
+        typealias Win = CatchUpAutoWindow
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: nil, now: now), .last24Hours)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: now.addingTimeInterval(3600), now: now), .last24Hours,
                        "a future ack falls back to 24h, as in Go")
-        XCTAssertEqual(W.start(lastAcknowledgedTo: now, now: now), .last24Hours)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: now, now: now), .last24Hours)
 
         let recent = now.addingTimeInterval(-3 * 24 * 3600)
-        XCTAssertEqual(W.start(lastAcknowledgedTo: recent, now: now), .since(recent))
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: recent, now: now), .since(recent))
 
         let atCap = now.addingTimeInterval(-31 * 24 * 3600)
-        XCTAssertEqual(W.start(lastAcknowledgedTo: atCap, now: now), .since(atCap), "exactly at the cap is not truncated")
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: atCap, now: now), .since(atCap), "exactly at the cap is not truncated")
 
         let ancient = now.addingTimeInterval(-45 * 24 * 3600)
-        XCTAssertEqual(W.start(lastAcknowledgedTo: ancient, now: now), .capped(atCap))
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: ancient, now: now), .capped(atCap))
     }
 
     func testAutoWindowCaption() {
