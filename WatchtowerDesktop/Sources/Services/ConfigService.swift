@@ -34,7 +34,12 @@ final class ConfigService {
     var claudePath: String?
     var codexPath: String?
     var calendarEnabled: Bool = false
-    var calendarSyncDaysAhead: Int = 2
+    /// Mirrors Go's `DefaultCalendarSyncDaysAhead` (internal/config/defaults.go).
+    /// `save()` always writes `calendar.sync_days_ahead`, so a Swift default
+    /// that drifts from Go's silently rewrites the daemon's horizon the first
+    /// time anything in Settings saves.
+    static let defaultCalendarSyncDaysAhead = 7
+    var calendarSyncDaysAhead: Int = ConfigService.defaultCalendarSyncDaysAhead
     /// Days of past events kept synced (`calendar.history_days`), the same
     /// knob widening the Go syncers' timeMin. Read-only here — `save()`
     /// preserves whatever is on disk via its merge.
@@ -121,7 +126,7 @@ final class ConfigService {
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
-                calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? 2
+                calendarSyncDaysAhead = (calendar["sync_days_ahead"] as? Int) ?? Self.defaultCalendarSyncDaysAhead
                 calendarHistoryDays = (calendar["history_days"] as? Int) ?? 14
             }
 

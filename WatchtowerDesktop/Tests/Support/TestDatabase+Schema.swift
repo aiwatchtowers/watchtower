@@ -366,6 +366,7 @@ extension TestDatabase {
         owner_display_name            TEXT NOT NULL DEFAULT ''
     );
 
+    -- jira_issues / jira_releases copied verbatim from internal/db/schema.sql
     CREATE TABLE IF NOT EXISTS jira_issues (
         account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
         key TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
@@ -388,6 +389,19 @@ extension TestDatabase {
         raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
         synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (account_id, key)
+    );
+    CREATE TABLE IF NOT EXISTS jira_releases (
+        account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+        id INTEGER NOT NULL,
+        project_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        release_date TEXT NOT NULL DEFAULT '',
+        released INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        synced_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (account_id, id),
+        UNIQUE(account_id, project_key, name)
     );
     CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key);
     CREATE INDEX IF NOT EXISTS idx_jira_issues_updated ON jira_issues(updated_at);
@@ -446,7 +460,9 @@ extension TestDatabase {
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT '',
         ical_uid        TEXT NOT NULL DEFAULT '',
-        conference_url  TEXT NOT NULL DEFAULT ''
+        conference_url  TEXT NOT NULL DEFAULT '',
+        time_changed_at TEXT NOT NULL DEFAULT '',
+        rsvp_changed    TEXT NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);

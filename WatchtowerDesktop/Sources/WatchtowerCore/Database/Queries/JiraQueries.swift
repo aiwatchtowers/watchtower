@@ -887,23 +887,28 @@ package enum JiraQueries {
             .fetchAll(db)
     }
 
-    /// Fetch issues where fix_versions JSON array contains versionName.
+    /// Fetch `accountID`'s issues whose fix_versions JSON array contains
+    /// versionName. Version names are site-local strings — two connected sites
+    /// routinely both ship a "1.0" — so the lookup is account-scoped, mirroring
+    /// Go's `GetJiraIssuesByFixVersion` (internal/db/jira_dashboards.go).
     package static func fetchIssuesByFixVersion(
         _ db: Database,
+        accountID: Int,
         versionName: String
     ) throws -> [JiraIssue] {
         try JiraIssue.fetchAll(
             db,
             sql: """
                 SELECT ji.* FROM jira_issues ji
-                WHERE EXISTS (SELECT 1 FROM json_each(ji.fix_versions) WHERE value = ?)
+                WHERE ji.account_id = ?
+                  AND EXISTS (SELECT 1 FROM json_each(ji.fix_versions) WHERE value = ?)
                   AND ji.is_deleted = 0
                 ORDER BY
                   CASE ji.status_category WHEN 'in_progress' THEN 0 WHEN 'todo' THEN 1 ELSE 2 END,
                   ji.priority,
                   ji.updated_at DESC
                 """,
-            arguments: [versionName]
+            arguments: [accountID, versionName]
         )
     }
 
@@ -988,8 +993,11 @@ package enum JiraQueries {
     /// Count issues added to / removed from a fix version since a given date.
     /// "Added" = issues currently in the version with synced_at >= since.
     /// "Removed" = approximated as 0 (fix_versions is current state, no history).
+    /// Account-scoped for the same reason as `fetchIssuesByFixVersion`
+    /// (Go twin: `GetJiraIssueCountAddedSince`).
     package static func fetchScopeChanges(
         _ db: Database,
+        accountID: Int,
         versionName: String,
         since: Date
     ) throws -> (added: Int, removed: Int) {
@@ -999,11 +1007,12 @@ package enum JiraQueries {
             sql: """
                 SELECT COUNT(*)
                 FROM jira_issues ji
-                WHERE EXISTS (SELECT 1 FROM json_each(ji.fix_versions) WHERE value = ?)
+                WHERE ji.account_id = ?
+                  AND EXISTS (SELECT 1 FROM json_each(ji.fix_versions) WHERE value = ?)
                   AND ji.synced_at >= ?
                   AND ji.is_deleted = 0
                 """,
-            arguments: [versionName, sinceStr]
+            arguments: [accountID, versionName, sinceStr]
         ) ?? 0
 
         // Removed count requires historical data not available in current schema.

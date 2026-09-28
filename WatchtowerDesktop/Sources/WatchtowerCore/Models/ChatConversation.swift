@@ -17,6 +17,8 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
     package let model: String?
     package let projectID: Int64?
     package let activeLeafMessageID: Int64?
+    /// Only `ChatConversationQueries.fetchStandalone` selects it; false elsewhere.
+    package let hasAttachments: Bool
 
     package enum CodingKeys: String, CodingKey {
         case id, title, pinned, provider, model
@@ -29,6 +31,7 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
         case titleSource = "title_source"
         case projectID = "project_id"
         case activeLeafMessageID = "active_leaf_message_id"
+        case hasAttachments = "has_attachments"
     }
 
     package init(from decoder: Decoder) throws {
@@ -47,6 +50,7 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
         model = try c.decodeIfPresent(String.self, forKey: .model)
         projectID = try c.decodeIfPresent(Int64.self, forKey: .projectID)
         activeLeafMessageID = try c.decodeIfPresent(Int64.self, forKey: .activeLeafMessageID)
+        hasAttachments = try c.decodeIfPresent(Bool.self, forKey: .hasAttachments) ?? false
     }
 
     package var createdDate: Date { Date(timeIntervalSince1970: createdAt) }
