@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -19,12 +20,28 @@ import (
 // the dependency-free internal/jirakey pattern, re-exported here.
 var KeyRegexp = jirakey.KeyRegexp
 
+// knownProjectKeysTTL bounds how long a daemon-lifetime KeyDetector can serve
+// a stale known-key set. A tray-launched daemon runs for weeks; without this,
+// a project connected (or a new project's first issue synced) after the set
+// first populated would never get its keys linked from Slack messages,
+// digests or tracks until the daemon restarted — ResetCache exists for that
+// same purpose but has no production caller. A daemon Jira sync cycle is on
+// the order of minutes, so an hour keeps the reload rare while bounding the
+// staleness window well below "for weeks."
+const knownProjectKeysTTL = time.Hour
+
 // KeyDetector detects Jira issue keys in text and links them to Slack messages.
 type KeyDetector struct {
 	db        *db.DB
 	logger    *log.Logger
 	knownKeys map[string]bool
+	loadedAt  time.Time
 	mu        sync.RWMutex
+
+	// now is the clock knownProjectKeys reads to decide staleness; nil means
+	// time.Now (a test injects a fake to cross the TTL without a real hour's
+	// wait — the internal/sync Orchestrator.now precedent).
+	now func() time.Time
 }
 
 // NewKeyDetector creates a new KeyDetector.
@@ -33,6 +50,14 @@ func NewKeyDetector(database *db.DB) *KeyDetector {
 		db:     database,
 		logger: log.New(os.Stderr, "[jira-keys] ", log.LstdFlags),
 	}
+}
+
+// clockNow returns the detector's clock (time.Now unless a test overrides now).
+func (d *KeyDetector) clockNow() time.Time {
+	if d.now != nil {
+		return d.now()
+	}
+	return time.Now()
 }
 
 // SetLogger replaces the detector's logger.
@@ -96,23 +121,27 @@ func (d *KeyDetector) DetectKeys(text string) []string {
 	return result
 }
 
-// knownProjectKeys returns the cached project keys, loading them when the cache
-// is still empty. Only a non-empty result is ever memoized: a daemon that
-// starts before the first Jira sync would otherwise cache the empty set for its
-// whole lifetime and never detect a key again. Reloading while the set is empty
-// is a SELECT DISTINCT over two small tables. A load error keeps the set empty,
-// which detects nothing — unknown means no, never yes.
+// knownProjectKeys returns the cached project keys, loading them when the
+// cache is still empty or has gone past knownProjectKeysTTL. Only a
+// non-empty result is ever memoized: a daemon that starts before the first
+// Jira sync would otherwise cache the empty set for its whole lifetime and
+// never detect a key again. Reloading is a SELECT DISTINCT over two small
+// tables. A load error leaves whatever was cached before untouched (nil if
+// nothing ever loaded successfully, or the previous — now stale — set on a
+// TTL-triggered reload that failed) rather than wiping a good set on a
+// transient DB hiccup; unknown still means no, never yes.
 func (d *KeyDetector) knownProjectKeys() map[string]bool {
 	d.mu.RLock()
 	known := d.knownKeys
+	fresh := len(known) > 0 && d.clockNow().Sub(d.loadedAt) < knownProjectKeysTTL
 	d.mu.RUnlock()
-	if len(known) > 0 {
+	if fresh {
 		return known
 	}
 
 	if err := d.refreshKnownKeys(); err != nil {
 		d.logger.Printf("failed to load known project keys: %v", err)
-		return nil
+		return known
 	}
 
 	d.mu.RLock()
@@ -245,6 +274,7 @@ func (d *KeyDetector) refreshKnownKeys() error {
 
 	d.mu.Lock()
 	d.knownKeys = known
+	d.loadedAt = d.clockNow()
 	d.mu.Unlock()
 	return nil
 }
@@ -253,6 +283,7 @@ func (d *KeyDetector) refreshKnownKeys() error {
 func (d *KeyDetector) ResetCache() {
 	d.mu.Lock()
 	d.knownKeys = nil
+	d.loadedAt = time.Time{}
 	d.mu.Unlock()
 }
 
