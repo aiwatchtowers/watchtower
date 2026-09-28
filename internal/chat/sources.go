@@ -3,7 +3,9 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -12,6 +14,16 @@ const SummaryMaxRunes = 300
 
 // MaxSources caps the source chips one tool_end carries.
 const MaxSources = 10
+
+// SnippetMaxRunes caps a source's snippet (the panel shows two lines).
+const SnippetMaxRunes = 160
+
+// Groups a source is filed under when its source has no finer grouping
+// (a mailbox or a meeting); an empty group is the Desktop's "Other".
+const (
+	mailGroup    = "Mail"
+	meetingGroup = "Meetings"
+)
 
 // SummarizeToolResult turns a read tool's raw result into a one-line summary
 // and the sources it cites (spec §3.4). name is the display name (no
@@ -49,7 +61,9 @@ var sourceExtractors = map[string]func([]byte) (string, []Source){
 }
 
 type kbDoc struct {
-	Ref, Source, Title, Link string
+	Ref, Source, Title, Link, When string
+	Snippets                       []string
+	Anchor                         map[string]string
 }
 
 // kbKind maps a knowledge-index source onto a chip kind.
@@ -69,7 +83,33 @@ func kbKind(source string) string {
 }
 
 func (d kbDoc) source() Source {
-	return Source{Kind: kbKind(d.Source), Title: d.Title, URL: d.Link, Ref: d.Ref}
+	kind := kbKind(d.Source)
+	s := Source{Kind: kind, Title: d.Title, URL: d.Link, Ref: d.Ref, Group: d.group(kind), Date: isoDay(d.When)}
+	if len(d.Snippets) > 0 {
+		s.Snippet = snippet(d.Snippets[0])
+	}
+	return s
+}
+
+// group files a knowledge document: a Slack document under its channel (the
+// title's "#channel — …"/"#channel · day" prefix), a Jira one under its
+// project, a Confluence page under its space, mail and meetings together.
+func (d kbDoc) group(kind string) string {
+	switch kind {
+	case "slack":
+		return slackTitleGroup(d.Title)
+	case "jira":
+		key := d.Anchor["key"]
+		if key == "" {
+			key = d.Ref[strings.LastIndex(d.Ref, ":")+1:]
+		}
+		return jiraProject(key)
+	case "email":
+		return mailGroup
+	case "meeting":
+		return meetingGroup
+	}
+	return d.Anchor["space"]
 }
 
 func knowledgeHitSources(raw []byte) (string, []Source) {
@@ -100,10 +140,21 @@ func knowledgeDocSource(raw []byte) (string, []Source) {
 	return "Opened " + d.Title, []Source{d.source()}
 }
 
-type jiraIssueView struct{ Key, Summary, Status string }
+type jiraIssueView struct {
+	Key, ProjectKey, Summary, Status, AssigneeDisplayName, UpdatedAt string
+}
 
 func (j jiraIssueView) source() Source {
-	return Source{Kind: "jira", Title: j.Key + ": " + j.Summary, Ref: "jira:" + j.Key}
+	group := j.ProjectKey
+	if group == "" {
+		group = jiraProject(j.Key)
+	}
+	detail := j.Status
+	if j.AssigneeDisplayName != "" {
+		detail = strings.TrimPrefix(detail+" · "+j.AssigneeDisplayName, " · ")
+	}
+	return Source{Kind: "jira", Title: j.Key + ": " + j.Summary, Ref: "jira:" + j.Key,
+		Group: group, Snippet: snippet(detail), Date: isoDay(j.UpdatedAt)}
 }
 
 func jiraIssueSource(raw []byte) (string, []Source) {
@@ -134,8 +185,8 @@ func jiraIssueListSources(raw []byte) (string, []Source) {
 
 func slackMessageSources(raw []byte) (string, []Source) {
 	var list []struct {
-		TS                         string `json:"ts"`
-		Channel, Sender, Permalink string
+		TS                               string `json:"ts"`
+		Channel, Sender, Text, Permalink string
 	}
 	if json.Unmarshal(raw, &list) != nil {
 		return "", nil
@@ -144,20 +195,22 @@ func slackMessageSources(raw []byte) (string, []Source) {
 	for _, m := range list {
 		ch := strings.TrimPrefix(m.Channel, "#")
 		sources = append(sources, Source{Kind: "slack", Title: "#" + ch + " · " + m.Sender, URL: m.Permalink,
-			Ref: "slack:" + ch + ":" + m.TS})
+			Ref: "slack:" + ch + ":" + m.TS, Group: "#" + ch, Snippet: snippet(m.Text), Date: slackDay(m.TS)})
 	}
 	return fmt.Sprintf("%d messages", len(list)), sources
 }
 
 func transcriptSource(raw []byte) (string, []Source) {
 	var tr struct {
-		ID    int64
-		Title string
+		ID             int64
+		Title, Summary string
+		CreatedAt      string `json:"created_at"`
 	}
 	if json.Unmarshal(raw, &tr) != nil || tr.ID == 0 {
 		return "", nil
 	}
-	return "Opened " + tr.Title, []Source{{Kind: "meeting", Title: tr.Title, Ref: fmt.Sprintf("transcript:%d", tr.ID)}}
+	return "Opened " + tr.Title, []Source{{Kind: "meeting", Title: tr.Title, Ref: fmt.Sprintf("transcript:%d", tr.ID),
+		Group: meetingGroup, Snippet: snippet(tr.Summary), Date: isoDay(tr.CreatedAt)}}
 }
 
 func personSource(raw []byte) (string, []Source) {
@@ -212,6 +265,50 @@ func capSources(in []Source) []Source {
 	}
 	return out
 }
+
+// slackTitleGroup is the channel part of a Slack knowledge title
+// ("#channel — headline", "#channel · 2026-05-13", "DM with Ann — …").
+func slackTitleGroup(title string) string {
+	for _, sep := range []string{" — ", " · "} {
+		if head, _, ok := strings.Cut(title, sep); ok {
+			return head
+		}
+	}
+	return ""
+}
+
+// jiraProject is an issue key's project ("PAY" of "PAY-7"), "" otherwise.
+func jiraProject(key string) string {
+	project, number, ok := strings.Cut(key, "-")
+	if !ok || project == "" || number == "" {
+		return ""
+	}
+	return project
+}
+
+// isoDay is the YYYY-MM-DD prefix of an ISO date/time, "" when s is not one.
+func isoDay(s string) string {
+	if len(s) < 10 {
+		return ""
+	}
+	if _, err := time.Parse("2006-01-02", s[:10]); err != nil {
+		return ""
+	}
+	return s[:10]
+}
+
+// slackDay is the UTC day of a Slack ts ("1715600000.000100"), "" if unparsable.
+func slackDay(ts string) string {
+	secs, _, _ := strings.Cut(ts, ".")
+	n, err := strconv.ParseInt(secs, 10, 64)
+	if err != nil || n <= 0 {
+		return ""
+	}
+	return time.Unix(n, 0).UTC().Format("2006-01-02")
+}
+
+// snippet collapses whitespace and caps s at SnippetMaxRunes.
+func snippet(s string) string { return truncateRunes(collapseSpace(s), SnippetMaxRunes) }
 
 // collapseSpace folds every run of whitespace into one space and trims.
 func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
