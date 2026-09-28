@@ -91,20 +91,11 @@ struct ChatThreadView: View {
                                             viewportHeight: height), proxy: proxy)
                 }
                 .overlay(alignment: .bottom) { jumpToLatestButton(proxy: proxy) }
-                // One handler for switch/jump/new row, so a ⌘K hit that also
-                // switches the conversation lands on the hit whatever order
-                // separate handlers would have fired in.
+                // One handler for switch/jump/turn start/new row, so a ⌘K hit
+                // that also switches into a streaming conversation lands on
+                // the hit whatever order separate handlers would have fired in.
                 .onChange(of: threadState) { old, new in
                     handleThreadChange(ChatAutoScrollPolicy.threadChange(from: old, to: new), proxy: proxy)
-                }
-                // Sending (or regenerate/edit/continue) always re-pins,
-                // whatever an earlier scroll left behind.
-                .onChange(of: chatVM.liveTurn?.messageID) { old, new in
-                    guard ChatAutoScrollPolicy.turnStarted(previousLiveMessageID: old, currentLiveMessageID: new)
-                    else { return }
-                    follow.tracker.repin()
-                    syncFollowing()
-                    proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
                 }
             }
         }
@@ -120,7 +111,7 @@ struct ChatThreadView: View {
 
     private var threadState: ChatAutoScrollPolicy.ThreadState {
         .init(conversationID: chatVM.conversationID, lastMessageID: chatVM.thread.last?.id,
-              scrollTarget: chatVM.scrollTarget)
+              scrollTarget: chatVM.scrollTarget, liveMessageID: chatVM.liveTurn?.messageID)
     }
 
     private func handleThreadChange(_ change: ChatAutoScrollPolicy.ThreadChange, proxy: ScrollViewProxy) {
@@ -129,10 +120,15 @@ struct ChatThreadView: View {
             follow.tracker.reset(following: false)
             syncFollowing()
             proxy.scrollTo(target, anchor: .center)
+            chatVM.consumeScrollTarget()
         case .switchedConversation:
             follow.tracker.reset(following: true)
             syncFollowing()
             if let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+        case .turnStarted:
+            follow.tracker.repin()
+            syncFollowing()
+            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
         case .newLastRow:
             if isFollowing, let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
         case .none:

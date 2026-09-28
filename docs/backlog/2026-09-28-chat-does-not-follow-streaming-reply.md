@@ -39,9 +39,14 @@ scroll up is read from the content's top edge moving down against a baseline
 that advances only on a real move, so even a slow sub-point drag adds up and
 stops following; scrolling back down near the bottom or tapping "Jump to
 latest" re-pins. Starting a turn (send, regenerate, edit, continue) always
-re-pins (`turnStarted`). A ⌘K search hit — including one that switches the
-conversation in the same update — lands on the message and does not follow;
-a plain switch lands at the bottom (`threadChange`, one handler for both).
+re-pins. A ⌘K search hit — including one that switches into a conversation
+whose reply is still streaming in the same update — lands on the message and
+does not follow; a plain switch lands at the bottom; a live-turn change counts
+as a turn start only within the same conversation (`threadChange`, one
+handler for all four). The view consumes the jump target
+(`ChatViewModel.consumeScrollTarget`), so reopening the same hit jumps again.
 Pinned by `ChatAutoScrollPolicyTests` (multi-measurement runs: streaming, slow
 drag, growth while reading, re-pin on scroll down, overscroll, shrink, reset
-following/not following, repin, thread-change classification).
+following/not following, repin, thread-change classification incl. a jump into a streaming
+conversation and reopening a consumed hit) and
+`ChatViewModelTests.testConsumedScrollTargetLetsTheSameHitJumpAgain`.

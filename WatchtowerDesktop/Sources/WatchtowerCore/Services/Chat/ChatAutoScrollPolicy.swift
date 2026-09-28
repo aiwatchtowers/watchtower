@@ -49,17 +49,27 @@ package enum ChatAutoScrollPolicy {
     }
 
     /// What the thread view watches for scroll purposes, in one value, so a
-    /// conversation switch and a search-hit jump landing in the same update
-    /// are told apart regardless of handler order.
+    /// conversation switch, a search-hit jump and a turn start landing in the
+    /// same update are told apart regardless of handler order.
     package struct ThreadState: Equatable, Sendable {
         package let conversationID: Int64?
         package let lastMessageID: Int64?
         package let scrollTarget: Int64?
+        /// The open conversation's live reply, if any. `liveTurn` is
+        /// per-conversation, so a switch into a streaming conversation
+        /// changes it too — that alone is not a turn start.
+        package let liveMessageID: Int64?
 
-        package init(conversationID: Int64?, lastMessageID: Int64?, scrollTarget: Int64?) {
+        package init(
+            conversationID: Int64?,
+            lastMessageID: Int64?,
+            scrollTarget: Int64?,
+            liveMessageID: Int64? = nil
+        ) {
             self.conversationID = conversationID
             self.lastMessageID = lastMessageID
             self.scrollTarget = scrollTarget
+            self.liveMessageID = liveMessageID
         }
     }
 
@@ -69,6 +79,9 @@ package enum ChatAutoScrollPolicy {
         case jumpToMessage(Int64)
         /// A plain conversation switch: land at the bottom, following.
         case switchedConversation
+        /// A new live turn in the same conversation (send, regenerate, edit,
+        /// continue): re-pin to the bottom, whatever an earlier scroll left.
+        case turnStarted
         /// A new last row in the same conversation.
         case newLastRow
         case none
@@ -77,6 +90,9 @@ package enum ChatAutoScrollPolicy {
     package static func threadChange(from old: ThreadState, to new: ThreadState) -> ThreadChange {
         if new.scrollTarget != old.scrollTarget, let target = new.scrollTarget { return .jumpToMessage(target) }
         if new.conversationID != old.conversationID { return .switchedConversation }
+        if turnStarted(previousLiveMessageID: old.liveMessageID, currentLiveMessageID: new.liveMessageID) {
+            return .turnStarted
+        }
         if new.lastMessageID != old.lastMessageID { return .newLastRow }
         return .none
     }

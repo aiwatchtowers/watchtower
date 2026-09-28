@@ -242,39 +242,84 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
 
     private typealias State = ChatAutoScrollPolicy.ThreadState
 
+    private func thread(_ conversation: Int64?, last: Int64?, target: Int64? = nil, live: Int64? = nil) -> State {
+        State(conversationID: conversation, lastMessageID: last, scrollTarget: target, liveMessageID: live)
+    }
+
     /// A ⌘K hit in another conversation switches AND targets in one update:
     /// the jump wins, so the view lands on the message, not at the bottom.
     func testSearchHitInAnotherConversationIsAJump() {
-        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
-        let new = State(conversationID: 2, lastMessageID: 20, scrollTarget: 15)
+        let old = thread(1, last: 10)
+        let new = thread(2, last: 20, target: 15)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .jumpToMessage(15))
     }
 
     func testSearchHitInTheOpenConversationIsAJump() {
-        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
-        let new = State(conversationID: 1, lastMessageID: 10, scrollTarget: 4)
+        let old = thread(1, last: 10)
+        let new = thread(1, last: 10, target: 4)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .jumpToMessage(4))
     }
 
     /// A plain switch leaves an earlier (stale) target untouched: it lands at
     /// the bottom, following.
     func testPlainSwitchWithStaleTargetIsASwitch() {
-        let old = State(conversationID: 2, lastMessageID: 20, scrollTarget: 15)
-        let new = State(conversationID: 3, lastMessageID: 30, scrollTarget: 15)
+        let old = thread(2, last: 20, target: 15)
+        let new = thread(3, last: 30, target: 15)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .switchedConversation)
     }
 
     func testNewRowInTheSameConversation() {
-        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
-        let new = State(conversationID: 1, lastMessageID: 11, scrollTarget: nil)
+        let old = thread(1, last: 10)
+        let new = thread(1, last: 11)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .newLastRow)
     }
 
     /// Degenerate: a cleared target or nothing changed is no scroll.
     func testClearedTargetOrNoChangeIsNone() {
-        let state = State(conversationID: 1, lastMessageID: 10, scrollTarget: 4)
+        let state = thread(1, last: 10, target: 4)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: state, to: state), .none)
-        let cleared = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
+        let cleared = thread(1, last: 10)
         XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: state, to: cleared), .none)
+    }
+
+    /// Verify finding V1: a ⌘K hit that switches into a conversation whose
+    /// reply is still streaming changes the live turn in the same update —
+    /// the jump still wins, so the view lands on the hit, not following.
+    func testSearchHitIntoAStreamingConversationIsAJump() {
+        let old = thread(1, last: 10)
+        let new = thread(2, last: 21, target: 15, live: 21)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .jumpToMessage(15))
+    }
+
+    /// A plain switch into a streaming conversation is a switch, not a turn start.
+    func testPlainSwitchIntoAStreamingConversationIsASwitch() {
+        let old = thread(1, last: 10, live: 9)
+        let new = thread(2, last: 21, live: 21)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .switchedConversation)
+    }
+
+    /// A genuine new turn in the same conversation (a send adds the owner row
+    /// and the live reply in one update) re-pins.
+    func testNewTurnInTheSameConversationIsATurnStart() {
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: thread(1, last: 10), to: thread(1, last: 12, live: 12)),
+                       .turnStarted)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: thread(1, last: 12, live: 12),
+                                                         to: thread(1, last: 14, live: 14)),
+                       .turnStarted)
+    }
+
+    /// The live turn ending (same row, liveTurn → nil) is not a turn start.
+    func testLiveTurnEndingIsNotATurnStart() {
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: thread(1, last: 12, live: 12), to: thread(1, last: 12)),
+                       .none)
+    }
+
+    /// Verify finding V6: once the view consumes a jump (target cleared),
+    /// reopening the same hit is a jump again.
+    func testReopeningTheSameHitAfterConsumingIsAJumpAgain() {
+        let jumped = thread(1, last: 10, target: 4)
+        let consumed = thread(1, last: 10)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: jumped, to: consumed), .none)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: consumed, to: jumped), .jumpToMessage(4))
     }
 }
