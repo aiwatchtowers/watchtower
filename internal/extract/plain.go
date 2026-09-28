@@ -382,8 +382,9 @@ var headContainerTags = map[string]bool{
 	"title": true, "style": true, "script": true, "noscript": true, "template": true,
 }
 
-// tag handles one tag token: skipped-element depth, cell separators, and
-// line ends at block elements (tr among them).
+// tag handles one tag token: <head> tracking, skipped-element depth, cell
+// separators, and line ends at block elements (tr among them) — split
+// across a few small steps to keep each one under the complexity gate.
 func (st *htmlStripper) tag(tt html.Token) {
 	name := tt.Data
 	if name == "head" {
@@ -391,31 +392,54 @@ func (st *htmlStripper) tag(tt html.Token) {
 		st.headChildDepth = 0
 		return
 	}
-	opening := tt.Type == html.StartTagToken || tt.Type == html.SelfClosingTagToken
 	if st.inHead {
-		switch {
-		case headContainerTags[name]:
-			if tt.Type == html.StartTagToken {
-				st.headChildDepth++
-			} else if tt.Type == html.EndTagToken {
-				st.headChildDepth = max(st.headChildDepth-1, 0)
-			}
-		case headAllowedTags[name]:
-			// A void head-only tag (meta/link/base): allowed in head, but
-			// never wraps child text, so headChildDepth is untouched.
-		case opening:
-			st.inHead = false
-		}
+		st.tagInHead(name, tt)
 	}
-	if skippedElements[name] {
-		if tt.Type == html.StartTagToken {
-			st.skip++
-		}
-		if tt.Type == html.EndTagToken {
-			st.skip = max(st.skip-1, 0)
-		}
+	if st.tagSkipDepth(name, tt) {
 		return
 	}
+	st.tagTableAndBlock(name, tt)
+}
+
+// tagInHead updates inHead/headChildDepth for one tag token seen while
+// already inside <head> — see headContainerTags/headAllowedTags's doc
+// comments for what each case means.
+func (st *htmlStripper) tagInHead(name string, tt html.Token) {
+	opening := tt.Type == html.StartTagToken || tt.Type == html.SelfClosingTagToken
+	switch {
+	case headContainerTags[name]:
+		if tt.Type == html.StartTagToken {
+			st.headChildDepth++
+		} else if tt.Type == html.EndTagToken {
+			st.headChildDepth = max(st.headChildDepth-1, 0)
+		}
+	case headAllowedTags[name]:
+		// A void head-only tag (meta/link/base): allowed in head, but
+		// never wraps child text, so headChildDepth is untouched.
+	case opening:
+		st.inHead = false
+	}
+}
+
+// tagSkipDepth updates the skippedElements depth counter for name, and
+// reports whether tag should stop processing this token any further (it was
+// itself a skip-tracked element, never also a table/block one).
+func (st *htmlStripper) tagSkipDepth(name string, tt html.Token) bool {
+	if !skippedElements[name] {
+		return false
+	}
+	if tt.Type == html.StartTagToken {
+		st.skip++
+	}
+	if tt.Type == html.EndTagToken {
+		st.skip = max(st.skip-1, 0)
+	}
+	return true
+}
+
+// tagTableAndBlock handles table-cell separators and the line break at a
+// block element (tr among them).
+func (st *htmlStripper) tagTableAndBlock(name string, tt html.Token) {
 	if (name == "td" || name == "th") && tt.Type == html.StartTagToken {
 		if st.cells > 0 {
 			st.cur.WriteString(" | ")
